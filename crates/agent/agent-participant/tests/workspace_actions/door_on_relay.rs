@@ -65,7 +65,8 @@ pub struct OnRelay {
     pub host: Device,
     pub hosted: Hosted,
     _site: test_http::Responder,
-    _state: tempfile::TempDir,
+    /// Where the relay keeps its state.
+    pub state: tempfile::TempDir,
 }
 
 impl OnRelay {
@@ -182,7 +183,7 @@ pub async fn door_on_relay_limiting(
         host,
         hosted,
         _site: site,
-        _state: state,
+        state,
     }
 }
 

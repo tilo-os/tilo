@@ -177,6 +177,18 @@ pub fn mark_unavailable(list: Vec<Entered>, place: &Place) -> Changed {
     }
 }
 
+/// The host of `place` said its owner deleted it: it is forgotten, and a bare entry no longer
+/// reopens it.
+#[must_use]
+pub fn forget_deleted(list: Vec<Entered>, place: &Place) -> Changed {
+    let (deleted, entered): (Vec<_>, Vec<_>) =
+        kept(list).into_iter().partition(|entry| entry.is(place));
+    Changed {
+        entered,
+        unchoose: deleted.iter().map(Entered::place).collect(),
+    }
+}
+
 /// Opening the remembered `place` failed, and its origin answers as `answering` (the device key
 /// of the host there now), or did not answer at all (`None`). Another host than the one that held
 /// it means it is gone; anything else says nothing about it.
@@ -226,6 +238,21 @@ mod tests {
             origin: origin.into(),
             room: room.into(),
         }
+    }
+
+    #[test]
+    fn a_deleted_workspace_is_forgotten_and_no_other() {
+        let list = remember(Vec::new(), entry("https://a", "kept", HOST)).entered;
+        let list = remember(list, entry("https://a", "deleted", HOST)).entered;
+        let changed = forget_deleted(list, &place("https://a", "deleted"));
+        assert_eq!(changed.unchoose, [place("https://a", "deleted")]);
+        assert_eq!(changed.entered.len(), 1);
+        assert_eq!(changed.entered[0].room, "kept");
+        let again = forget_deleted(changed.entered, &place("https://a", "deleted"));
+        assert!(
+            again.unchoose.is_empty(),
+            "one not remembered changes nothing"
+        );
     }
 
     #[test]

@@ -87,6 +87,18 @@ pub const CREATE_ROOM: &str = "room.create";
 pub const CREATE_OWN_ROOM: &str = "room.create-own";
 /// Every workspace the host governs, each as a [`WorkspaceListing`].
 pub const LIST_ROOMS: &str = "room.list";
+/// Delete the workspace `room`, one of the caller's person's own (any
+/// workspace this host governs, for the host's own person), with everything
+/// the host keeps of it: its records, history, files and the storage they
+/// took. Everyone in it is told it was deleted
+/// ([`tilo_relay_protocol::refusal::WORKSPACE_DELETED`]) and let in no more.
+/// Final: there is no undo. Only a person's device, or an agent's grant
+/// reaching all their workspaces, deletes; a workspace that is not theirs is
+/// refused with [`NOT_YOUR_OWN`]. Answers `{"deleted": room}`.
+pub const DELETE_ROOM: &str = "room.delete";
+/// What the host refuses a person asking for, or deleting, a workspace that
+/// is not one of their own with.
+pub const NOT_YOUR_OWN: &str = "that workspace is not one of your own";
 /// Admit the calling device to `workspace` as one of its owner's. Answers
 /// an [`EnteredWorkspace`]: the invitation the device redeems to hold the workspace,
 /// restricted to its person and redeemable `expires_in_seconds` (600 when

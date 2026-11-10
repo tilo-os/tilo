@@ -73,6 +73,13 @@ const NOT_ADMITTED: (&str, &str) = (
     "This workspace’s host no longer has you as a member.",
 );
 
+/// The host deleted a workspace this session held (`workspace-deleted`): its
+/// owner deleted it, so it never comes back and the device forgets it.
+pub(crate) const WORKSPACE_DELETED: (&str, &str) = (
+    "workspace-deleted",
+    "This workspace was deleted by its owner.",
+);
+
 /// What a failed connection says about this device.
 #[derive(Debug, PartialEq, Eq)]
 enum Refusal {
@@ -160,7 +167,7 @@ pub enum TransportPhase {
 pub struct Failure {
     /// `FailureCode`: `transport-unavailable`, `transport-ended`,
     /// `certificate-expired`, `certificate-rejected`, `not-admitted`,
-    /// `device-revoked`, `host-changed`, `agent-run-stopped`,
+    /// `device-revoked`, `host-changed`, `workspace-deleted`, `agent-run-stopped`,
     /// `protocol-rejected`, `permission-required`, `signature-rejected`,
     /// `storage-transaction-failed`, `admission-timeout`, and the codes the
     /// page reports (see [`PeerHandle::report_failure`]).

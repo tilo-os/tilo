@@ -6,7 +6,7 @@ import base64
 import builtins
 from typing import Any, AsyncIterator, Mapping
 
-from ._errors import ProtocolError, Refused
+from ._errors import ProtocolError, Refused, key_refusal
 from ._endpoint import CURRENT, Endpoint, RunGroup
 from ._models import (
     Event,
@@ -334,6 +334,9 @@ class Workspace:
             body = {}
         if response.status_code >= 400 or not isinstance(body.get("content"), str):
             error = body.get("error")
+            typed = key_refusal(error, response.status_code) if response.status_code == 401 else None
+            if typed is not None:
+                raise typed
             if isinstance(error, Mapping):
                 raise Refused(
                     str(error.get("code") or "upload_failed"),

@@ -38,7 +38,7 @@ import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
 import {
-  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces,
+  chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
   keptMembership, listedWorkspaces,
   membershipOrigins, nameEntered, OPEN_WORKSPACE, ownDesktopOpen, ownedHosts, pairViaHost, defaultDisplayName, redrawnDisplayName, rememberEntered,
@@ -1224,7 +1224,10 @@ export async function startEntryPage({mode}) {
           tell('unavailable');
           document.documentElement.dataset.refusal = code;
           const known = remembering(() => rememberedWorkspace(here));
-          if (known) void settleWorkspace(known, runtime);
+          // A workspace its owner deleted is forgotten; anything else is
+          // asked of its origin.
+          if (known && code === 'workspace-deleted') remembering(() => forgetDeletedWorkspace(runtime, known));
+          else if (known) void settleWorkspace(known, runtime);
           if (embed) return;
           const own = await card(refusalText(code, workspaceName),
             await ownDesktopAllowed(page.entry?.home) ? [['Open your own desktop', true]] : []);

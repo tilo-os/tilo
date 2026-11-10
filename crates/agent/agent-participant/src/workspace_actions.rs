@@ -211,6 +211,8 @@ enum Job {
     /// A workspace requests wait to be joined to changed: those it joined
     /// run.
     Joined(u64),
+    /// A workspace was deleted: the service lets go of all it holds of it.
+    Forget(u64),
 }
 
 impl Job {
@@ -223,6 +225,7 @@ impl Job {
             Self::Content { .. } => "content",
             Self::ContentGet { .. } => "content-get",
             Self::Joined(_) => "joined",
+            Self::Forget(_) => "forget",
         }
     }
 
@@ -233,7 +236,7 @@ impl Job {
             | Self::Invoke { workspace_id, .. }
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. } => Some(*workspace_id),
-            Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) => None,
+            Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
         }
     }
 }
@@ -305,6 +308,14 @@ impl WorkspaceActions {
             .map_err(|error| error.to_string())?;
         *self.shared.jobs.lock_recover() = Some(sender);
         Ok(())
+    }
+
+    /// The workspace `workspace_id` was deleted: the service lets go of all
+    /// it holds of it, its app workers' replicas included.
+    pub fn forget_workspace(&self, workspace_id: u64) {
+        if let Some(jobs) = self.shared.jobs.lock_recover().as_ref() {
+            let _ = jobs.send((Instant::now(), Job::Forget(workspace_id)));
+        }
     }
 
     /// Stop the service thread; later requests are refused as unavailable.
@@ -1358,6 +1369,7 @@ impl Worker {
                 } => done.complete(self.invoke(workspace_id, invocation)),
                 Job::Ran(ended) => self.ran(&ended),
                 Job::Joined(workspace_id) => self.resume(workspace_id),
+                Job::Forget(workspace_id) => self.forget(workspace_id),
                 Job::Content {
                     workspace_id,
                     caller,
@@ -1383,6 +1395,24 @@ impl Worker {
 
     fn ledger(&self) -> std::sync::MutexGuard<'_, Ledger> {
         self.shared.ledger.lock_recover()
+    }
+
+    /// Let go of everything held of `workspace_id`, deleted: its
+    /// membership, the records mounted and the replicas callers acted
+    /// through there, and its content store. Requests still waiting for it
+    /// run, and are told it is not there.
+    fn forget(&mut self, workspace_id: u64) {
+        let of =
+            |route: &DocumentRoute| room_workspace_id(&route.cluster_id).ok() == Some(workspace_id);
+        self.workspaces.remove(&workspace_id);
+        self.shared.joins.lock_recover().remove(&workspace_id);
+        self.shared.stores.lock_recover().remove(&workspace_id);
+        self.mounted.retain(|route, _| !of(route));
+        self.bounded.retain(|(route, _, _), _| !of(route));
+        self.beside.retain(|route, held| !of(route) && !of(held));
+        for (queued, job) in self.joining.remove(&workspace_id).unwrap_or_default() {
+            self.timed(queued, job);
+        }
     }
 
     /// The member's view of `workspace_id`, joining the workspace first and

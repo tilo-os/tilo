@@ -60,6 +60,34 @@ fn hold_reason(route: &DocumentRoute, envelope: &collab_types::SignedOp) -> Hold
 }
 
 impl Task {
+    /// The host no longer lets this device into `workspace_id`, for
+    /// `reason`: its owner deleted it, or this device may not.
+    fn not_authorised(&mut self, workspace_id: u64, reason: String) {
+        if reason == tilo_relay_protocol::refusal::WORKSPACE_DELETED {
+            self.workspace_deleted(workspace_id);
+        } else {
+            self.fail("permission-required", reason);
+        }
+    }
+
+    /// The host says `workspace_id`'s owner deleted it: it is gone for good.
+    /// The session stops following it, and says so (`workspace-deleted`) for
+    /// the page or desk to forget it; a session holding nothing else ends
+    /// there, as a refusal ends one.
+    fn workspace_deleted(&mut self, workspace_id: u64) {
+        self.workspaces.remove(&workspace_id);
+        self.planes_due.remove(&workspace_id);
+        self.placing.remove(&workspace_id);
+        self.fail(WORKSPACE_DELETED.0, WORKSPACE_DELETED.1);
+        let nothing_left = self.workspaces.is_empty();
+        self.update(|status| {
+            status.workspaces.remove(&workspace_id);
+            if nothing_left {
+                status.phase = TransportPhase::Failed;
+            }
+        });
+    }
+
     pub(super) fn inbound(&mut self, envelope: Envelope) {
         let now = tilo_clock::unix_now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
@@ -73,9 +101,10 @@ impl Task {
                 self.decide_held(workspace_id);
                 self.emit(&PeerEvent::Ready { workspace_id });
             }
-            Envelope::NotAuthorised { reason, .. } => {
-                self.fail("permission-required", reason);
-            }
+            Envelope::NotAuthorised {
+                workspace_id,
+                reason,
+            } => self.not_authorised(workspace_id, reason),
             Envelope::WorkspaceBootstrap {
                 workspace_id,
                 bootstrap,

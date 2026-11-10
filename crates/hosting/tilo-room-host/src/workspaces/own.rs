@@ -169,6 +169,27 @@ impl OwnWorkspaces {
         Ok(())
     }
 
+    /// Forget `workspace`, deleted: it is nobody's any more, and what it
+    /// took no longer counts against its person. Durably.
+    pub(super) fn forget(&self, workspace: &str) -> Result<(), String> {
+        let mut index = self.by_person.lock_recover();
+        let mut next = index.clone();
+        for mine in next.values_mut() {
+            mine.retain(|own| own != workspace);
+        }
+        next.retain(|_, mine| !mine.is_empty());
+        if next != *index {
+            let bytes = serde_json::to_vec(&next).map_err(|error| error.to_string())?;
+            tilo_files::native::atomic::write(&self.path, &bytes)
+                .map_err(|error| error.to_string())?;
+            *index = next;
+        }
+        drop(index);
+        self.owners.lock_recover().remove(workspace);
+        self.measured.lock_recover().remove(workspace);
+        Ok(())
+    }
+
     /// Put `person` on `plan` here: what their workspaces of their own may
     /// keep rather than what the offer gives everyone.
     pub(super) fn plan(&self, person: &[u8; 32], plan: PlanOffer) {
@@ -513,6 +534,22 @@ mod tests {
         assert!(!again.is_of(&[4; 32], "w-3"));
         assert_eq!(again.of(&[4; 32]), Vec::<String>::new());
         assert_eq!(again.owner_of("w-5"), None);
+    }
+
+    #[test]
+    fn a_deleted_workspace_is_nobodys_and_takes_nothing_after_a_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let offer = OwnWorkspaceOffer::free("tilo.test");
+        let own = OwnWorkspaces::open(dir.path(), offer.clone()).unwrap();
+        own.record(&[3; 32], "w-3").unwrap();
+        own.record(&[3; 32], "w-4").unwrap();
+        own.forget("w-3").unwrap();
+        assert_eq!(own.of(&[3; 32]), ["w-4"]);
+        assert_eq!(own.owner_of("w-3"), None);
+        own.forget("w-4").unwrap();
+        let again = OwnWorkspaces::open(dir.path(), offer).unwrap();
+        assert_eq!(again.of(&[3; 32]), Vec::<String>::new());
+        assert_eq!(again.owner_of("w-4"), None);
     }
 
     #[test]

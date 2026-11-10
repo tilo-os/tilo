@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tilo import AskPending, AsyncTilo, Key, MintedKey, Refused, SignIn
+from tilo import AskPending, AsyncTilo, Key, KeyExpired, KeyRefused, KeyRevoked, MintedKey, Refused, SignIn
 
 from fake_door import INVITED_ID, WORKSPACE_ID, FakeDoor
 
@@ -60,12 +60,46 @@ async def test_a_key_is_revoked_and_answers_which(tilo):
     assert answer == {"revoked": "g-root"}
 
 
-async def test_a_deleted_workspace_is_refused_today(tilo):
-    with pytest.raises(Refused) as raised:
-        await tilo.workspaces.delete("jane-doe")
+async def test_a_workspace_is_deleted_and_gone_from_the_listing(tilo, door):
+    answer = await tilo.workspaces.delete("jane-doe")
 
-    assert raised.value.code == "not_supported"
-    assert raised.value.next_steps == ["revoke the keys that reach it with account/keys#revoke"]
+    assert answer == {"deleted": WORKSPACE_ID, "revoked_keys": ["g-minted"]}
+    assert door.asked("tilo_do")[-1]["arguments"]["args"] == {"workspace": WORKSPACE_ID}
+    listed = await tilo.workspaces.list()
+    assert WORKSPACE_ID not in [workspace.id for workspace in listed]
+
+
+async def test_a_workspace_invited_into_is_not_deleted(tilo):
+    with pytest.raises(Refused) as raised:
+        await tilo.workspaces.delete(INVITED_ID)
+
+    assert raised.value.code == "not_found"
+
+
+@pytest.mark.parametrize(
+    ("key", "raised", "code"),
+    [
+        ("tilo_sk_revoked", KeyRevoked, "key_revoked"),
+        ("tilo_sk_expired", KeyExpired, "key_expired"),
+        ("tilo_sk_never", KeyRefused, "invalid_token"),
+    ],
+)
+async def test_a_key_the_door_turns_away_says_why(door, key, raised, code):
+    client = AsyncTilo(key=key, door="https://door.test", http=door.client())
+    try:
+        with pytest.raises(raised) as refused:
+            await client.workspaces.list()
+    finally:
+        await client.aclose()
+
+    assert type(refused.value) is raised
+    assert refused.value.code == code
+    assert refused.value.status == 401
+    if raised is KeyRevoked:
+        assert refused.value.revoked_at_ms == 1_794_000_000_000
+        assert refused.value.next_steps == ["ask the person for a new key"]
+    if raised is KeyExpired:
+        assert refused.value.expired_at_ms == 1_794_000_000_000
 
 
 async def test_asking_for_a_key_raises_with_the_link_and_waits(tilo, door):

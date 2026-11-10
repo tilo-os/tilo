@@ -57,6 +57,26 @@ class FakeDoor:
         }
         self.kinds = {TODO: "notes.Page", PDF: "pdf-viewer.Document"}
         self.sessions: set[str] = set()
+        # Keys the door turns away, with its typed refusal of each.
+        self.denied: dict[str, dict[str, Any]] = {
+            "tilo_sk_revoked": {
+                "code": "key_revoked",
+                "message": "this key was revoked on 2026-11-09",
+                "next_steps": ["ask the person for a new key"],
+                "revoked_at_ms": 1_794_000_000_000,
+            },
+            "tilo_sk_expired": {
+                "code": "key_expired",
+                "message": "this key expired on 2026-11-09",
+                "next_steps": ["ask the person for a new key, or mint one again"],
+                "expired_at_ms": 1_794_000_000_000,
+            },
+            "tilo_sk_never": {
+                "code": "invalid_token",
+                "message": "this is not a key or token this door issued",
+                "next_steps": [],
+            },
+        }
         self.opened = 0
         self.calls: list[dict[str, Any]] = []
         self.edits: list[dict[str, Any]] = []
@@ -160,7 +180,11 @@ class FakeDoor:
         authorization = request.headers.get("authorization", "")
         if not authorization.startswith("Bearer "):
             return httpx.Response(401, text="sign in to use Tilo")
-        if authorization.removeprefix("Bearer ") != self.key:
+        presented = authorization.removeprefix("Bearer ")
+        if presented in self.denied:
+            # The door's typed answer for a key it turned away.
+            return httpx.Response(401, json={"error": self.denied[presented]})
+        if presented != self.key:
             return httpx.Response(401, text="sign in to use Tilo")
         if workspace is not None and self.scope == "workspace" and workspace != WORKSPACE_ID:
             return httpx.Response(403, text="this grant does not reach that workspace")
@@ -357,12 +381,20 @@ class FakeDoor:
             self.workspaces.append(created)
             return {"status": "ok", "path": path, "result": {"workspace": created}}
         if path == "account/workspaces#delete":
-            return self.failed(
-                path,
-                "not_supported",
-                "the host cannot delete a workspace yet",
-                "revoke the keys that reach it with account/keys#revoke",
-            )
+            workspace = args.get("workspace")
+            if not any(row["id"] == workspace and row["role"] == "owner" for row in self.workspaces):
+                return self.failed(
+                    path,
+                    "not_found",
+                    "no such workspace of yours",
+                    "tilo_do account/workspaces#list names your workspaces",
+                )
+            self.workspaces = [row for row in self.workspaces if row["id"] != workspace]
+            return {
+                "status": "ok",
+                "path": path,
+                "result": {"deleted": workspace, "revoked_keys": ["g-minted"]},
+            }
         if path == "account/keys#list":
             return {"status": "ok", "path": path, "result": {"keys": self.keys}}
         if path == "account/keys#create":

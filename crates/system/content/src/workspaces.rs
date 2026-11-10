@@ -86,6 +86,25 @@ impl WorkspaceStores {
             .map_err(|error| error.to_string())
     }
 
+    /// Remove everything `workspace` keeps here, deleted: its store and its
+    /// directory. A store asked for afterwards starts empty.
+    ///
+    /// # Errors
+    ///
+    /// `workspace` is not a workspace's id, or its directory could not be
+    /// removed.
+    pub fn remove(&self, workspace: &str) -> Result<(), String> {
+        let workspace = workspace_dir(workspace).ok_or("the workspace is not a uuid")?;
+        self.stores
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&workspace);
+        match std::fs::remove_dir_all(self.dir.join(&workspace)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+            _ => Ok(()),
+        }
+    }
+
     /// The workspaces this host keeps content of, by id.
     #[must_use]
     pub fn workspaces(&self) -> Vec<String> {

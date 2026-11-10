@@ -7,7 +7,7 @@
  * is another (`/w/<workspace>/mcp`).
  */
 
-import { AskPending, ProtocolError, RATE_LIMITED, RateLimited, Refused } from "./errors.ts";
+import { AskPending, ProtocolError, RATE_LIMITED, RateLimited, Refused, keyRefusal } from "./errors.ts";
 
 export const DEFAULT_DOOR = "https://mcp.tilo.sh";
 /** How long a call keeps asking again while the host is busy, in ms. */
@@ -106,7 +106,7 @@ export class Session {
       },
     });
     if (response.status >= 400) {
-      throw new ProtocolError(await this.transport.refusal(response), response.status);
+      throw await this.transport.refused(response);
     }
     const opened = replyIn(await messagesIn(response), id);
     if (opened.error) {
@@ -202,7 +202,7 @@ export class Session {
       response = await this.#send(payload(id));
     }
     if (response.status >= 400) {
-      throw new ProtocolError(await this.transport.refusal(response), response.status);
+      throw await this.transport.refused(response);
     }
     const reply = replyIn(await messagesIn(response), id);
     if (reply.error) {
@@ -269,6 +269,26 @@ export class Transport {
       surface.run = run;
     }
     return surface;
+  }
+
+  /**
+   * What the door's refusal `response` throws: `KeyRevoked`, `KeyExpired` or
+   * `KeyRefused` for a key it turned away, typed as it said; else a
+   * `ProtocolError` with its words.
+   */
+  async refused(response: Response): Promise<Error> {
+    if (response.status === 401) {
+      try {
+        const body = (await response.clone().json()) as Record<string, unknown> | null;
+        const typed = keyRefusal(body?.error, response.status);
+        if (typed !== null) {
+          return typed;
+        }
+      } catch {
+        // Not JSON: the door's words below.
+      }
+    }
+    return new ProtocolError(await this.refusal(response), response.status);
   }
 
   async refusal(response: Response): Promise<string> {
@@ -378,6 +398,10 @@ export function answerOf(answer: Answer): Answer {
       throw busy;
     }
     const error = answer.error;
+    const typed = keyRefusal(error, null);
+    if (typed !== null) {
+      throw typed;
+    }
     if (error && typeof error === "object") {
       const detail = error as Record<string, unknown>;
       throw new Refused(

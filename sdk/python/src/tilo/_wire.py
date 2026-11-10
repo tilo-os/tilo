@@ -19,7 +19,7 @@ from typing import Any, Mapping
 
 import httpx
 
-from ._errors import RATE_LIMITED, AskPending, ProtocolError, RateLimited, Refused
+from ._errors import RATE_LIMITED, AskPending, ProtocolError, RateLimited, Refused, key_refusal
 
 DEFAULT_DOOR = "https://mcp.tilo.sh"
 PROTOCOL_VERSION = "2025-06-18"
@@ -102,9 +102,7 @@ class Session:
         }
         response = await self._send(payload)
         if response.status_code >= 400:
-            raise ProtocolError(
-                self.transport.refusal(response), status=response.status_code
-            )
+            raise self.transport.refused(response)
         error = reply_in(messages_in(response), payload["id"]).get("error")
         if isinstance(error, Mapping):
             raise refusal_of(error)
@@ -175,7 +173,7 @@ class Session:
             payload["id"] = next(self._ids)
             response = await self._send(payload)
         if response.status_code >= 400:
-            raise ProtocolError(self.transport.refusal(response), status=response.status_code)
+            raise self.transport.refused(response)
         reply = reply_in(messages_in(response), payload["id"])
         error = reply.get("error")
         if isinstance(error, Mapping):
@@ -254,6 +252,20 @@ class Transport:
         if run is not None:
             surface["run"] = dict(run)
         return surface
+
+    def refused(self, response: httpx.Response) -> Exception:
+        """What the door's refusal `response` raises: `KeyRevoked`,
+        `KeyExpired` or `KeyRefused` for a key it turned away, typed as it
+        said; else a `ProtocolError` with its words."""
+        if response.status_code == 401:
+            try:
+                body = response.json()
+            except ValueError:
+                body = None
+            typed = key_refusal(body.get("error") if isinstance(body, dict) else None, response.status_code)
+            if typed is not None:
+                return typed
+        return ProtocolError(self.refusal(response), status=response.status_code)
 
     def refusal(self, response: httpx.Response) -> str:
         text = response.text.strip() or response.reason_phrase
@@ -351,6 +363,9 @@ def answer_of(answer: Mapping[str, Any]) -> Mapping[str, Any]:
         busy = rate_limited(answer)
         if busy is not None:
             raise busy
+        typed = key_refusal(dict(error), None)
+        if typed is not None:
+            raise typed
         raise Refused(
             str(error.get("code") or "failed"),
             str(error.get("message") or ""),

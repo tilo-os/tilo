@@ -7,7 +7,7 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { AskPending, Refused, Tilo } from "../src/index.ts";
+import { AskPending, KeyRevoked, Refused, Tilo } from "../src/index.ts";
 
 const door = process.env.TILO_TEST_DOOR;
 const key = process.env.TILO_TEST_KEY;
@@ -72,14 +72,22 @@ describe.skipIf(skip)("a real front door", () => {
     await tilo.close();
   });
 
-  it("refuses deleting a workspace today", async () => {
+  it("deletes a workspace, and its minted key with it", async () => {
     const tilo = open();
     const created = await tilo.workspaces.create(name("sdk-delete"));
+    const minted = await tilo.keys.mint(created.id);
 
-    const failure = tilo.workspaces.delete(created.id);
+    const answer = (await tilo.workspaces.delete(created.id)) as Record<string, unknown>;
 
-    await expect(failure).rejects.toBeInstanceOf(Refused);
-    await expect(failure).rejects.toMatchObject({ code: "not_supported" });
+    expect(answer.deleted).toBe(created.id);
+    expect(answer.revoked_keys).toContain(minted.grant);
+    const listed = await tilo.workspaces.list();
+    expect(listed.workspaces.map((workspace) => workspace.id)).not.toContain(created.id);
+    const agent = new Tilo({ key: minted.token, door });
+    await expect(agent.workspace(created.id).ls()).rejects.toBeInstanceOf(KeyRevoked);
+    await agent.close();
+    const again = tilo.workspaces.delete(created.id);
+    await expect(again).rejects.toMatchObject({ code: "not_found" });
     await tilo.close();
   });
 

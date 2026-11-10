@@ -31,7 +31,16 @@ class Workspaces:
         return self.client.handoff(self.client._create_workspace(name, host))
 
     def delete(self, workspace: Any) -> Any:
-        """Delete a workspace: refused today, the host cannot yet."""
+        """Delete a workspace of the person's own, and everything in it: final.
+
+        Its records, files and history go from the host and stop counting
+        against the person's storage; anyone in it is told it was deleted,
+        and every key minted for it is revoked. Answers `{"deleted": id,
+        "revoked_keys": [grant, ...]}`. Only a key reaching all the person's
+        workspaces deletes; a workspace they were invited into is `not_found`,
+        as is one already deleted. The call is the confirmation: nothing asks
+        again.
+        """
         return self.client.handoff(self.client._delete_workspace(workspace))
 
     def named(self, id_or_name: str) -> WorkspaceInfo | None:

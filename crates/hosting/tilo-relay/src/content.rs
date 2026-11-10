@@ -54,3 +54,30 @@ impl WorkspaceContent for StoresContent {
         self.0.get(workspace).ok()?.read(hash)
     }
 }
+
+/// Let go of each workspace `workspaces` deletes, as it goes: its content in
+/// `stores`, and what the app-serving plane `apps` holds of it.
+pub async fn forget_deleted(
+    workspaces: crate::workspaces::Workspaces,
+    stores: Arc<WorkspaceStores>,
+    apps: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+) {
+    let mut deletions = workspaces.deletions();
+    drop(workspaces);
+    loop {
+        let (workspace, workspace_id) = match deletions.recv().await {
+            Ok(deleted) => deleted,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                tracing::error!(missed, "deleted workspaces' content was not let go of");
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+        };
+        if let Err(error) = stores.remove(&workspace) {
+            tracing::warn!(%workspace, %error, "a deleted workspace's content stays");
+        }
+        if let Some(apps) = &apps {
+            apps.forget_workspace(workspace_id);
+        }
+    }
+}

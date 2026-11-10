@@ -108,3 +108,70 @@ class ProtocolError(Exception):
         self.message = message
         self.status = status
         self.code = code
+
+
+class KeyRefused(ProtocolError):
+    """The door turned the key away (HTTP 401): it reaches nothing.
+
+    `code` says why, the door's own word: `invalid_token` for a key the door
+    never issued (mistyped, or from another door), `key_revoked`
+    (`KeyRevoked`) and `key_expired` (`KeyExpired`). `next_steps` are what
+    would work, each a sentence.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        code: str = "invalid_token",
+        status: int | None = 401,
+        next_steps: list[str] | None = None,
+    ) -> None:
+        super().__init__(message, status=status, code=code)
+        self.next_steps = list(next_steps or [])
+
+
+class KeyRevoked(KeyRefused):
+    """The key was revoked: by its person, with the key that minted it, or
+    when the workspace it reached was deleted. `revoked_at_ms` says when
+    (Unix milliseconds), when the door knows."""
+
+    def __init__(self, message: str = "this key was revoked", *, revoked_at_ms: int | None = None, **rest: Any) -> None:
+        super().__init__(message, code=KEY_REVOKED, **rest)
+        self.revoked_at_ms = revoked_at_ms
+
+
+class KeyExpired(KeyRefused):
+    """The key expired at `expired_at_ms` (Unix milliseconds), when the door
+    knows: a minted key lasts at most 90 days, and a key its person gave an
+    expiry ends then."""
+
+    def __init__(self, message: str = "this key expired", *, expired_at_ms: int | None = None, **rest: Any) -> None:
+        super().__init__(message, code=KEY_EXPIRED, **rest)
+        self.expired_at_ms = expired_at_ms
+
+
+KEY_REVOKED = "key_revoked"
+KEY_EXPIRED = "key_expired"
+INVALID_TOKEN = "invalid_token"
+
+
+def key_refusal(error: Any, status: int | None = 401) -> KeyRefused | None:
+    """The `KeyRefused` the door's typed refusal `error` (`{code, message,
+    next_steps, revoked_at_ms?, expired_at_ms?}`) is, if it is about the key."""
+    if not isinstance(error, dict):
+        return None
+    code = error.get("code")
+    message = str(error.get("message") or code or "")
+    steps = [str(step) for step in error.get("next_steps") or []]
+    if code == KEY_REVOKED:
+        return KeyRevoked(message, revoked_at_ms=_ms(error.get("revoked_at_ms")), status=status, next_steps=steps)
+    if code == KEY_EXPIRED:
+        return KeyExpired(message, expired_at_ms=_ms(error.get("expired_at_ms")), status=status, next_steps=steps)
+    if code == INVALID_TOKEN:
+        return KeyRefused(message, code=INVALID_TOKEN, status=status, next_steps=steps)
+    return None
+
+
+def _ms(value: Any) -> int | None:
+    return int(value) if isinstance(value, (int, float)) and value >= 0 else None

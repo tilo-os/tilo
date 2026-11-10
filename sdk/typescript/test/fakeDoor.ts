@@ -30,6 +30,27 @@ type Answer = Record<string, any>;
 
 export const INVITED_ID = "abcdef01-2345-6789-abcd-ef0123456789";
 
+/** Keys the door turns away, with its typed refusal of each. */
+export const DENIED: Record<string, Record<string, unknown>> = {
+  tilo_sk_revoked: {
+    code: "key_revoked",
+    message: "this key was revoked on 2026-11-09",
+    next_steps: ["ask the person for a new key"],
+    revoked_at_ms: 1_794_000_000_000,
+  },
+  tilo_sk_expired: {
+    code: "key_expired",
+    message: "this key expired on 2026-11-09",
+    next_steps: ["ask the person for a new key, or mint one again"],
+    expired_at_ms: 1_794_000_000_000,
+  },
+  tilo_sk_never: {
+    code: "invalid_token",
+    message: "this is not a key or token this door issued",
+    next_steps: [],
+  },
+};
+
 export class FakeDoor {
   key = "tilo_sk_test";
   scope: "account" | "workspace" = "account";
@@ -150,6 +171,14 @@ export class FakeDoor {
       return new Response("no such endpoint", { status: 404 });
     }
     const authorization = headers.authorization ?? "";
+    const denied = DENIED[authorization.slice(7)];
+    if (authorization.startsWith("Bearer ") && denied !== undefined) {
+      // The door's typed answer for a key it turned away.
+      return new Response(JSON.stringify({ error: denied }), {
+        status: 401,
+        headers: { "content-type": "application/json" },
+      });
+    }
     if (!authorization.startsWith("Bearer ") || authorization.slice(7) !== this.key) {
       return new Response("sign in to use Tilo", { status: 401 });
     }
@@ -339,8 +368,14 @@ export class FakeDoor {
         this.workspaces.push(created);
         return { status: "ok", path, result: { workspace: created } };
       }
-      case "account/workspaces#delete":
-        return this.failed(path, "not_supported", "the host cannot delete a workspace yet", "revoke the keys that reach it with account/keys#revoke");
+      case "account/workspaces#delete": {
+        const workspace = args.workspace;
+        if (!this.workspaces.some((row) => row.id === workspace && row.role === "owner")) {
+          return this.failed(path, "not_found", "no such workspace of yours", "tilo_do account/workspaces#list names your workspaces");
+        }
+        this.workspaces = this.workspaces.filter((row) => row.id !== workspace);
+        return { status: "ok", path, result: { deleted: workspace, revoked_keys: ["g-minted"] } };
+      }
       case "account/keys#list":
         return { status: "ok", path, result: { keys: this.keys } };
       case "account/keys#create":

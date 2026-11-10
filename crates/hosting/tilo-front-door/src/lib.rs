@@ -792,10 +792,10 @@ impl Door {
         headers: &hyper::HeaderMap,
         body: &[u8],
     ) -> Reply {
-        let presented = bearer(headers);
-        let grant = presented.and_then(|token| self.store.access(token, now_ms()));
-        let Some(grant) = grant else {
-            return self.challenge(pinned, presented.is_some());
+        let grant = match bearer(headers).map(|token| self.store.access(token, now_ms())) {
+            Some(Ok(grant)) => grant,
+            Some(Err(denied)) => return self.challenge(pinned, Some(denied)),
+            None => return self.challenge(pinned, None),
         };
         if !oauth::scope_reaches(&grant.scope, pinned) {
             return self.insufficient(pinned);
@@ -831,8 +831,10 @@ impl Door {
         }
     }
 
-    /// 401 naming where the agent learns how to get a token (RFC 9728).
-    fn challenge(&self, pinned: Option<&str>, presented: bool) -> Reply {
+    /// 401 naming where the agent learns how to get a token (RFC 9728),
+    /// and, for a token it was sent, why that token reaches nothing
+    /// ([`denial`]).
+    fn challenge(&self, pinned: Option<&str>, denied: Option<store::Denied>) -> Reply {
         let metadata = format!(
             "{}{}{}",
             self.config.issuer,
@@ -845,10 +847,22 @@ impl Door {
             "Bearer resource_metadata=\"{metadata}\", scope=\"{}\"",
             oauth::MCP_SCOPE
         );
-        if presented {
-            value.push_str(", error=\"invalid_token\"");
-        }
-        let mut reply = text(StatusCode::UNAUTHORIZED, "sign in to use Tilo");
+        let mut reply = match denied {
+            Some(denied) => {
+                let refusal = denial(denied);
+                let _ = write!(
+                    value,
+                    ", error=\"invalid_token\", error_description=\"{}: {}\"",
+                    denied.code(),
+                    refusal
+                        .pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                );
+                json_reply(StatusCode::UNAUTHORIZED, &refusal)
+            }
+            None => text(StatusCode::UNAUTHORIZED, "sign in to use Tilo"),
+        };
         if let Ok(value) = HeaderValue::from_str(&value) {
             reply.headers_mut().insert(header::WWW_AUTHENTICATE, value);
         }
@@ -1141,6 +1155,42 @@ fn now_ms() -> u64 {
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Why a token the door was sent reaches nothing, as every door refusal is
+/// typed: `{"error": {code, message, next_steps}}`, with when it was revoked
+/// (`revoked_at_ms`) or expired (`expired_at_ms`) when the door knows. A
+/// caller tells a revoked key from an expired one and from one that never
+/// was a key by the code alone.
+pub(crate) fn denial(denied: store::Denied) -> Value {
+    let (message, next, when) = match denied {
+        store::Denied::Unknown => (
+            "this is not a key or token this door issued".to_owned(),
+            "check the key you pass, or create one with `tilo keys create`",
+            None,
+        ),
+        store::Denied::Revoked { at_ms } => (
+            at_ms.map_or_else(
+                || "this key was revoked".to_owned(),
+                |at| format!("this key was revoked on {}", pages::date(at)),
+            ),
+            "ask the person for a new key",
+            at_ms.map(|at| ("revoked_at_ms", at)),
+        ),
+        store::Denied::Expired { at_ms } => (
+            at_ms.map_or_else(
+                || "this key expired".to_owned(),
+                |at| format!("this key expired on {}", pages::date(at)),
+            ),
+            "ask the person for a new key, or mint one again",
+            at_ms.map(|at| ("expired_at_ms", at)),
+        ),
+    };
+    let mut error = json!({"code": denied.code(), "message": message, "next_steps": [next]});
+    if let (Some((field, at)), Some(fields)) = (when, error.as_object_mut()) {
+        fields.insert(field.into(), json!(at));
+    }
+    json!({ "error": error })
 }
 
 fn json_reply(status: StatusCode, value: &Value) -> Reply {

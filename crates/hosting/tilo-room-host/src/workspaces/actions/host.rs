@@ -22,9 +22,10 @@ use tilo_actions::remote::{ActionHostError, CatalogueRow, InvokeRequest};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_session::workspaces::{
-    ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DETACH_HOST,
-    ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM, HOST_ROOMS_RESOURCE,
-    HostedWorkspace, LIST_REVOCATIONS, LIST_ROOMS, UNHOST_ROOM, WorkspaceListing,
+    ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM,
+    DETACH_HOST, ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM,
+    HOST_ROOMS_RESOURCE, HostedWorkspace, LIST_REVOCATIONS, LIST_ROOMS, NOT_YOUR_OWN, UNHOST_ROOM,
+    WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -57,7 +58,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 9] = [
+const HOST_VERBS: [(Verb, HostOperation); 10] = [
     (
         Verb {
             id: CREATE_ROOM,
@@ -77,6 +78,16 @@ const HOST_VERBS: [(Verb, HostOperation); 9] = [
             params: create_own_params,
         },
         HostOperation::CreateOwnWorkspace,
+    ),
+    (
+        Verb {
+            id: DELETE_ROOM,
+            label: "Delete your workspace",
+            gate: DELETE_ROOM,
+            kind: roles::GOVERNANCE_KIND,
+            params: workspace_params,
+        },
+        HostOperation::DeleteOwnWorkspace,
     ),
     (
         Verb {
@@ -386,6 +397,23 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 answer(&self.listed(device).await)
             }
+            HostOperation::DeleteOwnWorkspace => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                let workspace = args.required_text("room")?;
+                // The host's person deletes any workspace it governs; anyone
+                // else one of their own, which their grant reaches.
+                let person = device.user_public_key;
+                let theirs =
+                    person == self.inner.host.cert.user_public_key || self.owns(&person, workspace);
+                if !theirs || !self.lists_to(device, workspace) {
+                    return Err(refused(&NOT_YOUR_OWN));
+                }
+                self.delete(workspace)
+                    .await
+                    .map_err(|error| refused(&error))?;
+                Ok(serde_json::json!({ "deleted": workspace }))
+            }
             HostOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
@@ -566,7 +594,7 @@ impl Workspaces {
         } else if name.is_none() && moving.is_some() && !mine.is_empty() {
             // A workspace this host does not keep for them, asked for as one
             // of theirs.
-            return Err(refused(&"that workspace is not one of your own"));
+            return Err(refused(&NOT_YOUR_OWN));
         } else if name.is_none()
             && moving.is_none()
             && let Some(first) = mine.first()

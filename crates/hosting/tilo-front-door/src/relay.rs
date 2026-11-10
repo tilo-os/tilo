@@ -291,6 +291,40 @@ impl Relay {
         Ok(workspace)
     }
 
+    /// Delete the person's own `workspace` as `connection` (reaching all
+    /// their workspaces): final, with everything the relay keeps of it.
+    ///
+    /// # Errors
+    /// Not one of the person's own workspaces ([`RelayError::NotFound`]),
+    /// or the relay refused or was not reached.
+    pub async fn delete(&self, connection: &Connection, workspace: &str) -> Result<(), RelayError> {
+        if tilo_relay_protocol::room_workspace_id(workspace).is_err() {
+            return Err(RelayError::NotFound);
+        }
+        let lobby = self.lobby(connection).await?;
+        let mut arguments = Map::new();
+        arguments.insert("room".into(), json!(workspace));
+        connection
+            .device
+            .host_action(
+                lobby,
+                tilo_relay_session::workspaces::DELETE_ROOM,
+                arguments,
+                "tilo front door",
+            )
+            .await
+            .map_err(|refusal| match RelayError::from(refusal) {
+                RelayError::Refused(reason)
+                    if reason.contains(tilo_relay_session::workspaces::NOT_YOUR_OWN) =>
+                {
+                    RelayError::NotFound
+                }
+                other => other,
+            })?;
+        lock(&connection.entered).remove(workspace);
+        Ok(())
+    }
+
     /// Bring `connection` into `workspace`: its grant's person's own, which
     /// it reaches. A grant reaching all of them asks for the invitation
     /// itself; a minted one has `parent`, the grant that minted it, ask.

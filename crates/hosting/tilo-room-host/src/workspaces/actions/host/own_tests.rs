@@ -18,7 +18,8 @@ use tilo_actions::remote::{
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
 use tilo_relay_session::workspaces::{
-    CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    CREATE_OWN_ROOM, CreatedWorkspace, DELETE_ROOM, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE,
+    NOT_YOUR_OWN,
 };
 use tilo_user_identity::{
     AgentScope, DeviceCapabilities, DeviceCert, RevocationList, prepare_minted_grant,
@@ -163,8 +164,12 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
     offers.sort();
     assert_eq!(
         offers,
-        [CREATE_OWN_ROOM, tilo_relay_session::workspaces::LIST_ROOMS],
-        "a stranger makes and lists the workspace of their own, and nothing else"
+        [
+            CREATE_OWN_ROOM,
+            DELETE_ROOM,
+            tilo_relay_session::workspaces::LIST_ROOMS
+        ],
+        "a stranger makes, deletes and lists the workspaces of their own, and nothing else"
     );
     let created = create_own(&host, &guest, json!({"name": "Ada's workspace"}))
         .await
@@ -1129,4 +1134,127 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
         "the workspace she was invited into"
     );
     relay.shutdown().await;
+}
+
+fn delete_request(workspace: &str) -> InvokeRequest {
+    let mut request = super::super::tests::request("", DELETE_ROOM, json!({ "room": workspace }));
+    request.target = tilo_actions::remote::RemoteActionTarget {
+        provider: HOST_ACTIONS_PROVIDER.into(),
+        address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, DELETE_ROOM),
+    };
+    request
+}
+
+#[tokio::test]
+async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+    // A person's server key makes a workspace for a customer, and keeps it.
+    let root = SigningKey::from_bytes(&rand::random());
+    let key = SigningKey::from_bytes(&rand::random());
+    let server = certified(
+        &root,
+        &key,
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let created = own_as_key(&host, &server, json!({"name": "Applicant: Jane Doe"})).await;
+    let workspace = created.workspace.workspace.clone();
+    let workspace_id = created.workspace.workspace_id;
+    join(workspaces, &created, &key, &server).await;
+    let rooms = dir.path().join("rooms");
+    let record = rooms.join(format!("{workspace}.room"));
+    assert!(record.exists());
+    let person = root.verifying_key().to_bytes();
+    assert!(workspaces.owns(&person, &workspace));
+
+    // A key for that one workspace deletes nothing: it is not offered.
+    let narrow = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::Workspace([7; 16])),
+    );
+    assert!(matches!(
+        settled(
+            host.as_host(&narrow)
+                .invoke(&as_key(&narrow), delete_request(&workspace))
+        )
+        .await,
+        Err(ActionHostError::UnknownAction)
+    ));
+    // Nor does anyone else, who learns only that it is not theirs.
+    let (_, stranger) = guest_device();
+    let refused = invoke(&host, &stranger, delete_request(&workspace)).await;
+    assert!(
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        "{refused:?}"
+    );
+    assert!(record.exists(), "a refusal deletes nothing");
+
+    // Its owner's key deletes it.
+    let receipt = settled(
+        host.as_host(&server)
+            .invoke(&as_key(&server), delete_request(&workspace)),
+    )
+    .await
+    .unwrap();
+    let ReceiptStatus::Completed { output } = receipt.status else {
+        panic!("the owner deletes their workspace: {receipt:?}");
+    };
+    assert_eq!(output.value, Some(json!({ "deleted": workspace })));
+
+    // It is gone from every listing and from what its person keeps.
+    assert!(!workspaces.owns(&person, &workspace));
+    assert!(workspaces.own_workspaces_of(&person).is_empty());
+    assert!(
+        !workspaces
+            .list()
+            .await
+            .iter()
+            .any(|summary| summary.workspace == workspace)
+    );
+    let account = workspaces.own_account(&person).unwrap();
+    assert!(
+        account.standing.unwrap().usage.workspaces.is_empty(),
+        "what it kept no longer counts against its person"
+    );
+    // Nothing of it stays on disk but the mark that it was deleted.
+    assert!(!record.exists());
+    assert!(rooms.join(format!("{workspace}.deleted")).exists());
+    let left: Vec<String> = std::fs::read_dir(&rooms)
+        .unwrap()
+        .flatten()
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| name.starts_with(workspace.as_str()))
+        .collect();
+    assert_eq!(left, [format!("{workspace}.deleted")]);
+    assert!(
+        !dir.path()
+            .join("workspaces")
+            .join(workspace_id.to_string())
+            .exists()
+    );
+
+    // Deleting it again, or making it again under its identity, is refused.
+    let again = settled(
+        host.as_host(&server)
+            .invoke(&as_key(&server), delete_request(&workspace)),
+    )
+    .await;
+    assert!(
+        matches!(&again, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        "{again:?}"
+    );
+    assert!(
+        workspaces
+            .create_workspace("Again", Some(&workspace))
+            .await
+            .is_err()
+    );
 }

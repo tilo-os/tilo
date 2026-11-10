@@ -52,6 +52,8 @@ const ROOMS: &str = "rooms";
 /// groups of the workspaces it governs. Stops when dropped.
 pub(crate) struct Channels {
     device: DeviceKeys,
+    /// The service itself, to forget the workspaces deleted here.
+    access: ChannelKeyAccess,
     link: Arc<Link>,
     _pump: GovernancePump,
     following: Mutex<Vec<JoinHandle<()>>>,
@@ -87,6 +89,7 @@ impl Channels {
         let access = ChannelKeyAccess::with_wake(service, Arc::new(move || poke.poke()));
         let keys = ChannelKeyProvider::default();
         keys.set(Some(access.clone()));
+        let kept = access.clone();
         let pump = GovernancePump::spawn(
             "tilo-relay-channels",
             park,
@@ -96,6 +99,7 @@ impl Channels {
         )?;
         Ok(Self {
             device: Arc::new(Keys(keys)),
+            access: kept,
             link,
             _pump: pump,
             following: Mutex::new(Vec::new()),
@@ -134,6 +138,29 @@ impl Channels {
             }
         });
         lock(&self.following).push(publisher);
+        // A workspace deleted here takes its channels with it.
+        let mut deletions = workspaces.deletions();
+        let (access, directory) = (self.access.clone(), self.link.directory.clone());
+        let forgetting = tokio::spawn(async move {
+            loop {
+                let workspace = match deletions.recv().await {
+                    Ok((workspace, _)) => workspace,
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                        tracing::error!(missed, "deleted workspaces' channels were not forgotten");
+                        continue;
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
+                };
+                lock(&directory.states).remove(&workspace);
+                let Some(id) = WorkspaceId::parse(&workspace) else {
+                    continue;
+                };
+                if let Err(error) = access.forget_workspace(id) {
+                    tracing::warn!(%workspace, %error, "a deleted workspace's channels stay");
+                }
+            }
+        });
+        lock(&self.following).push(forgetting);
         self.link.park.poke();
     }
 }

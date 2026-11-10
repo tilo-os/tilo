@@ -123,6 +123,26 @@ Each agent session is one run in History, named after its key ("Jane Doe's
 agent #1"). Undo a run to take back everything it changed. Watch it live from
 your backend with `ws.watch()`.
 
+## When a customer leaves
+
+Delete their workspace, and their data goes with it:
+
+```python
+tilo.workspaces.delete("applicant-jane-doe")   # {"deleted": id, "revoked_keys": [...]}
+```
+
+Deleting is final: there is no undo, and nothing asks again, so the call is
+the confirmation. The host removes the workspace's records, files and history
+and stops counting them against your storage. Anyone with it open is told it
+was deleted, and their Tilo forgets it. Every key minted for it is revoked: its
+agent's next call raises `KeyRevoked` (`key_revoked` on the wire), which says
+when. Only a key reaching all your workspaces deletes, and only workspaces of
+your own; one you were invited into is `not_found`.
+
+A key the door turns away says why: `KeyRevoked`, `KeyExpired` (a minted key
+past its expiry, `key_expired`), or `KeyRefused` with `invalid_token` for one
+it never issued. All three are a `ProtocolError` with HTTP status 401.
+
 ## The same from a shell
 
 ```sh
@@ -135,12 +155,14 @@ tilo keys mint -w applicant-jane-doe --name "Jane Doe's agent"
 tilo members invite --role editor --email ops@example.com -w applicant-jane-doe
 tilo members ls -w applicant-jane-doe
 tilo keys revoke <grant>
+tilo account workspaces rm applicant-jane-doe   # when the customer leaves
 ```
 
 ## What is underneath
 
-There is no separate REST API. Making workspaces and keys are actions on your
-account (`account/workspaces#create`, `account/keys#mint`), inviting is the
+There is no separate REST API. Making and deleting workspaces and minting keys
+are actions on your account (`account/workspaces#create`,
+`account/workspaces#delete`, `account/keys#mint`), inviting is the
 workspace's own (`workspace/members#invite`), and everything in a workspace is
 reached through the MCP tools at
 `https://mcp.tilo.sh/w/<workspace>/mcp`. The SDKs ask for typed answers

@@ -11,7 +11,7 @@ import uuid
 
 import pytest
 
-from tilo import AskPending, AsyncTilo, Refused
+from tilo import AskPending, AsyncTilo, KeyRevoked, Refused
 
 DOOR = os.environ.get("TILO_TEST_DOOR")
 KEY = os.environ.get("TILO_TEST_KEY")
@@ -76,13 +76,25 @@ async def test_a_watch_answers_with_a_cursor(tilo):
     assert isinstance(answer.get("events"), list)
 
 
-async def test_deleting_a_workspace_is_refused_today(tilo):
+async def test_a_deleted_workspace_is_gone_and_its_minted_key_with_it(tilo):
     created = await tilo.workspaces.create(f"sdk-delete-{uuid.uuid4().hex[:8]}")
+    minted = await tilo.keys.mint(created.id)
 
-    with pytest.raises(Refused) as raised:
+    answer = await tilo.workspaces.delete(created.id)
+
+    assert answer["deleted"] == created.id
+    assert minted.grant in answer["revoked_keys"]
+    listing = await tilo.workspaces.list()
+    assert created.id not in [workspace.id for workspace in listing]
+    agent = AsyncTilo(key=minted.token, door=DOOR)
+    try:
+        with pytest.raises(KeyRevoked):
+            await agent.workspace(created.id).ls()
+    finally:
+        await agent.aclose()
+    with pytest.raises(Refused) as again:
         await tilo.workspaces.delete(created.id)
-
-    assert raised.value.code == "not_supported"
+    assert again.value.code == "not_found"
 
 
 async def test_asking_for_a_key_names_a_link(tilo):

@@ -8,8 +8,9 @@
 //! of the host, say) changes this table rather than a comparison in a
 //! handler.
 //!
-//! Two are anyone's: making the workspace of their own a host that offers
-//! them keeps for each person ([`HostOperation::CreateOwnWorkspace`]), and
+//! Three are anyone's: making the workspace of their own a host that offers
+//! them keeps for each person ([`HostOperation::CreateOwnWorkspace`]),
+//! deleting one of theirs ([`HostOperation::DeleteOwnWorkspace`]), and
 //! listing workspaces, which answers anyone but the host's person only the
 //! one of their own. The workspace is governed here like any other; the
 //! person administers it.
@@ -64,6 +65,13 @@ pub enum HostOperation {
     /// Anyone's, on a host that keeps workspaces of people's own
     /// (`crate::workspaces::OwnWorkspaceOffer`); the door says whether it does.
     CreateOwnWorkspace,
+    /// Delete a workspace of the caller's own person here, with everything
+    /// the host keeps of it; the host's person deletes any it governs. Which
+    /// workspace is theirs the operation's handler checks against the host's
+    /// record of who owns what. Anyone's, on a host that keeps workspaces of
+    /// people's own, as making one is; an agent's grant only when it reaches
+    /// all its person's workspaces, as for making one.
+    DeleteOwnWorkspace,
 }
 
 impl HostOperation {
@@ -85,6 +93,7 @@ impl HostOperation {
             Self::DetachHost => "room.detach-host",
             Self::ListRevocations => "identity.revocations",
             Self::CreateOwnWorkspace => "room.create-own",
+            Self::DeleteOwnWorkspace => "room.delete",
         }
     }
 
@@ -95,7 +104,10 @@ impl HostOperation {
     /// standing are checked by the door before it asks.
     pub fn permits(self, host: &[u8; 32], caller: &DeviceCert) -> bool {
         if caller.user_public_key != *host
-            && !matches!(self, Self::CreateOwnWorkspace | Self::ListWorkspaces)
+            && !matches!(
+                self,
+                Self::CreateOwnWorkspace | Self::DeleteOwnWorkspace | Self::ListWorkspaces
+            )
         {
             return false;
         }
@@ -103,7 +115,9 @@ impl HostOperation {
             return true;
         };
         match self {
-            Self::CreateWorkspace | Self::CreateOwnWorkspace => scope.makes_workspaces(),
+            Self::CreateWorkspace | Self::CreateOwnWorkspace | Self::DeleteOwnWorkspace => {
+                scope.makes_workspaces()
+            }
             // The listing answers only the workspaces the scope reaches.
             Self::ListWorkspaces | Self::ListRevocations => true,
             Self::EnterWorkspace
@@ -126,7 +140,7 @@ mod tests {
     use super::HostOperation;
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert};
 
-    const ALL: [HostOperation; 15] = [
+    const ALL: [HostOperation; 16] = [
         HostOperation::CreateWorkspace,
         HostOperation::ListWorkspaces,
         HostOperation::EnterWorkspace,
@@ -142,6 +156,7 @@ mod tests {
         HostOperation::DetachHost,
         HostOperation::ListRevocations,
         HostOperation::CreateOwnWorkspace,
+        HostOperation::DeleteOwnWorkspace,
     ];
 
     fn device(person: [u8; 32], capabilities: DeviceCapabilities) -> DeviceCert {
@@ -163,7 +178,9 @@ mod tests {
         for operation in ALL {
             let anyones = matches!(
                 operation,
-                HostOperation::CreateOwnWorkspace | HostOperation::ListWorkspaces
+                HostOperation::CreateOwnWorkspace
+                    | HostOperation::DeleteOwnWorkspace
+                    | HostOperation::ListWorkspaces
             );
             assert!(
                 operation.permits(&host, &device(host, DeviceCapabilities::member())),
@@ -197,7 +214,9 @@ mod tests {
             );
             let makes = matches!(
                 operation,
-                HostOperation::CreateWorkspace | HostOperation::CreateOwnWorkspace
+                HostOperation::CreateWorkspace
+                    | HostOperation::CreateOwnWorkspace
+                    | HostOperation::DeleteOwnWorkspace
             );
             assert_eq!(
                 operation.permits(&host, &all),
@@ -211,8 +230,8 @@ mod tests {
                 "{}",
                 operation.name()
             );
-            // Someone else's grant is someone else, who may only make and
-            // list the workspace of their own.
+            // Someone else's grant is someone else, who may only make, list
+            // and delete the workspaces of their own.
             let stranger = device(
                 [2; 32],
                 DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
@@ -221,7 +240,9 @@ mod tests {
                 operation.permits(&host, &stranger),
                 matches!(
                     operation,
-                    HostOperation::CreateOwnWorkspace | HostOperation::ListWorkspaces
+                    HostOperation::CreateOwnWorkspace
+                        | HostOperation::DeleteOwnWorkspace
+                        | HostOperation::ListWorkspaces
                 ),
                 "{}",
                 operation.name()

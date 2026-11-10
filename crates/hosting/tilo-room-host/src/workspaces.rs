@@ -31,6 +31,7 @@ mod authority;
 mod channel_governance;
 mod collaboration;
 mod content;
+mod delete;
 #[cfg(any(test, feature = "test-support"))]
 pub mod fixtures;
 mod surfaces;
@@ -820,6 +821,9 @@ struct WorkspacesInner {
     calls: Arc<voice::Calls>,
     /// The workspace UUID after each settled governance decision.
     changes: tokio::sync::broadcast::Sender<String>,
+    /// Each workspace deleted here, and its relay workspace
+    /// ([`Workspaces::deletions`]).
+    deletions: tokio::sync::broadcast::Sender<(String, u64)>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
     /// What the changes a record's repair kept wait for, by record, so a
@@ -1039,6 +1043,7 @@ impl Workspaces {
                 calls: Arc::default(),
                 creating: AsyncMutex::new(()),
                 changes: tokio::sync::broadcast::channel(64).0,
+                deletions: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
                 #[cfg(feature = "agents")]
                 repairs: repaired_records::Repairs::default(),
@@ -1067,6 +1072,9 @@ impl Workspaces {
             }
             // A workspace this host released stays on disk, unserved.
             if path.with_extension(RELEASED).exists() {
+                continue;
+            }
+            if delete::finish_deleting(&dir, &path) {
                 continue;
             }
             let workspace =
@@ -1174,6 +1182,16 @@ impl Workspaces {
                 .exists()
         {
             return Err("this host released that room; its files stay here".into());
+        }
+        if let Some(workspace) = workspace
+            && self
+                .inner
+                .dir
+                .join(workspace)
+                .with_extension(delete::DELETED)
+                .exists()
+        {
+            return Err("that room was deleted here".into());
         }
         // A workspace this host serves for its governor elsewhere is that
         // governor's: governing it here as well would fork it.

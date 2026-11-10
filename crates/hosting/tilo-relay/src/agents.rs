@@ -461,6 +461,10 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
         Some(Arc::clone(&self.stores))
     }
+
+    fn forget_workspace(&self, workspace_id: u64) {
+        self.actions.forget_workspace(workspace_id);
+    }
 }
 
 impl crate::AppServingPlane for HostActionsPlane {
@@ -487,6 +491,10 @@ impl crate::AppServingPlane for HostActionsPlane {
 
     fn content(&self) -> Option<Arc<WorkspaceStores>> {
         Some(Arc::clone(&self.stores))
+    }
+
+    fn forget_workspace(&self, workspace_id: u64) {
+        self.host.actions.forget_workspace(workspace_id);
     }
 }
 

@@ -506,7 +506,9 @@ Paths under `account` manage them and need no `workspace`: `tilo_ls account` lis
 `tilo_do {path: \"account/workspaces#list\"}` names the workspaces, \
 each with the part the person takes in it (`owner` for one of their own, else the role they were \
 invited with), \
-`account/workspaces#create {name}` makes one. Every other call acts in one workspace, \
+`account/workspaces#create {name}` makes one and `account/workspaces#delete {workspace}` deletes one \
+of the person's own for good, with everything in it and every key minted for it (no undo; the call \
+is the confirmation, so delete only what you were asked to). Every other call acts in one workspace, \
 named by id in its `workspace` argument. To give another agent one workspace and nothing else \
 (one workspace per customer), `tilo_do {path: \"account/keys#mint\", args: {workspace}}` answers \
 an `mcp_url` and a `token` for it; revoking this key ends every key it minted. \

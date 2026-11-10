@@ -118,7 +118,7 @@ no `workspace` and whose path is under `account` is answered by the door:
 |---|---|
 | `account/workspaces#list` | the relay's `room.list` as the grant: the workspaces of the person's own there |
 | `account/workspaces#create {name, host?}` | the relay's `room.create-own` as the grant, which then joins it; a person may have any number of workspaces of their own, sharing what the host keeps for them |
-| `account/workspaces#delete {workspace}` | refused for now: hosts have no operation that deletes a workspace |
+| `account/workspaces#delete {workspace}` | the relay's `room.delete` as the grant, for one of the person's own: final. The relay tells everyone in it it was deleted, lets nobody in again, removes its record, retained state, history and content, and releases its storage; the door then revokes every key that reached only it. Answers `{deleted, revoked_keys}`; one not theirs, or gone already, is `not_found`. The call is the confirmation |
 | `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
 | `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
 | `account/keys#mint {workspace, name?, expires_in?}` | a minted grant: `{grant, token, mcp_url, expires_at_ms}` |

@@ -109,7 +109,8 @@ pub enum WorkspacesCmd {
         #[arg(long)]
         host: Option<String>,
     },
-    /// Delete a workspace.
+    /// Delete a workspace of yours with everything in it, and revoke its
+    /// minted keys: final, there is no undo.
     Rm { workspace: String },
 }
 

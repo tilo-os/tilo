@@ -62,8 +62,8 @@ import {hostUnreachable} from './session-refusal.mjs';
 // The workspaces this browser entered are its own store (`entered-workspaces.mjs`):
 // offered here as the choices a person switches between.
 export {
-  chosenWorkspace, chooseWorkspace, enteredWorkspaces, forgetGoneWorkspaces, hostDeviceOf, markUnavailable, nameEntered,
-  rememberEntered, settleFailedWorkspace,
+  chosenWorkspace, chooseWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, hostDeviceOf, markUnavailable,
+  nameEntered, rememberEntered, settleFailedWorkspace,
 } from './entered-workspaces.mjs';
 
 const MEMBERSHIPS = 'tilo-host-memberships';

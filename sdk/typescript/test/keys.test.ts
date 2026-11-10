@@ -2,8 +2,8 @@
 
 import { describe, expect, it } from "bun:test";
 
-import { AskPending, Refused, Tilo } from "../src/index.ts";
-import { FakeDoor, WORKSPACE_ID } from "./fakeDoor.ts";
+import { AskPending, KeyExpired, KeyRefused, KeyRevoked, Refused, Tilo } from "../src/index.ts";
+import { FakeDoor, INVITED_ID, WORKSPACE_ID } from "./fakeDoor.ts";
 
 function open(house: FakeDoor): Tilo {
   return new Tilo({ key: house.key, door: "https://door.test", fetch: house.fetch });
@@ -55,18 +55,53 @@ describe("keys", () => {
     await tilo.close();
   });
 
-  it("is refused when deleting a workspace", async () => {
-    const tilo = open(new FakeDoor());
+  it("deletes a workspace, which leaves the listing", async () => {
+    const house = new FakeDoor();
+    const tilo = open(house);
 
-    const failure = tilo.workspaces.delete("jane-doe");
+    const answer = await tilo.workspaces.delete("jane-doe");
 
-    await expect(failure).rejects.toBeInstanceOf(Refused);
-    await expect(failure).rejects.toMatchObject({
-      code: "not_supported",
-      nextSteps: ["revoke the keys that reach it with account/keys#revoke"],
-    });
+    expect(answer).toEqual({ deleted: WORKSPACE_ID, revoked_keys: ["g-minted"] });
+    expect(house.asked("tilo_do").at(-1)?.arguments.args).toEqual({ workspace: WORKSPACE_ID });
+    const listed = await tilo.workspaces.list();
+    expect(listed.workspaces.map((workspace) => workspace.id)).not.toContain(WORKSPACE_ID);
     await tilo.close();
   });
+
+  it("deletes no workspace the person was only invited into", async () => {
+    const tilo = open(new FakeDoor());
+
+    const failure = tilo.workspaces.delete(INVITED_ID);
+
+    await expect(failure).rejects.toBeInstanceOf(Refused);
+    await expect(failure).rejects.toMatchObject({ code: "not_found" });
+    await tilo.close();
+  });
+
+  for (const [key, raised, code] of [
+    ["tilo_sk_revoked", KeyRevoked, "key_revoked"],
+    ["tilo_sk_expired", KeyExpired, "key_expired"],
+    ["tilo_sk_never", KeyRefused, "invalid_token"],
+  ] as const) {
+    it(`says why the door turned the key away: ${code}`, async () => {
+      const house = new FakeDoor();
+      const tilo = new Tilo({ key, door: "https://door.test", fetch: house.fetch });
+
+      const failure = tilo.workspaces.list();
+
+      await expect(failure).rejects.toBeInstanceOf(raised);
+      const error = await failure.catch((thrown: unknown) => thrown);
+      expect((error as Error).constructor).toBe(raised);
+      expect(error).toMatchObject({ code, status: 401 });
+      if (raised === KeyRevoked) {
+        expect(error).toMatchObject({ revokedAtMs: 1_794_000_000_000, nextSteps: ["ask the person for a new key"] });
+      }
+      if (raised === KeyExpired) {
+        expect(error).toMatchObject({ expiredAtMs: 1_794_000_000_000 });
+      }
+      await tilo.close();
+    });
+  }
 
   it("raises the ask when a key is requested and answers it later", async () => {
     const house = new FakeDoor();

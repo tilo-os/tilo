@@ -281,6 +281,15 @@ pub trait ChannelState: std::fmt::Debug + collab_types::signer::MaybeSendSync {
     fn open_vault(&self) -> Result<bool, String> {
         Ok(false)
     }
+    /// Forget everything kept of `workspace`'s channels: it was deleted. A
+    /// store that keeps nothing per workspace forgets nothing.
+    ///
+    /// # Errors
+    /// What it kept could not be removed.
+    fn forget(&self, workspace: WorkspaceId) -> Result<(), String> {
+        let _ = workspace;
+        Ok(())
+    }
 }
 
 /// A desktop's channels directory, with the layout every earlier build wrote: a
@@ -335,6 +344,13 @@ impl ChannelState for ChannelsDir {
 
     fn peers(&self, workspace: WorkspaceId) -> Arc<dyn channel_crypto::PeerStates> {
         Arc::new(channel_crypto::Files::new(self.workspace_dir(workspace)))
+    }
+
+    fn forget(&self, workspace: WorkspaceId) -> Result<(), String> {
+        match std::fs::remove_dir_all(self.state.join(workspace.to_string())) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+            _ => Ok(()),
+        }
     }
 
     fn route(&self, workspace: WorkspaceId, channel: ChannelId) -> Option<ChannelRoute> {
@@ -684,6 +700,32 @@ pub struct ChannelEncryption {
 }
 
 impl ChannelEncryption {
+    /// Forget `workspace`, deleted: its channels' groups, keys and routes,
+    /// here and in the store.
+    ///
+    /// # Errors
+    /// What the store kept could not be removed.
+    pub fn forget_workspace(&mut self, workspace: WorkspaceId) -> Result<(), String> {
+        let channels: Vec<ChannelId> = self
+            .peers
+            .iter()
+            .filter(|(_, entry)| entry.workspace == workspace)
+            .map(|(channel, _)| *channel)
+            .collect();
+        for channel in &channels {
+            self.peers.remove(channel);
+            self.changed.remove(channel);
+            self.unopened.remove(channel);
+            self.registered.remove(channel);
+            self.groups_seen.remove(channel);
+        }
+        self.units
+            .retain(|unit, scope| !channels.contains(unit) && !channels.contains(scope));
+        self.store
+            .as_ref()
+            .map_or(Ok(()), |store| store.state.forget(workspace))
+    }
+
     /// Open every channel state the host keeps and register each channel's
     /// gate with the broker, so the plaintext gate holds from the first op after
     /// a restart.
@@ -2046,6 +2088,15 @@ impl ChannelKeyAccess {
     pub(crate) fn run<T>(&self, operation: impl FnOnce(&mut ChannelEncryption) -> T) -> Option<T> {
         let mut service = self.inner.lock().ok()?;
         Some(operation(&mut service))
+    }
+
+    /// Forget `workspace`, deleted ([`ChannelEncryption::forget_workspace`]).
+    ///
+    /// # Errors
+    /// What the store kept could not be removed, or the service is gone.
+    pub fn forget_workspace(&self, workspace: WorkspaceId) -> Result<(), String> {
+        self.run(|service| service.forget_workspace(workspace))
+            .unwrap_or_else(|| Err("the channel service is gone".into()))
     }
 
     /// As [`Self::new`], for a host that parks its pump until it is poked:

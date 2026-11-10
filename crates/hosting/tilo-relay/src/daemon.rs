@@ -571,7 +571,7 @@ impl Relay {
                 trust_policy: cfg.trust_policy.clone(),
                 member_limits: cfg.member_limits,
                 max_workspace_grants: cfg.max_workspace_grants,
-                apps: app_serving,
+                apps: app_serving.clone(),
                 shell_payloads,
             },
             identity.clone(),
@@ -668,6 +668,16 @@ impl Relay {
                 tokio::spawn(crate::content::collection::run(
                     governed.clone(),
                     Arc::clone(&content),
+                )),
+            );
+            // A workspace its owner deleted takes its content and its app
+            // workers with it.
+            push_background_task(
+                &background_tasks,
+                tokio::spawn(crate::content::forget_deleted(
+                    governed.clone(),
+                    Arc::clone(&content),
+                    app_serving,
                 )),
             );
         }

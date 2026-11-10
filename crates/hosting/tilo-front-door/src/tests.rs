@@ -805,7 +805,15 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     assert!(page.contains(&format!("action=\"/grants/{}/revoke\"", grant.id)));
     // Revoking it ends it.
     assert!(door.revoke_grant(&alice.id(), &grant.id).await.unwrap());
-    assert!(door.store.access(&token, now).is_none());
+    // A revoked key is told so, and when, not that it never was a key.
+    assert!(matches!(
+        door.store.access(&token, now),
+        Err(store::Denied::Revoked { at_ms: Some(_) })
+    ));
+    assert!(matches!(
+        door.store.access("tilo_sk_never", now),
+        Err(store::Denied::Unknown)
+    ));
 
     // The person may choose when it expires.
     let (poll, asked) =
@@ -826,8 +834,11 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
         .as_str()
         .unwrap()
         .to_owned();
-    assert!(door.store.access(&token, expires - 1).is_some());
-    assert!(door.store.access(&token, expires).is_none());
+    assert!(door.store.access(&token, expires - 1).is_ok());
+    assert!(matches!(
+        door.store.access(&token, expires),
+        Err(store::Denied::Expired { at_ms: Some(at) }) if at == expires
+    ));
 }
 
 #[tokio::test(flavor = "multi_thread")]

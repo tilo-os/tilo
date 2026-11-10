@@ -114,6 +114,16 @@ export function markUnavailable(runtime, {origin, room}, store = globalThis.loca
   keep(store, runtime.markEnteredUnavailable(stored(store), JSON.stringify({origin: at, room})));
 }
 
+/** The host of the remembered workspace `{origin, room}` said its owner deleted
+ * it: forget it, and stop reopening it on a bare entry (`forgetDeletedWorkspace`
+ * in `runtime`). */
+export function forgetDeletedWorkspace(runtime, {origin, room}, store = globalThis.localStorage) {
+  let at;
+  try { at = originOf(origin); } catch { return; }
+  if (typeof room !== 'string') return;
+  keep(store, runtime.forgetDeletedWorkspace(stored(store), JSON.stringify({origin: at, room})));
+}
+
 /**
  * The host at `origin` answered as `hostDevice` (its device key, hex): the
  * workspaces remembered there under another host are gone with that host's

@@ -17,7 +17,10 @@
 //! a key asks the person, whose device certifies it ([`crate::keys`]); one
 //! reaching all their workspaces lasts until revoked unless `expires_in`
 //! says otherwise. The run waits for them, and `tilo_status` answers the key
-//! once they approve.
+//! once they approve. Deleting a workspace is the relay's own operation too:
+//! final, it takes everything the host keeps of it, tells whoever is in it,
+//! and revokes every key that reached only it. The call is the confirmation:
+//! nothing asks the person again, as revoking a key asks nothing.
 //!
 //! Answers are the agent surface's text (`ok …`, `failed: …`,
 //! `pending <id>: …`), or, for a caller that asks for typed answers, the
@@ -212,7 +215,7 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 7] = [
     (
         "workspaces",
         "delete",
-        "Delete a workspace",
+        "Delete a workspace of yours and everything in it, for good; its keys are revoked",
         "outside",
         &[param("workspace", true, "Text")],
     ),
@@ -314,7 +317,7 @@ impl Door {
                 structured,
                 path,
                 failed(
-                    "revoked",
+                    "key_revoked",
                     "this key was revoked",
                     "ask the person for a new key",
                 ),
@@ -544,11 +547,21 @@ impl Door {
                     Err(error) => refused(&error),
                 }
             }
-            "account/workspaces#delete" => failed(
-                "not_supported",
-                "the host cannot delete a workspace yet",
-                "revoke the keys that reach it with account/keys#revoke",
-            ),
+            "account/workspaces#delete" => {
+                let Some(workspace) = field("workspace") else {
+                    return failed(
+                        "invalid_arguments",
+                        "`workspace` is required",
+                        "pass args {workspace: \"<id>\"}; account/workspaces#list names them",
+                    );
+                };
+                if let Err(error) = self.relay.delete(key, workspace).await {
+                    return refused(&error);
+                }
+                // Every key that reached only that workspace goes with it.
+                let revoked = self.revoke_keys_for(&grant.person, workspace).await;
+                Outcome::Ok(json!({"deleted": workspace, "revoked_keys": revoked}))
+            }
             "account/keys#list" => self.account_keys(grant),
             "account/keys#create" => {
                 let asked =
@@ -600,6 +613,25 @@ impl Door {
                 "tilo_ls account lists its actions",
             ),
         }
+    }
+
+    /// Revoke every live key of `person` that reaches only `workspace`,
+    /// deleted: their sessions end now. Answers the grants revoked.
+    async fn revoke_keys_for(&self, person: &str, workspace: &str) -> Vec<String> {
+        let mut revoked = Vec::new();
+        for grant in self.store.grants_of(person) {
+            if grant.scope != Scope::Workspace(workspace.to_owned()) {
+                continue;
+            }
+            match self.revoke_grant(person, &grant.id).await {
+                Ok(true) => revoked.push(grant.id),
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(%error, grant = %grant.id, "a key of a deleted workspace stays");
+                }
+            }
+        }
+        revoked
     }
 
     async fn account_workspaces(&self, key: &Connection) -> Outcome {

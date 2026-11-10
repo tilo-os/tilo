@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, joinGranted, hostDeviceOf, joinViaHost, keepJoinedHost, keptMembership, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, joinGranted, hostDeviceOf, joinViaHost, keepJoinedHost, keptMembership, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -519,7 +519,7 @@ const kept = (origin, room, extra = {}) => ({origin, room, hostDevice: HOST, ...
 const rules = answer => {
   const asked = [];
   const runtime = {};
-  for (const name of ['rememberEntered', 'nameEntered', 'markEnteredUnavailable', 'forgetGoneWorkspaces', 'settleFailedWorkspace']) {
+  for (const name of ['rememberEntered', 'nameEntered', 'markEnteredUnavailable', 'forgetGoneWorkspaces', 'forgetDeletedWorkspace', 'settleFailedWorkspace']) {
     runtime[name] = (...args) => { asked.push([name, ...args]); return JSON.stringify(answer(name, ...args)); };
   }
   return {runtime, asked};
@@ -573,6 +573,20 @@ test('a bare entry reopens the chosen workspace until it does not open, and choo
   markUnavailable(runtime, {origin: 'https://acme.example', room: 'A'}, store);
   assert.equal(chosenWorkspace(store), null);
   assert.equal(enteredWorkspaces(store)[0].unavailable, true);
+});
+
+test('a workspace its owner deleted is forgotten and no longer reopened', () => {
+  const store = memoryStore();
+  seed(store, [kept('https://acme.example', 'A', {name: 'Acme'}), kept('https://acme.example', 'B')]);
+  chooseWorkspace({origin: 'https://acme.example', room: 'A'}, store);
+  const {runtime, asked} = rules(() => ({entered: [kept('https://acme.example', 'B')], unchoose: [{origin: 'https://acme.example', room: 'A'}]}));
+  forgetDeletedWorkspace(runtime, {origin: 'https://acme.example/', room: 'A'}, store);
+  assert.deepEqual(asked[0].slice(0, 1), ['forgetDeletedWorkspace']);
+  assert.deepEqual(JSON.parse(asked[0][2]), {origin: 'https://acme.example', room: 'A'}, 'asked with the origin as a link names it');
+  assert.deepEqual(enteredWorkspaces(store).map(entry => entry.room), ['B']);
+  assert.equal(chosenWorkspace(store), null, 'the deleted one is not reopened');
+  forgetDeletedWorkspace(runtime, {origin: 'not a url', room: 'A'}, store);
+  assert.equal(asked.length, 1, 'what is no place is not asked about');
 });
 
 test('a workspace that did not open is settled by what its origin answers now, asked once', async () => {

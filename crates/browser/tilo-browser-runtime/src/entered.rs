@@ -60,6 +60,16 @@ pub fn mark_entered_unavailable(stored: &str, place_json: &str) -> Result<String
     ))
 }
 
+/// The host of the remembered `place` said its owner deleted it ([`entered::forget_deleted`]).
+///
+/// # Errors
+///
+/// Throws for a place that is none.
+#[wasm_bindgen(js_name = forgetDeletedWorkspace)]
+pub fn forget_deleted_workspace(stored: &str, place_json: &str) -> Result<String, JsError> {
+    answer(&entered::forget_deleted(list(stored), &place(place_json)?))
+}
+
 /// The host at `origin` answered as `hostDevice` ([`entered::forget_gone`]).
 ///
 /// # Errors

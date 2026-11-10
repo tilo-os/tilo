@@ -297,7 +297,10 @@ fn failure_scope(code: &str) -> (&'static str, &'static str, Vec<RecoveryRequest
         // The host no longer admits this person, or another host answers
         // now: the page joins again through the workspace's door, which no
         // request to this session can do. A revoked device never comes back.
-        "not-admitted" | "host-changed" | "device-revoked" => ("identity", "error", Vec::new()),
+        // The workspace's owner deleted it: nothing brings it back.
+        "not-admitted" | "host-changed" | "device-revoked" | "workspace-deleted" => {
+            ("identity", "error", Vec::new())
+        }
         "storage-transaction-failed" => ("record", "error", vec![RecoveryRequest::RetrySaving]),
         "permission-required" => ("permission", "error", Vec::new()),
         "protocol-rejected" | "signature-rejected" => ("record", "error", Vec::new()),

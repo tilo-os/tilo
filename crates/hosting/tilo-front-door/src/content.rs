@@ -60,15 +60,19 @@ impl Door {
         headers: &hyper::HeaderMap,
         body: &[u8],
     ) -> Reply {
-        let Some(grant) =
-            crate::bearer(headers).and_then(|token| self.store.access(token, now_ms()))
-        else {
-            return refuse(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "send a key: Authorization: Bearer <key>",
-                "create one with `tilo keys create`",
-            );
+        let grant = match crate::bearer(headers).map(|token| self.store.access(token, now_ms())) {
+            Some(Ok(grant)) => grant,
+            Some(Err(denied)) => {
+                return json_reply(StatusCode::UNAUTHORIZED, &crate::denial(denied));
+            }
+            None => {
+                return refuse(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "send a key: Authorization: Bearer <key>",
+                    "create one with `tilo keys create`",
+                );
+            }
         };
         if !crate::oauth::scope_reaches(&grant.scope, Some(workspace)) {
             return refuse(

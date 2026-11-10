@@ -74,6 +74,13 @@ pub trait AppServingPlane: Send + Sync {
         None
     }
 
+    /// The workspace `workspace_id` was deleted: let go of whatever this
+    /// plane holds for it (its app workers, what it found of the
+    /// workspace). Nothing by default.
+    fn forget_workspace(&self, workspace_id: u64) {
+        let _ = workspace_id;
+    }
+
     /// Where `message`, sent to this host by device `sender`, goes instead of
     /// this plane: to the device of `workspace_id` that holds what it
     /// addresses. Some actions exist only on a window, and the window need not

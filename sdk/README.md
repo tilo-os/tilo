@@ -16,7 +16,8 @@ TypeScript: `workspaces.list/create/delete`, `keys.list/create/mint/revoke`,
 `ws.ls/read/find/do/link/program/status/watch`, `ws.files.upload`,
 `ws.keys.mint`, `ws.mint_mcp`, `ws.run(title)` for one undo step per app,
 `ws.resource(path)` as a typed object over `tilo_read` and `field-edit`,
-`Refused`, `AskPending` and `ProtocolError`.
+`Refused`, `AskPending` and `ProtocolError`, and for a key the door turns
+away `KeyRevoked`, `KeyExpired` or `KeyRefused`.
 
 A key is `TILO_API_KEY` and the door is `TILO_DOOR` (default
 `https://mcp.tilo.sh`). `tilo sdk gen` writes per-app types into

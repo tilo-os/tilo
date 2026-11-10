@@ -16,7 +16,7 @@ import {
   type ProgramAnswer,
   type WorkspaceInfo,
 } from "./models.ts";
-import { ProtocolError, Refused } from "./errors.ts";
+import { ProtocolError, Refused, keyRefusal } from "./errors.ts";
 import { resourceProxy, type Resource } from "./resource.ts";
 import type { Answer } from "./wire.ts";
 
@@ -69,6 +69,10 @@ export class Files {
     }
     if (response.status >= 400 || typeof body.content !== "string") {
       const error = body.error;
+      const typed = response.status === 401 ? keyRefusal(error, response.status) : null;
+      if (typed !== null) {
+        throw typed;
+      }
       if (error && typeof error === "object") {
         const detail = error as Record<string, unknown>;
         throw new Refused(

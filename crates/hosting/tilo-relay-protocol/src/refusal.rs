@@ -7,6 +7,12 @@
 
 use std::time::Duration;
 
+/// Why a host turns away everyone in a workspace its owner deleted, live or
+/// arriving later ([`crate::transport::Envelope::NotAuthorised`]): the
+/// workspace is gone for good, so a device forgets it rather than tries
+/// again.
+pub const WORKSPACE_DELETED: &str = "workspace deleted";
+
 /// The member change budget's refusal ([`crate::config::MemberLimitsConfig`]).
 pub const TOO_MANY_CHANGES: &str = "too many changes; slow down";
 /// The token that leads the reason of an action a relay is too busy to take

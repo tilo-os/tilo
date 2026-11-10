@@ -209,10 +209,51 @@ fn revoke_with_minted(state: &mut State, id: &str, now_ms: u64) -> Vec<String> {
             grant.revoke(now_ms);
         }
     }
+    // A key's token is kept, its grant revoked, so the door tells whoever
+    // still sends it that it was revoked rather than that it never was a
+    // key. The tokens an agent's grant rotates through go.
     state
         .tokens
-        .retain(|_, token| !revoked.contains(&token.grant));
+        .retain(|_, token| token.kind == TokenKind::Key || !revoked.contains(&token.grant));
     revoked
+}
+
+/// Why a token reaches nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Denied {
+    /// Not a token the door issued, or one it no longer knows.
+    Unknown,
+    /// Its grant, or the grant that minted it, was revoked, at `at_ms`
+    /// (Unix milliseconds) when the door knows.
+    Revoked { at_ms: Option<u64> },
+    /// It, or its grant's certificate, expired at `at_ms`.
+    Expired { at_ms: Option<u64> },
+}
+
+impl Denied {
+    /// Why `grant` reaches nothing at `now_ms`, if it does not: revoked, or
+    /// past its certificate's expiry.
+    fn of(grant: &Grant, now_ms: u64) -> Option<Self> {
+        if grant.revoked_ms.is_some() || grant.key.is_none() {
+            return Some(Self::Revoked {
+                at_ms: grant.revoked_ms,
+            });
+        }
+        (!grant.usable(now_ms)).then_some(Self::Expired {
+            at_ms: grant.expires_ms,
+        })
+    }
+
+    /// The code the door answers it with: `invalid_token`, `key_revoked`
+    /// or `key_expired`.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Unknown => "invalid_token",
+            Self::Revoked { .. } => "key_revoked",
+            Self::Expired { .. } => "key_expired",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -476,7 +517,11 @@ impl Store {
             else {
                 return Err(TokenError::InvalidGrant);
             };
-            state.tokens.retain(|_, token| token.expires_ms > now_ms);
+            // A key's token stays past its expiry, so the door says it
+            // expired rather than that it never was a key.
+            state
+                .tokens
+                .retain(|_, token| token.kind == TokenKind::Key || token.expires_ms > now_ms);
             for (secret, kind, lifetime) in [
                 (&access, TokenKind::Access, ACCESS_LIFETIME),
                 (&refresh, TokenKind::Refresh, REFRESH_LIFETIME),
@@ -536,27 +581,36 @@ impl Store {
     /// The live grant the access token or key `token` was issued under,
     /// noting that it was used now. A minted grant answers only while the
     /// grant that minted it is live.
-    #[must_use]
-    pub fn access(&self, token: &str, now_ms: u64) -> Option<Grant> {
+    ///
+    /// # Errors
+    /// Why the token reaches nothing: unknown, revoked or expired.
+    pub fn access(&self, token: &str, now_ms: u64) -> Result<Grant, Denied> {
         let mut state = self
             .state
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let token = state.tokens.get(&digest(token))?;
-        if token.kind == TokenKind::Refresh || token.expires_ms <= now_ms {
-            return None;
+        let token = state
+            .tokens
+            .get(&digest(token))
+            .filter(|token| token.kind != TokenKind::Refresh)
+            .ok_or(Denied::Unknown)?;
+        let (id, expires_ms) = (token.grant.clone(), token.expires_ms);
+        let grant = state.grants.get(&id).ok_or(Denied::Unknown)?;
+        if let Some(denied) = Denied::of(grant, now_ms) {
+            return Err(denied);
         }
-        let id = token.grant.clone();
-        let grant = state.grants.get(&id).filter(|grant| grant.usable(now_ms))?;
-        if let Some(parent) = grant.parent()
-            && !state
-                .grants
-                .get(parent)
-                .is_some_and(|parent| parent.usable(now_ms))
-        {
-            return None;
+        if expires_ms <= now_ms {
+            return Err(Denied::Expired {
+                at_ms: Some(expires_ms),
+            });
         }
-        let grant = state.grants.get_mut(&id)?;
+        if let Some(parent) = grant.parent() {
+            let parent = state.grants.get(parent).ok_or(Denied::Unknown)?;
+            if let Some(denied) = Denied::of(parent, now_ms) {
+                return Err(denied);
+            }
+        }
+        let grant = state.grants.get_mut(&id).ok_or(Denied::Unknown)?;
         grant.last_used_ms = Some(now_ms);
         let used = grant.clone();
         if now_ms.saturating_sub(self.saved_ms.load(Ordering::Relaxed)) >= LAST_USED_SAVE_MS
@@ -565,7 +619,7 @@ impl Store {
             tracing::warn!(%error, "could not keep when a key was last used");
         }
         drop(state);
-        Some(used)
+        Ok(used)
     }
 
     /// Record a grant the person approved as an API key on their device

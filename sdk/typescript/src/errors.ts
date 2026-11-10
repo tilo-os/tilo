@@ -91,3 +91,78 @@ export class ProtocolError extends Error {
     this.code = code;
   }
 }
+
+/**
+ * The door turned the key away (HTTP 401): it reaches nothing. `code` says
+ * why, the door's own word: `invalid_token` for a key the door never issued
+ * (mistyped, or from another door), `key_revoked` (`KeyRevoked`) and
+ * `key_expired` (`KeyExpired`). `nextSteps` are what would work.
+ */
+export class KeyRefused extends ProtocolError {
+  readonly nextSteps: string[];
+
+  constructor(message: string, code = INVALID_TOKEN, status: number | null = 401, nextSteps: string[] = []) {
+    super(message, status, code);
+    this.name = "KeyRefused";
+    this.nextSteps = nextSteps;
+  }
+}
+
+/**
+ * The key was revoked: by its person, with the key that minted it, or when
+ * the workspace it reached was deleted. `revokedAtMs` says when (Unix
+ * milliseconds), when the door knows.
+ */
+export class KeyRevoked extends KeyRefused {
+  readonly revokedAtMs: number | null;
+
+  constructor(message = "this key was revoked", revokedAtMs: number | null = null, status: number | null = 401, nextSteps: string[] = []) {
+    super(message, KEY_REVOKED, status, nextSteps);
+    this.name = "KeyRevoked";
+    this.revokedAtMs = revokedAtMs;
+  }
+}
+
+/**
+ * The key expired at `expiredAtMs` (Unix milliseconds), when the door knows:
+ * a minted key lasts at most 90 days, and a key its person gave an expiry
+ * ends then.
+ */
+export class KeyExpired extends KeyRefused {
+  readonly expiredAtMs: number | null;
+
+  constructor(message = "this key expired", expiredAtMs: number | null = null, status: number | null = 401, nextSteps: string[] = []) {
+    super(message, KEY_EXPIRED, status, nextSteps);
+    this.name = "KeyExpired";
+    this.expiredAtMs = expiredAtMs;
+  }
+}
+
+export const KEY_REVOKED = "key_revoked";
+export const KEY_EXPIRED = "key_expired";
+export const INVALID_TOKEN = "invalid_token";
+
+/**
+ * The `KeyRefused` the door's typed refusal `error` (`{code, message,
+ * next_steps, revoked_at_ms?, expired_at_ms?}`) is, if it is about the key.
+ */
+export function keyRefusal(error: unknown, status: number | null = 401): KeyRefused | null {
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    return null;
+  }
+  const detail = error as Record<string, unknown>;
+  const code = detail.code;
+  const message = String(detail.message ?? code ?? "");
+  const steps = Array.isArray(detail.next_steps) ? detail.next_steps.map(String) : [];
+  const ms = (value: unknown) => (typeof value === "number" && value >= 0 ? value : null);
+  if (code === KEY_REVOKED) {
+    return new KeyRevoked(message, ms(detail.revoked_at_ms), status, steps);
+  }
+  if (code === KEY_EXPIRED) {
+    return new KeyExpired(message, ms(detail.expired_at_ms), status, steps);
+  }
+  if (code === INVALID_TOKEN) {
+    return new KeyRefused(message, INVALID_TOKEN, status, steps);
+  }
+  return null;
+}
