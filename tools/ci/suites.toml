@@ -1504,9 +1504,12 @@ inputs = [
   "crates/sdk/ui-core/locales/en-US.ftl",
   "crates/system/settings-store/locales/en-US.ftl",
   "crates/system/settings-store/locales/de-DE.ftl",
+  # The page the page-track tests' engine shows: a snapshot the paint stream's own tests keep.
+  "crates/browser/paint-stream/tests/fixtures/layers.top.json",
 ]
 readers = [
   "crates/session/session/tests/no_locale_leaks.rs",
+  "crates/session/session/src/page_track.rs",
   "crates/session/session/src/doors/mod.rs",
   "crates/session/session/src/plane.rs",
   "crates/session/session/src/shell/mod.rs",
