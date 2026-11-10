@@ -561,7 +561,6 @@ mod tests {
     fn a_phone_wide_bar_folds_the_banner_into_its_lane() {
         for width in [390.0, 360.0, 320.0] {
             let (bar, _work_area, chip, stop, _windows) = placed(width, true);
-            let theme = Theme::default();
             let lane = Rect::from_center_size(bar.center(), (lane_width(width), chip.height()));
             assert!(folds(width), "a phone-wide bar folds at {width}");
             assert!(
