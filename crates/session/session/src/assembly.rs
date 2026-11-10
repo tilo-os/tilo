@@ -221,6 +221,11 @@ pub(crate) struct Shared {
     /// The workspace the host started this session to join.
     #[cfg(target_os = "linux")]
     pub(crate) boot_join: RefCell<crate::boot_join::BootJoin>,
+    /// The browser environment this session runs in, when a host started it for one: the workspace
+    /// it joins, the record whose window it opens, and what it reports of it
+    /// ([`crate::hosted_browser::HostedBrowser`]).
+    #[cfg(target_os = "linux")]
+    pub(crate) hosted_browser: RefCell<Option<crate::hosted_browser::HostedBrowser>>,
     /// The community site this computer is configured with, joined on its
     /// own as the session starts.
     #[cfg(target_os = "linux")]

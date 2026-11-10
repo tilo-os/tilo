@@ -21,7 +21,11 @@
 pub mod govern;
 
 use serde::{Deserialize, Serialize};
-use tilo_actions::remote::{InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage};
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::{
+    InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionFrame, RemoteActionMessage,
+    RemoteActionTarget,
+};
 use tilo_workspace_join::{GovernedMember, MemberRole};
 
 use crate::client::RelayClient;
@@ -62,6 +66,53 @@ pub async fn ask_host(
             None => return Err("the host's session closed".into()),
         }
     }
+}
+
+/// Ask `client`'s relay to enter this device into `workspace`, and answer the
+/// invitation text the device redeems to hold it: [`ENTER_ROOM`]'s ask, and
+/// the invitation it answers with, in the shape every join redeems.
+///
+/// # Errors
+///
+/// The host did not answer, refused, or answered no invitation.
+pub async fn enter_invitation(
+    client: &RelayClient,
+    workspace: &str,
+    expires_in_seconds: u64,
+) -> Result<String, String> {
+    let arguments = serde_json::Map::from_iter([
+        ("room".to_owned(), workspace.into()),
+        ("expires_in_seconds".to_owned(), expires_in_seconds.into()),
+    ]);
+    let invoke = InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: RemoteActionTarget {
+            provider: HOST_ACTIONS_PROVIDER.to_owned(),
+            address: ActionAddress::new(HOST_ROOMS_RESOURCE.to_owned(), ENTER_ROOM),
+        },
+        argument: InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+    };
+    let entered: EnteredWorkspace = match ask_host(client, invoke).await? {
+        ReceiptStatus::Completed { output } => {
+            serde_json::from_value(output.value.unwrap_or_default())
+                .map_err(|error| format!("the relay answered no invitation: {error}"))?
+        }
+        ReceiptStatus::Rejected { error } => {
+            return Err(format!("the relay refused to enter it: {error}"));
+        }
+        ReceiptStatus::Failed { error } => return Err(error.message),
+        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
+            return Err("the relay did not answer the entry".into());
+        }
+    };
+    let signed = entered.invitation.decode()?.signed_invitation;
+    Ok(tilo_workspace_join::encode_invitation_text(&signed))
 }
 
 /// The provider a relay answers its host operations under: creating,

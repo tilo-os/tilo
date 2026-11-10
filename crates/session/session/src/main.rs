@@ -610,6 +610,17 @@ fn start(
     // file is written beside them.
     tilo_startup_metrics::start_writer();
     tilo_startup_metrics::mark("services-start");
+    // A session in a browser environment takes the device identity its host handed it before it
+    // reads anything of itself: the workspace, the record whose window it opens and the key it acts
+    // with are the relay's placement record, the first line of its standard input
+    // (`docs/hosted-browser.md`, "What the session in the VM is handed").
+    let hosted_browser = match tilo_session::hosted_browser::handed() {
+        Ok(hosted) => hosted,
+        Err(said) => {
+            eprintln!("tilo-session: {said}");
+            return ExitCode::FAILURE;
+        }
+    };
     // Who sits here, read now and kept current by workers: nothing the loop asks of the identity
     // directory waits on the disk.
     tilo_session::identity::install();
@@ -685,6 +696,7 @@ fn start(
         admit_repl,
         test_control,
         admin_control,
+        hosted_browser,
         ..device_options(machine, config)
     };
     // The person's files: the login's files daemon serves them as the Files app's windowless

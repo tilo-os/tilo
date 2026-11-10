@@ -1028,6 +1028,13 @@ impl Session {
         if let Some(launch) = &options.launch {
             launch.lend_broker(action_plane.as_ref().and_then(Plane::agent_broker));
         }
+        // A session in a browser environment is started for one workspace, and everything it does
+        // of what a person's session does is the window it holds: it is told here what wakes its
+        // loop when the relay answers, and what the broker admits of its window's page.
+        if let Some(hosted) = &mut options.hosted_browser {
+            hosted.waking(options.wake.handle());
+            hosted.watching(action_plane.as_ref().and_then(Plane::agent_broker).as_ref());
+        }
         // What Files may read, and where a received file may land, is what
         // this session's workspaces grant it: read off the desk the broker
         // decides against.
@@ -1375,6 +1382,7 @@ impl Session {
             delete_workspace_ask: RefCell::default(),
             directory_store,
             boot_join: RefCell::new(boot_join),
+            hosted_browser: RefCell::new(options.hosted_browser.take()),
             community: RefCell::new(community),
             portal,
             file_picker,

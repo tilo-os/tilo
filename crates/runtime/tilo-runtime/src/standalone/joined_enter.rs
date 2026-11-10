@@ -28,15 +28,11 @@ use crate::standalone::take_work::Relay;
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
-use tilo_actions::{ActionAddress, InvocationId};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces};
 use tilo_relay_session::RelayClient;
-use tilo_relay_session::workspaces::{
-    ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, ask_host,
-};
+use tilo_relay_session::workspaces::enter_invitation;
 
 /// How long the relay is given to admit this member to a workspace it placed
 /// here: the session, the ask and the invitation redeemed.
@@ -118,7 +114,8 @@ impl Entering {
         )
         .await
         .map_err(|error| format!("this member could not reach its relay: {error}"))?;
-        let invitation = ask_invitation(&client, workspace).await?;
+        let invitation =
+            enter_invitation(&client, &workspace.to_string(), ENTER_INVITATION_SECONDS).await?;
         if self.joined.join(&invitation).await? != workspace {
             return Err("the relay admitted this member to another workspace".into());
         }
@@ -215,47 +212,6 @@ impl Workspaces for Entering {
 /// store it keeps it in.
 async fn held(joined: &Joined, workspace: &str, read: &mut (dyn FnMut(&StatePeer) + Send)) -> bool {
     Workspaces::read(&joined.owner, workspace, read).await
-}
-
-/// Ask `client`'s relay to enter this device into `workspace`, and answer the
-/// invitation text it redeems.
-async fn ask_invitation(client: &RelayClient, workspace: WorkspaceId) -> Result<String, String> {
-    let arguments = serde_json::Map::from_iter([
-        ("room".to_owned(), workspace.to_string().into()),
-        (
-            "expires_in_seconds".to_owned(),
-            ENTER_INVITATION_SECONDS.into(),
-        ),
-    ]);
-    let invoke = InvokeRequest {
-        invocation: InvocationId::new(),
-        target: RemoteActionTarget {
-            provider: HOST_ACTIONS_PROVIDER.to_owned(),
-            address: ActionAddress::new(HOST_ROOMS_RESOURCE.to_owned(), ENTER_ROOM),
-        },
-        argument: InvokeArgument::Json(arguments),
-        context: None,
-        confirmation: None,
-        revision: None,
-        on_behalf_of: None,
-        wait_ms: None,
-        appearance: None,
-    };
-    let entered: EnteredWorkspace = match ask_host(client, invoke).await? {
-        ReceiptStatus::Completed { output } => {
-            serde_json::from_value(output.value.unwrap_or_default())
-                .map_err(|error| format!("the relay answered no invitation: {error}"))?
-        }
-        ReceiptStatus::Rejected { error } => {
-            return Err(format!("the relay refused to enter it: {error}"));
-        }
-        ReceiptStatus::Failed { error } => return Err(error.message),
-        ReceiptStatus::Accepted | ReceiptStatus::Cancelled { .. } => {
-            return Err("the relay did not answer the entry".into());
-        }
-    };
-    let signed = entered.invitation.decode()?.signed_invitation;
-    Ok(tilo_peer_state::join::encode_invitation_text(&signed))
 }
 
 #[cfg(test)]

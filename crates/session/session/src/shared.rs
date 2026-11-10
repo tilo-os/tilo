@@ -288,6 +288,7 @@ impl Shared {
         self.follow_delete_workspace();
         self.follow_owner_deletions();
         self.follow_boot_join();
+        self.follow_hosted_browser();
         // A program of this login asking to work as an agent is a question of the person's: their
         // answer admits it, and the client is served from the next pass on.
         if !self.boot_join.borrow().waiting()

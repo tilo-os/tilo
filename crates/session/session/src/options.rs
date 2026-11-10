@@ -74,6 +74,11 @@ pub struct Options {
     /// once (the first use of this device, or the recovery of its identity), or the wait for the
     /// clock to admit this device's certificate.
     pub setup: Option<BeforeDesk>,
+    /// The browser environment this session runs in, when a host started it for one: the device,
+    /// workspace and record it was handed, and what it reports of the window it holds
+    /// ([`crate::hosted_browser::HostedBrowser`]). A session a person starts has none, and does
+    /// nothing an environment's session is spared.
+    pub hosted_browser: Option<crate::hosted_browser::HostedBrowser>,
     /// Carries out what the person chose in the power menu (log out,
     /// suspend, restart, shut down, switch user); the session locks the
     /// screen itself. Without one, the choice is only logged.
@@ -369,6 +374,7 @@ impl Default for Options {
             apps: None,
             launch: None,
             setup: None,
+            hosted_browser: None,
             session_actions: no_session_actions,
             user: String::new(),
             verifier: std::sync::Arc::new(unlock::Unavailable),

@@ -179,6 +179,16 @@ impl PageTracks {
         asks
     }
 
+    /// The windows whose page somebody shows: a member's desk wants the track, so the page is in
+    /// use while it does, whether or not an action runs on it.
+    pub(crate) fn viewed(&self) -> Vec<TabId> {
+        self.offered
+            .iter()
+            .filter(|(_, page)| page.watched)
+            .map(|(tab, _)| *tab)
+            .collect()
+    }
+
     /// The windows this session publishes a page of: those whose app said it
     /// streams one.
     #[cfg(test)]

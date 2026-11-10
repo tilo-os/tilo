@@ -83,6 +83,9 @@ tilo-actions = { path = "../../collab/actions" }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's door and directory answer.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# A browser environment's session asks its relay to enter the workspace it was handed, the way a
+# member device does.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 toml.workspace = true
 url.workspace = true
