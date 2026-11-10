@@ -688,20 +688,22 @@ pub fn edge_on_with(surface: Color, alpha: u8) -> Color {
     Colors::hairline_on(surface, alpha)
 }
 
-/// The 1 px rule `ink` draws when it is painted on `ground`: the ink's own hue at the
-/// smallest alpha that visibly moves that ground ([`crate::tokens::colors::HAIRLINE_MIN_DELTA`]),
-/// or the ink whole where even that leaves the ground where it was.
+/// The 1 px rule `ink` draws when it is painted on `ground`: the ink's own hue, at the
+/// smallest alpha that moves that ground as far as the ground's own hairline
+/// ([`edge_on`]) does, or the ink whole where even a full wash moves it less.
 ///
 /// [`edge_on`] derives the neutral edge of a surface it *is*: it picks black or white from the
-/// surface and is then painted on a ground of another tone, where a rule drawn in a colour of
-/// its own (a divider in the accent where reading starts again) would vanish. A rule meant to
-/// carry a colour is derived against the ground it lands on, never against itself.
+/// surface and is then painted on a ground of another tone, where a rule that carries a colour
+/// of its own (a divider in the accent where reading starts again) would land as nothing. A
+/// rule meant to carry a colour is derived against the ground it lands on, never against
+/// itself, and drawn at the weight of the rule beside it.
 #[must_use]
 pub fn hairline_of(ink: Color, ground: Color) -> Color {
+    let wanted = edge_delta(edge_on(ground), ground);
     let [r, g, b, _] = ink.to_rgba8().to_u8_array();
-    for alpha in EDGE_ALPHA_STEPS {
-        let wash = Color::from_rgba8(r, g, b, *alpha);
-        if edge_delta(wash, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA {
+    for alpha in [26, 40, 56, 72, 92, 120, 150, 190, 230, 255] {
+        let wash = Color::from_rgba8(r, g, b, alpha);
+        if edge_delta(wash, ground) >= wanted {
             return wash;
         }
     }

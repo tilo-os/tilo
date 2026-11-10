@@ -6,7 +6,9 @@
 //! mark: one band, a list row tall, the label centred with an `s3` gap between it and each rule,
 //! so the two read as the same thing where a conversation changes from one day to the next and
 //! where reading starts again. What tells them apart is the ink alone ([`DividerTone`]): a day in
-//! dimmed text over a hairline, the place reading starts again in the accent.
+//! dimmed text over a hairline, the place reading starts again in the accent. Where a day turns
+//! over at the very line the reader has not seen — the two marks over one row — they are one
+//! band saying both ([`day_with_unread`]), never a day's band stacked over the unread one.
 
 use vello::kurbo::Rect;
 use vello::peniko::Color;
@@ -148,12 +150,14 @@ pub fn paint(
     let rule_y = band.center().y;
     let lead = crate::surface::separator_rect(leading, left_edge, rule_y, 0.0);
     let trail = crate::surface::separator_rect(right_edge, trailing, rule_y, 0.0);
-    let hairline = crate::surface::edge_on(ink.rule);
+    // The rule is the ink the tone derived against the ground it lands on, painted as it comes:
+    // deriving it again here would derive it of its own wash, and a wash of a wash moves
+    // nothing.
     for rule in [lead, trail].into_iter().flatten() {
         paint.scene.fill(
             vello::peniko::Fill::NonZero,
             paint.transform,
-            hairline,
+            ink.rule,
             None,
             &rule,
         );
