@@ -29,12 +29,17 @@ impl TopBarChrome {
     /// them. Keyed by the roster id, so a reader's place survives someone arriving or leaving.
     pub(super) fn face_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        let mut faces: Vec<AccessNode> = self
-            .collaborator_names
+        // A bar not drawn yet stands the first few of everyone, as a wide bar does.
+        let shown: Vec<usize> = if self.face_rects.is_empty() {
+            (0..self.faces_shown).collect()
+        } else {
+            self.shown_faces.clone()
+        };
+        let mut faces: Vec<AccessNode> = shown
             .iter()
-            .take(self.faces_shown)
             .enumerate()
-            .map(|(index, name)| {
+            .filter_map(|(drawn, &index)| {
+                let name = self.collaborator_names.get(index)?;
                 let name = if self
                     .collaborator_agents
                     .get(index)
@@ -51,21 +56,23 @@ impl TopBarChrome {
                         "topbar-face",
                         self.collaborator_ids.get(index).map_or("", String::as_str),
                     ));
-                if let Some(rect) = self.face_rects.get(index) {
+                if let Some(rect) = self.face_rects.get(drawn) {
                     face = face.with_bounds(*rect);
                 }
-                face
+                Some(face)
             })
             .collect();
         if self.collaborator_overflow > 0 {
-            faces.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(t_args(
-                        "topbar-faces-more",
-                        &[("count", self.collaborator_overflow.into())],
-                    ))
-                    .with_hashed_key("topbar-faces-more"),
-            );
+            let mut more = AccessNode::new(Role::StaticText)
+                .with_name(t_args(
+                    "topbar-faces-more",
+                    &[("count", self.collaborator_overflow.into())],
+                ))
+                .with_hashed_key("topbar-faces-more");
+            if !self.people_count_rect.is_zero_area() {
+                more = more.with_bounds(self.people_count_rect);
+            }
+            faces.push(more);
         }
         faces
     }

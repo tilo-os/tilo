@@ -170,6 +170,8 @@ struct CacheFingerprint {
     /// How many of the people present the bar stood faces for: a narrower bar folds more of them
     /// into the count badge, which repaints the bar.
     faces_shown: usize,
+    /// Which of them a phone-wide bar stands its one face for: the one who did something last.
+    latest: Option<usize>,
     /// Each face's live look: dimmed, its call ring's level and its bounce, quantised, so presence
     /// repaints the bar only when a face changes.
     faces: Vec<(bool, Option<u8>, u16)>,
@@ -383,8 +385,21 @@ pub struct TopBarChrome {
     /// Same index as `collaborator_initials` : how each face looks now, read from presence at each
     /// draw.
     face_looks: Vec<FaceLook>,
-    /// Where each face was painted, same index.
+    /// Where each face was painted, same index as [`Self::shown_faces`].
     face_rects: Vec<Rect>,
+    /// The roster index (into `collaborator_initials`) of each face the last draw stood, in the
+    /// order drawn: a wide bar's are the first few in roster order, a phone's is the one who did
+    /// something last.
+    shown_faces: Vec<usize>,
+    /// What each person here was last seen doing, and since when: the roster id, a digest of what
+    /// their presence says (where they are, what they say they are doing, their call), and the
+    /// moment that last changed or they arrived.
+    seen_doing: HashMap<String, (u64, Instant)>,
+    /// The roster index of the person here, other than the one this view follows, whose presence
+    /// changed last: who a phone-wide bar, with room for one face, stands that face for.
+    latest_active: Option<usize>,
+    /// Where a phone-wide bar's people button wore its "+N"; zero when it wore none.
+    people_count_rect: Rect,
     /// When someone here was first seen in a call, so their ring breathes from its start.
     call_since: Option<Instant>,
     /// Collaborators beyond the three avatars; nonzero paints a "+N" chip.
@@ -520,6 +535,10 @@ impl TopBarChrome {
             collaborator_presence: Vec::new(),
             face_looks: Vec::new(),
             face_rects: Vec::new(),
+            shown_faces: Vec::new(),
+            seen_doing: HashMap::new(),
+            latest_active: None,
+            people_count_rect: Rect::ZERO,
             call_since: None,
             collaborator_overflow: 0,
             faces_shown: 0,
@@ -596,6 +615,7 @@ impl TopBarChrome {
             collaborator_agents: self.collaborator_agents.clone(),
             collaborator_overflow: self.collaborator_overflow,
             faces_shown: self.faces_shown,
+            latest: self.latest_active,
             faces: self
                 .face_looks
                 .iter()
@@ -675,12 +695,17 @@ impl TopBarChrome {
         let transform = Affine::IDENTITY;
         // The status cluster paints the pill and its glyphs in one pass.
         let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        // s3/s4 match the pad_x/gap used when this pill was sized and placed in
-        // `draw_tray_pill_body` (s4 = 16, ≥ 8 px after avatar radius).
-        let stack_right_x = self.rect.x1
-            - f64::from(theme.tokens.spacing.s3)
-            - tray_w
-            - f64::from(theme.tokens.spacing.s4);
+        // s3 matches the pad_x used when this pill was sized and placed in `draw_tray_pill_body`;
+        // the gap before the avatar is s4 (16) where the bar has room, and the bar's own control
+        // gap (s2) on a phone, whose middle lane (the clock, or the banner of following someone)
+        // the people beside it must keep that same gap from.
+        let before_tray = if self.phone_wide() {
+            theme.tokens.spacing.s2
+        } else {
+            theme.tokens.spacing.s4
+        };
+        let stack_right_x =
+            self.rect.x1 - f64::from(theme.tokens.spacing.s3) - tray_w - f64::from(before_tray);
         let stack_right_x = self.draw_own_avatar(
             scene,
             transform,
@@ -978,6 +1003,32 @@ impl TopBarChrome {
         let (stand, counted) = ui::presence::FaceStack::BAR.split(peer_count);
         self.faces_shown = stand;
         self.collaborator_overflow = counted;
+        // Who did something last: someone arriving, or anything their presence says changing
+        // (where they are, what they say they are doing, their call), makes them the latest. A
+        // phone-wide bar has room for one face, and it is theirs.
+        let seen_at = ui::time::now();
+        self.seen_doing
+            .retain(|id, _| here.iter().any(|c| &c.id == id));
+        self.latest_active = None;
+        let mut latest_at = None;
+        for (index, c) in here.iter().enumerate() {
+            let doing = presence_digest(c);
+            let since = match self.seen_doing.get(&c.id) {
+                Some((digest, since)) if *digest == doing => *since,
+                _ => {
+                    self.seen_doing.insert(c.id.clone(), (doing, seen_at));
+                    seen_at
+                }
+            };
+            // The face of the one this view follows already stands in the banner.
+            if c.following {
+                continue;
+            }
+            if latest_at.is_none_or(|at| since > at) {
+                latest_at = Some(since);
+                self.latest_active = Some(index);
+            }
+        }
         for c in here {
             let Some(ch) = c.name.chars().next() else {
                 continue;
@@ -1803,3 +1854,19 @@ mod fixture;
 
 #[cfg(test)]
 mod narrow_tests;
+
+/// A digest of what someone's presence says they are doing: where they are, what they say, their
+/// availability and call. Its change is what makes them the one who did something last.
+fn presence_digest(c: &tilo_desktop_model::Collaborator) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (
+        c.active_tab,
+        &c.in_app,
+        c.status.as_ref().map(|status| &status.text),
+        &c.availability,
+        &c.call,
+    )
+        .hash(&mut hasher);
+    hasher.finish()
+}

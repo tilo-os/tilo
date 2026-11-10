@@ -53,11 +53,20 @@ impl TopBarChrome {
     /// Where the face of the person with roster id `id` was last drawn.
     #[must_use]
     pub fn face_rect(&self, id: &str) -> Option<Rect> {
-        self.collaborator_ids
-            .iter()
-            .position(|shown| shown == id)
-            .filter(|index| *index < self.faces_shown)
-            .and_then(|index| self.face_rects.get(index).copied())
+        let index = self.collaborator_ids.iter().position(|shown| shown == id)?;
+        let drawn = self.shown_faces.iter().position(|shown| *shown == index)?;
+        self.face_rects.get(drawn).copied()
+    }
+
+    /// Whether this bar is a phone's: its middle lane is the time alone (or the folded banner of
+    /// following someone), and it has room beside the people button for one face.
+    pub(super) fn phone_wide(&self) -> bool {
+        !self.is_compact() && crate::follow_banner::folds(self.rect.width())
+    }
+
+    /// Whether anyone but this person is here or reading along: the people button then stands.
+    fn anyone_else(&self) -> bool {
+        !self.collaborator_initials.is_empty() || self.watching() > 0
     }
 
     /// The person whose face is under `point` , by roster id.
@@ -65,10 +74,10 @@ impl TopBarChrome {
         // Faces overlap left over right: the later one is on top.
         self.face_rects
             .iter()
-            .zip(&self.collaborator_ids)
+            .zip(&self.shown_faces)
             .rev()
             .find(|(rect, _)| rect.contains(point))
-            .map(|(_, id)| id.clone())
+            .and_then(|(_, index)| self.collaborator_ids.get(*index).cloned())
     }
 
     /// What a press at `point` on the people cluster asks for: invite, open one person, or open
@@ -81,6 +90,7 @@ impl TopBarChrome {
             return Some(ChromeIntent::ShowPerson(id));
         }
         (self.people_button_rect.contains(point)
+            || self.people_count_rect.contains(point)
             || self.avatar_stack_rect.contains(point)
             || self.sharing_indicator_rect.contains(point))
         .then_some(ChromeIntent::ToggleCollaborators)
@@ -190,7 +200,13 @@ impl TopBarChrome {
         right_x: f64,
     ) -> f64 {
         use ui::widget::BarChipFace;
-        if !self.can_invite() || !self.invite_clears_the_lane(text_renderer, theme, right_x) {
+        // A phone-wide bar with someone else here keeps its room for who is here: the face of the
+        // one who did something last beside the people button, and the clock. The invite waits in
+        // the panel that button opens ("Invite people"), and comes back once nobody else is here.
+        if !self.can_invite()
+            || !self.invite_clears_the_lane(text_renderer, theme, right_x)
+            || (self.phone_wide() && self.anyone_else())
+        {
             self.invite_rect = Rect::ZERO;
             return right_x;
         }
@@ -231,28 +247,19 @@ impl TopBarChrome {
         center_y: f64,
         stack_right_x: f64,
     ) -> Rect {
+        if self.phone_wide() {
+            return self.draw_phone_face(
+                scene,
+                transform,
+                theme,
+                text_renderer,
+                center_y,
+                stack_right_x,
+            );
+        }
         let colors = &theme.tokens.colors;
-        let faces: Vec<ui::presence::Face<'_>> = self
-            .collaborator_names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| {
-                let look = self.face_looks.get(i).copied();
-                ui::presence::Face {
-                    name: name.as_str(),
-                    identity: self.collaborator_ids.get(i).map_or("", String::as_str),
-                    colour: self
-                        .collaborator_colors
-                        .get(i)
-                        .copied()
-                        .unwrap_or(colors.intent.you),
-                    // Software is never drawn as a person: the shared agent mark in the same ring.
-                    is_agent: self.collaborator_agents.get(i).copied().unwrap_or(false),
-                    dimmed: look.is_some_and(|look| look.dimmed),
-                    in_call: look.and_then(|look| look.call),
-                    scale: look.map_or(1.0, |look| look.scale),
-                }
-            })
+        let faces: Vec<ui::presence::Face<'_>> = (0..self.collaborator_names.len())
+            .map(|i| self.face_of(i, theme))
             .collect();
         let stack = ui::presence::FaceStack::BAR;
         let gap = f64::from(theme.tokens.spacing.s2);
@@ -299,8 +306,6 @@ impl TopBarChrome {
         if stack.width_of(0, more) > room {
             more = 0;
         }
-        self.faces_shown = faces.len();
-        self.collaborator_overflow = more;
         let (rects, badge) = stack.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (anchor, center_y),
@@ -309,17 +314,128 @@ impl TopBarChrome {
             // rings is the bar, not a grey halo.
             colors.surfaces.base,
         );
+        let shown = faces.len();
+        drop(faces);
+        self.faces_shown = shown;
+        self.shown_faces = (0..shown).collect();
+        self.collaborator_overflow = more;
         self.face_rects = rects;
-        if faces.is_empty() && badge.is_none() {
+        if shown == 0 && badge.is_none() {
             return Rect::ZERO;
         }
-        let width = stack.width_of(faces.len(), more);
+        let width = stack.width_of(shown, more);
         Rect::new(
             anchor - width,
             center_y - BAR_CONTROL_PX / 2.0,
             anchor,
             center_y + BAR_CONTROL_PX / 2.0,
         )
+    }
+
+    /// The face of the person at roster index `i` , as everyone looking sees them: an agent wears
+    /// its client's hue as a rounded square and a person a circle.
+    fn face_of(&self, i: usize, theme: &Theme) -> ui::presence::Face<'_> {
+        let look = self.face_looks.get(i).copied();
+        ui::presence::Face {
+            name: self.collaborator_names.get(i).map_or("", String::as_str),
+            identity: self.collaborator_ids.get(i).map_or("", String::as_str),
+            colour: self
+                .collaborator_colors
+                .get(i)
+                .copied()
+                .unwrap_or(theme.tokens.colors.intent.you),
+            // Software is never drawn as a person: the shared agent mark in the same ring.
+            is_agent: self.collaborator_agents.get(i).copied().unwrap_or(false),
+            dimmed: look.is_some_and(|look| look.dimmed),
+            in_call: look.and_then(|look| look.call),
+            scale: look.map_or(1.0, |look| look.scale),
+        }
+    }
+
+    /// A phone-wide bar's one face, ending at `right_x` beside the people button: the person who
+    /// did something last, agents included, so someone who arrives, comes back or starts working
+    /// is on the bar the moment they do. Everyone else here is the "+N" the people button wears.
+    /// The one this view follows is not drawn twice: the banner's face is theirs. The face keeps
+    /// the bar's gap from the banner's lane and from the workspace's name; the clock yields to it
+    /// (`center_yield`), and where even one face has no room the people button counts it too.
+    fn draw_phone_face(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+        center_y: f64,
+        right_x: f64,
+    ) -> Rect {
+        let stack = ui::presence::FaceStack::BAR;
+        let gap = f64::from(theme.tokens.spacing.s2);
+        let mut left = self.ws_pill_rect.x1.max(self.rect.x0) + gap;
+        if self.following && !self.center_lane.is_zero_area() {
+            left = left.max(self.center_lane.x1 + gap);
+        }
+        let others = self
+            .collaborator_ids
+            .len()
+            .saturating_sub(usize::from(self.following));
+        let width = stack.width_of(1, 0);
+        let shown: Vec<usize> = self
+            .latest_active
+            .filter(|_| right_x - width >= left)
+            .into_iter()
+            .collect();
+        self.faces_shown = shown.len();
+        self.collaborator_overflow = others.saturating_sub(shown.len());
+        let faces: Vec<ui::presence::Face<'_>> =
+            shown.iter().map(|&i| self.face_of(i, theme)).collect();
+        let (rects, _) = stack.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            (right_x, center_y),
+            (&faces, 0),
+            theme.tokens.colors.surfaces.base,
+        );
+        drop(faces);
+        self.face_rects = rects;
+        self.shown_faces = shown;
+        if self.shown_faces.is_empty() {
+            return Rect::ZERO;
+        }
+        Rect::new(
+            right_x - width,
+            center_y - BAR_CONTROL_PX / 2.0,
+            right_x,
+            center_y + BAR_CONTROL_PX / 2.0,
+        )
+    }
+
+    /// The "+N" a phone-wide bar's people button wears for everyone here past the one face beside
+    /// it: a small neutral count on its corner, which takes none of the bar's width, so nobody
+    /// here goes uncounted however narrow the bar. Its words are the badge's own node.
+    fn draw_people_count(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        text_renderer: &mut TextRenderer,
+    ) {
+        self.people_count_rect = Rect::ZERO;
+        let button = self.people_button_rect;
+        if !self.phone_wide() || self.collaborator_overflow == 0 || button.is_zero_area() {
+            return;
+        }
+        let label = format!("+{}", self.collaborator_overflow.min(99));
+        let height = ui::widget::BadgeFace::height(theme);
+        let width =
+            ui::widget::BadgeFace::intrinsic_width(&label, text_renderer, theme).max(height);
+        // On the button's top right corner, inside the bar's band and clear of the control after it.
+        let centre = Point::new(
+            button.x1 - 2.0,
+            (button.y0 + 2.0).max(self.rect.y0 + height / 2.0 + 1.0),
+        );
+        let rect = Rect::from_center_size(centre, (width, height));
+        ui::widget::BadgeFace::new(rect, &label)
+            .style(ui::widget::ChipStyle::Neutral)
+            .paint(scene, transform, text_renderer, theme);
+        self.people_count_rect = rect;
     }
 
     /// A quiet "+N watching" label for pages reading this workspace, left of the invite button,
@@ -395,6 +511,7 @@ impl TopBarChrome {
         };
         self.avatar_stack_rect =
             self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, right_x);
+        self.draw_people_count(scene, transform, theme, text_renderer);
         // The watching count is part of the people button: it opens who is here too.
         if !watching.is_zero_area() && !self.people_button_rect.is_zero_area() {
             self.people_button_rect = self.people_button_rect.union(watching);
@@ -608,50 +725,161 @@ mod tests {
         );
     }
 
-    /// On a phone-wide bar an agent is never silently dropped: every face the bar has room for
-    /// stands, the one this person follows first, and the badge counts everyone past them. The
-    /// faces never reach past the bar's own left lane, where they would be lost off its edge.
-    #[test]
-    fn a_phone_wide_bar_keeps_the_followed_agent_or_counts_it() {
+    /// A bar as the hosted page stands it on a phone: the Tilo mark, the workspace's name, the
+    /// person's own avatar and the bell, so the room left for who is here is the page's.
+    fn phone_bar(tree: &DesktopTree, width: f32) -> (TopBarChrome, std::rc::Rc<FixtureChrome>) {
+        let chrome = FixtureChrome::new(tree.clone());
+        chrome.borrow_mut().can_invite = true;
+        chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
+            name: "Calm Fox".into(),
+            rgb: (110, 140, 230),
+            identity: String::new(),
+        });
+        let mut bar = TopBarChrome::from_tree(tree)
+            .with_chrome(chrome.clone())
+            .with_tilo_mark();
+        bar.sync_from_tree(tree);
+        super::super::tests::lay_out_and_draw(&mut bar, width);
+        (bar, chrome)
+    }
+
+    fn agent_and_person() -> DesktopTree {
         let mut tree = desk(&[("ada", "Ada Lovelace"), ("cc", "Claude Code")]);
         tree.workspaces[0].collaborators[1].role_id = Some("agent".into());
+        tree
+    }
+
+    /// What the bar tells a reader its faces are, in the order drawn.
+    fn face_names(bar: &TopBarChrome) -> Vec<String> {
+        bar.face_accessibility()
+            .into_iter()
+            .filter(|node| node.role == ui::a11y::Role::Image)
+            .filter_map(|node| node.name)
+            .collect()
+    }
+
+    /// The phone's bar has room for one face, and it is whoever did something last: an agent
+    /// that starts working (or comes back) is on the bar beside the people button at once, as its
+    /// client's square face, and everyone else here is the "+N" on that button. The invite waits
+    /// in the panel, and nothing stands on the clock or the workspace's name.
+    #[test]
+    fn a_phone_bar_shows_whoever_did_something_last() {
+        let theme = Theme::default();
+        let gap = f64::from(theme.tokens.spacing.s2);
+        for width in [390.0f32, 360.0] {
+            let mut tree = agent_and_person();
+            let (mut bar, _chrome) = phone_bar(&tree, width);
+            assert_eq!(bar.faces_shown, 1, "one face at {width}");
+            assert_eq!(
+                bar.collaborator_overflow(),
+                1,
+                "and the other counted at {width}"
+            );
+            // The agent starts writing: its presence says so, and its face takes the bar.
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            tree.workspaces[0].collaborators[1].status = Some(tilo_desktop_model::Status {
+                text: "Editing Launch notes in Notes".into(),
+                automatic: true,
+            });
+            bar.sync_from_tree(&tree);
+            super::super::tests::lay_out_and_draw(&mut bar, width);
+            assert_eq!(
+                face_names(&bar),
+                vec![t_args(
+                    "topbar-face-agent",
+                    &[("name", "Claude Code".into())]
+                )],
+                "the agent that just did something is the face at {width}"
+            );
+            let face = bar.face_rect("cc").expect("the agent's face");
+            let people = bar.people_button_rect();
+            assert!(
+                !people.is_zero_area(),
+                "the people button stands at {width}"
+            );
+            assert!(
+                face.x1 <= people.x0 && people.x0 - face.x1 <= gap,
+                "the face stands beside the people button at {width}: {face:?} {people:?}"
+            );
+            assert_eq!(bar.collaborator_overflow(), 1, "Ada is counted at {width}");
+            assert!(
+                !bar.people_count_rect.is_zero_area(),
+                "the people button wears the +1 at {width}"
+            );
+            assert!(
+                bar.people_count_rect.y0 >= bar.bar_rect().y0,
+                "the count stays inside the bar at {width}: {:?}",
+                bar.people_count_rect
+            );
+            assert!(
+                bar.people_count_rect.x1 < bar.own_avatar_rect.x0,
+                "and clear of the avatar after it at {width}: {:?}",
+                bar.people_count_rect
+            );
+            assert!(
+                bar.invite_rect().is_zero_area(),
+                "the invite waits in the panel at {width}"
+            );
+            assert!(
+                face.x0 >= bar.ws_pill_rect.x1 + gap,
+                "the face keeps off the workspace's name at {width}: {face:?} {:?}",
+                bar.ws_pill_rect
+            );
+            if !bar.center_rect.is_zero_area() {
+                assert!(
+                    bar.center_rect.x1 + gap <= face.x0,
+                    "the clock yields to the face at {width}: {:?} {face:?}",
+                    bar.center_rect
+                );
+            }
+            // A press on it opens the agent; on the count, everyone.
+            assert_eq!(
+                bar.people_intent_at(face.center()),
+                Some(ChromeIntent::ShowPerson("cc".into()))
+            );
+            assert_eq!(
+                bar.people_intent_at(bar.people_count_rect.center()),
+                Some(ChromeIntent::ToggleCollaborators)
+            );
+
+            // Alone, an agent that comes back is the one face, with no count.
+            let mut alone = desk(&[("cc", "Claude Code")]);
+            alone.workspaces[0].collaborators[0].role_id = Some("agent".into());
+            let (bar, _chrome) = phone_bar(&alone, width);
+            assert!(
+                bar.face_rect("cc").is_some(),
+                "the agent is on the bar at {width}"
+            );
+            assert_eq!(bar.collaborator_overflow(), 0);
+            assert!(bar.people_count_rect.is_zero_area(), "no count at {width}");
+        }
+    }
+
+    /// Nobody else here, the phone's bar keeps the invite: it yields only to people.
+    #[test]
+    fn an_empty_phone_bar_keeps_the_invite() {
+        let (bar, _chrome) = phone_bar(&desk(&[]), 390.0);
+        assert!(!bar.invite_rect().is_zero_area());
+        assert!(bar.people_button_rect().is_zero_area());
+    }
+
+    /// Following someone on a phone, the banner's face is theirs: the bar never draws it again,
+    /// and everyone else here is a face or counted.
+    #[test]
+    fn a_phone_bar_never_draws_the_followed_face_twice() {
+        let mut tree = agent_and_person();
         tree.workspaces[0].collaborators[1].following = true;
         for width in [390.0, 360.0] {
-            let (mut bar, _chrome) = bar_over(&tree, true);
-            super::super::tests::lay_out_and_draw(&mut bar, width);
-            let bar_rect = bar.bar_rect();
-            let agent = bar.face_rect("cc");
-            let person = bar.face_rect("ada");
-            for rect in &bar.face_rects {
-                assert!(
-                    rect.x0 >= bar_rect.x0 && rect.x1 <= bar_rect.x1,
-                    "a face stays in the bar at {width}: {rect:?} in {bar_rect:?}"
-                );
-                assert!(
-                    rect.x0 >= bar.ws_pill_rect.x1,
-                    "and past the workspace pill at {width}: {rect:?} over {:?}",
-                    bar.ws_pill_rect
-                );
-            }
-            // Someone present is either a face or counted: never neither.
-            let stood = usize::from(agent.is_some()) + usize::from(person.is_some());
-            assert_eq!(
-                stood + bar.collaborator_overflow(),
-                2,
-                "both people are accounted for at {width}"
+            let (bar, _chrome) = phone_bar(&tree, width);
+            assert!(
+                bar.face_rect("cc").is_none(),
+                "the banner stands for the agent at {width}"
             );
-            if stood == 1 {
-                assert!(
-                    agent.is_some(),
-                    "the one face the bar keeps is the agent this person follows, at {width}"
-                );
-            }
-            if stood == 0 {
-                assert!(
-                    bar.collaborator_overflow() >= 2,
-                    "the badge counts them both"
-                );
-            }
+            assert_eq!(
+                bar.faces_shown + bar.collaborator_overflow(),
+                1,
+                "Ada is a face or counted at {width}"
+            );
         }
     }
 
@@ -665,8 +893,7 @@ mod tests {
         tree.workspaces[0].collaborators[1].following = true;
         let theme = Theme::default();
         for width in [390.0f32, 360.0] {
-            let (mut bar, _chrome) = bar_over(&tree, true);
-            super::super::tests::lay_out_and_draw(&mut bar, width);
+            let (bar, _chrome) = phone_bar(&tree, width);
             assert!(bar.following, "the bar knows this view is not its own");
             let lane = crate::follow_banner::lane_width(f64::from(width));
             assert!(
@@ -711,6 +938,7 @@ mod tests {
             let mut beside: Vec<(&str, Rect)> = vec![
                 ("the workspace's name", bar.ws_pill_rect),
                 ("the people button", people),
+                ("the count on it", bar.people_count_rect),
                 ("the invite button", bar.invite_rect),
                 ("the notifications", bar.tray_hit_rect),
             ];
@@ -755,9 +983,10 @@ mod tests {
                 "the workspace keeps its name and chevron at {width}: {:?}",
                 bar.ws_pill_rect
             );
-            // Everyone here is either a face or counted: following never hides anyone.
+            // Everyone here is a face, counted, or the one the banner stands for: following never
+            // hides anyone.
             assert_eq!(
-                bar.faces_shown + bar.collaborator_overflow(),
+                bar.faces_shown + bar.collaborator_overflow() + 1,
                 2,
                 "both people are accounted for at {width}"
             );
@@ -778,7 +1007,9 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         tree.workspaces[0].collaborators[4].following = true;
-        for width in [640.0, 720.0, 900.0] {
+        // Narrower, the bar is a phone's, where the banner's face is the followed one's
+        // (`a_phone_bar_never_draws_the_followed_face_twice`).
+        for width in [720.0, 900.0, 1024.0] {
             let (mut bar, _chrome) = bar_over(&tree, true);
             super::super::tests::lay_out_and_draw(&mut bar, width);
             assert!(bar.faces_shown > 0, "some faces stand at {width}");
