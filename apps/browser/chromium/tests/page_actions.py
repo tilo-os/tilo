@@ -1063,9 +1063,17 @@ class PageActions(unittest.TestCase):
         self.assertEqual(first['navigation'], 'possible')
         # The form asks something new now, so it is no longer the form that
         # signature named: a caller holding the old one is told, not obeyed.
+        # The answer says what the form became, by the signature a read of
+        # it gives now, beside the one it was answered under.
+        self.assertEqual(first['data']['signature'], signature)
+        now = self.ok('forms')['data']['forms'][0]
+        self.assertNotEqual(now['signature'], signature)
+        self.assertEqual(first['data']['became'], {'signature': now['signature'], 'offers': now['offers']})
         stale = self.page('fill_form', form=signature, answers={'Which country?': 'Portugal'}, submit=True, actor='ada')
         self.assertFalse(stale['ok'])
-        self.assertEqual(stale['code'], 'no_form')
+        # The page has forms and none is the one named: not the refusal of
+        # a page that has no form at all.
+        self.assertEqual(stale['code'], 'form_changed')
         sent = self.ok('fill_form', form='form1', answers={'Which country?': 'Portugal'}, submit='Send application', actor='ada')
         self.assertTrue(sent['data']['submitted'])
         self.assertEqual(sent['navigation'], 'started')
@@ -1081,6 +1089,28 @@ class PageActions(unittest.TestCase):
         self.assertIn({'name': 'Languages', 'value': 'English, German'}, entries[0]['answers'])
         self.assertEqual(entries[2]['answers'], [{'name': 'Which country?', 'value': 'Portugal'}])
         self.assertEqual(entries[2]['to_url'], sent['url'])
+        # The page the form led to asks nothing, which is another refusal.
+        nothing = self.page('fill_form', form=signature, answers={'Which country?': 'Portugal'})
+        self.assertEqual((nothing['ok'], nothing['code'], nothing['message']), (False, 'no_form', 'This page has no form'))
+
+    def test_a_form_says_when_the_answers_a_choice_offers_change(self):
+        # A list of answers that is another list later is the same form
+        # asking the same questions: its signature stays, and the value
+        # beside it says the answers it offers are others.
+        self.h.navigate(self.url + '/apply')
+        before = self.ok('forms')['data']['forms'][0]
+        self.assertRegex(before['offers'], r'^[0-9a-f]{8}$')
+        self.assertIn(f'signature={before["signature"]} offers={before["offers"]}', self.ok('forms')['outline'])
+        self.main_world('(document.getElementById("nat").add(new Option("Chile")), 1)')
+        after = self.ok('forms')['data']['forms'][0]
+        self.assertEqual(after['signature'], before['signature'])
+        self.assertNotEqual(after['offers'], before['offers'])
+        asked = {field['name']: field for field in after['fields']}
+        self.assertEqual(asked['Nationality']['choices'], ['Kenya', 'Other', 'Chile'])
+        # An answer names the form by its signature still, and is told what
+        # the form offers now.
+        answered = self.ok('fill_form', form=before['signature'], answers={'Nationality': 'Chile'})
+        self.assertEqual(answered['data']['became'], {'signature': before['signature'], 'offers': after['offers']})
 
     def test_answers_are_placed_in_the_form_s_order_so_one_can_open_the_next(self):
         # A caller gives a form's answers together. The form takes them in

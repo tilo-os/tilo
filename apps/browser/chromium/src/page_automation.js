@@ -2596,7 +2596,12 @@ globalThis.__tiloPage ||= (() => {
     }
     const signature = signatureOf([method, where,
       ...fields.map(field => `${field.name}:${field.kind}:${field.required ? 1 : 0}`)].join('|'));
-    return {id, form, label: form ? formLabel(form) : '', method, where, signature, fields, submit};
+    // The answers its choices offer, as a second value beside the
+    // signature: a list of dates that is another list tomorrow is the same
+    // form asking the same questions, offering other answers.
+    const offers = signatureOf(fields.filter(field => field.options)
+      .map(field => `${field.name}=${field.options.map(option => option.label).join('\u001f')}`).join('|'));
+    return {id, form, label: form ? formLabel(form) : '', method, where, signature, offers, fields, submit};
   }
   function readForms() {
     const read = [...document.querySelectorAll('form')].slice(0, MAX_FORMS)
@@ -2623,10 +2628,10 @@ globalThis.__tiloPage ||= (() => {
       const head = [surface.id];
       if (surface.label) head.push(quote(surface.label));
       if (surface.method) head.push(`(${surface.method} ${surface.where})`);
-      head.push(`signature=${surface.signature}`);
+      head.push(`signature=${surface.signature}`, `offers=${surface.offers}`);
       lines.push(`- ${head.join(' ')}`);
       const out = {form: surface.id, label: surface.label, method: surface.method, action: surface.where,
-        signature: surface.signature, fields: [], submit: surface.submit.map(button => button.label)};
+        signature: surface.signature, offers: surface.offers, fields: [], submit: surface.submit.map(button => button.label)};
       for (const field of surface.fields) {
         const value = fieldValue(field), entry = {name: field.name, kind: field.kind};
         const said = [field.kind];
@@ -2702,9 +2707,12 @@ globalThis.__tiloPage ||= (() => {
     const read = readForms();
     const surface = read.find(candidate => candidate.id === id) || read.find(candidate => candidate.signature === id);
     if (!surface) {
+      // Two refusals: the page asks nothing at all, or it asks, but not as
+      // the form the caller named did: that form changed, or was another
+      // page's.
+      if (!read.length) throw failure('no_form', 'This page has no form');
       const has = read.map(candidate => candidate.label ? `${candidate.id} ${quote(candidate.label)}` : candidate.id).join(', ');
-      throw failure('no_form', has ? `This page has no form ${quote(String(id))}: it has ${has}. A form named by a signature it no longer has has changed; read the page's forms again`
-        : 'This page has no form');
+      throw failure('form_changed', `This page has no form ${quote(String(id))}: it has ${has}. A form named by a signature it no longer has has changed; read the page's forms again`);
     }
     const before = new Set(surface.fields.map(field => field.name));
     const results = [], set = [];
@@ -2776,9 +2784,14 @@ globalThis.__tiloPage ||= (() => {
     if (submitted) said.push('sent'); else if (held) said.push(held);
     if (opened.length) said.push(`the form now also asks ${opened.map(quote).join(', ')}`);
     if (!submitted && empty.length) said.push(`still required: ${empty.map(quote).join(', ')}`);
+    // What the form is now, by the signature a read of it would give: its
+    // caller knows at once that the form it answered asks something else.
+    if (after && after.signature !== surface.signature && !opened.length)
+      said.push(`the form asks something else now, signature ${after.signature}`);
     if (!placed && !submitted) throw failure(missed[0] ? missed[0].code : 'invalid_request', said.join('; '));
-    return {ok: true, message: said.join('; '),
-      data: {form: surface.id, signature: surface.signature, results, set, submitted, now_asks: opened, unanswered: empty}};
+    const data = {form: surface.id, signature: surface.signature, results, set, submitted, now_asks: opened, unanswered: empty};
+    if (after) data.became = {signature: after.signature, offers: after.offers};
+    return {ok: true, message: said.join('; '), data};
   }
 
   const page = {

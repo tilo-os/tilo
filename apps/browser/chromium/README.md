@@ -565,8 +565,8 @@ is first read or operated, so what was typed before that carries no `set`.
 `action: "forms"` reads the document's forms (or a named `frame`'s) as what
 they ask. Each form has an id (`form1`, `form2` in document order; `page` for
 fields in no form), a `label` (its own name, else the heading it stands under),
-its `method` and `action` path, a `signature` and its `submit` buttons by
-label. Each field has a `name`, a `kind` (`text`, `email`, `tel`, `url`,
+its `method` and `action` path, a `signature`, `offers` and its `submit`
+buttons by label. Each field has a `name`, a `kind` (`text`, `email`, `tel`, `url`,
 `number`, `date`, `time`, `datetime-local`, `month`, `week`, `range`, `color`,
 `choice`, `choices`, `flag`, `secret`, `file`), its `choices` when it offers
 them, `required`, `locked`, the `value` it holds and the ref (`element`, or
@@ -576,8 +576,11 @@ no answer and is not listed. A label two fields share is said with its group
 (`"Date of birth: Day"`). Hidden and disabled controls are not listed. The
 signature is a hash of the method, the path and every field's name, kind and
 whether it is required, so it names the same form on a later visit and stops
-naming it once the form asks something else. The outline prints an answer
-that is a control of its own (a radio, a checkbox of a group) with its ref.
+naming it once the form asks something else. `offers` is a second hash beside
+it, of the answers each choice question offers: a form whose list of dates is
+another list tomorrow keeps its signature and has other `offers`. The outline
+prints an answer that is a control of its own (a radio, a checkbox of a group)
+with its ref.
 
 A `fill` or a `select` that makes a form ask something it did not ask before
 says so in its message (`; the form now also asks "Which country?"`). `fields`
@@ -598,8 +601,11 @@ the form is read again after each, so an answer that opens a question is
 placed before the answer to it. A name matches exactly, or in any letter case
 when only one field is like it. The answer's `data` carries `results` (one per
 answer: `ok`, or `code`, `message` and the field's `element`), `set` (name and
-the value placed), `submitted`, `now_asks` (fields that appeared) and
-`unanswered` (required fields still empty). Placing is the same DOM edit and
+the value placed), `submitted`, `now_asks` (fields that appeared),
+`unanswered` (required fields still empty), `signature` (the form as it was
+answered) and `became`: the `signature` and `offers` a read of the form gives
+once the answers were placed, so a caller knows at once that the form now asks
+something else or offers other answers. Placing is the same DOM edit and
 events `fill` and `select` make; a checkbox or radio is clicked through the
 DOM.
 
@@ -609,8 +615,10 @@ field's own action: `secret_field` (use `fill` with `secret`), `needs_files`
 `not_editable`, `rejected`, and `no_field` for a name the form does not ask.
 A form with an answer not placed is not sent, nor one with a required field
 empty or invalid; the message says which. A call that places nothing and
-sends nothing fails with the first refusal's code. A form named by a signature
-it no longer has fails with `no_form`. `fill_form` takes a place in the tab's
+sends nothing fails with the first refusal's code. A page that has forms, none
+of them the one named (by a signature it no longer has, or an id the page does
+not have), answers `form_changed`; a page that has no form at all answers
+`no_form`. `fill_form` takes a place in the tab's
 record with its `answers` as placed; `forms` is a read and takes none.
 
 Fields inside open shadow roots are not read as part of a form; they stay
