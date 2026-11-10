@@ -238,20 +238,15 @@ impl Workspace {
     }
 
     /// Frames and doors until the window has nothing more to hand over, and its instance
-    /// reads the indexes its packages' load built: a host's frames keep coming until then,
-    /// and this harness's stop when it is at rest.
+    /// reads the indexes its packages' load built: those are read from the record on threads
+    /// of their own, which a window with a frame loop is woken by and a harness here waits for.
     fn settle(&mut self) {
         for _ in 0..4 {
             self.frame();
             self.door();
         }
-        let start = std::time::Instant::now();
-        while !self.index_ready() && start.elapsed().as_secs() < 120 {
-            self.frame();
-            self.door();
-            if !self.index_ready() {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-            }
+        if !self.index_ready() {
+            self.window.host().expect("the host started").wait_index();
         }
         assert!(self.index_ready(), "the window reads its packages' indexes");
         self.frame();
@@ -405,7 +400,9 @@ impl Workspace {
     /// open holds in its document, which a window's rows carry too once it opens.
     fn root_list(&self) -> String {
         fn outermost(node: &UiNode) -> Option<String> {
-            if node.kind == "ui.VirtualList" && !node.key.starts_with(DETAIL) {
+            if tilo_render_protocol::patch::is_virtual_list(&node.kind)
+                && !node.key.starts_with(DETAIL)
+            {
                 return Some(node.key.clone());
             }
             node.children.iter().find_map(outermost)
