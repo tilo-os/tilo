@@ -5328,6 +5328,38 @@ impl FrameHarness {
 
     /// The painted tooltip as the accessibility tree reads it: a tooltip
     /// naming what the control under the pointer does, where it shows.
+    /// The agents at work on this surface, as a reader is told them: one node per agent, named
+    /// with what it is doing where it acts. The mark's own pixels travel frame by frame, so the
+    /// node carries no bounds: what a reader needs is whose work it is, and the tree then changes
+    /// when that changes rather than sixty times a second.
+    fn agent_marker_inspection(&self) -> Vec<InspectionNode> {
+        let mut agents: Vec<InspectionNode> = Vec::new();
+        for marker in &self.drawn_action_markers {
+            let path = format!("agent-marker-{}", marker.interaction.actor.id);
+            let label = self.presence.interaction_status_label(&marker.interaction);
+            let node = InspectionNode {
+                path: path.clone(),
+                widget: "AgentMarker".into(),
+                test_id: Some("agent-marker".into()),
+                focusable: false,
+                rect: [0.0, 0.0, 0.0, 0.0],
+                child_clip: None,
+                page_title: None,
+                layout: None,
+                paint_key: None,
+                semantics: Some(
+                    crate::a11y::AccessNode::new(crate::a11y::Role::Image).with_name(label),
+                ),
+                children: Vec::new(),
+            };
+            match agents.iter_mut().find(|shown| shown.path == path) {
+                Some(shown) => *shown = node,
+                None => agents.push(node),
+            }
+        }
+        agents
+    }
+
     fn tooltip_inspection(&self) -> Option<InspectionNode> {
         let (text, chip) = self.tooltips.drawn()?;
         Some(InspectionNode {
@@ -5877,6 +5909,7 @@ impl FrameHarness {
             root.children.splice(0..0, self.slot_row_inspection());
         }
         root.children.extend(self.tooltip_inspection());
+        root.children.extend(self.agent_marker_inspection());
         fn owner_path(
             node: &InspectionNode,
             targets: &HashMap<String, NodeId>,

@@ -385,6 +385,11 @@ const speaks = (node, pattern) => pattern instanceof RegExp
   : node.name === pattern || node.description === pattern;
 const matching = (nodes, pattern, role = null) => nodes.find(node => speaks(node, pattern) && (!role || role.test(node.role)));
 const names = nodes => nodes.map(node => node.name || node.description).filter(Boolean).slice(0, 48).join(' | ');
+/** The agent's cursor, as the frame publishes it: the mark it draws where it acts, named with
+ * what the agent is doing there ("Claude Code: Appending paragraph"). The agent's face stands in
+ * the top bar, named after them alone, so the words after the name tell the cursor from it. */
+const agentCursor = nodes => nodes.find(node => node.role === 'Image'
+  && /^claude code\s*:/i.test(node.name));
 /** Where a control the page publishes for assistive technology stands, read
  * from the page's semantic mirror: the elements it lays over what it draws,
  * which carry the bounds of the node they speak for. A role's own rows and
@@ -464,10 +469,12 @@ async function dismissOverlays(tab) {
  * reader finds it under. A shot of something else is a failed check, not a
  * picture nobody looked at.
  */
-async function shot(tab, combo, name, {expect = null} = {}) {
-  await dismissOverlays(tab);
+async function shot(tab, combo, name, {expect = null, read = null} = {}) {
+  // A shot of a moment, its tree (`read`) taken just before: closing what covers the desk and
+  // reading the tree again would outlast the moment the shot is of.
+  if (!read) await dismissOverlays(tab);
   if (expect) {
-    const nodes = await semantics(tab);
+    const nodes = read ?? await semantics(tab);
     const missing = expect.filter(pattern => !nodes.some(node => speaks(node, pattern)));
     check(`${combo}: ${name} shows ${expect.map(String).join(' and ')}`, missing.length === 0,
       missing.length ? `not on screen: ${missing.map(String).join(', ')}; the desk shows ${names(nodes)}` : '');
@@ -1394,12 +1401,21 @@ try {
           for (const [index, step] of steps.entries()) {
             const sending = agent.call(step.tool, step.args);
             if (index === steps.shootAt) {
-              // The edit is in flight: the agent's window in front of the
-              // person, the text landing in it.
-              const editing = await until(async () => (await semantics(tab)).some(node => /claude|notes/i.test(node.name)), 6000, 200);
-              await sleep(700);
-              await shot(tab, combo, 'following-mid-edit', {expect: [/notes|claude/i]});
-              log(`${combo}: mid-edit shot ${editing ? 'with the agent in front' : 'but no agent window showed'}`);
+              // The edit is in flight: the agent's cursor lands on the text as the write
+              // commits, and the words it changed stay lit for a second and a half. The shot is
+              // taken the moment the cursor is in the frame's semantics, never after a fixed
+              // wait, so what it catches is the agent at work rather than where it was.
+              const showing = await until(async () => {
+                const nodes = await semantics(tab);
+                return agentCursor(nodes) ? nodes : undefined;
+              }, 8000, 120);
+              const cursor = showing ? agentCursor(showing) : undefined;
+              check(`${combo}: the agent's cursor stands on what it writes`, Boolean(cursor),
+                showing ? `the frame shows ${names(showing)}` : 'the page published no semantics while the write was in flight');
+              const editing = Boolean(showing?.some(node => /notes/i.test(node.name)));
+              log(`${combo}: mid-edit shot ${editing ? 'in the note' : 'but the note was not in front'}` +
+                `${cursor ? `, its cursor at ${JSON.stringify(cursor.rect)}` : ', with no agent cursor'}`);
+              await shot(tab, combo, 'following-mid-edit', {expect: [/notes|claude/i], read: showing});
             }
             const answer = await sending;
             step.answer = answer;

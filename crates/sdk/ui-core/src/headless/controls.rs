@@ -179,7 +179,6 @@ impl FrameHarness {
     /// follower can look around until the next one. Answers whether the view
     /// went there.
     pub fn follow_view(&mut self, actor: &str, followed: &mut FollowedView) -> bool {
-        self.invalidate_local();
         let Some(interaction) = self
             .presence
             .agent_marker_interactions(crate::time::now())
@@ -188,6 +187,8 @@ impl FrameHarness {
         else {
             return false;
         };
+        // There is an action to follow: what it left to show is read off the layout as it is now.
+        self.invalidate_local();
         if followed.invocation != Some(interaction.invocation) {
             *followed = FollowedView {
                 invocation: Some(interaction.invocation),
