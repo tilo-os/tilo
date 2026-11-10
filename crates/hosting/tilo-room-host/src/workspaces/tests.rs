@@ -1554,7 +1554,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     let member_dir = dir.path().join("member");
     std::fs::create_dir_all(&member_dir).unwrap();
     let request = channel_crypto::ChannelPeer::waiting(
-        Some(&member_dir),
+        Some(std::sync::Arc::new(channel_crypto::Files::new(&member_dir))),
         channel,
         Box::new(member_key.clone()),
         &vault,

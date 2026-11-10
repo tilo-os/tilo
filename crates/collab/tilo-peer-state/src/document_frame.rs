@@ -452,7 +452,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let channel = collab_types::document_channel_id("app", "room", "record");
         let creator = channel_crypto::ChannelPeer::create_now(
-            Some(dir.path()),
+            Some(std::sync::Arc::new(channel_crypto::Files::new(dir.path()))),
             channel,
             Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
             &channel_crypto::VaultKey::new([8; 32]),
@@ -494,7 +494,7 @@ mod tests {
             record: "record".into(),
         };
         let creator = channel_crypto::ChannelPeer::create_now(
-            Some(dir.path()),
+            Some(std::sync::Arc::new(channel_crypto::Files::new(dir.path()))),
             collab_types::document_channel_id("app", "room", "record"),
             Box::new(ed25519_dalek::SigningKey::from_bytes(&[7; 32])),
             &channel_crypto::VaultKey::new([8; 32]),
