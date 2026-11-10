@@ -364,7 +364,7 @@ async fn what_the_hosting_device_writes_reaches_the_persons_other_device() {
     });
     let other = DirectSync::new(other, other_key.clone());
     let host_endpoint = localhost_endpoint(&key).await;
-    let router = iroh::protocol::Router::builder(host_endpoint.clone())
+    let accepting = iroh::protocol::Router::builder(host_endpoint.clone())
         .accept(DIRECT_ALPN, host.clone())
         .spawn();
     let other_endpoint = localhost_endpoint(&other_key).await;
@@ -392,6 +392,6 @@ async fn what_the_hosting_device_writes_reaches_the_persons_other_device() {
 
     link.abort();
     paired.abort();
-    router.shutdown().await.unwrap();
+    accepting.shutdown().await.unwrap();
     other_endpoint.close().await;
 }
