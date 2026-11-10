@@ -38,7 +38,7 @@ const holding=(holder,{purpose='Text',ime=true,field='field'}={})=>({owner:`/${h
 async function fixture({standalone=false,models,providerManagement,app}={}){
  const document=new Node('document');document.body=new Node('body');document.append(document.body);document.activeElement=document.body;document.createElement=tag=>new Node(tag);globalThis.document=document;
  Object.defineProperty(globalThis,'navigator',{configurable:true,value:{gpu:{},platform:'Mac'}});
- globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.WheelEvent=class extends DomEvent{constructor(type,init){super(type,{deltaX:0,deltaY:0,deltaMode:0,...init});}};globalThis.fetch=async url=>{
+ globalThis.KeyboardEvent=DomEvent;globalThis.FocusEvent=DomEvent;globalThis.WheelEvent=class extends DomEvent{constructor(type,init){super(type,{deltaX:0,deltaY:0,deltaMode:0,...init});}};globalThis.PointerEvent=class extends DomEvent{constructor(type,init){super(type,{clientX:0,clientY:0,pointerId:1,pointerType:'mouse',buttons:0,...init});}};globalThis.fetch=async url=>{
   if(String(url).endsWith('fonts.json'))return {ok:true,json:async()=>({schema:1,catalog:'host-input-fixture',assets:[{name:'NotoSans[wght].ttf',bytes:1,sha256:'4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a',startup:true}]})};
   return {ok:true,arrayBuffer:async()=>new Uint8Array([1]).buffer};
  };
@@ -409,4 +409,20 @@ test('a drop hands over its files with their bytes, a bounded number of them',as
 test('a file too large to drop is named with its size, its contents never read',async()=>{
   const huge={name:'film.mov',type:'video/quicktime',size:MAX_DROPPED_FILE+1,arrayBuffer:async()=>{throw new Error('read');}};
   assert.deepEqual(await droppedFiles({files:[huge]}),[{name:'film.mov',type:'video/quicktime',size:MAX_DROPPED_FILE+1,unread:'tooLarge'}]);
+});
+test('a wheel tells the runtime where the fingers are before it reads one',async()=>{
+ const f=await fixture();const canvas=f.host.canvas;Object.assign(canvas,{clientWidth:800,clientHeight:600});
+ // Winit reads a wheel by the pointer it saw last, and a script's or a
+ // forwarded wheel can name a place it never saw the pointer at: the desk
+ // then pans the strip by a wheel meant for a window's grid.
+ const seen=[];canvas.addEventListener('pointermove',event=>seen.push(event));
+ canvas.dispatchEvent(new WheelEvent('wheel',{cancelable:true,deltaX:12,deltaY:0,clientX:300,clientY:220}));
+ assert.equal(seen.length,1,'the wheel placed the pointer');
+ assert.deepEqual([seen[0].clientX,seen[0].clientY,seen[0].pointerType],[300,220,'mouse']);
+ // A wheel over the same place asks for no move: a swipe's many events are
+ // one pointer, as a native session's are.
+ canvas.dispatchEvent(new WheelEvent('wheel',{cancelable:true,deltaX:18,deltaY:0,clientX:300,clientY:220}));
+ assert.equal(seen.length,1,'the pointer stays where the fingers are');
+ canvas.dispatchEvent(new WheelEvent('wheel',{cancelable:true,deltaX:6,deltaY:0,clientX:120,clientY:90}));
+ assert.deepEqual(seen.slice(1).map(event=>[event.clientX,event.clientY]),[[120,90]],'a wheel elsewhere moves it there');
 });

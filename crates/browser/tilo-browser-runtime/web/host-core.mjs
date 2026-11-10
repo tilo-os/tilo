@@ -39,6 +39,21 @@ export function pageWheelAsPixels(event,width,height) {
   return {deltaX:-x,deltaY:-y,deltaMode:0,clientX:event.clientX,clientY:event.clientY,
     ctrlKey:event.ctrlKey,shiftKey:event.shiftKey,altKey:event.altKey,metaKey:event.metaKey,bubbles:false,cancelable:true};
 }
+/** The pointer a wheel event places, as a move the runtime reads before the
+ * wheel: it routes a wheel by the pointer it last saw, and the wheel says
+ * where the fingers are. A trackpad's two-finger swipe never moves the
+ * pointer, so there the two already agree; a wheel a script sends, or one a
+ * page forwards somewhere else, names a place the runtime never saw the
+ * pointer at, and the wheel's own place is the one the fingers are at.
+ * `undefined` when the runtime already has the pointer there. */
+export function wheelPointerMove(event,seen={x:NaN,y:NaN}) {
+  const x=Number(event.clientX),y=Number(event.clientY);
+  if(!Number.isFinite(x)||!Number.isFinite(y))return undefined;
+  if(seen.x===x&&seen.y===y)return undefined;
+  seen.x=x;seen.y=y;
+  return {pointerId:1,pointerType:'mouse',isPrimary:true,button:-1,buttons:0,
+    clientX:x,clientY:y,bubbles:true,cancelable:true};
+}
 /** A mouse wheel's notches as the line deltas the native session reads from
  * a wheel (libinput's wheel source, one line a notch), so a sideways notch
  * pans the strip a line (40 px) and a vertical one scrolls by a line, as

@@ -4,7 +4,7 @@ import {createDataLoader} from './data-loader.mjs';
 import {createImageDecoder} from './image-decode.mjs';
 import {createFontDemandPump,createFontLoader} from './font-loader.mjs';
 import init,* as runtime from './pkg/tilo_browser_runtime.js';
-import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines} from './host-core.mjs';
+import {MountRegistry,applyEditorHints,createScreenFill,createInputScope,createFocusHandoff,createCompositionSession,beforeInputRoute,MAX_TEXT_INSERT,oversizedInsert,createKeyboardForwarder,draggingFiles,droppedFiles,pastedPicture,isDesktopSearchShortcut,keyboardRoute,modifierSnapshot,overlayKeyboardRoute,retainStatus,retainedWidget,createHostStatus,pageWheelAsPixels,wheelNotchesAsLines,wheelPointerMove} from './host-core.mjs';
 
 import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
@@ -684,15 +684,26 @@ export async function mountDesktop(target,options={}) {
     // A mouse wheel's notches reach the runtime as the lines a native wheel
     // sends; this runs before the runtime's own canvas listener.
     const wheelNotch={x:0,y:0};
+    // The pointer a wheel names, which the runtime routes the wheel by: a
+    // swipe over a window's grid is that grid's, not whatever the pointer was
+    // left on.
+    const wheelPointer={x:NaN,y:NaN};
+    const placePointerAtWheel=event=>{
+      if(typeof PointerEvent!=='function')return;
+      const move=wheelPointerMove(event,wheelPointer);
+      if(move)canvas.dispatchEvent(new PointerEvent('pointermove',move));
+    };
     on(surface,'wheel',event=>{
       if(event.target!==canvas)return;
       const lines=wheelNotchesAsLines(event,config.mac,wheelNotch);
       if(!lines)return;
       event.preventDefault();event.stopImmediatePropagation();
+      placePointerAtWheel(event);
       canvas.dispatchEvent(new WheelEvent('wheel',lines));
     },{capture:true,passive:false});
     on(canvas,'wheel',event=>{
       event.preventDefault();
+      placePointerAtWheel(event);
       const pixels=pageWheelAsPixels(event,canvas.clientWidth,canvas.clientHeight);
       if(pixels)canvas.dispatchEvent(new WheelEvent('wheel',pixels));
       else report({lastInput:'wheel'});
