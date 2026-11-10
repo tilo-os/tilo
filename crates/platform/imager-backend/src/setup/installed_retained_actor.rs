@@ -82,9 +82,7 @@ fn challenge() -> [u8; 32] {
 }
 const PROOF_TOTAL_LIMIT: Duration = Duration::from_secs(10);
 
-pub use crate::retained_source::deadline::{
-    ProofInterrupt as InstalledProofInterrupt, with_proof_deadline_at,
-};
+pub use crate::retained_source::deadline::with_proof_deadline_at;
 fn with_proof_deadline<T>(
     stream: &UnixStream,
     cancel: &AtomicBool,
@@ -191,24 +189,12 @@ impl ProofClient {
     }
 }
 
-fn check_editor_origin(
-    origin: &super::retained_open_selection::SelectedOriginCustody,
-    cancel: &AtomicBool,
-) -> io::Result<()> {
-    super::migration::check_cancel(cancel)?;
-    // New-editor cancellation cannot become Files actor revocation. Actual
-    // Files peer/certificate/source checks still latch their own failures.
-    origin.check(&AtomicBool::new(false))?;
-    super::migration::check_cancel(cancel)
-}
-
 /// Private constructor; request JSON, a serialized declaration, FD or signer
 /// labels cannot mint this admission. It is not Serialize/Deserialize/Clone.
 pub struct ReviewedInstalledRetainedLaunch {
     installed: Arc<AuthenticatedInstalledRetained>,
     source: Arc<RetainedSourceAuthority>,
     proof: Mutex<ProofClient>,
-    proof_interrupt: Arc<InstalledProofInterrupt>,
     anchor: Arc<dyn RootInstalledPersonAnchor>,
     observed: Option<tilo_identity_host::enrolled_transport::RootObservedCurrentDevice>,
     binding: RetainedLaunchBinding,
@@ -225,14 +211,6 @@ impl ReviewedInstalledRetainedLaunch {
     pub(in crate::setup) fn review(
         stream: UnixStream,
         request: LaunchRequest,
-        cancel: &AtomicBool,
-    ) -> io::Result<Arc<Self>> {
-        Self::review_current(stream, request, None, cancel)
-    }
-    fn review_current(
-        stream: UnixStream,
-        request: LaunchRequest,
-        origin: Option<&super::retained_open_selection::SelectedOriginCustody>,
         cancel: &AtomicBool,
     ) -> io::Result<Arc<Self>> {
         root()?;
@@ -255,15 +233,6 @@ impl ReviewedInstalledRetainedLaunch {
             return Err(refused());
         }
         let person = manifest.identity_public_key;
-        if let Some(origin) = origin {
-            check_editor_origin(origin, cancel)?;
-            if origin.input.reviewed.installed.manifest() != manifest
-                || origin.input.binding().operation_id != request.operation_id()
-                || origin.input.person_public_key() != person
-            {
-                return Err(refused());
-            }
-        }
         // B's initial retained group route is exclusively the canonical personal
         // room. Reject shared-workspace context BEFORE opening any RW source.
         if request.room() != runtime_collab::retained_person::personal_cluster(&person) {
@@ -308,18 +277,8 @@ impl ReviewedInstalledRetainedLaunch {
             return Err(refused());
         }
         installed.revalidate()?;
-        // Pin the exact new proof socket before allocating any source lease;
-        // descriptor failure cannot abandon freshly mounted physical custody.
-        let proof_interrupt = Arc::new(InstalledProofInterrupt::observe(&proof.stream)?);
-        let source = if let Some(origin) = origin {
-            check_editor_origin(origin, cancel)?;
-            origin
-                .input
-                .projection
-                .derive_installed(Arc::clone(&installed), &person, cancel)?
-        } else {
-            RetainedSourceAuthority::review_installed(Arc::clone(&installed), &person, cancel)?
-        };
+        let source =
+            RetainedSourceAuthority::review_installed(Arc::clone(&installed), &person, cancel)?;
         if source.identity_public_key() != &person {
             source.revoke();
             source.retire()?;
@@ -330,26 +289,12 @@ impl ReviewedInstalledRetainedLaunch {
             installed,
             source,
             proof: Mutex::new(proof),
-            proof_interrupt,
             anchor,
             observed,
             binding,
             revoked: AtomicBool::new(false),
         });
-        let result = value.revalidate(cancel).and_then(|()| {
-            if let Some(origin) = origin {
-                check_editor_origin(origin, cancel)?;
-                if origin.input.reviewed.installed.manifest() != value.installed.manifest()
-                    || origin.input.binding().operation_id != value.binding.operation_id
-                    || origin.input.person_public_key()
-                        != value.installed.manifest().identity_public_key
-                {
-                    return Err(refused());
-                }
-            }
-            Ok(())
-        });
-        if let Err(error) = result {
+        if let Err(error) = value.revalidate(cancel) {
             value.retire()?;
             return Err(error);
         }
@@ -466,21 +411,12 @@ impl ReviewedInstalledRetainedLaunch {
             installed,
             source,
             proof,
-            proof_interrupt,
             anchor,
             observed,
             binding,
             revoked,
         } = value;
-        drop((
-            installed,
-            proof,
-            proof_interrupt,
-            anchor,
-            observed,
-            binding,
-            revoked,
-        ));
+        drop((installed, proof, anchor, observed, binding, revoked));
         source.retire()
     }
 }
@@ -514,9 +450,6 @@ impl InstalledRetainedLaunchInput {
         self.revalidate(cancel)?;
         Ok(owner)
     }
-    pub fn proof_interrupt(&self) -> Arc<InstalledProofInterrupt> {
-        Arc::clone(&self.reviewed.proof_interrupt)
-    }
     pub fn removal_namespace(&self, cancel: &AtomicBool) -> io::Result<File> {
         self.revalidate(cancel)?;
         let directory = self.reviewed.source.removal_namespace(cancel)?;
@@ -548,70 +481,6 @@ impl InstalledRetainedLaunchInput {
     ) -> io::Result<&launcher::retained_view::OriginalHomeAlias> {
         self.revalidate(cancel)?;
         self.projection.original_home_alias(cancel)
-    }
-    /// A current ordinary Files launch may request independently enrolled
-    /// history Read. Original source consent is separate from the source kernel
-    /// Read checked when a readable native subject is actually opened.
-    pub fn check_home_history_read(&self, cancel: &AtomicBool) -> io::Result<()> {
-        self.revalidate(cancel)?;
-        let binding = self.binding();
-        let plan = self
-            .reviewed
-            .installed
-            .manifest()
-            .units
-            .retained_home()
-            .ok_or_else(refused)?
-            .as_plan();
-        if binding.app_id != "so.tilo.file-explorer"
-            || binding.resource_record != "retained-home"
-            || binding.room
-                != runtime_collab::retained_person::personal_cluster(&self.person_public_key())
-            || !plan.categories.home
-            || !matches!(
-                plan.home_policy,
-                super::migration_handoff::HomePolicy::AccessReadOnly
-                    | super::migration_handoff::HomePolicy::AccessReadWrite
-            )
-        {
-            return Err(refused());
-        }
-        self.revalidate(cancel)
-    }
-    /// Zero-effect enrollment context for a selected editor Reader. Native Read
-    /// rights and actual target Author are checked by the later opaque Reader
-    /// refinement and source-held readable subject, never this context string.
-    pub fn check_selected_editor_history_read(&self, cancel: &AtomicBool) -> io::Result<()> {
-        self.check_selected_parent_write(cancel)?;
-        let binding = self.binding();
-        let id = binding
-            .resource_record
-            .strip_prefix("selected-open-v2:edit-in-parent:")
-            .ok_or_else(refused)?;
-        if !crate::is_operation_id(id)
-            || binding.room
-                != runtime_collab::retained_person::personal_cluster(&self.person_public_key())
-        {
-            return Err(refused());
-        }
-        self.revalidate(cancel)
-    }
-    /// Only the independently authenticated installed source record determines
-    /// write consent; reported transfer/resize DTOs and Home mode cannot grant it.
-    pub fn check_selected_parent_write(&self, cancel: &AtomicBool) -> io::Result<()> {
-        self.revalidate(cancel)?;
-        let manifest = self.reviewed.installed.manifest();
-        let plan = manifest
-            .units
-            .retained_home()
-            .ok_or_else(refused)?
-            .as_plan();
-        if !plan.categories.home
-            || plan.home_policy != super::migration_handoff::HomePolicy::AccessReadWrite
-        {
-            return Err(refused());
-        }
-        self.revalidate(cancel)
     }
     pub fn revoke(&self) {
         self.reviewed.revoke();

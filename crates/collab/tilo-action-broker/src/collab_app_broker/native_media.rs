@@ -92,7 +92,6 @@ const MAX_HANDED_DESCRIPTORS: usize = 2 * (runtime_collab::file_clipboard::MAX_E
 #[derive(Clone)]
 pub(super) struct PeerProcess {
     task: Arc<std::os::fd::OwnedFd>,
-    executing: Option<Arc<runtime_portal::process_binding::ExecutingPeer>>,
     launcher: Option<Arc<std::os::fd::OwnedFd>>,
 }
 #[cfg(not(target_os = "linux"))]
@@ -125,7 +124,6 @@ impl PeerProcess {
         }
         let process = Self {
             task: Arc::new(owned),
-            executing: None,
             launcher: None,
         };
         process.alive().then_some(process)
@@ -133,12 +131,11 @@ impl PeerProcess {
     #[cfg(target_os = "linux")]
     pub(super) fn with_executing(
         self,
-        peer: runtime_portal::process_binding::ExecutingPeer,
+        peer: &runtime_portal::process_binding::ExecutingPeer,
     ) -> Option<Self> {
         let task = peer.pidfd().try_clone_to_owned().ok()?;
         let process = Self {
             task: Arc::new(task),
-            executing: Some(Arc::new(peer)),
             launcher: Some(self.task),
         };
         process.alive().then_some(process)
@@ -372,7 +369,6 @@ fn watch_death(
         .map(|task| {
             let watched = PeerProcess {
                 task: Arc::clone(task),
-                executing: None,
                 launcher: None,
             };
             // SAFETY: `watched.task` is an `Arc<OwnedFd>`, and `as_raw_fd`
@@ -515,25 +511,6 @@ impl JoinedChannel {
             context.revalidate()?;
             Ok(file)
         }))
-    }
-
-    #[cfg(target_os = "linux")]
-    pub(super) fn selected_open_peer(
-        &self,
-    ) -> Result<Arc<runtime_portal::process_binding::ExecutingPeer>, String> {
-        self.native_media_context(false)
-            .map_err(|error| error.to_string())?
-            .revalidate()?;
-        let peer = self
-            .lease
-            .as_ref()
-            .and_then(|lease| lease.local_media.as_ref())
-            .and_then(|local| local.process.executing.clone())
-            .ok_or("actual executing Files peer unavailable")?;
-        if !peer.current() {
-            return Err("actual executing Files peer ended".into());
-        }
-        Ok(peer)
     }
 
     /// The descriptor lane of this connection's launcher-attested Files process.

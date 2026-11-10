@@ -299,22 +299,8 @@ impl ConnectedNamespace {
 pub struct OrdinaryNamespaceOwner {
     inner: NamespaceOwner,
     retained: Option<Arc<crate::retained_view::RetainedViewAdmission>>,
-    selected_parent: Option<Arc<crate::retained_view::SelectedParentAdmission>>,
 }
 impl OrdinaryNamespaceOwner {
-    pub(crate) fn with_selected_parent(
-        authority: Arc<dyn ServiceAuthority>,
-        cancellation: ServiceCancellation,
-        connected: ConnectedNamespace,
-        parent: Arc<crate::retained_view::SelectedParentAdmission>,
-    ) -> io::Result<Self> {
-        authority.check()?;
-        Ok(Self {
-            inner: NamespaceOwner::for_ordinary(authority, cancellation, connected)?,
-            retained: None,
-            selected_parent: Some(parent),
-        })
-    }
     pub(crate) fn with_retained(
         authority: Arc<dyn ServiceAuthority>,
         cancellation: ServiceCancellation,
@@ -325,7 +311,6 @@ impl OrdinaryNamespaceOwner {
         Ok(Self {
             inner: NamespaceOwner::for_ordinary(authority, cancellation, connected)?,
             retained: Some(retained),
-            selected_parent: None,
         })
     }
     /// # Errors
@@ -339,14 +324,10 @@ impl OrdinaryNamespaceOwner {
         Ok(Self {
             inner: NamespaceOwner::for_ordinary(authority, cancellation, connected)?,
             retained: None,
-            selected_parent: None,
         })
     }
 }
 impl EnrolledProcessObserver for OrdinaryNamespaceOwner {
-    fn selected_parent(&self) -> Option<&crate::retained_view::SelectedParentAdmission> {
-        self.selected_parent.as_deref()
-    }
     fn retained_view(&self) -> Option<&crate::retained_view::RetainedViewAdmission> {
         self.retained.as_deref()
     }

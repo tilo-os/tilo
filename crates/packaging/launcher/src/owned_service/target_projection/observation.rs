@@ -1,4 +1,4 @@
-//! Fixed held-object metadata and bounded selected lookup operations.
+//! Fixed held-object metadata over the initialized target worker.
 //! No content access or source permission constructor exists.
 #[cfg(test)]
 use super::Write;
@@ -111,10 +111,8 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
         let mut io = Handoff::new(&mut stream, &cancellation, Duration::from_secs(10))?;
         let mut rest = [0; 3];
         io.read_exact(&mut rest)?;
-        let lookup = rest == *b"OL1";
-        let read = rest == *b"OR1";
         let exposure = rest == *b"ME1";
-        if first != *b"T" || (!lookup && !read && !exposure && rest != *b"OM1") {
+        if first != *b"T" || (!exposure && rest != *b"OM1") {
             return Err(refused("Target observation request differs"));
         }
         let mut nonce = [0; 32];
@@ -140,26 +138,6 @@ pub(super) fn serve(mut stream: UnixStream, record: &Record) -> io::Result<()> {
         super::shim::verify_dropped(record.uid, record.gid)?;
         if namespaces()? != record.namespaces {
             return Err(refused("Target observation worker namespace changed"));
-        }
-        if read {
-            super::selected_read::serve_request(
-                &mut io,
-                &file,
-                record,
-                &nonce,
-                admitted_view.as_ref(),
-            )?;
-            continue;
-        }
-        if lookup {
-            super::selected_lookup::serve_request(
-                &mut io,
-                &file,
-                record,
-                &nonce,
-                admitted_view.as_ref(),
-            )?;
-            continue;
         }
         serve_measurement(&mut io, &file, record, &nonce, exposure, &mut admitted_view)?;
     }

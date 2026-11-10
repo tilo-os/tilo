@@ -6826,9 +6826,6 @@ impl AppBrokerState {
             | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
-            | CollabEvent::SelectedDiscoveryResult { .. }
-            | CollabEvent::OpenSelectedV2Result { .. }
-            | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged
@@ -11709,54 +11706,6 @@ pub mod tests {
                         .expect_err("unattested channel must be refused");
                     assert!(error.to_string().contains("launcher-attested"), "{error}");
                 }
-            })
-            .await;
-    }
-
-    #[cfg(target_os = "linux")]
-    #[tokio::test(flavor = "current_thread")]
-    async fn selected_open_rpc_requires_actual_files_peer_and_original_invocation() {
-        tokio::task::LocalSet::new()
-            .run_until(async {
-                let fixture = local_directory_fixture();
-                let channel = fixture.invocation_channel();
-                let discovery = runtime_collab::open_selected::discovery::Request {
-                    invocation: None,
-                    protocol: runtime_collab::open_selected::discovery::PROTOCOL.into(),
-                    schema: 1,
-                    request_id: uuid::Uuid::new_v4().to_string(),
-                    components: vec![b"document.md".to_vec()],
-                };
-                let error = channel
-                    .local_file_selected_discovery(&discovery, None)
-                    .await
-                    .expect_err("discovery cannot mint a local Files peer");
-                assert!(error.to_string().contains("launcher-attested"), "{error}");
-                let selected = runtime_collab::open_selected::v2::Request {
-                    protocol: runtime_collab::open_selected::v2::PROTOCOL.into(),
-                    resource: "entry:document".into(),
-                    request: runtime_collab::open_selected::v2::RootRequest {
-                        schema: 2,
-                        request_id: uuid::Uuid::new_v4().to_string(),
-                        components: vec![b"document.md".to_vec()],
-                        app_id: "so.tilo.text-editor".into(),
-                        access: runtime_collab::open_selected::v2::SelectedAccess::EditInParent,
-                    },
-                    selected_descriptor: 3,
-                    parent_descriptor: 4,
-                    proof_descriptor: 5,
-                };
-                let error = channel
-                    .local_file_open_selected_v2(&selected, Some(*uuid::Uuid::new_v4().as_bytes()))
-                    .await
-                    .expect_err("Edit requires its actual semantic invocation");
-                assert!(error.to_string().contains("absent"), "{error}");
-                let navigation = selected.navigation();
-                let error = channel
-                    .local_file_open_selected(&navigation, Some(*uuid::Uuid::new_v4().as_bytes()))
-                    .await
-                    .expect_err("Read requires its actual semantic invocation");
-                assert!(error.to_string().contains("absent"), "{error}");
             })
             .await;
     }

@@ -6400,43 +6400,6 @@ async fn dispatch_sdk_request(
             let _ = inbound_tx
                 .send_reply(CollabEvent::NearbyTransferCommandResult { request_id, result });
         }
-        CollabRequest::SelectedDiscovery {
-            request_id,
-            command,
-            on_behalf_of,
-        } => {
-            let result = route
-                .channel
-                .local_file_selected_discovery(&command, on_behalf_of.map(|id| *id.0.as_bytes()))
-                .await
-                .map_err(|error| error.to_string());
-            let _ =
-                inbound_tx.send_reply(CollabEvent::SelectedDiscoveryResult { request_id, result });
-        }
-        CollabRequest::OpenSelectedV2 {
-            request_id,
-            command,
-            on_behalf_of,
-        } => {
-            let result = route
-                .channel
-                .local_file_open_selected_v2(&command, Some(*on_behalf_of.0.as_bytes()))
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_reply(CollabEvent::OpenSelectedV2Result { request_id, result });
-        }
-        CollabRequest::OpenSelected {
-            request_id,
-            command,
-            on_behalf_of,
-        } => {
-            let result = route
-                .channel
-                .local_file_open_selected(&command, Some(*on_behalf_of.0.as_bytes()))
-                .await
-                .map_err(|error| error.to_string());
-            let _ = inbound_tx.send_reply(CollabEvent::OpenSelectedResult { request_id, result });
-        }
         CollabRequest::LocalFileClipboard {
             request_id,
             command,

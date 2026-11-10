@@ -270,7 +270,6 @@ pub(crate) const CALLED_SEAMS: &[(&str, &str)] = &[
         "ui::collaboration::channel_live_activity",
         "live_activities",
     ),
-    ("ui::collaboration::open_selected", "file_clipboard"),
     ("ui::collaboration::file_clipboard", "file_clipboard"),
     ("ui::collaboration::write_attribution", "file_clipboard"),
     ("NearbyTransferCommand", "nearby_transfer"),

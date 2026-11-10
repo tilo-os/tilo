@@ -22,13 +22,9 @@ use std::{
 mod endpoint;
 pub(crate) mod exposure;
 mod observation;
-mod selected_lookup;
-mod selected_read;
 mod shim;
 use super::workspace;
-pub use endpoint::{
-    LookedUpSelected, ObservedTargetObject, SelectedParentIssue, TargetProjectionEndpoint,
-};
+pub use endpoint::{ObservedTargetObject, TargetProjectionEndpoint};
 #[cfg(feature = "native-home-alias-qualification")]
 pub use exposure::FixtureExposure;
 pub use exposure::HeldViewExposure;
@@ -86,16 +82,11 @@ impl TargetProjectionCredentials {
 pub enum TargetProjectionMode {
     SelectedFile,
     HomeDirectory,
-    SelectedParent,
+    /// Retired in place: a retained home is presented read-only, whole.
+    RetiredSelectedParent,
 }
 pub trait TargetProjectionAuthority: super::ServiceAuthority {
     fn projection_mode(&self) -> TargetProjectionMode;
-    /// Default deny. Only the setup-private adapter retaining the genuine root
-    /// edit admission AND constructed filtered source supplies this live object.
-    /// Mode or descriptive scope fields alone never establish source rights.
-    fn selected_parent_edit(&self) -> io::Result<Option<&dyn SelectedParentEditAuthority>> {
-        Ok(None)
-    }
     /// # Errors
     /// Fails if the certified target identity cannot be admitted under root custody.
     fn target_credentials(&self) -> io::Result<TargetProjectionCredentials>;
@@ -103,104 +94,6 @@ pub trait TargetProjectionAuthority: super::ServiceAuthority {
     fn source_view_sha256(&self) -> [u8; 32];
     /// Actual selected held-file presentation component, preserving POSIX bytes.
     fn presentation_name(&self) -> io::Result<OsString>;
-}
-/// Nonserializable root policy bridge, implemented only by the setup-private
-/// adapter around `RootSelectedEditAdmission` and its constructed source filter.
-/// `check()` replays current original source and fresh target authorization.
-pub trait SelectedParentEditAuthority: super::ServiceAuthority {
-    /// # Errors
-    /// Fails if the original selection or current target authorization cannot be
-    /// revalidated to produce the sealed edit scope.
-    fn scope_facts(&self) -> io::Result<SelectedParentScopeFacts>;
-}
-/// Descriptive binding only, with no FD, source credentials, backend methods,
-/// serde implementation or grant constructor. The live authority is separate.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SelectedParentScopeFacts {
-    pub request_id: String,
-    pub resource_record: String,
-    pub raw_leaf: Vec<u8>,
-    pub source_parent_identity: [u64; 2],
-    pub source_selected_identity: [u64; 2],
-    pub source_context_sha256: [u8; 32],
-    pub source_view_sha256: [u8; 32],
-    pub target_context_sha256: [u8; 32],
-}
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SealedSelectedParentScope {
-    // Closed selected + own create-new regular temps only. No directory,
-    // sibling, unlink or replacement/rename authority is represented here.
-    version: u32,
-    max_owned_temporaries: u32,
-    request_id: String,
-    resource_record: String,
-    raw_leaf: Vec<u8>,
-    source_parent_identity: [u64; 2],
-    source_selected_identity: [u64; 2],
-    source_context_sha256: [u8; 32],
-    source_view_sha256: [u8; 32],
-    target_context_sha256: [u8; 32],
-}
-impl SealedSelectedParentScope {
-    fn from_facts(facts: SelectedParentScopeFacts) -> Self {
-        Self {
-            version: 1,
-            max_owned_temporaries: 64,
-            request_id: facts.request_id,
-            resource_record: facts.resource_record,
-            raw_leaf: facts.raw_leaf,
-            source_parent_identity: facts.source_parent_identity,
-            source_selected_identity: facts.source_selected_identity,
-            source_context_sha256: facts.source_context_sha256,
-            source_view_sha256: facts.source_view_sha256,
-            target_context_sha256: facts.target_context_sha256,
-        }
-    }
-    fn validate(&self, record: &Record) -> io::Result<()> {
-        validate_name(&self.raw_leaf)?;
-        let id = uuid::Uuid::parse_str(&self.request_id)
-            .map_err(|_| refused("Selected parent request differs"))?;
-        if self.version != 1
-            || self.max_owned_temporaries != 64
-            || id.is_nil()
-            || id.to_string() != self.request_id
-            || self.resource_record
-                != format!("selected-open-v2:edit-in-parent:{}", self.request_id)
-            || self.source_parent_identity[1] == 0
-            || self.source_selected_identity[1] == 0
-            || self.source_parent_identity == self.source_selected_identity
-            || self.source_context_sha256 == [0; 32]
-            || self.source_view_sha256 != record.source_view_sha256
-            || self.target_context_sha256 != record.context_sha256
-            || self.raw_leaf != record.name
-        {
-            return Err(refused("Selected parent sealed scope differs"));
-        }
-        Ok(())
-    }
-}
-fn selected_parent_scope(
-    authority: &dyn TargetProjectionAuthority,
-) -> io::Result<Option<SealedSelectedParentScope>> {
-    authority.check()?;
-    let edit = authority.selected_parent_edit()?;
-    match (authority.projection_mode(), edit) {
-        (TargetProjectionMode::SelectedParent, Some(edit)) => {
-            edit.check()?;
-            let facts = edit.scope_facts()?;
-            edit.check()?;
-            authority.check()?;
-            Ok(Some(SealedSelectedParentScope::from_facts(facts)))
-        }
-        (TargetProjectionMode::SelectedParent, None) => {
-            Err(refused("Selected parent lacks genuine live edit admission"))
-        }
-        (_, None) => Ok(None),
-        (_, Some(_)) => Err(refused(
-            "Ordinary projection cannot acquire selected parent edit scope",
-        )),
-    }
 }
 fn validate_ids(uid: u32, gid: u32) -> io::Result<()> {
     if uid == 0 || uid == u32::MAX || gid == u32::MAX {
@@ -271,8 +164,6 @@ fn descriptor_flags(file: &File) -> i32 {
 struct Record {
     schema: u32,
     mode: TargetProjectionMode,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    selected_parent: Option<SealedSelectedParentScope>,
     purpose: String,
     uid: u32,
     gid: u32,
@@ -292,13 +183,8 @@ impl Record {
         if mounted {
             self.baseline.validate(BASELINE)?;
         }
-        match (&self.mode, &self.selected_parent) {
-            (TargetProjectionMode::SelectedParent, Some(scope)) => scope.validate(self)?,
-            (TargetProjectionMode::SelectedParent, None) => {
-                return Err(refused("Selected parent record lacks edit scope"));
-            }
-            (_, None) => {}
-            (_, Some(_)) => return Err(refused("Ordinary projection contains edit scope")),
+        if self.mode == TargetProjectionMode::RetiredSelectedParent {
+            return Err(refused("Selected parent projection is retired"));
         }
 
         if self.schema != 4
@@ -425,7 +311,6 @@ impl TargetProjectionAdmission {
         if !authority.network_hosts()?.is_empty() {
             return Err(refused("Target projection service must be offline"));
         }
-        let selected_parent = selected_parent_scope(authority.as_ref())?;
         let c = authority.target_credentials()?;
         let fuse = File::options()
             .read(true)
@@ -437,7 +322,6 @@ impl TargetProjectionAdmission {
             // Older workers only acknowledge readiness and cannot serve observations.
             schema: 4,
             mode: authority.projection_mode(),
-            selected_parent,
             purpose: "retained-target-projection".into(),
             uid: c.uid,
             gid: c.gid,
@@ -479,8 +363,7 @@ impl TargetProjectionAdmission {
         root()?;
         self.authority.check()?;
         let c = self.authority.target_credentials()?;
-        if selected_parent_scope(self.authority.as_ref())? != self.record.selected_parent
-            || self.authority.projection_mode() != self.record.mode
+        if self.authority.projection_mode() != self.record.mode
             || c.uid != self.record.uid
             || c.gid != self.record.gid
             || self.authority.context_sha256() != self.record.context_sha256
@@ -720,7 +603,6 @@ mod tests {
         let mut record = Record {
             schema: 4,
             mode: TargetProjectionMode::HomeDirectory,
-            selected_parent: None,
             purpose: "retained-target-projection".into(),
             uid: 1000,
             gid: 1000,
@@ -745,7 +627,7 @@ mod tests {
             clone_mount_id: None,
         };
         record.validate(false).unwrap();
-        record.mode = TargetProjectionMode::SelectedParent;
+        record.mode = TargetProjectionMode::RetiredSelectedParent;
         assert_eq!(
             record.validate(false).unwrap_err().kind(),
             io::ErrorKind::PermissionDenied
@@ -768,42 +650,6 @@ mod tests {
         );
         record.schema = 4;
         record.validate(false).unwrap();
-    }
-    struct ModeOnlyAuthority;
-    impl super::super::ServiceAuthority for ModeOnlyAuthority {
-        fn check(&self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    impl TargetProjectionAuthority for ModeOnlyAuthority {
-        fn projection_mode(&self) -> TargetProjectionMode {
-            TargetProjectionMode::SelectedParent
-        }
-        fn target_credentials(&self) -> io::Result<TargetProjectionCredentials> {
-            Err(refused(
-                "No authentic target credential in mode-only negative fixture",
-            ))
-        }
-        fn context_sha256(&self) -> [u8; 32] {
-            [0; 32]
-        }
-        fn source_view_sha256(&self) -> [u8; 32] {
-            [0; 32]
-        }
-        fn presentation_name(&self) -> io::Result<OsString> {
-            Err(refused("No source grant"))
-        }
-    }
-    #[test]
-    fn selected_parent_enum_and_descriptive_fields_cannot_upgrade_default_denied_authority() {
-        // Calls the actual admission/endpoint scope path, before opening FUSE.
-        // No positive fake root/source/worker grant is constructed here.
-        assert_eq!(
-            selected_parent_scope(&ModeOnlyAuthority)
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::PermissionDenied
-        );
     }
     #[test]
     fn ordinary_and_unsealed_descriptors_cannot_mint_target_admission() {

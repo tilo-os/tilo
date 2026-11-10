@@ -293,7 +293,7 @@ impl HeldViewExposure {
         {
             return Err(refused("Exposure launcher mount namespace differs"));
         }
-        Self::allocate(endpoint, Some(peer), !binding.writable)
+        Self::allocate(endpoint, Some(peer), true)
     }
     fn allocate(
         endpoint: Arc<TargetProjectionEndpoint>,
@@ -501,7 +501,7 @@ impl Drop for HeldViewExposure {
 }
 
 /// Disposable boundary fixture only. No conversion to HeldViewExposure, Home,
-/// SelectedParent, installed consent, signed app binding or Author grant exists.
+/// installed consent or signed app binding exists.
 #[cfg(feature = "native-home-alias-qualification")]
 pub struct FixtureExposure {
     inner: HeldViewExposure,
@@ -717,11 +717,8 @@ impl ExposurePreparation {
         if mount_id(&clone)? != clone_id {
             return Err(refused("Remote detached clone differs"));
         }
-        let readonly =
-            !binding.writable || endpoint.record.mode == TargetProjectionMode::SelectedFile;
-        if readonly {
-            self::readonly(&clone)?;
-        }
+        // A retained source is only ever presented read-only.
+        self::readonly(&clone)?;
         let mut nonce = [0; 32];
         getrandom::SysRng
             .try_fill_bytes(&mut nonce)
@@ -734,7 +731,7 @@ impl ExposurePreparation {
             target_uid: endpoint.record.uid,
             target_gid: endpoint.record.gid,
             clone_mount_id: clone_id,
-            readonly,
+            readonly: true,
         };
         record.validate()?;
         Ok(Self {

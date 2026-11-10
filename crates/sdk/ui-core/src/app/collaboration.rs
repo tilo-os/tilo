@@ -913,10 +913,7 @@ impl App {
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
         !matches!(
             event,
-            CollabEvent::SelectedDiscoveryResult { .. }
-                | CollabEvent::OpenSelectedV2Result { .. }
-                | CollabEvent::OpenSelectedResult { .. }
-                | CollabEvent::NearbyTransferCommandResult { .. }
+            CollabEvent::NearbyTransferCommandResult { .. }
                 | CollabEvent::NearbyTransferChanged
                 | CollabEvent::SpeakersChanged
                 | CollabEvent::DrivesChanged
@@ -1029,9 +1026,6 @@ impl App {
             | CollabEvent::WorkspaceControl { .. }
             | CollabEvent::RealtimeCommandResult { .. }
             | CollabEvent::NearbyTransferCommandResult { .. }
-            | CollabEvent::SelectedDiscoveryResult { .. }
-            | CollabEvent::OpenSelectedV2Result { .. }
-            | CollabEvent::OpenSelectedResult { .. }
             | CollabEvent::NearbyTransferChanged
             | CollabEvent::SpeakersChanged
             | CollabEvent::DrivesChanged

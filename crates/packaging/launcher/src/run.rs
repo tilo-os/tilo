@@ -2908,11 +2908,6 @@ fn spawn_and_wait(
     {
         service_fds.extend(retained.descriptor_pairs()?);
     }
-    if let Some(parent) =
-        observer.and_then(crate::managed::EnrolledProcessObserver::selected_parent)
-    {
-        service_fds.push(parent.descriptor_pair()?);
-    }
     if let Some(target) = target_projection {
         service_fds.extend(target.pairs()?);
         target.replace_baseline(&mut service_fds)?;
@@ -3413,14 +3408,7 @@ pub(crate) fn run_with_context(
     }
     let retained_view =
         native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view);
-    let selected_parent =
-        native_owner.and_then(crate::managed::EnrolledProcessObserver::selected_parent);
-    if selected_parent.is_some() && retained_view.is_some() {
-        return Err(RunError::InvalidServiceLaunch(
-            "Mixed ordinary view grants".into(),
-        ));
-    }
-    if (retained_view.is_some() || selected_parent.is_some())
+    if retained_view.is_some()
         && (enrolled.is_some()
             || retained_io.is_some()
             || target_projection.is_some()
@@ -3844,10 +3832,7 @@ pub(crate) fn run_with_context(
     if let Some(retained) =
         native_owner.and_then(crate::managed::EnrolledProcessObserver::retained_view)
     {
-        retained.splice(&mut argv, capabilities.participation)?;
-    }
-    if let Some(parent) = selected_parent {
-        parent.splice(&mut argv, capabilities.participation)?;
+        retained.splice(&mut argv)?;
     }
     let result = spawn_and_wait(
         argv,

@@ -31,7 +31,6 @@ use tilo_sort::CompactSort as _;
 
 pub mod browser_service_sessions;
 pub mod file_clipboard;
-pub mod open_selected;
 pub use browser_service_sessions::*;
 pub mod retained_person;
 pub mod retained_retirement;

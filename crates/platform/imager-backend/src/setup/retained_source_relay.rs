@@ -1,8 +1,6 @@
 //! Root-owned relay for an already admitted selected-file source capability.
 //! The target receives only the existing filesystem RPC, never the worker fd.
 use super::installed_retained_actor::InstalledRetainedLaunchInput;
-#[path = "retained_source_origin.rs"]
-mod source_origin;
 use launcher::owned_service::{TargetProjectionEndpoint, TargetProjectionMode};
 use runtime_fs::{
     DirEntry, EntryKind, EntryName, Metadata, OpenMode,
@@ -14,7 +12,6 @@ use runtime_fs::{
     selected_client::SelectedFileConnection,
     workspace_server::{self, ConnectedWorkspaceServer, WorkspaceBackend, WorkspaceFileBackend},
 };
-pub(in crate::setup) use source_origin::SourceSelectedOrigin;
 use std::{
     io,
     os::unix::net::UnixStream,
@@ -434,7 +431,7 @@ impl RetainedSourceRelay {
                 let expected = match source.mode() {
                     TargetProjectionMode::SelectedFile => EntryKind::File,
                     TargetProjectionMode::HomeDirectory => EntryKind::Directory,
-                    TargetProjectionMode::SelectedParent => return Err(refused()),
+                    TargetProjectionMode::RetiredSelectedParent => return Err(refused()),
                 };
                 if source.metadata()?.kind != expected {
                     return Err(refused());

@@ -110,9 +110,8 @@ mod workspace;
 pub use retained_worker::{RetainedWorkerConnector, RetainedWorkerWitness};
 pub mod target_projection;
 pub use target_projection::{
-    AdmittedTargetFuse, SelectedParentEditAuthority, SelectedParentScopeFacts, TargetFuseReady,
-    TargetProjectionAdmission, TargetProjectionAuthority, TargetProjectionCredentials,
-    TargetProjectionEndpoint, TargetProjectionMode,
+    AdmittedTargetFuse, TargetFuseReady, TargetProjectionAdmission, TargetProjectionAuthority,
+    TargetProjectionCredentials, TargetProjectionEndpoint, TargetProjectionMode,
 };
 pub type ConnectedTargetProjection =
     Box<dyn FnOnce(TargetProjectionEndpoint) -> io::Result<()> + Send>;

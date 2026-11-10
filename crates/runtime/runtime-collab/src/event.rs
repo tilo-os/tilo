@@ -39,19 +39,6 @@ impl EndpointCustody for NoCustody {
     reason = "the layout every app matches on; boxing a payload would change each of those matches"
 )]
 pub enum CollabEvent<C: EndpointCustody = NoCustody> {
-    SelectedDiscoveryResult {
-        request_id: u64,
-        result: Result<crate::open_selected::discovery::Reply, String>,
-    },
-    OpenSelectedV2Result {
-        request_id: u64,
-        result: Result<crate::open_selected::v2::ObservedReply, String>,
-    },
-    OpenSelectedResult {
-        request_id: u64,
-        result: Result<crate::open_selected::RootReceipt, String>,
-    },
-
     LocalFileClipboardResult {
         request_id: u64,
         result: Result<crate::file_clipboard::Reply, String>,

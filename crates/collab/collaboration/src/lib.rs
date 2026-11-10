@@ -272,7 +272,7 @@ pub use runtime_collab::{
     NearbyTransferSnapshot, NearbyTransferStatus, NearbyTransferTarget, NetworkWakeStatus,
     PortableWifiSecurity, WifiContinuityCommand, WifiContinuityReply,
 };
-pub use runtime_collab::{file_clipboard, open_selected, write_attribution};
+pub use runtime_collab::{file_clipboard, write_attribution};
 
 use collab_types::presence::PresenceKey;
 pub use collab_types::presence::{Collaborator, PresencePayload};
@@ -445,22 +445,6 @@ pub enum CollabRequest {
         on_behalf_of: tilo_actions::InvocationId,
         reply: crate::invocation_scope::ExternalModerationReply,
     },
-    SelectedDiscovery {
-        request_id: u64,
-        command: runtime_collab::open_selected::discovery::Request,
-        on_behalf_of: Option<tilo_actions::InvocationId>,
-    },
-    OpenSelectedV2 {
-        request_id: u64,
-        command: runtime_collab::open_selected::v2::Request,
-        on_behalf_of: tilo_actions::InvocationId,
-    },
-    OpenSelected {
-        request_id: u64,
-        command: runtime_collab::open_selected::Request,
-        on_behalf_of: tilo_actions::InvocationId,
-    },
-
     LocalFileClipboard {
         request_id: u64,
         command: runtime_collab::file_clipboard::Command,

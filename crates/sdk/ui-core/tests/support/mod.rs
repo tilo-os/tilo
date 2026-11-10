@@ -169,9 +169,6 @@ pub fn pump(relay: &mut MemoryRelay) {
                 refuse_workspace_control(&mut inboxes, &from, session_id);
             }
             request @ (CollabRequest::ReportLocalDocumentAction { .. }
-            | CollabRequest::SelectedDiscovery { .. }
-            | CollabRequest::OpenSelectedV2 { .. }
-            | CollabRequest::OpenSelected { .. }
             | CollabRequest::LocalFileClipboard { .. }) => {
                 refuse_local_request(&mut inboxes, &from, &request);
             }
@@ -274,30 +271,6 @@ fn refuse_local_request(inboxes: &mut PeerInboxes, from: &str, request: &CollabR
                     result: Err(runtime_collab::LocalDocumentActionError::Rejected(
                         "memory relay has no authenticated admission authority".into(),
                     )),
-                });
-            }
-        }
-        CollabRequest::SelectedDiscovery { request_id, .. } => {
-            if let Some(inbox) = inboxes.get_mut(from) {
-                inbox.push_back(CollabEvent::SelectedDiscoveryResult {
-                    request_id: *request_id,
-                    result: Err("memory relay has no selected-file discovery".into()),
-                });
-            }
-        }
-        CollabRequest::OpenSelectedV2 { request_id, .. } => {
-            if let Some(inbox) = inboxes.get_mut(from) {
-                inbox.push_back(CollabEvent::OpenSelectedV2Result {
-                    request_id: *request_id,
-                    result: Err("memory relay has no selected-file authority".into()),
-                });
-            }
-        }
-        CollabRequest::OpenSelected { request_id, .. } => {
-            if let Some(inbox) = inboxes.get_mut(from) {
-                inbox.push_back(CollabEvent::OpenSelectedResult {
-                    request_id: *request_id,
-                    result: Err("memory relay has no selected-file authority".into()),
                 });
             }
         }

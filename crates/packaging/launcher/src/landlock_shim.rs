@@ -1084,8 +1084,6 @@ mod readonly_data_noexec_tests {
             "/usr".into(),
             "--ro-noexec".into(),
             "/run/tilo/retained-home".into(),
-            "--rw-noexec".into(),
-            "/run/tilo/selected-open/leaf".into(),
             "--".into(),
             "/app/bin".into(),
         ])
@@ -1113,13 +1111,6 @@ mod readonly_data_noexec_tests {
                 .access
                 .intersects(AccessFs::Execute | AccessFs::WriteFile | AccessFs::RemoveFile)
         );
-        let selected = spec
-            .rules
-            .iter()
-            .find(|rule| rule.path == std::path::Path::new("/run/tilo/selected-open/leaf"))
-            .unwrap();
-        assert!(!selected.access.contains(AccessFs::Execute));
-        assert!(selected.access.contains(AccessFs::WriteFile));
         assert!(ShimArgs::parse(&["--ro-noexec".into()]).is_err());
     }
 }

@@ -70,10 +70,6 @@ pub mod retained_consumer_lease;
 #[cfg(target_os = "linux")]
 pub mod retained_consumer_selection;
 #[cfg(target_os = "linux")]
-pub mod retained_open_dispatch;
-#[cfg(target_os = "linux")]
-pub mod retained_open_selection;
-#[cfg(target_os = "linux")]
 pub mod retained_projection_session;
 #[cfg(target_os = "linux")]
 pub mod retained_source_relay;

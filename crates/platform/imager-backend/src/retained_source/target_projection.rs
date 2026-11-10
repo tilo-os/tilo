@@ -77,9 +77,9 @@ pub(super) fn run() -> io::Result<()> {
             let retired = source.retire();
             result.and(retired)
         }
-        TargetProjectionMode::HomeDirectory | TargetProjectionMode::SelectedParent => {
-            // The sealed selected-parent mode uses the authoritative filtered
-            // source with the same canonical directory invalidation lifecycle.
+        TargetProjectionMode::HomeDirectory => {
+            // The authoritative filtered source serves the whole home, with the
+            // same canonical directory invalidation lifecycle.
             let source = DirectoryConnection::connected(stream)?;
             let filesystem = DirectoryFilesystem::new(source.clone(), uid, gid)?;
             let control = filesystem.invalidation_control();
@@ -87,6 +87,7 @@ pub(super) fn run() -> io::Result<()> {
             let retired = source.retire();
             result.and(retired)
         }
+        TargetProjectionMode::RetiredSelectedParent => return Err(refused()),
     };
     directory.validate()?;
     let current = std::fs::symlink_metadata(&path)?;

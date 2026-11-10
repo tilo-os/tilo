@@ -165,9 +165,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
             }
         }
         CollabRequest::RemoteAction { message } => serialized_bytes(message, &mut meter),
-        CollabRequest::SelectedDiscovery { command, .. } => serialized_bytes(command, &mut meter),
-        CollabRequest::OpenSelected { command, .. } => serialized_bytes(command, &mut meter),
-        CollabRequest::OpenSelectedV2 { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::LocalFileClipboard { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::ExternalModeration { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::OfferContent { hash, bytes } => {
@@ -799,27 +796,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
                 Err(error) => meter.string_capacity(error),
             }
             "RealtimeCommandResult"
-        }
-        CollabEvent::SelectedDiscoveryResult { result, .. } => {
-            match result {
-                Ok(value) => serialized_bytes(value, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "SelectedDiscoveryResult"
-        }
-        CollabEvent::OpenSelectedV2Result { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "OpenSelectedV2Result"
-        }
-        CollabEvent::OpenSelectedResult { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "OpenSelectedResult"
         }
         CollabEvent::LocalFileClipboardResult { result, .. } => {
             match result {

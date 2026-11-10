@@ -866,18 +866,6 @@ fn run_gui_command(
                         launcher::retained_view::run_admitted_gui(admission, cancellation)
                     })
                 }
-                launcher::retained_view::OrdinaryLaunchGate::SelectedParent(endpoint) => {
-                    launcher::retained_view::SelectedParentAdmission::receive(
-                        endpoint,
-                        &args.manifest,
-                        &args.payload_root,
-                        &opts,
-                        &cancellation,
-                    )
-                    .and_then(|admission| {
-                        launcher::retained_view::run_selected_parent_gui(admission, cancellation)
-                    })
-                }
             }
         } else {
             run_manifest(&manifest, &args.payload_root, &opts)

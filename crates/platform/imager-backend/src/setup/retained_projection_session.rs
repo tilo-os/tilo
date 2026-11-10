@@ -156,7 +156,7 @@ impl RetainedProjectionSession {
         hash.update([match mode {
             TargetProjectionMode::SelectedFile => 1,
             TargetProjectionMode::HomeDirectory => 2,
-            TargetProjectionMode::SelectedParent => return Err(io::Error::new(
+            TargetProjectionMode::RetiredSelectedParent => return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "Selected parent requires genuine root edit admission and filtered source composition")),
         }]);
@@ -268,17 +268,6 @@ impl RetainedProjectionSession {
             managed,
         )
     }
-    pub(super) fn with_consumer_view(
-        &self,
-        use_view: impl FnOnce(&File) -> io::Result<()>,
-    ) -> io::Result<()> {
-        let endpoint = self.endpoint.as_ref().ok_or(io::ErrorKind::NotConnected)?;
-        endpoint.check()?;
-        let view = endpoint.held_view()?;
-        let result = use_view(&view);
-        endpoint.check()?;
-        result
-    }
     /// Independent expected source digest comes from the retained source
     /// worker admission, never from echoing an observation's descriptive facts.
     pub(super) fn expected_source_view_sha256(&self) -> io::Result<[u8; 32]> {
@@ -307,12 +296,6 @@ impl RetainedProjectionSession {
         let result = use_observation(&observation);
         observation.check()?;
         result
-    }
-    /// Kernel observations may only come from THIS retained target service.
-    pub(super) fn uses_selected_endpoint(&self, endpoint: &Arc<TargetProjectionEndpoint>) -> bool {
-        self.endpoint
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(current, endpoint))
     }
     /// Off UI: cancellation and real namespace exit precede source release.
     /// No timeout or pathname disappearance is treated as a positive stop.

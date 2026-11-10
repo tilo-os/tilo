@@ -198,49 +198,13 @@ pub(super) type FileAnswer = std::pin::Pin<Box<dyn Future<Output = Result<Vec<u8
 
 impl JoinedChannel {
     /// Answer a command about the person's local files, JSON both ways:
-    /// selected discovery and opening, write attribution, external
-    /// moderation, or the file clipboard, told apart by their envelopes.
+    /// write attribution, external moderation, or the file clipboard, told
+    /// apart by their envelopes.
     pub(super) fn local_file_dispatch(
         self: Rc<Self>,
         bytes: &[u8],
         on_behalf_of: &[u8],
     ) -> Result<FileAnswer, BrokerError> {
-        #[cfg(target_os = "linux")]
-        if runtime_collab::open_selected::discovery::is_envelope(bytes) {
-            let future = self.selected_discovery_dispatch(bytes, on_behalf_of)?;
-            return Ok(Box::pin(async move {
-                let value = future.await.map_err(BrokerError::failed)?;
-                if !value.valid() {
-                    return Err(BrokerError::failed("invalid discovery response".into()));
-                }
-                let bytes =
-                    serde_json::to_vec(&value).map_err(|e| BrokerError::failed(e.to_string()))?;
-                if bytes.len() > runtime_collab::open_selected::discovery::MAX_BYTES {
-                    return Err(BrokerError::failed(
-                        "discovery response exceeds limit".into(),
-                    ));
-                }
-                Ok(bytes)
-            }));
-        }
-        #[cfg(target_os = "linux")]
-        if runtime_collab::open_selected::v2::is_envelope(bytes) {
-            let future = self.selected_open_v2_dispatch(bytes, on_behalf_of)?;
-            return Ok(Box::pin(async move {
-                let receipt = future.await.map_err(BrokerError::failed)?;
-                runtime_collab::open_selected::v2::encode_observed(&receipt)
-                    .map_err(|e| BrokerError::failed(e.to_string()))
-            }));
-        }
-        #[cfg(target_os = "linux")]
-        if runtime_collab::open_selected::is_envelope(bytes) {
-            let future = self.selected_open_dispatch(bytes, on_behalf_of)?;
-            return Ok(Box::pin(async move {
-                let receipt = future.await.map_err(BrokerError::failed)?;
-                runtime_collab::open_selected::encode_observed(&receipt)
-                    .map_err(|e| BrokerError::failed(e.to_string()))
-            }));
-        }
         if runtime_collab::write_attribution::is_envelope(bytes) {
             let reply = self.write_attribution_dispatch(bytes, on_behalf_of)?;
             return Ok(Box::pin(std::future::ready(Ok(reply))));

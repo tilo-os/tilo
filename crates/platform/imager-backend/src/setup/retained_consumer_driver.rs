@@ -12,7 +12,6 @@ use super::{
     migration::PinnedDirectory,
     retained_consumer_lease::{PendingRetainedConsumer, RetainedConsumerLease},
     retained_consumer_selection::ReviewedConsumerSelection,
-    retained_open_dispatch::RetainedOpenDispatcher,
     retained_projection_session::RetainedProjectionSession,
 };
 use launcher::{
@@ -308,21 +307,12 @@ fn run_reviewed(
         export?;
         lease.lock().map_err(|_| refused())?.check(cancel)?;
         fence.observed_consumer()?;
-        let mut opens = RetainedOpenDispatcher::new(
-            bootstrap.try_clone()?,
-            Arc::clone(cancel),
-            cancellation.clone(),
-            lease
-                .lock()
-                .map_err(|_| refused())?
-                .original_proof_interrupt()?,
-        )?;
         let mut gate = None;
-        let outcome = RetainedConsumerLease::supervise_shared_with_open_requests(
+        let outcome = RetainedConsumerLease::supervise(
             &lease,
             cancel,
             Duration::from_secs(5),
-            &mut opens,
+            bootstrap,
             reviewed_slot,
             &mut gate,
         );
