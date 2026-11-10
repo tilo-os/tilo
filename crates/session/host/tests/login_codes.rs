@@ -12,7 +12,8 @@
     clippy::expect_used,
     clippy::panic,
     clippy::too_many_lines,
-    reason = "in a test these are the assertion, not a hazard; the test is one login, in order"
+    clippy::significant_drop_tightening,
+    reason = "in a test these are the assertion, not a hazard; the test is one login, in order; the host lives until it ends"
 )]
 
 mod support;
