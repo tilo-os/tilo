@@ -936,6 +936,7 @@ impl StripPolicy {
                 parent: window.parent,
                 min_size: window.min_size,
                 max_size: window.max_size,
+                pid: window.pid,
             });
             if let Err(error) = mapped {
                 tracing::warn!(%error, window = window.id, "the desktop has no strip to open a window in");
@@ -943,6 +944,8 @@ impl StripPolicy {
             }
             self.mapped.push(window.id);
             desk.host.relayout();
+            // A window launched into a workspace not in front goes there once its tab is made.
+            desk.policy.carry_launched();
         }
         self.followers.mapped(window);
     }
@@ -1039,6 +1042,8 @@ impl WindowPolicy for StripPolicy {
         windows: &[(WindowInfo, LayoutRect)],
         outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
+        // A launched window whose tab came with the last layout goes to its own workspace.
+        self.desk.borrow_mut().policy.carry_launched();
         // A window the compositor lists has shown its buffer.
         self.pending
             .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));

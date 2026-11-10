@@ -966,3 +966,84 @@ fn a_stopped_app_leaves_a_notice_that_asks_for_it_again() {
         "the window that comes takes the tab the answer stands in"
     );
 }
+
+/// A window whose process was launched into a workspace that is not in front (an agent's open of
+/// an app in its own workspace) opens there: the workspace in front shows only its own windows,
+/// and a second launch of the same app in front finds no window of it there to raise.
+#[test]
+fn a_window_launched_into_another_workspace_opens_there() {
+    use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceSlot};
+    let (seeded, _) = DesktopPolicy::new(7);
+    let mut tree = seeded.handle().read(Clone::clone);
+    tree.workspaces
+        .push(Workspace::new(WorkspaceSlot(2), "Garden"));
+    let garden = tree.workspaces[1].id().to_string();
+    let front = tree.active;
+    let (mut policy, surface) = DesktopPolicy::with_tree(tree, 7);
+    policy.set_viewport_width(WIDTH);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.relayout();
+    policy.reads_launch_workspaces(std::rc::Rc::new(move |pid, app| {
+        (pid == 50 && app == "so.tilo.calculator").then(|| garden.clone())
+    }));
+    policy
+        .map(Window {
+            pid: Some(50),
+            ..window(5, "so.tilo.calculator")
+        })
+        .unwrap();
+    settle(&mut driver);
+    policy.carry_launched();
+    settle(&mut driver);
+    policy
+        .map(Window {
+            pid: Some(60),
+            ..window(6, "so.tilo.notes")
+        })
+        .unwrap();
+    settle(&mut driver);
+    let placed = |id: u64| {
+        policy.handle().read(|tree| {
+            tree.workspaces
+                .iter()
+                .find(|workspace| {
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .flat_map(|group| &group.tabs)
+                        .any(|tab| matches!(tab.tile, TileContent::Foreign { surface_id, .. } if surface_id == id))
+                })
+                .map(|workspace| workspace.slot)
+        })
+    };
+    assert_eq!(
+        placed(5),
+        Some(WorkspaceSlot(2)),
+        "launched into Garden: opens there"
+    );
+    assert_eq!(
+        placed(6),
+        Some(front),
+        "launched into the one in front: opens in front"
+    );
+    assert_eq!(
+        policy.handle().read(|tree: &DesktopTree| tree.active),
+        front,
+        "the person stays"
+    );
+    assert!(
+        policy
+            .app_tabs_in_front()
+            .iter()
+            .all(|(_, app)| app != "so.tilo.calculator"),
+        "the workspace in front shows no calculator of Garden's"
+    );
+}

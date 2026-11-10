@@ -440,6 +440,13 @@ impl Session {
         ));
         let settling = Rc::clone(&window_doors);
         let mut policy = crate::desk::DeskPolicy::for_shell(options.shell, &desktop, strips);
+        // A window opens in the workspace its process was launched into: an agent's or a service's
+        // open of an app in a workspace that is not in front lands there, never in front.
+        let launched = std::sync::Arc::clone(&options.launches);
+        desktop.with_policy(|policy| {
+            policy
+                .reads_launch_workspaces(Rc::new(move |pid, app| launched.workspace_of(pid, app)));
+        });
         // What each window shows: the desk offers the windows a person may
         // share from the note, and one whose app holds no record shows none.
         desktop.with_policy(|policy| {

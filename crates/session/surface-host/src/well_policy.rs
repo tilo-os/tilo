@@ -252,6 +252,7 @@ impl WellPolicy {
             parent: window.parent,
             min_size: window.min_size,
             max_size: window.max_size,
+            pid: window.pid,
         });
         if let Err(error) = mapped {
             tracing::warn!(%error, window = window.id, "the shell has no place for a window");
@@ -259,6 +260,8 @@ impl WellPolicy {
         }
         self.mapped.push(window.id);
         self.desk.relayout();
+        // A window launched into a workspace not in front goes there once its tab is made.
+        self.desk.policy().carry_launched();
         self.followers.mapped(window);
     }
 
@@ -308,6 +311,8 @@ impl WindowPolicy for WellPolicy {
         outputs: &[LayoutRect],
     ) -> Option<Vec<Arrangement>> {
         self.desk.cover(outputs);
+        // A launched window whose tab came with the last layout goes to its own workspace.
+        self.desk.policy().carry_launched();
         // A window the compositor lists has shown its buffer.
         self.pending
             .retain(|id| !windows.iter().any(|(window, _)| window.id == *id));

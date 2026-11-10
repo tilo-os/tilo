@@ -66,7 +66,14 @@ pub struct Window {
     pub min_size: Option<(i32, i32)>,
     /// The largest size the client accepts, when it set one.
     pub max_size: Option<(i32, i32)>,
+    /// The process that made the window, when the compositor knows it: what tells the workspace
+    /// it was launched into ([`DesktopPolicy::reads_launch_workspaces`]).
+    pub pid: Option<u32>,
 }
+
+/// The workspace the process `pid` of `app` was launched into, by its id, as the session that
+/// launched it knows.
+pub type LaunchWorkspaces = Rc<dyn Fn(u32, &str) -> Option<String>>;
 
 /// Where the windows are as of the surface's last layout pass.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -430,6 +437,12 @@ pub struct DesktopPolicy {
     /// The app-drawn cards floating over the desk, as the session placed
     /// them.
     cards: cards::Placements,
+    /// The workspace each launched window belongs to, as the session that launched it knows:
+    /// a window launched into a workspace that is not in front opens there, never in front.
+    launched_into: Option<LaunchWorkspaces>,
+    /// The windows launched into a workspace not in front whose tab the desk has not made yet,
+    /// each with where it goes ([`Self::carry_launched`]).
+    to_carry: Vec<(u64, WorkspaceSlot)>,
 }
 
 impl DesktopPolicy {
@@ -491,6 +504,8 @@ impl DesktopPolicy {
             floating: BTreeMap::new(),
             displays: Vec::new(),
             cards: cards::Placements::new(),
+            launched_into: None,
+            to_carry: Vec::new(),
         };
         (policy, surface)
     }
@@ -522,6 +537,31 @@ impl DesktopPolicy {
     /// A tab opens with the name of its app, never with the app's id.
     pub fn reads_app_names(&mut self, names: Rc<dyn Fn(&str) -> String>) {
         *self.names.borrow_mut() = Some(names);
+    }
+
+    /// Tell which workspace a window's process was launched into with `workspaces`, the
+    /// session's: an app an agent or a service opened in a workspace other than the one in front
+    /// opens its window there.
+    pub fn reads_launch_workspaces(&mut self, workspaces: LaunchWorkspaces) {
+        self.launched_into = Some(workspaces);
+    }
+
+    /// The workspace `window` was launched into, when it is not the one in front: where its tab
+    /// goes instead of the front one's strip.
+    fn launched_elsewhere(&self, window: &Window) -> Option<WorkspaceSlot> {
+        let workspaces = self.launched_into.as_ref()?;
+        let launched = workspaces(window.pid?, window.app_id.as_deref()?)?;
+        self.handle.read(|tree| {
+            let front = tree.active_workspace()?.id().to_string();
+            (front != launched)
+                .then(|| {
+                    tree.workspaces
+                        .iter()
+                        .find(|held| held.id().to_string() == launched)
+                        .map(|held| held.slot)
+                })
+                .flatten()
+        })
     }
 
     /// Show that the app `asked` names stopped, in a tab of its own with its button
@@ -718,6 +758,7 @@ impl DesktopPolicy {
             return Ok(());
         }
         let id = window.id;
+        let elsewhere = self.launched_elsewhere(&window);
         // A window of an app that asked for another one right after a tab of
         // its own takes the tab held for it there, from the moment it maps.
         if let Some(held) = self.take_held(window.app_id.as_deref().unwrap_or_default())
@@ -755,7 +796,30 @@ impl DesktopPolicy {
         };
         placed.inspect_err(|_| {
             self.arriving.borrow_mut().remove(&id);
-        })
+        })?;
+        // Launched into a workspace that is not in front (an agent's, a service's): its tab goes
+        // there, so the workspace in front shows only its own windows and the other holds its own.
+        if let Some(slot) = elsewhere {
+            self.to_carry.push((id, slot));
+            self.carry_launched();
+        }
+        Ok(())
+    }
+
+    /// Move each window launched into a workspace that is not in front into that workspace, once
+    /// the desk made its tab: what a host calls after it lays the desk out for a mapped window.
+    pub fn carry_launched(&mut self) {
+        let pending = std::mem::take(&mut self.to_carry);
+        for (window, slot) in pending {
+            let Some(tab) = self.tab_of(window) else {
+                // Its tab comes with the desk's next layout.
+                self.to_carry.push((window, slot));
+                continue;
+            };
+            // ignored-failure: a workspace removed since the launch leaves the window where it
+            // opened, in front, rather than nowhere
+            let _ = self.carry(tab, slot);
+        }
     }
 
     /// The tab of `app` a request from it answers to, with its group and its
@@ -1147,6 +1211,7 @@ impl DesktopPolicy {
     /// `window` went away: its tab closes, and focus goes back to the
     /// window the person had in front before it.
     pub fn unmap(&mut self, window: u64) {
+        self.to_carry.retain(|(pending, _)| *pending != window);
         self.cards.gone(window);
         // Its dialogs float on, over the display.
         for parent in self.floating.values_mut() {
