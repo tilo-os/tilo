@@ -405,6 +405,8 @@ async fn both_routes_decide_every_callers_actions_alike() {
         .collect();
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
+    let spoken_by = hex::encode(host.cert.device_public_key);
+    let mut differences = Vec::new();
     let person = guest_device.cert.user_public_key;
     let member = Arc::new(Member {
         host: WorkspaceMember {
@@ -463,7 +465,6 @@ async fn both_routes_decide_every_callers_actions_alike() {
     .in_workspace(WORKSPACE);
     let broker = broker_workspace(&hex::encode(person));
     let broker_workspace = &broker;
-    let mut differences = Vec::new();
 
     // Offered: what each record publishes to anyone, as the host's own
     // person is listed it, offered to each caller alike by both routes.
@@ -678,7 +679,6 @@ async fn both_routes_decide_every_callers_actions_alike() {
     // as an SDK client never does. The host speaks for each run it executes:
     // the run is present as an agent named as the host knows it, said by the
     // host for it, and its actions are narrated as that run's.
-    let spoken_by = hex::encode(host.cert.device_public_key);
     let deadline = tilo_test_env::hang_deadline();
     let (seen, narrated) = loop {
         browser.pump();
@@ -774,4 +774,87 @@ async fn both_routes_decide_every_callers_actions_alike() {
         "the routes decide differently:\n{}",
         differences.join("\n")
     );
+}
+
+/// Seen once: an agent through `tilo mcp`'s own path (its session the
+/// agent's run, its records opened as windows) is one entry in the people a
+/// page shows, the run the host speaks for by the name the host knows. Its
+/// computer says nothing of itself, so no second entry is the client's.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(&root, "Codex on build-box", DeviceCapabilities::member());
+    let state = support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let _participant = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    browser.create(NOTES);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+
+    let codex = Browser::open(&hosted, &computer, &host).await;
+    let _ = tilo_session_host::device::run_as_agent(&codex.peer, "Codex").await;
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    let actions = tilo_session_host::session_actions::SessionActions::new(
+        &codex.peer,
+        codex.workspace,
+        host.cert.device_public_key,
+    );
+    let windows = tilo_runtime::mcp_windows::AgentWindows::new(
+        actions.clone(),
+        person.clone(),
+        WORKSPACE.into(),
+    );
+    let server = tilo_runtime::mcp::McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(tilo_runtime::mcp::Surface::Agent)
+        .with_agent_run("run-codex", "Codex");
+    let listed = super::hosted_documents::tool(&server, "tilo_ls", serde_json::json!({})).await;
+    assert!(listed.contains("notes"), "{listed}");
+    let made = super::hosted_documents::tool(
+        &server,
+        "tilo_do",
+        serde_json::json!({"path": "notes#new-note", "args": {"title": "Seen once"}}),
+    )
+    .await;
+    windows.changed(server.take_changed(), None).await;
+
+    let spoken_by = hex::encode(host.cert.device_public_key);
+    let computer_publisher = hex::encode(computer.cert.device_public_key);
+    let deadline = tilo_test_env::hang_deadline();
+    let codexes = loop {
+        browser.pump();
+        let codexes: Vec<collab_types::presence::Shown> = browser
+            .here()
+            .into_iter()
+            .filter(|member| member.label == "Codex" || member.publisher == computer_publisher)
+            .collect();
+        let seen = codexes
+            .iter()
+            .any(|member| member.spoken_by.as_deref() == Some(spoken_by.as_str()));
+        if seen || Instant::now() >= deadline {
+            break codexes;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    // Its word restated a few times over: a second entry would have arrived.
+    tokio::time::sleep(Duration::from_secs(4)).await;
+    browser.pump();
+    let again: Vec<collab_types::presence::Shown> = browser
+        .here()
+        .into_iter()
+        .filter(|member| member.label == "Codex" || member.publisher == computer_publisher)
+        .collect();
+    for seen in [&codexes, &again] {
+        assert!(
+            seen.len() == 1
+                && seen[0].agent
+                && seen[0].spoken_by.as_deref() == Some(spoken_by.as_str()),
+            "an agent through `tilo mcp` ({made}) is not seen once, as the host's run: {seen:?}"
+        );
+    }
 }

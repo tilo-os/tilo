@@ -7,8 +7,6 @@ mod confirm;
 mod content;
 #[path = "mcp_get.rs"]
 mod get;
-#[path = "mcp_narration.rs"]
-mod narration;
 #[path = "mcp_page.rs"]
 mod page;
 #[path = "mcp_providers.rs"]
@@ -110,11 +108,6 @@ pub struct McpServer<H> {
     /// The record each of this session's changes still running is changing,
     /// by invocation id: `tilo_status` answers its link once it finished.
     changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
-    /// Who is told what this session's actions on records are doing as they
-    /// go ([`Acting`]); `None` for a door that shows nobody its agent.
-    narration: Option<Narration>,
-    /// The record and action of each invocation still being told, by id.
-    narrating: std::sync::Mutex<std::collections::HashMap<tilo_actions::InvocationId, Acting>>,
     /// The invocations of this session a watch follows, oldest first, each
     /// with where its latest phase falls in the watch's sequence
     /// ([`crate::mcp::watch`]).
@@ -123,8 +116,16 @@ pub struct McpServer<H> {
 
 pub use agent::{PersonStep, literals_in};
 pub use agent::{TaskHosts, TaskProgram};
-use narration::ended;
-pub use narration::{ActedRecord, Acting, Narration};
+
+/// The record an agent call worked in: the app's id and the workspace's
+/// record id, as the provider of the resource the call resolved names it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActedRecord {
+    /// The app's stable id (`so.tilo.notes`).
+    pub app: String,
+    /// The workspace's record id, which a provider's own token names.
+    pub record: String,
+}
 
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -697,18 +698,8 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             acted: std::sync::Mutex::default(),
             changed: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
-            narration: None,
-            narrating: std::sync::Mutex::default(),
             runs: std::sync::Mutex::default(),
         }
-    }
-
-    /// Tell `narration` what this session's actions on records are doing
-    /// as they go ([`Acting`]).
-    #[must_use]
-    pub fn with_narration(mut self, narration: Narration) -> Self {
-        self.narration = Some(narration);
-        self
     }
 
     /// The record this session's last agent call worked in, when the
@@ -2890,7 +2881,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             let change = self.host().next_change(&self.caller(), &id);
             let state = self.observed(id).await;
             if let Some(state) = state.as_ref().filter(|state| state.update.is_terminal()) {
-                self.narrate(id, None, ended(&state.update), state.left_at.clone());
                 return Ok(state_json(id, state));
             }
             let Some(deadline) =
@@ -2955,13 +2945,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             .take()
             .filter(|_| !request.revision.as_deref().unwrap_or_default().is_empty());
         let revision = request.revision.clone().unwrap_or_default();
-        let invocation = request.invocation;
-        self.narrate(
-            invocation,
-            Some(&request.target),
-            tilo_actions::InteractionPhase::Locating,
-            None,
-        );
         let patience = wait.max(HOST_ANSWER_WAIT);
         let Ok(answer) = tokio::time::timeout(
             patience,
@@ -2976,14 +2959,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             self.remember_effect(invocation, effect);
         }
         let answer = answer.ok_or_else(|| BridgeError::from("Unavailable"))?;
-        let phase = match &answer {
-            Ok(_) => tilo_actions::InteractionPhase::Applying,
-            Err(error) => tilo_actions::InteractionPhase::Failed {
-                code: None,
-                message: error.to_string(),
-            },
-        };
-        self.narrate(invocation, None, phase, None);
         answer
             .map(|_| Admission::Answered)
             .map_err(BridgeError::Host)

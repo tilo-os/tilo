@@ -1070,29 +1070,6 @@ struct Worker {
     titles: crate::worker::ConfinedTitles,
 }
 
-/// How a run's action ended, as it is narrated.
-fn ended_phase(outcome: &Result<(ActionOutput, Option<ActorPlace>), Outcome>) -> InteractionPhase {
-    match outcome {
-        Ok(_) => InteractionPhase::Committed,
-        Err(Outcome::Failed(error)) => InteractionPhase::Failed {
-            code: Some(error.code.clone()),
-            message: error.message.clone(),
-        },
-        Err(Outcome::Rejected(error)) => InteractionPhase::Failed {
-            code: Some(error.code().to_owned()),
-            message: error.to_string(),
-        },
-    }
-}
-
-/// How a run's action the host turned away is narrated.
-fn refused_phase() -> InteractionPhase {
-    InteractionPhase::Failed {
-        code: None,
-        message: "refused".into(),
-    }
-}
-
 /// The door's answer for an action it has nothing by that address.
 fn unknown_action() -> Outcome {
     Outcome::Rejected(ActionHostError::UnknownAction)
@@ -1361,6 +1338,7 @@ impl Worker {
                     caller,
                     done,
                 } => {
+                    self.voice_catalogue(workspace_id, &caller, &query);
                     let result = if query.view_resource.is_some() {
                         self.view_catalogue_page(workspace_id, &caller, &query)
                     } else {
@@ -1908,7 +1886,12 @@ impl Worker {
             drop(ledger);
             (caller, request)
         };
-        self.voice(workspace_id, &caller, &request, &InteractionPhase::Applying);
+        self.voice(
+            workspace_id,
+            &caller,
+            &request,
+            (&InteractionPhase::Applying, None),
+        );
         if let Some(receipt) = self.terminal(workspace_id, &caller, &request) {
             return receipt;
         }
@@ -1927,20 +1910,17 @@ impl Worker {
             self.ledger().running = None;
             return receipt;
         }
-        let target = &request.target;
-        match &outcome {
-            Ok(_) => {
-                tracing::info!(provider = %target.provider, resource = %target.address.resource,
-                action = %target.address.action, "workspace actions: succeeded");
-            }
-            Err(Outcome::Failed(error)) => tracing::info!(provider = %target.provider,
-                resource = %target.address.resource, action = %target.address.action,
-                code = %error.code, message = %error.message, "workspace actions: failed"),
-            Err(Outcome::Rejected(error)) => tracing::info!(provider = %target.provider,
-                resource = %target.address.resource, action = %target.address.action,
-                code = error.code(), %error, "workspace actions: refused"),
-        }
-        self.voice(workspace_id, &caller, &request, &ended_phase(&outcome));
+        log_outcome(&request.target, &outcome);
+        let left = outcome
+            .as_ref()
+            .ok()
+            .and_then(|(_, left_at)| left_at.as_ref());
+        self.voice(
+            workspace_id,
+            &caller,
+            &request,
+            (&run_voice::ended_phase(&outcome), left),
+        );
         let mut ledger = self.ledger();
         ledger.running = None;
         let (update, left_at) = match outcome {
@@ -1987,54 +1967,6 @@ impl Worker {
         }
         drop(ledger);
         InvocationState::new(invocation, update).receipt()
-    }
-
-    /// A Terminal run `request` starts, or the runs it stops, answered
-    /// here: `None` for any other request.
-    fn terminal(
-        &mut self,
-        workspace_id: u64,
-        caller: &Caller,
-        request: &InvokeRequest,
-    ) -> Option<InvocationReceipt> {
-        let receipt = self
-            .start_terminal_run(workspace_id, caller, request)
-            .or_else(|| self.stop_terminal_runs(workspace_id, caller, request))?;
-        let mut ledger = self.ledger();
-        ledger.running = None;
-        let refused = matches!(receipt.status, ReceiptStatus::Rejected { .. });
-        if refused {
-            ledger.forget(&request.invocation);
-        }
-        drop(ledger);
-        if refused {
-            self.voice(workspace_id, caller, request, &refused_phase());
-        }
-        Some(receipt)
-    }
-
-    /// Say `caller`'s run taking `request` at `phase`, as the host speaks
-    /// for the runs it executes ([`run_voice`]).
-    fn voice(
-        &mut self,
-        workspace_id: u64,
-        caller: &Caller,
-        request: &InvokeRequest,
-        phase: &InteractionPhase,
-    ) {
-        let Some(workspace) = self.workspaces.get(&workspace_id) else {
-            return;
-        };
-        let Some(cluster) = workspace.cluster_id(workspace_id) else {
-            return;
-        };
-        self.voices.acting(
-            (&workspace.peer, workspace_id, &cluster),
-            caller,
-            request.invocation,
-            &request.target,
-            phase,
-        );
     }
 
     /// The appearance `request` may show: only a bot whose installation
@@ -2829,6 +2761,25 @@ fn speaks_for_a_member(caller: &Caller) -> bool {
             caller.user_public_key().is_some() && caller.device_public_key().is_some()
         }
         _ => false,
+    }
+}
+
+/// Log how the action `target` names ended: succeeded, failed or refused.
+fn log_outcome(
+    target: &tilo_actions::remote::RemoteActionTarget,
+    outcome: &Result<(ActionOutput, Option<tilo_actions::remote::ActorPlace>), Outcome>,
+) {
+    match outcome {
+        Ok(_) => {
+            tracing::info!(provider = %target.provider, resource = %target.address.resource,
+            action = %target.address.action, "workspace actions: succeeded");
+        }
+        Err(Outcome::Failed(error)) => tracing::info!(provider = %target.provider,
+            resource = %target.address.resource, action = %target.address.action,
+            code = %error.code, message = %error.message, "workspace actions: failed"),
+        Err(Outcome::Rejected(error)) => tracing::info!(provider = %target.provider,
+            resource = %target.address.resource, action = %target.address.action,
+            code = error.code(), %error, "workspace actions: refused"),
     }
 }
 

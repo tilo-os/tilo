@@ -392,6 +392,38 @@ impl Worker {
         }
     }
 
+    /// A Terminal run `request` starts, or the runs it stops, answered
+    /// here: `None` for any other request.
+    pub(super) fn terminal(
+        &mut self,
+        workspace_id: u64,
+        caller: &Caller,
+        request: &InvokeRequest,
+    ) -> Option<InvocationReceipt> {
+        let receipt = self
+            .start_terminal_run(workspace_id, caller, request)
+            .or_else(|| self.stop_terminal_runs(workspace_id, caller, request))?;
+        let mut ledger = self.ledger();
+        ledger.running = None;
+        let refused = matches!(
+            receipt.status,
+            tilo_actions::remote::ReceiptStatus::Rejected { .. }
+        );
+        if refused {
+            ledger.forget(&request.invocation);
+        }
+        drop(ledger);
+        if refused {
+            self.voice(
+                workspace_id,
+                caller,
+                request,
+                (&super::run_voice::refused_phase(), None),
+            );
+        }
+        Some(receipt)
+    }
+
     /// Record `ended` on its session record and settle its invocation with
     /// the run: cancelled, when it was stopped before it ended.
     pub(super) fn ran(&mut self, ended: &Ended) {
@@ -412,7 +444,12 @@ impl Worker {
             },
             _ => tilo_actions::InteractionPhase::Committed,
         };
-        self.voice(ended.workspace_id, &ended.caller, &ended.request, &phase);
+        self.voice(
+            ended.workspace_id,
+            &ended.caller,
+            &ended.request,
+            (&phase, None),
+        );
         if let Some(entry) = self.ledger().entries.get_mut(&invocation) {
             entry.update = update;
             entry.stop = None;

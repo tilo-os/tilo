@@ -30,7 +30,7 @@ use tilo_session_host::device::Device as Entered;
 use tilo_session_host::session_actions::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
-use tilo_runtime::mcp_presence;
+use tilo_runtime::mcp_windows;
 
 /// The MCP protocol version this server speaks when it cannot reach the
 /// workspace; the projection answers with its own once it can.
@@ -48,15 +48,14 @@ const CLOSING: Duration = Duration::from_secs(3);
 struct Session {
     server: McpServer<SessionActions>,
     device: Entered,
-    /// The agent, present in the workspace while this connection lives.
-    presence: Arc<mcp_presence::Presence>,
+    /// The windows of the records the agent works in.
+    windows: Arc<mcp_windows::AgentWindows>,
 }
 
 impl Drop for Session {
     fn drop(&mut self) {
-        // The agent leaves with the connection: nothing of it is drawn
-        // after this.
-        self.presence.leave();
+        // The agent's run ends with the connection, and the host that shows
+        // it takes it down.
         self.device.close();
     }
 }
@@ -124,31 +123,22 @@ fn open(entered: Entered, device: &Device, run: &str) -> Result<Session, String>
         .and_then(|bytes| bytes.try_into().ok())
         .ok_or("this computer's login names no person; log in again")?;
     let actions = entered.actions(workspace_id);
-    // The person's desktops see the agent present from the moment it enters
-    // the workspace, not from its first action.
-    let presence = mcp_presence::Presence::new(
-        (entered.session(), entered.cert()),
+    let person = collab_types::Principal::of_person(user).id().to_owned();
+    // The records the agent works in open as windows on the workspace's
+    // desk; the host that executes its run shows it there, doing what it
+    // does.
+    let windows = Arc::new(mcp_windows::AgentWindows::new(
         actions.clone(),
-        collab_types::Principal::of_person(user).id().to_owned(),
-        (device.workspace.clone(), workspace_id),
-        device.agent.clone(),
-    )
-    .ok_or("this computer's login names no workspace; log in again")?;
-    presence.arrive();
-    // And see each action it takes in a record as it goes.
-    let narrating = Arc::clone(&presence);
-    let server = McpServer::new(
-        actions,
+        person.clone(),
         device.workspace.clone(),
-        collab_types::Principal::of_person(user).id().to_owned(),
-    )
-    .with_surface(Surface::Agent)
-    .with_agent_run(run, device.agent.clone())
-    .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
+    ));
+    let server = McpServer::new(actions, device.workspace.clone(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run(run, device.agent.clone());
     Ok(Session {
         server,
         device: entered,
-        presence,
+        windows,
     })
 }
 
@@ -230,7 +220,7 @@ async fn answer(serving: &Serving, line: &str) -> Option<String> {
         Err(problem) => unreachable_answer(&request, problem),
     }?;
     if let Ok(session) = session {
-        show(&session, &request, &answer);
+        show(&session, &request);
     }
     Some(answer.to_string())
 }
@@ -261,23 +251,20 @@ fn unreachable_answer(request: &Value, problem: &str) -> Option<Value> {
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
 }
 
-/// Show the person, beside the agent in their workspace, the tool call
-/// `request` made and whether it worked.
-fn show(session: &Arc<Session>, request: &Value, answer: &Value) {
+/// Open the record the tool call `request` worked in as a window where the
+/// agent works: the host that executes the run shows what it did.
+fn show(session: &Arc<Session>, request: &Value) {
     if request.get("method").and_then(Value::as_str) != Some("tools/call") {
         return;
     }
-    let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true))
-        || answer.get("error").is_some();
-    // The workspace sees the agent present, doing this and where: its own
-    // presence says it, as every desktop reads it.
-    let said = Arc::clone(session);
-    let (call, worked, run) = (
-        request.clone(),
-        (session.server.acted(), session.server.take_changed()),
+    // Each record the call made or changed opens where the agent works, as
+    // a step of the run the call was.
+    let windows = Arc::clone(&session.windows);
+    let (changed, run) = (
+        session.server.take_changed(),
         session.server.run_of(request),
     );
-    tokio::spawn(async move { said.presence.called(&call, failed, worked, run).await });
+    tokio::spawn(async move { windows.changed(changed, run).await });
 }
 
 #[cfg(test)]

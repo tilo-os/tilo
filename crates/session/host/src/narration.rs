@@ -99,6 +99,163 @@ pub fn admit(here: &[Shown], from: [u8; 32], event: &SemanticFrame) -> Option<Se
     Some(interaction)
 }
 
+/// The longest line said beside a run's face, the ellipsis included: what a
+/// person reads at a glance where the roster draws it.
+const SHOWN_CHARS: usize = 64;
+
+/// What a run is at, in a person's words, said beside its face: the host's
+/// own word for each request a run makes ([`looking`], [`reading`],
+/// [`searching`], [`doing`]), cut where a person stops reading.
+pub mod lines {
+    use collab_types::presence::MAX_ACTIVITY_BYTES;
+    use serde_json::Value;
+
+    /// An app as a person reads it: the last part of its id, capitalised
+    /// (`Sheets`).
+    fn short(app: &str) -> String {
+        let mut letters = app.rsplit('.').next().unwrap_or(app).chars();
+        letters
+            .next()
+            .map(|first| first.to_uppercase().chain(letters).collect())
+            .unwrap_or_default()
+    }
+
+    /// Looking at the apps, or at the one `app` names.
+    #[must_use]
+    pub fn looking(app: Option<&str>) -> String {
+        match app.map(short).filter(|app| !app.is_empty()) {
+            Some(app) => clip(&format!("Looking at {app}")),
+            None => "Looking at the apps".to_owned(),
+        }
+    }
+
+    /// Reading what `app` shows.
+    #[must_use]
+    pub fn reading(app: &str) -> String {
+        clip(&verb_line("Reading", &short(app)))
+    }
+
+    /// Searching for `needle`.
+    #[must_use]
+    pub fn searching(needle: &str) -> String {
+        clip(&verb_line("Searching for", needle))
+    }
+
+    /// Taking the action `action` in `app` with `args`: the action's verb on
+    /// the app, a shell command as the command line itself.
+    #[must_use]
+    pub fn doing(app: &str, action: &str, args: Option<&Value>) -> String {
+        let line = match verb(action) {
+            "Running" => {
+                let command = ["command", "command_line", "cmd"]
+                    .iter()
+                    .find_map(|key| args.and_then(|args| args.get(*key)))
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|command| !command.is_empty());
+                match command {
+                    Some(command) => verb_line("Running", command),
+                    None => format!("Running a command in {}", short(app)),
+                }
+            }
+            verb => verb_line(verb, &short(app)),
+        };
+        clip(&line)
+    }
+
+    /// `line`, for an action that failed: never said as one that worked.
+    #[must_use]
+    pub fn failed(line: &str) -> String {
+        clip(&format!("{line} (failed)"))
+    }
+
+    /// The verb the action `action` is taken with, as the person reads it.
+    fn verb(action: &str) -> &'static str {
+        let action = action.to_lowercase();
+        let any = |words: &[&str]| words.iter().any(|word| action.contains(word));
+        if any(&["run", "exec", "shell", "command"]) {
+            "Running"
+        } else if any(&["delete", "remove", "clear"]) {
+            "Deleting"
+        } else if any(&["new", "add", "create"]) {
+            "Adding"
+        } else if any(&[
+            "edit", "insert", "append", "replace", "set", "update", "write", "type", "format",
+            "rename", "move", "toggle",
+        ]) {
+            "Editing"
+        } else if any(&["open", "start", "launch"]) {
+            "Opening"
+        } else {
+            "Working in"
+        }
+    }
+
+    /// `<verb> <what>` as one line, the what left out when there is none.
+    fn verb_line(verb: &str, what: &str) -> String {
+        let what = what.trim();
+        if what.is_empty() {
+            verb.to_owned()
+        } else {
+            format!("{verb} {what}")
+        }
+    }
+
+    /// `line` as far as a person reads it at a glance, and within the bytes
+    /// a presence frame carries.
+    fn clip(line: &str) -> String {
+        let mut kept = String::new();
+        for character in line.chars() {
+            if kept.chars().count().saturating_add(2) > super::SHOWN_CHARS
+                || kept.len().saturating_add(character.len_utf8()) > MAX_ACTIVITY_BYTES
+            {
+                kept.push('…');
+                return kept;
+            }
+            kept.push(character);
+        }
+        kept.trim().to_owned()
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Each request is said as what the run is at now, on what.
+        #[test]
+        fn a_request_is_said_as_what_the_run_is_doing() {
+            assert_eq!(looking(None), "Looking at the apps");
+            assert_eq!(looking(Some("so.tilo.terminal")), "Looking at Terminal");
+            assert_eq!(reading("so.tilo.notes"), "Reading Notes");
+            assert_eq!(searching(" invoices "), "Searching for invoices");
+            assert_eq!(doing("so.tilo.sheets", "new-sheet", None), "Adding Sheets");
+            assert_eq!(
+                doing("so.tilo.word-processor", "append-paragraph", None),
+                "Editing Word-processor"
+            );
+            let command = serde_json::json!({"command": "cargo build"});
+            assert_eq!(
+                doing("so.tilo.terminal", "run", Some(&command)),
+                "Running cargo build"
+            );
+            assert_eq!(
+                doing("so.tilo.terminal", "run", None),
+                "Running a command in Terminal"
+            );
+            assert_eq!(failed("Adding Sheets"), "Adding Sheets (failed)");
+        }
+
+        /// A long line is cut where a person stops reading.
+        #[test]
+        fn a_long_line_is_cut_where_a_person_stops_reading() {
+            let long = searching(&"x".repeat(200));
+            assert!(long.ends_with('…') && long.chars().count() <= SHOWN_CHARS);
+        }
+
+        use super::super::SHOWN_CHARS;
+    }
+}
+
 /// An app's name as a person reads it: the last word of its id, capitalised.
 fn app_label(app: &str) -> String {
     capitalised(app.rsplit('.').next().unwrap_or(app)).unwrap_or_else(|| app.to_owned())

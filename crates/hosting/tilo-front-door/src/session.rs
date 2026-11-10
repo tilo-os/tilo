@@ -18,8 +18,10 @@
 //!
 //! The run's name is the person's: the client's name and a number of their
 //! own runs ("Claude Code #2"), which History groups the run's actions under,
-//! and which the workspace shows present, doing what it does, while the
-//! session lives (`mcp_presence`, as `tilo mcp` shows its agent).
+//! and which the workspace's host shows present, doing what it does, while
+//! the session lives: the host is the run's one voice, so the door says
+//! nothing of it itself, and opens the records the run works in as windows
+//! (`mcp_windows`, as `tilo mcp` does).
 
 pub mod members;
 
@@ -32,7 +34,7 @@ use std::{
     time::Instant,
 };
 use tilo_runtime::mcp::{McpServer, Surface};
-use tilo_runtime::mcp_presence;
+use tilo_runtime::mcp_windows;
 use tilo_session_host::session_actions::SessionActions;
 
 /// The header naming an MCP session (Streamable HTTP).
@@ -70,14 +72,8 @@ impl Reply {
 /// there, and the agent present in it.
 struct Served {
     server: McpServer<SessionActions>,
-    presence: Arc<mcp_presence::Presence>,
-}
-
-impl Drop for Served {
-    fn drop(&mut self) {
-        // The agent leaves with the run: nothing of it is drawn after this.
-        self.presence.leave();
-    }
+    /// The windows of the records the run works in.
+    windows: Arc<mcp_windows::AgentWindows>,
 }
 
 pub struct Session {
@@ -205,24 +201,17 @@ impl Session {
             .await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
-        // The person's desktops see the agent present from the moment it
-        // enters the workspace, not from its first action, and each action it
-        // takes in a record as it goes.
-        let presence = mcp_presence::Presence::new(
-            (device.session(), device.cert()),
+        // The records the run works in open as windows on the workspace's
+        // desk; the host that executes the run shows it there.
+        let windows = Arc::new(mcp_windows::AgentWindows::new(
             actions.clone(),
             self.person.clone(),
-            (workspace.to_owned(), id),
-            self.label.clone(),
-        )
-        .ok_or(RelayError::NotFound)?;
-        presence.arrive();
-        let narrating = Arc::clone(&presence);
+            workspace.to_owned(),
+        ));
         let server = McpServer::new(actions, workspace.to_owned(), self.person.clone())
             .with_surface(Surface::Agent)
-            .with_agent_run(&self.run, self.label.clone())
-            .with_narration(Arc::new(move |acting| narrating.acting(&acting)));
-        let run = Arc::new(Served { server, presence });
+            .with_agent_run(&self.run, self.label.clone());
+        let run = Arc::new(Served { server, windows });
         runs.insert(workspace.to_owned(), Arc::clone(&run));
         drop(runs);
         Ok(run)
@@ -264,12 +253,9 @@ impl Session {
             return Reply::accepted();
         };
         if let Some(call) = call {
-            let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true))
-                || answer.get("error").is_some();
-            let worked = (run.server.acted(), run.server.take_changed());
-            let step = run.server.run_of(&call);
-            let shown = Arc::clone(&run);
-            tokio::spawn(async move { shown.presence.called(&call, failed, worked, step).await });
+            let (changed, step) = (run.server.take_changed(), run.server.run_of(&call));
+            let windows = Arc::clone(&run.windows);
+            tokio::spawn(async move { windows.changed(changed, step).await });
         }
         Reply::one(answer)
     }

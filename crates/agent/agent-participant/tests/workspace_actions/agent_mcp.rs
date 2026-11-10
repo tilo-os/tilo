@@ -4,9 +4,8 @@
 //! session as one of the person's devices.
 use super::*;
 use serde_json::{Value, json};
-use tilo_relay_protocol::live::{LiveFrame, LiveRecord, OpsFrame};
 use tilo_runtime::mcp::{McpServer, Surface};
-use tilo_runtime::mcp_presence;
+use tilo_runtime::mcp_windows;
 use tilo_session_host::session_actions::SessionActions;
 
 /// The app the agent writes in.
@@ -43,45 +42,6 @@ async fn tool(server: &McpServer<SessionActions>, name: &str, arguments: Value) 
     )
 }
 
-/// Semantic work a member narrated on a record's live stream: who published
-/// it, the record, and what was done.
-type Narrated = ([u8; 32], LiveRecord, tilo_actions::SemanticInteraction);
-
-/// What the page heard since it last looked, in order: the presence frames,
-/// and the semantic work members narrated on records' live streams, with
-/// who published it. Everything else it received it takes as its own pump
-/// does.
-fn heard(browser: &mut Browser) -> (Vec<collab_types::presence::Presence>, Vec<Narrated>) {
-    let mut frames = Vec::new();
-    let mut narrated = Vec::new();
-    for event in browser.events.drain() {
-        if let tilo_session_host::PeerEvent::Live { from, frame, .. } = &event
-            && let Ok(LiveFrame::Ops(OpsFrame::Semantic { record, event })) =
-                LiveFrame::decode(frame)
-            // What the host says for the agent's run is the host's word
-            // (`route_parity`); this is what the agent's own device says.
-            && event.on_behalf.is_none()
-            && let Ok(interaction) = serde_json::from_str(&event.interaction_json)
-        {
-            narrated.push((*from, record, interaction));
-        }
-        if let tilo_session_host::PeerEvent::LivePlane {
-            workspace_id,
-            track: tilo_live::live::Track::Presence,
-            body,
-            ..
-        } = &event
-            && *workspace_id == browser.workspace
-            && let Some(frame) = collab_types::presence::Presence::decode(body)
-            && frame.on_behalf.is_none()
-        {
-            frames.push(frame);
-        }
-        let _ = browser.take(event);
-    }
-    (frames, narrated)
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_sees() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -112,24 +72,13 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         panic!("a key names a person")
     };
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    // The agent shows itself present in the workspace from the moment it
-    // enters it, as `tilo mcp` does, and each action it takes as it goes.
-    let presence = mcp_presence::Presence::new(
-        (&agent.peer, &computer.cert),
-        actions.clone(),
-        person.clone(),
-        (WORKSPACE.into(), agent.workspace),
-        "Claude Code".into(),
-    )
-    .expect("the agent's certificate names a device");
-    presence.arrive();
-    let narrating = std::sync::Arc::clone(&presence);
+    // The records it works in open as windows on the workspace's desk, as
+    // `tilo mcp` opens them; the host that executes its run is what shows it
+    // there, doing what it does.
+    let windows = mcp_windows::AgentWindows::new(actions.clone(), person.clone(), WORKSPACE.into());
     let server = McpServer::new(actions, WORKSPACE.into(), person)
         .with_surface(Surface::Agent)
-        .with_agent_run("run-1", "Claude Code")
-        .with_narration(std::sync::Arc::new(move |acting| {
-            narrating.acting(&acting);
-        }));
+        .with_agent_run("run-1", "Claude Code");
 
     let listed = ask(
         &server,
@@ -166,8 +115,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
                                                     "args": {"name": "Budget"}}}});
     let ran = ask(&server, new_sheet.clone()).await;
     assert_eq!(ran["result"]["isError"], false, "{ran}");
-    // The call names the record it worked in; the agent says that is where
-    // it acts.
+    // The call names the record it worked in, which opens as its window.
     let acted = server
         .acted()
         .expect("the call names the record it worked in");
@@ -180,14 +128,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         std::slice::from_ref(&acted),
         "the call changed the workbook"
     );
-    presence
-        .called(
-            &new_sheet,
-            false,
-            (Some(acted), changed),
-            server.run_of(&new_sheet),
-        )
-        .await;
+    windows.changed(changed, server.run_of(&new_sheet)).await;
     // And it writes in the document the other device made.
     let (wrote, failed) = tool(
         &server,
@@ -197,44 +138,40 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     .await;
     assert!(!failed, "{wrote}");
 
-    // The other device hears the agent present — as an agent, saying what it
-    // does and in which record (the frame a desktop turns into a member of
-    // kind agent, `tilo_live::presence::shown`) — and sees its change, made
-    // by the host as the workspace's own, whose History says it was the
-    // agent's run.
+    // The other device sees the agent present — once, as an agent the host
+    // speaks for, by the name the host knows, saying what it does and in
+    // which record — narrated as it went, and sees its change, made by the
+    // host as the workspace's own, whose History says it was the agent's run.
+    // The agent's own computer says nothing of itself.
+    let spoken_by = hex::encode(host.cert.device_public_key);
     let deadline = tilo_test_env::hang_deadline();
-    let mut view: Option<collab_types::presence::ShellPresence> = None;
-    let mut selected: Option<collab_types::presence::ShellSelection> = None;
-    let mut phases = Vec::new();
     let mut edited = false;
     let mut shown = false;
-    loop {
-        let (frames, narrated) = heard(&mut browser);
-        for frame in frames {
-            if let collab_types::PeerPresencePayload::Shell(shell) = frame.payload
-                && shell.agent
-            {
-                if shell.selection.is_some() {
-                    selected.clone_from(&shell.selection);
-                }
-                view = Some(*shell);
-            }
-        }
-        // The agent's action, narrated on the workbook's stream by the
-        // agent's own device as it went.
-        for (from, record, interaction) in narrated {
-            assert_eq!(from, computer.cert.device_public_key);
-            interaction.validate().unwrap();
-            let on = (record.app.as_str(), record.record.as_str());
-            match interaction.action.id.as_str() {
-                "new-sheet" => {
-                    assert_eq!(on, (SHEETS, sheets.record.as_str()));
-                    phases.push(interaction.phase);
-                }
-                "append-paragraph" => assert_eq!(on, (WRITER, writer.record.as_str())),
-                other => panic!("narrated an action it did not take: {other}"),
-            }
-        }
+    let (view, phases) = loop {
+        browser.pump();
+        let here: Vec<collab_types::presence::Shown> = browser
+            .here()
+            .into_iter()
+            .filter(|member| member.agent)
+            .collect();
+        let run = here
+            .iter()
+            .find(|member| member.label == "Claude Code")
+            .cloned();
+        let phases: Vec<tilo_actions::InteractionPhase> = browser
+            .narrated
+            .iter()
+            .filter(|(_, work)| {
+                run.as_ref()
+                    .is_some_and(|run| work.actor.id == run.publisher)
+            })
+            .filter(|(record, work)| {
+                work.action.id == "new-sheet"
+                    && (record.app.as_str(), record.record.as_str())
+                        == (SHEETS, sheets.record.as_str())
+            })
+            .map(|(_, work)| work.phase.clone())
+            .collect();
         if !edited {
             let app = browser.mount(&sheets);
             if sheet_names(&app).iter().any(|name| name == "Budget") {
@@ -262,28 +199,32 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         // The workbook it works in is open on the workspace's desk, as a
         // window of the person's, for every page to draw.
         shown = shown || desk_windows(&mut browser, &sheets.record) > 0;
-        let said = view
-            .as_ref()
-            .is_some_and(|view| view.activity.as_deref() == Some("Adding Sheets"));
+        let said = run.as_ref().is_some_and(|run| {
+            run.spoken_by.as_deref() == Some(spoken_by.as_str())
+                && run
+                    .activity
+                    .as_deref()
+                    .is_some_and(|line| line.starts_with("Editing"))
+                && run.selection.is_some()
+        });
         let committed = phases.contains(&tilo_actions::InteractionPhase::Committed);
-        if edited && said && shown && committed && selected.is_some() {
-            break;
+        if edited && said && shown && committed {
+            assert_eq!(here.len(), 1, "the agent is seen once: {here:?}");
+            break (run.unwrap(), phases);
         }
         assert!(
             Instant::now() < deadline,
-            "the agent's sheet ({edited}), its window ({shown}), what it says it is doing \
-             ({said}), its narrated action ({phases:?}) or where it left off ({selected:?}) \
-             never all reached the browser\nbrowser channels: {}\nagent channels: {}",
-            browser.peer.status().channels,
-            agent.peer.status().channels,
+            "the agent's sheet ({edited}), its window ({shown}), the agent the host speaks for \
+             ({run:?}), or its narrated action ({phases:?}) never all reached the browser; \
+             here: {here:?}",
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    };
 
-    // It was seen finding the action, applying it and done, in that order.
+    // It was seen applying the action and done, in that order.
     assert_eq!(
         phases.first(),
-        Some(&tilo_actions::InteractionPhase::Locating),
+        Some(&tilo_actions::InteractionPhase::Applying),
         "{phases:?}"
     );
     assert!(
@@ -292,9 +233,10 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             .all(|pair| pair[0] != tilo_actions::InteractionPhase::Committed),
         "nothing after done: {phases:?}"
     );
-    // What it wrote is its selection in the document, which every window
-    // showing the document highlights in its colour.
-    let selected = selected.expect("where the agent left off");
+    // What it wrote last is its selection in the document, which every
+    // window showing the document highlights in its colour, and it is in
+    // the record it wrote in: following it brings the person there.
+    let selected = view.selection.clone().expect("where the agent left off");
     let (key, _, _) = tilo_relay_protocol::live::read_presence_anchors(
         &tilo_relay_protocol::live::LiveAnchor {
             cursor: hex::decode(&selected.anchor).unwrap(),
@@ -309,30 +251,24 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
             || key.scope_digest().is_none(),
         "{key:?}"
     );
-
-    // The agent is a member of the workspace as an agent, by its own name,
-    // doing that in the workbook it edited: following it brings the person
-    // to that record.
-    let view = view.expect("another device hears the agent");
-    assert!(view.agent);
-    assert_eq!(view.label, "Claude Code");
-    assert_eq!(view.activity.as_deref(), Some("Adding Sheets"));
-    let edited_record = tilo_relay_protocol::live::LiveRecord {
-        app: SHEETS.into(),
-        record: sheets.record.clone(),
+    let wrote_in = tilo_relay_protocol::live::LiveRecord {
+        app: WRITER.into(),
+        record: writer.record.clone(),
     };
-    assert_eq!(view.focus(), Some((SHEETS, edited_record.short_digest())));
+    assert_eq!(
+        view.focus
+            .as_ref()
+            .map(|focus| (focus.app.as_str(), focus.record.clone())),
+        Some((WRITER, hex::encode(wrote_in.short_digest())))
+    );
 
     // Another change in the same workbook opens no second window of it.
-    let again = tilo_runtime::mcp::ActedRecord {
-        app: SHEETS.into(),
-        record: sheets.record.clone(),
-    };
-    presence
-        .called(
-            &new_sheet,
-            false,
-            (server.acted(), vec![again]),
+    windows
+        .changed(
+            vec![tilo_runtime::mcp::ActedRecord {
+                app: SHEETS.into(),
+                record: sheets.record.clone(),
+            }],
             server.run_of(&new_sheet),
         )
         .await;
@@ -343,42 +279,41 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         "one window shows the workbook"
     );
 
-    // An agent that idles between calls restates itself, so a member that came in after its last
-    // call still draws it within one restatement. What it says again is the word it already said,
-    // so the cadence is its board's schedule, and what a reader proves is that the idle loop keeps
-    // that schedule armed and says each word it owes. Timing the arrivals here measured this
-    // machine instead: a loaded suite starved the reader past a keepalive and handed it the frames
-    // in one burst, and an agent that had said every one of them read as silent.
-    let _ = heard(&mut browser);
-    let keepalive = Duration::from_secs_f64(tilo_live::presence::KEEPALIVE_MS / 1_000.0);
-    let mut restated = 0;
-    while restated < 2 {
-        restated += heard(&mut browser)
-            .0
+    // An agent that idles between calls is restated by the host, so a member
+    // that came in after its last call still draws it within one restatement.
+    tokio::time::sleep(Duration::from_secs(10)).await;
+    browser.pump();
+    browser.board =
+        tilo_live::presence::Board::new(WORKSPACE, browser_device.cert.device_public_key);
+    browser.board.set_host(Some(host.cert.device_public_key));
+    let came_in = Instant::now();
+    loop {
+        browser.pump();
+        if browser
+            .here()
             .iter()
-            .filter(|frame| matches!(frame.payload, collab_types::PeerPresencePayload::Shell(_)))
-            .count();
-        let due = presence.restates_in();
+            .any(|member| member.label == "Claude Code")
+        {
+            break;
+        }
         assert!(
-            due.is_some_and(|due| due <= keepalive + Duration::from_secs(1)),
-            "an idle agent's next word is due in {due:?}, past a keepalive: it said itself again \
-             {restated} times"
-        );
-        assert!(
-            Instant::now() < deadline,
-            "an idle agent said itself again only {restated} times"
+            came_in.elapsed() <= Duration::from_secs(4),
+            "an idle agent went unsaid for {:?}",
+            came_in.elapsed()
         );
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
     // And it leaves with the connection, rather than standing there.
-    presence.leave();
+    drop(server);
+    drop(agent);
     loop {
-        let left = heard(&mut browser)
-            .0
-            .into_iter()
-            .any(|frame| frame.payload == collab_types::PeerPresencePayload::Left);
-        if left {
+        browser.pump();
+        if !browser
+            .here()
+            .iter()
+            .any(|member| member.label == "Claude Code")
+        {
             break;
         }
         assert!(Instant::now() < deadline, "the agent never left");
@@ -680,94 +615,57 @@ fn desk_windows(browser: &mut Browser, record: &str) -> usize {
     })
 }
 
-/// The person's page's board of who is here: what a page draws its roster from, fed the presence
-/// frames the page's session hears and its own clock, as the page's runtime feeds it.
-struct Roster {
-    board: tilo_session_client::Presence,
-}
-
-impl Roster {
-    fn of(device: &support::Device) -> Self {
-        let board = tilo_session_client::Presence::over(
-            None,
-            &tilo_session_host::saying::device(&device.cert).expect("a device"),
-            tilo_session_client::presence::OwnPresence {
-                label: "Ada".into(),
-                user: Some(hex::encode(device.cert.user_public_key)),
-                ..tilo_session_client::presence::OwnPresence::default()
-            },
-        );
-        let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).expect("a workspace");
-        let topic = tilo_session_client::topic_of(workspace);
-        board.taking_part(&[(topic, WORKSPACE.to_owned())], Some(topic));
-        Self { board }
-    }
-
-    /// Take what `page` heard, and whether the agent `agent` (its device key) is listed after.
-    fn listed(&self, page: &mut Browser, agent: [u8; 32]) -> bool {
-        for event in page.events.drain() {
-            if let tilo_session_host::PeerEvent::LivePlane {
-                workspace_id,
-                from,
-                track: tilo_live::live::Track::Presence,
-                body,
-                ..
-            } = &event
-                && *workspace_id == page.workspace
-                && let Ok(from) = iroh::EndpointId::from_bytes(from)
-            {
-                self.board.heard_body(WORKSPACE, from, body);
-            }
-            let _ = page.take(event);
-        }
-        self.board.due_in(WORKSPACE);
-        self.board
-            .members(WORKSPACE)
-            .iter()
-            .any(|member| member.agent && member.publisher == hex::encode(agent))
-    }
+/// The agent runs the host speaks for that `browser`'s board lists now, by the
+/// host's device: each run is a member of its own, named as the host knows it.
+fn runs_listed(
+    browser: &mut Browser,
+    host: &support::Device,
+) -> Vec<collab_types::presence::Shown> {
+    let spoken_by = hex::encode(host.cert.device_public_key);
+    browser.pump();
+    browser
+        .here()
+        .into_iter()
+        .filter(|member| {
+            member.agent
+                && member.label == "Claude Code"
+                && member.spoken_by.as_deref() == Some(spoken_by.as_str())
+        })
+        .collect()
 }
 
 /// How an agent's session ends.
 #[derive(Clone, Copy, Debug)]
 enum Ending {
-    /// `tilo mcp`'s input closed: the agent says it left, and its session closes.
-    Leaves,
-    /// Its session closes without a word, as a process that is killed leaves it.
+    /// Its session closes: `tilo mcp`'s input closed, or its process was killed.
     Closes,
     /// The person stops it from its card, through their agent door.
     Stopped,
 }
 
-/// The longest the person's page may still list an agent after its session ended: well inside
-/// the silence after which a page forgets a member that says nothing
-/// (eight seconds).
+/// The longest the person's page may still list an agent after its session
+/// ended: well inside the silence after which a page forgets a member that
+/// says nothing (eight seconds).
 const LEAVES_WITHIN: Duration = Duration::from_secs(4);
 
-/// An agent that says it left, as `tilo mcp` does once its input closes, leaves who is here on
-/// the person's page within [`LEAVES_WITHIN`].
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn an_agent_that_leaves_leaves_who_is_here() {
-    Box::pin(leaves_who_is_here(Ending::Leaves)).await;
-}
-
-/// An agent whose session closes without a word, as a killed process leaves it, leaves who is
-/// here as soon as its session is gone, rather than once the page gave up waiting for its word.
+/// An agent whose session closes leaves who is here as soon as its session is
+/// gone, rather than once the page gave up waiting for its word.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_whose_session_closes_leaves_who_is_here() {
     Box::pin(leaves_who_is_here(Ending::Closes)).await;
 }
 
-/// The person stops their agent from its card: its session ends for good, and it leaves who is
-/// here with it.
+/// The person stops their agent from its card: its session ends for good, and
+/// it leaves who is here with it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_agent_leaves_who_is_here() {
     Box::pin(leaves_who_is_here(Ending::Stopped)).await;
 }
 
-/// An agent whose session ends as `ending` says leaves who is here on the person's page: the page
-/// lists it no longer within [`LEAVES_WITHIN`], so it can say the agent finished; a stopped agent's
-/// session connects no more.
+/// An agent whose session ends as `ending` says leaves who is here on the
+/// person's page: the host that spoke for its run says it left within
+/// [`LEAVES_WITHIN`], so the page can say the agent finished; a stopped
+/// agent's session connects no more.
 async fn leaves_who_is_here(ending: Ending) {
     use tilo_actions::remote::{ActionHost as _, Caller, InvokeRequest, agent_door};
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -785,7 +683,6 @@ async fn leaves_who_is_here(ending: Ending) {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let roster = Roster::of(&browser_device);
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -796,17 +693,13 @@ async fn leaves_who_is_here(ending: Ending) {
         .await
         .expect("the computer's session is the agent's run");
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-    let presence = mcp_presence::Presence::new(
-        (&agent.peer, &computer.cert),
-        actions,
-        person.clone(),
-        (WORKSPACE.into(), agent.workspace),
-        "Claude Code".into(),
-    )
-    .expect("the agent's certificate names a device");
-    presence.arrive();
+    let server = McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-1", "Claude Code");
+    let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
+    assert!(!failed, "the agent lists the workspace");
     let deadline = tilo_test_env::hang_deadline();
-    while !roster.listed(&mut browser, device) {
+    while runs_listed(&mut browser, &host).is_empty() {
         assert!(
             Instant::now() < deadline,
             "{ending:?}: the agent never arrived"
@@ -815,10 +708,6 @@ async fn leaves_who_is_here(ending: Ending) {
     }
     let ended = Instant::now();
     match ending {
-        Ending::Leaves => {
-            presence.leave();
-            agent.peer.close();
-        }
         Ending::Closes => agent.peer.close(),
         Ending::Stopped => {
             let door = SessionActions::new(
@@ -854,7 +743,7 @@ async fn leaves_who_is_here(ending: Ending) {
             );
         }
     }
-    while roster.listed(&mut browser, device) {
+    while !runs_listed(&mut browser, &host).is_empty() {
         assert!(
             ended.elapsed() < LEAVES_WITHIN,
             "{ending:?}: the agent is still listed {:?} after its session ended",
@@ -866,7 +755,7 @@ async fn leaves_who_is_here(ending: Ending) {
         // The stopped session stays closed: the agent is not said again.
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(
-            !roster.listed(&mut browser, device),
+            runs_listed(&mut browser, &host).is_empty(),
             "a stopped agent came back on its own"
         );
         assert_eq!(
@@ -875,16 +764,18 @@ async fn leaves_who_is_here(ending: Ending) {
             "a stopped agent's session connects no more"
         );
     }
-    drop(presence);
+    drop(server);
 }
 
-/// The longest an open page may take to list the agent of a new `tilo mcp` run on the same
-/// computer, with what it is doing: a run that restarts (after `tilo login`, or as an agent's
-/// client restarts its MCP server) is the same agent coming back to the person.
+/// The longest an open page may take to list the agent of a new `tilo mcp`
+/// run on the same computer: a run that restarts (after `tilo login`, or as an
+/// agent's client restarts its MCP server) is the same agent coming back to
+/// the person.
 const COMES_BACK_WITHIN: Duration = Duration::from_secs(6);
 
-/// One computer runs `tilo mcp` again and again, each run ending its own way: the person's page,
-/// open the whole time, lists each run's agent with what it is doing, and drops it as it ends.
+/// One computer runs `tilo mcp` again and again: the person's page, open the
+/// whole time, lists each run's agent once, as the host speaks for it, and
+/// drops it as its session ends.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
     let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
@@ -895,95 +786,59 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
         "Claude Code on build-box",
         DeviceCapabilities::member(),
     );
-    let device = computer.cert.device_public_key;
     let state = support::scratch_dir();
     let hosted = start(&root, &host, state.path()).await;
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let _sheets = browser.create(SHEETS);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
-    let roster = Roster::of(&browser_device);
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
         panic!("a key names a person")
     };
-    for (run, ending) in [
-        Ending::Leaves,
-        Ending::Closes,
-        Ending::Leaves,
-        Ending::Closes,
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let started = Instant::now();
+    let mut seen = std::collections::BTreeSet::new();
+    for run in 0..4 {
         let agent = Browser::open(&hosted, &computer, &host).await;
         tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
             .await
             .expect("the computer's session is the agent's run");
         let actions =
             SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
-        let presence = mcp_presence::Presence::new(
-            (&agent.peer, &computer.cert),
-            actions,
-            person.clone(),
-            (WORKSPACE.into(), agent.workspace),
-            "Claude Code".into(),
-        )
-        .expect("the agent's certificate names a device");
-        presence.arrive();
-        let path = format!("/{SHEETS}/run-{run}");
-        presence
-            .called(
-                &json!({"method": "tools/call",
-                        "params": {"name": "tilo_read", "arguments": {"path": path}}}),
-                false,
-                (None, Vec::new()),
-                None,
-            )
-            .await;
+        let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
+            .with_surface(Surface::Agent)
+            .with_agent_run(format!("run-{run}"), "Claude Code");
         let opened = Instant::now();
-        let doing = |roster: &Roster, browser: &mut Browser| {
-            roster.listed(browser, device);
-            roster
-                .board
-                .members(WORKSPACE)
-                .into_iter()
-                .find(|member| member.agent && member.publisher == hex::encode(device))
-                .and_then(|member| member.activity)
-        };
-        loop {
-            let activity = doing(&roster, &mut browser);
-            if activity
-                .as_deref()
-                .is_some_and(|line| line.contains(&format!("run-{run}")))
+        let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
+        assert!(!failed, "run {run}: the agent lists the workspace");
+        let listed = loop {
+            let listed = runs_listed(&mut browser, &host);
+            if let [only] = listed.as_slice()
+                && !seen.contains(&only.publisher)
+                && only.activity.is_some()
             {
-                break;
+                break only.clone();
             }
             assert!(
                 opened.elapsed() < COMES_BACK_WITHIN,
-                "run {run}: the open page never heard the agent come back ({:?} since its \
-                 session opened, {:?} in all), it shows {activity:?}",
-                opened.elapsed(),
-                started.elapsed()
+                "run {run}: the open page never heard the agent come back, once and saying \
+                 what it does ({:?} since its session opened): {listed:?}",
+                opened.elapsed()
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
-        }
+        };
+        seen.insert(listed.publisher);
         let ended = Instant::now();
-        if matches!(ending, Ending::Leaves) {
-            presence.leave();
-        }
         agent.peer.close();
-        while roster.listed(&mut browser, device) {
+        while !runs_listed(&mut browser, &host).is_empty() {
             assert!(
                 ended.elapsed() < LEAVES_WITHIN,
-                "run {run} ({ending:?}): the agent is still listed {:?} after its session ended",
+                "run {run}: the agent is still listed {:?} after its session ended",
                 ended.elapsed()
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        drop(presence);
+        drop(server);
         drop(agent);
     }
 }
