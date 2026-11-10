@@ -787,7 +787,10 @@ def asked_change(ctx, res):
                 not any(name.strip().lower() == "deny" for name in shown):
             problems.append(f"{e['name']}: the sheet offers no Always allow and Deny: {shown}")
         if is_error(e["new_file"]) is not False:
-            problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]}")
+            # What the agent sees of Terminal, so a refusal says what it was refused against.
+            seen = text_of(agents[e["name"]].tool("tilo_ls", {"path": "terminal"}))
+            problems.append(f"{e['name']}: terminal#run was refused: {text_of(e['new_file'])[:300]} "
+                            f"(tilo_ls terminal: {seen[:500]!r})")
             continue
         if slot_read(ctx, f"{e['tree']}/{files[e['name']]}") is None:
             problems.append(f"{e['name']}: the agent's file is not in its workspace's files")
