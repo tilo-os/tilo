@@ -87,7 +87,7 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
 
     const BOX = `(() => { const r = document.querySelector('.fr-offer').getBoundingClientRect();
       return {x: Math.round(r.x), y: Math.round(r.y), width: Math.round(r.width), height: Math.round(r.height),
-        caption: document.querySelector('.fr-caption').textContent}; })()`;
+        caption: getComputedStyle(document.querySelector('.fr-caption')).display === 'none' ? null : document.querySelector('.fr-caption').textContent}; })()`;
     const before = await tab.evaluate(BOX);
     await click('first-run-agent');
     await tab.waitFor(`document.documentElement.dataset.firstRun === 'waiting'`, {timeout: 10000});
@@ -96,8 +96,8 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
       `${name}: the prompt box stays where it was, as wide (${JSON.stringify(before)} → ${JSON.stringify(after)})`);
     check(before.height === after.height, `${name}: the prompt box keeps its height (${before.height} → ${after.height})`);
     check(Math.abs(before.y - after.y) <= 1, `${name}: the prompt box does not jump (${before.y} → ${after.y})`);
-    check(before.caption === 'The code in it works once, for 10 minutes, in this tab only.' && after.caption === before.caption,
-      `${name}: the caption reads the same before and after the click`);
+    check(before.caption === 'The code in it works once, for 10 minutes, in this tab only.', `${name}: the caption says how long the code works`);
+    check(after.caption === null, `${name}: once copied, the countdown alone says how long it works`);
     const copied = await tab.evaluate(`Promise.race([navigator.clipboard.readText().catch(() => null), new Promise(r => setTimeout(() => r(null), 3000))])`);
     check(copied === null || copied === shown, `${name}: the click copied exactly the prompt shown${copied === null ? ' (clipboard not readable here)' : ''}`);
     check(await tab.evaluate(`document.getElementById('first-run-prompt').textContent`) === shown, `${name}: the prompt stays on the screen`);
