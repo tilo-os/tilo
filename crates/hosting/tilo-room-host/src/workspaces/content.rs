@@ -150,6 +150,15 @@ impl Workspaces {
         None
     }
 
+    /// The name of the workspace governed here whose channels are
+    /// `workspace`; `None` for one not governed here.
+    pub async fn workspace_name(&self, workspace: u64) -> Option<String> {
+        let identity = self.workspace_identity(workspace).await?;
+        let governed = self.inner.workspaces.lock().await.get(&identity)?.clone();
+        let name = governed.lock().await.record.name.clone();
+        Some(name)
+    }
+
     /// The bytes named `hash` this host keeps for the workspace of `workspace`
     /// governed here, checked against the hash: what its bots fetched and
     /// the files it keeps for members. `None` for a workspace not governed here

@@ -2,7 +2,9 @@
 //! by the agent surface `tilo mcp` serves ([`tilo_runtime::mcp::McpServer`]),
 //! its actions asked of the workspace's relay over the grant's own session
 //! ([`crate::relay`], [`SessionActions`]). Record actions run on the relay's
-//! app workers, with no tab of the person's open.
+//! app workers, and each record the agent makes or changes opens on the
+//! workspace's desk as a window of the person's, naming the run, so whoever
+//! enters the workspace sees what the agent did.
 //!
 //! - **Pinned** (a one-workspace grant): the session serves that one
 //!   workspace. It cannot name another: the relay admits the grant nowhere
@@ -264,9 +266,9 @@ impl Session {
         if let Some(call) = call {
             let failed = answer.pointer("/result/isError") == Some(&Value::Bool(true))
                 || answer.get("error").is_some();
-            let acted = run.server.acted();
+            let (acted, changed) = (run.server.acted(), run.server.take_changed());
             let shown = Arc::clone(&run);
-            tokio::spawn(async move { shown.presence.called(&call, failed, acted).await });
+            tokio::spawn(async move { shown.presence.called(&call, failed, acted, changed).await });
         }
         Reply::one(answer)
     }

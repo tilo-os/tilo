@@ -59,6 +59,7 @@ fn desktop(windows: &[(u64, &str)]) -> SharedDesktop {
             .iter()
             .map(|(id, who)| (*id, (*who).to_owned()))
             .collect(),
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 

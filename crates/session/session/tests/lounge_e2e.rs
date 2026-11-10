@@ -400,6 +400,7 @@ fn the_members_desktop(member: &Member) -> SharedDesktop {
         },
         records: Vec::new(),
         authors,
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 

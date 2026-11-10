@@ -42,6 +42,18 @@ pub const DESKTOP_KIND: &str = "tilo.desktop";
 /// or tab id, as person ids.
 pub type Authors = BTreeMap<u64, String>;
 
+/// The agent run that opened a window on a person's behalf: what a desk says
+/// beside the window, so everyone sees whose agent put it there and in which
+/// run. The window stays the person's ([`Authors`]): the run is who opened it,
+/// not who may close it.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct OpenedBy {
+    /// The run's id, as History groups the run's changes (`agent-run:…`).
+    pub run: String,
+    /// What the run is called: the agent's name.
+    pub label: String,
+}
+
 /// A shared desktop as a workspace holds it: the tree and who made what.
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct SharedDesktop {
@@ -52,6 +64,11 @@ pub struct SharedDesktop {
     pub records: Vec<(TabId, String)>,
     #[serde(default)]
     pub authors: Authors,
+    /// The agent run that opened each window an agent opened, by tab.
+    /// Written once with the window and kept until the window closes: a
+    /// writer that knows nothing of it leaves it as it is.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub opened_by: BTreeMap<TabId, OpenedBy>,
 }
 
 impl SharedDesktop {
@@ -425,6 +442,7 @@ mod tests {
             tree,
             authors,
             records: Vec::new(),
+            opened_by: std::collections::BTreeMap::new(),
         }
     }
 

@@ -218,6 +218,57 @@ impl Page {
         }
     }
 
+    /// The route of the workspace's shared desk.
+    fn desk_route(&self) -> DocumentRoute {
+        DocumentRoute {
+            app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
+            cluster_id: self.cluster_id.clone(),
+            record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
+        }
+    }
+
+    /// Write the workspace's shared desk as a page first writes it: one
+    /// strip and no window yet.
+    pub fn put_desk(&mut self) {
+        use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+        workspace.strips = vec![Strip::new(StripId(10), "Main")];
+        let desktop = tilo_desktop_model::ownership::SharedDesktop {
+            tree: DesktopTree {
+                workspaces: vec![workspace],
+                ..DesktopTree::default()
+            },
+            ..tilo_desktop_model::ownership::SharedDesktop::default()
+        };
+        let mut doc = automerge::AutoCommit::new();
+        tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();
+        doc.commit();
+        let bytes = doc.save();
+        let route = self.desk_route();
+        self.peer
+            .publish(
+                route.clone(),
+                &collab_types::DocumentMutation::Snapshot(bytes.clone()),
+            )
+            .unwrap();
+        // The host never echoes a device's own change back to it.
+        self.documents
+            .entry(route)
+            .or_default()
+            .push(([0; 32], bytes));
+    }
+
+    /// The workspace's shared desk as the page has received it.
+    pub fn desk(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
+        use tilo_automerge::ApplyIncoming as _;
+        self.pump();
+        let mut doc = automerge::AutoCommit::new();
+        for (_, bytes) in self.documents.get(&self.desk_route()).into_iter().flatten() {
+            doc.load_incoming(bytes).unwrap();
+        }
+        tilo_desktop_model::shared_record::read(&doc, None)
+    }
+
     /// Send `message` to the host.
     pub fn send(&self, message: RemoteActionMessage) {
         let frame = RemoteActionFrame::new(message).encode().unwrap();

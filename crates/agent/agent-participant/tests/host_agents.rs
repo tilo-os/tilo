@@ -558,6 +558,7 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let _approver = approve_agents(&hosted.relay, root.clone(), &laptop);
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    browser.put_desk();
 
     // The person opens a workbook before any agent exists, and it is in the
     // workspace (sealed and durable on the host) before the agent arrives.
@@ -641,6 +642,32 @@ async fn a_browser_sees_every_task_of_an_agent_live_and_after_a_reload() {
             }
         }
         assert!(Instant::now() < deadline, "the reload replayed nothing");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    // The workbook the agent worked in is open on the workspace's desk, once,
+    // as a window of the person's that the agent's run opened.
+    let person = hex::encode(root.verifying_key().to_bytes());
+    loop {
+        let desktop = reloaded.desk();
+        let windows: Vec<u64> = desktop
+            .iter()
+            .flat_map(|desktop| &desktop.records)
+            .filter(|(_, record)| *record == page.route.record)
+            .map(|(tab, _)| *tab)
+            .collect();
+        if let (Some(desktop), [tab]) = (&desktop, windows.as_slice()) {
+            assert_eq!(desktop.authors.get(tab), Some(&person), "{desktop:?}");
+            let run = desktop.opened_by.get(tab);
+            assert!(
+                run.is_some_and(|run| !run.run.is_empty() && !run.label.is_empty()),
+                "the window names the agent's run: {desktop:?}"
+            );
+            break;
+        }
+        assert!(
+            windows.len() < 2 && Instant::now() < deadline,
+            "the agent's workbook is open on the desk once: {desktop:?}"
+        );
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     stop(hosted).await;

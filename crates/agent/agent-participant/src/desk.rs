@@ -1,20 +1,25 @@
 //! An agent's view on the person's desk.
 //!
-//! No action is performed out of sight: when an agent starts working in a
-//! record that no window on the workspace's shared desktop shows, it adds a tab
-//! for that record to the desktop, right after the group showing the record
-//! it worked in before (the view its task already occupies), on whichever
-//! strip holds that. Every page of the workspace draws it from the synced desktop
-//! as it draws its own tabs, mounting the app over the record locally:
-//! nothing is streamed. A record already on the desk is left where the
-//! people put it.
+//! No action is performed out of sight: when an agent makes or changes a
+//! record that no window on the workspace's shared desktop shows, it adds a
+//! tab for that record to the desktop, right after the group showing the
+//! record it worked in before (the view its task already occupies), on
+//! whichever strip holds that. The window is the person's the agent acts
+//! for, and says which run of the agent opened it. Every page of the
+//! workspace draws it from the synced desktop as it draws its own tabs,
+//! mounting the app over the record locally: nothing is streamed. A record
+//! already on the desk is left where the people put it. A workspace nobody
+//! has opened a desk in yet gets one, as the first page in would make it,
+//! holding the agent's window.
 
 use automerge::AutoCommit;
 use tilo_desktop_model::commands::{
     DesktopCommand, OpenContext, apply_command, namespace_counter, open_app_placement,
 };
-use tilo_desktop_model::ownership::SharedDesktop;
-use tilo_desktop_model::{IdMinter, TileContent, shared_record};
+use tilo_desktop_model::ownership::{OpenedBy, SharedDesktop};
+use tilo_desktop_model::{
+    DesktopTree, IdMinter, TileContent, Workspace, WorkspaceId, WorkspaceSlot, shared_record,
+};
 
 pub(crate) struct View<'a> {
     pub app_id: &'a str,
@@ -25,12 +30,25 @@ pub(crate) struct View<'a> {
     pub beside: Option<&'a str>,
 }
 
-/// The change that puts `view` on the shared `desktop`, written by
-/// `author`; `None` when a tab already shows the record, or the workspace has no
-/// shared desktop.
-pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) -> Option<Vec<u8>> {
+/// Who opens a view: the person whose window it is, and the agent run that
+/// opened it for them.
+pub(crate) struct Opener<'a> {
+    pub person: &'a str,
+    pub run: Option<OpenedBy>,
+}
+
+/// The change that puts `view` on the shared `desktop` of `workspace` (its
+/// id and, to start a desktop there, its name), opened by `opener`; `None`
+/// when a tab already shows the record, or the workspace has no shared
+/// desktop and no name to start one under.
+pub(crate) fn place_view(
+    desktop: &AutoCommit,
+    (workspace, name): (&str, Option<&str>),
+    opener: &Opener<'_>,
+    view: &View<'_>,
+) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
-    let mut desktop = shared_record::read(&doc, None)?;
+    let mut desktop = shared_record::read(&doc, None).or_else(|| fresh(workspace, name?))?;
     if desktop
         .records
         .iter()
@@ -38,17 +56,38 @@ pub(crate) fn place_view(desktop: &AutoCommit, author: &str, view: &View<'_>) ->
     {
         return None;
     }
+    let author = opener.person;
     let tab = add_tab(&mut desktop, author, view)?;
     desktop.records.push((tab, view.record.to_owned()));
     desktop.records.sort_unstable();
-    // The agent opened it: it is the agent's to close, as anyone's window is
-    // theirs.
+    // The window is the person's to close, as anyone's window is theirs;
+    // the run says their agent opened it.
     desktop.authors.insert(tab, author.to_owned());
+    if let Some(run) = &opener.run {
+        desktop.opened_by.insert(tab, run.clone());
+    }
     let before = doc.get_heads();
     doc.set_actor(automerge::ActorId::from(author.as_bytes()));
     shared_record::write(&mut doc, &desktop).ok()?;
     doc.commit();
     Some(doc.save_after(&before))
+}
+
+/// The desktop the first page in `workspace` makes: the workspace itself,
+/// by its id and in the slot every device derives from it, under `name`.
+/// The strip the first window opens on is made with it ("Main"), so a page
+/// that wrote its own before this reached it folds into the same one.
+fn fresh(workspace: &str, name: &str) -> Option<SharedDesktop> {
+    let identity = WorkspaceId::parse(workspace)?;
+    let desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(identity), identity, name);
+    Some(SharedDesktop {
+        tree: DesktopTree {
+            active: desk.slot,
+            workspaces: vec![desk],
+            ..DesktopTree::default()
+        },
+        ..SharedDesktop::default()
+    })
 }
 
 /// Add a tab for `view` to the desktop's first workspace, beside the group
@@ -119,6 +158,19 @@ mod tests {
     use tilo_automerge::ApplyIncoming as _;
     use tilo_desktop_model::{Strip, StripId, Tab, WindowGroup, Workspace, WorkspaceSlot};
 
+    const WORKSPACE: &str = "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11";
+    const PERSON: &str = "ada";
+
+    fn opener() -> Opener<'static> {
+        Opener {
+            person: PERSON,
+            run: Some(OpenedBy {
+                run: "agent-run:7".into(),
+                label: "Scribe".into(),
+            }),
+        }
+    }
+
     fn tab(id: u64, app: &str) -> Tab {
         Tab {
             id,
@@ -168,6 +220,7 @@ mod tests {
             },
             records: vec![(21, "chat-record".into()), (31, "notes-record".into())],
             authors: std::collections::BTreeMap::new(),
+            opened_by: std::collections::BTreeMap::new(),
         };
         let mut doc = AutoCommit::new();
         shared_record::write(&mut doc, &desktop).unwrap();
@@ -196,7 +249,8 @@ mod tests {
             record: "files-record",
             beside: Some("notes-record"),
         };
-        let change = place_view(&merged(&changes), "agent:scribe", &view).expect("a tab is added");
+        let change = place_view(&merged(&changes), (WORKSPACE, None), &opener(), &view)
+            .expect("a tab is added");
         changes.push(change);
         let desktop = read(&changes);
         let task = &desktop.tree.workspaces[0].strips[1];
@@ -221,7 +275,7 @@ mod tests {
             "the person's strip is untouched"
         );
         assert!(
-            place_view(&merged(&changes), "agent:scribe", &view).is_none(),
+            place_view(&merged(&changes), (WORKSPACE, None), &opener(), &view).is_none(),
             "a record already on the desk stays where it is"
         );
     }
@@ -234,6 +288,35 @@ mod tests {
             record: "files-record",
             beside: None,
         };
-        assert!(place_view(&AutoCommit::new(), "agent:scribe", &view).is_none());
+        assert!(place_view(&AutoCommit::new(), (WORKSPACE, None), &opener(), &view).is_none());
+    }
+
+    #[test]
+    fn a_workspace_nobody_opened_a_desk_in_gets_one_holding_the_view() {
+        let view = View {
+            app_id: "so.tilo.files",
+            title: "Files",
+            record: "files-record",
+            beside: None,
+        };
+        let change = place_view(
+            &AutoCommit::new(),
+            (WORKSPACE, Some("Visa")),
+            &opener(),
+            &view,
+        )
+        .expect("a desk is started");
+        let desktop = read(&[change]);
+        let workspace = &desktop.tree.workspaces[0];
+        assert_eq!(workspace.name, "Visa");
+        assert_eq!(
+            workspace.slot,
+            WorkspaceSlot::of_workspace(WorkspaceId::parse(WORKSPACE).unwrap()),
+            "the slot every device derives from the workspace"
+        );
+        let tab = workspace.strips[0].window_groups[0].tabs[0].id;
+        assert_eq!(desktop.records, vec![(tab, "files-record".to_owned())]);
+        assert_eq!(desktop.authors.get(&tab).map(String::as_str), Some(PERSON));
+        assert_eq!(desktop.opened_by.get(&tab), opener().run.as_ref());
     }
 }

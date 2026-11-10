@@ -1499,6 +1499,7 @@ pub(crate) fn shared_value(
         tree,
         records,
         authors,
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 

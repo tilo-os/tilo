@@ -61,8 +61,10 @@ pub struct OnRelay {
     pub web_entry: String,
     /// The relay's own origin, which the links to its records name.
     pub host_origin: String,
+    /// The relay's own device, which a page joining its workspaces trusts.
+    pub host: Device,
+    pub hosted: Hosted,
     _site: test_http::Responder,
-    hosted: Hosted,
     _state: tempfile::TempDir,
 }
 
@@ -177,8 +179,9 @@ pub async fn door_on_relay_limiting(
         relay,
         web_entry,
         host_origin: hosted.web.origin.clone(),
-        _site: site,
+        host,
         hosted,
+        _site: site,
         _state: state,
     }
 }

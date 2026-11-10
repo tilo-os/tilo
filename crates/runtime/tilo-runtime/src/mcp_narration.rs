@@ -4,7 +4,18 @@
 use tilo_actions::remote::{ActionHost, RemoteActionTarget};
 use tilo_lock::MutexRecover as _;
 
-use super::{ActedRecord, McpServer};
+use super::McpServer;
+
+/// The record an agent call worked in: the app's id and the workspace's
+/// record id, as the provider of the resource the call resolved names it.
+/// What a door that shows its agent present says the agent acts in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActedRecord {
+    /// The app's stable id (`so.tilo.notes`).
+    pub app: String,
+    /// The workspace's record id, which a provider's own token names.
+    pub record: String,
+}
 
 /// What an agent's action on a record is doing now: the record, the action,
 /// its phase, and once it is done, where it left the agent in the record. A

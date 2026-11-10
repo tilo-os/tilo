@@ -677,6 +677,7 @@ mod tests {
                 .map(|id| (id.saturating_add(100), records(id)))
                 .collect(),
             authors: std::collections::BTreeMap::new(),
+            opened_by: std::collections::BTreeMap::new(),
         }
     }
 

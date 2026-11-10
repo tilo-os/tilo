@@ -7,7 +7,7 @@
 //! document, decides when to commit, and stamps history.
 //! Shape: `{ active: uint, authors_v1?: {actor → author},
 //! window_records_v1?: {tab id → record id}, window_authors_v1?: {strip or
-//! tab id → person},
+//! tab id → person}, window_opened_by_v1?: {tab id → json agent run},
 //! view_v1: json, workspaces: [ { id, name, workspace, owner?,
 //! members: {person → json role}, members_joined_v1: {person → json Unix ms}, grants: {id → json}, sandbox: {id → json},
 //! presets_v1: {key → json},
@@ -62,6 +62,7 @@ const CANVAS_KEY: &str = "canvas_v1";
 const FLOATS_KEY: &str = "floats_v1";
 const RECORDS_KEY: &str = "window_records_v1";
 const WINDOW_AUTHORS_KEY: &str = "window_authors_v1";
+const OPENED_BY_KEY: &str = "window_opened_by_v1";
 
 /// The map key a named grant set is stored under: a digest of its
 /// case-folded name, so two spellings of one name share a slot.
@@ -1174,6 +1175,63 @@ pub fn set_window_authors(doc: &mut AutoCommit, authors: &crate::ownership::Auth
     for key in stale {
         let _ = doc.delete(&map, key.as_str());
     }
+}
+
+/// The agent run that opened each window an agent opened, by tab
+/// ([`crate::ownership::OpenedBy`]), for the windows still on the desk.
+#[must_use]
+pub fn opened_by(
+    doc: &AutoCommit,
+) -> std::collections::BTreeMap<TabId, crate::ownership::OpenedBy> {
+    let Some(map) = obj(doc, &ROOT, OPENED_BY_KEY) else {
+        return std::collections::BTreeMap::new();
+    };
+    let mut tree = DesktopTree::default();
+    rebuild(doc, &mut tree);
+    doc.keys(&map)
+        .filter_map(|key| {
+            let tab: TabId = key.parse().ok()?;
+            tree.tab(tab)?;
+            Some((tab, serde_json::from_str(&doc.str_at(&map, &key)?).ok()?))
+        })
+        .collect()
+}
+
+/// Note who opened the windows `opened` names, and forget it for windows
+/// the desk no longer holds. A window's run is never cleared while the
+/// window stays, so a writer that knows nothing of it keeps it. Whether the
+/// document changed.
+pub fn note_opened_by(
+    doc: &mut AutoCommit,
+    opened: &std::collections::BTreeMap<TabId, crate::ownership::OpenedBy>,
+) -> bool {
+    let before = doc.pending_ops();
+    let held = obj(doc, &ROOT, OPENED_BY_KEY);
+    if opened.is_empty() && held.is_none() {
+        return false;
+    }
+    let Some(map) = child_object(doc, &ROOT, OPENED_BY_KEY, ObjType::Map) else {
+        return false;
+    };
+    for (tab, run) in opened {
+        if let Ok(text) = serde_json::to_string(run) {
+            let _ = doc.put_str_if_changed(&map, tab.to_string(), &text);
+        }
+    }
+    let mut tree = DesktopTree::default();
+    rebuild(doc, &mut tree);
+    let gone: Vec<String> = doc
+        .keys(&map)
+        .filter(|key| {
+            key.parse()
+                .ok()
+                .is_none_or(|tab: TabId| tree.tab(tab).is_none())
+        })
+        .collect();
+    for key in gone {
+        let _ = doc.delete(&map, key.as_str());
+    }
+    doc.pending_ops() > before
 }
 
 /// The root keys a workspace's desktop record kept when every window was its own

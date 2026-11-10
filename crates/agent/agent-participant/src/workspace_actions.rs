@@ -328,7 +328,11 @@ impl WorkspaceActions {
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_record;
         let on_workspace = provider_workspace(&request.target.provider).is_some();
-        let member_request = (on_record || on_workspace) && speaks_for_a_member(caller);
+        // Showing a record on the workspace's desk, as an agent's work opens
+        // what it changed in front of the people there.
+        let shows = application_provider(&request.target.provider).is_some()
+            && request.target.address.action == APPLICATION_OPEN_ACTION;
+        let member_request = (on_record || on_workspace || shows) && speaks_for_a_member(caller);
         link_request || member_request || self.authorized(caller)
     }
 
@@ -2056,7 +2060,7 @@ impl Worker {
         }
         if let Some((named, app)) = application_provider(&request.target.provider) {
             return self
-                .show_on_desk(workspace_id, caller, named, app, &request.target)
+                .show_on_desk(workspace_id, caller, (named, app), request)
                 .map(|output| (output, None));
         }
         // Acting on a record waits for that record's keys and no other's;
@@ -2184,10 +2188,12 @@ impl Worker {
     }
 
     /// Show the record an application's `open` names (its own record when it names none) as a
-    /// window on the workspace's shared desktop, opened by `caller`: what a device of the owner's
-    /// that draws no desk asks for the record it works in (an agent's `tilo mcp`), so every member
-    /// sees it open as they see a colleague's window, without anyone's view moving to it
-    /// ([`crate::desk`]). A record a window already shows is left where the people put it.
+    /// window on the workspace's shared desktop: what the device an agent acts through asks for
+    /// each record the agent makes or changes (`tilo mcp`, the front door), so every member sees
+    /// it open as they see a colleague's window, without anyone's view moving to it
+    /// ([`crate::desk`]). The window is the person's the caller acts for — the host's own, or a
+    /// member of the workspace — and names the agent run that opened it. A record a window
+    /// already shows is left where the people put it.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -2196,18 +2202,34 @@ impl Worker {
         &mut self,
         workspace_id: u64,
         caller: &Caller,
-        named: &str,
-        app: &str,
-        target: &tilo_actions::remote::RemoteActionTarget,
+        (named, app): (&str, &str),
+        request: &InvokeRequest,
     ) -> Result<ActionOutput, Outcome> {
         let unknown = || Outcome::Rejected(ActionHostError::UnknownAction);
-        let person = self.participant.clone();
-        if !self.acts_for_owner(caller)
-            || target.address.action != APPLICATION_OPEN_ACTION
+        let target = &request.target;
+        if target.address.action != APPLICATION_OPEN_ACTION
             || room_workspace_id(named).ok() != Some(workspace_id)
         {
             return Err(unknown());
         }
+        let person = if self.acts_for_owner(caller) {
+            self.participant.clone()
+        } else {
+            self.bounded(caller)
+                .filter(|who| self.admits_bounded(workspace_id, who))
+                .ok_or_else(unknown)?
+                .person
+        };
+        let run = caller_context(caller, request)
+            .and_then(|context| context.group)
+            .filter(|group| {
+                group.kind == tilo_actions::context::AGENT_RUN_GROUP
+                    || group.kind == tilo_actions::context::TASK_RUN_GROUP
+            })
+            .map(|group| tilo_desktop_model::ownership::OpenedBy {
+                run: group.id,
+                label: group.label,
+            });
         let title = self
             .catalogue
             .get(app)
@@ -2235,6 +2257,11 @@ impl Worker {
                 reason: format!("this workspace has no {app} record {}", route.record),
             }));
         }
+        let name = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.workspace_name(workspace_id));
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)
@@ -2245,7 +2272,16 @@ impl Worker {
             record: &route.record,
             beside: None,
         };
-        let Some(change) = crate::desk::place_view(workspace.desktop.doc(), &person, &view) else {
+        let opener = crate::desk::Opener {
+            person: &person,
+            run,
+        };
+        let Some(change) = crate::desk::place_view(
+            workspace.desktop.doc(),
+            (named, name.as_deref()),
+            &opener,
+            &view,
+        ) else {
             return Ok(ActionOutput::default());
         };
         workspace.desktop.receive(change.clone());

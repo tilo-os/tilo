@@ -97,7 +97,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     let _laptop = participant::Participant::start(&hosted.relay, &root).await;
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let sheets = browser.create(SHEETS);
-    let desk = put_desk(&mut browser);
+    browser.put_desk();
     let writer = browser.create(WRITER);
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
 
@@ -173,7 +173,16 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         .expect("the call names the record it worked in");
     assert_eq!(acted.app, SHEETS);
     assert_eq!(acted.record, sheets.record);
-    presence.called(&new_sheet, false, Some(acted)).await;
+    // The workbook it changed opens on the desk.
+    let changed = server.take_changed();
+    assert_eq!(
+        changed,
+        std::slice::from_ref(&acted),
+        "the call changed the workbook"
+    );
+    presence
+        .called(&new_sheet, false, Some(acted), changed)
+        .await;
     // And it writes in the document the other device made.
     let (wrote, failed) = tool(
         &server,
@@ -247,7 +256,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         }
         // The workbook it works in is open on the workspace's desk, as a
         // window of the person's, for every page to draw.
-        shown = shown || desk_windows(&mut browser, &desk, &sheets.record) > 0;
+        shown = shown || desk_windows(&mut browser, &sheets.record) > 0;
         let said = view
             .as_ref()
             .is_some_and(|view| view.activity.as_deref() == Some("Adding sheets"));
@@ -309,11 +318,17 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     };
     assert_eq!(view.focus(), Some((SHEETS, edited_record.short_digest())));
 
-    // Another call in the same workbook opens no second window of it.
-    presence.called(&new_sheet, false, server.acted()).await;
+    // Another change in the same workbook opens no second window of it.
+    let again = tilo_runtime::mcp::ActedRecord {
+        app: SHEETS.into(),
+        record: sheets.record.clone(),
+    };
+    presence
+        .called(&new_sheet, false, server.acted(), vec![again])
+        .await;
     browser.peer.barrier().unwrap().recv().unwrap().unwrap();
     assert_eq!(
-        desk_windows(&mut browser, &desk, &sheets.record),
+        desk_windows(&mut browser, &sheets.record),
         1,
         "one window shows the workbook"
     );
@@ -634,62 +649,23 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     }
 }
 
-/// The workspace's shared desk as a page first writes it: one strip and no
-/// window yet.
-fn put_desk(browser: &mut Browser) -> DocumentRoute {
-    use tilo_desktop_model::{DesktopTree, Strip, StripId, Workspace, WorkspaceSlot};
-    let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
-    workspace.strips = vec![Strip {
-        id: StripId(10),
-        name: "Main".into(),
-        window_groups: Vec::new(),
-    }];
-    let desktop = tilo_desktop_model::ownership::SharedDesktop {
-        tree: DesktopTree {
-            workspaces: vec![workspace],
-            ..DesktopTree::default()
-        },
-        ..tilo_desktop_model::ownership::SharedDesktop::default()
-    };
-    let mut doc = automerge::AutoCommit::new();
-    tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();
-    doc.commit();
-    let route = DocumentRoute {
-        app_id: tilo_desktop_model::ownership::DESKTOP_APP.into(),
-        cluster_id: browser.cluster_id.clone(),
-        record: tilo_desktop_model::ownership::DESKTOP_RECORD.into(),
-    };
-    let bytes = doc.save();
-    browser
-        .peer
-        .publish(
-            route.clone(),
-            &collab_types::DocumentMutation::Snapshot(bytes.clone()),
-        )
-        .unwrap();
-    // The host never echoes a device's own change back to it.
-    browser
-        .documents
-        .entry(route.clone())
-        .or_default()
-        .push(([0; 32], bytes));
-    route
-}
-
-/// How many windows of the desk at `desk` show `record`, as the page has
-/// received it.
-fn desk_windows(browser: &mut Browser, desk: &DocumentRoute, record: &str) -> usize {
-    use tilo_automerge::ApplyIncoming as _;
-    browser.pump();
-    let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in browser.documents.get(desk).into_iter().flatten() {
-        doc.load_incoming(bytes).unwrap();
-    }
-    tilo_desktop_model::shared_record::read(&doc, None).map_or(0, |desktop| {
+/// How many windows of the workspace's desk show `record`, as the page has
+/// received it: each says the agent's run opened it.
+fn desk_windows(browser: &mut Browser, record: &str) -> usize {
+    browser.desk().map_or(0, |desktop| {
         desktop
             .records
             .iter()
             .filter(|(tab, shown)| shown == record && desktop.tree.tab(*tab).is_some())
+            .inspect(|(tab, _)| {
+                let run = desktop.opened_by.get(tab);
+                assert!(
+                    run.is_some_and(
+                        |run| run.label == "Claude Code" && run.run.starts_with("agent-run:")
+                    ),
+                    "the window names the agent's run: {run:?}"
+                );
+            })
             .count()
     })
 }
@@ -954,6 +930,7 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
                         "params": {"name": "tilo_read", "arguments": {"path": path}}}),
                 false,
                 None,
+                Vec::new(),
             )
             .await;
         let opened = Instant::now();

@@ -608,6 +608,12 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         self.member.clone()
     }
 
+    fn workspace_name(&self, workspace: u64) -> Option<String> {
+        self.member
+            .runtime
+            .block_on(self.workspaces.as_ref()?.workspace_name(workspace))
+    }
+
     fn admits(&self, workspace: u64, caller: &tilo_actions::remote::Caller) -> bool {
         self.workspaces.as_ref().is_some_and(|workspaces| {
             self.member

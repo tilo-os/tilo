@@ -1618,6 +1618,7 @@ fn shared_desktop(person: &str, strips: &[HeldStrip<'_>]) -> SharedDesktop {
         },
         records: Vec::new(),
         authors,
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 

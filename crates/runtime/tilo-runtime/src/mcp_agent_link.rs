@@ -77,6 +77,14 @@ pub(super) fn step_links(steps: &[Value]) -> Vec<Value> {
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
+    /// The records this session's calls made or changed since this was last
+    /// asked, each once, in the order first changed: what the door that shows
+    /// its agent opens in front of the workspace's people. A read is none.
+    #[must_use]
+    pub fn take_changed(&self) -> Vec<crate::mcp::ActedRecord> {
+        std::mem::take(&mut *self.changed.lock_recover())
+    }
+
     /// `tilo_link`: the link to the resource `args.path` names, or, when the
     /// resource offers none of its own, to the record it is in.
     pub(super) async fn agent_link(
@@ -190,14 +198,23 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         None
     }
 
-    /// The link a record that a call just changed answers beside its result:
-    /// `None` when the call changed no record or no link could be made, which
-    /// never fails the call that did its work. Only a record the workspace
+    /// The link a record that a call just changed answers beside its result,
+    /// noting the record as changed ([`McpServer::take_changed`]): `None`
+    /// when the call changed no record or no link could be made, which never
+    /// fails the call that did its work. Only a record the workspace
     /// serves by its provider (`record:<app>:<record>`) is one: a window of a
     /// person's desktop is not a record a link names.
     pub(super) async fn changed_link(&self, provider: &str) -> Option<String> {
-        if !tilo_actions::remote::is_record_provider(provider) {
-            return None;
+        let (app, record) = tilo_actions::remote::record_parts(provider)?;
+        let changed = crate::mcp::ActedRecord {
+            app: app.to_owned(),
+            record: record.to_owned(),
+        };
+        {
+            let mut held = self.changed.lock_recover();
+            if !held.contains(&changed) {
+                held.push(changed);
+            }
         }
         match self.record_link(provider, serde_json::Map::new()).await {
             Ok(url) => Some(url),

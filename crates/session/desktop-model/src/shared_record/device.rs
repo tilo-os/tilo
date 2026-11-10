@@ -243,6 +243,7 @@ pub fn write(
         },
         records,
         authors,
+        opened_by: std::collections::BTreeMap::new(),
     };
     super::write(doc, &desktop)
 }

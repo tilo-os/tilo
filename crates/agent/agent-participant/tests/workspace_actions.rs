@@ -33,6 +33,9 @@ pub(crate) mod support;
 mod agent_mcp;
 mod common;
 #[cfg(test)]
+#[path = "workspace_actions/door_desk.rs"]
+mod door_desk;
+#[cfg(test)]
 #[path = "workspace_actions/door_invites.rs"]
 mod door_invites;
 #[cfg(test)]

@@ -77,6 +77,11 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     fn admits(&self, _workspace: u64, _caller: &Caller) -> bool {
         false
     }
+    /// What the workspace whose channels are `workspace` is called, which a
+    /// desktop the host starts there is named after, as a page names its own.
+    fn workspace_name(&self, _workspace: u64) -> Option<String> {
+        None
+    }
     /// Current certified-device admission and exact record Read capability.
     /// Absence denies; this never inherits document invocation authority.
     fn view_read_policy(

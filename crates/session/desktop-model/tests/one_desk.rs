@@ -76,6 +76,7 @@ fn shared(tree: DesktopTree) -> SharedDesktop {
         tree,
         records: vec![(100, "notes".into())],
         authors: [(100, "ada".to_owned()), (101, "grace".to_owned())].into(),
+        opened_by: std::collections::BTreeMap::new(),
     }
 }
 

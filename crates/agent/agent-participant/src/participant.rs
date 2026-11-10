@@ -2176,11 +2176,23 @@ impl AgentParticipant {
             record: &record,
             beside: beside.as_deref(),
         };
-        let author = format!(
-            "agent:{}",
-            crate::control::agent_id(&self.identity.delegation)
-        );
-        let place = |doc: &automerge::AutoCommit| crate::desk::place_view(doc, &author, &view);
+        // The window is the person's the agent works for; the run says it
+        // was this agent's task that opened it.
+        let delegation = &self.identity.delegation;
+        let person = hex::encode(delegation.user_public_key);
+        let opener = crate::desk::Opener {
+            person: &person,
+            run: Some(tilo_desktop_model::ownership::OpenedBy {
+                run: self.running.as_ref().map_or_else(
+                    || format!("agent:{}", crate::control::agent_id(delegation)),
+                    |running| running.id.clone(),
+                ),
+                label: delegation.label.clone(),
+            }),
+        };
+        let place = |doc: &automerge::AutoCommit| {
+            crate::desk::place_view(doc, (&self.workspace, None), &opener, &view)
+        };
         let change = match self.unopened.desktop() {
             Some(doc) => place(doc),
             None => self

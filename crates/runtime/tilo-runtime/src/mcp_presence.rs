@@ -14,10 +14,13 @@
 //! schedule while the agent thinks, so an agent that idles between calls
 //! stays present; the board takes the agent down when the connection ends.
 //!
-//! The record it acts in is open as a window on the workspace's desk before
-//! a frame names it: the host the agent acts through opens it there, as a
-//! window of the person's, so everyone in the workspace sees it as they see a
-//! colleague's, and following the agent brings that window forward.
+//! Invoking an action shows what it did: every record a call makes or
+//! changes is opened as a window on the workspace's desk before the frame
+//! naming it is said. The host the agent acts through opens it there, as a
+//! window of the person's naming the agent's run, so everyone in the
+//! workspace sees it as they see a colleague's; a record already open keeps
+//! its one window, and following the agent brings that window forward. What
+//! a call only reads opens nothing.
 //!
 //! Each action the agent takes in a record is narrated as it goes
 //! ([`Presence::acting`]): the semantic work every desktop draws as the
@@ -184,27 +187,30 @@ impl Presence {
 
     /// Say what the call `request` made is doing now, and the record it
     /// worked in (`acted`): the line the person reads under the agent's
-    /// face, and where following it brings them. A record it moved into is
-    /// opened as a window first, so the frame that names it finds it shown.
-    pub async fn called(&self, request: &Value, failed: bool, acted: Option<ActedRecord>) {
+    /// face, and where following it brings them. The records the call made
+    /// or changed (`changed`) are opened as windows first, so the frame that
+    /// names one finds it shown.
+    pub async fn called(
+        &self,
+        request: &Value,
+        failed: bool,
+        acted: Option<ActedRecord>,
+        changed: Vec<ActedRecord>,
+    ) {
         let line = now_line(request, failed);
         let focus = acted.map(|worked| LiveRecord {
             app: worked.app,
             record: worked.record,
         });
+        for record in changed {
+            self.open(&LiveRecord {
+                app: record.app,
+                record: record.record,
+            })
+            .await;
+        }
         if line.is_none() && focus.is_none() {
             return;
-        }
-        let moved = focus.as_ref().filter(|focus| {
-            self.said
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .focus
-                .as_ref()
-                != Some(*focus)
-        });
-        if let Some(focus) = moved {
-            self.open(focus).await;
         }
         {
             let mut said = self.said.lock().unwrap_or_else(PoisonError::into_inner);

@@ -104,6 +104,9 @@ pub struct McpServer<H> {
     /// ([`ActedRecord`]): where its agent is, for the presence its door
     /// shows the person.
     acted: std::sync::Mutex<Option<ActedRecord>>,
+    /// The records this session's calls made or changed since the door that
+    /// shows its agent last took them ([`McpServer::take_changed`]).
+    changed: std::sync::Mutex<Vec<ActedRecord>>,
     /// The record each of this session's changes still running is changing,
     /// by invocation id: `tilo_status` answers its link once it finished.
     changing: std::sync::Mutex<std::collections::HashMap<String, String>>,
@@ -118,21 +121,10 @@ pub struct McpServer<H> {
     pub(super) runs: std::sync::Mutex<Vec<agent::watch::Run>>,
 }
 
-/// The record an agent call worked in: the app's id and the workspace's
-/// record id, as the provider of the resource the call resolved names it.
-/// What a door that shows its agent present says the agent acts in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ActedRecord {
-    /// The app's stable id (`so.tilo.notes`).
-    pub app: String,
-    /// The workspace's record id, which a provider's own token names.
-    pub record: String,
-}
-
 pub use agent::{PersonStep, literals_in};
 pub use agent::{TaskHosts, TaskProgram};
 use narration::ended;
-pub use narration::{Acting, Narration};
+pub use narration::{ActedRecord, Acting, Narration};
 
 /// The tools a session offers.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -703,6 +695,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             devices: None,
             task: tokio::sync::Mutex::new(None),
             acted: std::sync::Mutex::default(),
+            changed: std::sync::Mutex::default(),
             changing: std::sync::Mutex::default(),
             narration: None,
             narrating: std::sync::Mutex::default(),
