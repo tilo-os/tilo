@@ -4,6 +4,7 @@ import argparse
 import contextlib
 import errno
 import hashlib
+import http.client
 import json
 import os
 import random
@@ -215,8 +216,10 @@ def wait_after(error, attempt):
         header = (error.headers or {}).get("Retry-After", "")
         if header.isdigit() and 0 < int(header) <= LONGEST_WAIT_SECONDS:
             return float(header)
-    elif not isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError, ValueError)):
-        # A local failure (no room, a file that cannot be made) meets the same thing again.
+    elif not isinstance(error, (urllib.error.URLError, TimeoutError, ConnectionError,
+                                http.client.HTTPException)):
+        # Anything else is the answer itself: a body that does not verify against its pin is not
+        # what a second attempt at the same address is for.
         return None
     return min(FIRST_WAIT_SECONDS * 2 ** (attempt - 1), LONGEST_WAIT_SECONDS) \
         * random.uniform(0.8, 1.2)
@@ -277,7 +280,8 @@ def locked(cache):
 
     Jobs sharing a build directory share the artifact cache in it (TILO_FONT_ASSET_CACHE). Without
     the lock each of them fetches the whole 56 MB catalog at once, and the store rate-limits the
-    node for it. A cache on a file system whose locks fail, or a platform without flock, is used
+    node for it. The lock is held on the cache directory itself, so nothing is written beside the
+    catalogs it names; a platform without flock, or a file system whose locks fail, is used
     unserialized, as it was before.
     """
     cache = Path(cache)
@@ -285,16 +289,19 @@ def locked(cache):
         yield
         return
     cache.mkdir(parents=True, exist_ok=True)
-    with open(cache / ".lock", "a+b") as lock:
+    descriptor = os.open(cache, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    try:
         try:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
         except OSError:
             yield
             return
         try:
             yield
         finally:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+    finally:
+        os.close(descriptor)
 
 
 def cached_font(entry, cache, offline):

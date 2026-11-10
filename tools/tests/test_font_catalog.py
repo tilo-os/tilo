@@ -161,19 +161,33 @@ class StoreTest(unittest.TestCase):
             self.fetch()
         self.assertEqual(self.waits, [])
 
-    def test_a_short_body_is_fetched_again_rather_than_kept(self):
+    def test_a_body_that_does_not_match_its_pin_is_not_kept_and_not_asked_again(self):
         real = self.catalog / ONE_FONT
         with tempfile.TemporaryDirectory() as tmp:
             short = Path(tmp) / "short"
             short.write_bytes(real.read_bytes()[:-16])
-            answers = [short, real]
+            asked = []
 
             def open_url(url):
-                return Answer(answers.pop(0), url)
+                asked.append(url)
+                return Answer(short, url)
             self.patch(fc, "open_url", open_url)
-            path = self.fetch()
-        self.assertEqual(answers, [])
-        fc.verify_artifact(path, self.entry)
+            with mock.patch.object(sys, "stderr", io.StringIO()), self.assertRaisesRegex(
+                    ValueError, r"in 1 attempt: invalid cached font size"):
+                self.fetch()
+        self.assertEqual(len(asked), 1)
+        self.assertFalse((self.cache / self.entry["sha256"] / self.entry["file"]).exists())
+        self.assertEqual(list((self.cache / self.entry["sha256"]).iterdir()), [],
+                         "no partial font is left behind")
+
+    def test_a_connection_that_drops_is_asked_again(self):
+        def open_url(url):
+            raise ConnectionResetError("connection reset by peer")
+        self.patch(fc, "open_url", open_url)
+        with mock.patch.object(sys, "stderr", io.StringIO()), self.assertRaisesRegex(
+                ValueError, r"in 5 attempts: connection reset by peer"):
+            self.fetch()
+        self.assertEqual(len(self.waits), fc.ATTEMPTS - 1)
 
 
 class CacheLockTest(unittest.TestCase):
@@ -223,9 +237,10 @@ class CacheLockTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             cache = Path(tmp) / "cache"
             with fc.locked(cache):
-                self.assertTrue((cache / ".lock").exists())
+                pass
             with fc.locked(cache):
-                self.assertEqual([path.name for path in cache.iterdir()], [".lock"])
+                # The lock is held on the directory, so it names nothing of its own.
+                self.assertEqual(list(cache.iterdir()), [])
 
 
 class CatalogTest(unittest.TestCase):
