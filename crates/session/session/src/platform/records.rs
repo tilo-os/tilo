@@ -169,6 +169,9 @@ mod native {
         }
     }
 
+    /// The checkouts each workspace index named, by the app and workspace it belongs to.
+    type IndexCheckouts = BTreeMap<(String, String), Arc<Vec<RecordCheckout>>>;
+
     /// This device's records, read through its store and the changes the session heard of.
     pub struct Linked {
         store: Store,
@@ -178,7 +181,7 @@ mod native {
         read: std::cell::Cell<bool>,
         /// The checkouts each workspace index named when this session last read it: the kind of
         /// record an app keeps, which the index is the workspace's own word for.
-        indexes: std::cell::RefCell<BTreeMap<(String, String), Arc<Vec<RecordCheckout>>>>,
+        indexes: std::cell::RefCell<IndexCheckouts>,
     }
 
     impl Linked {

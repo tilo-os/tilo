@@ -866,21 +866,18 @@ impl SessionNotifications {
         // News, not a demand: it leaves the banner by itself and the centre keeps it.
         machine.expires_after = Some(Duration::from_secs(NOTICE_SECONDS));
         let place = (notice.tag.clone(), notice.place.clone());
-        let showing = match &self.daemon {
-            Some(daemon) => {
-                let notification = machine.into_notification(daemon);
-                let id = notification.id;
-                daemon.push(notification);
-                self.awaited.borrow_mut().insert(id, place);
-                Showing::Served(id)
-            }
-            // A session without a notifications service still draws its desk: what it tells is kept
-            // there rather than lost.
-            None => {
-                let id = machine.tell_desk(&self.desktop);
-                self.places.borrow_mut().insert(id, place);
-                Showing::Desk(id)
-            }
+        let showing = if let Some(daemon) = &self.daemon {
+            let notification = machine.into_notification(daemon);
+            let id = notification.id;
+            daemon.push(notification);
+            self.awaited.borrow_mut().insert(id, place);
+            Showing::Served(id)
+        } else {
+            // A session without a notifications service still draws its desk: what it tells is
+            // kept there rather than lost.
+            let id = machine.tell_desk(&self.desktop);
+            self.places.borrow_mut().insert(id, place);
+            Showing::Desk(id)
         };
         self.showing
             .borrow_mut()

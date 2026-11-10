@@ -75,7 +75,7 @@ impl Records for Recorder {
         self.docs
             .borrow()
             .get(&(app.to_owned(), record.to_owned()))
-            .map(AutoCommit::clone)
+            .cloned()
     }
 
     fn kind(&self, app: &str, _workspace: &str) -> String {
@@ -119,7 +119,8 @@ fn role(records: &Rc<Recorder>, shown: &Rc<Shown>, store: Store) -> Mentions {
 
 /// Look again, past the pause the role keeps between two looks.
 fn look_again(mentions: &Mentions) {
-    mentions.step_at(ui::time::now() + ui::time::Duration::from_secs(1));
+    let after = ui::time::now().checked_add(ui::time::Duration::from_secs(1));
+    mentions.step_at(after.expect("a second after now"));
 }
 
 /// A device's store to keep what was told in.
