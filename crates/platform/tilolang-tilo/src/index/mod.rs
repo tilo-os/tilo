@@ -107,6 +107,15 @@ pub const LEFT: &str = "$left";
 /// record.
 pub const CYCLES: &str = "$cycles";
 
+/// Whether the index keeps `field` as a short text rather than as a field value: the
+/// pseudo-fields naming a resource's type, its order key, where it is and where it left from,
+/// what it links to and what left its collections. The versions [`reflect`] keeps of a resource
+/// are field values like its own fields, what a view reads of them.
+#[must_use]
+fn is_text(field: &str) -> bool {
+    field.starts_with('$') && !reflect::is_reflected(field)
+}
+
 /// The pseudo-field of a resource holding the items that left a collection of it, in the order
 /// they left, each with the version that removed it: what a list shows of them struck, until
 /// the person has seen them go. The field's own name follows [`removed_field`].
@@ -886,7 +895,7 @@ impl Snapshot {
         for entry in self.fields.iter()? {
             let (key, value) = entry?;
             let (resource, field) = key.value();
-            let shown = if field.starts_with('$') && !reflect::is_reflected(field) {
+            let shown = if is_text(field) {
                 codec::get_text(value.value())?
             } else {
                 format!("{:?}", codec::get_value(value.value())?)
@@ -1094,6 +1103,14 @@ impl<'t> Writer<'t> {
                 return Ok(());
             }
         }
+        self.set_newest(resource, stamp)
+    }
+
+    /// Keep `stamp`'s version as the newest version of `resource`, whatever it holds there.
+    ///
+    /// # Errors
+    /// The index cannot be written.
+    pub fn set_newest(&mut self, resource: &str, stamp: &reflect::Stamp) -> Result<(), IndexError> {
         self.tables
             .newest
             .insert(resource, codec::put_value(&stamp.value()).as_slice())?;

@@ -2,6 +2,7 @@
 //! what deriving it from the record anew holds, whatever replicas wrote and in which order; an
 //! index stamped with older heads catches up; a corrupt one is built anew and never read.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -13,6 +14,7 @@ use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::host::{Host, Opening};
+use tilolang_tilo::index::Contents;
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::record::DynValue;
 
@@ -200,6 +202,41 @@ fn kept(replica: &Replica) -> tilolang_tilo::index::Contents {
     replica.host.store().index_contents(APP).unwrap()
 }
 
+/// The rows two indexes hold differently, as `which key => value`: what a person reads when
+/// the index one replica keeps is not what deriving its record anew holds.
+fn differing(kept: &Contents, anew: &Contents) -> Vec<String> {
+    fn rows<K: std::fmt::Debug + Ord, V: std::fmt::Debug>(
+        held: &BTreeMap<K, V>,
+    ) -> BTreeSet<String> {
+        held.iter()
+            .map(|(key, value)| format!("{key:?} => {value:?}"))
+            .collect()
+    }
+    let mut out = Vec::new();
+    let parts = [
+        ("docs", rows(&kept.docs), rows(&anew.docs)),
+        ("fields", rows(&kept.fields), rows(&anew.fields)),
+        ("lists", rows(&kept.lists), rows(&anew.lists)),
+        ("counts", rows(&kept.counts), rows(&anew.counts)),
+        ("newest", rows(&kept.newest), rows(&anew.newest)),
+    ];
+    for (name, held, fresh) in parts {
+        for row in held.difference(&fresh) {
+            out.push(format!("{name} kept: {row}"));
+        }
+        for row in fresh.difference(&held) {
+            out.push(format!("{name} anew: {row}"));
+        }
+    }
+    out
+}
+
+/// The index `replica` keeps holds what deriving its record anew holds, as `what` names them.
+fn assert_same(replica: &Replica, lock: &str, what: &str) {
+    let (held, fresh) = (kept(replica), anew(replica, lock));
+    assert!(held == fresh, "{what}: {:#?}", differing(&held, &fresh));
+}
+
 /// Ada's workspace with a list, and the package's ids lock.
 fn workspace() -> (Replica, String, String) {
     let (mut ada, packages) = Replica::new("ada", AutoCommit::new(), &[(TODO, "")]);
@@ -363,22 +400,234 @@ fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds() {
                 ada.sync_with(&mut grace);
             }
             if step % 10 == 9 {
-                assert_eq!(
-                    kept(&ada),
-                    anew(&ada, &lock),
-                    "ada, seed {seed} step {step}"
-                );
-                assert_eq!(
-                    kept(&grace),
-                    anew(&grace, &lock),
-                    "grace, seed {seed} step {step}"
-                );
+                assert_same(&ada, &lock, &format!("ada, seed {seed} step {step}"));
+                assert_same(&grace, &lock, &format!("grace, seed {seed} step {step}"));
             }
         }
         ada.sync_with(&mut grace);
         assert_eq!(kept(&ada), kept(&grace), "seed {seed}: the replicas agree");
-        assert_eq!(kept(&ada), anew(&ada, &lock), "seed {seed}");
+        assert_same(&ada, &lock, &format!("seed {seed}"));
     }
+}
+
+/// Remove the item `id` of the list `root` from its items, as the list's Delete does.
+fn remove(replica: &mut Replica, root: &str, id: &str) {
+    replica.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: KIND.to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Place {
+            id: root.to_owned(),
+            item: id.to_owned(),
+            at: tilolang_runtime::place::Placement::Removed.encode(),
+            nested: Vec::new(),
+            ty: String::new(),
+            holders: vec![root.to_owned()],
+        }],
+    });
+}
+
+/// Put the item `id` back into the items of the list `root`, at the order key `key`.
+fn place_back(replica: &mut Replica, root: &str, id: &str, key: &str) {
+    let meta = replica.host.packages()[0].meta.clone();
+    replica.apply(&DynAction {
+        app: APP.to_owned(),
+        kind: KIND.to_owned(),
+        action_id: "$edit".to_owned(),
+        args: Json::Null,
+        authorship: Authorship::default(),
+        edits: vec![DynEdit::Place {
+            id: root.to_owned(),
+            item: id.to_owned(),
+            at: tilolang_runtime::place::Placement::At {
+                place: tilolang_runtime::place::Place {
+                    parent: None,
+                    field: field_id(&meta, "TodoList", "items"),
+                    key: key.to_owned(),
+                },
+                was: None,
+            }
+            .encode(),
+            nested: Vec::new(),
+            ty: String::new(),
+            holders: vec![root.to_owned()],
+        }],
+    });
+}
+
+/// The person of `replica` takes their last step back, or makes it again, as their window's
+/// Undo and Redo do.
+#[cfg(feature = "record")]
+fn step(replica: &mut Replica, again: bool) {
+    use collaboration::history_source::verbs::HistoryEdit;
+    replica.history(&if again {
+        HistoryEdit::Redo { steps: None }
+    } else {
+        HistoryEdit::Undo {
+            steps: None,
+            run: None,
+            by: None,
+            to: None,
+            step: None,
+        }
+    });
+}
+
+/// An item added, one removed, the removal undone and made again, one put back where it left
+/// from, and a peer's change meanwhile: the index kept change by change holds what deriving the
+/// record anew holds after every one of them, on both replicas.
+#[cfg(feature = "record")]
+#[test]
+fn an_index_kept_change_by_change_holds_what_deriving_it_anew_holds_through_undos() {
+    for seed in [7_u64, 1234, 98_765, 654_321] {
+        let mut rng = Rng(seed);
+        let (mut ada, root, lock) = workspace();
+        let mut grace = ada.fork("grace", &[(TODO, &lock)]);
+        // Every item the list ever held. The ones it does not hold now are the ones to put back.
+        let mut known: Vec<String> = Vec::new();
+        // The steps ada made, and the ones of those her undos took back: a redo brings back an
+        // undo only while no newer step of hers follows it.
+        let (mut made, mut undone) = (0usize, 0usize);
+        let opening = plan(&ada, "add", json!({ "text": "first" }), &root);
+        ada.apply(&opening);
+        for step_no in 0..20 {
+            let held = items(&ada, &root);
+            for id in &held {
+                if !known.contains(id) {
+                    known.push(id.clone());
+                }
+            }
+            // The items the record holds out of the list: ones removed, never ones whose making
+            // a step took back, which the record has no map of.
+            let gone: Vec<&String> = known
+                .iter()
+                .filter(|id| !held.contains(id) && ada.host.store().record(id).is_ok())
+                .collect();
+            let mut undoable = false;
+            match rng.below(6) {
+                0 | 1 => {
+                    let action = plan(
+                        &ada,
+                        "add",
+                        json!({ "text": format!("task {step_no}") }),
+                        &root,
+                    );
+                    ada.apply(&action);
+                    undoable = true;
+                }
+                2 => {
+                    if let Some(id) = held.get(rng.below(held.len())) {
+                        remove(&mut ada, &root, id);
+                        undoable = true;
+                    }
+                }
+                3 => {
+                    if undone < made {
+                        step(&mut ada, false);
+                        undone = undone.saturating_add(1);
+                    }
+                }
+                4 => {
+                    if undone > 0 {
+                        step(&mut ada, true);
+                        undone = undone.saturating_sub(1);
+                    }
+                }
+                _ => {
+                    if let Some(id) = gone.get(rng.below(gone.len())) {
+                        let id = (*id).clone();
+                        place_back(&mut ada, &root, &id, &format!("{step_no:010}"));
+                        undoable = true;
+                    }
+                }
+            }
+            if undoable {
+                made = made.saturating_sub(undone).saturating_add(1);
+                undone = 0;
+            }
+            // The peer edits the list meanwhile, and now and then they meet.
+            if rng.below(3) == 0 {
+                let action = plan(
+                    &grace,
+                    "add",
+                    json!({ "text": format!("grace {step_no}") }),
+                    &root,
+                );
+                grace.apply(&action);
+            }
+            if rng.below(2) == 0 {
+                ada.sync_with(&mut grace);
+            }
+            assert_same(&ada, &lock, &format!("ada, seed {seed} step {step_no}"));
+            assert_same(&grace, &lock, &format!("grace, seed {seed} step {step_no}"));
+        }
+        ada.sync_with(&mut grace);
+        assert_eq!(kept(&ada), kept(&grace), "seed {seed}: the replicas agree");
+    }
+}
+
+/// Undoing a removal puts the item back into the index change by change, and making the
+/// removal again (a redo) takes it out again, its row of what left kept: the index is built
+/// anew neither way, and it holds what deriving the record anew holds.
+#[cfg(feature = "record")]
+#[test]
+fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
+    let (mut ada, root, lock) = workspace();
+    let mut ids = Vec::new();
+    for step_no in 0..3 {
+        let action = plan(
+            &ada,
+            "add",
+            json!({ "text": format!("task {step_no}") }),
+            &root,
+        );
+        ada.apply(&action);
+        ids = items(&ada, &root);
+    }
+    let second = ids.get(1).cloned().expect("a second item");
+    remove(&mut ada, &root, &second);
+    assert_eq!(items(&ada, &root).len(), 2, "the removal takes it out");
+
+    let before = ada.host.store().stats();
+    step(&mut ada, false);
+    let after = ada.host.store().stats();
+    assert_eq!(
+        items(&ada, &root).len(),
+        3,
+        "the undo puts the item back into the record"
+    );
+    assert_eq!(after.builds, before.builds, "the index is not built anew");
+    assert_eq!(
+        after.incremental_syncs,
+        before.incremental_syncs + 1,
+        "the index takes the undo in"
+    );
+    assert_eq!(
+        listed(&ada, &root),
+        items(&ada, &root),
+        "the rows are the items"
+    );
+    assert_same(&ada, &lock, "after the undo");
+
+    step(&mut ada, true);
+    assert_eq!(
+        items(&ada, &root).len(),
+        2,
+        "the redo takes the item out again"
+    );
+    assert_eq!(
+        ada.host.store().stats().builds,
+        before.builds,
+        "the redo builds no index anew"
+    );
+    assert_eq!(
+        listed(&ada, &root),
+        items(&ada, &root),
+        "the rows are the items again"
+    );
+    assert_same(&ada, &lock, "after the redo");
 }
 
 #[test]

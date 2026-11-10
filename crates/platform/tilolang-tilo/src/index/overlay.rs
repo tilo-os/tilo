@@ -279,10 +279,19 @@ impl Sink for OverlaySink<'_> {
             .get(resource)
             .is_none_or(|held| held.before(stamp));
         if newer {
-            self.overlay
-                .newest
-                .insert(resource.to_owned(), stamp.clone());
+            self.set_newest(resource, stamp)?;
         }
+        Ok(())
+    }
+
+    fn set_newest(
+        &mut self,
+        resource: &str,
+        stamp: &super::reflect::Stamp,
+    ) -> Result<(), IndexError> {
+        self.overlay
+            .newest
+            .insert(resource.to_owned(), stamp.clone());
         Ok(())
     }
 

@@ -549,6 +549,24 @@ fn versions_of_changes<'c>(
     out
 }
 
+/// The changes `step` marked at the record's root ([`undone_changes`]), whether it marked one
+/// undone or took the mark back (a redo): the changes whose resources the record holds as they
+/// left them, or no longer does.
+fn marked_by(step: &automerge::Change) -> Vec<String> {
+    let mut out = Vec::new();
+    for op in step.decode().operations {
+        if op.obj != automerge::legacy::ObjectId::Root {
+            continue;
+        }
+        if let automerge::legacy::Key::Map(key) = &op.key
+            && let Some(hash) = key.strip_prefix(tilo_actions::UNDONE_KEY)
+        {
+            out.push(hash.to_owned());
+        }
+    }
+    out
+}
+
 /// The changes the record marks undone (an undo, until a redo brings it back), by hash: a
 /// derivation of the whole log leaves them out.
 #[must_use]
@@ -599,7 +617,8 @@ pub fn ends_of<'c>(
     }
     let undone = undone_changes(mirror);
     // The resources the steps wrote, and those of the changes they took back: a step that
-    // undoes a removal writes nothing of the resource that comes back.
+    // undoes a removal writes nothing of the resource that comes back, and a step that makes
+    // it again (a redo) only takes the record's marker of it back.
     let mut touched: BTreeSet<String> = BTreeSet::new();
     for step in &steps {
         touched.extend(
@@ -608,7 +627,8 @@ pub fn ends_of<'c>(
                 .map(|version| version.resource),
         );
     }
-    for hash in &undone {
+    let marked: BTreeSet<String> = steps.iter().flat_map(|step| marked_by(step)).collect();
+    for hash in undone.iter().chain(marked.iter()) {
         let Ok(hash) = hash.parse::<automerge::ChangeHash>() else {
             continue;
         };
