@@ -2513,11 +2513,12 @@ class PageActions(unittest.TestCase):
         # Rows are rendered as the list is scrolled, and its own scroll
         # listener renders the rows further on as the wheel reaches them.
         invoices = self.ref(self.outline(), 'region "Invoices"')
-        self.ok('scroll', to='bottom')
+        bottom = self.ok('scroll', to='bottom')
         scrolled = self.main_world('scrollY')
         # The wheel turns over the list until Invoice 60 comes into view.
         turned = self.ok('scroll', element=invoices, by=2300)
-        self.assertIn('Invoice 60 (overdue)', self.outline(), f'the rows the wheel reached are rendered: {turned["message"]}')
+        self.assertIn('Invoice 60 (overdue)', self.outline(),
+                      f'the rows the wheel reached are rendered: {bottom["message"]}; then {turned["message"]}')
         self.assertEqual(self.main_world('scrollY'), scrolled, 'the list scrolled, not the page')
 
     def test_an_element_that_cannot_hear_a_scroll_is_refused(self):
@@ -2549,9 +2550,11 @@ class PageActions(unittest.TestCase):
         # A row the page has rendered but the list clips is brought into view
         # by the same wheel a person turns over it.
         invoices = self.ref(self.outline(), 'region "Invoices"')
-        self.ok('scroll', to='bottom')
+        bottom = self.ok('scroll', to='bottom')
         # The wheel turns over the list until Invoice 60 comes into view.
-        self.ok('scroll', element=invoices, by=2300)
+        turned = self.ok('scroll', element=invoices, by=2300)
+        self.assertRegex(self.outline(), 'Invoice 6[0-9]',
+                         f'the wheel reached the rows: {bottom["message"]}; then {turned["message"]}')
         later = self.near('Invoice 6[0-9]')
         self.ok('scroll', into_view=later)
         self.assertIn('Invoice 60 (overdue)', self.outline(), 'the wheel brought the row into view')

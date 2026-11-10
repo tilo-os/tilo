@@ -131,6 +131,8 @@ globalThis.__tiloPage ||= (() => {
   // scrolls by distances knows where it is without a picture of the page.
   let scrollAt = null;
   const takeScrollAt = () => { const at = scrollAt; scrollAt = null; return at; };
+  // Whether the page moved the box out of view while the wheel turned it.
+  let scrollLost = false;
   const placeOf = box => {
     const at = Math.round(scrollYOffset(box));
     return {at, of: Math.max(Math.round(scrollable(box)), at)};
@@ -171,7 +173,7 @@ globalThis.__tiloPage ||= (() => {
       // The row is centred in its box when there is room for that, and the
       // wheel turns toward it from where the box is scrolled to now.
       const delta = Math.round(visible.top - area.top - (area.height - visible.height) / 2);
-      return beginScroll(box, point, scrollYOffset(box) + delta);
+      return beginScroll(box, point, scrollYOffset(box) + delta, () => clip(box.getBoundingClientRect()));
     }
     // The box the caller named, or the page itself; a point inside it that
     // the wheel can turn over is its visible centre.
@@ -188,7 +190,8 @@ globalThis.__tiloPage ||= (() => {
     // it stands now.
     const goal = command.to === 'bottom' ? Infinity : command.to === 'top' ? 0
       : typeof command.by === 'number' ? scrollYOffset(scroller) + command.by : scrollYOffset(scroller);
-    return beginScroll(scroller, point, goal);
+    return beginScroll(scroller, point, goal,
+      root ? null : () => (element && clip(element.getBoundingClientRect())) || clip(box.getBoundingClientRect()));
   }
   // A scroll is the wheel turned until the box stands where it was asked to
   // go, or as near as it can go: the end of what it holds now, which grows
@@ -205,6 +208,15 @@ globalThis.__tiloPage ||= (() => {
   // The next turn toward where the box was asked to go; none when it stands
   // there. The turn is owed by the box until the box has shown it.
   function scrollTurn() {
+    // The wheel turns over the box where the page has it now: a page that
+    // grew above it while the wheel turned (a section that loaded late) has
+    // moved it, and a wheel left where the box was would turn the page
+    // instead. A box the page has moved out of view is turned no further.
+    if (scrolling.where) {
+      const at = scrolling.where();
+      if (!at) { scrollLost = true; scrolling.owed = 0; return scrollAnswer(0, false); }
+      scrolling.x = at.x; scrolling.y = at.y;
+    }
     const box = scrolling.box, held = scrollable(box), now = scrollYOffset(box);
     const goal = Math.max(0, Math.min(scrolling.goal, held));
     let left = Math.round(goal - now);
@@ -220,10 +232,11 @@ globalThis.__tiloPage ||= (() => {
     scrolling.turned = 0;
     return scrollAnswer(scrolling.owed, false);
   }
-  function beginScroll(box, point, goal) {
+  function beginScroll(box, point, goal, where) {
     scrolling = {box, x: point.x, y: point.y, goal, start: scrollYOffset(box), still: 0, owed: 0, unshown: 0,
-      turned: 0, reach: 0};
+      turned: 0, reach: 0, where};
     scrollMoved = 0;
+    scrollLost = false;
     scrollAt = placeOf(box);
     return scrollTurn();
   }
@@ -805,8 +818,10 @@ globalThis.__tiloPage ||= (() => {
     const before = getLastLines(), {lines} = outlineLines();
     setLastLines(lines);
     const stands = place ? ` ${place.at} of ${place.of}` : '';
-    const travelled = moved === null ? '' : moved ? `Scrolled ${Math.abs(moved)}px ${moved > 0 ? 'down' : 'up'}${stands ? ',' : ''}${stands ? ' to' + stands : ''}`
-      : `Did not move${stands ? ', at' + stands : ''}`;
+    const lost = scrollLost ? '; the page moved the box out of view while the wheel turned, so it stopped there' : '';
+    scrollLost = false;
+    const travelled = moved === null ? '' : (moved ? `Scrolled ${Math.abs(moved)}px ${moved > 0 ? 'down' : 'up'}${stands ? ',' : ''}${stands ? ' to' + stands : ''}`
+      : `Did not move${stands ? ', at' + stands : ''}`) + lost;
     // A scroll answers with how far it went. A caller that had not read the
     // page is told so, not handed the whole page for turning a wheel.
     if (!before && moved !== null)

@@ -428,8 +428,11 @@ out as wheel events of at most one page of the box each: where the engine's
 wheel is a mouse's (Linux), Chromium carries a box no further than a page of
 itself for the wheel event that begins a scroll, and the events behind it in
 full. A turn that still carries a box only part of the way, with room left to
-go, is as far as a turn goes there, and the turns after it are that long. On a
-page
+go, is as far as a turn goes there, and the turns after it are that long. Each
+turn is made over the box where the page has it then: a page that grew above
+the box while the wheel turned has moved it, and a box moved out of view is
+turned no further, which the answer says (`the page moved the box out of view
+while the wheel turned, so it stopped there`). On a page
 its caller has not read, a scroll says so in place of the changes and does not
 answer with the page.
 
