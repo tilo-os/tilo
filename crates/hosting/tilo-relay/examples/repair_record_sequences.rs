@@ -305,6 +305,9 @@ struct Collision {
     seq: u64,
     kept: ChangeHash,
     left_out: Vec<ChangeHash>,
+    /// Each of its changes, kept first: when its writer says it wrote it
+    /// (Unix milliseconds) and the write it reached the record in.
+    when: Vec<String>,
 }
 
 impl RecordReport {
@@ -338,6 +341,9 @@ impl RecordReport {
                     .collect::<Vec<_>>()
                     .join(", ")
             );
+            for when in &collision.when {
+                println!("    {when}");
+            }
         }
         println!(
             "  {} changes of the left-out branches {} again as the host's own change",
@@ -603,44 +609,71 @@ struct Analysis {
     left_out: Vec<automerge::Change>,
 }
 
+/// Every distinct change of `history`, in the order it reached the record,
+/// with where each reached it, and the writes that do not open here.
+type Read = (
+    Vec<automerge::Change>,
+    BTreeMap<ChangeHash, String>,
+    Vec<String>,
+);
+
+fn read_history(history: &tilo_peer_state::OpenedHistory) -> anyhow::Result<Read> {
+    let mut changes: Vec<automerge::Change> = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut unreadable = Vec::new();
+    // Where each change reached the record: its base, or a write by
+    // author and sequence (a member's sequence is the time it wrote).
+    let mut origin: BTreeMap<ChangeHash, String> = BTreeMap::new();
+    let mut take = |found: Vec<automerge::Change>, from: &str| {
+        for change in found {
+            if seen.insert(change.hash()) {
+                origin.insert(change.hash(), from.to_owned());
+                changes.push(change);
+            }
+        }
+    };
+    if !history.base.is_empty() {
+        take(
+            AutoCommit::load(&history.base)
+                .context("the record's base")?
+                .get_changes(&[]),
+            "the record's base",
+        );
+    }
+    for write in &history.writes {
+        let from = format!(
+            "write {}#{}",
+            hex::encode(write.author.get(..8).unwrap_or_default()),
+            write.seq
+        );
+        match &write.mutation {
+            Ok(DocumentMutation::Snapshot(bytes)) => {
+                take(
+                    AutoCommit::load(bytes)
+                        .context("a checkpoint")?
+                        .get_changes(&[]),
+                    &from,
+                );
+            }
+            Ok(DocumentMutation::Incremental(bytes)) => {
+                take(
+                    automerge::Automerge::parse_changes(bytes).context("a write")?,
+                    &from,
+                );
+            }
+            Err(why) => unreadable.push(format!(
+                "{}#{}: {why}",
+                hex::encode(write.author.get(..8).unwrap_or_default()),
+                write.seq
+            )),
+        }
+    }
+    Ok((changes, origin, unreadable))
+}
+
 impl Analysis {
     fn of(history: &tilo_peer_state::OpenedHistory) -> anyhow::Result<Self> {
-        let mut changes: Vec<automerge::Change> = Vec::new();
-        let mut seen = BTreeSet::new();
-        let mut unreadable = Vec::new();
-        let mut take = |found: Vec<automerge::Change>| {
-            for change in found {
-                if seen.insert(change.hash()) {
-                    changes.push(change);
-                }
-            }
-        };
-        if !history.base.is_empty() {
-            take(
-                AutoCommit::load(&history.base)
-                    .context("the record's base")?
-                    .get_changes(&[]),
-            );
-        }
-        for write in &history.writes {
-            match &write.mutation {
-                Ok(DocumentMutation::Snapshot(bytes)) => {
-                    take(
-                        AutoCommit::load(bytes)
-                            .context("a checkpoint")?
-                            .get_changes(&[]),
-                    );
-                }
-                Ok(DocumentMutation::Incremental(bytes)) => {
-                    take(automerge::Automerge::parse_changes(bytes).context("a write")?);
-                }
-                Err(why) => unreadable.push(format!(
-                    "{}#{}: {why}",
-                    hex::encode(write.author.get(..8).unwrap_or_default()),
-                    write.seq
-                )),
-            }
-        }
+        let (changes, origin, unreadable) = read_history(history)?;
         // Each writer's sequence, in the order its changes reached the record.
         let mut by_sequence: BTreeMap<(Vec<u8>, u64), Vec<usize>> = BTreeMap::new();
         for (index, change) in changes.iter().enumerate() {
@@ -693,6 +726,18 @@ impl Analysis {
                         .iter()
                         .filter_map(|index| changes.get(*index).map(automerge::Change::hash))
                         .collect(),
+                    when: held
+                        .iter()
+                        .filter_map(|index| changes.get(*index))
+                        .map(|change| {
+                            format!(
+                                "{} written at {} ms, reached the record in {}",
+                                short(&change.hash()),
+                                change.timestamp(),
+                                origin.get(&change.hash()).map_or("?", String::as_str)
+                            )
+                        })
+                        .collect(),
                 })
             })
             .collect();
@@ -718,6 +763,7 @@ impl Analysis {
                 seq: collision.seq,
                 kept: collision.kept,
                 left_out: collision.left_out.clone(),
+                when: collision.when.clone(),
             })
             .collect();
         report.carried = self
