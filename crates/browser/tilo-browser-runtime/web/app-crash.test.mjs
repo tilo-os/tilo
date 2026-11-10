@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createCrashQuarantine,createPageRestarts,crashAction,pageCrashAction,showPageCrash} from './app-crash.mjs';
+import {createCrashQuarantine,createPageRestarts,crashAction,pageCrashAction,showPageCrash,trapCrash} from './app-crash.mjs';
 
 function memoryStorage(){
   const values=new Map();
@@ -118,4 +118,17 @@ test('the crash screen says what happened and offers Reload, in the browser\'s t
 
 test('a page with nowhere to put the screen reports no error of its own', () => {
   assert.equal(showPageCrash('boom',{document:{}}),undefined);
+});
+
+test('a Wasm trap no panic preceded starts the page over, and says when memory ran out', () => {
+  const trap=(message,stack)=>{const error=new WebAssembly.RuntimeError(message);Object.defineProperty(error,'stack',{value:stack});return error;};
+  const oom=trap('unreachable','RuntimeError: unreachable\n    at tilo_web_desktop.wasm._RNvNtCsdl5sGgnNXvY_3std5alloc8rust_oom (x.wasm)');
+  assert.deepEqual(trapCrash(oom,{panicked:false}),{tab:null,message:'the page ran out of memory'});
+  assert.deepEqual(trapCrash(trap('call stack exhausted',''),{panicked:false}),
+    {tab:null,message:'the runtime stopped: call stack exhausted'});
+  // The trap that ends a panic the hook reported is that panic's, already handled.
+  assert.equal(trapCrash(oom,{panicked:true}),null);
+  // A script's own errors are not the runtime's.
+  assert.equal(trapCrash(new TypeError('x is undefined'),{panicked:false}),null);
+  assert.equal(trapCrash(undefined,{panicked:false}),null);
 });

@@ -49,6 +49,22 @@ export function crashAction(report,recorded) {
   return report?.tab!=null&&recorded?'restart':'report';
 }
 
+/** The page crash an uncaught `error` stands for when the runtime's panic
+ * hook never spoke (`panicked` false): a Wasm trap with no panic before it --
+ * memory ran out, the stack overflowed -- leaves the module as dead as a panic
+ * does, in the middle of whatever callback it was running. Every call after it
+ * finds that callback still holding the runtime, so the page would stall
+ * saying it is busy; it starts over like any panic outside a window instead.
+ * `null` for anything else, and for the trap that ends a reported panic. */
+export function trapCrash(error,{panicked}) {
+  if(panicked||typeof WebAssembly==='undefined'||!(error instanceof WebAssembly.RuntimeError))return null;
+  const stack=String(error.stack??'');
+  const message=/rust_oom|handle_alloc_error/.test(stack)
+    ?'the page ran out of memory'
+    :`the runtime stopped: ${error.message}`;
+  return {tab:null,message};
+}
+
 const RESTART_KEY='tilo.page-restarts.v1';
 /** How long after the page started itself over a crash still counts as the
  * same one: a load younger than this that crashes again would only come back

@@ -79,3 +79,21 @@ test('a crash inside a window is left to that window', async () => {
   assert.equal(page.document.body.children.length, 0);
   assert.equal(storage.getItem('tilo.page-restarts.v1'), null, 'no page restart is recorded for it');
 });
+
+test('a Wasm trap no panic preceded, such as memory running out, starts the page over too', async () => {
+  const storage = memoryStorage();
+  const reports = [];
+  const listeners = [];
+  globalThis.addEventListener = (type, listener) => { if (type === 'error') listeners.push(listener); };
+  try {
+    const page = await loadPage({storage, reports});
+    const trap = new WebAssembly.RuntimeError('unreachable');
+    Object.defineProperty(trap, 'stack', {value: 'RuntimeError: unreachable\n    at x.wasm._RNvNtCs0_3std5alloc8rust_oom'});
+    listeners.at(-1)({error: trap});
+    await settle(350);
+    assert.deepEqual(page.reloads, ['reload'], 'a page stalled on a dead module starts over');
+    assert.deepEqual(reports, [{kind: 'panic', message: 'outside any window: the page ran out of memory'}]);
+  } finally {
+    delete globalThis.addEventListener;
+  }
+});
