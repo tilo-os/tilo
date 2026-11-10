@@ -26,7 +26,14 @@
 //! sealed from its first write — is read again in a moment: quickly at first,
 //! and further apart the longer it stays shut. A host that kept only the files
 //! of the trees it happened to read at the right moment would keep none of a
-//! workspace's files.
+//! workspace's files. Once the host holds the channel's keys there is nothing
+//! to wait for: a tree nobody wrote yet is read when its first write lands, so
+//! a workspace whose members never touched its files costs nothing while it
+//! sits there, however many of them the host governs.
+//!
+//! A change to one workspace's governance reads that workspace's tree alone:
+//! making a person's next workspace costs the same whether they have one or
+//! hundreds.
 //!
 //! What it keeps goes into the workspace's content store on this host
 //! ([`crate::content`], beside the workspace's uploads, what its apps made and
@@ -153,9 +160,10 @@ impl FilesContent {
                 },
                 // A workspace that appeared, or whose membership moved: its
                 // tree is read, and a record this host cannot open yet is
-                // asked about before its members write to it.
+                // asked about before its members write to it. The others did
+                // not move.
                 change = governance.recv() => match change {
-                    Ok(_) => self.read_all().await,
+                    Ok(workspace) => self.keep_tree(&workspace).await,
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         self.read_all().await;
                     }
@@ -216,6 +224,16 @@ impl FilesContent {
     /// this host does not keep yet.
     async fn keep_tree(&self, workspace: &str) {
         let Some(record) = self.record(workspace).await else {
+            if !self
+                .workspaces
+                .waits_for_keys(workspace, FILES_APP, &tree_record())
+                .await
+            {
+                // Nobody wrote the tree yet, and its first write reaches this
+                // host readable: it is read when that write lands.
+                self.state.lock_recover().reopened.remove(workspace);
+                return;
+            }
             // A tree its members write sealed opens only once this host's
             // device is in the channel that seals it: ask, and read again.
             self.workspaces

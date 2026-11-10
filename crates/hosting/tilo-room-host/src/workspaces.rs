@@ -1765,30 +1765,27 @@ impl Workspaces {
             let Some(inner) = workspaces.upgrade() else {
                 return;
             };
-            let workspaces = Self { inner };
-            let Ok(state) = workspaces.workspace(&workspace).await else {
-                return;
-            };
-            let workspace_id = state.lock().await.workspace_id();
-            let retained = match workspaces
-                .inner
-                .host
-                .records
-                .retained_settled(workspace_id)
-                .await
-            {
-                Ok(retained) => retained,
-                Err(error) => {
-                    tracing::warn!(%workspace, %error, "governed room did not replay what its members wrote");
-                    return;
-                }
-            };
-            #[cfg(any(feature = "agents", feature = "web"))]
-            workspaces
-                .found_retained(&workspace, &state, &retained)
-                .await;
-            workspaces.recall_retained(&mut *state.lock().await, retained);
+            (Self { inner }).replay(&workspace).await;
         });
+    }
+
+    /// Replay what the relay retains for `workspace` into the governor's
+    /// copy now: [`Self::replay_soon`] in the caller's own time.
+    async fn replay(&self, workspace: &str) {
+        let Ok(state) = self.workspace(workspace).await else {
+            return;
+        };
+        let workspace_id = state.lock().await.workspace_id();
+        let retained = match self.inner.host.records.retained_settled(workspace_id).await {
+            Ok(retained) => retained,
+            Err(error) => {
+                tracing::warn!(%workspace, %error, "governed room did not replay what its members wrote");
+                return;
+            }
+        };
+        #[cfg(any(feature = "agents", feature = "web"))]
+        self.found_retained(workspace, &state, &retained).await;
+        self.recall_retained(&mut *state.lock().await, retained);
     }
 
     /// Found every record of `workspace` that `retained` holds a write of and
@@ -1872,14 +1869,16 @@ impl Workspaces {
                 return;
             };
             let workspaces = Self { inner };
-            let joined = workspaces.join_channel(&name, &app, &record).await;
+            // Still asking until what the channel's keys open is replayed:
+            // whoever waits for them ([`Self::waits_for_keys`]) reads the
+            // record once that is in the governor's copy.
+            if workspaces.join_channel(&name, &app, &record).await {
+                workspaces.replay(&name).await;
+            }
             let Ok(workspace) = workspaces.workspace(&name).await else {
                 return;
             };
             workspace.lock().await.asking.remove(&(app, record));
-            if joined {
-                workspaces.replay_soon(name);
-            }
         });
     }
 
@@ -1901,6 +1900,33 @@ impl Workspaces {
         {
             let _ = (&mut governed, app, record);
         }
+    }
+
+    /// Whether this host waits to be let into the channel that seals `record`
+    /// of `app` in `workspace`: it runs on a device that takes part in the
+    /// workspace's channels, and holds none of that channel's keys yet. Once
+    /// it holds them, every write of the record reaches it readable and is
+    /// followed as it lands, so nothing about the record is worth asking
+    /// again. It waits while it is let in and replays what the keys open.
+    /// `false` for a workspace not governed here.
+    pub async fn waits_for_keys(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Ok(state) = self.workspace(workspace).await else {
+            return false;
+        };
+        let governed = state.lock().await;
+        #[cfg(any(feature = "agents", feature = "web"))]
+        let waits = governed.seals()
+            && (governed
+                .asking
+                .contains(&(app.to_owned(), record.to_owned()))
+                || !governed.takes_part_in_channel(app, record).await);
+        #[cfg(not(any(feature = "agents", feature = "web")))]
+        let waits = {
+            let _ = (&governed, app, record);
+            false
+        };
+        drop(governed);
+        waits
     }
 
     /// Take in `message` if it is a notice rather than a record write: an

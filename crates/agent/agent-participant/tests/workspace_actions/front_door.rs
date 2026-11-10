@@ -581,6 +581,18 @@ async fn one_key_makes_and_works_in_hundreds_of_workspaces_at_once() {
         create_p95 < Duration::from_millis(500),
         "making a workspace stays fast: p95 {create_p95:?}"
     );
+    // The last hundred cost what the first hundred did (the very first warms
+    // the relay up): nothing a create does, or that the workspaces made
+    // before it do meanwhile, grows with how many the person has.
+    let (first, last) = (
+        quantile(&creating[1..=100], 0.95),
+        quantile(&creating[CUSTOMERS - 100..], 0.95),
+    );
+    eprintln!("create p95: first hundred {first:?}, last hundred {last:?}");
+    assert!(
+        last <= first * 2 + Duration::from_millis(100),
+        "the {CUSTOMERS}th workspace costs what the first ones did: p95 {first:?} at first, {last:?} at last"
+    );
     assert!(
         listing < Duration::from_millis(500),
         "listing them stays fast: {listing:?}"
