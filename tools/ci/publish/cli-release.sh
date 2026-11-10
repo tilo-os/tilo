@@ -24,9 +24,11 @@
 #                                      tilo-cli/<version>/<file>, and as tilo-cli/latest/<file>
 #                                      for a final version newer than latest's; tilo.sh serves
 #                                      both at /releases/ (the web entry's Caddyfile)
-#   cli-release.sh rehearse DIR        sign (a throwaway key) and publish (into DIR/registry)
-#                                      the release in DIR as a tag would, then install it with
-#                                      the installer from there and run what it installed
+#   cli-release.sh rehearse DIR        sign (a throwaway key) and publish the release in DIR as
+#                                      a tag would, serve it at a local site laid out as tilo.sh
+#                                      serves it, and install it from there the way a person
+#                                      does, `curl -fsSL https://<site>/ | sh`, then run what
+#                                      was installed; nothing here reaches the live site
 #
 # With TILO_PUBLISH_DRY_RUN set to a directory, `sign` signs with a throwaway key made here
 # (its public half kept as DIR/dry-run.pub) and `publish` writes DIR/releases/<version>/ and
@@ -344,44 +346,122 @@ cmd_publish() {
   echo "$package/latest/ is $v"
 }
 
+# The files a site serves: the installer at / (what `curl -fsSL https://tilo.sh | sh` gets) and at
+# /install.sh, beside the release ROOT already holds at /releases/<version>/ and
+# /releases/latest/, as the web entry's Caddyfile maps them onto the package registry.
+site_root() {
+  local root=$1
+  cp "$repo_root/dist/install/tilo.sh" "$root/index.html"
+  cp "$repo_root/dist/install/tilo.sh" "$root/install.sh"
+}
+
+# Serve ROOT at https://127.0.0.1:$1 with CERT and KEY as the site's: the installer fetches over
+# https alone, so a rehearsal's site is https too, and curl is told to trust this certificate.
+serve() {
+  local port=$1 root=$2 cert=$3 key=$4 log=$5
+  python3 - "$port" "$root" "$cert" "$key" >"$log" 2>&1 <<'PY' &
+import functools, http.server, ssl, sys
+port, root, cert, key = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
+site = http.server.HTTPServer(("127.0.0.1", port), functools.partial(http.server.SimpleHTTPRequestHandler, directory=root))
+context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+context.load_cert_chain(cert, key)
+site.socket = context.wrap_socket(site.socket, server_side=True)
+site.serve_forever()
+PY
+}
+
+# A port nothing listens on, for the rehearsal's site.
+free_port() {
+  python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()'
+}
+
+# Install the release the site at $1 serves, as a person does: the installer is what `curl` gets
+# from that site's root, piped into `sh`, and everything it runs with is the environment `$2`
+# gives. The site's certificate is trusted through CURL_CA_BUNDLE, which the installer's own
+# `curl` reads; $3 picks a release other than latest.
+install_from_site() {
+  local site=$1 path=$2 ref=$3 home=$4 dir=$5
+  curl -fsSL --cacert "$dir/site.pem" "$site/" \
+    | env -i PATH="$path" HOME="$home" CURL_CA_BUNDLE="$dir/site.pem" \
+        TILO_RELEASES="$site/releases" TILO_VERSION="$ref" TILO_RELEASE_KEY="$dir/dry-run.pub" sh
+}
+
 cmd_rehearse() {
-  local release=${1:?$usage} dir registry home installed
-  registry=$scratch/cli-rehearsal
+  local release=${1:?$usage} installed ref machine command
+  # Not `local`: the EXIT trap below runs after this function has returned.
+  server=
+  site=$scratch/cli-rehearsal-site
   dir=$scratch/cli-rehearsal-release
-  rm -rf "$registry" "$dir"
-  mkdir -p "$registry"
+  rm -rf "$site" "$dir"
+  mkdir -p "$site"
   cp -r "$release" "$dir"
-  export TILO_PUBLISH_DRY_RUN=$registry
+  export TILO_PUBLISH_DRY_RUN=$site
   cmd_sign "$dir"
   cmd_publish "$dir"
-  local machine
+  site_root "$site"
+  # The site's certificate, made here: the name it answers to is this machine's loopback.
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+    -subj /CN=cli-rehearsal -addext subjectAltName=IP:127.0.0.1 \
+    -keyout "$dir/site.key" -out "$dir/site.pem" >/dev/null 2>&1 \
+    || die 'could not make the rehearsal site a certificate'
+  port=$(free_port)
+  serve "$port" "$site" "$dir/site.pem" "$dir/site.key" "$scratch/cli-rehearsal-site.log"
+  server=$!
+  trail() {
+    kill "$server" 2>/dev/null || true
+    rm -rf "$site" "$dir" "$scratch/cli-rehearsal-home" "$scratch/cli-rehearsal-tools" \
+      "$scratch/cli-rehearsal-site.log"
+  }
+  trap trail EXIT
+  local url=https://127.0.0.1:$port
+  curl -fsS --retry 30 --retry-connrefused --retry-delay 1 --cacert "$dir/site.pem" -o /dev/null "$url/install.sh" \
+    || die "the rehearsal's site did not come up: $(cat "$scratch/cli-rehearsal-site.log" 2>/dev/null)"
   case $(uname -m) in x86_64) machine=x86_64 ;; aarch64) machine=aarch64 ;; *) die "no release for $(uname -m)" ;; esac
   local refs=("$(version)")
   if [[ -n $(final "$(version)") ]]; then refs+=(latest); fi
+  home=$scratch/cli-rehearsal-home
   for ref in "${refs[@]}"; do
-    home=$scratch/cli-rehearsal-home
     rm -rf "$home"
     mkdir -p "$home"
-    # The installer as tilo.sh serves it, from the published layout, with the throwaway key as
+    # The installer as tilo.sh serves it, from the site's own layout, with the throwaway key as
     # the mirror's: it checks the signature and the archive's sum, then installs.
-    env -i PATH=/usr/bin:/bin HOME="$home" TILO_RELEASES="file://$registry/releases" \
-      TILO_VERSION="$ref" TILO_RELEASE_KEY="$dir/dry-run.pub" sh dist/install/tilo.sh \
+    install_from_site "$url" /usr/bin:/bin "$ref" "$home" "$dir" \
       || die "the installer refused the rehearsed release at $ref"
     installed=$home/.local/bin/tilo
-    cmp --silent "$installed" <(tar -xzOf "$dir/tilo-linux-$machine.tar.gz" tilo) \
+    cmp --silent "$installed" <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilo) \
       || die "the installer installed something other than tilo-linux-$machine.tar.gz's program"
     HOME=$home "$installed" --help >/dev/null || die "the installed tilo does not run"
   done
-  # Without the mirror's key only the release key is trusted, which did not sign this.
-  home=$scratch/cli-rehearsal-home
-  rm -rf "$home" && mkdir -p "$home"
-  if env -i PATH=/usr/bin:/bin HOME="$home" TILO_RELEASES="file://$registry/releases" \
-    sh dist/install/tilo.sh 2>/dev/null; then
+  # Stock systems (Fedora) come without openssl, so the installer must install there too, on the
+  # archive's sum against SHA256SUMS alone: only what the installer itself runs is on PATH.
+  tools=$scratch/cli-rehearsal-tools
+  rm -rf "$tools"
+  mkdir -p "$tools"
+  for command in sh uname tar gzip curl sha256sum mktemp awk mkdir cp chmod mv rm cut cat; do
+    ln -s "$(command -v "$command")" "$tools/$command" || die "no $command to give the installer a PATH without openssl"
+  done
+  PATH=$tools command -v openssl >/dev/null && die 'openssl is on the PATH the rehearsal calls empty of it'
+  rm -rf "$home"
+  mkdir -p "$home"
+  install_from_site "$url" "$tools" latest "$home" "$dir" \
+    || die 'without openssl the installer refused the release'
+  cmp --silent "$home/.local/bin/tilo" <(tar -xzOf "$site/releases/latest/tilo-linux-$machine.tar.gz" tilo) \
+    || die 'without openssl the installer installed something other than the release'
+  # The site's files decide: one that does not match its sums, and a release the release key did
+  # not sign, both install nothing.
+  printf 'x' >> "$site/releases/latest/tilo-linux-$machine.tar.gz"
+  rm -rf "$home"
+  mkdir -p "$home"
+  if install_from_site "$url" /usr/bin:/bin latest "$home" "$dir" 2>/dev/null; then
+    die 'the installer accepted an archive that does not match the release SHA256SUMS'
+  fi
+  [[ ! -e $home/.local/bin/tilo ]] || die 'the installer wrote a program it refused'
+  rm -f "$site/releases/latest/SHA256SUMS.sig"
+  if install_from_site "$url" /usr/bin:/bin latest "$home" "$dir" 2>/dev/null; then
     die 'the installer accepted a release the release key did not sign'
   fi
   [[ ! -e $home/.local/bin/tilo ]] || die 'the installer wrote a program it refused'
-  rm -rf "$home" "$registry" "$dir"
-  echo "the installer installs the rehearsed release $(version) and refuses it unsigned by the release key"
+  echo "the installer installs the rehearsed release $(version) from the rehearsal's own site, with and without openssl, and refuses a release its sums or the release key do not match"
 }
 
 case ${1:-} in

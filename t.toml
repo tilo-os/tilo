@@ -2577,9 +2577,10 @@ id_token = ["registry.tilo.so"]
 # runs anywhere else. Either may also be dispatched, on a release tag whose own run did not
 # publish it (`t dispatch publish-cli --ref tag:vX.Y.Z`): the release key's token is issued for
 # tags only and cli-release.sh refuses any other ref, so a dispatch elsewhere publishes nothing.
-# cli-rehearsal signs the same release with a throwaway key the same way,
-# publishes it into a directory laid out as tilo.sh serves it, and installs it from there with the
-# installer.
+# cli-rehearsal signs the same release with a throwaway key, publishes it into a directory laid
+# out as tilo.sh serves it, serves that at a local HTTPS site, and installs it the way a person
+# does (`curl -fsSL https://<site>/ | sh`): with openssl on the machine, and again with a PATH
+# that has none, as stock systems come. Nothing in it reaches the live site.
 #
 # A release carries both Linux archives or none. The Mac archives are built by the
 # cli-macos-cross checks, on the same x86_64 node: no Mac is a node of this fleet, so Zig builds
@@ -2633,7 +2634,8 @@ default = false
 [[check]]
 name = "cli-rehearsal"
 run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release"
-# The installer verifies with openssl, which the image lacks; so does this, the same way.
+# openssl makes the rehearsal site's certificate and verifies the signature as the installer does;
+# the image lacks it, so it is installed here.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False openssl && dnf clean all" }
 needs = ["cli-release", "signing-tools"]
 requires = ["arch=x86_64"]
