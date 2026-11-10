@@ -870,13 +870,15 @@ readers = [
 
 [[cargo]]
 package = "tilolang-host"
-# The host compiles built-in packages and embeds the UI host's catalogues, and its task's tests
-# hold native apps' packages from their surfaces, as a session hands them.
+# The host compiles built-in packages and embeds the UI host's catalogues and the toolkit's (the
+# words its dates and clocks are written in), and its task's tests hold native apps' packages from
+# their surfaces, as a session hands them.
 inputs = [
   "apps/tl/",
   "apps/chat/",
   "apps/tasks/",
   "crates/platform/tilo-ui-host/locales/",
+  "crates/sdk/ui-core/locales/",
 ]
 readers = [
   "crates/platform/tilolang-host/examples/host_cost.rs",
