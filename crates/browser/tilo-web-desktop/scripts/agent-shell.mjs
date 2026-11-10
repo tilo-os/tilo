@@ -83,6 +83,14 @@ const out = resolve(option('--out', join(target, 'look/agent-shell')));
 // device key, throwaway HOMEs): beside the shots, so fetching the shots back
 // carries none of it.
 const work = resolve(option('--work', join(target, 'agent-shell-work')));
+// A run is a first visit. The host's state keeps what an earlier run did: the workspace
+// remembers that the person was following the agent and what the agent wrote there, and a run
+// starting from it shoots the last run's desk — already following, so no Follow to press, with
+// a note the person never opened. `--keep-work` runs against what was left.
+if (!flag('--keep-work')) {
+  rmSync(work, {recursive: true, force: true});
+  rmSync(out, {recursive: true, force: true});
+}
 mkdirSync(work, {recursive: true, mode: 0o700});
 const shotsDir = join(out, 'shots');
 const videoDir = join(out, 'video');
@@ -772,41 +780,53 @@ async function rosterOpens(tab, wait) {
   return {panel, took: Date.now() - began};
 }
 
-/** The roster, open: the top bar's people button ("Everyone here"), else the
- * Console's People/Agents, else the palette's people search. The panel is what
- * is waited for, not the button: a press that opened nothing is pressed once
- * more, as a person does when the bar ate it. */
-async function openPeople(tab, label) {
+/** The roster, open: the top bar's own people button ("Everyone here"), pressed as
+ * a person presses it. Only that control opens who is here: the Console's Agents
+ * page and a search result that reads like a person open their windows instead,
+ * and following from one of those finds no Follow at all. */
+async function openPeople(tab) {
   if (rosterOf(await semantics(tab))) return null;
-  // Who is here, as this desktop offers it: the bar's button beside the faces
-  // of everyone here, or the Console's Agents where the workspace opens one.
-  for (const pattern of [/^everyone here$/i, /^people$/i, /^agents$/i]) {
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      if (!await press(tab, pattern, {what: 'the roster'})) break;
-      const {panel, took} = await rosterOpens(tab, 1500);
-      if (panel) {
-        log(`the roster opened ${took} ms after the press`);
-        return null;
-      }
-      log(`pressing ${pattern} opened no roster after ${took} ms: ${names(await semantics(tab))}`);
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    if (!await press(tab, /^everyone here$/i, {what: 'the roster'})) {
+      return `the bar offers no people button: ${names(await semantics(tab))}`;
     }
+    const {panel, took} = await rosterOpens(tab, 4000);
+    if (panel) {
+      log(`the roster opened ${took} ms after the press`);
+      return null;
+    }
+    log(`pressing the people button opened no roster after ${took} ms: ${names(await semantics(tab))}`);
   }
-  const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
-  await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
-  const searching = await until(async () => (await semantics(tab)).some(node => /search|type to search|search or run/i.test(node.name)), 10000);
-  if (!searching) return `no People control, and the search chord opened no search: ${names(await semantics(tab))}`;
-  await typeText(tab, label);
-  const hit = await until(async () => matching(await semantics(tab), new RegExp(label, 'i')), 10000);
-  if (!hit) return `typing ${label} in search found nothing: ${names(await semantics(tab))}`;
-  await key(tab, 'Enter', 'Enter', 13);
-  const {panel} = await rosterOpens(tab, 10000);
-  if (!panel) return `searching for ${label} opened no roster: ${names(await semantics(tab))}`;
-  return null;
+  return `the people button opened no roster: ${names(await semantics(tab))}`;
 }
 
+/** Who is here, closed: the button that opens it closes it, as a person's own
+ * press does. */
+async function closePeople(tab) {
+  if (!rosterOf(await semantics(tab))) return null;
+  await press(tab, /^everyone here$/i, {what: 'closing who is here'});
+  const closed = await until(async () => !rosterOf(await semantics(tab)), 4000, 150);
+  return closed ? null : `who is here stayed open: ${names(await semantics(tab))}`;
+}
+
+/** Whether the note following brought forward is the window in front, by the
+ * frame's own tree: the windows are published in the order they are drawn, so
+ * the last tab bar naming a page is the window in front, and its page is the
+ * name a person reads at the top of it. */
+const noteInFront = nodes => {
+  const bars = nodes.filter(node => typeof node.role === 'string' && /^tabbar$/i.test(node.role) && node.value);
+  return /^launch notes$/i.test(bars.at(-1)?.value ?? '');
+};
+
 async function followAgent(tab, label) {
-  const opened = await openPeople(tab, label);
+  const opened = await openPeople(tab);
   if (opened) return opened;
+  // The workspace can carry following from an earlier session: the row then offers the way back
+  // rather than Follow, and the person's view is already the agent's.
+  if (await until(async () => matching(await semantics(tab), new RegExp(`^stop following ${label}`, 'i')), 3000, 150)) {
+    log(`${label} is already the person's view: the roster offers Stop following`);
+    return null;
+  }
   const follow = new RegExp(`^follow ${label}`, 'i');
   /** The panel with a row to follow in it: what the press that opened it owes. */
   const filled = async (wait) => {
@@ -861,7 +881,7 @@ async function pinOverlay(tab) {
   let pressed = await press(tab, pin, {what: 'pinning who is here'});
   if (!pressed) {
     // The roster closed in the meantime: open it again, then pin.
-    await openPeople(tab, 'Claude Code');
+    await openPeople(tab);
     pressed = await press(tab, pin, {what: 'pinning who is here'});
   }
   if (!pressed) return `no "Keep on screen" control: ${names(await semantics(tab))}`;
@@ -894,8 +914,14 @@ async function unpinned(tab) {
   const back = nodes.some(node => speaks(node, /^put back in the bar$/i));
   if (!back) return undefined;
   await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
-  const closed = await until(async () => !rosterOf(await semantics(tab)), 4000, 150);
-  return closed ? nodes : null;
+  // Back in the bar, the panel it was pinned as is gone, and so is the control only the pinned
+  // panel offers. A list still standing over the desk is the press having done nothing.
+  const left = await until(async () => {
+    const seen = await semantics(tab);
+    const pinned = seen.some(node => speaks(node, /^put back in the bar$/i));
+    return !pinned && !rosterOf(seen) ? seen : undefined;
+  }, 8000, 150);
+  return left ? nodes : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -945,7 +971,9 @@ async function openNote(tab) {
   // A window of Notes with a note in it is what following needs: it is the
   // window the person's view goes to, and where the agent's writing lands.
   const withNote = async () => (await semantics(tab)).some(node => /^saved$/i.test(node.name));
-  const windowed = async () => (await semantics(tab)).some(node => /^notes$/i.test(node.name));
+  // A Notes window, not the launcher's entry for the app: the window publishes itself as the
+  // group of what it shows, and its title bar is the only place "New note" stands.
+  const windowed = async () => (await semantics(tab)).some(node => node.role === 'Group' && /^notes$/i.test(node.name));
   if (await withNote()) return null;
   if (!await windowed()) {
     // The desk's own app list first ("Open an app"), the palette after.
@@ -974,6 +1002,8 @@ async function openNote(tab) {
 // refuses to encode, so a recording that failed is still in the output.
 
 const FPS = 8;
+/** The widest a recording is drawn: what the encoder in the container keeps up with. */
+const RECORD_MAX_W = 720;
 /** Draws the frames it is given into a canvas and records it: a page of its
  * own, so nothing it does reaches the shots. */
 const RECORDING_TAB = `(() => {
@@ -1033,7 +1063,12 @@ async function record(browser, tab, name, {width, height}, body) {
     recorder = await browser.tab();
     await recorder.navigate('about:blank');
     await recorder.evaluate(RECORDING_TAB);
-    await recorder.evaluate(`begin(4000000, ${width}, ${height})`);
+    // The encoder is this container's CPU too: at the page's own 1280 px it keeps up with only a
+    // frame in a second or two, which is no recording. It is watched, not read, so a wide page is
+    // drawn down to RECORD_MAX_W; a phone is under it and records at its own size.
+    const scale = Math.min(1, RECORD_MAX_W / Math.max(width, height));
+    const recorded = [Math.round(width * scale), Math.round(height * scale)];
+    await recorder.evaluate(`begin(4000000, ${recorded[0]}, ${recorded[1]})`);
   } catch (error) {
     log(`${name}: this browser cannot record (${error.message ?? error}); the shots are what it keeps`);
     recorder = null;
@@ -1394,6 +1429,12 @@ try {
         await emulate(theme);
         await until(() => tone(theme), 15000, 300);
 
+        // Following left who is here open beside the note, over the words the agent is about to
+        // write: the person closes it, as their own press closes it, before reading the note.
+        const stillOpen = await closePeople(tab);
+        check(`${combo}: the person can put who is here away to read the note`, stillOpen === null,
+          stillOpen ?? '');
+
         // 5. A few of the agent's actions, with the person following: the
         //    recording, and `following-mid-edit` from the first write.
         const steps = await planActions(agent, apps);
@@ -1401,21 +1442,31 @@ try {
           for (const [index, step] of steps.entries()) {
             const sending = agent.call(step.tool, step.args);
             if (index === steps.shootAt) {
-              // The edit is in flight: the agent's cursor lands on the text as the write
-              // commits, and the words it changed stay lit for a second and a half. The shot is
-              // taken the moment the cursor is in the frame's semantics, never after a fixed
-              // wait, so what it catches is the agent at work rather than where it was.
+              // The edit is in flight. Following brings the note's window forward, and the frame
+              // says which window that is: the cursor is read only once the note it writes in is
+              // the window in front, so the shot is of the note at work and not of the console
+              // still covering it.
+              const frontAt = Date.now();
+              const front = await until(async () => {
+                const nodes = await semantics(tab);
+                return noteInFront(nodes) ? nodes : undefined;
+              }, 12000, 120);
+              log(`${combo}: the followed note came to the front ${((Date.now() - frontAt) / 1000).toFixed(1)} s after the write began`);
+              // The agent's cursor lands on the text as the write commits, and the words it
+              // changed stay lit for a second and a half: read it the moment it is in the frame's
+              // semantics, never after a fixed wait.
               const showing = await until(async () => {
                 const nodes = await semantics(tab);
-                return agentCursor(nodes) ? nodes : undefined;
+                return noteInFront(nodes) && agentCursor(nodes) ? nodes : undefined;
               }, 8000, 120);
               const cursor = showing ? agentCursor(showing) : undefined;
               check(`${combo}: the agent's cursor stands on what it writes`, Boolean(cursor),
-                showing ? `the frame shows ${names(showing)}` : 'the page published no semantics while the write was in flight');
-              const editing = Boolean(showing?.some(node => /notes/i.test(node.name)));
-              log(`${combo}: mid-edit shot ${editing ? 'in the note' : 'but the note was not in front'}` +
+                showing ? `the frame shows ${names(showing)}`
+                  : front ? `the note is in front but no cursor was published while the write was in flight: ${names(front)}`
+                    : `the followed note never came to the front: ${names(await semantics(tab))}`);
+              log(`${combo}: mid-edit shot in the note` +
                 `${cursor ? `, its cursor at ${JSON.stringify(cursor.rect)}` : ', with no agent cursor'}`);
-              await shot(tab, combo, 'following-mid-edit', {expect: [/notes|claude/i], read: showing});
+              await shot(tab, combo, 'following-mid-edit', {expect: [/^launch notes$/i], read: showing});
             }
             const answer = await sending;
             step.answer = answer;
@@ -1460,9 +1511,20 @@ try {
         const pinProblem = await pinOverlay(tab);
         check(`${combo}: who is here is kept on screen`, !pinProblem, pinProblem ?? '');
         await shot(tab, combo, 'presence-with-agent', {expect: [/^everyone here$/i, /claude code/i]});
+        // The line beside the agent's name is what a person reads of its work: the record it is
+        // in and the app. The field a write landed in is the tool's own name for a part of that
+        // record, and no name a person reads.
+        const status = (await semantics(tab)).find(node => /^agent;\s*\S/i.test(node.description ?? ''));
+        note(`${combo}: who is here says where the agent is, in a person's words`, Boolean(status),
+          status ? status.description : `no row described it: ${names(await semantics(tab))}`);
+        check(`${combo}: who is here names the record and its app, never the field written in`,
+          Boolean(status) && !/\bBody of\b|=|#|\//i.test(status.description),
+          status ? status.description : names(await semantics(tab)));
         // Kept on screen, it stays while the person works elsewhere: a press on the desk is the
-        // desk's, and the list is still there after it.
-        await clickAt(tab, Math.round(width / 2), Math.round(height * 0.6));
+        // desk's, and the list is still there after it. The desk's bottom edge, which is the desk
+        // at every width — the panel is a bottom sheet on a phone, and a press on its invite
+        // button is not a press elsewhere.
+        await clickAt(tab, Math.round(width / 2), Math.round(height - 12));
         await sleep(400);
         check(`${combo}: who is here stays while the desk is pressed`, Boolean(rosterOf(await semantics(tab))),
           names(await semantics(tab)));
