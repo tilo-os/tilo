@@ -385,21 +385,32 @@ pub(crate) fn say(peer: u32, workspace: &str, value: &JsPresence) -> Result<f64,
 }
 
 /// Publish what `peer` owes now (keepalives, repeats), and answer when it next has something to say
-/// (`0` for nothing).
+/// (`0` for nothing). A member the board forgot on the way, gone quiet, is taken down by the
+/// mounts that draw the workspace.
 pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
     workspace_number(workspace)?;
-    PAGES.with_borrow_mut(|pages| {
+    let (next, forgot) = PAGES.with_borrow_mut(|pages| {
         let page = pages
             .get_mut(&peer)
             .ok_or_else(|| js_error("not a started peer"))?;
-        if !page.workspaces.values().any(|shown| shown == workspace) {
-            return Ok(0.0);
-        }
+        let Some(workspace_id) = page
+            .workspaces
+            .iter()
+            .find_map(|(id, shown)| (shown == workspace).then_some(*id))
+        else {
+            return Ok((0.0, None));
+        };
         // What this workspace's board owes, whether or not it is the one in front: a page shows
         // each of its workspaces at once, and each keeps its own schedule.
+        let before = page.client.here_revision(workspace);
         page.client.due_in(workspace);
-        Ok(page.client.next_due_in(workspace).unwrap_or(0.0))
-    })
+        let forgot = (page.client.here_revision(workspace) != before).then_some(workspace_id);
+        Ok::<_, JsError>((page.client.next_due_in(workspace).unwrap_or(0.0), forgot))
+    })?;
+    if let Some(workspace_id) = forgot {
+        crate::browser::presence::heard(peer, workspace_id);
+    }
+    Ok(next)
 }
 
 /// Take one presence frame another member published in `workspace_id`: their word merges into the
@@ -408,21 +419,31 @@ pub(crate) fn due(peer: u32, workspace: &str) -> Result<f64, JsError> {
 pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
     let changed = PAGES.with_borrow(|pages| {
         let Some(page) = pages.get(&peer) else {
-            return false;
+            return None;
         };
         let Some(workspace) = page.workspaces.get(&workspace_id) else {
-            return false;
+            return None;
         };
         let before = page.client.here_revision(workspace);
         let Ok(from) = EndpointId::from_bytes(&from) else {
-            return false;
+            return None;
         };
         page.client.heard_body(workspace, from, body);
-        page.client.here_revision(workspace) != before
+        Some((
+            page.client.here_revision(workspace) != before,
+            workspace.clone(),
+        ))
     });
+    let Some((changed, workspace)) = changed else {
+        return;
+    };
     if changed {
         crate::browser::presence::heard(peer, workspace_id);
     }
+    // A page in a hidden tab has its timers held back by the browser, and a member silent for long
+    // is taken down: what it owes leaves as it hears the others too, so a tab kept in the
+    // background stays here while its connection does.
+    let _ = due(peer, &workspace);
 }
 
 /// Take semantic work `from` narrated on a record's live stream in `workspace_id` (`event`):

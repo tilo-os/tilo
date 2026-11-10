@@ -15,6 +15,12 @@ use collab_types::presence::{
 };
 
 use super::publish::{KEEPALIVE_MS, Schedule};
+
+/// How long a member may say nothing before this device forgets them: every
+/// device here says itself again each [`KEEPALIVE_MS`], so this is two of
+/// those words missed with room for a late timer, which a device still
+/// connected does not miss and one that is gone always does.
+pub const SILENT_MS: f64 = KEEPALIVE_MS * 2.0 + 2_000.0;
 use super::smooth::Smoother;
 
 /// A device here, as the workspace names it: its endpoint key.
@@ -180,6 +186,9 @@ pub struct Member {
     /// after leaving, so a surface tells a member from the one before it.
     pub epoch: u64,
     pointer: Smoother,
+    /// When this device last heard them say anything, on the clock the
+    /// caller hands [`Board::hear`]: `None` while only the roster named them.
+    heard_ms: Option<f64>,
 }
 
 impl Member {
@@ -200,6 +209,7 @@ impl Member {
             here: false,
             epoch: 0,
             pointer: Smoother::default(),
+            heard_ms: None,
         }
     }
 
@@ -467,7 +477,11 @@ impl Board {
     /// The burst due at `now_ms`: the frames to say, with the object each is
     /// on the presence track. One burst at most per call; nothing before the
     /// rate ceiling has passed.
+    ///
+    /// The members heard from no longer are forgotten on the same pass
+    /// ([`SILENT_MS`]), so a caller reads [`Self::revision`] after it.
     pub fn due(&mut self, now_ms: f64) -> Option<Vec<(u32, Presence)>> {
+        self.forget_silent(now_ms);
         if self.keepalive_at.is_some_and(|at| now_ms >= at) {
             self.keepalive_at = Some(now_ms + KEEPALIVE_MS);
             self.restate();
@@ -507,6 +521,36 @@ impl Board {
         if from == self.publisher {
             return false;
         }
+        let changed = self.take(from, frame, now_ms);
+        if let Some(member) = self
+            .members
+            .iter_mut()
+            .find(|member| member.publisher == from)
+        {
+            member.heard_ms = Some(now_ms);
+        }
+        changed
+    }
+
+    /// Forget every member nothing was heard from for [`SILENT_MS`]: a
+    /// device whose page closed without saying it left, or whose link
+    /// dropped, keeps no row here. Whether what is known here changed.
+    pub fn forget_silent(&mut self, now_ms: f64) -> bool {
+        let before = self.members.len();
+        self.members.retain(|member| {
+            member
+                .heard_ms
+                .is_none_or(|heard| now_ms - heard < SILENT_MS)
+        });
+        let changed = self.members.len() != before;
+        if changed {
+            self.revision = self.revision.wrapping_add(1);
+        }
+        changed
+    }
+
+    /// Take one member's frame into what is known of them.
+    fn take(&mut self, from: Device, frame: &Presence, now_ms: f64) -> bool {
         if frame.app != DESKTOP_APP {
             return self.keep(from, &frame.key, &frame.payload);
         }

@@ -239,7 +239,12 @@ impl Client {
         if let Some(host) = self.host.borrow().clone() {
             host.pass(self);
         }
-        self.presence.pump_presence() || heard
+        let (said, forgot) = self.presence.pump_presence();
+        if forgot {
+            // A member gone quiet was taken down: who is here changed.
+            self.touched();
+        }
+        said || forgot || heard
     }
 
     /// One member's word about themselves on `workspace`'s live plane: what they said of

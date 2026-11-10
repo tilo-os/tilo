@@ -235,6 +235,15 @@ impl Plane {
         Some((desk, workspace.board.due(now_ms)?))
     }
 
+    /// How many times what is known in the workspace in front changed: a pass reads it around
+    /// [`Self::due_in_front`], which forgets the members gone quiet.
+    #[must_use]
+    pub fn front_revision(&self) -> u64 {
+        self.active
+            .and_then(|active| self.workspaces.iter().find(|held| held.ws == active))
+            .map_or(0, |held| held.board.revision())
+    }
+
     /// Take what `workspace`'s board owes at `now_ms`, as a host that names one workspace at a time
     /// asks with its own timer: the keepalives, the repeats and the loss repairs it holds.
     pub fn due_in(

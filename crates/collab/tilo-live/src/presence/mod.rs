@@ -31,7 +31,7 @@ mod smooth;
 mod tests;
 
 pub use board::{
-    Board, Call, Device, LiveCall, LiveCaller, Member, Own, Point, Status, without_clock,
+    Board, Call, Device, LiveCall, LiveCaller, Member, Own, Point, SILENT_MS, Status, without_clock,
 };
 pub use place::{Tile, anchor, tile};
 pub use publish::{KEEPALIVE_MS, MIN_INTERVAL_MS, REPEATS_MS};

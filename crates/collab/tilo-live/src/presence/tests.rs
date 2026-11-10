@@ -426,3 +426,46 @@ fn a_status_taken_back_is_said_and_its_reader_forgets_it() {
         None
     );
 }
+
+#[test]
+fn a_member_who_goes_quiet_is_forgotten_and_one_who_keeps_talking_is_not() {
+    let mut board = board();
+    board.say(&Own {
+        label: "Me".into(),
+        ..Own::default()
+    });
+    board.due(0.0);
+    for member in [[1; 32], [2; 32]] {
+        board.hear(member, &said(Payload::Arrived), 0.0);
+    }
+    // Only the second keeps saying itself, as every device here does on its
+    // keepalive; the first closed without a word.
+    let mut now = 0.0;
+    for _ in 0..4 {
+        now += KEEPALIVE_MS;
+        board.hear([2; 32], &said(Payload::Arrived), now);
+        board.due(now);
+    }
+    assert!(now >= SILENT_MS, "longer than a member may stay quiet");
+    let here: Vec<Device> = board.here().map(|member| member.publisher).collect();
+    assert_eq!(
+        here,
+        vec![[2; 32]],
+        "the quiet member is gone, the other stays"
+    );
+    assert!(board.member([1; 32]).is_none(), "nothing of it is kept");
+    let revision = board.revision();
+    assert!(
+        !board.forget_silent(now),
+        "forgetting again changes nothing"
+    );
+    assert_eq!(board.revision(), revision);
+}
+
+#[test]
+fn a_member_only_the_roster_named_is_not_forgotten_for_silence() {
+    let mut board = board();
+    board.certify([1; 32], "ada".into(), "laptop");
+    assert!(!board.forget_silent(SILENT_MS * 10.0));
+    assert!(board.member([1; 32]).is_some());
+}

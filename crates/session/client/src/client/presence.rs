@@ -461,14 +461,21 @@ impl Presence {
 
     /// Take what the workspace in front's board owes now: what changed since its last burst, the
     /// loss repairs, and the slow restatement that reaches someone who came in after the first
-    /// word. Whether anything left.
-    pub(super) fn pump_presence(&self) -> bool {
+    /// word. Answers whether anything left, and whether the board forgot a member gone quiet on
+    /// the way.
+    pub(super) fn pump_presence(&self) -> (bool, bool) {
         let now = now_ms();
-        let Some((desk, frames)) = self.plane.borrow_mut().due_in_front(now) else {
-            return false;
+        let (due, forgot) = {
+            let mut plane = self.plane.borrow_mut();
+            let before = plane.front_revision();
+            let due = plane.due_in_front(now);
+            (due, plane.front_revision() != before)
+        };
+        let Some((desk, frames)) = due else {
+            return (false, forgot);
         };
         self.say_frames(desk, frames);
-        true
+        (true, forgot)
     }
 
     /// What this device says of itself, as its board carries it.

@@ -1274,6 +1274,81 @@ fn a_page_and_a_desk_see_the_same_rows_and_lines_of_everyone_here() {
     );
 }
 
+/// A browser joins a workspace a desk and another page are in, then closes without a word, as a
+/// tab killed with its browser does: the others stop listing it within a few seconds, on their own
+/// clocks, while everyone still connected stays.
+#[test]
+fn a_browser_that_closes_without_a_word_leaves_who_is_here_within_seconds() {
+    let (gone, other, native) = (0xa0, 0xb0, 0xd0);
+    let clients = [
+        (
+            gone,
+            Client::offline(device(gone), saying("Ada", 2, None)).0,
+        ),
+        (
+            other,
+            Client::offline(device(other), saying("Grace", 3, None)).0,
+        ),
+        (
+            native,
+            Client::offline(device(native), saying("Quinten", 1, None)).0,
+        ),
+    ];
+    for (own, client) in &clients {
+        client.follow_desktop(&desk(WORKSPACE));
+        for (seed, user, label) in [
+            (gone, 2, "Browser"),
+            (other, 3, "Laptop"),
+            (native, 1, "Desk"),
+        ] {
+            if seed != *own {
+                client.hear(hello(seed, user, label));
+            }
+        }
+    }
+    // Everyone's word reaches everyone else over the plane, each time anyone says one.
+    let carry = |clients: &[(u8, Client)]| {
+        for (from, speaker) in clients {
+            speaker.follow();
+            for frame in speaker.take_said() {
+                for (to, listener) in clients {
+                    if to != from {
+                        listener.heard_presence(WORKSPACE, device(*from), &frame);
+                    }
+                }
+            }
+        }
+    };
+    carry(&clients);
+    let names = |client: &Client| -> Vec<String> {
+        let mut names: Vec<String> = roster_rows(client).into_iter().map(|row| row.0).collect();
+        names.sort();
+        names
+    };
+    let [_, (_, grace), (_, quinten)] = &clients;
+    assert_eq!(names(quinten), ["Ada", "Grace"], "the browser is here");
+    assert_eq!(names(grace), ["Ada", "Quinten"], "the browser is here");
+
+    // The browser closes: nothing more of it reaches anyone, and nobody said it left.
+    let closed = std::time::Instant::now();
+    let still = &clients[1..];
+    let bound = std::time::Duration::from_secs_f64(tilo_live::presence::SILENT_MS / 1_000.0 + 2.0);
+    loop {
+        carry(still);
+        if names(quinten) == ["Grace"] && names(grace) == ["Quinten"] {
+            break;
+        }
+        assert!(
+            closed.elapsed() < bound,
+            "the closed browser is still listed after {:?}: desk {:?}, page {:?}",
+            closed.elapsed(),
+            names(quinten),
+            names(grace),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// What person `user`, called `label`, says of themselves: `status` their line and whether their
 /// device read it off their steps.
 fn saying(label: &str, user: u8, status: Option<(&str, bool)>) -> OwnPresence {
