@@ -1105,7 +1105,12 @@ impl CollaboratorsOverlay {
             if !lines.0.is_empty() {
                 face = face.subtitle(&lines.0);
             }
-            if let Some(doing) = &lines.1 {
+            // The line under the row says it whole where software's window line stands there:
+            // the row's own line is elided to a caption column beside Wave and Stop, and a
+            // person reading "Reading Launch notes in…" has been told nothing.
+            if let Some(doing) = &lines.1
+                && place.working_in.area() <= 0.0
+            {
                 face = face.secondary(doing);
             }
             // Words software wrote about someone are marked as such: never shown as if they had
@@ -1256,7 +1261,11 @@ impl CollaboratorsOverlay {
                 // that window forward.
                 let (line, record) = working_in_line(row);
                 let mut face = ListRowFace::new(&line);
-                if let Some(record) = &record {
+                // The record the line already names is said once: "Reading Launch notes in Notes"
+                // and a "Notes" after it is the same place twice.
+                if let Some(record) = &record
+                    && !line.contains(record.as_str())
+                {
                     face = face.meta(record);
                 }
                 face.interaction(ui::widget::Interaction {
