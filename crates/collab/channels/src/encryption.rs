@@ -59,11 +59,26 @@ const MAX_GROUPS_SEEN: usize = 1 << 16;
 /// back after that many later ones is not going to be applied.
 const MAX_HELD_FRAMES: usize = 8;
 
-/// How long a device that holds no state for a channel waits for its genesis
-/// (from the workspace's retained frames, or a participant answering its request)
-/// before it creates the group itself. Each device waits its own while
-/// within a second or two of the next, set by its key and the channel, so
-/// one creates the group and the others hear of it in time.
+/// The widest a device's wait to create a channel's group spreads past
+/// [`REQUEST_FIRST`], in milliseconds: devices that hold no state for the same
+/// channel wait within these of each other, so one creates the group and the
+/// others hear of it in time.
+const FOUNDING_SPREAD_MS: u64 = 2_000;
+
+/// The longest a device that holds no state for a channel waits for its genesis
+/// (from the workspace's retained frames, or a participant answering its
+/// request) before it creates the group itself: [`REQUEST_FIRST`] plus the
+/// widest spread between devices. Whoever waits for a fresh channel's keys
+/// waits longer than this, or it gives up on a group about to be created.
+#[must_use]
+pub const fn founding_wait() -> Duration {
+    REQUEST_FIRST.saturating_add(Duration::from_millis(FOUNDING_SPREAD_MS))
+}
+
+/// How long this device waits for a channel's genesis before creating the group
+/// itself ([`founding_wait`] at most), its own while set by its key and the
+/// channel: within a second or two of the next device's, so one creates the
+/// group and the others hear of it in time.
 fn found_after(device: &Ed25519PublicKey, channel: ChannelId) -> Duration {
     let spread =
         device
@@ -74,7 +89,7 @@ fn found_after(device: &Ed25519PublicKey, channel: ChannelId) -> Duration {
                 acc.wrapping_mul(31)
                     .wrapping_add(u64::from(device ^ channel))
             })
-            % 2_000;
+            % FOUNDING_SPREAD_MS;
     REQUEST_FIRST.saturating_add(Duration::from_millis(spread))
 }
 
@@ -2469,11 +2484,12 @@ impl ChannelKeyProvider {
     /// ([`ChannelEncryption::access_record`]), and waiting up to `wait` for
     /// the group when the directory backs this device but no genesis has
     /// arrived or been admitted yet. An endpoint writing a record's first
-    /// content asks this: the group is created within a second or two, and
+    /// content asks this: the group is created within [`founding_wait`], and
     /// the write lands with its keys rather than failing.
     ///
     /// `None` when this device takes part in no channel of the route's
-    /// workspace; [`Err`] when it waited and the keys still are not there.
+    /// workspace; [`Err`] when it waited and the keys still are not there,
+    /// saying how long it waited.
     pub async fn open_record(
         &self,
         workspace: WorkspaceId,
@@ -2501,14 +2517,24 @@ impl ChannelKeyProvider {
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Some(Err("the channel's keys are not ready".into()));
+                return Some(Err(not_ready(wait)));
             }
             let changed = tokio::time::timeout(remaining, self.channel_changed(channel, after));
             if changed.await.is_err() {
-                return Some(Err("the channel's keys are not ready".into()));
+                return Some(Err(not_ready(wait)));
             }
         }
     }
+}
+
+/// What a caller waiting `wait` for a channel's keys is told when they never
+/// arrived: how long it waited, so whoever reads it knows what the wait was
+/// and that nothing more is coming.
+fn not_ready(wait: Duration) -> String {
+    format!(
+        "the channel's keys did not arrive within {}s",
+        wait.as_secs()
+    )
 }
 
 /// The identity service's route keys, from this host's channel service once

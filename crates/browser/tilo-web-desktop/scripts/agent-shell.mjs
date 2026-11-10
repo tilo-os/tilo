@@ -313,48 +313,33 @@ const hostHome = join(work, 'host-home');
 const secretsDir = join(work, 'secrets');
 mkdirSync(secretsDir, {recursive: true, mode: 0o700});
 const OPERATOR_LINE = 'tilo-room-operator ';
-// A host's first start seeds the workspace's apps, and a seed that lands
-// before the workspace's channel keys are ready stops it: a fresh state and
-// another start is the whole fix.
-let started = null;
-let lastHost = null;
-for (let attempt = 1; started === null; attempt += 1) {
-  if (attempt > 3) throw new Error(`the host did not start in 3 tries: ${lastHost?.stderr.slice(-1200) ?? ''}`);
-  const host = detached('host', relayBin, ['room', '--state', join(work, 'room-state'),
-    '--persistent', 'tilo', '--workspace-name', 'Tilo', '--root-file', rootFile, '--room-id-file', roomIdFile,
-    '--web', `127.0.0.1:${hostPort}`, '--tls', `files:${certPath},${keyPath}`,
-    '--web-plain', `127.0.0.1:${plainPort}`, '--public-origin', siteOrigin,
-    '--packet-relay', `127.0.0.1:${relayPort}`,
-    '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
-    '--default-role', 'editor', '--room-records',
-    // The apps the workspace opens with: the ones the agent drives, which the
-    // person's desktop shows too. The Terminal's sessions run on the host,
-    // beside the workspace's records.
-    '--seed-app', 'so.tilo.notes', '--seed-app', 'so.tilo.sheets', '--seed-app', 'so.tilo.chat',
-    '--seed-app', 'so.tilo.terminal'],
-  {env: {...homeDirs(hostHome), TILO_RELAY_LOG: process.env.AGENT_SHELL_RELAY_LOG ?? 'tilo_relay=info,warn',
-    // A machine with no keychain to unlock keeps its secrets in files here.
-    TILO_SECRETS_DIR: secretsDir}, stdin: 'pipe', logTo: browserDir});
-  lastHost = host;
-  let stopped = null;
-  host.child.once('exit', code => { stopped = code; });
-  const heard = await until(() => {
-    const line = host.stdout.split('\n')
-      .find(candidate => candidate.startsWith(OPERATOR_LINE) && candidate.includes('"started"'));
-    if (line) return JSON.parse(line.slice(OPERATOR_LINE.length));
-    if (stopped !== null) return {stopped: `the host stopped (exit ${stopped}): ${host.stderr.slice(-1500)}`};
-  }, 240000, 200);
-  if (heard?.stopped) {
-    log(`host attempt ${attempt}: ${heard.stopped}`);
-    await stop(host);
-    rmSync(join(work, 'room-state'), {recursive: true, force: true});
-    rmSync(roomIdFile, {force: true});
-    continue;
-  }
-  if (!heard) throw new Error(`the host did not start: ${host.stderr.slice(-1200)}`);
-  if (heard.room) started = heard;
-  else log('host attempt', attempt, 'governs no workspace yet');
-}
+const host = detached('host', relayBin, ['room', '--state', join(work, 'room-state'),
+  '--persistent', 'tilo', '--workspace-name', 'Tilo', '--root-file', rootFile, '--room-id-file', roomIdFile,
+  '--web', `127.0.0.1:${hostPort}`, '--tls', `files:${certPath},${keyPath}`,
+  '--web-plain', `127.0.0.1:${plainPort}`, '--public-origin', siteOrigin,
+  '--packet-relay', `127.0.0.1:${relayPort}`,
+  '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
+  '--default-role', 'editor', '--room-records',
+  // The apps the workspace opens with: the ones the agent drives, which the
+  // person's desktop shows too. The Terminal's sessions run on the host,
+  // beside the workspace's records.
+  '--seed-app', 'so.tilo.notes', '--seed-app', 'so.tilo.sheets', '--seed-app', 'so.tilo.chat',
+  '--seed-app', 'so.tilo.terminal'],
+{env: {...homeDirs(hostHome), TILO_RELAY_LOG: process.env.AGENT_SHELL_RELAY_LOG ?? 'tilo_relay=info,warn',
+  // A machine with no keychain to unlock keeps its secrets in files here.
+  TILO_SECRETS_DIR: secretsDir}, stdin: 'pipe', logTo: browserDir});
+let stopped = null;
+host.child.once('exit', code => { stopped = code; });
+const started = await until(() => {
+  const line = host.stdout.split('\n')
+    .find(candidate => candidate.startsWith(OPERATOR_LINE) && candidate.includes('"started"'));
+  if (line) return JSON.parse(line.slice(OPERATOR_LINE.length));
+  if (stopped !== null) return {stopped: `the host stopped (exit ${stopped}): ${host.stderr.slice(-1500)}`};
+}, 240000, 200);
+// A start that stopped is said as it stopped: the host explains itself, and a
+// second start would only hide what it said.
+if (started?.stopped) throw new Error(started.stopped);
+if (!started) throw new Error(`the host did not start: ${host.stderr.slice(-1200)}`);
 hostOrigin = siteOrigin;
 const roomId = started.room;
 if (!roomId) throw new Error(`the host governs no workspace: ${JSON.stringify(started)}`);

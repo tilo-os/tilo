@@ -41,8 +41,20 @@ use tilo_room_host::workspaces::{
 };
 use tokio::task::JoinHandle;
 
-/// How long a first write to a record's channel waits for its group.
-const OPEN_WAIT: Duration = Duration::from_secs(5);
+/// How long a first write to a record's channel waits for its group: half a
+/// minute, which is far more than the wait before this device creates the
+/// group itself (`channel_encryption::founding_wait`) and the work a start
+/// does beside it — creating the workspace, its listing and its settings, and
+/// writing the genesis of each app the operator seeded. A fresh start's first
+/// seed waits for all of that, so a wait as short as the channel's own is
+/// refused for keys that are about to arrive; keys that have not arrived in
+/// half a minute are not about to.
+const OPEN_WAIT: Duration = Duration::from_secs(30);
+/// A first write must outlast the wait before the group is created here, or a
+/// fresh workspace's first seed is refused for keys that do arrive.
+const _: () = assert!(
+    OPEN_WAIT.as_secs() > tilo_action_broker::channel_encryption::founding_wait().as_secs()
+);
 /// Where the shared channel service keeps its state under the state root.
 const STATE: &str = "channels";
 /// Where the workspace host keeps the workspaces this relay governs.

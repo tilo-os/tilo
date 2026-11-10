@@ -35,6 +35,11 @@ use tracing_subscriber::{EnvFilter, fmt};
 use tilo_relay::{RelayConfig, daemon::RelayIdentity};
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 
+// The tests in this binary open records, which an app worker serves: libtest
+// owns `main`, so the worker is one more test here.
+#[cfg(all(test, feature = "agents"))]
+tilo_agent_participant::app_worker!();
+
 #[cfg(feature = "agents")]
 mod persistent_moderation;
 #[cfg(feature = "agents")]

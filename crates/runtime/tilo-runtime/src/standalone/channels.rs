@@ -35,8 +35,17 @@ use tilo_identity_host::provisioning::IdentityStorage;
 const CHANNEL_STATE: &str = "channels";
 const CHANNEL_STATE_KEY: &str = "channel-state.key";
 /// How long a first write to a route's channel waits for its group to be
-/// created and admit this device.
-const OPEN_WAIT: Duration = Duration::from_secs(5);
+/// created and admit this device: far more than the wait before this device
+/// creates the group itself
+/// (`tilo_action_broker::channel_encryption::founding_wait`) and the work a
+/// first write does beside it, so a fresh workspace's first write is not
+/// refused for keys that are about to arrive; keys that have not arrived in
+/// half a minute are not about to.
+const OPEN_WAIT: Duration = Duration::from_secs(30);
+/// A first write must outlast the wait before the group is created here.
+const _: () = assert!(
+    OPEN_WAIT.as_secs() > tilo_action_broker::channel_encryption::founding_wait().as_secs()
+);
 
 /// The running channel service; stops when dropped.
 pub(super) struct Channels {
