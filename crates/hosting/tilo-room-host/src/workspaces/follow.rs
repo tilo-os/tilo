@@ -8,6 +8,25 @@ use tilo_peer_state::TransportOrigin;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
+/// A member's write to a record of a governed workspace, after the governor's
+/// copy took it in: what wakes the workspace's installed bots.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordWrite {
+    /// The workspace's UUID.
+    pub workspace: String,
+    /// The record's app.
+    pub app: String,
+    /// The record's id on the wire (`""` for the app's primary).
+    pub record: String,
+    /// What the write carried that the record's repair could take in
+    /// ([`super::repaired_records::Carried`]): the changes it carried, when the
+    /// record's kept changes could wait for one of them. Nothing when the
+    /// record's archive says nothing it keeps waits for a write like this, so
+    /// reading the record for it would be work for nothing.
+    #[cfg(feature = "agents")]
+    pub carried: super::repaired_records::Carried,
+}
+
 /// What taking a member's write into the governor's copy did.
 #[derive(Clone, Debug, Default)]
 pub(super) struct Followed {

@@ -45,6 +45,7 @@ mod door;
 mod follow;
 pub use device_plane::HostJobs;
 use follow::Followed;
+pub use follow::RecordWrite;
 #[cfg(test)]
 mod device_rejoin_tests;
 #[cfg(test)]
@@ -858,6 +859,11 @@ struct WorkspacesInner {
     changes: tokio::sync::broadcast::Sender<String>,
     /// Each record write of a member the governor's copy took in.
     record_writes: tokio::sync::broadcast::Sender<RecordWrite>,
+    /// What the changes a record's repair kept wait for, by record, so a
+    /// member's write to it is only tried against them when it could release
+    /// one ([`repaired_records`]).
+    #[cfg(feature = "agents")]
+    repairs: repaired_records::Repairs,
     /// What members asking for content are answered from.
     content: content::ContentSlot,
     /// Channel access requests and commits of members waiting for the device's
@@ -911,18 +917,6 @@ pub struct MemberMark {
     pub removed: bool,
     /// They are kept out until unbanned.
     pub banned: bool,
-}
-
-/// A member's write to a record of a governed workspace, after the governor's
-/// copy took it in: what wakes the workspace's installed bots.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RecordWrite {
-    /// The workspace's UUID.
-    pub workspace: String,
-    /// The record's app.
-    pub app: String,
-    /// The record's id on the wire (`""` for the app's primary).
-    pub record: String,
 }
 
 /// What [`Workspaces::refound_record`] did: which record was founded again,
@@ -1087,6 +1081,8 @@ impl Workspaces {
                 creating: AsyncMutex::new(()),
                 changes: tokio::sync::broadcast::channel(64).0,
                 record_writes: tokio::sync::broadcast::channel(256).0,
+                #[cfg(feature = "agents")]
+                repairs: repaired_records::Repairs::default(),
                 content: content::ContentSlot::default(),
                 channel_notices: std::sync::Mutex::default(),
                 queued_admissions: std::sync::Mutex::default(),
@@ -2470,10 +2466,21 @@ impl Workspaces {
             }
             crate::timing::window("room.compact", compacting);
         }
+        // What the write carried, read here where it is at hand, so a record
+        // whose repair keeps changes is read only for a write that could
+        // release one of them.
+        #[cfg(feature = "agents")]
+        let carried = {
+            let name = workspace.workspace().to_owned();
+            self.carried_into(&*workspace, (&name, &app, &record), &message)
+                .await
+        };
         let _ = self.inner.record_writes.send(RecordWrite {
             workspace: workspace.workspace().to_owned(),
             app,
             record,
+            #[cfg(feature = "agents")]
+            carried,
         });
     }
 

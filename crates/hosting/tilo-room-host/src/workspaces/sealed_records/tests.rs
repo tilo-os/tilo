@@ -1811,3 +1811,132 @@ async fn a_write_reaches_every_member_once_whatever_carrier_it_came_on() {
     drop(workspaces);
     relay.shutdown().await;
 }
+
+/// Write `value` at `key` into `replica` as its next change, and hand that
+/// change to the workspace as the member's write of [`RECORD`].
+async fn burst_write(
+    member: &SealingMember,
+    workspaces: &Workspaces,
+    workspace: &str,
+    replica: &mut automerge::AutoCommit,
+    (key, value): (&str, &str),
+) {
+    let heads = replica.get_heads();
+    replica.put(ROOT, key, value).unwrap();
+    replica.commit_edit("fixture", key);
+    member
+        .sends_changes(workspaces, workspace, replica.save_after(&heads))
+        .await;
+}
+
+/// A record whose repair keeps a change that waits for another is not read
+/// and written again for every write of it: a burst of writes it waits for
+/// nothing from leaves its kept change where it is, and the one write that
+/// brings what it builds on takes it in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_repair_is_tried_for_a_write_only_when_that_write_could_release_what_it_keeps() {
+    let lounge = Box::new(lounge().await);
+    let (workspaces, workspace) = (&lounge.workspaces, lounge.workspace.as_str());
+    let tried = || super::super::repaired_records::tried(workspace, APP, RECORD);
+    // The record as the member joined it, the write the node never got, and
+    // the change the repair kept on top of it.
+    let joined = lounge.member.document().get_heads();
+    let _never_sent = lounge.member.seal(workspace, |document| {
+        document.put(ROOT, "lost", "on the way").unwrap();
+        document.commit_edit("fixture", "lost");
+    });
+    let lost = lounge.member.document().save_after(&joined);
+    let after_lost = lounge.member.document().get_heads();
+    let _kept_out = lounge.member.seal(workspace, |document| {
+        document.put(ROOT, "kept", "by the repair").unwrap();
+        document.commit_edit("fixture", "kept");
+    });
+    let kept = lounge.member.document().get_changes(&after_lost);
+    let [kept] = kept.as_slice() else {
+        panic!("one change kept: {kept:?}");
+    };
+    // The relay's state root, which holds the governed records' `rooms`.
+    let root = workspaces
+        .workspace(workspace)
+        .await
+        .unwrap()
+        .lock()
+        .await
+        .path
+        .parent()
+        .and_then(std::path::Path::parent)
+        .unwrap()
+        .to_path_buf();
+    let archive =
+        crate::workspaces::repaired_records::repaired_record_dir(&root, workspace, APP, RECORD);
+    std::fs::create_dir_all(&archive).unwrap();
+    let kept_at = archive.join(format!("{}.change", kept.hash()));
+    std::fs::write(&kept_at, kept.raw_bytes()).unwrap();
+
+    // A writer of its own, so none of these writes takes the place in the
+    // member's sequence that the kept change waits for.
+    let mut burst = lounge.member.document().fork_at(&joined).unwrap();
+    burst.set_actor(automerge::ActorId::from(b"burst".as_slice()));
+    // The first write is the one that reads the archive: what it keeps is
+    // what every write after it is tested against.
+    burst_write(
+        &lounge.member,
+        workspaces,
+        workspace,
+        &mut burst,
+        ("title", "burst 0"),
+    )
+    .await;
+    follows(workspaces, workspace, "burst 0").await;
+    let read = tried();
+    for index in 1..=4 {
+        let value = format!("burst {index}");
+        burst_write(
+            &lounge.member,
+            workspaces,
+            workspace,
+            &mut burst,
+            ("title", &value),
+        )
+        .await;
+    }
+    follows(workspaces, workspace, "burst 4").await;
+    // What a write costs a record's repair is decided once it landed.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    assert_eq!(
+        tried(),
+        read,
+        "the record's repair is not read for a write it waits for nothing from"
+    );
+    assert!(
+        kept_at.exists(),
+        "the kept change stays while what it builds on is not in the record"
+    );
+    assert_eq!(
+        read_key(workspaces, workspace, "title").await.as_deref(),
+        Some("burst 4"),
+        "the node took every write of the burst in"
+    );
+
+    // The write that brings the change the kept one builds on.
+    lounge
+        .member
+        .sends_changes(workspaces, workspace, lost)
+        .await;
+    tilo_test_env::within("the kept change is taken in", async {
+        while kept_at.exists() {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await;
+    assert_eq!(
+        read_key(workspaces, workspace, "kept").await.as_deref(),
+        Some("by the repair")
+    );
+    assert_eq!(
+        tried(),
+        read + 1,
+        "the one write that could release it, and no other"
+    );
+    lounge.relay.shutdown().await;
+}

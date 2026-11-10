@@ -22,8 +22,16 @@
 //! A kept change whose writer and sequence the record holds under another
 //! change (the branch a repair carried forward rather than kept) can never
 //! merge, and stays as kept.
+//!
+//! A record whose archive is not empty changes constantly (the shared desktop
+//! does), and re-reading and re-writing it for every write of it costs more
+//! than the kept changes are worth. Each record's kept changes say what they
+//! wait for ([`Waits`]), and a write is only tried against its record when the
+//! changes it carried could release one of them: its hash is one they build
+//! on, or its place in its writer's sequence is the one they follow. The write
+//! is read for that here, never the record.
 
-use super::{RecordWrite, WeakWorkspaces, Workspaces};
+use super::{GovernedWorkspace, RecordWrite, WeakWorkspaces, Workspaces};
 use automerge::{ActorId, AutoCommit, Change, ChangeHash};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
@@ -54,6 +62,177 @@ pub fn repaired_record_dir(root: &Path, workspace: &str, app: &str, record: &str
 struct Kept {
     path: PathBuf,
     change: Change,
+}
+
+/// A record: its workspace, its app, and its id on the wire (`""` for the
+/// app's primary).
+type Record = (String, String, String);
+
+/// One change a write carried into a record, as the record holds it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LandedChange {
+    /// Its hash: what a kept change that builds on it names.
+    pub hash: ChangeHash,
+    /// The writer that made it.
+    pub writer: ActorId,
+    /// Its place in that writer's sequence.
+    pub seq: u64,
+}
+
+/// What a write carried that a record's repair could take in, worked out
+/// without reading the record.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum Carried {
+    /// Nothing a record's repair keeps waits for a change like this write's.
+    #[default]
+    Nothing,
+    /// The changes the write carried.
+    Changes(Vec<LandedChange>),
+    /// Whether the write releases anything is not known here: its record's
+    /// archive has not been read yet, or the write does not open here. The
+    /// record's kept changes are tried all the same.
+    Unknown,
+}
+
+impl Carried {
+    /// This write and `later`, one that landed with it.
+    fn and_later(&mut self, later: Self) {
+        match (&mut *self, later) {
+            (Self::Unknown, _) | (_, Self::Nothing) => {}
+            (carried, Self::Unknown) => *carried = Self::Unknown,
+            (Self::Nothing, later) => *self = later,
+            (Self::Changes(changes), Self::Changes(more)) => changes.extend(more),
+        }
+    }
+}
+
+/// What the kept changes of one record wait for, as its archive says: the
+/// hashes of the changes they build on, and the change of its writer each of
+/// them follows.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct Waits {
+    /// The changes a kept change builds on.
+    builds_on: BTreeSet<ChangeHash>,
+    /// The writer and sequence of the change a kept change follows.
+    follows: BTreeSet<(ActorId, u64)>,
+}
+
+impl Waits {
+    /// What `changes` waits for. A change whose dependencies the record holds
+    /// already waits for nothing, and is taken in beside its record's kept
+    /// changes, so this names some changes the record has: a write carrying
+    /// one of them again is tried once for nothing.
+    fn of<'a>(changes: impl IntoIterator<Item = &'a Change>) -> Self {
+        let mut waits = Self::default();
+        for change in changes {
+            waits.builds_on.extend(change.deps().iter().copied());
+            if let Some(previous) = change.seq().checked_sub(1) {
+                waits.follows.insert((change.actor_id().clone(), previous));
+            }
+        }
+        waits
+    }
+
+    /// Whether anything kept waits for one of `carried`.
+    fn released_by(&self, carried: &[LandedChange]) -> bool {
+        carried.iter().any(|change| {
+            self.builds_on.contains(&change.hash)
+                || self.follows.contains(&(change.writer.clone(), change.seq))
+        })
+    }
+
+    /// Whether it names anything at all: what a write could release.
+    fn any(&self) -> bool {
+        !self.builds_on.is_empty() || !self.follows.is_empty()
+    }
+}
+
+/// What the kept changes of each repaired record wait for, by record, read
+/// from the archive and kept as every pass leaves it
+/// ([`Workspaces::carried_into`]).
+#[derive(Default)]
+pub(crate) struct Repairs {
+    /// A record with an entry here has been read: what is left of its kept
+    /// changes waits for these, and nothing any write carries releases them
+    /// when this names nothing. A record without one has not been read, or
+    /// keeps nothing.
+    waits: std::sync::Mutex<BTreeMap<Record, Waits>>,
+}
+
+impl Repairs {
+    /// What the kept changes of `record` under `root`'s archive wait for;
+    /// `None` when the record keeps nothing, or its archive does not read
+    /// here.
+    fn of(&self, root: &Path, (workspace, app, record): (&str, &str, &str)) -> Option<Waits> {
+        let key = record_key(workspace, app, record);
+        if let Some(read) = self.lock().get(&key) {
+            return Some(read.clone());
+        }
+        let kept = read_kept(&repaired_record_dir(root, workspace, app, record)).ok()?;
+        if kept.is_empty() {
+            return None;
+        }
+        let read = Waits::of(kept.iter().map(|kept| &kept.change));
+        self.lock().insert(key, read.clone());
+        Some(read)
+    }
+
+    /// Read `record`'s archive afresh, as a pass over its kept changes left
+    /// it.
+    fn keep(&self, root: &Path, (workspace, app, record): (&str, &str, &str)) {
+        let key = record_key(workspace, app, record);
+        let kept =
+            read_kept(&repaired_record_dir(root, workspace, app, record)).unwrap_or_default();
+        let mut waits = self.lock();
+        if kept.is_empty() {
+            waits.remove(&key);
+        } else {
+            let read = Waits::of(kept.iter().map(|kept| &kept.change));
+            waits.insert(key, read);
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<Record, Waits>> {
+        self.waits
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn record_key(workspace: &str, app: &str, record: &str) -> Record {
+    (workspace.into(), app.into(), record.into())
+}
+
+/// How many times each record's kept changes were tried here, for the tests
+/// that hold a record to being read only for the writes that can release
+/// something its repair keeps.
+#[cfg(test)]
+static TRIED: std::sync::LazyLock<std::sync::Mutex<BTreeMap<Record, usize>>> =
+    std::sync::LazyLock::new(std::sync::Mutex::default);
+
+/// How many times the kept changes of `record` of `app` in `workspace` were
+/// tried.
+#[cfg(test)]
+pub(crate) fn tried(workspace: &str, app: &str, record: &str) -> usize {
+    TRIED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&record_key(workspace, app, record))
+        .copied()
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "one map holds every record's count, for the whole test binary"
+)]
+fn count_try(workspace: &str, app: &str, record: &str) {
+    let mut tried = TRIED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let times = tried.entry(record_key(workspace, app, record)).or_default();
+    *times = times.saturating_add(1);
 }
 
 /// What taking a record's kept changes in did.
@@ -99,23 +278,59 @@ impl Workspaces {
         });
     }
 
+    /// What `message`, a member's write of `record` of `app` in `workspace`,
+    /// carried that the record's repair could take in, decided from what its
+    /// kept changes wait for and the write alone: the record itself is not
+    /// read ([`Repairs`]).
+    pub(super) async fn carried_into(
+        &self,
+        governed: &GovernedWorkspace,
+        (workspace, app, record): (&str, &str, &str),
+        message: &neighbour_wire::NeighbourMsg,
+    ) -> Carried {
+        let Some(root) = self.repaired_records_root() else {
+            return Carried::Nothing;
+        };
+        let Some(waits) = self.inner.repairs.of(&root, (workspace, app, record)) else {
+            // Its archive has not been read here yet, or keeps nothing: the
+            // write is tried, which reads what it keeps now, and after this
+            // only writes like it.
+            return if repaired_record_dir(&root, workspace, app, record).is_dir() {
+                Carried::Unknown
+            } else {
+                Carried::Nothing
+            };
+        };
+        if !waits.any() {
+            // Read here, and nothing of what it keeps is waiting for a change
+            // any write carries.
+            return Carried::Nothing;
+        }
+        let Some(carried) = carried_changes(governed, (workspace, app, record), message).await
+        else {
+            return Carried::Unknown;
+        };
+        if waits.released_by(&carried) {
+            Carried::Changes(carried)
+        } else {
+            Carried::Nothing
+        }
+    }
+
     /// Write every kept change of `record` of `app` in `workspace` whose
     /// dependencies the record holds into it as the host's own change, and
     /// take it out of the archive under `root`, with any the record holds
     /// already. Logs what it could not do; the kept changes stay then.
     async fn take_in_kept(&self, root: &Path, workspace: &str, app: &str, record: &str) {
+        #[cfg(test)]
+        count_try(workspace, app, record);
         let dir = repaired_record_dir(root, workspace, app, record);
-        match self.take_in_repaired(&dir, workspace, app, record).await {
-            Ok(taken) if taken.merged > 0 || taken.held > 0 => tracing::info!(
-                %workspace,
-                %app,
-                %record,
-                merged = taken.merged,
-                held = taken.held,
-                waiting = taken.waiting,
-                "changes a record's repair left out are in the record again"
-            ),
-            Ok(_) => {}
+        let taken = self.take_in_repaired(&dir, workspace, app, record).await;
+        // What the record keeps from now on is what a write to it is tested
+        // against. Kept as it was when the pass failed: the write that brought
+        // the pass is the one to try, and the next one it can release is.
+        match &taken {
+            Ok(_) => self.inner.repairs.keep(root, (workspace, app, record)),
             Err(error) => tracing::warn!(
                 %workspace,
                 %app,
@@ -123,6 +338,19 @@ impl Workspaces {
                 %error,
                 "changes a record's repair left out were not taken in; they stay kept"
             ),
+        }
+        if let Ok(taken) = taken
+            && (taken.merged > 0 || taken.held > 0)
+        {
+            tracing::info!(
+                %workspace,
+                %app,
+                %record,
+                merged = taken.merged,
+                held = taken.held,
+                waiting = taken.waiting,
+                "changes a record's repair left out are in the record again"
+            );
         }
     }
 
@@ -182,7 +410,8 @@ impl Workspaces {
 }
 
 /// Take in, for each member write that lands, its record's kept changes, once
-/// per record however many writes of it came at once.
+/// per record however many writes of it came at once, and only for the records
+/// whose kept changes a write could release something from.
 async fn follow_writes(
     workspaces: &WeakWorkspaces,
     root: &Path,
@@ -190,27 +419,24 @@ async fn follow_writes(
 ) {
     use tokio::sync::broadcast::error::{RecvError, TryRecvError};
     loop {
-        let mut landed = BTreeSet::new();
+        // What each record's writes landed together carried, in one try each.
+        let mut tried = BTreeMap::new();
         match writes.recv().await {
-            Ok(write) => {
-                landed.insert((write.workspace, write.app, write.record));
-            }
+            Ok(write) => landed(&mut tried, write),
             // Writes went by unread: every record kept is tried.
-            Err(RecvError::Lagged(_)) => landed.extend(kept_records(root)),
+            Err(RecvError::Lagged(_)) => every_kept(&mut tried, root),
             Err(RecvError::Closed) => return,
         }
         loop {
             match writes.try_recv() {
-                Ok(write) => {
-                    landed.insert((write.workspace, write.app, write.record));
-                }
-                Err(TryRecvError::Lagged(_)) => landed.extend(kept_records(root)),
+                Ok(write) => landed(&mut tried, write),
+                Err(TryRecvError::Lagged(_)) => every_kept(&mut tried, root),
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Closed) => return,
             }
         }
-        for (workspace, app, record) in landed {
-            if !repaired_record_dir(root, &workspace, &app, &record).is_dir() {
+        for ((workspace, app, record), carried) in tried {
+            if carried == Carried::Nothing {
                 continue;
             }
             let Some(live) = workspaces.upgrade() else {
@@ -219,6 +445,68 @@ async fn follow_writes(
             live.take_in_kept(root, &workspace, &app, &record).await;
         }
     }
+}
+
+/// What `write` adds to what `tried` holds for its record.
+fn landed(tried: &mut BTreeMap<Record, Carried>, write: RecordWrite) {
+    let key = record_key(&write.workspace, &write.app, &write.record);
+    match tried.get_mut(&key) {
+        Some(carried) => carried.and_later(write.carried),
+        None => {
+            tried.insert(key, write.carried);
+        }
+    }
+}
+
+/// Every record with changes kept under `root`'s archive, tried.
+fn every_kept(tried: &mut BTreeMap<Record, Carried>, root: &Path) {
+    for (workspace, app, record) in kept_records(root) {
+        tried
+            .entry(record_key(&workspace, &app, &record))
+            .and_modify(|carried| carried.and_later(Carried::Unknown))
+            .or_insert(Carried::Unknown);
+    }
+}
+
+/// The changes `message`, a member's write of `(app, record)` in `workspace`,
+/// carried, read from the write itself where it is in the clear and opened
+/// with the record's channel keys where it is sealed; `None` when they cannot
+/// be read here.
+async fn carried_changes(
+    governed: &GovernedWorkspace,
+    (workspace, app, record): (&str, &str, &str),
+    message: &neighbour_wire::NeighbourMsg,
+) -> Option<Vec<LandedChange>> {
+    let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
+        return None;
+    };
+    let mutation =
+        match collab_types::validate_whole_document_payload_route(app, workspace, record, envelope)
+            .ok()?
+        {
+            collab_types::WholeDocumentPayload::Cleartext(mutation) => mutation,
+            collab_types::WholeDocumentPayload::Encrypted { .. } => {
+                // Sealed for the record's channel: opened here where this host
+                // holds its keys, and read nowhere else.
+                let opened = governed
+                    .open_write(app, record, envelope)
+                    .await
+                    .ok()
+                    .flatten()?;
+                collab_types::DocumentMutation::decode(&opened).ok()?
+            }
+        };
+    let changes = collab_types::parse_changes(mutation.data()).ok()?;
+    Some(
+        changes
+            .iter()
+            .map(|change| LandedChange {
+                hash: change.hash(),
+                writer: change.actor_id().clone(),
+                seq: change.seq(),
+            })
+            .collect(),
+    )
 }
 
 /// Every record with changes kept under `root`'s archive, as

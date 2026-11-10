@@ -315,7 +315,9 @@ impl WorkspaceAttachments {
                 workspace: self.workspace.clone(),
                 app,
                 record,
+                carried: tilo_room_host::workspaces::repaired_records::Carried::Nothing,
             };
+
             if let Some(part) = self.part_of(&write) {
                 self.read_part(&part).await;
             }
