@@ -19,6 +19,7 @@ pub mod frame;
 
 pub mod preface;
 
+pub mod page;
 /// The devices whose frames a scope opens.
 pub mod roster;
 pub mod video;

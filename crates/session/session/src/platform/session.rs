@@ -1344,6 +1344,7 @@ impl Session {
             services,
             table,
             window_shares,
+            pages: crate::page_track::PageTracks::new(),
             seats,
             hosted: !options.machine.is_owned(),
             fabric: fabric.clone(),

@@ -10,10 +10,11 @@
 //! does not name is refused before it is decrypted.
 //!
 //! Presence, audio and the activity note are tracks every plane publishes.
-//! Pictures are not: a camera or screen layer exists only while a peer asks
-//! for it ([`Plane::show`]), and a device encodes a layer only while it is
-//! asked for ([`Plane::wanted_pictures`]), so a picture nobody watches costs
-//! no bitrate and no encoder.
+//! Pictures and a window's page are not: a camera layer, a screen layer or a
+//! page track exists only while a peer asks for it ([`Plane::show`]), and a
+//! device encodes a layer or captures a page only while it is asked for
+//! ([`Plane::wanted_pictures`], [`Plane::wanted_pages`]), so a picture or a
+//! page nobody watches costs no bitrate and no capture.
 //!
 //! The carrier is whatever [`Dial`] this device has: iroh to the device that
 //! serves the workspace ([`crate::native::Iroh`]). This module does not name
@@ -26,6 +27,7 @@ use std::task::Poll;
 use std::time::Duration;
 
 use crate::frame::{Opener, Refusal, Sealer, Stream, TrackName};
+use crate::page::{self, PageObject};
 use crate::roster::Roster;
 use crate::video::{self, Layer, Source, VideoObject};
 use channel_crypto::ChannelContentKeys;
@@ -144,8 +146,9 @@ impl Heard {
     }
 }
 
-/// One picture track this plane publishes because a peer asked for it.
-struct PictureOut {
+/// One track this plane publishes because a peer asked for it: a picture
+/// layer or a window's page.
+struct Demand {
     track: moq_net::track::Producer,
     group: Option<moq_net::group::Producer>,
     next_group: u64,
@@ -154,8 +157,9 @@ struct PictureOut {
     _unused: Task,
 }
 
-impl PictureOut {
-    /// Write one encoded picture: a keyframe starts a group.
+impl Demand {
+    /// Write one object of the track: the object that starts a group — a
+    /// picture's keyframe, a page's whole frame — opens the group.
     fn write(
         &mut self,
         keyframe: bool,
@@ -187,19 +191,19 @@ impl PictureOut {
     }
 }
 
-/// The picture tracks of one plane, as its readers asked for them.
+/// The tracks of one plane its readers asked for, as they asked.
 #[derive(Default)]
-struct Pictures {
+struct Demands {
     /// The tracks someone asked this device for, by track name: exactly what
     /// it encodes ([`Plane::wanted_pictures`]).
-    out: BTreeMap<String, PictureOut>,
+    out: BTreeMap<String, Demand>,
     /// Where a track asked for again numbers its groups: one past the last
     /// group of its earlier acceptance, so a subscriber that asks again is
     /// never sent a group it already read.
     next_group: BTreeMap<String, u64>,
     /// Tracks whose reader needs a keyframe: they were asked for afresh, or
     /// a picture could not join its group.
-    keyframes: BTreeSet<video::Track>,
+    keyframes: BTreeSet<Track>,
     /// Received tracks that dropped a picture: nothing of them is delivered
     /// until a keyframe.
     behind: BTreeSet<([u8; 32], Track)>,
@@ -226,10 +230,11 @@ pub(crate) struct Shared {
     picture_requests: Mutex<Option<moq_net::broadcast::Dynamic>>,
     /// The picture layers someone shows of this device, and the groups they
     /// are written in.
-    pictures: Mutex<Pictures>,
-    /// Advances whenever a picture layer is asked for or ends, or a picture
-    /// could not join its group.
-    pictures_revision: AtomicU64,
+    demands: Mutex<Demands>,
+    /// Advances whenever a demanded track is asked for or ends, or an object
+    /// could not join its group: what a publisher reads to encode a picture or
+    /// capture a page.
+    demand_revision: AtomicU64,
     heard: Mutex<VecDeque<Heard>>,
     /// How many objects this plane opened from its peers, and why it could not
     /// open what a reader got: the answer a member needs when it hears nobody
@@ -293,8 +298,8 @@ impl Shared {
             published: Mutex::new(published),
             _broadcast: broadcast,
             picture_requests: Mutex::new(requests),
-            pictures: Mutex::new(Pictures::default()),
-            pictures_revision: AtomicU64::new(0),
+            demands: Mutex::new(Demands::default()),
+            demand_revision: AtomicU64::new(0),
             heard: Mutex::new(VecDeque::new()),
             heard_total: AtomicU64::new(0),
             refusals: Mutex::new(BTreeMap::new()),
@@ -371,12 +376,12 @@ impl Shared {
     fn deliver_picture(&self, heard: Heard) {
         let key = (heard.sender, heard.track);
         let keyframe = VideoObject::decode(&heard.body).is_ok_and(|object| object.keyframe);
-        let mut pictures = self.pictures.lock_recover();
-        if pictures.behind.contains(&key) {
+        let mut demands = self.demands.lock_recover();
+        if demands.behind.contains(&key) {
             if !keyframe {
                 return;
             }
-            pictures.behind.remove(&key);
+            demands.behind.remove(&key);
         }
         let queued = self
             .heard
@@ -389,21 +394,21 @@ impl Shared {
                 .lock_recover()
                 .retain(|object| (object.sender, object.track) != key);
             if !keyframe {
-                pictures.behind.insert(key);
+                demands.behind.insert(key);
                 return;
             }
         }
-        drop(pictures);
+        drop(demands);
         self.deliver(heard);
     }
     /// A picture track someone asked for, or one this plane no longer reads,
     /// or one that needs a keyframe: the encoder reads it.
-    fn pictures_moved(&self) {
-        self.pictures_revision.fetch_add(1, Ordering::Relaxed);
+    fn demand_moved(&self) {
+        self.demand_revision.fetch_add(1, Ordering::Relaxed);
         self.wake();
     }
     /// The peers' requests for this device's picture tracks, taken once.
-    fn take_picture_requests(&self) -> Option<moq_net::broadcast::Dynamic> {
+    fn take_demands(&self) -> Option<moq_net::broadcast::Dynamic> {
         self.picture_requests.lock_recover().take()
     }
     /// Would `device`'s frame be opened now? Decided by the roster and the
@@ -465,13 +470,13 @@ pub struct Plane {
     /// This device's recent audio objects, newest last: the redundancy its
     /// datagrams carry, so one lost packet costs one frame and not two.
     sent: Mutex<VecDeque<Vec<u8>>>,
-    /// The peer picture tracks this plane reads now: exactly what its app
+    /// The peer tracks this plane reads now: exactly what its app
     /// shows ([`Self::show`]), one reader each.
     shown: Mutex<BTreeMap<([u8; 32], Track), Task>>,
     /// One reader per device of the roster, by track: started when the device
     /// joins the roster, ended by itself once the roster no longer admits it.
     readers: Mutex<Vec<Task>>,
-    _pictures: Vec<Task>,
+    _demands: Vec<Task>,
     _origins: Vec<OriginTask>,
     _connected: Option<Connected>,
 }
@@ -529,7 +534,7 @@ impl Plane {
     /// Start the readers of a prepared plane.
     fn serve(shared: Arc<Shared>, origins: Vec<OriginTask>, connected: Option<Connected>) -> Self {
         let mut readers = Vec::new();
-        let mut pictures = Vec::new();
+        let mut demands = Vec::new();
         if let Some(connected) = &connected {
             let watched = connected.session.clone();
             let ended = shared.clone();
@@ -538,8 +543,8 @@ impl Plane {
                 ended.end();
             }));
         }
-        if let Some(requests) = shared.take_picture_requests() {
-            pictures.push(Task::spawn(accept_pictures(shared.clone(), requests)));
+        if let Some(requests) = shared.take_demands() {
+            demands.push(Task::spawn(accept_demands(shared.clone(), requests)));
         }
         read_roster(&shared, &mut readers);
         Self {
@@ -547,7 +552,7 @@ impl Plane {
             sent: Mutex::new(VecDeque::new()),
             shown: Mutex::new(BTreeMap::new()),
             readers: Mutex::new(readers),
-            _pictures: pictures,
+            _demands: demands,
             _origins: origins,
             _connected: connected,
         }
@@ -656,15 +661,15 @@ impl Plane {
     }
 
     /// Show `tracks` of `sender` here, and stop showing those left out: this
-    /// plane asks the peer for exactly these picture layers, and its session
-    /// encodes a layer only while a peer asks for it. A track is read from
-    /// the peer's own broadcast, so what arrives is [`Shared::deliver`]ed as
-    /// that peer's objects.
+    /// plane asks the peer for exactly these picture layers and window pages,
+    /// and its session encodes a layer, or captures a page, only while a peer
+    /// asks for it. A track is read from the peer's own broadcast, so what
+    /// arrives is [`Shared::deliver`]ed as that peer's objects.
     pub fn show(&self, sender: [u8; 32], tracks: &[Track]) {
         let wanted: BTreeSet<Track> = tracks
             .iter()
             .copied()
-            .filter(|track| matches!(track, Track::Camera(_) | Track::Screen(_)))
+            .filter(|track| matches!(track, Track::Camera(_) | Track::Screen(_) | Track::Page(_)))
             .collect();
         let mut shown = self.shown.lock_recover();
         let stale: Vec<([u8; 32], Track)> = shown
@@ -674,7 +679,7 @@ impl Plane {
             .collect();
         for key in stale {
             // Dropping the reader's task ends it: the peer is no longer
-            // asked for that layer.
+            // asked for that track.
             shown.remove(&key);
         }
         if sender == self.shared.join.device {
@@ -690,15 +695,28 @@ impl Plane {
     }
 
     /// The picture layers someone shows of this device now: exactly what it
-    /// encodes. Changes with [`Self::pictures_revision`].
+    /// encodes. Changes with [`Self::demand_revision`].
     #[must_use]
     pub fn wanted_pictures(&self) -> Vec<(Source, Layer)> {
         self.shared
-            .pictures
+            .demands
             .lock_recover()
             .out
             .keys()
             .filter_map(|name| video::parse_track(name))
+            .collect()
+    }
+
+    /// The windows whose page someone shows of this device now: exactly what
+    /// it captures and sends. Changes with [`Self::demand_revision`].
+    #[must_use]
+    pub fn wanted_pages(&self) -> Vec<u64> {
+        self.shared
+            .demands
+            .lock_recover()
+            .out
+            .keys()
+            .filter_map(|name| page::parse_track(name))
             .collect()
     }
 
@@ -707,11 +725,11 @@ impl Plane {
     #[must_use]
     pub fn wants_picture_keyframe(&self, source: Source) -> bool {
         self.shared
-            .pictures
+            .demands
             .lock_recover()
             .keyframes
             .iter()
-            .any(|track| matches!(track, video::Track::Picture(of, _) if *of == source))
+            .any(|held| held.picture_of() == Some(source))
     }
 
     /// The layers of `source` that need a keyframe now: their tracks were
@@ -719,26 +737,45 @@ impl Plane {
     /// picture sends its new reader nothing until asked.
     #[must_use]
     pub fn take_picture_keyframes(&self, source: Source) -> Vec<Layer> {
-        let mut pictures = self.shared.pictures.lock_recover();
-        let layers = pictures
+        let mut demands = self.shared.demands.lock_recover();
+        let layers: Vec<Layer> = demands
             .keyframes
             .iter()
-            .filter_map(|track| match track {
-                video::Track::Picture(of, layer) if *of == source => Some(*layer),
-                _ => None,
-            })
+            .filter(|held| held.picture_of() == Some(source))
+            .map(|held| held.layer())
             .collect();
-        pictures
+        demands
             .keyframes
-            .retain(|track| !matches!(track, video::Track::Picture(of, _) if *of == source));
+            .retain(|held| held.picture_of() != Some(source));
         layers
     }
 
-    /// Advances whenever a picture layer is asked for or ends, or a picture
-    /// could not join its group.
+    /// The windows whose page needs a whole frame now, as
+    /// [`Self::take_page_keyframes`] would take: their tracks were asked for
+    /// afresh, or an object could not join its group.
     #[must_use]
-    pub fn pictures_revision(&self) -> u64 {
-        self.shared.pictures_revision.load(Ordering::Relaxed)
+    pub fn take_page_keyframes(&self) -> Vec<u64> {
+        let mut demands = self.shared.demands.lock_recover();
+        let pages = demands
+            .keyframes
+            .iter()
+            .filter_map(|track| match track {
+                Track::Page(tab) => Some(*tab),
+                _ => None,
+            })
+            .collect();
+        demands
+            .keyframes
+            .retain(|track| !matches!(track, Track::Page(_)));
+        pages
+    }
+
+    /// Advances whenever a demanded track is asked for or ends, or an object
+    /// could not join its group: what a publisher reads to encode a picture or
+    /// capture a page.
+    #[must_use]
+    pub fn demand_revision(&self) -> u64 {
+        self.shared.demand_revision.load(Ordering::Relaxed)
     }
 
     /// Send one picture of `source` on its layer's track, to everyone who
@@ -756,13 +793,76 @@ impl Plane {
     /// keyframe or a group past [`video::MAX_GROUP_OBJECTS`] (send a
     /// keyframe), and otherwise as [`Self::publish`].
     pub fn send_picture(&self, source: Source, object: &VideoObject) -> Result<(), PlaneError> {
-        if self.shared.ended() {
-            return Err(PlaneError::Ended);
-        }
         let track = match source {
             Source::Camera => Track::Camera(object.layer),
             Source::Screen => Track::Screen(object.layer),
         };
+        let object = object.clone();
+        self.send_keyed(
+            track,
+            object.keyframe,
+            object.timestamp_us,
+            &object.payload,
+            {
+                move |body| {
+                    VideoObject {
+                        payload: body,
+                        ..object
+                    }
+                    .encode()
+                    .map_err(|_| PlaneError::Invalid)
+                }
+            },
+        )
+    }
+
+    /// Send one object of window `tab`'s page on its track, to everyone who
+    /// shows it. A page starts with a whole frame
+    /// ([`Self::take_page_keyframes`]), and each whole frame starts a group.
+    ///
+    /// The page is sealed as its own stream: only the payload is sealed, so
+    /// the relay still validates the object it forwards and never sees the
+    /// page.
+    ///
+    /// # Errors
+    ///
+    /// [`PlaneError::Unwanted`] when nobody shows this page,
+    /// [`PlaneError::Unkeyed`] for a patch before the page's first whole
+    /// frame or a group past [`page::MAX_GROUP_OBJECTS`] (send a whole
+    /// frame), and otherwise as [`Self::publish`].
+    pub fn send_page(&self, tab: u64, object: &PageObject) -> Result<(), PlaneError> {
+        let track = Track::Page(tab);
+        let object = object.clone();
+        self.send_keyed(
+            track,
+            object.whole,
+            object.timestamp_us,
+            &object.payload,
+            move |body| {
+                PageObject {
+                    payload: body,
+                    ..object
+                }
+                .encode()
+                .map_err(|_| PlaneError::Invalid)
+            },
+        )
+    }
+
+    /// Seal one object of a demanded track's payload and write it in the
+    /// track's group: `rebuild` puts the sealed payload back in the object the
+    /// track carries.
+    fn send_keyed(
+        &self,
+        track: Track,
+        whole: bool,
+        timestamp_us: u64,
+        payload: &[u8],
+        rebuild: impl FnOnce(Vec<u8>) -> Result<Vec<u8>, PlaneError>,
+    ) -> Result<(), PlaneError> {
+        if self.shared.ended() {
+            return Err(PlaneError::Ended);
+        }
         let name = live::track(track);
         let keys = self.shared.keys.lock_recover().clone();
         let sealer = Sealer::new(
@@ -771,28 +871,20 @@ impl Plane {
             stream(track),
             TrackName::new(&self.shared.join.scope, name.as_str()),
         )?;
-        let timestamp = moq_net::Timestamp::from_scale(object.timestamp_us, 1_000_000)
+        let timestamp = moq_net::Timestamp::from_scale(timestamp_us, 1_000_000)
             .map_err(|_| PlaneError::Invalid)?;
-        let mut pictures = self.shared.pictures.lock_recover();
-        let Some(out) = pictures.out.get_mut(&name) else {
+        let mut demands = self.shared.demands.lock_recover();
+        let Some(out) = demands.out.get_mut(&name) else {
             return Err(PlaneError::Unwanted);
         };
-        let cipher_body = sealer.seal(
-            u32::try_from(out.next_group).unwrap_or(u32::MAX),
-            &object.payload,
-        )?;
-        let object = VideoObject {
-            payload: cipher_body,
-            ..object.clone()
-        };
-        let bytes = object.encode().map_err(|_| PlaneError::Invalid)?;
-        let sent = out.write(object.keyframe, timestamp, bytes);
+        let cipher_body =
+            sealer.seal(u32::try_from(out.next_group).unwrap_or(u32::MAX), payload)?;
+        let bytes = rebuild(cipher_body)?;
+        let sent = out.write(whole, timestamp, bytes);
         if sent.is_err() {
-            pictures
-                .keyframes
-                .insert(video::Track::Picture(source, object.layer));
-            drop(pictures);
-            self.shared.pictures_moved();
+            demands.keyframes.insert(track);
+            drop(demands);
+            self.shared.demand_moved();
         }
         sent
     }
@@ -849,6 +941,7 @@ pub const fn stream(track: Track) -> Stream {
         Track::Camera(_) => Stream::Camera,
         Track::Screen(_) => Stream::Screen,
         Track::Window(..) => Stream::Window,
+        Track::Page(_) => Stream::Page,
         Track::Input(_) | Track::Activity => Stream::Activity,
     }
 }
@@ -868,36 +961,42 @@ fn track_info(track: Track) -> moq_net::track::Info {
         .with_priority(live::priority(track))
 }
 
-/// Serve the peers' requests for this device's picture tracks: a request for
-/// a camera or screen layer is accepted and encoded from then on, a track
+/// Serve the peers' requests for this device's demanded tracks: a request for
+/// a camera layer, a screen layer or a window's page is accepted and published
+/// from then on, a track
 /// nobody reads past its grace is ended
 /// ([`watch_unused`]), and anything else is refused.
-async fn accept_pictures(shared: Arc<Shared>, mut requests: moq_net::broadcast::Dynamic) {
+async fn accept_demands(shared: Arc<Shared>, mut requests: moq_net::broadcast::Dynamic) {
     while let Ok(request) = requests.requested_track().await {
-        let Some(track) = video::Track::parse(request.name()) else {
+        let Some(track) = live::parse_track(request.name()) else {
             request.reject(moq_net::Error::NotFound);
             continue;
         };
-        let video::Track::Picture(source, layer) = track else {
-            request.reject(moq_net::Error::NotFound);
-            continue;
+        // Only a track someone can ask this device for: its own pictures and
+        // the pages of the windows it shows.
+        let accepted = match track {
+            Track::Camera(_) | Track::Screen(_) | Track::Page(_) => track,
+            Track::Presence
+            | Track::Audio
+            | Track::Window(..)
+            | Track::Input(_)
+            | Track::Activity => {
+                request.reject(moq_net::Error::NotFound);
+                continue;
+            }
         };
         if shared.ended() {
             request.reject(moq_net::Error::Cancel);
             return;
         }
         let name = request.name().to_owned();
-        let plane_track = match source {
-            Source::Camera => Track::Camera(layer),
-            Source::Screen => Track::Screen(layer),
-        };
-        let out = request.accept(track_info(plane_track));
+        let out = request.accept(track_info(accepted));
         let unused = watch_unused(&shared, name.clone(), out.clone());
-        let mut pictures = shared.pictures.lock_recover();
-        let next_group = pictures.next_group.get(&name).copied().unwrap_or(0);
-        pictures.out.insert(
+        let mut demands = shared.demands.lock_recover();
+        let next_group = demands.next_group.get(&name).copied().unwrap_or(0);
+        demands.out.insert(
             name,
-            PictureOut {
+            Demand {
                 track: out,
                 group: None,
                 next_group,
@@ -905,14 +1004,15 @@ async fn accept_pictures(shared: Arc<Shared>, mut requests: moq_net::broadcast::
                 _unused: unused,
             },
         );
-        // The new reader can start at nothing but a keyframe.
-        pictures.keyframes.insert(track);
-        drop(pictures);
-        shared.pictures_moved();
+        // The new reader can start at nothing but a group's first object: a
+        // picture's keyframe, a page's whole frame.
+        demands.keyframes.insert(accepted);
+        drop(demands);
+        shared.demand_moved();
     }
 }
 
-/// A picture track nobody reads any more is ended and no longer encoded. A
+/// A demanded track nobody reads any more is ended and no longer encoded. A
 /// track is accepted before its reader attaches, so it is ended only once it
 /// stays unread past the grace: a track ended in that gap would take the
 /// keyframe asked for with it.
@@ -924,8 +1024,8 @@ fn watch_unused(shared: &Arc<Shared>, name: String, track: moq_net::track::Produ
             let Some(shared) = shared.upgrade() else {
                 return;
             };
-            let mut pictures = shared.pictures.lock_recover();
-            if !pictures
+            let mut demands = shared.demands.lock_recover();
+            if !demands
                 .out
                 .get(&name)
                 .is_some_and(|out| out.track.is_clone(&track))
@@ -935,11 +1035,11 @@ fn watch_unused(shared: &Arc<Shared>, name: String, track: moq_net::track::Produ
             if track.clone().abort_unused(moq_net::Error::Cancel).is_err() {
                 continue;
             }
-            if let Some(out) = pictures.out.remove(&name) {
-                pictures.next_group.insert(name, out.next_group);
+            if let Some(out) = demands.out.remove(&name) {
+                demands.next_group.insert(name, out.next_group);
             }
-            drop(pictures);
-            shared.pictures_moved();
+            drop(demands);
+            shared.demand_moved();
             return;
         }
     })
@@ -957,6 +1057,26 @@ fn open_picture(
     let opened = shared.open(device, track, &object.payload).ok()?;
     let sequence = u32::try_from(object.sequence).unwrap_or(u32::MAX);
     let body = VideoObject {
+        payload: opened,
+        ..object
+    }
+    .encode()
+    .ok()?;
+    Some((sequence, body))
+}
+
+/// Open one page object's sealed payload, keeping the header the relay
+/// validated: `None` when the epoch or the roster no longer opens it.
+fn open_page(
+    shared: &Shared,
+    device: [u8; 32],
+    track: Track,
+    bytes: &[u8],
+) -> Option<(u32, Vec<u8>)> {
+    let object = PageObject::decode(bytes).ok()?;
+    let opened = shared.open(device, track, &object.payload).ok()?;
+    let sequence = u32::try_from(object.sequence).unwrap_or(u32::MAX);
+    let body = PageObject {
         payload: opened,
         ..object
     }
@@ -1101,6 +1221,21 @@ async fn read(
                         }
                         if hear_voice(shared, device, &object) {
                             played = Some(object.sequence);
+                        }
+                        continue;
+                    }
+                    if matches!(track, Track::Page(_)) {
+                        // A page keeps the header the relay validated: whether
+                        // it is a whole frame is what a viewer acts on.
+                        if let Some((sequence, body)) =
+                            open_page(shared, device, track, &frame.payload)
+                        {
+                            shared.deliver(Heard {
+                                sender: device,
+                                track,
+                                sequence,
+                                body,
+                            });
                         }
                         continue;
                     }

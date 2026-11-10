@@ -792,6 +792,29 @@ fn picture(
     }
 }
 
+/// One object of a window's page, as its publisher sends it.
+fn page_object(sequence: u64, whole: bool) -> tilo_live::page::PageObject {
+    tilo_live::page::PageObject {
+        whole,
+        sequence,
+        timestamp_us: sequence.saturating_mul(100_000),
+        payload: vec![0, 9, 9],
+    }
+}
+
+/// Everything `plane` received on `track` so far, decoded.
+fn pages(plane: &Plane, track: Track) -> Vec<tilo_live::page::PageObject> {
+    let mut objects = Vec::new();
+    while let Some(heard) = plane.try_recv() {
+        if heard.track == track
+            && let Ok(object) = tilo_live::page::PageObject::decode(&heard.body)
+        {
+            objects.push(object);
+        }
+    }
+    objects
+}
+
 /// Everything `plane` received on `track` so far, decoded.
 fn pictures(plane: &Plane, track: Track) -> Vec<tilo_live::video::VideoObject> {
     let mut objects = Vec::new();
@@ -987,5 +1010,116 @@ async fn a_shared_screen_is_published_only_at_the_layer_shown() {
             &picture(Layer::Low, Source::Screen, sequence, true)
         ),
         Err(plane::PlaneError::Unwanted)
+    );
+}
+
+/// One window's page travels the plane as its own sealed track: the publisher
+/// sends it only while a member shows it, the member's first object is a whole
+/// frame, and a member that joins while the page is up starts at a whole frame
+/// too — never at a patch of a frame it does not hold.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_windows_page_travels_only_while_a_member_shows_it() {
+    /// The window whose page the test publishes.
+    const TAB: u64 = 0x5EED_0000_0000_0007;
+    let authority = Authority::new();
+    let (relay_endpoint, a_endpoint, b_endpoint, c_endpoint) = (
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+        endpoint().await,
+    );
+    let (a_key, b_key, c_key) = (
+        *a_endpoint.id().as_bytes(),
+        *b_endpoint.id().as_bytes(),
+        *c_endpoint.id().as_bytes(),
+    );
+    let (a_cert, b_cert, c_cert) = (
+        authority.admit_device(a_key),
+        authority.admit_device(b_key),
+        authority.admit_device(c_key),
+    );
+    let roster = authority.roster();
+    let relay = Relay::new(authority.clone());
+    let _router = serve(&relay, &relay_endpoint);
+    let keys = keys();
+    let a = Plane::join(
+        &native::Iroh::new(a_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&a_cert),
+        join(a_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    let b = Plane::join(
+        &native::Iroh::new(b_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&b_cert),
+        join(b_key, roster.clone(), keys.clone()),
+    )
+    .await
+    .unwrap();
+    wait_until("both sessions admitted", || relay.counters().accepted == 2);
+    assert!(
+        a.wanted_pages().is_empty(),
+        "nobody shows the page yet: nothing is captured"
+    );
+
+    // The viewer shows the window's page: its track is asked for, and it
+    // starts with a whole frame.
+    b.show(a_key, &[Track::Page(TAB)]);
+    wait_until("the page is asked for", || a.wanted_pages() == [TAB]);
+    assert_eq!(a.take_page_keyframes(), [TAB]);
+    let mut received = Vec::new();
+    let mut sequence = 0_u64;
+    wait_until("the whole frame reaches the viewer", || {
+        let _ = a.send_page(TAB, &page_object(sequence, true));
+        sequence = sequence.saturating_add(1);
+        received.extend(pages(&b, Track::Page(TAB)));
+        !received.is_empty()
+    });
+    assert!(received[0].whole);
+    assert_eq!(received[0].payload, vec![0, 9, 9]);
+
+    // Its changes follow on the same track, without another whole frame.
+    let mut patches = Vec::new();
+    wait_until("the changes reach the viewer", || {
+        let _ = a.send_page(TAB, &page_object(sequence, false));
+        sequence = sequence.saturating_add(1);
+        patches.extend(pages(&b, Track::Page(TAB)));
+        patches.iter().any(|object| !object.whole)
+    });
+    assert!(
+        patches.iter().any(|object| !object.whole),
+        "a change travels without a new whole frame"
+    );
+
+    // A member that joins while the page is up starts at a whole frame: it
+    // could not apply a change to a frame it never had.
+    let c = Plane::join(
+        &native::Iroh::new(c_endpoint.clone(), addr(&relay_endpoint)),
+        &grant_for(&c_cert),
+        join(c_key, roster, keys),
+    )
+    .await
+    .unwrap();
+    wait_until("the late member is admitted", || {
+        relay.counters().accepted == 3
+    });
+    c.show(a_key, &[Track::Page(TAB)]);
+    let mut late = Vec::new();
+    wait_until("the late viewer is handed a whole frame", || {
+        late.extend(pages(&c, Track::Page(TAB)));
+        !late.is_empty()
+    });
+    assert!(late[0].whole, "a viewer that joined late starts at a frame");
+
+    // Nobody watches any more: the page is not captured, and nothing of it is
+    // sent.
+    b.show(a_key, &[]);
+    c.show(a_key, &[]);
+    wait_until("the page is no longer shown", || {
+        a.wanted_pages().is_empty()
+    });
+    assert_eq!(
+        a.send_page(TAB, &page_object(sequence, false)),
+        Err(PlaneError::Unwanted)
     );
 }

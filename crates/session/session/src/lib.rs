@@ -258,6 +258,7 @@ mod options;
 mod overview;
 #[cfg(target_os = "linux")]
 mod owner_session;
+mod page_track;
 #[cfg(target_os = "linux")]
 mod pairing;
 #[cfg(target_os = "linux")]

@@ -649,7 +649,7 @@ async fn forward(
         ) else {
             return;
         };
-        let pictures = crate::Task::spawn(forward_pictures(
+        let demands = crate::Task::spawn(forward_demands(
             out.dynamic(),
             source.clone(),
             counters.clone(),
@@ -684,7 +684,7 @@ async fn forward(
             let _ = source.closed().await;
             let _ = track.abort(moq_net::Error::Cancel);
         }
-        drop(pictures);
+        drop(demands);
         drop(opaque);
         out.finish();
         // A publisher that ends and re-announces is picked up afresh.
@@ -733,6 +733,18 @@ fn picture_bounds(layer: crate::video::Layer) -> Arc<Bounds> {
                 .is_ok_and(|header| header.layer == layer && (index > 0 || header.keyframe))
         }),
         frames: crate::video::MAX_GROUP_OBJECTS,
+    })
+}
+
+/// A window's page: every object a valid page object, a group entered at a
+/// whole frame.
+fn page_bounds() -> Arc<Bounds> {
+    Arc::new(Bounds {
+        datagram: |_| false,
+        frame: Box::new(|index, payload| {
+            crate::page::validate(payload).is_ok_and(|header| index > 0 || header.whole)
+        }),
+        frames: crate::page::MAX_GROUP_OBJECTS,
     })
 }
 
@@ -842,47 +854,61 @@ async fn copy_opaque(
     copy_checked(input, output, &counters, opaque_bounds()).await;
 }
 
-/// Serve the picture and window tracks subscribers ask of one publication:
-/// each copied from the publisher, validated, only while someone asks for
-/// it. Any other track name is refused.
-async fn forward_pictures(
+/// Serve the tracks subscribers ask of one publication — a call's picture
+/// layers, a publisher's viewed windows and a window's page — each copied
+/// from the publisher, validated, only while someone asks for it. Any other
+/// track name is refused.
+async fn forward_demands(
     mut requests: moq_net::broadcast::Dynamic,
     source: moq_net::broadcast::Consumer,
     counters: Arc<Counters>,
 ) {
-    let mut serving: Vec<crate::Task> = Vec::new();
+    let mut pictures: Vec<crate::Task> = Vec::new();
     let mut windows: Vec<crate::Task> = Vec::new();
+    let mut pages: Vec<crate::Task> = Vec::new();
     while let Ok(request) = requests.requested_track().await {
-        serving.retain(|task| !task.is_finished());
+        pictures.retain(|task| !task.is_finished());
         windows.retain(|task| !task.is_finished());
-        let Some(track) = crate::video::Track::parse(request.name()) else {
+        pages.retain(|task| !task.is_finished());
+        let Some(track) = crate::live::parse_track(request.name()) else {
             request.reject(moq_net::Error::NotFound);
             continue;
         };
-        // A call's layers and a publisher's viewed windows are bounded
-        // apart: a window viewer never takes a call's picture slots.
-        let (tasks, bound) = match track {
-            crate::video::Track::Picture(..) => (&mut serving, MAX_PICTURE_TRACKS),
-            crate::video::Track::Window(_) => (&mut windows, crate::video::MAX_WINDOW_TRACKS),
+        // A call's layers, a publisher's viewed windows and its pages are
+        // bounded apart: a window viewer never takes a call's picture slots.
+        let (tasks, bound, bounds) = match track {
+            crate::live::Track::Camera(layer) | crate::live::Track::Screen(layer) => {
+                (&mut pictures, MAX_PICTURE_TRACKS, picture_bounds(layer))
+            }
+            crate::live::Track::Window(_, layer) => (
+                &mut windows,
+                crate::video::MAX_WINDOW_TRACKS,
+                picture_bounds(layer),
+            ),
+            crate::live::Track::Page(_) => (&mut pages, crate::page::MAX_TRACKS, page_bounds()),
+            _ => {
+                request.reject(moq_net::Error::NotFound);
+                continue;
+            }
         };
         if tasks.len() >= bound {
             request.reject(moq_net::Error::BoundsExceeded(moq_net::BoundsExceeded));
             continue;
         }
-        tasks.push(crate::Task::spawn(forward_picture(
+        tasks.push(crate::Task::spawn(forward_demand(
             request,
             source.clone(),
-            track.layer(),
+            bounds,
             counters.clone(),
         )));
     }
 }
 
-/// Copy one picture track for as long as a subscriber asks for it.
-async fn forward_picture(
+/// Copy one demanded track for as long as a subscriber asks for it.
+async fn forward_demand(
     request: moq_net::track::Request,
     source: moq_net::broadcast::Consumer,
-    layer: crate::video::Layer,
+    bounds: Arc<Bounds>,
     counters: Arc<Counters>,
 ) {
     let subscription = moq_net::track::Subscription::default().with_max_age(PICTURE_RETAIN);
@@ -900,8 +926,8 @@ async fn forward_picture(
     let output = request.accept(moq_net::track::Info::default().with_max_age(PICTURE_RETAIN));
     let watched = output.clone();
     tokio::select! {
-        () = copy_checked(input, output, &counters, picture_bounds(layer)) => {}
-        // Nobody shows this layer any more: stop asking the publisher for it.
+        () = copy_checked(input, output, &counters, bounds) => {}
+        // Nobody shows this track any more: stop asking the publisher for it.
         _ = watched.unused() => {}
     }
 }

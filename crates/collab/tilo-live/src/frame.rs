@@ -111,6 +111,9 @@ pub enum Stream {
     Window,
     /// Who is here, and what they are doing.
     Presence,
+    /// One window's page: its paint stream, sealed apart from every other
+    /// window's.
+    Page,
     /// One window's input events.
     Input,
     /// A low-rate note of what this device is doing.
@@ -131,6 +134,7 @@ impl Stream {
             Self::Screen => [VIDEO, 1],
             Self::Presence => [AUDIO, 1],
             Self::Window => [PLANE, 0],
+            Self::Page => [PLANE, 3],
             Self::Input => [PLANE, 1],
             Self::Activity => [PLANE, 2],
         }
@@ -146,6 +150,7 @@ impl Stream {
             Self::Camera => "camera",
             Self::Screen => "screen",
             Self::Window => "window",
+            Self::Page => "page",
             Self::Presence => "presence",
             Self::Input => "input",
             Self::Activity => "activity",

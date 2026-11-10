@@ -9,11 +9,13 @@
 //! for the compositor that every capture asks, and every connection receives the appearance of its
 //! window's workspace.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{BufReader, Write};
 use std::os::fd::{AsRawFd as _, OwnedFd};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -41,6 +43,7 @@ use crate::apps::Apps;
 use crate::capture_studio::CaptureStudio;
 use crate::desktop_services::DesktopServices;
 use crate::host_shell::HostShellAsks;
+use crate::page_track::{PageTracks, Watch};
 
 /// The longest frame an app may send: a paint stream and a marker inventory both fit, and nothing
 /// else comes close.
@@ -311,6 +314,7 @@ impl AppTabs {
                 sent: &mut self.sent,
                 asked: &mut self.asked,
                 held: &mut self.held,
+                pages: &shared.pages,
             };
             for request in self.requests.try_iter() {
                 answered.answer(&mut self.host_shell, request);
@@ -325,6 +329,9 @@ impl AppTabs {
         // The tabs the desk made for the windows the apps asked for this pass: each window starts
         // now, taking the tab it was held.
         self.start_held(desktop, apps);
+        // What the members' desks show of these windows' pages, and what the
+        // apps sent of them since the last pass.
+        self.follow_pages(shared);
         // What the windows' boxes sent and asked, now that every ask of
         // theirs is answered: a send is one action on the person's behalf,
         // and a search is the desk's own.
@@ -336,6 +343,30 @@ impl AppTabs {
         self.follow_cards(desktop, compositor);
         // The person may have answered a question about the device's own shell since the last pass.
         self.host_shell.settle(services);
+    }
+
+    /// Publish the pages someone shows, and tell the apps how their windows are watched: a window
+    /// that gained a viewer is asked for a whole frame and starts sending, one that lost its last
+    /// viewer is told to stop, and a window's whole frame the plane needs again (a viewer joined, or
+    /// lost the chain of changes) is asked for as the app can only answer.
+    fn follow_pages(&self, shared: &crate::Shared) {
+        let planes = shared
+            .sync
+            .as_deref()
+            .map(crate::calls::planes_of)
+            .unwrap_or_default();
+        let now_us = tilo_clock::unix_now_ms().saturating_mul(1000);
+        let asks = shared.pages.borrow_mut().step(&planes, now_us);
+        for (tab, watch) in asks {
+            let Some(link) = self.links.values().find(|link| link.instance == Some(tab)) else {
+                continue;
+            };
+            let message = match watch {
+                Watch::Whole => FloatingSurfaceHostMessage::PaintKeyframe,
+                Watch::Stop => FloatingSurfaceHostMessage::PaintStop,
+            };
+            tell(&link.writer, &message, &link.app);
+        }
     }
 
     /// Start the windows the apps asked the desk for, now that it made the tab each takes: the
@@ -667,6 +698,8 @@ struct Answers<'a> {
     asked: &'a mut Vec<Asked>,
     /// The windows the apps asked the desk for, by app and in ask order.
     held: &'a mut BTreeMap<String, VecDeque<HeldStart>>,
+    /// The windows whose apps hand their page over as a paint stream.
+    pages: &'a Rc<RefCell<PageTracks>>,
 }
 
 /// A message a window's box sent: who it goes to, what it carries, and where it came from, so a
@@ -749,7 +782,14 @@ impl Answers<'_> {
                     &app,
                     false,
                 );
-                self.links.remove(&connection);
+                if let Some(tab) = self
+                    .links
+                    .remove(&connection)
+                    .and_then(|link| link.instance)
+                {
+                    // A page nothing runs any more is published nowhere.
+                    self.pages.borrow_mut().closed(tab);
+                }
                 // The cards it presented, and the windows the desk stood
                 // them in, go with it.
                 let mut gone = false;
@@ -963,12 +1003,33 @@ impl Answers<'_> {
                     query,
                 });
             }
-            // What an app's page may be shared as, instead of video streamed from it: the session
-            // asks no window to paint its page.
-            FloatingSurfaceClientMessage::PaintCapable
-            | FloatingSurfaceClientMessage::PaintStream { .. } => {
-                refuse(&reply, &app, &name, NO_PAINT);
-            }
+            // A window that runs a page engine offers its page as the thing the
+            // workspace sees of it: what it draws is published on the live
+            // plane as its window's page track, and only while a member shows
+            // it. Tilo apps' own views are never streamed, and neither is
+            // anything but a page.
+            FloatingSurfaceClientMessage::PaintCapable => match own {
+                Some(tab) => self.pages.borrow_mut().capable(tab, &workspace),
+                None => refuse(&reply, &app, &name, NO_WINDOW),
+            },
+            FloatingSurfaceClientMessage::PaintStream { payload, .. } => match own {
+                // `page` and `scale` place a viewer's input in the page, which
+                // this session does not take: the page is drawn, not typed
+                // into, by the members that show it.
+                Some(tab) => {
+                    use base64::Engine as _;
+                    match base64::engine::general_purpose::STANDARD.decode(&payload) {
+                        Ok(bytes) => {
+                            let whole = ui::webview::paint::stream::wire::Payload::is_key(&bytes);
+                            self.pages.borrow_mut().received(tab, whole, bytes);
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, %app, "a window's page frame is not base64");
+                        }
+                    }
+                }
+                None => refuse(&reply, &app, &name, NO_WINDOW),
+            },
             // The device's displays are placed in Settings, and its own shell is what a window of
             // Terminal asks about: neither is asked here.
             FloatingSurfaceClientMessage::MoveDeviceDisplay { .. }
@@ -1162,9 +1223,6 @@ const NO_WINDOW_SHARE: &str = "this session shares no window live";
 
 /// An app asked about what a person selected, and for an agent to work from it.
 const NO_AGENT: &str = "this session asks no window about a selection";
-
-/// An app offered its page as a paint stream.
-const NO_PAINT: &str = "this session asks no window to paint its page";
 
 /// An app asked to move a device's display, or answered a device-shell operation.
 const NO_DEVICE: &str = "this session moves no device display here";
@@ -1699,20 +1757,24 @@ mod tests {
         let (app, session) = UnixStream::pair().unwrap();
         app.set_read_timeout(Some(std::time::Duration::from_secs(10)))
             .unwrap();
-        let message = FloatingSurfaceClientMessage::PaintCapable;
+        let message = FloatingSurfaceClientMessage::WindowRecord {
+            record: "so.tilo.notes".to_owned(),
+            kind: "note".to_owned(),
+            instance: Some(1),
+        };
         refuse(
             &Arc::new(Mutex::new(session)),
             "so.tilo.notes",
             &name_of(&message),
-            NO_PAINT,
+            NO_WINDOW_SHARE,
         );
         let mut line = String::new();
         std::io::BufReader::new(&app).read_line(&mut line).unwrap();
         assert_eq!(
             serde_json::from_str::<FloatingSurfaceHostMessage>(line.trim()).unwrap(),
             FloatingSurfaceHostMessage::Unanswered {
-                message: "paint_capable".to_owned(),
-                reason: NO_PAINT.to_owned(),
+                message: "window_record".to_owned(),
+                reason: NO_WINDOW_SHARE.to_owned(),
             }
         );
     }

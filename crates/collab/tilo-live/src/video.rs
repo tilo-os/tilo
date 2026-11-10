@@ -206,17 +206,18 @@ pub fn parse_track(name: &str) -> Option<(Source, Layer)> {
 /// it that someone views.
 pub const MAX_WINDOW_TRACKS: usize = 32;
 
-/// The track window `tab` is published on: `window/` and the tab as 16
-/// lowercase hex digits.
+/// A track named for one window: `kind/` and the window's tab as 16 lowercase
+/// hex digits. A window's tracks all spell its tab the one way, so a viewer
+/// that knows the tab finds the stream whichever kind of window it holds.
 #[must_use]
-pub fn window_track(tab: u64) -> String {
-    format!("window/{tab:016x}")
+pub(crate) fn tab_track(kind: &str, tab: u64) -> String {
+    format!("{kind}/{tab:016x}")
 }
 
-/// The tab of a window track name, or `None` for any other name.
+/// The tab of a `kind/` track name, or `None` for any other name.
 #[must_use]
-pub fn parse_window_track(name: &str) -> Option<u64> {
-    let digits = name.strip_prefix("window/")?;
+pub(crate) fn tab_of(kind: &str, name: &str) -> Option<u64> {
+    let digits = name.strip_prefix(kind)?.strip_prefix('/')?;
     if digits.len() != 16
         || !digits
             .bytes()
@@ -225,6 +226,19 @@ pub fn parse_window_track(name: &str) -> Option<u64> {
         return None;
     }
     u64::from_str_radix(digits, 16).ok()
+}
+
+/// The track window `tab` is published on: `window/` and the tab as 16
+/// lowercase hex digits.
+#[must_use]
+pub fn window_track(tab: u64) -> String {
+    tab_track("window", tab)
+}
+
+/// The tab of a window track name, or `None` for any other name.
+#[must_use]
+pub fn parse_window_track(name: &str) -> Option<u64> {
+    tab_of("window", name)
 }
 
 /// A track a relay forwards as video: a call's picture layer or one

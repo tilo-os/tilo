@@ -21359,6 +21359,7 @@ dependencies = [
  "agent-provider-config",
  "app-catalogue",
  "app-cli",
+ "base64 0.22.1",
  "blake3",
  "block-devices",
  "bounded-command",

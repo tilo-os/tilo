@@ -45,6 +45,8 @@ dev-overrides = []
 dev-rust-views = ["dep:tube", "chat/samples"]
 
 [dependencies]
+# A window's page reaches this session as the paint stream its app encoded.
+base64.workspace = true
 # The MLS vault's master key: the Secret Service, the Keychain, the page's
 # IndexedDB, or the store a headless machine names with `TILO_SECRETS_DIR`.
 tilo-secrets.workspace = true

@@ -410,7 +410,7 @@ fn callers_in(live: &[LiveCall]) -> BTreeMap<String, BTreeMap<[u8; 32], String>>
 
 /// The workspace planes this session is in now: a call's voice and pictures run on the one its
 /// workspace is in, and are no longer carried once this device leaves the workspace.
-fn planes_of(sync: &sync::Client) -> BTreeMap<String, Arc<Plane>> {
+pub(crate) fn planes_of(sync: &sync::Client) -> BTreeMap<String, Arc<Plane>> {
     sync.live()
         .map(|live| {
             live.planes()

@@ -761,7 +761,7 @@ impl Task {
             let Some(joined) = self.planes.joined_mut(workspace_id) else {
                 return;
             };
-            let revision = joined.plane.pictures_revision();
+            let revision = joined.plane.demand_revision();
             if joined.demand_at == revision {
                 None
             } else {
