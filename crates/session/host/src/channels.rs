@@ -765,14 +765,7 @@ mod tests {
     fn admitting(
         devices: &[&SigningKey],
     ) -> impl Fn(&DocumentRoute) -> Option<RecordPolicy> + use<> {
-        let devices: BTreeSet<_> = devices.iter().map(|key| public(key)).collect();
-        move |route| {
-            Some(RecordPolicy {
-                unit: Channels::channel(route),
-                scope: scope(route),
-                allowed: devices.clone(),
-            })
-        }
+        admitting_keys(devices.iter().map(|key| public(key)).collect())
     }
 
     fn route(record: &str) -> DocumentRoute {
@@ -1006,6 +999,208 @@ mod tests {
                 .unwrap()
                 .to_vec(),
             b"before the reload",
+        );
+    }
+
+    /// [`admitting`] by the devices' public keys.
+    fn admitting_keys(
+        devices: BTreeSet<Ed25519PublicKey>,
+    ) -> impl Fn(&DocumentRoute) -> Option<RecordPolicy> + use<> {
+        move |route| {
+            Some(RecordPolicy {
+                unit: Channels::channel(route),
+                scope: scope(route),
+                allowed: devices.clone(),
+            })
+        }
+    }
+
+    fn saved_size(saved: &SavedChannels) -> usize {
+        saved.members.iter().map(|member| member.sealed.len()).sum()
+    }
+
+    /// A session following a group that keeps changing saves no more for it
+    /// than its last frames and the group's content keys: once its recent
+    /// frames are kept in full, each change adds only that epoch's content
+    /// key, which keeps what was sealed under it readable. A reload after
+    /// hundreds of changes holds the newest keys without asking, and still
+    /// opens what was sealed at the first epoch.
+    #[test]
+    fn a_group_that_keeps_changing_saves_its_recent_frames_and_its_keys() {
+        const CHANGES: usize = 200;
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
+        let note = route("note-churn");
+        let mut laptop = laptop(&laptop_key, &note);
+        let vault = VaultKey::new([9; 32]);
+        let visitors: Vec<SigningKey> = (0..8_u8)
+            .map(|seed| SigningKey::from_bytes(&[seed.wrapping_add(100); 32]))
+            .collect();
+        let mut allowed = BTreeSet::from([public(&laptop_key), public(&browser)]);
+        let policy = admitting_keys(allowed.clone());
+        let mut channels = Channels::new(device(&browser), [4; 32]);
+        let request = requests(&channels.open(&note, &policy, 0)).pop().unwrap();
+        deliver(&mut channels, &mut laptop, &policy);
+        laptop
+            .learn_request(signed(&browser, request), &vault)
+            .unwrap();
+        laptop.reconcile_now(&allowed, &vault).unwrap();
+        deliver(&mut channels, &mut laptop, &policy);
+        let unit = Channels::channel(&note);
+        let artifact =
+            collab_types::document_artifact_id(&note.app_id, &note.cluster_id, &note.record);
+        let (metadata, sealed) = laptop
+            .content_keys()
+            .unwrap()
+            .for_unit(unit)
+            .seal_content(
+                artifact,
+                collab_types::ContentRetention::Checkpoint,
+                b"at the first epoch",
+            )
+            .unwrap();
+
+        let mut sizes = Vec::with_capacity(CHANGES);
+        let mut saved = None;
+        for change in 0..CHANGES {
+            // One of eight visitors joins, or leaves again.
+            let visitor = &visitors[change % visitors.len()];
+            if !allowed.remove(&public(visitor)) {
+                let mut peer =
+                    ChannelPeer::waiting(None, scope(&note), Box::new(visitor.clone()), &vault)
+                        .unwrap();
+                let issued = u64::try_from(change).unwrap() + 1;
+                let ask = peer
+                    .access_request_now(issued, false, &vault)
+                    .unwrap()
+                    .unwrap();
+                laptop.learn_request(ask, &vault).unwrap();
+                allowed.insert(public(visitor));
+            }
+            assert!(laptop.reconcile_now(&allowed, &vault).unwrap().changed());
+            deliver(&mut channels, &mut laptop, &admitting_keys(allowed.clone()));
+            let state = channels
+                .export_if_changed()
+                .unwrap_or_else(|| panic!("change {change} is saved"));
+            sizes.push(saved_size(&state));
+            saved = Some(state);
+        }
+        let epoch = laptop.content_keys().unwrap().epoch();
+        assert!(epoch > CHANGES as u64, "every change was a commit");
+
+        // The membership repeats every 16 changes, so states 16 apart differ
+        // only by what those changes added. Past the kept frames (32), that
+        // is one content key each, held by the group and by its state before
+        // the newest frame: well under 128 bytes a change.
+        let period = 2 * visitors.len();
+        for (index, size) in sizes
+            .iter()
+            .enumerate()
+            .skip(2 * channel_crypto::peer::MAX_BRANCH)
+        {
+            let earlier = sizes[index - period];
+            assert!(
+                *size <= earlier + period * 128,
+                "change {index} saved {size} bytes, {period} changes after {earlier}: {sizes:?}"
+            );
+        }
+
+        let mut reloaded = Channels::new(device(&browser), [4; 32]);
+        reloaded.restore(saved.unwrap());
+        let changes = reloaded.open(&note, &admitting_keys(allowed.clone()), 0);
+        assert!(requests(&changes).is_empty(), "a reload does not ask again");
+        let (_, keys) = changes.keys.into_iter().next().expect("keys are back");
+        assert_eq!(keys.epoch(), epoch, "the reload holds the newest keys");
+        assert_eq!(
+            keys.open_content(artifact, &metadata, &sealed)
+                .unwrap()
+                .to_vec(),
+            b"at the first epoch",
+            "what was sealed at the first epoch still opens"
+        );
+    }
+
+    /// A session in many groups saves the same for each of them on every
+    /// save until that group changes, and a change in one changes only what
+    /// it saves for that one: nothing accumulates from save to save.
+    #[test]
+    fn saving_often_in_many_groups_adds_nothing() {
+        const GROUPS: usize = 40;
+        let browser = SigningKey::from_bytes(&[3; 32]);
+        let laptop_key = SigningKey::from_bytes(&[4; 32]);
+        let phone_key = SigningKey::from_bytes(&[5; 32]);
+        let vault = VaultKey::new([9; 32]);
+        let notes: Vec<DocumentRoute> = (0..GROUPS)
+            .map(|index| route(&format!("note-{index}")))
+            .collect();
+        // Every note narrowed to a group of its own.
+        let policy = |devices: BTreeSet<Ed25519PublicKey>| {
+            move |route: &DocumentRoute| {
+                let unit = Channels::channel(route);
+                Some(RecordPolicy {
+                    unit,
+                    scope: unit,
+                    allowed: devices.clone(),
+                })
+            }
+        };
+        let two = BTreeSet::from([public(&laptop_key), public(&browser)]);
+        let three = BTreeSet::from([public(&laptop_key), public(&browser), public(&phone_key)]);
+        let mut channels = Channels::new(device(&browser), [4; 32]);
+        let mut laptops: Vec<ChannelPeer> = Vec::with_capacity(GROUPS);
+        for note in &notes {
+            let mut laptop = ChannelPeer::create_now(
+                None,
+                Channels::channel(note),
+                Box::new(laptop_key.clone()),
+                &vault,
+            )
+            .unwrap();
+            let request = requests(&channels.open(note, &policy(two.clone()), 0))
+                .pop()
+                .unwrap();
+            deliver(&mut channels, &mut laptop, &policy(two.clone()));
+            laptop
+                .learn_request(signed(&browser, request), &vault)
+                .unwrap();
+            laptop.reconcile_now(&two, &vault).unwrap();
+            deliver(&mut channels, &mut laptop, &policy(two.clone()));
+            laptops.push(laptop);
+        }
+        let first = channels.export_if_changed().expect("admissions are saved");
+        assert_eq!(first.members.len(), GROUPS);
+        for _ in 0..200 {
+            channels.mark_changed();
+            let again = channels.export_if_changed().unwrap();
+            assert_eq!(again, first, "an unchanged group saves the same");
+        }
+
+        // The phone joins the first group: only that group saves anew.
+        let mut phone = ChannelPeer::waiting(
+            None,
+            Channels::channel(&notes[0]),
+            Box::new(phone_key),
+            &vault,
+        )
+        .unwrap();
+        let ask = phone.access_request_now(1, false, &vault).unwrap().unwrap();
+        laptops[0].learn_request(ask, &vault).unwrap();
+        laptops[0].reconcile_now(&three, &vault).unwrap();
+        deliver(&mut channels, &mut laptops[0], &policy(three));
+        let after = channels.export_if_changed().expect("the change is saved");
+        let changed: Vec<ChannelId> = first
+            .members
+            .iter()
+            .zip(&after.members)
+            .filter(|(before, now)| before != now)
+            .map(|(before, _)| before.channel)
+            .collect();
+        assert_eq!(changed, vec![Channels::channel(&notes[0])]);
+        assert!(
+            saved_size(&after) < saved_size(&first) + 8 * 1024,
+            "one commit in one group adds that group's frame: {} after {}",
+            saved_size(&after),
+            saved_size(&first)
         );
     }
 
