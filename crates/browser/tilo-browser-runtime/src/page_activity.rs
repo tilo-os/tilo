@@ -1,7 +1,6 @@
-//! The page's workspace history: the session's activity ([`tilo_session::activity`]) over the seams
-//! this page provides — its store, its apps, the people presence knows, the mounts it writes
-//! records as, and the activity model's code, which it fetches the first time someone opens
-//! Activity ([`defer_activity_pane`]) so the start module does not carry it.
+//! The page's workspace history: the session's activity ([`tilo_session::activity`]) over this
+//! page's store, apps, people and mounts, and the activity model's code, which the page fetches when
+//! someone first opens Activity ([`defer_activity_pane`]).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -24,8 +23,7 @@ enum PaneCode {
     /// Fetched when the model first opens.
     Deferred(LoadActivity),
     Loading,
-    /// The last fetch failed: that request is dismissed, the next one
-    /// fetches again.
+    /// The last fetch failed: the next request fetches again.
     Failed(LoadActivity),
 }
 
@@ -35,8 +33,7 @@ thread_local! {
     static WAITING: RefCell<Vec<crate::desktop::Shared>> = const { RefCell::new(Vec::new()) };
 }
 
-/// No loader yet: the bundling crate supplies one before it mounts a desktop, and Activity stays
-/// unavailable without it.
+/// No loader yet: the bundling crate supplies one, and Activity stays unavailable without it.
 fn missing() -> Pin<Box<dyn Future<Output = Option<OpenActivity>>>> {
     Box::pin(std::future::ready(None))
 }
@@ -94,9 +91,7 @@ impl Pane for PagePane {
     }
 }
 
-/// The name and colour presence shows for a person, by the principal they
-/// write as: here now, else as they were when last seen; this page's own
-/// person as the top bar does, never by the key they write as.
+/// The name and colour presence shows for a person, by the principal they write as.
 pub(super) fn person_of(
     here: &tilo_desktop::here::Here,
     people: &Rc<RefCell<HashMap<String, crate::desktop::PersonIdentity>>>,
@@ -112,10 +107,8 @@ pub(super) fn person_of(
     })
 }
 
-/// What moves when a record of the workspace did: the records its windows show, by their changes.
-///
-/// The store the page keeps is its own to drive, and this is how its activity learns that what it
-/// read is stale instead of reading the documents again on every frame.
+/// What moves when a record of the workspace did: the page drives its own store, so this is how its
+/// activity learns that what it read is stale.
 pub(super) fn records_moved(shared: &crate::desktop::Shared) -> Rc<dyn Fn() -> u64> {
     let shared = shared.clone();
     Rc::new(move || {
@@ -138,8 +131,7 @@ pub(super) fn records_moved(shared: &crate::desktop::Shared) -> Rc<dyn Fn() -> u
     })
 }
 
-/// Who the records this page's mounts wrote belong to: each record's document writer is noted as
-/// one of this page's own, and the people presence knows are named as it shows them.
+/// Who the records this page's mounts wrote belong to.
 pub(super) fn writers(people: People, author: &str) -> Writers {
     let mine = author.to_owned();
     Writers {
@@ -153,8 +145,7 @@ pub(super) fn writers(people: People, author: &str) -> Writers {
 }
 
 impl crate::browser::Desktop {
-    /// Take up what the history wrote back and what the person opened from it there, and let a
-    /// model describe the desk's changes once one answers.
+    /// Take up what the history wrote back and what the person opened from it there.
     pub(super) fn serve_activity(&self) {
         if let Some(tree) = self.activity.take_restored() {
             self.handle.replace_tree(tree);

@@ -12,15 +12,13 @@ use std::sync::Arc;
 /// The name and colour presence shows `principal` by, when this host knows them.
 pub type People = Rc<dyn Fn(&str) -> Option<(String, (u8, u8, u8))>>;
 
-/// Told the writer a record's document carries as it is read: the actor a host's own mount writes
-/// it as.
+/// Told the writer a record's document carries as it is read.
 #[cfg(target_os = "linux")]
 pub type Noted = Arc<dyn Fn(&ui::automerge::ActorId) + Send + Sync>;
 #[cfg(not(target_os = "linux"))]
 pub type Noted = Rc<dyn Fn(&ui::automerge::ActorId)>;
 
-/// Name every actor this host's mounts write a record as. A record's document is shared by every
-/// mount of it, and each writes as its author's own actor; only the host that mounted them can say
+/// Name every actor this host's mounts write a record as: only the host that mounted them knows
 /// which is whose.
 #[cfg(target_os = "linux")]
 pub type Register = Arc<dyn Fn(&mut ui::AuthorDirectory) + Send + Sync>;

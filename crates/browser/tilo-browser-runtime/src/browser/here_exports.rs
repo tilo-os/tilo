@@ -245,7 +245,9 @@ pub fn desktop_here_tick(id: u64, since_ms: f64) -> Result<String, JsValue> {
                 reason = "a page clock in milliseconds; negative clamps to zero"
             )]
             let since = since_ms.max(0.0) as u64;
-            crate::page_doing::own_recent_actions(&desktop.shared, &tree, &desktop.author, since)
+            desktop
+                .activity
+                .own_actions(&tree, tree.active, &desktop.author, since)
         } else {
             Vec::new()
         };
