@@ -321,27 +321,35 @@ fn mail_does_the_work_of_what_it_shows() {
 /// undo. One letter is one change, and it reads nothing of the workspace: no collection's entries,
 /// no listing of it, no filter evaluated on an item.
 ///
-/// What else a letter costs is the views that show it: a change runs again the boundaries that
-/// read it, as any change does. What this scenario types into is the window's own search on the
-/// workspace it seeds, so what it commits and which boundaries it runs is no letter of a bound
-/// field; the window's own tests hold that (`apps/tilolang/tests/hosted/typing.rs`).
+/// What this scenario types into is the note's body, the document its window edits, as a person
+/// writing a note does; what else a letter costs is the views that show it, which are the same at
+/// 200 notes and at 2k ([`a_key_reruns_the_same_views_whatever_the_notebook_holds`]).
 #[test]
 fn a_keystroke_is_one_cheap_change() {
-    let records = bench_at("notes", vec![SMALL / 5, LARGE / 5], 2);
+    let records = bench_at("notes", vec![SMALL / 5, LARGE / 5], 3);
     let work = |size: &str| {
         let record = find(&records, "keystroke", size)
             .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
         Work::of_record(record).unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
     };
+    let first = |size: &str| {
+        let record = find(&records, "keystroke", size)
+            .unwrap_or_else(|| panic!("the keystroke at {size} counts work"));
+        Work::first_of_record(record)
+            .unwrap_or_else(|| panic!("the keystroke at {size} counts work"))
+    };
     let (small, large) = (work("200"), work("2k"));
     let mut misses = Vec::new();
-    for (size, at) in [("200", small), ("2k", large)] {
-        // One letter is one change of the record, never one per thing it touched.
-        if at.commits > 1 {
-            misses.push(format!(
-                "{size}: a keystroke committed {} changes, where a letter is one",
-                at.commits
-            ));
+    for (size, at, first) in [("200", small, first("200")), ("2k", large, first("2k"))] {
+        // One letter is one change of the record, never one per thing it touched, and never
+        // none: a letter the record does not hold is a letter the person lost.
+        for (which, at) in [("a steady keystroke", at), ("the first", first)] {
+            if at.commits != 1 {
+                misses.push(format!(
+                    "{size}: {which} committed {} changes, where a letter is one",
+                    at.commits
+                ));
+            }
         }
         // Nothing of the workspace is read for the letter: no collection's entries listed, no
         // filter evaluated on an item, and no resource found by walking the record beyond the

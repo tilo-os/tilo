@@ -18,11 +18,12 @@
 //! * `first_frame`: from the saved workspace to the first frame, the record loading on a thread of
 //!   its own while the window opens over the index; `first_write`, the first change right
 //!   after that frame, which waits for the record.
-//! * `keystroke`: one character typed where a person types: into the title of an item in the
-//!   item's own window, or, when items have none, into the main window's first text input. The
-//!   change goes through the executor into the workspace and back, and the views are brought up to
-//!   date. A package with no text to type into (a counter) gets `press`: its main window's
-//!   first button.
+//! * `keystroke`: one character typed where a person types: into the body the window shows (a
+//!   note beside its notebook's tree), else into the body of an item in the item's own window,
+//!   else into the item's title, else, when items have no window, into the main window's first
+//!   text input. The change goes through the executor into the workspace and back, and the views
+//!   are brought up to date. A package with no text to type into (a counter) gets `press`: its
+//!   main window's first button.
 //! * `peer_edit`: another replica retitles an item, or bumps the root's counter; the change
 //!   merges into the workspace and the main view is brought up to date.
 //! * `peer_post`: for a package whose items hold a collection of their own, another replica
@@ -1594,26 +1595,16 @@ fn size_name(n: usize) -> String {
     }
 }
 
-/// The key of the first input bound to `field` in `node`.
-fn bound_input(node: &UiNode, field: &str) -> Option<String> {
-    if let Some(binding) = &node.binding
-        && binding.field().is_some_and(|(_, f)| f == field)
-    {
-        return Some(node.key.clone());
-    }
-    node.children.iter().find_map(|c| bound_input(c, field))
-}
-
 /// Rows a window shows at once, overscan included.
 const PAGE: usize = 40;
 
 /// Rows one scroll frame brings into view.
 const SCROLL_STEP: usize = 3;
 
-/// The key of the window's own list: the toolkit's virtual list its shell holds in a column
-/// (`std.list`'s, `std.transcript`'s).
+/// The key of the window's own list: the toolkit's virtual list or tree its shell holds in a
+/// column (`std.list`'s, `std.tree`'s, `std.transcript`'s).
 fn frame_list(tree: &UiNode) -> Option<String> {
-    if tree.kind == "ui.VirtualList" {
+    if matches!(tree.kind.as_str(), "ui.VirtualList" | "ui.TreeView") {
         return Some(tree.key.clone());
     }
     tree.children.iter().find_map(frame_list)
@@ -1834,7 +1825,7 @@ fn changes(sized: &Sized<'_>, out: &mut Recorder<'_>) -> Result<(), String> {
     workspace.frame(&mut [])?;
     workspace.phases.take();
     if sized.shape.subject().is_some()
-        || text_input(&workspace.host, workspace.list.tree()).is_some()
+        || text_input(&workspace.host, workspace.list.tree(), None).is_some()
     {
         match keystroke(sized, &mut workspace)? {
             Some(record) => out.push(record),
@@ -2247,10 +2238,11 @@ fn index_everything(sized: &Sized<'_>, workspace: &Workspace) -> [Record; 2] {
 
 /// Where the keystrokes go.
 enum Typing {
-    /// The input bound to an item's title, in the item's own window.
+    /// An input of an item's own window: the body it edits, or its title, or its draft.
     Item(Box<ViewInstance>, String),
-    /// An input of the main window bound to text: where a person types in an app whose items
-    /// have no window of their own (todo's entry for a new item).
+    /// An input of the main window: the body the window shows (a note beside a notebook's tree),
+    /// or the text a person types in an app whose items have no window of their own (todo's
+    /// entry for a new item).
     Main(String),
 }
 
@@ -2265,14 +2257,34 @@ fn has_default_view(packages: &[Compiled], ty: &str) -> bool {
     })
 }
 
-/// The key and text of the first input of `node` bound to a text field.
-fn text_input(host: &Host, node: &UiNode) -> Option<(String, String)> {
-    if let Some((target, field)) = node.binding.as_ref().and_then(|b| b.field())
-        && let Ok(Value::Text(text)) = host.runtime().read(target, field)
+/// The key and text of the first input of `node` bound to a text field, `field` naming the one
+/// when it does.
+fn text_input(host: &Host, node: &UiNode, field: Option<&str>) -> Option<(String, String)> {
+    if let Some((target, bound)) = node.binding.as_ref().and_then(|b| b.field())
+        && field.is_none_or(|wanted| wanted == bound)
+        && let Ok(Value::Text(text)) = host.runtime().read(target, bound)
     {
         return Some((node.key.clone(), text));
     }
-    node.children.iter().find_map(|c| text_input(host, c))
+    node.children
+        .iter()
+        .find_map(|c| text_input(host, c, field))
+}
+
+/// The key and text of the first document of `node` bound to a field: the body a person writes
+/// their words into (a note's, a task's), whole.
+fn body_input(host: &Host, node: &UiNode) -> Option<(String, String)> {
+    if node.kind == "ui.BlockEditor"
+        && let Some((target, field)) = node.binding.as_ref().and_then(|b| b.field())
+        && let Ok(value) = host.runtime().read(target, field)
+    {
+        return match value {
+            Value::Rich(rich) => Some((node.key.clone(), rich.written_text())),
+            Value::Text(text) => Some((node.key.clone(), text)),
+            _ => None,
+        };
+    }
+    node.children.iter().find_map(|c| body_input(host, c))
 }
 
 /// The key and text of the first input of `node` bound to the view's own state: the text a
@@ -2300,33 +2312,38 @@ pub(crate) fn typed(view: &ViewInstance, input: &str, text: &str) -> Value {
 /// Where a person types in the window `main` of `host` shows; nowhere when the main window
 /// has no text input and the items no window of their own (the shell's bar, which only the
 /// session changes).
+///
+/// A person types where the window they are at shows the words they write: into the body its own
+/// tree holds (a note beside a notebook's tree), else into an item's own window — its body, else
+/// its title, else the first text it composes (a conversation's draft) — else into the main
+/// window's first text input.
 fn typing(
     sized: &Sized<'_>,
     host: &Host,
     main: &UiNode,
 ) -> Result<Option<(Typing, String)>, String> {
+    if let Some((input, text)) = body_input(host, main) {
+        return Ok(Some((Typing::Main(input), text)));
+    }
     if let Some((root, list)) = sized.shape.subject()
         && has_default_view(sized.packages, &list.item_ty)
     {
         let target = sized.target(main);
         let item = item_ref(root, list, &item_id(target));
         let editor = host.open_resource(&item, None).map_err(|e| e.to_string())?;
-        // A person types into the item's title where its window edits it (a note), else into
-        // the window's first text input (a conversation's draft).
-        let title = list.texts.first().cloned().unwrap_or_default();
-        let (input, text) = match bound_input(editor.tree(), &title) {
-            Some(input) => (input, format!("Item {target}")),
-            None => text_input(host, editor.tree())
-                .or_else(|| composer_input(&editor, editor.tree()))
-                .ok_or("the item's window has no text input")?,
-        };
+        let title = list.texts.first().map(String::as_str);
+        let (input, text) = body_input(host, editor.tree())
+            .or_else(|| text_input(host, editor.tree(), title))
+            .or_else(|| composer_input(&editor, editor.tree()))
+            .ok_or("the item's window has no text input")?;
         return Ok(Some((Typing::Item(Box::new(editor), input), text)));
     }
-    Ok(text_input(host, main).map(|(key, text)| (Typing::Main(key), text)))
+    Ok(text_input(host, main, None).map(|(key, text)| (Typing::Main(key), text)))
 }
 
-/// Typing one letter a frame where a person types in the package: into the title of an item
-/// in the item's own window, or else into the main window's first text input.
+/// Typing one letter a frame where a person types in the package: into the body the window shows,
+/// else into the body of an item in its own window, else into its title, or else into the main
+/// window's first text input.
 fn keystroke(sized: &Sized<'_>, workspace: &mut Workspace) -> Result<Option<Record>, String> {
     let Some((mut typing, mut text)) = typing(sized, &workspace.host, workspace.list.tree())?
     else {
