@@ -674,7 +674,8 @@ fn transcript(c: &Channel, cx: &ViewCx) -> Node {
         if let Some(label) = day {
             flush(&mut run, &mut rows);
             rows.push(
-                ui::SectionDividerBuilder::new(&cx.key(format!("day-{index}")), label.clone())
+                ui::SectionDividerBuilder::new(&cx.key(format!("day-{index}")))
+                    .label(label.clone())
                     .into(),
             );
         }

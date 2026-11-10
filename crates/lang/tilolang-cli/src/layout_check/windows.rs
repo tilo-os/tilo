@@ -1511,13 +1511,12 @@ fn a_channels_messages_the_person_has_not_seen_take_no_mark_of_their_own() {
     // begins: the day's dividers and this one are one component, told apart by the ink it is
     // drawn in.
     let dividers = dividers_of(&channels);
-    let unseen: Vec<&(String, Rect)> = dividers
+    let unseen = dividers
         .iter()
         .filter(|(words, _)| words == "New messages")
-        .collect();
+        .count();
     assert_eq!(
-        unseen.len(),
-        1,
+        unseen, 1,
         "one divider, over the row where the unseen part starts: {dividers:?}"
     );
     assert!(
