@@ -5,7 +5,9 @@
 //! person's workspace, is answered there by the relay's app workers with no
 //! tab of anyone's open, mints a key that reaches that one workspace and
 //! nothing else, and revoking it ends both.
+use super::hosted_documents::{application_pdf, content_in, json_in};
 use super::*;
+use base64::Engine as _;
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -190,6 +192,57 @@ impl Mcp<'_> {
         assert_eq!(status, 200, "{reply}");
         reply
     }
+
+    /// What `tilo_do` of `path` with `args` answered, which it ran.
+    async fn did(&mut self, path: &str, args: Value) -> Value {
+        let reply = self.tilo_do(json!({"path": path, "args": args})).await;
+        let answer = &reply["result"]["structuredContent"];
+        assert_eq!(answer["status"], "ok", "{path} ran: {reply}");
+        answer["result"].clone()
+    }
+
+    /// The bytes of `content` the session gets back with `tilo_get`.
+    async fn get(&mut self, content: &str) -> Vec<u8> {
+        let (status, reply) = self
+            .post(json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                         "params": {"name": "tilo_get", "arguments": {"content": content}}}))
+            .await;
+        assert_eq!(status, 200, "{reply}");
+        assert_eq!(reply["result"]["isError"], false, "{reply}");
+        let piece = json_in(
+            reply["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap_or_default(),
+        );
+        base64::engine::general_purpose::STANDARD
+            .decode(piece["bytes"].as_str().expect("the piece's bytes"))
+            .expect("base64")
+    }
+}
+
+/// `PUT /w/<workspace>/content` of `body` in `mcp`'s session: the status
+/// and the reply.
+async fn upload(mcp: &Mcp<'_>, workspace: &str, body: &[u8]) -> (u16, Value) {
+    let bearer = format!("Bearer {}", mcp.token);
+    let mut pairs = vec![
+        ("authorization", bearer.as_str()),
+        ("content-type", "application/pdf"),
+    ];
+    if let Some(session) = &mcp.session {
+        pairs.push((tilo_front_door::session::SESSION_HEADER, session.as_str()));
+    }
+    json_of(
+        mcp.door
+            .dispatch(
+                &hyper::Method::PUT,
+                &format!("/w/{workspace}/content"),
+                "",
+                &headers(&pairs),
+                body,
+            )
+            .await,
+    )
+    .await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -350,6 +403,81 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
         .await;
     assert_eq!(status, 200, "{listed}");
     assert_eq!(listed["result"]["isError"], false, "{listed}");
+    // The person's own documents, through the door alone with the key for
+    // that workspace, run by the relay's app workers though the relay is not
+    // theirs: a form goes in over HTTP, PDF Viewer fills it, Writer writes a
+    // letter and exports it, and the letter comes back out.
+    let (status, put) = upload(&minted_session, &workspace, &application_pdf()).await;
+    assert_eq!(status, 201, "the form goes into the workspace: {put}");
+    let form = put["content"].as_str().unwrap().to_owned();
+    let work = &mut minted_session;
+    work.did("pdf-viewer#open", json!({})).await;
+    let imported = work
+        .did(
+            "pdf-viewer#import-pdf-content",
+            json!({"content": form, "name": "application.pdf"}),
+        )
+        .await;
+    assert!(
+        imported.to_string().contains("application.pdf"),
+        "{imported}"
+    );
+    let fields = work.did("pdf-viewer#read-form-fields", json!({})).await;
+    let surname = fields["fields"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .find(|field| field["name"] == "surname")
+        .unwrap_or_else(|| panic!("the form has a surname: {fields}"))
+        .clone();
+    let edit = json!({"path": surname["path"], "op": "set",
+                      "value": {"kind": "text", "value": "Okafor"}});
+    work.did(
+        "pdf-viewer/application.pdf#field-edit",
+        json!({"edit": edit}),
+    )
+    .await;
+    let filled = work.did("pdf-viewer#read-form-fields", json!({})).await;
+    assert!(
+        filled.to_string().contains("Okafor"),
+        "the form is filled: {filled}"
+    );
+    work.did("word-processor#open", json!({})).await;
+    work.did(
+        "word-processor#append-paragraph",
+        json!({"text": "Dear Visa Officer,"}),
+    )
+    .await;
+    let exported = work
+        .tilo_do(json!({"path": "word-processor#export-content", "args": {"format": "docx"}}))
+        .await;
+    let letter = work.get(&content_in(&exported.to_string())).await;
+    assert!(letter.starts_with(b"PK"), "the letter is a Word file");
+    // History names the key's agent, acting for the person, for the edit.
+    let history = work
+        .did("word-processor#history", json!({"last": 50}))
+        .await;
+    let ada_hex = hex::encode(ada.verifying_key().to_bytes());
+    let edits: Vec<&Value> = history["versions"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|version| version.get("actor").is_some())
+        .collect();
+    assert!(
+        !edits.is_empty()
+            && edits.iter().all(|version| {
+                version["actor"]["kind"] == "agent" && version["actor"]["for"] == ada_hex.as_str()
+            }),
+        "{history}"
+    );
+    // The key puts nothing into another of the person's workspaces.
+    let (status, _) = upload(work, &another, &application_pdf()).await;
+    assert_eq!(
+        status, 403,
+        "a workspace's key puts only into its workspace"
+    );
+
     // It reaches no other workspace: not the site's home workspace.
     let mut lobby_session = Mcp {
         door: &door,

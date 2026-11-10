@@ -6,16 +6,15 @@
 //! than admitted to each channel a second time. The host owner's page acts
 //! on a sealed record through the host; another member of the workspace sees the
 //! change arrive sealed and authored by the host; that member, an editor,
-//! has the host make an edit as theirs, sealed the same way, but may not open
-//! a new record; and a new record the host opens goes out sealed on a channel
+//! has the host make an edit as theirs, sealed the same way, and opens a new
+//! record too; and a new record the host opens goes out sealed on a channel
 //! the members can join.
 
 use std::time::{Duration, Instant};
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{
-    ActionHostError, CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus,
-    application_open_target,
+    CatalogueQuery, InvokeArgument, InvokeRequest, ReceiptStatus, application_open_target,
 };
 use tilo_peer_state::join::MemberRole;
 
@@ -230,7 +229,8 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         with_theirs.iter().all(|sealed| *sealed),
         "the member's change is delivered sealed: {with_theirs:?}"
     );
-    // Opening a new record is the host's own person's, not a member's.
+    // The member, an editor, opens a new record through the host, as the
+    // owner does.
     let open = |invocation| InvokeRequest {
         on_behalf_of: None,
         invocation,
@@ -242,12 +242,10 @@ async fn the_governing_host_acts_on_sealed_records_for_its_owner_and_no_one_else
         wait_ms: None,
         appearance: None,
     };
-    let refused = member.invoke(open(InvocationId::new())).await;
-    assert_eq!(
-        refused.status,
-        ReceiptStatus::Rejected {
-            error: ActionHostError::UnknownAction
-        }
+    let by_member = member.invoke(open(InvocationId::new())).await;
+    assert!(
+        matches!(by_member.status, ReceiptStatus::Completed { .. }),
+        "an editor opens a new record through the host: {by_member:?}"
     );
     let opened = page.invoke(open(InvocationId::new())).await;
     let ReceiptStatus::Completed { output } = &opened.status else {

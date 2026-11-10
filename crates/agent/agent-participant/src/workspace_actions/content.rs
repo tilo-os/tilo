@@ -10,10 +10,15 @@
 //! workspace's members from it too, so a page that opens the record later
 //! reads the same bytes.
 //!
-//! The same caller reads those bytes back out, a piece at a time
+//! The same callers read those bytes back out, a piece at a time
 //! ([`super::RemoteActionMessage::ContentGetRequest`]): only this
 //! workspace's store answers, so a reference another workspace holds reads
 //! as content this one does not have.
+//!
+//! Who may: the host's own person and their agents, and any member of the
+//! workspace, or an agent of theirs, as their standing there is now: one who
+//! may change its records (an editor, an agent of one) puts files, and one
+//! who may read it gets them. A viewer only reads.
 
 use tilo_actions::remote::{
     ActionHostError, CONTENT_GETS_UNAVAILABLE, Caller, ContentGetAnswer, ContentPiece, ContentPut,
@@ -24,6 +29,7 @@ use tilo_lock::MutexRecover as _;
 
 use super::{Job, Worker, WorkspaceActions};
 use crate::worker::ConfinedReplica;
+use ui::permissions::policy::ActionKind;
 
 /// The most bytes one upload into a workspace's store takes: as much as the
 /// host answers a member's request for content with.
@@ -151,8 +157,10 @@ impl ContentPut for StorePut {
 
 impl WorkspaceActions {
     /// Answer `step` of an upload `caller` asks of the host in
-    /// `workspace_id`. Only the host's own person puts files, as only they
-    /// run document actions through it.
+    /// `workspace_id`. The host's own person and their agents put files; a
+    /// member, or an agent of theirs, puts them where their standing lets
+    /// them change the workspace's records, which the service's thread reads
+    /// when the upload begins. Its later steps go to the upload they began.
     pub(super) fn content_put(
         &self,
         workspace_id: u64,
@@ -164,17 +172,11 @@ impl WorkspaceActions {
             correlation,
             result,
         };
-        if !self.authorized(caller) {
+        let checked = !self.authorized(caller) && matches!(step, ContentPutStep::Begin { .. });
+        if checked && !super::speaks_for_a_member(caller) {
             return Pending::ready(respond(Err(ActionHostError::NotPermitted)));
         }
-        // The store is found once on the service's thread, then kept.
-        let known = self
-            .shared
-            .stores
-            .lock_recover()
-            .get(&workspace_id)
-            .cloned();
-        if let Some(store) = known {
+        if let Some(store) = self.known_store(workspace_id).filter(|_| !checked) {
             return Pending::ready(respond(self.shared.puts.step(
                 &StorePuts(store),
                 caller,
@@ -197,9 +199,9 @@ impl WorkspaceActions {
     }
 
     /// Answer `caller`'s request for a piece of `content` from the content
-    /// store of the host's workspace `workspace_id`. The same caller puts
-    /// files as reads them back: only the host's own person, as only they
-    /// run document actions through it.
+    /// store of the host's workspace `workspace_id`: the host's own person
+    /// and their agents, and anyone whose standing there lets them read it,
+    /// which the service's thread reads.
     pub(super) fn content_get(
         &self,
         workspace_id: u64,
@@ -211,17 +213,11 @@ impl WorkspaceActions {
             correlation,
             result,
         };
-        if !self.authorized(caller) {
+        let owner = self.authorized(caller);
+        if !owner && !super::speaks_for_a_member(caller) {
             return Pending::ready(respond(Err(ActionHostError::NotPermitted)));
         }
-        // The store is found once on the service's thread, then kept.
-        let known = self
-            .shared
-            .stores
-            .lock_recover()
-            .get(&workspace_id)
-            .cloned();
-        if let Some(store) = known {
+        if let Some(store) = self.known_store(workspace_id).filter(|_| owner) {
             return Pending::ready(respond(
                 piece(&store, &content, offset, length).and_then(ContentGetAnswer::new),
             ));
@@ -229,6 +225,7 @@ impl WorkspaceActions {
         let (done, answer) = pending();
         let job = Job::ContentGet {
             workspace_id,
+            caller: caller.clone(),
             content,
             offset,
             length,
@@ -240,6 +237,15 @@ impl WorkspaceActions {
             }));
         }
         answer.map(respond)
+    }
+
+    /// `workspace_id`'s store, once the service's thread found it.
+    fn known_store(&self, workspace_id: u64) -> Option<ContentStore> {
+        self.shared
+            .stores
+            .lock_recover()
+            .get(&workspace_id)
+            .cloned()
     }
 }
 
@@ -257,13 +263,19 @@ impl Worker {
         Some(store)
     }
 
-    /// Answer `step` of `caller`'s upload into `workspace_id`'s store.
+    /// Answer `step` of `caller`'s upload into `workspace_id`'s store: one
+    /// begins only where they may change the workspace's records.
     pub(super) fn content_put(
         &self,
         workspace_id: u64,
         caller: &Caller,
         step: ContentPutStep,
     ) -> Result<tilo_actions::remote::ContentPutAnswer, ActionHostError> {
+        if matches!(step, ContentPutStep::Begin { .. })
+            && !self.may_across(workspace_id, caller, ActionKind::Undoable)
+        {
+            return Err(ActionHostError::NotPermitted);
+        }
         let store =
             self.workspace_content(workspace_id)
                 .ok_or_else(|| ActionHostError::Unavailable {
@@ -272,14 +284,18 @@ impl Worker {
         self.shared.puts.step(&StorePuts(store), caller, step)
     }
 
-    /// The piece of `content` asked of `workspace_id`'s store.
+    /// The piece of `content` `caller` asked of `workspace_id`'s store,
+    /// where they may read the workspace.
     pub(super) fn content_get(
         &self,
         workspace_id: u64,
+        caller: &Caller,
         content: &str,
-        offset: u64,
-        length: u64,
+        (offset, length): (u64, u64),
     ) -> Result<ContentGetAnswer, ActionHostError> {
+        if !self.may_across(workspace_id, caller, ActionKind::Read) {
+            return Err(ActionHostError::NotPermitted);
+        }
         let store =
             self.workspace_content(workspace_id)
                 .ok_or_else(|| ActionHostError::Unavailable {

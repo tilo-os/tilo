@@ -322,38 +322,36 @@ impl Worker {
         }
     }
 
-    /// The person's standing for `route` as the workspace's policy gives it
-    /// now: refused for a person it does not admit (a removed member, a
+    /// The person's standing in the workspace `cluster` as its policy gives
+    /// it now, where they may read `record` (an app and its record) when one
+    /// is named: refused for a person it does not admit (a removed member, a
     /// revoked device). The host's own person, in a workspace no governance
     /// here answers for, is its owner, as the host's own mount holds it.
     pub(super) fn policy_for(
         &self,
         workspace_id: u64,
         who: &Bounded,
-        route: &DocumentRoute,
+        cluster: &str,
+        record: Option<(&str, &str)>,
     ) -> Result<super::ViewReadPolicy, ActionHostError> {
-        let governed = self.shared.link.get().and_then(|link| {
-            link.view_read_policy(
-                workspace_id,
-                &who.person_caller,
-                &route.app_id,
-                &route.record,
-            )
+        let governed = self.shared.link.get().and_then(|link| match record {
+            Some((app, record)) => {
+                link.view_read_policy(workspace_id, &who.person_caller, app, record)
+            }
+            None => link.workspace_policy(workspace_id, &who.person_caller),
         });
         match governed {
-            Some(policy)
-                if policy.workspace == route.cluster_id && policy.standing.person == who.person =>
-            {
+            Some(policy) if policy.workspace == cluster && policy.standing.person == who.person => {
                 Ok(policy)
             }
             None if who.person == self.participant && !self.governed(workspace_id) => {
                 let owner = ui::permissions::PermissionContext::member_of(
-                    &route.cluster_id,
+                    cluster,
                     who.person.clone(),
                     ui::permissions::Role::Owner,
                 );
                 Ok(super::ViewReadPolicy {
-                    workspace: route.cluster_id.clone(),
+                    workspace: cluster.to_owned(),
                     standing: owner.standing().clone(),
                     sandbox: Vec::new(),
                     unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
@@ -361,6 +359,39 @@ impl Worker {
             }
             Some(_) | None => Err(ActionHostError::NotPermitted),
         }
+    }
+
+    /// [`Self::policy_for`] the record at `route`.
+    fn policy_at(
+        &self,
+        workspace_id: u64,
+        who: &Bounded,
+        route: &DocumentRoute,
+    ) -> Result<super::ViewReadPolicy, ActionHostError> {
+        let record = Some((route.app_id.as_str(), route.record.as_str()));
+        self.policy_for(workspace_id, who, &route.cluster_id, record)
+    }
+
+    /// Whether `caller` may do `kind` across the workspace `workspace_id`
+    /// (its content, a new record of it): the host's own person and their
+    /// agents may; anyone else as the workspace's policy gives them now, an
+    /// agent held to what an agent of its person may do.
+    pub(super) fn may_across(&self, workspace_id: u64, caller: &Caller, kind: ActionKind) -> bool {
+        if super::acts_for(caller, &self.participant) {
+            return true;
+        }
+        let Some(who) = self.bounded(caller) else {
+            return false;
+        };
+        self.shared
+            .link
+            .get()
+            .and_then(|link| link.workspace_policy(workspace_id, &who.person_caller))
+            .filter(|policy| policy.standing.person == who.person)
+            .is_some_and(|policy| {
+                bounded_permissions(&policy, who.agent.as_deref()).answer(&TreePath::root(), kind)
+                    == Answer::Allow
+            })
     }
 
     /// Whether a governance on this host answers for who is in `workspace_id`.
@@ -397,7 +428,7 @@ impl Worker {
         state: &WorkspaceState,
     ) -> Result<BoundedKey, ActionHostError> {
         let unavailable = |reason: String| ActionHostError::Unavailable { reason };
-        let policy = self.policy_for(workspace_id, who, route)?;
+        let policy = self.policy_at(workspace_id, who, route)?;
         // Where the host's own mount holds it, so a part is held beside the
         // same record for everyone.
         self.mount(route, state)
@@ -594,7 +625,7 @@ impl Worker {
         // Their standing now, not as it was when the replica opened: a
         // member removed or narrowed meanwhile writes nothing.
         let policy = self
-            .policy_for(workspace_id, who, route)
+            .policy_at(workspace_id, who, route)
             .map_err(Outcome::Rejected)?;
         let permissions = bounded_permissions(&policy, who.agent.as_deref());
         for (changed, mutation) in &taken {

@@ -84,7 +84,9 @@ use tilo_actions::{
 use tilo_browser_peer::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_protocol::room_workspace_id;
 use tilo_user_identity::RevocationList;
+use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
 /// How long a comment the host files for someone may take to be saved
 /// before the action reports that it was not.
@@ -173,6 +175,12 @@ pub trait WorkspaceRecordsLink: Send + Sync {
         _app: &str,
         _record: &str,
     ) -> Option<ViewReadPolicy> {
+        None
+    }
+    /// The certified caller's standing across `workspace` now, with no
+    /// record's read checked: what its content and its new records are
+    /// decided by. Absence denies.
+    fn workspace_policy(&self, _workspace: u64, _caller: &Caller) -> Option<ViewReadPolicy> {
         None
     }
     /// Read an exact existing source using already-owned host keys. The host
@@ -364,6 +372,7 @@ enum Job {
     /// not found yet.
     ContentGet {
         workspace_id: u64,
+        caller: Caller,
         content: String,
         offset: u64,
         length: u64,
@@ -460,14 +469,15 @@ impl WorkspaceActions {
     /// Whether `caller` may ask the host to run `request` at all. Anyone the
     /// workspace admits may ask for a resource's link: it reads where the resource
     /// is shown and grants nothing, and the governed view lookup behind it
-    /// applies their own grant. Other people may comment on a record through
-    /// the host: the worker runs it under their own current standing, so the
-    /// action's door decides, and refuses anything else.
+    /// applies their own grant. Other people and their agents may act on a
+    /// record, or open a new one, through the host: the worker runs it under
+    /// their own current standing, and refuses what it does not allow.
     fn admits(&self, caller: &Caller, request: &InvokeRequest) -> bool {
         let on_record = record_of(&request.target.provider, "").is_some();
         let link_request =
             request.target.address.action == ui::tilo_resource::share::SHARE_LINK && on_record;
-        let member_request = on_record && speaks_for_a_member(caller);
+        let on_workspace = provider_workspace(&request.target.provider).is_some();
+        let member_request = (on_record || on_workspace) && speaks_for_a_member(caller);
         link_request || member_request || self.authorized(caller)
     }
 
@@ -831,8 +841,7 @@ fn sealed_for(
         .iter()
         .filter(|(route, status)| {
             status.waiting() > 0
-                && tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok()
-                    == Some(workspace_id)
+                && room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
                 && match needs {
                     Needs::Joined => false,
                     Needs::Workspace => !gave_up.listed,
@@ -904,9 +913,7 @@ impl Workspace {
                     self.ready = true;
                 }
                 PeerEvent::Document(document) => {
-                    if tilo_relay_protocol::room_workspace_id(&document.route.cluster_id).ok()
-                        != Some(workspace_id)
-                    {
+                    if room_workspace_id(&document.route.cluster_id).ok() != Some(workspace_id) {
                         continue;
                     }
                     let Some(mutation) = document.mutation() else {
@@ -1064,9 +1071,8 @@ impl Workspace {
     /// The cluster id of the workspace `workspace_id` names, from what the member has
     /// seen of it.
     fn cluster_id(&self, workspace_id: u64) -> Option<String> {
-        let of_workspace = |route: &DocumentRoute| {
-            tilo_relay_protocol::room_workspace_id(&route.cluster_id).ok() == Some(workspace_id)
-        };
+        let of_workspace =
+            |route: &DocumentRoute| room_workspace_id(&route.cluster_id).ok() == Some(workspace_id);
         if let Some((route, _)) = self.log.iter().find(|(route, _)| of_workspace(route)) {
             return Some(route.cluster_id.clone());
         }
@@ -1301,11 +1307,17 @@ impl Worker {
                 } => done.complete(self.content_put(workspace_id, &caller, step)),
                 Job::ContentGet {
                     workspace_id,
+                    caller,
                     content,
                     offset,
                     length,
                     done,
-                } => done.complete(self.content_get(workspace_id, &content, offset, length)),
+                } => done.complete(self.content_get(
+                    workspace_id,
+                    &caller,
+                    &content,
+                    (offset, length),
+                )),
             }
         }
     }
@@ -1631,7 +1643,14 @@ impl Worker {
             });
         let state = self.refresh(workspace_id, needs)?;
         let revision = state.revision.to_string();
-        let Some(cluster_id) = state.workspace.clone() else {
+        // A workspace nothing was written in yet is named by the provider
+        // asked for, so its new records are offered.
+        let asked = query.provider.as_deref().and_then(provider_workspace);
+        let Some(cluster_id) = state.workspace.clone().or_else(|| {
+            asked
+                .filter(|named| room_workspace_id(named).ok() == Some(workspace_id))
+                .map(str::to_owned)
+        }) else {
             return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
         };
         let routes = self.records(&state);
@@ -1679,7 +1698,7 @@ impl Worker {
             .provider
             .as_deref()
             .is_none_or(|provider| provider == own_provider)
-            && self.acts_for_owner(caller)
+            && self.may_across(workspace_id, caller, ActionKind::Undoable)
         {
             rows.extend(self.open_rows(&cluster_id));
         }
@@ -1944,9 +1963,8 @@ impl Worker {
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
         if let Some(named) = provider_workspace(&target.provider) {
-            let opens = self.acts_for_owner(caller);
             return self
-                .open_asked(workspace_id, named, opens, target)
+                .open_asked(workspace_id, caller, named, target)
                 .map(|output| (output, None));
         }
         let workspace = workspace.ok_or_else(unknown_action)?;
@@ -2013,9 +2031,10 @@ impl Worker {
     }
 
     /// Open an app on a new record of the workspace `named`, as its
-    /// workspace's own action asks (`app.<app>#open`): only for the
-    /// workspace's owner and their own agents, in the workspace the session
-    /// is in.
+    /// workspace's own action asks (`app.<app>#open`), in the workspace the
+    /// session is in: for the host's own person as its owner, and for anyone
+    /// else, a member or an agent of anyone's, within their standing there
+    /// now.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -2023,13 +2042,18 @@ impl Worker {
     fn open_asked(
         &mut self,
         workspace_id: u64,
+        caller: &Caller,
         named: &str,
-        owner: bool,
         target: &tilo_actions::remote::RemoteActionTarget,
     ) -> Result<ActionOutput, Outcome> {
-        if !owner || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id) {
+        if room_workspace_id(named).ok() != Some(workspace_id) {
             return Err(unknown_action());
         }
+        let who = if self.serves_as_owner(caller) {
+            None
+        } else {
+            Some(self.bounded(caller).ok_or_else(unknown_action)?)
+        };
         let app = target
             .address
             .resource
@@ -2038,7 +2062,7 @@ impl Worker {
             .filter(|app| self.catalogue.get(app).is_some())
             .ok_or_else(unknown_action)?
             .to_owned();
-        self.open_new(workspace_id, named, &app)
+        self.open_new(workspace_id, named, &app, who.as_ref())
     }
 
     /// Show the record an application's `open` names (its own record when it names none) as a
@@ -2062,7 +2086,7 @@ impl Worker {
         let person = self.participant.clone();
         if !self.acts_for_owner(caller)
             || target.address.action != APPLICATION_OPEN_ACTION
-            || tilo_relay_protocol::room_workspace_id(named).ok() != Some(workspace_id)
+            || room_workspace_id(named).ok() != Some(workspace_id)
         {
             return Err(unknown());
         }
@@ -2265,6 +2289,9 @@ impl Worker {
         .map_err(|error| Box::new(door_outcome(&error)))
     }
 
+    /// A new record of `app` in `workspace`, created by the host's own person
+    /// as its owner, or by `who` on their standing there now: a genesis they
+    /// may not write is never saved, as no change of theirs is.
     #[allow(
         clippy::result_large_err,
         reason = "the outcome becomes the receipt the host records"
@@ -2274,23 +2301,50 @@ impl Worker {
         workspace_id: u64,
         workspace: &str,
         app: &str,
+        who: Option<&bounded::Bounded>,
     ) -> Result<ActionOutput, Outcome> {
         let refused = |reason: String| Outcome::Rejected(ActionHostError::Refused { reason });
-        let hosted = ConfinedReplica::open(
-            &self.catalogue,
-            app,
-            workspace,
-            &self.participant,
-            &crate::ReplicaActor::Owner,
-            Seed::New,
-        )
-        .map_err(|error| refused(error.to_string()))?;
+        let (creator, actor, permissions) = match who {
+            None => (self.participant.clone(), crate::ReplicaActor::Owner, None),
+            Some(who) => {
+                let policy = self
+                    .policy_for(workspace_id, who, workspace, None)
+                    .map_err(Outcome::Rejected)?;
+                let permissions = bounded::bounded_permissions(&policy, who.agent.as_deref());
+                if permissions.answer(&TreePath::root().app(app), ActionKind::Undoable)
+                    != Answer::Allow
+                {
+                    return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+                }
+                let actor = crate::ReplicaActor::Member {
+                    standing: policy.standing,
+                    sandbox: policy.sandbox,
+                    unix_time: policy.unix_time,
+                    agent: who.agent.clone(),
+                };
+                (who.person.clone(), actor, Some(permissions))
+            }
+        };
+        let hosted =
+            ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
+                .map_err(|error| refused(error.to_string()))?;
         let hosted = self.lend(hosted, workspace);
         let route = DocumentRoute {
             app_id: app.to_owned(),
             cluster_id: workspace.to_owned(),
             record: hosted.wire_record().to_owned(),
         };
+        let genesis = hosted
+            .take_mutation()
+            .map_err(|error| refused(error.to_string()))?;
+        if let (Some(permissions), Some(mutation)) = (&permissions, &genesis) {
+            let unwritable =
+                bounded::refused_writes(permissions, (app, None), &[], mutation, false)
+                    .map_err(|reason| commit_failed(reason, false))?;
+            if !unwritable.is_empty() {
+                return Err(Outcome::Rejected(ActionHostError::NotPermitted));
+            }
+        }
         // When the host device takes part in the workspace's channels, it opens a
         // new record's channel for the member and hands it the keys, so the
         // first change goes out sealed instead of waiting for keys.
@@ -2312,10 +2366,7 @@ impl Worker {
                 .install_channel_keys(route.clone(), keys)
                 .map_err(refused)?;
         }
-        if let Some(mutation) = hosted
-            .take_mutation()
-            .map_err(|error| refused(error.to_string()))?
-        {
+        if let Some(mutation) = genesis {
             self.commit(workspace_id, &route, &mutation)
                 .map_err(refused)?;
         }

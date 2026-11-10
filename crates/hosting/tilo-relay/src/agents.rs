@@ -550,6 +550,18 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
         )
     }
 
+    fn workspace_policy(
+        &self,
+        workspace: u64,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<tilo_agent_participant::workspace_actions::ViewReadPolicy> {
+        self.member.runtime.block_on(
+            self.workspaces
+                .as_ref()?
+                .workspace_policy(workspace, caller),
+        )
+    }
+
     fn view_document(
         &self,
         workspace: u64,

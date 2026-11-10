@@ -35,21 +35,29 @@ impl GovernedWorkspace {
         self.admitted(caller).is_some()
     }
 
-    /// Called while holding this governed workspace's lock, including before keys.
-    fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
+    /// `caller`'s standing across the workspace now and its sandbox: what
+    /// every record's policy holds before the record's own read is checked.
+    fn workspace_policy(&self, caller: &Caller) -> Option<ViewReadPolicy> {
         let standing = self.admitted(caller)?.standing();
-        let device = *caller.device_public_key()?;
-        let now = SystemTime::now();
-        let peer = self.peer();
-        peer.check_document_read(device, app, record, now).ok()?;
-        let sandbox = peer.governance().governed_sandbox().ok()?;
-        drop(peer);
+        let sandbox = self.peer().governance().governed_sandbox().ok()?;
         Some(ViewReadPolicy {
             workspace: self.workspace().to_owned(),
             standing,
             sandbox,
-            unix_time: now.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs(),
+            unix_time: SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .ok()?
+                .as_secs(),
         })
+    }
+
+    /// Called while holding this governed workspace's lock, including before keys.
+    fn view_read_policy(&self, caller: &Caller, app: &str, record: &str) -> Option<ViewReadPolicy> {
+        let device = *caller.device_public_key()?;
+        self.peer()
+            .check_document_read(device, app, record, SystemTime::now())
+            .ok()?;
+        self.workspace_policy(caller)
     }
 }
 
@@ -68,9 +76,13 @@ pub fn bot_shows_personas(peer: &StatePeer, installation: &str, now: SystemTime)
 }
 
 impl Workspaces {
-    /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
-    /// false for a workspace not governed here.
-    pub async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+    /// `answer` of the workspace `workspace` governed here, under its lock;
+    /// `None` for a workspace not governed here.
+    async fn governing<T>(
+        &self,
+        workspace: u64,
+        answer: impl FnOnce(&GovernedWorkspace) -> T,
+    ) -> Option<T> {
         let workspaces = self
             .inner
             .workspaces
@@ -82,31 +94,29 @@ impl Workspaces {
         for governed in workspaces {
             let runtime = governed.lock().await;
             if runtime.workspace_id() == workspace {
-                return bot_shows_personas(&runtime.peer(), installation, SystemTime::now());
+                return Some(answer(&runtime));
             }
         }
-        false
+        None
+    }
+
+    /// [`bot_shows_personas`] in the workspace of `workspace` governed here;
+    /// false for a workspace not governed here.
+    pub async fn bot_personas(&self, workspace: u64, installation: &str) -> bool {
+        self.governing(workspace, |runtime| {
+            bot_shows_personas(&runtime.peer(), installation, SystemTime::now())
+        })
+        .await
+        .unwrap_or(false)
     }
 
     /// Whether the workspace `workspace` governs here admits `caller`: false
     /// for a workspace it does not govern, and for anyone its governance does
     /// not certify a device for.
     pub async fn admits(&self, workspace: u64, caller: &Caller) -> bool {
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
+        self.governing(workspace, |runtime| runtime.admits(caller))
             .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for governed in workspaces {
-            let runtime = governed.lock().await;
-            if runtime.workspace_id() == workspace {
-                return runtime.admits(caller);
-            }
-        }
-        false
+            .unwrap_or(false)
     }
 
     pub async fn resource_view_policy(
@@ -116,21 +126,24 @@ impl Workspaces {
         app: &str,
         record: &str,
     ) -> Option<ViewReadPolicy> {
-        let workspaces = self
-            .inner
-            .workspaces
-            .lock()
+        self.governing(workspace, |runtime| {
+            runtime.view_read_policy(caller, app, record)
+        })
+        .await
+        .flatten()
+    }
+
+    /// `caller`'s standing across the workspace `workspace` governed here,
+    /// with no record's read checked: what a workspace's content and its new
+    /// records are decided by.
+    pub async fn workspace_policy(
+        &self,
+        workspace: u64,
+        caller: &Caller,
+    ) -> Option<ViewReadPolicy> {
+        self.governing(workspace, |runtime| runtime.workspace_policy(caller))
             .await
-            .values()
-            .cloned()
-            .collect::<Vec<_>>();
-        for governed in workspaces {
-            let runtime = governed.lock().await;
-            if runtime.workspace_id() == workspace {
-                return runtime.view_read_policy(caller, app, record);
-            }
-        }
-        None
+            .flatten()
     }
 
     pub async fn resource_view_document(

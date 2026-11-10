@@ -7,7 +7,9 @@
 use super::*;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use tilo_actions::remote::{Caller, ConfirmationQuestion, ConfirmationReply, Pending};
+use tilo_actions::remote::{
+    Caller, ConfirmationQuestion, ConfirmationReply, ContentPutAnswer, ContentPutStep, Pending,
+};
 use tilo_agent_participant::workspace_actions::{
     ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
 };
@@ -26,6 +28,7 @@ struct Membership {
     revoked: AtomicBool,
     answer: Mutex<Option<ConfirmationReply>>,
     asked: AtomicUsize,
+    content: tilo_content::ContentStore,
 }
 
 impl Membership {
@@ -69,6 +72,12 @@ impl WorkspaceRecordsLink for Membership {
             sandbox: Vec::new(),
             unix_time: tilo_clock::unix_now_ns() / 1_000_000_000,
         })
+    }
+    fn workspace_policy(&self, workspace: u64, caller: &Caller) -> Option<ViewReadPolicy> {
+        self.view_read_policy(workspace, caller, "", "")
+    }
+    fn workspace_content(&self, _workspace: u64) -> Option<tilo_content::ContentStore> {
+        Some(self.content.clone())
     }
     fn ask_person(
         &self,
@@ -135,6 +144,71 @@ fn invoked(
             return status;
         }
         std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// `bytes` put into the workspace's store by `caller`: its reference.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a reply of another kind is the failure the test reports"
+)]
+fn put(
+    actions: &tilo_agent_participant::WorkspaceActions,
+    workspace: u64,
+    caller: &Caller,
+    bytes: &[u8],
+) -> Result<String, ActionHostError> {
+    let step = |step| match served(
+        actions,
+        workspace,
+        caller,
+        RemoteActionMessage::ContentPutRequest {
+            correlation: 1,
+            step,
+        },
+    ) {
+        RemoteActionMessage::ContentPutResponse { result, .. } => result,
+        other => panic!("expected an upload's answer, got {other:?}"),
+    };
+    let ContentPutAnswer::Begun { upload } = step(ContentPutStep::Begin {
+        size: bytes.len() as u64,
+    })?
+    else {
+        panic!("an upload begins")
+    };
+    step(ContentPutStep::append(upload, 0, bytes))?;
+    match step(ContentPutStep::Finish { upload })? {
+        ContentPutAnswer::Finished { content } => Ok(content),
+        other => panic!("expected the content, got {other:?}"),
+    }
+}
+
+/// The bytes of `content` `caller` gets from the workspace's store.
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "a reply of another kind is the failure the test reports"
+)]
+fn got(
+    actions: &tilo_agent_participant::WorkspaceActions,
+    workspace: u64,
+    caller: &Caller,
+    content: &str,
+) -> Result<Vec<u8>, ActionHostError> {
+    match served(
+        actions,
+        workspace,
+        caller,
+        RemoteActionMessage::ContentGetRequest {
+            correlation: 1,
+            content: content.to_owned(),
+            offset: 0,
+            length: 0,
+        },
+    ) {
+        RemoteActionMessage::ContentGetResponse { result, .. } => {
+            Ok(result?.bytes().expect("well-formed bytes"))
+        }
+        other => panic!("expected a piece, got {other:?}"),
     }
 }
 
@@ -272,6 +346,7 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
         revoked: AtomicBool::new(false),
         answer: Mutex::new(None),
         asked: AtomicUsize::new(0),
+        content: tilo_content::ContentStore::in_dir(state.path().join("member-content")),
     });
     let actions = tilo_agent_participant::WorkspaceActions::new(Arc::new(common::catalogue));
     actions.attach(membership.clone()).unwrap();
@@ -342,26 +417,73 @@ async fn each_member_runs_what_their_standing_lets_them_and_nothing_else() {
         matches!(edited, ReceiptStatus::Completed { .. }),
         "{edited:?}"
     );
-    // Opening a new record in the workspace is the host's own person's.
-    let open = invoked(
-        &actions,
-        workspace,
-        &member,
-        &request(
-            &format!("workspace:{WORKSPACE}"),
+    // An editor opens a new record in the workspace, and their agent does
+    // too: each is listed the open, and each record is begun by them.
+    let agent = member.clone().delegated_to("Claude Code");
+    let workspace_provider = format!("workspace:{WORKSPACE}");
+    let open = || {
+        request(
+            &workspace_provider,
             ActionAddress::new(format!("app.{NOTES}"), "open"),
             InvokeArgument::None,
-        ),
-    );
+        )
+    };
+    for (caller, who) in [(&member, "the editor"), (&agent, "their agent")] {
+        assert!(
+            listed(&actions, workspace, caller, &workspace_provider)
+                .iter()
+                .any(|action| action.address.action == "open"),
+            "{who} is listed the open"
+        );
+        let opened = invoked(&actions, workspace, caller, &open());
+        assert!(
+            matches!(opened, ReceiptStatus::Completed { .. }),
+            "{who} opens a record: {opened:?}"
+        );
+    }
+    // An editor and their agent put files into the workspace and get them
+    // back; a viewer only gets them, and opens nothing.
+    let by_editor = put(&actions, workspace, &member, b"%PDF-1.7 editor").unwrap();
+    let by_agent = put(&actions, workspace, &agent, b"%PDF-1.7 agent").unwrap();
     assert_eq!(
-        open,
-        ReceiptStatus::Rejected {
-            error: ActionHostError::UnknownAction
-        }
+        got(&actions, workspace, &agent, &by_editor).unwrap(),
+        b"%PDF-1.7 editor"
     );
+    *membership.role.lock().unwrap() = Some(Role::Viewer);
+    assert_eq!(
+        got(&actions, workspace, &member, &by_agent).unwrap(),
+        b"%PDF-1.7 agent",
+        "a viewer reads the workspace's files"
+    );
+    for caller in [&member, &agent] {
+        assert_eq!(
+            put(&actions, workspace, caller, b"by a viewer"),
+            Err(ActionHostError::NotPermitted),
+            "a viewer, and their agent, puts nothing"
+        );
+        assert_eq!(
+            invoked(&actions, workspace, caller, &open()),
+            ReceiptStatus::Rejected {
+                error: ActionHostError::NotPermitted
+            },
+            "a viewer, and their agent, opens nothing"
+        );
+        assert!(
+            !listed(&actions, workspace, caller, &workspace_provider)
+                .iter()
+                .any(|action| action.address.action == "open"),
+            "a viewer is not listed the open"
+        );
+    }
+    *membership.role.lock().unwrap() = None;
+    assert_eq!(
+        got(&actions, workspace, &member, &by_agent),
+        Err(ActionHostError::NotPermitted),
+        "someone the workspace no longer admits gets nothing"
+    );
+    *membership.role.lock().unwrap() = Some(Role::Editor);
     // An action people alone are offered is listed to the editor and not to
     // their agent, which runs only what it is listed.
-    let agent = member.clone().delegated_to("Claude Code");
     let people_only = |caller: &Caller| {
         listed(&actions, workspace, caller, &tasks_provider)
             .into_iter()
