@@ -248,10 +248,97 @@ impl ActorState {
         let Some(link) = self.native_links.get(&ws) else {
             return;
         };
+        // The devices that take part through this one hear the rest of the
+        // workspace through it alone. Its channels' governance goes to them
+        // with the rest of what the channel service hears.
+        if let Some(members) = &self.members
+            && heard.report.is_ok()
+            && !is_channel_governance(&heard.message)
+        {
+            members.carry(link.scope.workspace(), heard.author, heard.message.clone());
+        }
+        self.deliver(ws, heard).await;
+    }
+
+    /// Hand `heard`, a frame of the workspace on topic `ws` that this
+    /// device's owner took in, to this device's apps.
+    async fn deliver(&self, ws: u64, heard: tilo_peer_state::direct::Heard) {
+        let Some(link) = self.native_links.get(&ws) else {
+            return;
+        };
         let input = Input::heard(Arc::clone(&link.scope), heard);
         self.tally.note(super::heard_kind(&input));
         self.publish_to_subscriber(ws, super::NetEvent::NativeInput(Box::new(input)))
             .await;
+    }
+
+    /// Relay for `members`, the devices that take part in this device's
+    /// workspaces through it: what their links bring reaches
+    /// [`Self::member_heard`].
+    pub(super) fn serve_members(&mut self, members: tilo_peer_state::direct::Owning) {
+        let (tell, mut told) = tokio::sync::mpsc::unbounded_channel();
+        members.hear(Arc::new(move |workspace, heard| {
+            let _ = tell.send((workspace, heard.clone()));
+        }));
+        let tx = self.internal_tx.clone();
+        tokio::spawn(async move {
+            while let Some((workspace, heard)) = told.recv().await {
+                let ws = crate::workspace_topic_id(workspace);
+                if tx
+                    .send(InternalEvent::MemberHeard { ws, heard })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
+            }
+        });
+        self.members = Some(members);
+    }
+
+    /// A frame a device that takes part in the workspace on topic `ws`
+    /// through this one wrote, which this device's owner took in: it reaches
+    /// this device's apps, and the workspace's own host over this device's
+    /// link, so the devices that take part there read it too. Its link
+    /// already sent it to this device's other members. The channels'
+    /// governance takes its own path, through the channel service.
+    pub(super) async fn member_heard(&self, ws: u64, heard: tilo_peer_state::direct::Heard) {
+        if heard.report.is_err() || is_channel_governance(&heard.message) {
+            return;
+        }
+        let Some(link) = self.native_links.get(&ws) else {
+            tracing::debug!(
+                ws,
+                "a member's frame reaches no host and no app: this device holds no link of the workspace"
+            );
+            return;
+        };
+        if matches!(heard.message, NeighbourMsg::AppDocument { .. })
+            && let Err(error) = link.link.send(heard.message.clone())
+        {
+            tracing::debug!(ws, %error, "a member's write waits for the workspace's next link");
+        }
+        self.deliver(ws, heard).await;
+    }
+
+    /// Send `msg`, a write this device publishes, to the devices that take
+    /// part in its workspace through this one: they read the workspace
+    /// through this device alone.
+    pub(super) fn carry_own(&self, msg: &NeighbourMsg) {
+        let (Some(members), Some(identity)) = (&self.members, &self.host_identity) else {
+            return;
+        };
+        let NeighbourMsg::AppDocument { cluster_id, .. } = msg else {
+            return;
+        };
+        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(cluster_id) else {
+            return;
+        };
+        members.carry(
+            workspace,
+            identity.device_signing_key.verifying_key().to_bytes(),
+            msg.clone(),
+        );
     }
 
     /// The workspace on topic `ws`'s link has its host's retained history in

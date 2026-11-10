@@ -1069,6 +1069,15 @@ impl Engine {
         })
     }
 
+    /// The devices that take part in this device's workspaces through it, as their workspace's host
+    /// ([`Self::direct_protocols`]): what they write reaches this device's apps and the workspace's
+    /// own host through this device, and what the workspace writes elsewhere reaches them through
+    /// it too.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn members(&self) -> Option<tilo_peer_state::direct::Owning> {
+        self.directed.clone()
+    }
+
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
     /// live plane is dialled at.
     #[cfg(target_os = "linux")]
@@ -1107,6 +1116,19 @@ impl Engine {
     /// Where a read asks the workspaces' hosts for a record they send only once asked: the plane
     /// this session's channels travel on.
     pub fn attach_link(&self, link: Arc<channels::ChannelLink>) {
+        // The devices that take part in a workspace through this one hear its channels' governance
+        // through this one alone, and what they say reaches the channels here and the workspace's
+        // own host through it.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(directed) = &self.directed {
+            link.serve_members(Arc::new(directed.clone()));
+            let members = Arc::downgrade(&link);
+            directed.hear(Arc::new(move |_, heard| {
+                if let Some(link) = members.upgrade() {
+                    link.heard_from_member(&heard.message);
+                }
+            }));
+        }
         *self.link.lock_recover() = Some(link);
     }
 

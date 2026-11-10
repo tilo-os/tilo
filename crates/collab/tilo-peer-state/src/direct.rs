@@ -167,6 +167,21 @@ struct Inner {
     /// it sends on to its other links, so a member's frame reaches every
     /// member through one path.
     fan_out: std::sync::atomic::AtomicBool,
+    /// Who else takes what the links bring, when they are an [`Owning`]
+    /// device's members' links: the device's session, which hands it to its
+    /// apps and channels and on to the workspace's own host.
+    hearing: Option<Hearing>,
+}
+
+/// Where a device takes what its members' links bring it, in the workspace
+/// they are of ([`Owning::hear`]): each frame as its link took it in.
+pub type MemberSink = Arc<dyn Fn(tilo_desktop_model::WorkspaceId, &Heard) + Send + Sync>;
+
+/// The sinks a link of one workspace hands what it brings to.
+#[derive(Clone)]
+struct Hearing {
+    workspace: tilo_desktop_model::WorkspaceId,
+    sinks: Arc<RwLock<Vec<MemberSink>>>,
 }
 
 impl std::fmt::Debug for DirectSync {
@@ -202,6 +217,7 @@ impl DirectSync {
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
             fan_out: std::sync::atomic::AtomicBool::new(false),
+            hearing: None,
         }))
     }
 
@@ -223,6 +239,23 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
+            hearing: self.0.hearing.clone(),
+        }))
+    }
+
+    /// The same link, handing what it brings to `hearing`'s sinks too.
+    fn hearing(&self, hearing: Hearing) -> Self {
+        Self(Arc::new(Inner {
+            replica: self.0.replica.clone(),
+            admission: self.0.admission.clone(),
+            key: self.0.key.clone(),
+            store: self.0.store.clone(),
+            outgoing: self.0.outgoing.clone(),
+            heard: self.0.heard.clone(),
+            changed: self.0.changed.clone(),
+            caught_up: self.0.caught_up.clone(),
+            fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
+            hearing: Some(hearing),
         }))
     }
 
@@ -255,6 +288,7 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
+            hearing: self.0.hearing.clone(),
         }))
     }
 
@@ -714,8 +748,19 @@ impl DirectSync {
                 published: false,
             });
         }
-        let _ = self.0.heard.send(heard);
+        self.tell(heard);
         Ok(())
+    }
+
+    /// Hand `heard` to this device's engine, and to the sinks an [`Owning`]
+    /// device's session hears its members by.
+    fn tell(&self, heard: Heard) {
+        if let Some(hearing) = &self.0.hearing {
+            for sink in hearing.sinks.read_recover().iter() {
+                sink(hearing.workspace, &heard);
+            }
+        }
+        let _ = self.0.heard.send(heard);
     }
 
     /// Carry `message`, `author`'s channel governance, without admitting it:
@@ -733,7 +778,7 @@ impl DirectSync {
                 published: false,
             });
         }
-        let _ = self.0.heard.send(Heard {
+        self.tell(Heard {
             author,
             message,
             landed: false,
@@ -1002,6 +1047,8 @@ pub struct Owning {
     key: SigningKey,
     store: Arc<Store>,
     serving: Serving,
+    /// Who takes what the members' links bring ([`Self::hear`]).
+    sinks: Arc<RwLock<Vec<MemberSink>>>,
 }
 
 impl std::fmt::Debug for Owning {
@@ -1028,6 +1075,68 @@ impl Owning {
             key,
             store,
             serving: Serving::new(),
+            sinks: Arc::default(),
+        }
+    }
+
+    /// Hand `sink` every frame the members linked to this device bring it, in
+    /// any workspace it serves, as their link took it in: the device's own
+    /// apps and channels read the workspace as the members write it, and the
+    /// devices that take part through the workspace's own host hear it only
+    /// when this device sends it on there. The links already send it on to
+    /// the device's other members.
+    pub fn hear(&self, sink: MemberSink) {
+        self.sinks.write_recover().push(sink);
+    }
+
+    /// Send `message`, `from`'s frame of `workspace`, to the members linked to
+    /// this device there: what this device writes, and what the workspace's
+    /// other devices wrote that reached it another way. A member linked here
+    /// has no other path to the rest of the workspace. A sealed write is kept
+    /// at this device's store as well, so a member that links later catches
+    /// up on it; nothing else goes out for a workspace no member reached here.
+    pub fn carry(
+        &self,
+        workspace: tilo_desktop_model::WorkspaceId,
+        from: [u8; 32],
+        message: NeighbourMsg,
+    ) {
+        let Ok(number) = crate::join::room_workspace_id(&workspace.to_string()) else {
+            return;
+        };
+        if let Ok(frame) = Frame::of(&message)
+            && let Err(error) = self.store.retain(number, &frame)
+        {
+            tracing::warn!(%error, "a frame was not kept for the workspace's members");
+        }
+        let Some(link) = self.serving.link(number) else {
+            return;
+        };
+        link.outgoing(Authored {
+            from,
+            message,
+            published: false,
+        });
+    }
+
+    /// Send `message`, channel governance of a workspace this device serves,
+    /// to the members linked to it there: what this device's channel service
+    /// says, and what the workspace's other devices said that reached it
+    /// another way. A member hears no other path to the rest of the
+    /// workspace. Nothing goes out for a workspace no member reached here.
+    pub fn carry_governance(&self, message: &NeighbourMsg) {
+        let workspace = match message {
+            NeighbourMsg::MlsGovernance { workspace, .. }
+            | NeighbourMsg::MlsAccessRequest { workspace, .. } => workspace,
+            NeighbourMsg::MlsRoutedAccessRequest { room, .. } => room,
+            _ => return,
+        };
+        if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(workspace) {
+            self.carry(
+                workspace,
+                self.key.verifying_key().to_bytes(),
+                message.clone(),
+            );
         }
     }
 
@@ -1049,6 +1158,10 @@ impl Owning {
             return Ok(link);
         }
         let link = DirectSync::over(self.owner.replica(held)?, self.key.clone())
+            .hearing(Hearing {
+                workspace: held,
+                sinks: Arc::clone(&self.sinks),
+            })
             .owning(self.owner.clone(), held)?
             .with_store(Arc::clone(&self.store));
         self.serving.serve(link.clone())?;
@@ -1144,9 +1257,14 @@ async fn send_authored(
         match live.recv().await {
             Ok(authored) if already_theirs(&authored, remote, own) => {}
             Ok(authored) => {
+                // The governance that removes the device is the last frame it
+                // is sent, whichever path told this device of the removal.
+                let governance = matches!(authored.message, NeighbourMsg::SyncResp { .. });
+                if !governance && link.removed(remote) {
+                    return Err(REMOVED.into());
+                }
                 write_authored(&mut send, &authored).await?;
-                if matches!(authored.message, NeighbourMsg::SyncResp { .. }) && link.removed(remote)
-                {
+                if governance && link.removed(remote) {
                     return Err(REMOVED.into());
                 }
             }

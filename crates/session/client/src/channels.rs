@@ -169,7 +169,20 @@ pub struct ChannelLink {
     asked: Mutex<BTreeSet<(Topic, [u8; 32])>>,
     /// What this session says on the collaboration plane, once it is running.
     outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
+    /// The devices that reach this one as their workspace's host, when it
+    /// serves any ([`Self::serve_members`]).
+    members: Mutex<Option<Arc<dyn Members>>>,
     park: Arc<GovernancePark>,
+}
+
+/// The devices that take part in a workspace through this one, as their
+/// workspace's host: a channel's governance reaches them only through this
+/// device, so it sends them what it hears and says, and takes what they say
+/// to its own channel service and on to the workspace's own host.
+pub trait Members: Send + Sync {
+    /// Send `message`, a workspace's channel governance, to the members
+    /// linked to this device in that workspace.
+    fn carry(&self, message: &NeighbourMsg);
 }
 
 impl ChannelLink {
@@ -180,6 +193,7 @@ impl ChannelLink {
             changed: Mutex::new(BTreeSet::new()),
             asked: Mutex::new(BTreeSet::new()),
             outgoing: Mutex::new(None),
+            members: Mutex::new(None),
             park: GovernancePark::new(),
         })
     }
@@ -202,14 +216,62 @@ impl ChannelLink {
         self.outgoing.lock_recover().is_some()
     }
 
+    /// Send the channel governance this device hears and says to `members`, the devices that take
+    /// part in a workspace through this one, and take what they say: [`Self::heard_from_member`].
+    pub fn serve_members(&self, members: Arc<dyn Members>) {
+        *self.members.lock_recover() = Some(members);
+    }
+
     /// Take in one message the plane heard. Anything but the channels' governance is left to the
-    /// plane.
+    /// plane. The members linked to this device hear it too: the plane is not their path.
     pub fn heard(&self, message: &NeighbourMsg) {
-        let Some(governance) = InboundChannelGovernance::from_message(message.clone()) else {
+        if !self.take_in(message) {
             return;
+        }
+        self.carry_to_members(message);
+    }
+
+    /// Send `message`, channel governance, to the members linked to this device.
+    fn carry_to_members(&self, message: &NeighbourMsg) {
+        let members = self.members.lock_recover().clone();
+        if let Some(members) = members {
+            members.carry(message);
+        }
+    }
+
+    /// Take in channel governance a member linked to this device said: the channel service settles
+    /// its groups with it, and the plane sends it on to the workspace's own host, so the devices
+    /// that take part there hear it. The link it came by already sent it to the other members.
+    pub fn heard_from_member(&self, message: &NeighbourMsg) {
+        if !self.take_in(message) {
+            return;
+        }
+        if let Some(workspace) = governance_workspace(message) {
+            self.say(workspace, message.clone());
+        }
+    }
+
+    /// Queue `message` for the channel service when it is channel governance, and say whether it
+    /// was.
+    fn take_in(&self, message: &NeighbourMsg) -> bool {
+        let Some(governance) = InboundChannelGovernance::from_message(message.clone()) else {
+            return false;
         };
         self.inbound.lock_recover().push(governance);
         self.park.poke();
+        true
+    }
+
+    /// Say `message`, channel governance of `workspace`, on the plane; `false` when the plane is
+    /// not running.
+    fn say(&self, workspace: ModelWorkspaceId, message: NeighbourMsg) -> bool {
+        let outgoing = self.outgoing.lock_recover().clone();
+        outgoing.is_some_and(|outgoing| {
+            outgoing.send(Cmd::Publish {
+                ws: topic_of(workspace),
+                msg: Box::new(message),
+            })
+        })
     }
 
     /// Take what a workspace's governor never admits into its replica: the channels' governance,
@@ -298,28 +360,33 @@ impl ChannelLink {
 
 impl GovernanceTransport for ChannelLink {
     fn publish(&self, message: NeighbourMsg) -> bool {
-        let workspace = match &message {
-            NeighbourMsg::MlsGovernance { workspace, .. }
-            | NeighbourMsg::MlsAccessRequest { workspace, .. } => {
-                ModelWorkspaceId::parse(workspace)
-            }
-            NeighbourMsg::MlsRoutedAccessRequest { room, .. } => ModelWorkspaceId::parse(room),
-            _ => None,
-        };
-        let Some(workspace) = workspace else {
+        let Some(workspace) = governance_workspace(&message) else {
             return false;
         };
-        let outgoing = self.outgoing.lock_recover().clone();
-        outgoing.is_some_and(|outgoing| {
-            outgoing.send(Cmd::Publish {
-                ws: topic_of(workspace),
-                msg: Box::new(message),
-            })
-        })
+        // The members linked to this device hear it from this device alone.
+        self.carry_to_members(&message);
+        self.say(workspace, message)
     }
 
     fn take_inbound(&self) -> Vec<InboundChannelGovernance> {
         std::mem::take(&mut *self.inbound.lock_recover())
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Members for tilo_peer_state::direct::Owning {
+    fn carry(&self, message: &NeighbourMsg) {
+        self.carry_governance(message);
+    }
+}
+
+/// The workspace `message`, a channel's governance, is of; `None` for any other message.
+fn governance_workspace(message: &NeighbourMsg) -> Option<ModelWorkspaceId> {
+    match message {
+        NeighbourMsg::MlsGovernance { workspace, .. }
+        | NeighbourMsg::MlsAccessRequest { workspace, .. } => ModelWorkspaceId::parse(workspace),
+        NeighbourMsg::MlsRoutedAccessRequest { room, .. } => ModelWorkspaceId::parse(room),
+        _ => None,
     }
 }
 
@@ -647,6 +714,70 @@ mod tests {
             matches!(sent.try_recv(), Ok(Cmd::Roster { .. })),
             "and the plane was told it"
         );
+    }
+
+    /// The members linked to a device that hosts their workspace hear a channel's governance
+    /// through that device alone: what it says and what the plane brings it reach them, and what
+    /// they say reaches its channel service and, on the plane, the workspace's own host.
+    #[test]
+    fn governance_passes_between_the_plane_and_the_members_linked_here() {
+        #[derive(Default)]
+        struct Linked(Mutex<Vec<NeighbourMsg>>);
+        impl Members for Linked {
+            fn carry(&self, message: &NeighbourMsg) {
+                self.0.lock_recover().push(message.clone());
+            }
+        }
+        let link = ChannelLink::new();
+        let (outgoing, mut said) = tokio::sync::mpsc::unbounded_channel();
+        link.attach(std::sync::Arc::new(outgoing));
+        let members = Arc::new(Linked::default());
+        link.serve_members(Arc::clone(&members) as Arc<dyn Members>);
+        let workspace = ModelWorkspaceId::new();
+        let frame = |epoch| NeighbourMsg::MlsGovernance {
+            workspace: workspace.to_string(),
+            frame: Box::new(collab_types::MlsGovernanceFrame {
+                version: collab_types::MLS_GOVERNANCE_VERSION,
+                channel: ChannelId::new(),
+                previous_frame_digest: [0; 32],
+                epoch,
+                action: collab_types::MlsGovernanceAction::Genesis,
+                signed_by: Ed25519PublicKey::from_bytes([2; 32]),
+                signature: collab_types::Signature([0; 64]),
+            }),
+            delivery: epoch,
+        };
+        let published = |said: &mut tokio::sync::mpsc::UnboundedReceiver<Cmd>| {
+            let mut published = Vec::new();
+            while let Ok(command) = said.try_recv() {
+                if let Cmd::Publish { msg, .. } = command {
+                    published.push(*msg);
+                }
+            }
+            published
+        };
+
+        // What this device's channel service says goes out on the plane and to the members.
+        let own = frame(1);
+        assert!(link.publish(own.clone()));
+        assert_eq!(published(&mut said), vec![own.clone()]);
+        assert_eq!(*members.0.lock_recover(), vec![own]);
+
+        // What the plane brings reaches the channel service and the members, and is not said
+        // again on the plane.
+        let from_the_host = frame(2);
+        link.heard(&from_the_host);
+        assert_eq!(link.take_inbound().len(), 1);
+        assert!(published(&mut said).is_empty());
+        assert_eq!(members.0.lock_recover().last(), Some(&from_the_host));
+
+        // What a member says reaches the channel service and goes on to the workspace's host; its
+        // link already sent it to the other members.
+        let from_a_member = frame(3);
+        link.heard_from_member(&from_a_member);
+        assert_eq!(link.take_inbound().len(), 1);
+        assert_eq!(published(&mut said), vec![from_a_member]);
+        assert_eq!(members.0.lock_recover().len(), 2);
     }
 
     fn device_cert() -> tilo_user_identity::DeviceCert {

@@ -453,6 +453,27 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     let frames = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
     let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store));
+    // The device's session hears what its members bring, in the workspace they write to: its own
+    // apps and channels read it, and it sends it on to the workspace's own host. A member's write
+    // and its channel governance went nowhere past this device's links.
+    let (tell, told) = std::sync::mpsc::channel();
+    let tell = std::sync::Mutex::new(tell);
+    serving.hear(Arc::new(
+        move |workspace, heard: &tilo_peer_state::direct::Heard| {
+            let _ = tell
+                .lock()
+                .unwrap()
+                .send((workspace, heard.author, heard.message.clone()));
+        },
+    ));
+    let heard_here = |wanted: &dyn Fn(&NeighbourMsg) -> bool| loop {
+        let (in_workspace, author, message) = told
+            .recv_timeout(Duration::from_secs(30))
+            .expect("the device's session hears what its members bring");
+        if wanted(&message) {
+            return (in_workspace, author, message);
+        }
+    };
     let router = Router::builder(host_endpoint.clone())
         .accept(DIRECT_ALPN, serving.clone())
         .spawn();
@@ -530,6 +551,34 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
     })
     .await
     .expect("the device that holds the workspace admits the joiner's write");
+    let (in_workspace, author, _) =
+        heard_here(&|message| matches!(message, NeighbourMsg::AppDocument { .. }));
+    assert_eq!(
+        (in_workspace, author),
+        (workspace, b_key.verifying_key().to_bytes())
+    );
+
+    // What the device writes, or hears of the workspace another way, it sends to its members, and
+    // keeps for the ones that link later: a member that linked after the device wrote never heard
+    // of the write.
+    let keys = ChannelGroup::create(channel(), MemberKey::generate("owner").unwrap())
+        .unwrap()
+        .content_keys()
+        .unwrap();
+    let own = sealed(&host_key, &keys, "the device's own");
+    serving.carry(workspace, host_key.verifying_key().to_bytes(), own.clone());
+    assert!(
+        store
+            .replay(
+                tilo_peer_state::join::room_workspace_id(WORKSPACE).unwrap(),
+                &[],
+                Budget::default()
+            )
+            .unwrap()
+            .frames
+            .contains(&own),
+        "what the device sends its members is kept for the ones that link later"
+    );
 
     // A device that joins later catches up from the device that holds the workspace: what it wrote,
     // and what the joiner wrote through it.
@@ -581,6 +630,37 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         !heard.landed,
         "channel governance is never the workspace's state"
     );
+    let (_, _, taken) = heard_here(&|message| *message == asking);
+    assert_eq!(
+        taken, asking,
+        "the device's own channels hear the joiner's governance"
+    );
+    let genesis = NeighbourMsg::MlsGovernance {
+        workspace: WORKSPACE.into(),
+        frame: Box::new(
+            collab_types::MlsGovernanceFrame::signed(
+                channel(),
+                [0; 32],
+                0,
+                collab_types::MlsGovernanceAction::Genesis,
+                &host_key,
+            )
+            .unwrap(),
+        ),
+        delivery: 1,
+    };
+    serving.carry_governance(&genesis);
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            match c_heard.recv().await {
+                Ok(heard) if heard.message == genesis => return,
+                Ok(_) | Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {}
+                Err(error) => panic!("the late joiner's link closed: {error}"),
+            }
+        }
+    })
+    .await
+    .expect("what the device holding the workspace says of its channels reaches its members");
 
     // A workspace this device does not hold is refused, rather than answered for.
     let elsewhere =

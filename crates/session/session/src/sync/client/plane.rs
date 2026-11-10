@@ -502,6 +502,11 @@ async fn listening(
         reachability.clone(),
         served,
     );
+    // The devices that take part in this device's workspaces through it reach the rest of each
+    // workspace, and its apps, through this plane.
+    if let Some(members) = engine.and_then(|engine| engine.members()) {
+        let _ = actor.send(NetCmd::ServeMembers(members)).await;
+    }
     let (events, carrying, attending) = heard(
         identity.is_some(),
         arrivals,
