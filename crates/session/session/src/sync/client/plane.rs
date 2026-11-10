@@ -82,7 +82,7 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
         }
         // Taken off this path before it gets here: what a host replays into the workspaces this
         // device holds is admitted on its own thread, and the rest is the plane's own bookkeeping.
-        NetEvent::NativeInput(_) | NetEvent::RecordOpened { .. } | NetEvent::OwnReplay { .. } => {
+        NetEvent::NativeInput(_) | NetEvent::OwnReplay { .. } => {
             return None;
         }
     }))
@@ -547,7 +547,7 @@ fn heard(
     tokio::task::JoinHandle<()>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
-    let opened = link.clone();
+    let replayed = link.clone();
     let (admissions, attending) = if holds_custody {
         let (say, hear) = tokio::sync::mpsc::unbounded_channel();
         let attending = tokio::spawn(async move { take_in(hear, link, documents).await });
@@ -562,23 +562,12 @@ fn heard(
                 (NetEvent::NativeInput(input), Some(say)) => {
                     let _ = say.send(Taken::Input(input.clone()));
                 }
-                // The host sent all it retains of a record this device asked for, behind the
-                // record's writes: told after they are taken in, so a read waiting for the record
-                // decides on what landed.
-                (NetEvent::RecordOpened { ws, channel, .. }, Some(say)) => {
-                    let _ = say.send(Taken::Opened(*ws, *channel));
-                }
-                (NetEvent::RecordOpened { ws, channel, .. }, None) => {
-                    if let Some(link) = &opened {
-                        link.record_opened(*ws, *channel);
-                    }
-                }
                 // Its replay ended, behind the replay's writes: told after they are taken in.
                 (NetEvent::HostReady { ws, .. }, Some(say)) => {
                     let _ = say.send(Taken::Ready(*ws));
                 }
                 (NetEvent::HostReady { ws, .. }, None) => {
-                    if let Some(link) = &opened {
+                    if let Some(link) = &replayed {
                         link.host_ready(*ws);
                     }
                 }
@@ -607,9 +596,6 @@ fn heard(
 enum Taken {
     /// A write it replays or carries into a workspace this device holds.
     Input(Box<tilo_network_actor::native_ingress::Input>),
-    /// It sent everything it retains of the record on this channel, in the workspace on this
-    /// topic.
-    Opened(u64, [u8; 32]),
     /// It finished replaying what it retains of the workspace on this topic.
     Ready(u64),
 }
@@ -631,19 +617,6 @@ async fn take_in(
         for taken in waiting {
             let input = match taken {
                 Taken::Input(input) => *input,
-                Taken::Opened(ws, channel) => {
-                    // What came before it is the record's: taken in first.
-                    admit(
-                        std::mem::take(&mut run),
-                        link.as_deref(),
-                        documents.as_ref(),
-                    )
-                    .await;
-                    if let Some(link) = &link {
-                        link.record_opened(ws, channel);
-                    }
-                    continue;
-                }
                 Taken::Ready(ws) => {
                     admit(
                         std::mem::take(&mut run),
@@ -785,9 +758,6 @@ async fn carry_out(
         Cmd::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
         Cmd::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
         Cmd::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
-        Cmd::OpenRecord { ws, channel } => {
-            plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
-        }
         Cmd::Roster { ws, devices } => plane
             .send(NetCmd::SetWorkspaceRoster { ws, devices })
             .await

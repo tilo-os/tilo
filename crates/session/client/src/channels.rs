@@ -167,17 +167,12 @@ pub struct ChannelLink {
     /// The workspaces whose state moved since it was last read: their channels and their rosters
     /// are read again.
     changed: Mutex<BTreeSet<ModelWorkspaceId>>,
-    /// The records this device asked a workspace's hosts for, by workspace topic and channel: a
-    /// read asks once, and the plane asks a host session that starts later itself.
-    asked: Mutex<BTreeSet<(Topic, [u8; 32])>>,
-    /// The records a workspace's host said it sent everything it retains of, by workspace topic
-    /// and channel ([`Self::record_opened`]): a read waiting for one decides on what arrived.
-    opened: Mutex<BTreeSet<(Topic, [u8; 32])>>,
     /// The workspaces, by topic, whose host finished replaying what it retains to this device
-    /// ([`Self::host_ready`]): a record sent without asking that is not here then is not anywhere.
+    /// ([`Self::host_ready`]): every record comes with that history, so a record not here then is
+    /// not anywhere.
     replayed: Mutex<BTreeSet<Topic>>,
-    /// Ticks whenever a host said that of a record, or finished its replay.
-    opens: tokio::sync::watch::Sender<u64>,
+    /// Ticks whenever a host finished its replay.
+    replays: tokio::sync::watch::Sender<u64>,
     /// What this session says on the collaboration plane, once it is running.
     outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
     /// The devices that reach this one as their workspace's host, when it
@@ -202,10 +197,8 @@ impl ChannelLink {
         Arc::new(Self {
             inbound: Mutex::new(Vec::new()),
             changed: Mutex::new(BTreeSet::new()),
-            asked: Mutex::new(BTreeSet::new()),
-            opened: Mutex::new(BTreeSet::new()),
             replayed: Mutex::new(BTreeSet::new()),
-            opens: tokio::sync::watch::Sender::new(0),
+            replays: tokio::sync::watch::Sender::new(0),
             outgoing: Mutex::new(None),
             members: Mutex::new(None),
             park: GovernancePark::new(),
@@ -325,42 +318,11 @@ impl ChannelLink {
         workspaces
     }
 
-    /// Ask `workspace` 's hosts for the record on `channel` the first time a local reader reads it
-    /// (an on-demand record, or a part of a chain behind its head): its history then arrives as the
-    /// workspace's other documents do, and later reads ask nobody.
-    /// Whether the record was asked for, now or before: `false` when the plane is gone, and
-    /// nothing will answer.
-    pub fn ask_record(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) -> bool {
-        let ws = topic_of(workspace);
-        let outgoing = self.outgoing.lock_recover().clone();
-        let Some(outgoing) = outgoing else {
-            return false;
-        };
-        let mut asked = self.asked.lock_recover();
-        if asked.contains(&(ws, channel)) {
-            return true;
-        }
-        if !outgoing.send(Cmd::OpenRecord { ws, channel }) {
-            // The plane is gone: the next read asks again.
-            return false;
-        }
-        asked.insert((ws, channel));
-        true
-    }
-
-    /// The host of the workspace on topic `ws` sent everything it retains of the record on
-    /// `channel`, after the record's own writes: a read waiting for it decides now on what landed.
-    pub fn record_opened(&self, ws: Topic, channel: [u8; 32]) {
-        self.opened.lock_recover().insert((ws, channel));
-        self.opens
-            .send_modify(|count| *count = count.wrapping_add(1));
-    }
-
     /// The host of the workspace on topic `ws` finished replaying what it retains to this device,
     /// after the replay's own writes.
     pub fn host_ready(&self, ws: Topic) {
         self.replayed.lock_recover().insert(ws);
-        self.opens
+        self.replays
             .send_modify(|count| *count = count.wrapping_add(1));
         // A group that waited on the history is founded now, if it held no genesis.
         self.park.poke();
@@ -371,17 +333,10 @@ impl ChannelLink {
         self.replayed.lock_recover().contains(&topic_of(workspace))
     }
 
-    /// Whether `workspace`'s host said it sent everything it retains of the record on `channel`.
-    pub fn has_opened(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) -> bool {
-        self.opened
-            .lock_recover()
-            .contains(&(topic_of(workspace), channel))
-    }
-
-    /// Wait for the next record a host says it sent whole, from a value read before the wait.
+    /// Wait for the next replay a host finished, from a value read before the wait.
     #[must_use]
-    pub fn opens(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.opens.subscribe()
+    pub fn replays(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.replays.subscribe()
     }
 
     /// Ask the host of `workspace` to replay what it retains: a message the workspace held back

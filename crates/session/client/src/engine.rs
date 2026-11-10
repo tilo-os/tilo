@@ -370,9 +370,6 @@ impl Engine {
         maximum: usize,
     ) -> Result<RecordReading, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        if self.asks_for_record(workspace, app, record)? {
-            return Ok(RecordReading::Pending);
-        }
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
@@ -450,31 +447,8 @@ impl Engine {
         })
     }
 
-    /// Ask `workspace`'s hosts for `app`'s `record` when it is one they send a device only once
-    /// asked, and this device holds none of it.
-    /// Whether a host was asked, now or before, so an answer is coming: `false` when there is no
-    /// one to ask (a record sent without asking, one held already, no plane).
-    pub fn request_record(&self, workspace: &str, app: &str, record: &str) -> bool {
-        WorkspaceId::parse(workspace).is_some_and(|workspace| {
-            self.asks_for_record(workspace, app, record)
-                .unwrap_or(false)
-        })
-    }
-
-    /// Whether `workspace`'s host said it sent everything it retains of `app`'s `record`: a record
-    /// this device then holds nothing of is one the workspace has none of.
-    #[must_use]
-    pub fn record_answered(&self, workspace: &str, app: &str, record: &str) -> bool {
-        let Some(workspace) = WorkspaceId::parse(workspace) else {
-            return false;
-        };
-        self.link.lock_recover().as_ref().is_some_and(|link| {
-            link.has_opened(workspace, neighbour_wire::app_document_channel(app, record))
-        })
-    }
-
-    /// Whether `workspace`'s host finished replaying to this device what it retains: a record it
-    /// sends without being asked that is not here then is one the workspace has none of.
+    /// Whether `workspace`'s host finished replaying to this device what it retains: every record
+    /// comes with it, so one that is not here then is one the workspace has none of.
     #[must_use]
     pub fn host_replayed(&self, workspace: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -486,17 +460,10 @@ impl Engine {
             .is_some_and(|link| link.has_replayed(workspace))
     }
 
-    /// Whether `app`'s `record` is one a host sends only once asked for it.
+    /// What ticks whenever a host finished its replay; `None` with no plane.
     #[must_use]
-    pub fn sent_when_asked(record: &str) -> bool {
-        neighbour_wire::record_sync(record) != neighbour_wire::RecordSync::Eager
-    }
-
-    /// What ticks whenever a host says it sent a record whole, or finished its replay; `None` with
-    /// no plane.
-    #[must_use]
-    pub fn record_opens(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
-        self.link.lock_recover().as_ref().map(|link| link.opens())
+    pub fn replays(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.link.lock_recover().as_ref().map(|link| link.replays())
     }
 
     /// Whether this device is `workspace`'s own host: everything the workspace retains is here,
@@ -728,27 +695,6 @@ impl Engine {
             }
             ChannelAccess::NoSecretStore => SealKeys::NoSecretStore,
         })
-    }
-
-    /// Ask `workspace`'s hosts for the record on `channel` the first time it is read,
-    /// and say whether it is one they send only once asked.
-    fn asks_for_record(
-        &self,
-        workspace: WorkspaceId,
-        app: &str,
-        record: &str,
-    ) -> Result<bool, String> {
-        if neighbour_wire::record_sync(record) == neighbour_wire::RecordSync::Eager {
-            return Ok(false);
-        }
-        let held = self.owner.with_current(workspace, |view| {
-            Ok(view.peer().document(app, record).is_some())
-        })?;
-        // With no plane there is no one to ask: the read answers for itself.
-        let Some(link) = self.link.lock_recover().clone().filter(|_| !held) else {
-            return Ok(false);
-        };
-        Ok(link.ask_record(workspace, neighbour_wire::app_document_channel(app, record)))
     }
 
     /// The devices the workspace `workspace` admits, by the publisher each of their

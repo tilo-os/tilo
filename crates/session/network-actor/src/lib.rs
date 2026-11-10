@@ -322,16 +322,6 @@ pub enum NetCmd {
     NativeReplay {
         ws: WorkspaceId,
     },
-    /// Ask `ws`'s hosts for the on-demand record on `channel`
-    /// (`neighbour_wire::record_sync`: an on-demand record, or a part of a
-    /// chain behind its head), which they replay a joining device only once
-    /// it asks: a local app reads it. Its history arrives as the workspace's
-    /// other documents do, and its changes keep arriving; a host session
-    /// that starts later is asked too.
-    OpenRecord {
-        ws: WorkspaceId,
-        channel: [u8; 32],
-    },
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.
     NativeConnect(native_ingress::Connect),
@@ -505,14 +495,6 @@ pub enum NetEvent {
         device: PeerId,
         active: bool,
     },
-    /// A host of `ws` sent everything it retains of the on-demand
-    /// record on `channel` this device asked for ([`NetCmd::OpenRecord`]):
-    /// `frames` of it, which arrived before this as the workspace's documents do.
-    RecordOpened {
-        ws: WorkspaceId,
-        channel: [u8; 32],
-        frames: u32,
-    },
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
@@ -564,7 +546,6 @@ impl NetEvent {
             Self::PeerLeft { .. } => "PeerLeft",
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
-            Self::RecordOpened { .. } => "RecordOpened",
             Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } | Self::SiblingMsg { msg, .. } => {
                 msg.kind()
             }
@@ -779,12 +760,6 @@ enum HostEvent {
     Member {
         device: [u8; 32],
         active: bool,
-    },
-    /// The host sent everything it retains of the on-demand record on
-    /// `channel`: `frames` of it.
-    RecordOpened {
-        channel: [u8; 32],
-        frames: u32,
     },
     Message {
         author: EndpointId,
@@ -1430,9 +1405,6 @@ impl ActorState {
                         "no link of the workspace is up; the next one replays as it starts"
                     );
                 }
-            }
-            Some(NetCmd::OpenRecord { ws, channel }) => {
-                tracing::debug!(ws, channel = %hex::encode(channel), "a sealed record's frames come with its workspace's link");
             }
             Some(NetCmd::Publish { ws, msg }) => {
                 self.observe_surface_stream(ws, &msg);
@@ -2742,11 +2714,6 @@ impl ActorState {
         match event {
             HostEvent::Ready => Some(self.host_ready(ws, peer)),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
-            HostEvent::RecordOpened { channel, frames } => Some(NetEvent::RecordOpened {
-                ws,
-                channel,
-                frames,
-            }),
             HostEvent::Message {
                 author,
                 replayed: true,
@@ -3707,7 +3674,6 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
         HostEvent::Message { msg, .. } => msg.kind(),
         HostEvent::Ready => "HostReady",
         HostEvent::Member { .. } => "HostMember",
-        HostEvent::RecordOpened { .. } => "HostRecordOpened",
         HostEvent::Closed => "HostClosed",
     }
 }
@@ -4085,13 +4051,12 @@ fn host_event(
             HostEvent::Ready
         }
         HostInbound::Member { device, active } => HostEvent::Member { device, active },
-        // Nothing here holds either: a call's audio is the session's, carried
-        // by the relay session the call itself holds, and a host keeps what a
-        // link's store kept.
-        HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
-        HostInbound::RecordOpened { channel, frames } => {
-            HostEvent::RecordOpened { channel, frames }
-        }
+        // Nothing here holds these: a call's audio is the session's, carried
+        // by the relay session the call itself holds, a host keeps what a
+        // link's store kept, and every record comes with the link's history.
+        HostInbound::Voice(_)
+        | HostInbound::Committed { .. }
+        | HostInbound::RecordOpened { .. } => return None,
         HostInbound::CommitRefused { reason, .. } => {
             tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
             return None;

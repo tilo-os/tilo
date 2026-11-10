@@ -149,9 +149,6 @@ pub enum Cmd {
     TellSiblings(Box<NeighbourMsg>),
     /// Dial one of the person's own devices, for the session that carries their device fabric.
     ConnectDevice(EndpointAddr),
-    /// Ask `ws`'s hosts for the record on `channel`, which they replay a joining device only once
-    /// it asks.
-    OpenRecord { ws: Topic, channel: [u8; 32] },
     /// Ask the host of the joined workspace on `ws` to replay what it retains.
     Replay(Topic),
     /// Send this device's owner's outgoing custody of the workspace on `ws` to its peers.
