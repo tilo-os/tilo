@@ -348,7 +348,12 @@ const openMarks = tab => tab.evaluate(`(() => {
   watch?.read?.();
   globalThis.__tiloOpen = undefined;
   if (!watch || watch.pressedAt === null || watch.shownAt === null) {
-    return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null});
+    // What the watch saw, so an unmeasured open says which condition held it back.
+    const host = globalThis.tiloMount?.canvas?.parentElement;
+    return JSON.stringify({ok: false, pressed: watch?.pressedAt != null, shown: watch?.shownAt != null,
+      phase: host?.dataset.phase ?? null, frames: Number(host?.dataset.frames ?? NaN), framesAtPress: watch?.framesAtPress ?? null,
+      entry: (globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === watch?.app),
+      subscribes: typeof globalThis.tiloMount?.navigation?.subscribe === 'function'});
   }
   return JSON.stringify({ok: true,
     presentMs: Math.round(watch.shownAt - watch.pressedAt),
