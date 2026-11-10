@@ -333,7 +333,7 @@ impl crate::component::SlotViews for DragSource {
     }
 
     fn insert(&mut self, index: usize, view: Element) {
-        let _ = self.column.insert(index, Slot::new(view));
+        self.column.insert(index, Slot::new(view));
     }
 
     fn remove(&mut self, index: usize) {

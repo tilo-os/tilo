@@ -910,9 +910,7 @@ impl Arrangement {
                     held.arrangement.place_of(id)
                 })
             })
-            .map_or((0, 0), |place| {
-                (i64::from(place.right()), i64::from(place.y))
-            });
+            .map_or((0, 0), |place| (place.right(), i64::from(place.y)));
         let action = ArrangementAction::Place {
             workspace: surface.workspace,
             row: surface.row,

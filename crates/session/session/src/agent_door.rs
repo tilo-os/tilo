@@ -2430,16 +2430,7 @@ fn serve_connection(opened: Opened, serving: &Serving) {
     };
     let (pid, entrance) = match from {
         From::ShellRuntime(pid) => {
-            match runtime_portal::environment_door::Request::of(&first) {
-                Some(request) => environments::open(stream, request, pid, serving.clone()),
-                None => {
-                    tracing::info!(
-                        pid,
-                        "agent door: the shell runtime asked for something other than an environment's door"
-                    );
-                    refuse(stream, &PeerRefusal::Sandboxed);
-                }
-            }
+            serve_shell_runtime(stream, &first, pid, serving);
             return;
         }
         From::Login(pid) => (pid, Origin::Host),
@@ -2523,6 +2514,20 @@ fn serve_connection(opened: Opened, serving: &Serving) {
         session,
         (requests, wake, seats),
     );
+}
+
+/// Serve a connection of the login's confined shell runtime, by the pid that opened it: it asks
+/// for the door of an environment it made, and is served nothing else.
+fn serve_shell_runtime(stream: UnixStream, first: &[u8], pid: u32, serving: &Serving) {
+    if let Some(request) = runtime_portal::environment_door::Request::of(first) {
+        environments::open(stream, request, pid, serving.clone());
+    } else {
+        tracing::info!(
+            pid,
+            "agent door: the shell runtime asked for something other than an environment's door"
+        );
+        refuse(stream, &PeerRefusal::Sandboxed);
+    }
 }
 
 /// Ask the person about one connection whose first line, `first` , opened the MCP door, and serve

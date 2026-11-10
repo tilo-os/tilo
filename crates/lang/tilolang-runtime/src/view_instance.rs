@@ -504,7 +504,7 @@ impl ViewInstance {
         for arg in &mut aref.args {
             match arg {
                 Value::State { key, scalar } => {
-                    *arg = self.state_now(key, *scalar && unbox)?;
+                    *arg = self.state_now(key, *scalar && unbox);
                 }
                 Value::AtEvent {
                     module,
@@ -527,7 +527,7 @@ impl ViewInstance {
     }
 
     /// The view state slot `key` as it is now; with `unbox`, a scalar's value plain.
-    fn state_now(&self, key: &StateKey, unbox: bool) -> Result<Value, RuntimeError> {
+    fn state_now(&self, key: &StateKey, unbox: bool) -> Value {
         let stored = self.core.view_states.borrow().get(key).cloned();
         let value = stored.or_else(|| self.live.state_seen(key));
         // A slot the person never set is nothing, not a failure: an action reading it as an
@@ -535,11 +535,11 @@ impl ViewInstance {
         // before anything is) runs with nothing there, and the view's own default stands. A
         // missing slot used to fail the action, which made every action that names an optional
         // slot fail until a person filled it.
-        let value = value.unwrap_or(Value::none());
-        Ok(match value {
+        let value = value.unwrap_or_else(Value::none);
+        match value {
             Value::Opt(Some(held)) if unbox => *held,
             other => other,
-        })
+        }
     }
 
     /// Run the argument function `id` of `module` over `args`, its view state read now.
@@ -552,7 +552,7 @@ impl ViewInstance {
         let mut given = Vec::with_capacity(args.len());
         for arg in args {
             given.push(match arg {
-                Value::State { key, scalar } => self.state_now(key, *scalar)?,
+                Value::State { key, scalar } => self.state_now(key, *scalar),
                 other => other.clone(),
             });
         }

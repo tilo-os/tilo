@@ -34,9 +34,6 @@ struct ConversationAsk {
     /// The run it belongs to, by its task id: the question goes when the run
     /// does.
     task: String,
-    /// Whether the agent sends its arguments behind
-    /// [`tilo_actions::ARGUMENTS_JSON_PREFIX`].
-    prefixed: bool,
     /// What the person answered, until it is spent on a child.
     answered: Answered,
 }
@@ -67,6 +64,7 @@ impl ConversationAsks {
     }
 
     /// Whether no question waits now.
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.questions
             .lock()
@@ -222,13 +220,7 @@ impl AppBrokerState {
             Err(error)
                 if crate::services::NativeTaskActionRequirement::awaits_confirmation(&error) =>
             {
-                self.raise_conversation_ask(
-                    &key,
-                    task,
-                    &draft,
-                    (&logical, action),
-                    prefixed.is_some(),
-                )?;
+                self.raise_conversation_ask(&key, task, &draft, (&logical, action))?;
                 Ok(AskGate::Held {
                     reason: conversation_awaiting(&draft.action_label),
                 })
@@ -245,7 +237,6 @@ impl AppBrokerState {
         task: &str,
         draft: &Draft,
         (resource, action): (&str, &str),
-        prefixed: bool,
     ) -> Result<(), String> {
         let mut questions = self
             .conversation_asks
@@ -269,7 +260,6 @@ impl AppBrokerState {
             key.to_owned(),
             ConversationAsk {
                 task: task.to_owned(),
-                prefixed,
                 answered: Answered::Waiting,
             },
         );
@@ -289,8 +279,7 @@ impl AppBrokerState {
                     // no denial of theirs, so the question goes and the next
                     // ask raises it again (`super::run_question`'s
                     // `serve_answered` decides a closed sheet the same way).
-                    Err(error) => {
-                        drop(error);
+                    Err(_) => {
                         if let Ok(mut questions) = asks.questions.lock() {
                             questions.remove(&key);
                         }
@@ -309,11 +298,6 @@ impl AppBrokerState {
             return Err(format!("the person's answer could not be awaited: {error}"));
         }
         Ok(())
-    }
-
-    /// Take the question `key` away: what it asked no longer asks.
-    pub(super) fn forget_conversation_ask(&self, key: &str) {
-        self.conversation_asks.remove(key);
     }
 
     /// Take away the questions of runs no longer going: a question whose
