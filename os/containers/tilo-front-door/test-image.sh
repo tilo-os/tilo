@@ -7,7 +7,8 @@
 #
 # usage: test-image.sh ARCHIVE
 # ARCHIVE is an OCI archive as t's image build writes it (the check image-front-door). It runs in
-# the buildah image, without a daemon, as root in a micro-VM step.set -euo pipefail
+# the buildah image, without a daemon, as root in a micro-VM step.
+set -euo pipefail
 archive=${1:?usage: test-image.sh ARCHIVE}
 . "$(dirname -- "${BASH_SOURCE[0]}")/../../../tools/ci/publish/lib.sh"
 use_buildah front-door-test
@@ -16,10 +17,13 @@ image=$(b pull --quiet "oci-archive:$archive")
 inspect_image() { b inspect --type image --format "$1" "$image"; }
 user=$(inspect_image '{{.OCIv1.Config.User}}')
 [[ $user == 65532:65532 ]] || die "the image runs as $user, not uid 65532"
-inspect_image '{{json .OCIv1.Config.ExposedPorts}}' | grep -Fq '"8080/tcp"' \
-  || die 'the image does not expose 8080/tcp'
+# Each answer is read whole before it is searched: under pipefail, `grep -q` leaving at its
+# first match can cut off buildah mid-write and fail the check on a value that was there.
+ports=$(inspect_image '{{json .OCIv1.Config.ExposedPorts}}')
+grep -Fq '"8080/tcp"' <<<"$ports" || die 'the image does not expose 8080/tcp'
 # Nothing of the deployment is baked in: a changed value is a changed environment, not an image.
-if inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}' | grep -q '^TILO_DOOR_'; then
+environment=$(inspect_image '{{range .OCIv1.Config.Env}}{{println .}}{{end}}')
+if grep -q '^TILO_DOOR_' <<<"$environment"; then
   die 'the image sets TILO_DOOR_* itself, so a deployment cannot change them'
 fi
 
@@ -116,7 +120,8 @@ grep -Fq 'front door image test' "$state/door.json" || die 'the registered clien
 kill "$door" 2>/dev/null || true
 wait "$door" 2>/dev/null || true
 door=
-outside=$(diff <(printf '%s\n' "$before") <(snapshot) \
+# diff answers 1 for differences, which there always are (the volume): only 2 is its failure.
+outside=$({ diff <(printf '%s\n' "$before") <(snapshot) || (( $? == 1 )); } \
   | sed -n 's/^[<>] //p' \
   | awk '$1 !~ /^\.\/(state|run|dev|proc|sys)(\/|$)/ && $1 !~ /^\.\/etc\/(hosts|hostname|resolv\.conf|mtab)$/ { print $1 }' \
   | sort -u)

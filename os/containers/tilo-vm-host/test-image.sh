@@ -18,16 +18,19 @@ root=$(b mount "$container")
 inside() { b run "$container" -- "$@"; }
 
 [[ $(inside firecracker --version | head -1) == 'Firecracker v1.17.0' ]] || die 'not Firecracker 1.17.0'
-inside jailer --version | grep -q 'v1.17.0' || die 'not the jailer of Firecracker 1.17.0'
+# Each answer is read whole before it is searched: under pipefail, `grep -q` leaving at its
+# first match can cut off the program mid-write and fail the check on an answer that was right.
+grep -q 'v1.17.0' <<<"$(inside jailer --version)" || die 'not the jailer of Firecracker 1.17.0'
 inside pasta --version >/dev/null || die 'no pasta'
 inside skopeo --version >/dev/null || die 'no skopeo'
 inside curl --version >/dev/null || die 'no curl for the placer'
-inside tilo-legacy hosted help | grep -q -- 'place --listen' || die 'tilo-legacy hosted lacks place'
+hosted_help=$(inside tilo-legacy hosted help)
+grep -q -- 'place --listen' <<<"$hosted_help" || die 'tilo-legacy hosted lacks place'
 inside mkfs.xfs -V >/dev/null || die 'no mkfs.xfs'
 inside tar --version >/dev/null || die 'no tar, which unpacks the member identity'
 [[ -x $root/usr/local/bin/tilo-runtime ]] || die 'no tilo-runtime, the member that takes the relay'"'"'s runs'
-inside tilo-legacy hosted help | grep -q -- '--evict-notice' || die 'tilo-legacy hosted lacks --evict-notice'
-inside tilo-legacy hosted help | grep -q -- '--memory-mib' || die 'tilo-legacy hosted lacks --memory-mib'
+grep -q -- '--evict-notice' <<<"$hosted_help" || die 'tilo-legacy hosted lacks --evict-notice'
+grep -q -- '--memory-mib' <<<"$hosted_help" || die 'tilo-legacy hosted lacks --memory-mib'
 # The start's own mkfs.xfs line, on a scratch file: the state disk's filesystem is made only
 # on a node, the first time, so a bad option there would otherwise first fail in production.
 mkfs=$(grep -E '^\s*mkfs\.xfs ' "$root/usr/local/bin/tilo-vm-host" | sed 's/"\$state_device"/\/tmp\/state.img/')
@@ -51,6 +54,6 @@ grep -q '"service_uid": 10001' "$root/etc/tilo/hosted-jail.json" || die 'the jai
 grep -q '"pasta": "/usr/bin/pasta"' "$root/etc/tilo/hosted-jail.json" || die 'the jail names another pasta'
 grep -q 'use-sigstore-attachments: true' "$root/etc/containers/registries.d/registry.tilo.so.yaml" \
   || die 'skopeo is not told where the guest'"'"'s signature is'
-grep -A3 '"registry.tilo.so/tilo/hosted-guest"' "$root/etc/containers/policy.json" \
-  | grep -q '"keyPath": "/usr/share/tilo/cosign.pub"' || die 'the guest is not held to the release key'
+guest_policy=$(grep -A3 '"registry.tilo.so/tilo/hosted-guest"' "$root/etc/containers/policy.json")
+grep -q '"keyPath": "/usr/share/tilo/cosign.pub"' <<<"$guest_policy" || die 'the guest is not held to the release key'
 echo 'the VM host image holds what a host runs'

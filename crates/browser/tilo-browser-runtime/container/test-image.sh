@@ -142,8 +142,10 @@ installer=$root/srv/tilo-install/install.sh
 [[ $(get / -A curl/8.9.1 | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "curl at / must get the installer"
 [[ $(get / -A Wget/1.24 | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "Wget at / must get the installer"
 [[ $(get /install.sh | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "/install.sh must be the installer"
-get / -A 'Mozilla/5.0' | grep -q '<!doctype html>' || fail "a browser at / must get the entry page"
-head_of /install.sh | grep -q '^content-type: text/x-shellscript' || fail "the installer must be served as a shell script"
+# Each answer is read whole before it is searched: under pipefail, `grep -q` leaving at its
+# first match can cut off curl mid-write and fail the check on an answer that was right.
+grep -q '<!doctype html>' <<<"$(get / -A 'Mozilla/5.0')" || fail "a browser at / must get the entry page"
+grep -q '^content-type: text/x-shellscript' <<<"$(head_of /install.sh)" || fail "the installer must be served as a shell script"
 
 # The releases the installer downloads, from the store they are kept in (here a stand-in on the
 # loopback that sets a cookie and its own caching, and records what it was asked with).
