@@ -7,8 +7,9 @@
 //! and which operations became available because of it — before deciding the
 //! next. Nothing here knows any application: there are no recipes, no
 //! per-application tools and no hand-built edits. A reply to the person is
-//! the terminal `plan` call's text; text *in* a document is whatever the
-//! document's own published operations write.
+//! the terminal `plan` call's text, or — as a chat-style model ends a turn —
+//! the words of a turn that called nothing; text *in* a document is whatever
+//! the document's own published operations write.
 //!
 //! Latency matters as much as generality, so a turn is not a round trip:
 //!
@@ -1409,10 +1410,10 @@ impl Session {
                 active.ready.clear();
                 active.refused = None;
                 if let Some(Ok(body)) = &active.finished {
-                    match conversation.calls(body) {
-                        Ok((_, calls)) => {
-                            active.completed = calls.len();
-                            active.ready.extend(calls.into_iter().enumerate().map(
+                    match conversation.turn(body) {
+                        Ok(turn) => {
+                            active.completed = turn.calls.len();
+                            active.ready.extend(turn.calls.into_iter().enumerate().map(
                                 |(index, call)| StreamedCall {
                                     index,
                                     id: call.id,
@@ -1538,11 +1539,15 @@ impl Session {
             }
         };
         self.charge_turn(run, &body)?;
-        let (assistant, calls) = match conversation.calls(&body) {
-            Ok(parsed) => {
+        let (assistant, calls, words) = match conversation.turn(&body) {
+            Ok(crate::model::Turn {
+                assistant,
+                calls,
+                said,
+            }) => {
                 // Debug capture (the launcher keeps the agent's stderr):
                 // each tool call with its arguments, truncated.
-                for call in &parsed.1 {
+                for call in &calls {
                     tracing::info!(
                         turn,
                         tool = %call.name,
@@ -1550,7 +1555,7 @@ impl Session {
                         "agent tool call"
                     );
                 }
-                parsed
+                (assistant, calls, said)
             }
             Err(error) => {
                 self.chooser
@@ -1559,9 +1564,9 @@ impl Session {
                     return Ok(Some(end));
                 }
                 // The person reads one clean sentence of what happened; the
-                // parser's own reason ("the model called no tool", a call the
-                // loop cannot read) is the record kept beside it, never the
-                // reply's words.
+                // parser's own reason (a turn with neither a call nor a word,
+                // a call the loop cannot read) is the record kept beside it,
+                // never the reply's words.
                 return Ok(Some(LoopEnd::Failed(Failure::spoken(
                     &crate::i18n::t("agent-failure-invalid-response"),
                     &error,
@@ -1672,8 +1677,32 @@ impl Session {
             .push(assistant, ordered)
             .map_err(anyhow::Error::msg)?;
         self.show_pictures(conversation, state);
+        // A turn that called nothing and answered in words is the model's
+        // answer: a chat-style model ends a turn that way, so its words are the
+        // turn's reply. Every step the turn started has settled by now
+        // (`settle_turn`), so nothing the answer could describe is still
+        // running. A model that ends with `plan` keeps that finish.
+        if calls.is_empty() && !failed {
+            let answer = tools::bound_reply(&words);
+            self.chooser
+                .mark(tilo_model_client::TraceEvent::PlanReady, turn);
+            return Ok(Some(LoopEnd::Finished(
+                tools::Finish {
+                    reply: (!answer.is_empty()).then_some(answer),
+                    done: true,
+                    view: None,
+                },
+                state.completed,
+            )));
+        }
         match finish {
-            Some(Finishing { said, .. }) if !failed => {
+            Some(Finishing { mut said, .. }) if !failed => {
+                // The model's own words are the reply when its `plan` carried
+                // none: a model that wrote its answer in the turn's text said
+                // it, and no canned line stands in for what it said.
+                if said.reply.is_none() && !words.is_empty() {
+                    said.reply = Some(tools::bound_reply(&words));
+                }
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanReady, turn);
                 Ok(Some(LoopEnd::Finished(said, state.completed)))

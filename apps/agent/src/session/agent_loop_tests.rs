@@ -289,6 +289,25 @@ fn turn(calls: &[(&str, Value)], piece: usize) -> Vec<TurnEvent> {
     events
 }
 
+/// One provider-neutral turn that answers in words and calls nothing, as a
+/// chat-style model ends a turn: its text streams as deltas, then the
+/// assembled response with no tool call and `end_turn`.
+fn said_turn(text: &str) -> Vec<TurnEvent> {
+    let response = serde_json::json!({
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+        "stop_reason": "end_turn"
+    });
+    vec![
+        TurnEvent::Neutral(agent_provider_config::protocol::StreamEvent::TextDelta {
+            text: text.into(),
+        }),
+        TurnEvent::Neutral(agent_provider_config::protocol::StreamEvent::Finished {
+            response: serde_json::from_value(response.clone()).unwrap(),
+        }),
+        TurnEvent::Finished(Ok(response.to_string())),
+    ]
+}
+
 /// One Anthropic-dialect turn calling `calls`, as the gateway streams it:
 /// a call's argument deltas (indexed among the turn's tool calls), its
 /// completed-call frame at its `content_block_stop`, then the assembled
@@ -1608,6 +1627,8 @@ mod pictures;
 mod programs;
 #[path = "agent_loop/tests/spending.rs"]
 mod spending;
+#[path = "agent_loop/tests/text_answers.rs"]
+mod text_answers;
 #[path = "agent_loop/tests/web_pages.rs"]
 mod web_pages;
 

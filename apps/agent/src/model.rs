@@ -1172,6 +1172,34 @@ impl TurnTransport for GatewayTurns {
 mod conversation_view;
 pub use conversation_view::Answered;
 
+/// One validated model turn: its tool calls in order and the words it said
+/// beside them. A turn that made no call is the model answering in words —
+/// how a chat-style model ends a turn — and `calls` is empty then.
+#[derive(Clone, Debug)]
+pub struct Turn {
+    /// The assistant turn as the model sent it, to record in the history.
+    pub assistant: Value,
+    pub calls: Vec<ToolCall>,
+    /// The turn's own text, never its exposed reasoning (presentation only).
+    pub said: String,
+}
+
+/// The words a model turn said: its text blocks, never its exposed reasoning,
+/// which is presentation only.
+fn said_text(message: &agent_provider_config::protocol::Message) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|content| match content {
+            agent_provider_config::protocol::Content::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_owned()
+}
+
 /// Provider-neutral history for the discover → invoke → observe loop.
 #[derive(Clone, Debug)]
 pub struct Conversation {
@@ -1369,11 +1397,22 @@ impl Conversation {
             .collect())
     }
 
-    /// Validate the complete response before any tools may execute.
-    pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
+    /// Validate the complete turn before any of its calls may execute: its
+    /// calls in order and the words it said.
+    ///
+    /// A chat-style model ends a turn by answering in words, calling nothing;
+    /// that answer is the turn's own, never an unusable response.
+    ///
+    /// # Errors
+    ///
+    /// A body that is not a model response this conversation can read, a turn
+    /// the conversation may not replay (a consumed call id, a refusal, a
+    /// truncated turn), a call the loop refuses for its shape or arguments,
+    /// or a turn that neither called a tool nor said anything.
+    pub fn turn(&self, body: &str) -> Result<Turn, String> {
         #[cfg(test)]
         if let Some(legacy) = &self.legacy {
-            return legacy.calls(body);
+            return legacy.turn(body);
         }
         let response: agent_provider_config::protocol::ModelResponse =
             serde_json::from_str(body).map_err(|_| "invalid gateway completion".to_string())?;
@@ -1384,11 +1423,18 @@ impl Conversation {
             .into_iter()
             .cloned()
             .collect::<Vec<_>>();
-        if calls.is_empty() {
-            return Err("the model called no tool".into());
+        let said = said_text(&response.message);
+        if calls.is_empty() && said.is_empty() {
+            return Err("the model called no tool and said nothing".into());
         }
-        tools::validate_loop_calls(&calls)?;
-        Ok((serde_json::json!(response), calls))
+        if !calls.is_empty() {
+            tools::validate_loop_calls(&calls)?;
+        }
+        Ok(Turn {
+            assistant: serde_json::json!(response),
+            calls,
+            said,
+        })
     }
 
     /// Answer a turn whose own calls the loop refused (a call missing an
@@ -1598,14 +1644,39 @@ impl LegacyConversation {
         }
     }
 
-    /// The assistant turn and its tool calls, in call order.
-    pub fn calls(&self, body: &str) -> Result<(Value, Vec<ToolCall>), String> {
-        let (assistant, calls) = self.calls_unchecked(body)?;
-        tools::validate_loop_calls(&calls)?;
-        if calls.is_empty() {
-            return Err("the model called no tool".into());
+    /// The validated turn as the dialect reads it: its calls and the words it
+    /// said, or the words it answered in when it called nothing.
+    pub fn turn(&self, body: &str) -> Result<Turn, String> {
+        let (assistant, calls) = match self.dialect {
+            Dialect::Anthropic => anthropic_calls(body)?,
+            Dialect::OpenAi => openai_calls(body)?,
+        };
+        let said = match assistant.get("content") {
+            Some(Value::String(said)) => said.trim().to_owned(),
+            Some(Value::Array(blocks)) => blocks
+                .iter()
+                .filter_map(|block| {
+                    (block.get("type").and_then(Value::as_str) == Some("text"))
+                        .then(|| block.get("text").and_then(Value::as_str))
+                        .flatten()
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                .trim()
+                .to_owned(),
+            _ => String::new(),
+        };
+        if calls.is_empty() && said.is_empty() {
+            return Err("the model called no tool and said nothing".into());
         }
-        Ok((assistant, calls))
+        if !calls.is_empty() {
+            tools::validate_loop_calls(&calls)?;
+        }
+        Ok(Turn {
+            assistant,
+            calls,
+            said,
+        })
     }
 
     /// The assistant turn and its calls as the dialect reads them, before the
@@ -1805,13 +1876,13 @@ mod tests {
             usage: agent_provider_config::protocol::Usage::default(),
             cost_micros: 0,
         };
-        let (assistant, calls) = conversation
-            .calls(&serde_json::json!(response).to_string())
+        let turn = conversation
+            .turn(&serde_json::json!(response).to_string())
             .unwrap();
-        assert_eq!(calls[0].id, "call-a");
+        assert_eq!(turn.calls[0].id, "call-a");
         conversation
             .push(
-                assistant,
+                turn.assistant,
                 vec![("call-a".into(), "visible applications".into())],
             )
             .unwrap();
@@ -1819,7 +1890,7 @@ mod tests {
         assert_eq!(next["messages"][3]["content"][0]["call_id"], "call-a");
         assert!(
             conversation
-                .calls(&serde_json::json!(response).to_string())
+                .turn(&serde_json::json!(response).to_string())
                 .is_err(),
             "consumed call ids cannot be replayed"
         );
@@ -1947,11 +2018,16 @@ mod tests {
             "stop_reason": "tool_calls"
         })
         .to_string();
-        let (assistant, calls) = conversation.calls(&discovery).unwrap();
-        let listed = tools::answer(&calls[0].name, &calls[0].input, &catalogue, &mut revealed);
+        let turn = conversation.turn(&discovery).unwrap();
+        let listed = tools::answer(
+            &turn.calls[0].name,
+            &turn.calls[0].input,
+            &catalogue,
+            &mut revealed,
+        );
         assert!(listed.contains("calculator.range:main#sample"));
         conversation
-            .push(assistant, vec![("tool-1".into(), listed)])
+            .push(turn.assistant, vec![("tool-1".into(), listed)])
             .unwrap();
 
         let final_turn = serde_json::json!({
@@ -1971,8 +2047,8 @@ mod tests {
             "stop_reason": "tool_calls"
         })
         .to_string();
-        let (_, calls) = conversation.calls(&final_turn).unwrap();
-        let answer = tools::read_plan(&calls[0].input, &revealed, 4).unwrap();
+        let turn = conversation.turn(&final_turn).unwrap();
+        let answer = tools::read_plan(&turn.calls[0].input, &revealed, 4).unwrap();
         let instruction = Instruction::from_answer(
             &answer.actions[0],
             "sample twelve values",
