@@ -12,7 +12,7 @@ use std::sync::Arc;
 use tilo_front_door::{Config, Door, store::Store};
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
-use tilo_user_identity::{AgentScope, DeviceCert, SignInProof};
+use tilo_user_identity::{DeviceCert, MAX_AGENT_GRANT_LIFETIME_NS, SignInProof};
 
 const ISSUER: &str = "https://mcp.tilo.test";
 
@@ -45,7 +45,8 @@ fn query_of(url: &str) -> HashMap<String, String> {
 
 /// A key called `name`, asked for as a terminal does and approved by the
 /// person's Tilo on the web, which this plays: it signs the door's
-/// challenge with a device of `root`'s and certifies the grant's key.
+/// challenge with a device of `root`'s and certifies the grant's key as the
+/// server key the door asked for, lasting until revoked.
 async fn approved_key(door: &Arc<Door>, root: &SigningKey, device: &Device, name: &str) -> String {
     let (status, asked) = json_of(
         door.dispatch(
@@ -83,15 +84,16 @@ async fn approved_key(door: &Arc<Door>, root: &SigningKey, device: &Device, name
         .try_into()
         .unwrap();
     assert_eq!(query["grant_scope"], "all");
-    let expires_ms: u64 = query["grant_expires"].parse().unwrap();
+    assert_eq!(query["grant_kind"], "server_key");
+    assert_eq!(query["grant_expires"], "never");
     let now_ns = tilo_clock::unix_now_ns();
     let mut grant = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: grant_key,
         device_label: format!("{name} via mcp.tilo.test"),
-        capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        capabilities: DeviceCapabilities::server_key_grant(),
         issued_at_ns: now_ns.saturating_sub(1_000_000_000),
-        expires_at_ns: Some(expires_ms.saturating_mul(1_000_000)),
+        expires_at_ns: None,
         signature: [0; 64],
         issuer: None,
     };
@@ -311,6 +313,14 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
         .tilo_do(json!({"path": "account/keys#mint", "args": {"workspace": workspace}}))
         .await;
     let minted = &minted["result"]["structuredContent"]["result"];
+    // A key that lasts until revoked mints keys that still expire.
+    let most = tilo_clock::unix_now_ms() + MAX_AGENT_GRANT_LIFETIME_NS / 1_000_000;
+    assert!(
+        minted["expires_at_ms"]
+            .as_u64()
+            .is_some_and(|expiry| expiry <= most),
+        "{minted}"
+    );
     let minted_key = minted["token"]
         .as_str()
         .unwrap_or_else(|| panic!("a key is minted: {minted}"))

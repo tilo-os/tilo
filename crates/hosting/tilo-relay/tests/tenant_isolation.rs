@@ -827,19 +827,9 @@ async fn an_agent_never_governs_and_reaches_no_room_outside_its_delegation() {
     let before = t.globex_governance().await;
     // The host's own agent: a device of the relay's person with no
     // capabilities, delegated Acme alone.
-    let agent = t.provider.enrol(
-        "acme-agent",
-        DeviceCapabilities {
-            can_own_workspaces: false,
-            can_admit_devices: false,
-            can_act_as_host: false,
-            can_read_all_workspaces: false,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
-        },
-    );
+    let agent = t
+        .provider
+        .enrol("acme-agent", DeviceCapabilities::nothing());
     let issued = tilo_clock::unix_now_ns();
     let delegation = Delegation::sign(
         &t.provider.user_sk,

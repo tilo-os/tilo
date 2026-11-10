@@ -209,16 +209,7 @@ impl CertificationPolicy {
     /// Certificates last 7 days.
     pub fn agent() -> Self {
         Self {
-            ceiling: DeviceCapabilities {
-                can_own_workspaces: false,
-                can_admit_devices: false,
-                can_act_as_host: false,
-                can_read_all_workspaces: false,
-                foreign: false,
-                can_administer_devices: false,
-                agent: None,
-                stand_in: false,
-            },
+            ceiling: DeviceCapabilities::nothing(),
             lifetime_ns: 7 * 24 * 60 * 60 * 1_000_000_000,
         }
     }
@@ -241,6 +232,7 @@ impl CertificationPolicy {
             // A stand-in is certified by its person's root on purpose, never
             // through a device's request.
             stand_in: false,
+            server_key: false,
         }
     }
 

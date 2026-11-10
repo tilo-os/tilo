@@ -91,6 +91,36 @@ enum Purpose {
     Key { name: String, poll: Option<String> },
 }
 
+/// The grant the person is asked to certify.
+#[derive(Clone, Copy, Debug)]
+struct GrantAsk {
+    /// The workspace the agent was pointed at, or all of them. The
+    /// certificate they answer with may be narrower — one of their
+    /// workspaces where all were asked for.
+    scope: AgentScope,
+    /// A server key: an API key reaching all the person's workspaces,
+    /// which lasts until revoked unless they chose an expiry.
+    server_key: bool,
+    /// When the grant expires, in Unix milliseconds; `None` for a server
+    /// key that lasts until revoked.
+    expires_ms: Option<u64>,
+}
+
+impl GrantAsk {
+    /// An agent's grant reaching `scope`, for as long as a grant may last.
+    fn bounded(scope: AgentScope, now: u64) -> Self {
+        Self {
+            scope,
+            server_key: false,
+            expires_ms: Some(
+                now.saturating_add(
+                    u64::try_from(grant_key::GRANT_LIFETIME.as_millis()).unwrap_or(0),
+                ),
+            ),
+        }
+    }
+}
+
 /// An authorization in progress: the agent's request or an API key,
 /// waiting for the person's Tilo to answer it.
 struct Pending {
@@ -98,10 +128,8 @@ struct Pending {
     challenge: [u8; 32],
     /// The key made for the grant, waiting for the person's certificate.
     key: ed25519_dalek::SigningKey,
-    /// What the person is asked to approve: the workspace the agent was
-    /// pointed at, or all of them. The certificate they answer with may be
-    /// narrower — one of their workspaces where all were asked for.
-    scope: AgentScope,
+    /// What the person is asked to approve.
+    grant: GrantAsk,
     expires_ms: u64,
     /// Where the person's Tilo answers it.
     location: String,
@@ -316,7 +344,7 @@ impl Door {
         match self.begin(
             Purpose::Agent(request),
             &client_name,
-            scope,
+            GrantAsk::bounded(scope, now),
             (id, challenge, key),
             now,
         ) {
@@ -325,26 +353,23 @@ impl Door {
         }
     }
 
-    /// Ask the person's Tilo to approve `purpose` reaching `scope`, shown as
-    /// `client`: the sign-in in progress `id`, with its `challenge` and the
+    /// Ask the person's Tilo to approve `purpose` as the grant `grant`, shown
+    /// as `client`: the sign-in in progress `id`, with its `challenge` and the
     /// grant's `key`. Answers where the person's Tilo answers it.
     fn begin(
         &self,
         purpose: Purpose,
         client: &str,
-        scope: AgentScope,
+        grant: GrantAsk,
         (id, challenge, key): (String, [u8; 32], ed25519_dalek::SigningKey),
         now: u64,
     ) -> Result<String, &'static str> {
-        let grant_expires_ms =
-            now.saturating_add(u64::try_from(grant_key::GRANT_LIFETIME.as_millis()).unwrap_or(0));
         let location = self.sign_in_url(&SignInAsk {
             pending: &id,
             challenge: &challenge,
             client,
             key: &key,
-            scope,
-            expires_ms: grant_expires_ms,
+            grant,
         });
         let mut pending = lock(&self.pending);
         pending.retain(|_, pending| pending.expires_ms > now);
@@ -357,7 +382,7 @@ impl Door {
                 purpose,
                 challenge,
                 key,
-                scope,
+                grant,
                 expires_ms: now.saturating_add(PENDING_LIFETIME_MS),
                 location: location.clone(),
             },
@@ -379,8 +404,17 @@ impl Door {
                 "grant_key",
                 &hex::encode(ask.key.verifying_key().to_bytes()),
             )
-            .append_pair("grant_scope", &ask.scope.name())
-            .append_pair("grant_expires", &ask.expires_ms.to_string());
+            .append_pair("grant_scope", &ask.grant.scope.name())
+            .append_pair(
+                "grant_expires",
+                &ask.grant
+                    .expires_ms
+                    .map_or_else(|| "never".to_owned(), |ms| ms.to_string()),
+            );
+        if ask.grant.server_key {
+            url.query_pairs_mut()
+                .append_pair("grant_kind", "server_key");
+        }
         url.into()
     }
 
@@ -489,8 +523,22 @@ impl Door {
                 "the grant was certified by someone else than who signed in",
             ));
         }
-        GrantKey::new(pending.key.clone(), cert, pending.scope, now_ns)
-            .map_err(|error| refused(&error.to_string()))
+        let outlasts = match (pending.grant.expires_ms, cert.expires_at_ns) {
+            (Some(asked), Some(expiry)) => expiry > asked.saturating_mul(1_000_000),
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if outlasts {
+            return Err(refused("the grant was certified for longer than was asked"));
+        }
+        GrantKey::new(
+            pending.key.clone(),
+            cert,
+            pending.grant.scope,
+            pending.grant.server_key,
+            now_ns,
+        )
+        .map_err(|error| refused(&error.to_string()))
     }
 
     fn token(&self, body: &[u8]) -> Reply {
@@ -904,8 +952,7 @@ struct SignInAsk<'a> {
     challenge: &'a [u8; 32],
     client: &'a str,
     key: &'a ed25519_dalek::SigningKey,
-    scope: AgentScope,
-    expires_ms: u64,
+    grant: GrantAsk,
 }
 
 /// What a path names on the door's MCP endpoint: `Some(None)` for the

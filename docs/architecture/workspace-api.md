@@ -21,14 +21,41 @@ and the person's own Tilo signs them in and certifies the key exactly as it
 does for an agent (`/sign-in`, the same proof and certificate). The person's
 device is still the only thing that certifies. What changes is what comes
 back. Instead of a code for a client, the door issues one bearer token,
-`tilo_sk_…`, that lasts as long as the certificate does (89 days at most).
-That token resolves to the grant, so every existing rule applies unchanged:
+`tilo_sk_…`, that lasts as long as the certificate does. That token resolves
+to the grant, so every existing rule applies unchanged:
 
 - the scope check at the door and the relay;
-- the certificate's expiry;
+- the certificate's expiry, where it has one;
 - the person's revocations, checked at every handshake;
 - the History attribution of each run;
 - revocation at `/grants`, which forgets the key.
+
+### Server keys last until revoked
+
+A key reaching all of a person's workspaces is a server key: it runs a
+backend unattended, and a backend whose key ran out every three months would
+break silently. So, like Stripe's and AWS's secret keys, it lasts until the
+person revokes it. They may choose an expiry instead: `expires_in` (seconds)
+on `/keys/new` and `account/keys#create`, `tilo keys create --expires-in`, the
+SDKs' `keys.create(..., expires_in)`, or the expiry menu on the grants page.
+
+The certificate says it is a server key itself
+(`DeviceCapabilities::server_key`, an extended capability bit under the
+grant's signature), because hosts verify it without the door's records.
+`verify_device_cert` takes a grant without an expiry, or one longer than 90
+days, only with that marker and only reaching all workspaces. Older verifiers
+refuse the bit. A grant an agent gets through OAuth consent never carries it
+and still expires within 90 days, and so does a key reaching one workspace.
+
+What bounds a leaked server key is revocation, which hosts check at every
+handshake and which ends everything it minted. Leaks are made cheap to find
+and end:
+
+- the `tilo_sk_` prefix lets secret scanners recognise the token;
+- the token is shown exactly once (the door keeps only its digest);
+- the keys list (`/grants`, `account/keys#list`, `tilo keys ls`) shows when
+  each key was last used and which of the person's devices approved it;
+- revoking is one click on `/grants`, or `tilo keys revoke <grant>`.
 
 `tilo keys create` cannot open a browser on a server, so it follows the
 device-authorization pattern. It asks the door for an approval link and a poll
@@ -53,7 +80,8 @@ the following hold:
   with no issuer of its own (so the chain is never longer than one step);
 - the issuer is the same person's, and was valid when it issued;
 - the certificate is an agent's grant for **one** workspace and nothing else;
-- it expires no later than its issuer;
+- it expires no later than its issuer, and within 90 days: a minted key
+  always expires, even when its issuer is a server key that does not;
 - its key is neither the issuer's nor the root's.
 
 The relay verifies every certificate it is shown with
@@ -91,8 +119,8 @@ no `workspace` and whose path is under `account` is answered by the door:
 | `account/workspaces#list` | the relay's `room.list` as the grant: the workspaces of the person's own there |
 | `account/workspaces#create {name, host?}` | the relay's `room.create-own` as the grant, which then joins it; the relay keeps as many workspaces of each person's own as their plan does, sharing their storage, and refuses one more, typed |
 | `account/workspaces#delete {workspace}` | refused for now: hosts have no operation that deletes a workspace |
-| `account/keys#list` | this key and the keys it minted |
-| `account/keys#create {name, workspace?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
+| `account/keys#list` | this key and the keys it minted, each with `expires_at_ms` (`null` until revoked), `last_used_at_ms` and `created_by` |
+| `account/keys#create {name, workspace?, expires_in?}` | asks the person; the run is `pending` until they approve, and `tilo_status` then answers the key |
 | `account/keys#mint {workspace, name?, expires_in?}` | a minted grant: `{grant, token, mcp_url, expires_at_ms}` |
 | `account/keys#revoke {grant}` | this key or one it minted, and everything it minted |
 

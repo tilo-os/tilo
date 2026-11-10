@@ -5,8 +5,17 @@
 //! person's own Tilo signs them in and certifies it (the same `/sign-in`
 //! answer an agent's authorization gets). What comes back is one bearer
 //! token, `tilo_sk_…`, lasting as long as the certificate, instead of a code
-//! for a client. Scope checks, expiry, History attribution and revocation at
+//! for a client. Scope checks, History attribution and revocation at
 //! `/grants` are the grant's.
+//!
+//! A key reaching all the person's workspaces is a server key: a backend
+//! runs unattended, so it lasts until the person revokes it, as Stripe's and
+//! AWS's secret keys do, unless they chose an expiry (`expires_in`, in
+//! seconds). A key reaching one workspace lasts at most
+//! [`crate::grant_key::GRANT_LIFETIME`], like an agent's grant. The token
+//! is answered once, and the grants page
+//! and `account/keys#list` show when each key was last used and which device
+//! of the person approved it.
 //!
 //! Where the person asks matters for where the key goes:
 //!
@@ -87,6 +96,51 @@ fn scope_of(workspace: Option<&str>) -> Result<AgentScope, &'static str> {
     }
 }
 
+/// The grant a key reaching `scope` asks for at `now`: a server key, lasting
+/// until revoked or `expires_in` seconds, for all workspaces; a bounded one,
+/// for at most [`crate::grant_key::GRANT_LIFETIME`], for one.
+fn key_grant(
+    scope: AgentScope,
+    expires_in: Option<u64>,
+    now: u64,
+) -> Result<crate::GrantAsk, &'static str> {
+    if expires_in == Some(0) {
+        return Err("`expires_in` is a number of seconds above zero");
+    }
+    let chosen = expires_in.map(|seconds| now.saturating_add(seconds.saturating_mul(1000)));
+    if scope == AgentScope::AllWorkspaces {
+        return Ok(crate::GrantAsk {
+            scope,
+            server_key: true,
+            expires_ms: chosen,
+        });
+    }
+    let bounded = crate::GrantAsk::bounded(scope, now);
+    match (chosen, bounded.expires_ms) {
+        (Some(chosen), Some(most)) if chosen > most => Err(
+            "a key reaching one workspace lasts at most 89 days (`expires_in` 7689600); \
+             a key reaching all of them may last until revoked",
+        ),
+        (Some(chosen), _) => Ok(crate::GrantAsk {
+            expires_ms: Some(chosen),
+            ..bounded
+        }),
+        (None, _) => Ok(bounded),
+    }
+}
+
+/// `expires_in` as a request names it: absent, or seconds above zero.
+pub(crate) fn expires_in_of(asked: Option<&Value>) -> Result<Option<u64>, &'static str> {
+    match asked {
+        None | Some(Value::Null) => Ok(None),
+        Some(value) => value
+            .as_u64()
+            .filter(|seconds| *seconds > 0)
+            .map(Some)
+            .ok_or("`expires_in` is a number of seconds above zero"),
+    }
+}
+
 fn error(status: StatusCode, code: &str, message: &str, next: &str) -> crate::Reply {
     json_reply(
         status,
@@ -99,7 +153,7 @@ impl Door {
     fn key_sign_in(
         &self,
         name: String,
-        scope: AgentScope,
+        grant: crate::GrantAsk,
         poll: Option<String>,
     ) -> Result<(String, String), &'static str> {
         let mut challenge = [0u8; 32];
@@ -114,7 +168,7 @@ impl Door {
         let location = self.begin(
             Purpose::Key { name, poll },
             &shown,
-            scope,
+            grant,
             (id.clone(), challenge, key),
             now_ms(),
         )?;
@@ -122,17 +176,19 @@ impl Door {
     }
 
     /// Ask the person for a key called `name`, reaching `workspace` or all
-    /// of them: the poll secret that collects it ([`Self::key_answer`]), and
-    /// the link where the person approves it.
+    /// of them, expiring after `expires_in` seconds or (reaching all of
+    /// them) never: the poll secret that collects it ([`Self::key_answer`]),
+    /// and the link where the person approves it.
     pub(crate) fn request_key(
         &self,
         name: Option<&str>,
         workspace: Option<&str>,
+        expires_in: Option<u64>,
     ) -> Result<(String, String), &'static str> {
         let name = name_of(name)?;
-        let scope = scope_of(workspace)?;
+        let grant = key_grant(scope_of(workspace)?, expires_in, now_ms())?;
         let poll = store::secret(32).map_err(|_| "no randomness is available; try again")?;
-        let (id, _) = self.key_sign_in(name, scope, Some(store::digest(&poll)))?;
+        let (id, _) = self.key_sign_in(name, grant, Some(store::digest(&poll)))?;
         Ok((poll, format!("{}{APPROVE_PREFIX}{id}", self.config.issuer)))
     }
 
@@ -163,11 +219,14 @@ impl Door {
         }
     }
 
-    /// `POST /keys/new` `{name, workspace?}`: a key a terminal waits for.
+    /// `POST /keys/new` `{name, workspace?, expires_in?}`: a key a terminal
+    /// waits for.
     pub(crate) fn new_key(&self, body: &[u8]) -> crate::Reply {
         let asked: Value = serde_json::from_slice(body).unwrap_or_default();
         let field = |name: &str| asked.get(name).and_then(Value::as_str);
-        match self.request_key(field("name"), field("workspace")) {
+        let requested = expires_in_of(asked.get("expires_in"))
+            .and_then(|expires_in| self.request_key(field("name"), field("workspace"), expires_in));
+        match requested {
             Ok((poll, approve_url)) => json_reply(
                 StatusCode::CREATED,
                 &json!({
@@ -181,7 +240,8 @@ impl Door {
                 StatusCode::BAD_REQUEST,
                 "invalid_request",
                 why,
-                "send {\"name\": \"…\"}, and \"workspace\": \"<id>\" for a key reaching one workspace",
+                "send {\"name\": \"…\"}, \"workspace\": \"<id>\" for a key reaching one workspace, \
+                 and \"expires_in\": <seconds> for a key that expires",
             ),
         }
     }
@@ -266,17 +326,34 @@ impl Door {
                 &pages::message("Not allowed", "This did not come from your grants page."),
             );
         }
-        let field = |name: &str| form.get(name).map(String::as_str);
-        let (name, scope) = match (name_of(field("name")), scope_of(field("workspace"))) {
-            (Ok(name), Ok(scope)) => (name, scope),
-            (Err(why), _) | (_, Err(why)) => {
+        let field = |name: &str| {
+            form.get(name)
+                .map(String::as_str)
+                .filter(|value| !value.is_empty())
+        };
+        let expires_in = field("expires_in").map(|seconds| {
+            seconds
+                .parse::<u64>()
+                .map_err(|_| "`expires_in` is a number of seconds above zero")
+        });
+        let asked = name_of(field("name")).and_then(|name| {
+            let grant = key_grant(
+                scope_of(field("workspace"))?,
+                expires_in.transpose()?,
+                now_ms(),
+            )?;
+            Ok((name, grant))
+        });
+        let (name, grant) = match asked {
+            Ok(asked) => asked,
+            Err(why) => {
                 return html(
                     StatusCode::BAD_REQUEST,
                     &pages::message("Key not created", why),
                 );
             }
         };
-        match self.key_sign_in(name, scope, None) {
+        match self.key_sign_in(name, grant, None) {
             Ok((_, location)) => redirect(&location),
             Err(why) => text(StatusCode::SERVICE_UNAVAILABLE, why),
         }
@@ -315,9 +392,15 @@ impl Door {
             Ok(key) => key,
             Err(reply) => return *reply,
         };
-        let Ok((grant, token)) = self
-            .store
-            .record_key(&key, name, store::GrantKind::Key, now)
+        let device = hex::encode(proof.cert.device_public_key);
+        let created_by = format!(
+            "{} ({})",
+            proof.cert.device_label,
+            device.get(..8).unwrap_or_default()
+        );
+        let Ok((grant, token)) =
+            self.store
+                .record_key(&key, name, store::GrantKind::Key, Some(created_by), now)
         else {
             return text(StatusCode::SERVICE_UNAVAILABLE, "keys are unavailable");
         };

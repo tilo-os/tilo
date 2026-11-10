@@ -41,7 +41,22 @@ test('a service’s link asks what the route answers', () => {
     grantKey: KEY,
     grantScope: 'all',
     grantExpiresMs: NOW + 7 * DAY,
+    grantServerKey: false,
   });
+});
+
+test('a server key reaches all workspaces and lasts until revoked, or as long as the person chose', () => {
+  const lasting = read({grant_kind: 'server_key', grant_expires: 'never'});
+  assert.equal(lasting.grantServerKey, true);
+  assert.equal(lasting.grantExpiresMs, null);
+  assert.equal(requestWords(lasting).until, 'Until you revoke it');
+  const chosen = read({grant_kind: 'server_key', grant_expires: String(NOW + 5 * MAX_GRANT_LIFETIME_MS)});
+  assert.equal(chosen.grantExpiresMs, NOW + 5 * MAX_GRANT_LIFETIME_MS);
+  assert.throws(() => read({grant_kind: 'server_key', grant_expires: String(NOW)}), /has expired/);
+  assert.throws(() => read({grant_kind: 'server_key', grant_scope: WORKSPACE}), /grant Tilo cannot give/);
+  assert.throws(() => read({grant_kind: 'agent'}), /grant Tilo cannot give/);
+  // Only a server key may last until revoked.
+  assert.throws(() => read({grant_expires: 'never'}), /grant Tilo cannot give/);
 });
 
 test('a link may name no grant at all: the page then proves the person alone', () => {
@@ -264,6 +279,7 @@ test('allow signs what the link asked for and posts it to the service', async ()
     grantKey: KEY,
     grantScope: 'all',
     expiresAtMs: NOW + 7 * DAY,
+    serverKey: false,
   });
   const custody = posted.find(entry => entry.custody)?.custody;
   assert.equal(custody.profile, `tilo-identity:${ROOT}@door.example`);

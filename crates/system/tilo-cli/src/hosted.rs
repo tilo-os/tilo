@@ -30,12 +30,19 @@ const MAX_ANSWER: usize = 64 * 1024 * 1024;
 pub enum KeysCmd {
     /// Ask for a key: you approve it in your Tilo, and it prints here.
     #[command(
-        after_help = "Example:\n  tilo keys create \"Visa backend\"\n  export TILO_API_KEY=tilo_sk_…"
+        after_help = "Example:\n  tilo keys create \"Visa backend\"\n  export TILO_API_KEY=tilo_sk_…\n\n\
+                      A key reaching all your workspaces lasts until you revoke it (`tilo keys revoke`), \
+                      unless --expires-in says when it expires. A key reaching one workspace (-w) lasts \
+                      at most 89 days."
     )]
     Create {
         /// What will use it, as your grants page will name it. With -w
         /// (an id), it reaches only that workspace.
         name: String,
+        /// Seconds until it expires; without it, a key reaching all your
+        /// workspaces lasts until revoked.
+        #[arg(long)]
+        expires_in: Option<u64>,
     },
     /// This key and the keys it minted.
     Ls,
@@ -474,8 +481,8 @@ pub fn files(door: Option<&str>, json: bool, workspace: &str, cmd: FilesCmd) -> 
 pub fn keys(door: Option<&str>, json: bool, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode {
     run(async {
         let client = match cmd {
-            KeysCmd::Create { name } => {
-                return create_key(&door_of(door), json, &name, workspace).await;
+            KeysCmd::Create { name, expires_in } => {
+                return create_key(&door_of(door), json, &name, workspace, expires_in).await;
             }
             _ => Client::from_env(door, json)?,
         };
@@ -508,12 +515,13 @@ async fn create_key(
     json: bool,
     name: &str,
     workspace: Option<&str>,
+    expires_in: Option<u64>,
 ) -> Result<ExitCode> {
     let http = tilo_net::Client::new();
     let asked = http
         .post(format!("{door}/keys/new"))
         .header("content-type", "application/json")
-        .body(json!({"name": name, "workspace": workspace}).to_string())
+        .body(json!({"name": name, "workspace": workspace, "expires_in": expires_in}).to_string())
         .send()
         .await
         .with_context(|| format!("reaching {door}"))?;

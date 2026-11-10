@@ -15,7 +15,16 @@
 use crate::grant_key::GrantKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, io, path::PathBuf, sync::Mutex, time::Duration};
+use std::{
+    collections::HashMap,
+    io,
+    path::PathBuf,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 
 /// How long an access token works before the client refreshes it.
 pub const ACCESS_LIFETIME: Duration = Duration::from_secs(60 * 60);
@@ -28,6 +37,9 @@ pub const CODE_LIFETIME: Duration = Duration::from_secs(60);
 /// oldest client nobody holds a grant for gives way first.
 const MAX_CLIENTS: usize = 10_000;
 const MAX_CODES: usize = 4_096;
+/// How often using a token writes when its grant was last used to the file:
+/// a use is noted in memory at once, and kept at most this much later.
+const LAST_USED_SAVE_MS: u64 = 60 * 1000;
 
 /// What a grant lets its agent reach.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -71,7 +83,8 @@ pub enum GrantKind {
     #[default]
     Agent,
     /// An API key the person approved: one bearer token, lasting as long
-    /// as the grant's certificate.
+    /// as the grant's certificate — until revoked, for a key reaching all
+    /// their workspaces, unless they chose an expiry.
     Key,
     /// A grant for one workspace that the all-workspaces grant `parent`
     /// minted, with a bearer token like a key's. It ends with its parent.
@@ -92,10 +105,19 @@ pub struct Grant {
     pub scope: Scope,
     #[serde(default)]
     pub kind: GrantKind,
-    /// When the grant's certificate expires, in Unix milliseconds.
+    /// When the grant's certificate expires, in Unix milliseconds; `None`
+    /// for a server key that lasts until revoked.
     #[serde(default)]
-    pub expires_ms: u64,
+    pub expires_ms: Option<u64>,
     pub created_ms: u64,
+    /// When a token of the grant last reached the door, in Unix
+    /// milliseconds.
+    #[serde(default)]
+    pub last_used_ms: Option<u64>,
+    /// The device of the person that approved the grant, as its certificate
+    /// names it, with the start of its key.
+    #[serde(default)]
+    pub created_by: Option<String>,
     #[serde(default)]
     pub revoked_ms: Option<u64>,
     /// The grant's key and the person's certificate for it, until the grant
@@ -167,10 +189,8 @@ fn scope_of(key: &GrantKey) -> Scope {
     }
 }
 
-fn expiry_ms(key: &GrantKey) -> u64 {
-    key.cert()
-        .expires_at_ns
-        .map_or(u64::MAX, |expiry| expiry / 1_000_000)
+fn expiry_ms(key: &GrantKey) -> Option<u64> {
+    key.cert().expires_at_ns.map(|expiry| expiry / 1_000_000)
 }
 
 /// Revoke `id` and every grant it minted, forgetting their tokens. Answers
@@ -248,6 +268,8 @@ pub struct Store {
     path: Option<PathBuf>,
     state: Mutex<State>,
     codes: Mutex<HashMap<String, Code>>,
+    /// When the file was last written, in Unix milliseconds.
+    saved_ms: AtomicU64,
 }
 
 /// Why a token request was refused, as RFC 6749 names it.
@@ -265,6 +287,7 @@ impl Store {
             path: None,
             state: Mutex::default(),
             codes: Mutex::default(),
+            saved_ms: AtomicU64::new(0),
         }
     }
 
@@ -283,6 +306,7 @@ impl Store {
             path: Some(path),
             state: Mutex::new(state),
             codes: Mutex::default(),
+            saved_ms: AtomicU64::new(0),
         })
     }
 
@@ -292,14 +316,22 @@ impl Store {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let answer = change(&mut state);
-        if let Some(path) = &self.path {
-            let bytes = serde_json::to_vec(&*state).map_err(io::Error::other)?;
-            tilo_files::native::private::write_atomic(path, &bytes)?;
-        }
+        self.save(&state)?;
         // Held until the file is written: two changes writing their
         // snapshots unlocked could leave the older one on disk.
         drop(state);
         Ok(answer)
+    }
+
+    /// Write `state` to the file, the caller holding its lock.
+    fn save(&self, state: &State) -> io::Result<()> {
+        if let Some(path) = &self.path {
+            let bytes = serde_json::to_vec(state).map_err(io::Error::other)?;
+            tilo_files::native::private::write_atomic(path, &bytes)?;
+            self.saved_ms
+                .store(tilo_clock::unix_now_ms(), Ordering::Relaxed);
+        }
+        Ok(())
     }
 
     fn read<T>(&self, read: impl FnOnce(&State) -> T) -> T {
@@ -376,6 +408,8 @@ impl Store {
             kind: GrantKind::Agent,
             expires_ms: expiry_ms(key),
             created_ms: now_ms,
+            last_used_ms: None,
+            created_by: None,
             revoked_ms: None,
             key: Some(KeptKey {
                 secret: hex::encode(key.secret()),
@@ -499,35 +533,46 @@ impl Store {
         }
     }
 
-    /// The live grant the access token or key `token` was issued under. A
-    /// minted grant answers only while the grant that minted it is live.
+    /// The live grant the access token or key `token` was issued under,
+    /// noting that it was used now. A minted grant answers only while the
+    /// grant that minted it is live.
     #[must_use]
     pub fn access(&self, token: &str, now_ms: u64) -> Option<Grant> {
-        self.read(|state| {
-            let token = state.tokens.get(&digest(token))?;
-            if token.kind == TokenKind::Refresh || token.expires_ms <= now_ms {
-                return None;
-            }
-            let grant = state
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let token = state.tokens.get(&digest(token))?;
+        if token.kind == TokenKind::Refresh || token.expires_ms <= now_ms {
+            return None;
+        }
+        let id = token.grant.clone();
+        let grant = state.grants.get(&id).filter(|grant| grant.usable(now_ms))?;
+        if let Some(parent) = grant.parent()
+            && !state
                 .grants
-                .get(&token.grant)
-                .filter(|grant| grant.usable(now_ms))?;
-            if let Some(parent) = grant.parent()
-                && !state
-                    .grants
-                    .get(parent)
-                    .is_some_and(|parent| parent.usable(now_ms))
-            {
-                return None;
-            }
-            Some(grant.clone())
-        })
+                .get(parent)
+                .is_some_and(|parent| parent.usable(now_ms))
+        {
+            return None;
+        }
+        let grant = state.grants.get_mut(&id)?;
+        grant.last_used_ms = Some(now_ms);
+        let used = grant.clone();
+        if now_ms.saturating_sub(self.saved_ms.load(Ordering::Relaxed)) >= LAST_USED_SAVE_MS
+            && let Err(error) = self.save(&state)
+        {
+            tracing::warn!(%error, "could not keep when a key was last used");
+        }
+        drop(state);
+        Some(used)
     }
 
-    /// Record a grant the person approved as an API key, or one a grant
-    /// minted (`kind`), named `name`, with `key` and its certificate, and
-    /// issue its one bearer token, lasting as long as the certificate. A
-    /// minted grant's parent must be live.
+    /// Record a grant the person approved as an API key on their device
+    /// `created_by`, or one a grant minted (`kind`), named `name`, with `key`
+    /// and its certificate, and issue its one bearer token, lasting as long
+    /// as the certificate. A minted grant's parent must be live. The token
+    /// is answered here once; only its digest is kept.
     ///
     /// # Errors
     /// The store could not be written, or the parent is not live.
@@ -536,6 +581,7 @@ impl Store {
         key: &GrantKey,
         name: &str,
         kind: GrantKind,
+        created_by: Option<String>,
         now_ms: u64,
     ) -> io::Result<(Grant, String)> {
         let token = format!("tilo_sk_{}", secret(32)?);
@@ -548,6 +594,8 @@ impl Store {
             kind,
             expires_ms: expiry_ms(key),
             created_ms: now_ms,
+            last_used_ms: None,
+            created_by,
             revoked_ms: None,
             key: Some(KeptKey {
                 secret: hex::encode(key.secret()),
@@ -572,7 +620,7 @@ impl Store {
                 Token {
                     kind: TokenKind::Key,
                     grant: grant.id.clone(),
-                    expires_ms: grant.expires_ms,
+                    expires_ms: grant.expires_ms.unwrap_or(u64::MAX),
                 },
             );
             Ok(())

@@ -5,7 +5,7 @@
 //! It is addressed like any resource, by path, through the same tools:
 //!
 //! - `account/workspaces#list`, `#create {name, host?}`, `#delete {workspace}`;
-//! - `account/keys#list`, `#create {name, workspace?}`,
+//! - `account/keys#list`, `#create {name, workspace?, expires_in?}`,
 //!   `#mint {workspace, name?, expires_in?}`, `#revoke {grant}`.
 //!
 //! `tilo_ls account` lists them, `tilo_read` reads the lists, `tilo_do` runs
@@ -13,9 +13,11 @@
 //! a workspace is the relay's own operation ([`crate::relay`]). Minting a
 //! key is a certificate the grant's own key signs for one workspace
 //! ([`tilo_user_identity::prepare_minted_grant`]): narrower than the grant,
-//! ending no later than it, and revoked with it. Creating a key asks the
-//! person, whose device certifies it ([`crate::keys`]). The run waits for
-//! them, and `tilo_status` answers the key once they approve.
+//! ending no later than it and within 90 days, and revoked with it. Creating
+//! a key asks the person, whose device certifies it ([`crate::keys`]); one
+//! reaching all their workspaces lasts until revoked unless `expires_in`
+//! says otherwise. The run waits for them, and `tilo_status` answers the key
+//! once they approve.
 //!
 //! Answers are the agent surface's text (`ok …`, `failed: …`,
 //! `pending <id>: …`), or, for a caller that asks for typed answers, the
@@ -188,6 +190,7 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 7] = [
         &[
             param("name", true, "Text"),
             param("workspace", false, "Text"),
+            param("expires_in", false, "Integer"),
         ],
     ),
     (
@@ -236,7 +239,7 @@ fn actions_of(resource: &str) -> (Vec<Value>, String) {
     (rows, text)
 }
 
-fn grant_row(grant: &Grant) -> Value {
+pub(crate) fn grant_row(grant: &Grant) -> Value {
     json!({
         "grant": grant.id,
         "name": grant.client_name,
@@ -247,6 +250,8 @@ fn grant_row(grant: &Grant) -> Value {
             GrantKind::Minted { .. } => "minted",
         },
         "created_at_ms": grant.created_ms,
+        "created_by": grant.created_by,
+        "last_used_at_ms": grant.last_used_ms,
         "expires_at_ms": grant.expires_ms,
     })
 }
@@ -413,14 +418,21 @@ impl Door {
             .into_iter()
             .flatten()
         {
+            let when = |field: &str, none: &str| {
+                row[field]
+                    .as_u64()
+                    .map_or_else(|| none.to_owned(), crate::pages::date)
+            };
             let _ = match row.get("grant") {
                 Some(grant) => write!(
                     text,
-                    "\n{} (grant {}, reaches {}, {})",
+                    "\n{} (grant {}, reaches {}, {}, last used {}, expires {})",
                     row["name"].as_str().unwrap_or_default(),
                     grant.as_str().unwrap_or_default(),
                     row["scope"].as_str().unwrap_or_default(),
                     row["kind"].as_str().unwrap_or_default(),
+                    when("last_used_at_ms", "never"),
+                    when("expires_at_ms", "never"),
                 ),
                 None => write!(
                     text,
@@ -473,10 +485,20 @@ impl Door {
                 "revoke the keys that reach it with account/keys#revoke",
             ),
             "account/keys#list" => self.account_keys(grant),
-            "account/keys#create" => match self.ask_for_key(field("name"), field("workspace")) {
-                Ok((invocation, ask)) => Outcome::Pending { invocation, ask },
-                Err(why) => failed("invalid_arguments", why, "pass args {name, workspace?}"),
-            },
+            "account/keys#create" => {
+                let asked =
+                    crate::keys::expires_in_of(args.get("expires_in")).and_then(|expires_in| {
+                        self.ask_for_key(field("name"), field("workspace"), expires_in)
+                    });
+                match asked {
+                    Ok((invocation, ask)) => Outcome::Pending { invocation, ask },
+                    Err(why) => failed(
+                        "invalid_arguments",
+                        why,
+                        "pass args {name, workspace?, expires_in?}",
+                    ),
+                }
+            }
             "account/keys#mint" => self.mint(grant, key, args).await,
             "account/keys#revoke" => {
                 let Some(id) = field("grant") else {
@@ -565,8 +587,9 @@ impl Door {
         &self,
         name: Option<&str>,
         workspace: Option<&str>,
+        expires_in: Option<u64>,
     ) -> Result<(String, String), &'static str> {
-        let (poll, ask) = self.request_key(name, workspace)?;
+        let (poll, ask) = self.request_key(name, workspace, expires_in)?;
         Ok((format!("{KEY_INVOCATION}{poll}"), ask))
     }
 
@@ -629,7 +652,7 @@ impl Door {
         let kind = GrantKind::Minted {
             parent: grant.id.clone(),
         };
-        match self.store.record_key(&minted, &name, kind, now) {
+        match self.store.record_key(&minted, &name, kind, None, now) {
             Ok((minted, token)) => Outcome::Ok(json!({
                 "grant": minted.id,
                 "name": minted.client_name,
@@ -648,8 +671,9 @@ impl Door {
 }
 
 /// A key for the workspace `id` alone, named `name`, certified by `key`: a
-/// grant for one workspace that ends after `expires_in` seconds, or with
-/// `key`, whichever is sooner.
+/// grant for one workspace that ends after `expires_in` seconds, with `key`,
+/// or after the most a grant may last, whichever is soonest. A server key
+/// that never expires still mints keys that do.
 fn mint_key(
     key: &GrantKey,
     id: [u8; 16],
@@ -658,11 +682,15 @@ fn mint_key(
     now: u64,
 ) -> Result<GrantKey, Outcome> {
     let now_ns = now.saturating_mul(1_000_000);
-    let parent_expiry = key.cert().expires_at_ns.unwrap_or(now_ns);
-    let expires_ns = expires_in.map_or(parent_expiry, |seconds| {
+    let most = now_ns.saturating_add(tilo_user_identity::MAX_AGENT_GRANT_LIFETIME_NS);
+    let limit = key
+        .cert()
+        .expires_at_ns
+        .map_or(most, |parent| parent.min(most));
+    let expires_ns = expires_in.map_or(limit, |seconds| {
         now_ns
             .saturating_add(seconds.saturating_mul(1_000_000_000))
-            .min(parent_expiry)
+            .min(limit)
     });
     if expires_ns <= now_ns {
         return Err(failed(
@@ -693,6 +721,6 @@ fn mint_key(
             "ask the person for a new key",
         )
     })?;
-    GrantKey::new(minted_key, cert, AgentScope::Workspace(id), now_ns)
+    GrantKey::new(minted_key, cert, AgentScope::Workspace(id), false, now_ns)
         .map_err(|error| failed("forbidden", error.0, "ask the person for a new key"))
 }

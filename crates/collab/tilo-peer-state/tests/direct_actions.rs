@@ -51,16 +51,7 @@ const PATIENCE: Duration = Duration::from_secs(20);
 fn agent_device(root: &SigningKey, n: u8) -> (SigningKey, DeviceCert) {
     let (key, mut cert) = device(root, n);
     cert.device_label = format!("Agent: Scribe {n}");
-    cert.capabilities = DeviceCapabilities {
-        can_own_workspaces: false,
-        can_admit_devices: false,
-        can_act_as_host: false,
-        can_read_all_workspaces: false,
-        foreign: false,
-        can_administer_devices: false,
-        agent: None,
-        stand_in: false,
-    };
+    cert.capabilities = DeviceCapabilities::nothing();
     sign_device_cert(&mut cert, root).unwrap();
     (key, cert)
 }

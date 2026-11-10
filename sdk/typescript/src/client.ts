@@ -133,11 +133,17 @@ export class Keys {
   /**
    * Ask the person for a new key.
    *
-   * Throws `AskPending` with the link they approve it at; `await ask.wait()`
-   * answers the `Key` once they do.
+   * A key reaching all their workspaces lasts until revoked unless
+   * `expiresIn` (seconds) says when it expires; one reaching a single
+   * workspace lasts at most 89 days. Throws `AskPending` with the link they
+   * approve it at; `await ask.wait()` answers the `Key` once they do.
    */
-  create(name: string, workspace: string | Workspace | null = null): Promise<Key> {
-    return this.client.keyCreate(name, workspace);
+  create(
+    name: string,
+    workspace: string | Workspace | null = null,
+    expiresIn: number | null = null,
+  ): Promise<Key> {
+    return this.client.keyCreate(name, workspace, expiresIn);
   }
 
   /** A key for one workspace, for an agent there; narrower than your own. */
@@ -181,14 +187,24 @@ export class Tilo {
     return new Workspace(this, idOrName);
   }
 
-  /** A key this machine does not have yet: show the link, wait for approval. */
-  async signIn(name: string | null = null, workspace: string | null = null): Promise<SignIn> {
+  /**
+   * A key this machine does not have yet: show the link, wait for approval.
+   * It lasts until revoked unless `expiresIn` (seconds) says otherwise.
+   */
+  async signIn(
+    name: string | null = null,
+    workspace: string | null = null,
+    expiresIn: number | null = null,
+  ): Promise<SignIn> {
     const body: Record<string, unknown> = {};
     if (name !== null) {
       body.name = name;
     }
     if (workspace !== null) {
       body.workspace = workspace;
+    }
+    if (expiresIn !== null) {
+      body.expires_in = expiresIn;
     }
     const response = await this.transport.request("POST", "/keys/new", { body });
     const answer = await jsonOf(response);
@@ -304,10 +320,17 @@ export class Tilo {
     return this.link().outcome(`${ACCOUNT}/keys#revoke`, { grant });
   }
 
-  async keyCreate(name: string, workspace: string | Workspace | null): Promise<Key> {
+  async keyCreate(
+    name: string,
+    workspace: string | Workspace | null,
+    expiresIn: number | null = null,
+  ): Promise<Key> {
     const args: Record<string, unknown> = { name };
     if (workspace !== null) {
       args.workspace = await this.workspaceId(workspace);
+    }
+    if (expiresIn !== null) {
+      args.expires_in = expiresIn;
     }
     try {
       await this.link().call("tilo_do", { path: `${ACCOUNT}/keys#create`, args });

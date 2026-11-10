@@ -8,10 +8,12 @@ agent did step by step, and undo any of it.
 You need three things, all from one API key:
 
 1. **A key for your backend.** It reaches all your workspaces, makes new ones
-   and mints keys. You approve it once in your Tilo.
+   and mints keys. You approve it once in your Tilo, and it lasts until you
+   revoke it.
 2. **A workspace per customer**, with their files in it.
 3. **A key per customer's agent.** It reaches that one workspace and nothing
-   else, ends when your key ends or sooner, and stops when you revoke it.
+   else, expires within 90 days (or sooner, with `expires_in`), and stops
+   when you revoke it or the key that minted it.
 
 ## Get a key
 
@@ -20,9 +22,17 @@ tilo keys create "Visa backend"     # prints a link: approve it in your Tilo
 export TILO_API_KEY=tilo_sk_…       # what it prints once you approved
 ```
 
+The key is shown once: keep it in your secret store. It works until you
+revoke it, so your backend does not break when some date passes. To have it
+expire anyway, say when: `tilo keys create "Nightly job" --expires-in 2592000`
+(seconds).
+
 You can also create a key on your grants page (`https://mcp.tilo.sh/grants`).
-Keys are listed there with the agents you connected, and revoking one ends
-every key it minted.
+Keys are listed there with the agents you connected, with when each was last
+used and which of your devices approved it. If a key leaks, revoke it there
+with one click, or with `tilo keys revoke <grant>`: that ends every key it
+minted too. The `tilo_sk_` prefix lets secret scanners find a key committed
+by mistake.
 
 ## A workspace per customer, in Python
 

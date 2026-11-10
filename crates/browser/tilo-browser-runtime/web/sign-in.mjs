@@ -8,7 +8,13 @@
  * <web entry>/sign-in?audience=<the service's origin>&challenge=<64 hex>
  *   &return=<audience>/sign-in&pending=<its id>&client=<what it calls itself>
  *   &grant_key=<64 hex>&grant_scope=<all|a workspace id>&grant_expires=<unix ms>
+ *   [&grant_kind=server_key]
  * ```
+ *
+ * `grant_kind=server_key` asks for an API key the person creates for their
+ * own backend: it reaches all their workspaces and may last until they revoke
+ * it (`grant_expires=never`) or until any time they chose, where an agent's
+ * grant lasts at most 90 days.
  *
  * Everything in it is checked before the page shows anything, and nothing is
  * signed until the person presses Allow: then this browser's device key,
@@ -114,6 +120,10 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
   let grantKey = null;
   let grantScope = null;
   let grantExpiresMs = null;
+  const grantServerKey = params.has('grant_kind');
+  if (grantServerKey && (granted.length < 3 || once('grant_kind') !== 'server_key')) {
+    throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
+  }
   if (granted.length === 3) {
     grantKey = once('grant_key').toLowerCase();
     if (!HEX32.test(grantKey)) throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
@@ -121,14 +131,19 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
     if (grantScope !== 'all' && !UUID.test(grantScope)) {
       throw new SignInLinkError('This link asks a grant to reach a workspace Tilo cannot read.');
     }
-    const expires = once('grant_expires');
-    if (!MILLISECONDS.test(expires)) throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
-    grantExpiresMs = Number(expires);
-    if (grantExpiresMs <= now) {
-      throw new SignInLinkError('This request has expired. Ask the service for a new sign-in link.');
+    if (grantServerKey && grantScope !== 'all') {
+      throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
     }
-    if (grantExpiresMs - now > MAX_GRANT_LIFETIME_MS) {
-      throw new SignInLinkError('This link asks for a grant longer than Tilo gives. Ask the service for a shorter one.');
+    const expires = once('grant_expires');
+    if (!(grantServerKey && expires === 'never')) {
+      if (!MILLISECONDS.test(expires)) throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
+      grantExpiresMs = Number(expires);
+      if (grantExpiresMs <= now) {
+        throw new SignInLinkError('This request has expired. Ask the service for a new sign-in link.');
+      }
+      if (!grantServerKey && grantExpiresMs - now > MAX_GRANT_LIFETIME_MS) {
+        throw new SignInLinkError('This link asks for a grant longer than Tilo gives. Ask the service for a shorter one.');
+      }
     }
   }
   return Object.freeze({
@@ -141,6 +156,7 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
     grantKey,
     grantScope,
     grantExpiresMs,
+    grantServerKey,
   });
 }
 
@@ -165,7 +181,9 @@ export function requestWords(request, {locale = undefined, local = globalThis.lo
     reaches: grantScope === 'all'
       ? 'All your workspaces, and it may create new ones'
       : `Only the workspace ${workspaceName(grantScope, {local})}`,
-    until: new Date(grantExpiresMs).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'}),
+    until: grantExpiresMs === null
+      ? 'Until you revoke it'
+      : new Date(grantExpiresMs).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'}),
   };
 }
 
@@ -196,10 +214,11 @@ export function workspaceName(id, {local = globalThis.localStorage} = {}) {
  * or `null` where there is nothing to choose: the service asked for one
  * workspace, or for no grant at all. One that asked for all of them is a
  * choice of the person's workspaces, the service's own ask first, so the
- * agent is held to what they chose and never to more.
+ * agent is held to what they chose and never to more. A server key reaches
+ * all of them: the person chose that where they asked for it.
  */
 export function grantChoices(request, {local = globalThis.localStorage} = {}) {
-  if (request.grantScope !== 'all') return null;
+  if (request.grantScope !== 'all' || request.grantServerKey) return null;
   const workspaces = rememberedWorkspaces({local});
   return workspaces.length ? [{scope: 'all', name: 'All my workspaces'}, ...workspaces] : null;
 }
@@ -251,7 +270,12 @@ export async function signedAnswer(request, {identity, custody, runtime, scope =
     audience: request.audience,
     challenge: request.challenge,
     client: request.client,
-    ...(request.grantKey === null ? {} : {grantKey: request.grantKey, grantScope: scope, expiresAtMs: request.grantExpiresMs}),
+    ...(request.grantKey === null ? {} : {
+      grantKey: request.grantKey,
+      grantScope: scope,
+      expiresAtMs: request.grantExpiresMs,
+      serverKey: request.grantServerKey,
+    }),
   };
   // A device key kept as a sealed seed is opened for the one call that
   // signs; one held by `WebCrypto` signs where it is.

@@ -17,7 +17,7 @@ use tilo_browser_peer::{
     DeviceSigner as _, IssuedRole, encode, grant_label, issue_agent_grant, issue_device_cert,
     sign_in_proof,
 };
-use tilo_user_identity::AgentScope;
+use tilo_user_identity::{AgentScope, DeviceCapabilities};
 use wasm_bindgen::prelude::*;
 
 use crate::peer::{PageSigner, device_key, js_error};
@@ -32,7 +32,7 @@ const MAX_MILLISECONDS: f64 = 9_007_199_254_740_991.0;
 
 /// What the service's sign-in link asked for, as the page read and checked
 /// it (`web/sign-in.mjs`): the fields of
-/// `<web entry>/sign-in?audience=…&challenge=…&return=…&pending=…&client=…&grant_key=…&grant_scope=…&grant_expires=…`.
+/// `<web entry>/sign-in?audience=…&challenge=…&return=…&pending=…&client=…&grant_key=…&grant_scope=…&grant_expires=…&grant_kind=…`.
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct Ask {
@@ -51,9 +51,14 @@ struct Ask {
     /// What the grant reaches: `all`, or one workspace's UUID.
     #[serde(default)]
     grant_scope: Option<String>,
-    /// When the grant expires, in Unix milliseconds.
+    /// When the grant expires, in Unix milliseconds; none for a server key
+    /// that lasts until it is revoked.
     #[serde(default)]
     expires_at_ms: Option<f64>,
+    /// The grant is a server key the person creates for their own backend:
+    /// it reaches all their workspaces and may last until revoked.
+    #[serde(default)]
+    server_key: bool,
 }
 
 #[derive(Serialize)]
@@ -69,7 +74,7 @@ struct Answer {
 ///
 /// `root` is the person's unlocked root (`identity.mjs`) and `custody` the
 /// device key this page signs with (`device-custody.mjs`); `ask` is JSON:
-/// `{audience, challenge, client, grantKey?, grantScope?, expiresAtMs?}`.
+/// `{audience, challenge, client, grantKey?, grantScope?, expiresAtMs?, serverKey?}`.
 ///
 /// # Errors
 ///
@@ -98,19 +103,23 @@ pub async fn sign_in_answer(
         .map_err(js_error)?;
     let proof = encode(&proof).map_err(js_error)?;
     let grant = match (ask.grant_key, ask.grant_scope, ask.expires_at_ms) {
-        (None, None, None) => None,
-        (Some(key), Some(scope), Some(expires)) => {
-            let scope = match scope.as_str() {
-                "all" => AgentScope::AllWorkspaces,
-                workspace => AgentScope::parse(workspace)
-                    .ok_or_else(|| js_error("a grant's scope is `all` or a workspace id"))?,
+        (None, None, None) if !ask.server_key => None,
+        (Some(key), Some(scope), expires) if expires.is_some() || ask.server_key => {
+            let scope = AgentScope::parse(&scope)
+                .ok_or_else(|| js_error("a grant's scope is `all` or a workspace id"))?;
+            let capabilities = match (ask.server_key, scope) {
+                (false, scope) => DeviceCapabilities::agent_grant(scope),
+                (true, AgentScope::AllWorkspaces) => DeviceCapabilities::server_key_grant(),
+                (true, AgentScope::Workspace(_)) => {
+                    return Err(js_error("a server key reaches all your workspaces"));
+                }
             };
             let cert = issue_agent_grant(
                 &root,
                 device_key(&key)?,
                 &grant_label(&ask.client, &ask.audience),
-                scope,
-                nanoseconds(expires)?,
+                capabilities,
+                expires.map(nanoseconds).transpose()?,
             )
             .await
             .map_err(js_error)?;
@@ -118,7 +127,8 @@ pub async fn sign_in_answer(
         }
         _ => {
             return Err(js_error(
-                "a grant asks for its key, scope and expiry together",
+                "a grant asks for its key, scope and expiry together; only a server key may \
+                 last until revoked",
             ));
         }
     };

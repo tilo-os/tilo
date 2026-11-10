@@ -49,6 +49,11 @@ export class WorkspaceList {
   }
 }
 
+/**
+ * A key as the account lists it: its expiry is `null` for a key that lasts
+ * until revoked; it says when it was last used and which device of the
+ * person approved it.
+ */
 export interface Key {
   grant: string;
   name: string;
@@ -57,6 +62,8 @@ export interface Key {
   createdAtMs: number | null;
   expiresAtMs: number | null;
   token: string;
+  lastUsedAtMs: number | null;
+  createdBy: string | null;
 }
 
 export function keyOf(raw: Record<string, unknown>): Key {
@@ -68,6 +75,8 @@ export function keyOf(raw: Record<string, unknown>): Key {
     createdAtMs: intOf(raw.created_at_ms),
     expiresAtMs: intOf(raw.expires_at_ms),
     token: String(raw.token ?? raw.key ?? ""),
+    lastUsedAtMs: intOf(raw.last_used_at_ms),
+    createdBy: typeof raw.created_by === "string" ? raw.created_by : null,
   };
 }
 

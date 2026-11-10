@@ -925,16 +925,7 @@ mod tests {
             capabilities: DeviceCapabilities {
                 can_act_as_host: host,
                 can_own_workspaces: !host,
-                ..DeviceCapabilities {
-                    can_own_workspaces: false,
-                    can_admit_devices: false,
-                    can_act_as_host: false,
-                    can_read_all_workspaces: false,
-                    foreign: false,
-                    can_administer_devices: false,
-                    agent: None,
-                    stand_in: false,
-                }
+                ..DeviceCapabilities::nothing()
             },
             issued_at_ns: 1,
             expires_at_ns,

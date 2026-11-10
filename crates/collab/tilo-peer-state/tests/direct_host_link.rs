@@ -425,14 +425,8 @@ async fn a_device_serves_the_workspace_its_engine_holds() {
         &root,
         2,
         DeviceCapabilities {
-            can_own_workspaces: true,
-            can_admit_devices: true,
             can_act_as_host: true,
-            can_read_all_workspaces: true,
-            foreign: false,
-            can_administer_devices: false,
-            agent: None,
-            stand_in: false,
+            ..DeviceCapabilities::primary()
         },
     );
     let (b_key, b_cert) = device(&root, 3);

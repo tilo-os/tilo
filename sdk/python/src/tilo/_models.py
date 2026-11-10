@@ -85,7 +85,9 @@ class WorkspaceList:
 
 @dataclass(frozen=True)
 class Key:
-    """A key as the account lists it: a grant, its scope and its expiry."""
+    """A key as the account lists it: a grant, its scope, its expiry (`None`
+    for a key that lasts until revoked), when it was last used and which
+    device of the person approved it."""
 
     grant: str
     name: str = ""
@@ -94,6 +96,8 @@ class Key:
     created_at_ms: int | None = None
     expires_at_ms: int | None = None
     token: str = ""
+    last_used_at_ms: int | None = None
+    created_by: str | None = None
 
     @classmethod
     def of(cls, raw: Mapping[str, Any]) -> Key:
@@ -105,6 +109,10 @@ class Key:
             created_at_ms=_int(raw.get("created_at_ms")),
             expires_at_ms=_int(raw.get("expires_at_ms")),
             token=str(raw.get("token") or raw.get("key") or ""),
+            last_used_at_ms=_int(raw.get("last_used_at_ms")),
+            created_by=(
+                str(raw["created_by"]) if raw.get("created_by") is not None else None
+            ),
         )
 
     def client(self, door: str | None = None) -> Any:

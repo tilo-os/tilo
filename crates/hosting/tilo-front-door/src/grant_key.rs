@@ -4,7 +4,10 @@
 //! door generates a key for that one grant, and the person's own Tilo
 //! certifies it with their root as an agent's grant
 //! ([`tilo_user_identity::AgentScope`]): it reaches the workspaces the person
-//! chose (all of them and new ones, or one), and it expires. Everything the
+//! chose (all of them and new ones, or one), and it expires — but for an API
+//! key the person creates for their own backend that reaches all of them (a
+//! server key), which lasts until they revoke it unless they chose an expiry
+//! ([`tilo_user_identity::DeviceCapabilities::server_key`]). Everything the
 //! door then does for the agent (listing and making workspaces on the
 //! person's hosts, opening sessions at their runtime) it does as that key,
 //! and every host and runtime checks the certificate, its scope and the
@@ -61,19 +64,29 @@ impl GrantKey {
 
     /// `key` with `cert`, which must certify it as an agent's grant that
     /// holds at `now_ns` and reaches no more than `asked`: what the person
-    /// was asked to approve, or less of it where they chose so.
+    /// was asked to approve, or less of it where they chose so. It is a
+    /// server key exactly when one was asked for (`server_key`).
     ///
     /// # Errors
     /// The certificate is for another key or reaches more than was asked, is
-    /// no grant, or does not hold.
+    /// no grant, is a server key when none was asked for or the reverse, or
+    /// does not hold.
     pub fn new(
         key: ed25519_dalek::SigningKey,
         cert: DeviceCert,
         asked: AgentScope,
+        server_key: bool,
         now_ns: u64,
     ) -> Result<Self, Refused> {
         if cert.device_public_key != key.verifying_key().to_bytes() {
             return Err(Refused("the certificate is for another key".into()));
+        }
+        if cert.capabilities.server_key != server_key {
+            return Err(Refused(if server_key {
+                "the certificate is no server key".into()
+            } else {
+                "a server key is certified only for an API key".into()
+            }));
         }
         let certified = cert
             .capabilities
@@ -106,7 +119,8 @@ impl GrantKey {
             .capabilities
             .agent
             .ok_or_else(|| Refused("a kept certificate is no grant".into()))?;
-        Self::new(key, cert.clone(), scope, cert.issued_at_ns)
+        let server_key = cert.capabilities.server_key;
+        Self::new(key, cert.clone(), scope, server_key, cert.issued_at_ns)
     }
 
     /// The key's secret bytes, for the store only.

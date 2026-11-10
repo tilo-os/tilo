@@ -2790,16 +2790,7 @@ fn certify(options: &CertifyOptions<'_>) -> anyhow::Result<()> {
         .ok()
         .and_then(|bytes| bytes.try_into().ok())
         .context("--device must be a 32-byte hex public key")?;
-    let mut granted = DeviceCapabilities {
-        can_own_workspaces: false,
-        can_admit_devices: false,
-        can_act_as_host: false,
-        can_read_all_workspaces: false,
-        foreign: false,
-        can_administer_devices: false,
-        agent: None,
-        stand_in: false,
-    };
+    let mut granted = DeviceCapabilities::nothing();
     for capability in capabilities {
         match capability.as_str() {
             "own" => granted.can_own_workspaces = true,

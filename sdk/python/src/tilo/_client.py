@@ -50,13 +50,19 @@ class AccountKeys:
         """This key and the keys it minted."""
         return self.client.handoff(self.client._keys_list())
 
-    def create(self, name: str, workspace: Any = None) -> Any:
+    def create(
+        self, name: str, workspace: Any = None, expires_in: int | None = None
+    ) -> Any:
         """Ask the person for a new key.
 
-        Raises `AskPending` with the link they approve it at;
-        `await ask.wait()` answers the `Key` once they do.
+        A key reaching all their workspaces lasts until revoked unless
+        `expires_in` (seconds) says when it expires; one reaching a single
+        workspace lasts at most 89 days. Raises `AskPending` with the link
+        they approve it at; `await ask.wait()` answers the `Key` once they do.
         """
-        return self.client.handoff(self.client._key_create(name, workspace))
+        return self.client.handoff(
+            self.client._key_create(name, workspace, expires_in)
+        )
 
     def mint(
         self,
@@ -261,10 +267,14 @@ class AsyncTilo:
     async def _revoke(self, grant: str) -> Any:
         return await self._link().outcome(f"{ACCOUNT}/keys#revoke", {"grant": grant})
 
-    async def _key_create(self, name: str, workspace: Any) -> Key:
+    async def _key_create(
+        self, name: str, workspace: Any, expires_in: int | None
+    ) -> Key:
         arguments: dict[str, Any] = {"name": name}
         if workspace is not None:
             arguments["workspace"] = await self._workspace_id(workspace)
+        if expires_in is not None:
+            arguments["expires_in"] = expires_in
         try:
             await self._link().call("tilo_do", {
                 "path": f"{ACCOUNT}/keys#create",
@@ -275,16 +285,28 @@ class AsyncTilo:
             raise
         raise ProtocolError("the door made a key without asking the person")
 
-    def sign_in(self, name: str | None = None, workspace: str | None = None) -> Any:
-        """A key this machine does not have yet: show the link, wait for approval."""
-        return self.handoff(self._sign_in(name, workspace))
+    def sign_in(
+        self,
+        name: str | None = None,
+        workspace: str | None = None,
+        expires_in: int | None = None,
+    ) -> Any:
+        """A key this machine does not have yet: show the link, wait for approval.
 
-    async def _sign_in(self, name: str | None, workspace: str | None) -> SignIn:
+        It lasts until revoked unless `expires_in` (seconds) says otherwise.
+        """
+        return self.handoff(self._sign_in(name, workspace, expires_in))
+
+    async def _sign_in(
+        self, name: str | None, workspace: str | None, expires_in: int | None
+    ) -> SignIn:
         body: dict[str, Any] = {}
         if name is not None:
             body["name"] = name
         if workspace is not None:
             body["workspace"] = workspace
+        if expires_in is not None:
+            body["expires_in"] = expires_in
         response = await self.transport.request("POST", "/keys/new", body=body)
         answer = _json_of(response)
         if response.status_code >= 400:

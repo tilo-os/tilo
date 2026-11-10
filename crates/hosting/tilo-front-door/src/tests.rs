@@ -30,7 +30,9 @@ pub(crate) struct Asked {
     pub challenge: [u8; 32],
     pub key: [u8; 32],
     pub scope: AgentScope,
-    pub expires_ms: u64,
+    /// `None` for a server key that lasts until revoked.
+    pub expires_ms: Option<u64>,
+    pub server_key: bool,
     pub client: String,
 }
 
@@ -51,7 +53,15 @@ impl Asked {
                 .try_into()
                 .unwrap(),
             scope: AgentScope::parse(&asked["grant_scope"]).unwrap(),
-            expires_ms: asked["grant_expires"].parse().unwrap(),
+            expires_ms: match asked["grant_expires"].as_str() {
+                "never" => None,
+                ms => Some(ms.parse().unwrap()),
+            },
+            server_key: match asked.get("grant_kind").map(String::as_str) {
+                None => false,
+                Some("server_key") => true,
+                Some(other) => panic!("no grant kind {other}"),
+            },
             client: asked["client"].clone(),
         }
     }
@@ -79,17 +89,38 @@ impl Person {
         hex::encode(self.root.verifying_key().to_bytes())
     }
 
-    /// The person's Tilo certifying the grant's key as asked, but expiring
-    /// at `expires_ms`.
-    pub(crate) fn certify(&self, asked: &Asked, scope: AgentScope, expires_ms: u64) -> DeviceCert {
+    /// The person's Tilo certifying the grant's key as asked, but reaching
+    /// `scope` and expiring at `expires_ms`.
+    pub(crate) fn certify(
+        &self,
+        asked: &Asked,
+        scope: AgentScope,
+        expires_ms: Option<u64>,
+    ) -> DeviceCert {
+        let capabilities = if asked.server_key {
+            DeviceCapabilities::server_key_grant()
+        } else {
+            DeviceCapabilities::agent_grant(scope)
+        };
+        self.certify_as(asked, capabilities, expires_ms)
+    }
+
+    /// The person's Tilo certifying the grant's key with `capabilities`,
+    /// expiring at `expires_ms`.
+    pub(crate) fn certify_as(
+        &self,
+        asked: &Asked,
+        capabilities: DeviceCapabilities,
+        expires_ms: Option<u64>,
+    ) -> DeviceCert {
         let now = tilo_clock::unix_now_ms();
         let mut cert = DeviceCert {
             user_public_key: self.root.verifying_key().to_bytes(),
             device_public_key: asked.key,
             device_label: format!("{} via door.test", asked.client),
-            capabilities: DeviceCapabilities::agent_grant(scope),
+            capabilities,
             issued_at_ns: now.saturating_sub(1_000).saturating_mul(1_000_000),
-            expires_at_ns: Some(expires_ms.saturating_mul(1_000_000)),
+            expires_at_ns: expires_ms.map(|ms| ms.saturating_mul(1_000_000)),
             signature: [0; 64],
             issuer: None,
         };
@@ -540,6 +571,7 @@ async fn the_grant_is_exactly_what_the_door_asked_the_person_to_certify() {
                     key: [7; 32],
                     scope: asked.scope,
                     expires_ms: asked.expires_ms,
+                    server_key: asked.server_key,
                     client: asked.client.clone(),
                 };
                 alice.certify(&other, asked.scope, asked.expires_ms)
@@ -644,7 +676,7 @@ async fn a_grant_past_its_certificate_issues_no_token() {
     let proof =
         SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
     let soon = tilo_clock::unix_now_ms() + 1_500;
-    let cert = alice.certify(&asked, asked.scope, soon);
+    let cert = alice.certify(&asked, asked.scope, Some(soon));
     let code = returned(&answer(&door, &answer_form(&asked, &proof, &cert)).await)["code"].clone();
     let tokens = json_body(redeem(&door, &client, &code, VERIFIER).await).await;
     let access = tokens["access_token"].as_str().unwrap().to_owned();
@@ -675,6 +707,184 @@ async fn a_grant_past_its_certificate_issues_no_token() {
     )
     .await;
     assert_eq!(renewed["error"], "invalid_grant");
+}
+
+/// Ask the door for a key as a terminal does, with `body`: the poll secret,
+/// and what the door asked the person's Tilo.
+async fn ask_for_key(door: &Arc<Door>, body: &Value) -> (String, Asked) {
+    let reply = door
+        .dispatch(
+            &Method::POST,
+            keys::NEW_PATH,
+            "",
+            &hyper::HeaderMap::new(),
+            body.to_string().as_bytes(),
+        )
+        .await;
+    assert_eq!(reply.status(), StatusCode::CREATED);
+    let asked = json_body(reply).await;
+    let approve = asked["approve_url"].as_str().unwrap();
+    let reply = door
+        .dispatch(
+            &Method::GET,
+            approve.strip_prefix(ISSUER).unwrap(),
+            "",
+            &hyper::HeaderMap::new(),
+            b"",
+        )
+        .await;
+    (
+        asked["poll"].as_str().unwrap().to_owned(),
+        Asked::of(&location(&reply)),
+    )
+}
+
+/// What polling for a key answers: its status and body.
+async fn poll_key(door: &Arc<Door>, poll: &str) -> (StatusCode, Value) {
+    let reply = door
+        .dispatch(
+            &Method::POST,
+            keys::POLL_PATH,
+            "",
+            &hyper::HeaderMap::new(),
+            json!({ "poll": poll }).to_string().as_bytes(),
+        )
+        .await;
+    (reply.status(), json_body(reply).await)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
+    const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+    let alice = Person::new(1);
+    let door = door();
+    let now = tilo_clock::unix_now_ms();
+
+    // A key reaching all workspaces is a server key, asked for until revoked.
+    let (poll, asked) = ask_for_key(&door, &json!({"name": "Visa backend"})).await;
+    assert!(asked.server_key);
+    assert_eq!(
+        (asked.scope, asked.expires_ms),
+        (AgentScope::AllWorkspaces, None)
+    );
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let (status, polled) = poll_key(&door, &poll).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    assert!(polled["expires_at_ms"].is_null(), "{polled}");
+    let token = polled["key"].as_str().unwrap().to_owned();
+    assert!(token.starts_with("tilo_sk_"));
+    // Shown once: the poll answers it no more.
+    assert_eq!(poll_key(&door, &poll).await.0, StatusCode::NOT_FOUND);
+
+    // Still a key long past the bound of an agent's grant.
+    let later = now + 400 * DAY_MS;
+    let grant = door
+        .store
+        .access(&token, later)
+        .expect("a server key lasts");
+    assert_eq!(grant.last_used_ms, Some(later));
+    let device = hex::encode(alice.device.verifying_key().to_bytes());
+    let approved_on = format!("Laptop ({})", device.get(..8).unwrap());
+    assert_eq!(grant.created_by.as_deref(), Some(approved_on.as_str()));
+    let row = account::grant_row(&door.store.grants_of(&alice.id())[0]);
+    assert_eq!(row["last_used_at_ms"], later);
+    assert_eq!(row["created_by"], approved_on.as_str());
+    assert!(row["expires_at_ms"].is_null());
+    let page = pages::grants(&door.store.grants_of(&alice.id()), "csrf");
+    assert!(
+        page.contains(&format!("Last used {}", pages::date(later))),
+        "{page}"
+    );
+    assert!(page.contains("approved on Laptop"), "{page}");
+    assert!(page.contains("lasts until revoked"), "{page}");
+    assert!(page.contains(&format!("action=\"/grants/{}/revoke\"", grant.id)));
+    // Revoking it ends it.
+    assert!(door.revoke_grant(&alice.id(), &grant.id).await.unwrap());
+    assert!(door.store.access(&token, now).is_none());
+
+    // The person may choose when it expires.
+    let (poll, asked) =
+        ask_for_key(&door, &json!({"name": "Nightly job", "expires_in": 3_600})).await;
+    assert!(asked.server_key);
+    let expires = asked.expires_ms.unwrap();
+    assert!(
+        (now + 3_600_000..now + 3_700_000).contains(&expires),
+        "{expires}"
+    );
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let token = poll_key(&door, &poll).await.1["key"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(door.store.access(&token, expires - 1).is_some());
+    assert!(door.store.access(&token, expires).is_none());
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn only_a_key_reaching_all_workspaces_lasts_and_only_the_key_flow_makes_one() {
+    const DAY_MS: u64 = 24 * 60 * 60 * 1000;
+    let alice = Person::new(1);
+    let door = door();
+    let now = tilo_clock::unix_now_ms();
+
+    // A key for one workspace is no server key and stays bounded.
+    let studio = "6a1f8f2e-4c55-4b0e-9f43-0d6c1b7a9e21";
+    let (_, asked) = ask_for_key(&door, &json!({"name": "Jane", "workspace": studio})).await;
+    assert!(!asked.server_key);
+    assert!(asked.expires_ms.unwrap() <= now + 90 * DAY_MS);
+    for body in [
+        json!({"name": "Jane", "workspace": studio, "expires_in": 100 * 24 * 60 * 60}),
+        json!({"name": "Visa backend", "expires_in": 0}),
+        json!({"name": "Visa backend", "expires_in": "soon"}),
+    ] {
+        let reply = door
+            .dispatch(
+                &Method::POST,
+                keys::NEW_PATH,
+                "",
+                &hyper::HeaderMap::new(),
+                body.to_string().as_bytes(),
+            )
+            .await;
+        assert_eq!(reply.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // A server key is what the key flow asked for, and nothing else is.
+    let (_, asked) = ask_for_key(&door, &json!({"name": "Visa backend"})).await;
+    let plain = alice.certify_as(
+        &asked,
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+        Some(now + DAY_MS),
+    );
+    let proof =
+        SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
+    let reply = answer(&door, &answer_form(&asked, &proof, &plain)).await;
+    assert_eq!(reply.status(), StatusCode::FORBIDDEN);
+    let client = register(&door).await;
+    let asked = authorize(&door, &client, ISSUER).await;
+    assert!(!asked.server_key);
+    let lasting = alice.certify_as(&asked, DeviceCapabilities::server_key_grant(), None);
+    let proof =
+        SignInProof::sign(alice.cert.clone(), &alice.device, ISSUER, asked.challenge).unwrap();
+    let reply = answer(&door, &answer_form(&asked, &proof, &lasting)).await;
+    assert_eq!(reply.status(), StatusCode::FORBIDDEN);
+}
+
+#[test]
+fn a_date_reads_as_its_utc_day_and_minute() {
+    assert_eq!(pages::date(0), "1970-01-01 00:00 UTC");
+    assert_eq!(pages::date(1_762_696_980_000), "2025-11-09 14:03 UTC");
+    assert_eq!(pages::date(951_782_400_000), "2000-02-29 00:00 UTC");
 }
 
 #[test]

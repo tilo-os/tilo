@@ -20,10 +20,10 @@ use tilo_relay_protocol::certify::{
     PendingCertification,
 };
 use tilo_user_identity::{
-    AgentScope, CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest,
-    DeviceCapabilities, DeviceCert, MAX_AGENT_GRANT_LIFETIME_NS, RevocationEntry, RevocationList,
-    RevocationReason, STAND_IN_LIFETIME_NS, certification::MAX_CERTIFICATION_LABEL_BYTES,
-    verify_device_cert_at, verify_issued_cert,
+    CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
+    DeviceCert, MAX_AGENT_GRANT_LIFETIME_NS, RevocationEntry, RevocationList, RevocationReason,
+    STAND_IN_LIFETIME_NS, certification::MAX_CERTIFICATION_LABEL_BYTES, verify_device_cert_at,
+    verify_issued_cert,
 };
 
 use crate::session::Host;
@@ -288,24 +288,26 @@ pub async fn issue_device_cert(
 }
 
 /// Have `root` (the user root the page holds) certify `device_public_key`
-/// as the key of an agent's grant reaching `scope`, expiring at
-/// `expires_at_ns`: what a service that runs an agent for the person keeps,
-/// so the agent acts for them in those workspaces and nowhere else, and not
-/// after that. A grant is no device of the person: it admits no devices and
-/// has no life of its own to extend. Never certifies the root itself.
+/// as the key of an agent's grant with `capabilities` (its scope, and
+/// whether it is a server key), expiring at `expires_at_ns`: what a service
+/// that runs an agent for the person keeps, so the agent acts for them in
+/// those workspaces and nowhere else, and not after that. Only a server key
+/// may last until it is revoked (`None`). A grant is no device of the
+/// person: it admits no devices and has no life of its own to extend. Never
+/// certifies the root itself.
 ///
 /// # Errors
 ///
-/// Returns [`CertifyError::Request`] for the root's own key, an expiry that
-/// is not in the future or is beyond
-/// [`MAX_AGENT_GRANT_LIFETIME_NS`], a label a certificate does not carry, or
-/// when signing fails or does not verify.
+/// Returns [`CertifyError::Request`] for the root's own key, capabilities
+/// that are no grant's, an expiry that is not in the future or (but for a
+/// server key) is missing or beyond [`MAX_AGENT_GRANT_LIFETIME_NS`], a label
+/// a certificate does not carry, or when signing fails or does not verify.
 pub async fn issue_agent_grant(
     root: &dyn DeviceSigner,
     device_public_key: [u8; 32],
     label: &str,
-    scope: AgentScope,
-    expires_at_ns: u64,
+    capabilities: DeviceCapabilities,
+    expires_at_ns: Option<u64>,
 ) -> Result<DeviceCert, CertifyError> {
     let request = |error: &dyn std::fmt::Display| CertifyError::Request(error.to_string());
     let user_public_key = root.device_public_key();
@@ -324,18 +326,25 @@ pub async fn issue_agent_grant(
         ));
     }
     let now = tilo_clock::unix_now_ns();
-    if expires_at_ns <= now || expires_at_ns.saturating_sub(now) > MAX_AGENT_GRANT_LIFETIME_NS {
+    if capabilities.agent.is_none() {
+        return Err(CertifyError::Request("a grant reaches workspaces".into()));
+    }
+    let bounded = expires_at_ns.is_some_and(|expiry| {
+        expiry > now && expiry.saturating_sub(now) <= MAX_AGENT_GRANT_LIFETIME_NS
+    });
+    let chosen = capabilities.server_key && expires_at_ns.is_none_or(|expiry| expiry > now);
+    if !(bounded || chosen) {
         return Err(CertifyError::Request(
-            "a grant expires after now, and within 90 days".into(),
+            "a grant expires after now, and within 90 days unless it is a server key".into(),
         ));
     }
     let mut cert = DeviceCert {
         user_public_key,
         device_public_key,
         device_label: label.to_owned(),
-        capabilities: DeviceCapabilities::agent_grant(scope),
+        capabilities,
         issued_at_ns: now,
-        expires_at_ns: Some(expires_at_ns),
+        expires_at_ns,
         signature: [0; 64],
         issuer: None,
     };
@@ -683,7 +692,7 @@ fn check_issued(
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use tilo_user_identity::verify_device_cert;
+    use tilo_user_identity::{AgentScope, verify_device_cert};
 
     #[tokio::test]
     async fn a_page_root_issues_browser_node_and_session_certificates_but_never_its_own() {
@@ -740,8 +749,8 @@ mod tests {
             &root,
             agent,
             "Claude Code via door.example",
-            scope,
-            now + week,
+            DeviceCapabilities::agent_grant(scope),
+            Some(now + week),
         )
         .await
         .unwrap();
@@ -753,20 +762,26 @@ mod tests {
         assert_eq!(grant.device_label, "Claude Code via door.example");
         assert!(verify_device_cert_at(&grant, now + week).is_err());
 
-        let all = AgentScope::AllWorkspaces;
+        let all = DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces);
+        for expiry in [
+            Some(now + MAX_AGENT_GRANT_LIFETIME_NS + 60_000_000_000),
+            Some(now - 1),
+            None,
+        ] {
+            assert!(matches!(
+                issue_agent_grant(&root, agent, "Claude Code", all.clone(), expiry).await,
+                Err(CertifyError::Request(_))
+            ));
+        }
         assert!(matches!(
             issue_agent_grant(
                 &root,
                 agent,
                 "Claude Code",
-                all,
-                now + MAX_AGENT_GRANT_LIFETIME_NS + 60_000_000_000
+                DeviceCapabilities::member(),
+                Some(now + week)
             )
             .await,
-            Err(CertifyError::Request(_))
-        ));
-        assert!(matches!(
-            issue_agent_grant(&root, agent, "Claude Code", all, now - 1).await,
             Err(CertifyError::Request(_))
         ));
         assert!(matches!(
@@ -774,18 +789,50 @@ mod tests {
                 &root,
                 root.verifying_key().to_bytes(),
                 "Claude Code",
-                all,
-                now + week
+                all.clone(),
+                Some(now + week)
             )
             .await,
             Err(CertifyError::Request(_))
         ));
         assert!(matches!(
-            issue_agent_grant(&root, agent, " ", all, now + week).await,
+            issue_agent_grant(&root, agent, " ", all.clone(), Some(now + week)).await,
             Err(CertifyError::Request(_))
         ));
         assert!(matches!(
-            issue_agent_grant(&root, agent, &"x".repeat(81), all, now + week).await,
+            issue_agent_grant(&root, agent, &"x".repeat(81), all, Some(now + week)).await,
+            Err(CertifyError::Request(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn the_root_certifies_a_server_key_that_lasts_until_revoked_or_its_chosen_expiry() {
+        let root = SigningKey::from_bytes(&[3; 32]);
+        let key = SigningKey::from_bytes(&[4; 32]).verifying_key().to_bytes();
+        let now = tilo_clock::unix_now_ns();
+        let year = 365 * 24 * 60 * 60 * 1_000_000_000;
+        for expiry in [None, Some(now + year)] {
+            let cert = issue_agent_grant(
+                &root,
+                key,
+                "Visa backend",
+                DeviceCapabilities::server_key_grant(),
+                expiry,
+            )
+            .await
+            .unwrap();
+            assert_eq!(cert.expires_at_ns, expiry);
+            assert_eq!(verify_device_cert_at(&cert, now + year - 1), Ok(()));
+        }
+        assert!(matches!(
+            issue_agent_grant(
+                &root,
+                key,
+                "Visa backend",
+                DeviceCapabilities::server_key_grant(),
+                Some(now - 1)
+            )
+            .await,
             Err(CertifyError::Request(_))
         ));
     }
