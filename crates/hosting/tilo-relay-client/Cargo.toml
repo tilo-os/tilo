@@ -32,12 +32,9 @@ uuid.workspace = true
 postcard = { workspace = true, features = ["use-std"] }
 thiserror.workspace = true
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
-# Both carriers need the browser-safe clock: HTTPS remains available when
-# the optional iroh dialers are disabled, so this dependency is unconditional.
+# The browser-safe clock: the HTTPS calls a device makes before it holds a
+# session sign with it too, with or without the iroh dialers.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
-# The HTTPS link's send and poll pumps, on tokio natively and on the page's
-# event loop in a browser.
-n0-future = "0.3"
 hex.workspace = true
 
 [features]

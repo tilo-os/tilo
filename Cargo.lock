@@ -20781,7 +20781,6 @@ dependencies = [
  "hex",
  "iroh",
  "iroh-base",
- "n0-future",
  "postcard",
  "rand 0.10.3",
  "serde",

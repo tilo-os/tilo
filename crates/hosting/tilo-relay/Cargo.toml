@@ -154,11 +154,11 @@ tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rcgen = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
-# The pages' live plane: the WebTransport listener beside the HTTPS one, and
-# the relay that copies its sealed bytes (admission preface, moq-lite, and the
-# same relay the native carrier reaches over iroh).
+# The workspaces' live plane: the relay that copies its sealed bytes
+# (admission preface and moq-lite) for every device, a page included, which
+# reaches it over iroh.
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], optional = true }
-# SHA-256 of the live listener's certificate, which a page pins.
+# SHA-256 of the development certificate, which a page pins.
 sha2 = { workspace = true, optional = true }
 # The fetch proxy a page's apps reach the web through.
 tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }

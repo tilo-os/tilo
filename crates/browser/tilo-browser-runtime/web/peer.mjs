@@ -1,13 +1,16 @@
 /**
  * `connectPeer` → `CertifiedPeer`: the page as a certified Tilo peer of the
- * user's host, reached at its HTTPS origin (PR 541's carriers, served by the
- * host itself):
+ * user's host. Before it holds a certificate the page asks the host's HTTPS
+ * origin only what it cannot ask a session: the host's certificate and
+ * address, joining a workspace, and a member's approval of their own
+ * device. Everything after goes over one iroh session to the host, through
+ * the packet relay the host names (a page holds no UDP socket), the same
+ * session a native device holds (`tilo-session-host` in wasm):
  *
- * - durable documents over HTTPS: signed commits from a persisted outbox,
- *   acknowledged in host order, received by long-poll from a host cursor,
- *   replayed after every reconnect (`tilo-session-host` in wasm);
- * - device certification over HTTPS: the page shows the pairing code while
- *   a root-holding device of the user approves;
+ * - durable documents: signed commits from a persisted outbox, acknowledged
+ *   in host order, replayed after every reconnect;
+ * - device certification: the page shows the pairing code while a
+ *   root-holding device of the user approves;
  * - the live plane (`peer.live`): this page as one member device of the
  *   workspace beside every other, its presence, pointers, previews and shell
  *   on the same session link they use. Never authority;
