@@ -39,13 +39,16 @@
 //! ```text
 //! rcargo build --release -p tilo-relay --features agents --example move_relay_content \
 //!     --fetch release/examples/move_relay_content
-//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --dry-run
-//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root
+//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --dry-run
+//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge
 //! # once the upgraded host serves its workspaces' files and pictures:
-//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --remove-sources
+//! move_relay_content --state /srv/lounge --root-file /etc/lounge/root --persistent lounge --remove-sources
 //! ```
 //!
-//! `--state` and `--root-file` are what `tilo-relay room` runs with. Running it
+//! `--state`, `--root-file` and `--persistent` are what `tilo-relay room` runs
+//! with: the host serves under the certificate it signs from them at every
+//! start, and the tool opens the workspaces under that same certificate, so
+//! it acts as the host itself and changes nothing in their governance. Running it
 //! again is safe: what is in place and intact is left alone. It exits
 //! non-zero when an item did not match its name or could not be moved, or a
 //! workspace's records did not read whole.
@@ -67,6 +70,8 @@ const UNASSIGNED: &str = "unassigned";
 struct Args {
     state: PathBuf,
     root_file: PathBuf,
+    /// The workspace's name, as `tilo-relay room --persistent` names it.
+    persistent: String,
     dry_run: bool,
     remove_sources: bool,
 }
@@ -74,6 +79,7 @@ struct Args {
 fn args() -> anyhow::Result<Args> {
     let mut state = None;
     let mut root_file = None;
+    let mut persistent = None;
     let mut dry_run = false;
     let mut remove_sources = false;
     let mut given = std::env::args().skip(1);
@@ -81,10 +87,11 @@ fn args() -> anyhow::Result<Args> {
         match arg.as_str() {
             "--state" => state = given.next().map(PathBuf::from),
             "--root-file" => root_file = given.next().map(PathBuf::from),
+            "--persistent" => persistent = given.next(),
             "--dry-run" => dry_run = true,
             "--remove-sources" => remove_sources = true,
             other => anyhow::bail!(
-                "unknown argument {other:?}: --state DIR --root-file FILE [--dry-run] [--remove-sources]"
+                "unknown argument {other:?}: --state DIR --root-file FILE --persistent NAME [--dry-run] [--remove-sources]"
             ),
         }
     }
@@ -92,6 +99,8 @@ fn args() -> anyhow::Result<Args> {
         state: state.context("--state: the directory `tilo-relay room --state` names")?,
         root_file: root_file
             .context("--root-file: the file `tilo-relay room --root-file` names")?,
+        persistent: persistent
+            .context("--persistent: the name `tilo-relay room --persistent` gives the workspace")?,
         dry_run,
         remove_sources,
     })
@@ -192,7 +201,7 @@ async fn named_by_workspace(
 ) -> anyhow::Result<BTreeMap<String, Option<BTreeSet<String>>>> {
     let root = read_root(&args.root_file)?;
     let host = read_host_key(&args.state.join("host-device.key"))?;
-    let cert = host_cert(&root, &host)?;
+    let cert = host_cert(&root, &host, &args.persistent)?;
     let scratch = tempfile::tempdir()?;
     // Bound to this machine alone, and found by nobody: no member reaches
     // the host while its content moves.
@@ -275,13 +284,17 @@ fn read_host_key(path: &Path) -> anyhow::Result<SigningKey> {
     Ok(SigningKey::from_bytes(&seed))
 }
 
-/// The certificate `tilo-relay room` serves with: its workspaces' records
-/// name it, and the host is the device they were made with.
-fn host_cert(root: &SigningKey, host: &SigningKey) -> anyhow::Result<DeviceCert> {
+/// The certificate `tilo-relay room --persistent <name>` serves with: it is
+/// kept nowhere, but signed afresh at every start from the workspace root,
+/// the host's key and the workspace's name, exactly so. The host's
+/// workspaces name it among their hosts; a certificate signed any other way
+/// is another device to them, and opening under it would change their
+/// governance.
+fn host_cert(root: &SigningKey, host: &SigningKey, name: &str) -> anyhow::Result<DeviceCert> {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: host.verifying_key().to_bytes(),
-        device_label: "workspace host".into(),
+        device_label: format!("{name} workspace host"),
         capabilities: tilo_user_identity::cloud_enrollment::host_capabilities(),
         issued_at_ns: 1,
         expires_at_ns: None,
@@ -524,7 +537,8 @@ mod tests {
                     tilo_relay::daemon::RelayIdentity {
                         user_public_key: root.verifying_key().to_bytes(),
                         device_signing_key: host.clone(),
-                        device_cert: host_cert(&root, &host).unwrap(),
+                        // As `tilo-relay room --persistent lounge` signs it.
+                        device_cert: host_cert(&root, &host, "lounge").unwrap(),
                         revocations: RevocationList::new(),
                     },
                 )
@@ -554,6 +568,7 @@ mod tests {
         let args = Args {
             state: state.path().to_path_buf(),
             root_file,
+            persistent: "lounge".into(),
             dry_run: false,
             remove_sources: false,
         };
