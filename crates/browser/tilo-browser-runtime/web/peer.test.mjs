@@ -1,7 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {readFileSync} from 'node:fs';
-import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, hostRefusal, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
+import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
@@ -1069,16 +1068,4 @@ test('the peer starts from the certificate text, keeping nanosecond timestamps e
   assert.ok(started.includes('1791962530023125779') && started.includes('1792048930023125779'));
   assert.equal(JSON.parse(started).displayName, 'Ada');
   assert.equal(withStartFields(certified, {displayName: undefined}), certified);
-});
-
-test('a host\'s refusal reads as it travels: each code and words as the host\'s own type says them, its own reason bare', () => {
-  // Each refusal as `ActionHostError` serializes it (tilo-actions checks this file against the type).
-  const refusals = JSON.parse(readFileSync(new URL('../../../collab/actions/tests/host_refusals.json', import.meta.url), 'utf8'));
-  assert.ok(refusals.some(({wire}) => wire === 'UnknownAction'));
-  for (const {wire, code, display} of refusals) {
-    const reason = wire?.Refused?.reason;
-    assert.deepEqual(hostRefusal(wire), [code, reason ?? display], JSON.stringify(wire));
-  }
-  // A refusal the page makes itself keeps its code and words.
-  assert.deepEqual(hostRefusal({code: 'unavailable', reason: 'the host did not answer'}), ['unavailable', 'the host did not answer']);
 });

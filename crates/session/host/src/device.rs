@@ -562,6 +562,26 @@ mod tests {
     }
 
     #[test]
+    fn every_refusal_reads_with_the_code_and_words_it_travels_with() {
+        // Each refusal as it travels, with its code and words (tilo-actions holds the file to the
+        // type): what the CLI, the front door and the page read off it.
+        let file: Vec<Value> = serde_json::from_str(include_str!(
+            "../../../collab/actions/tests/host_refusals.json"
+        ))
+        .unwrap();
+        for entry in file {
+            let wire: ActionHostError = serde_json::from_value(entry["wire"].clone()).unwrap();
+            let read = HostRefusal::of(&wire);
+            assert_eq!(read.code, entry["code"], "{entry}");
+            match (&wire, &read.refusal) {
+                (_, Some(typed)) => assert_eq!(read.message, typed.message),
+                (ActionHostError::Refused { reason }, None) => assert_eq!(&read.message, reason),
+                (_, None) => assert_eq!(read.message, entry["display"], "{entry}"),
+            }
+        }
+    }
+
+    #[test]
     fn a_refusal_in_words_alone_keeps_them_and_every_other_answer_its_code() {
         let refused = HostRefusal::of(&ActionHostError::Refused {
             reason: "that workspace is not one of your own".into(),

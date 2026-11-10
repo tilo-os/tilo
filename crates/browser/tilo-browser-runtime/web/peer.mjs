@@ -435,32 +435,6 @@ export async function withCustody(custody, connecting, signal) {
   return peer;
 }
 
-/** What `ActionHostError::StaleRevision` travels as (`STALE_REVISION_REASON`). */
-const STALE_REVISION = 'the target changed since that revision; list it again';
-
-/** The code and words of a host's refusal, as it travels: an
- * `ActionHostError` variant, `"UnknownAction"` or `{Refused: {reason}}`
- * (codes and words as `ActionHostError` names and says them; tilo-actions'
- * `tests/host_refusals.json` holds each). A refusal of the host's own reads
- * as its reason alone, which may be its typed refusal's text. */
-export function hostRefusal(error) {
-  const [variant, body] = typeof error === 'string' ? [error, null] : Object.entries(error ?? {})[0] ?? [];
-  const reason = typeof body?.reason === 'string' ? body.reason : '';
-  switch (variant) {
-    case 'Unavailable': return ['remote_actions_unavailable', `remote actions are unavailable: ${reason}`];
-    case 'UnknownAction': return ['unknown_action', 'no such action is offered'];
-    case 'NotPermitted': return ['not_permitted', 'the caller may not invoke this action'];
-    case 'ConfirmationRequired': return ['action_confirmation_required', 'the action requires confirmation'];
-    // A stale revision travels as the invalid request older peers decode.
-    case 'InvalidRequest': return [reason === STALE_REVISION ? 'stale_revision' : 'invalid_arguments', `invalid request: ${reason}`];
-    case 'UnknownInvocation': return ['unknown_invocation', 'no such invocation'];
-    case 'InvocationConflict': return ['invocation_conflict', 'the invocation id was already used for a different request'];
-    case 'NotCancellable': return ['not_cancellable', `the invocation cannot be cancelled: ${reason}`];
-    case 'Refused': return ['refused', reason || 'the workspace\'s host refused the action'];
-    default: return [error?.code ?? 'refused', error?.reason ?? 'the workspace\'s host refused the action'];
-  }
-}
-
 async function connect({
   origin, userPublicKey, label = 'Browser', workspace, custody, store, runtime, identity, deviceCertificate,
   profile, device, displayName = '',
@@ -785,9 +759,12 @@ async function connect({
     class ActionsError extends Error {
       constructor(code, message) { super(message); this.name = 'ActionsError'; this.code = code; }
     }
+    /** The host's refusal `error`, as it travels, read as every caller reads it
+     * (`hostRefusal` in wasm): its code, its words, and its typed refusal where
+     * it gave one. */
     const failure = error => {
-      const [code, message] = hostRefusal(error);
-      return new ActionsError(code, message);
+      const refused = JSON.parse(runtime.hostRefusal(JSON.stringify(error)));
+      return Object.assign(new ActionsError(refused.code, refused.message), {refusal: refused.refusal ?? null});
     };
 
     /** Ask the workspace's host `message` (a `RemoteActionMessage`) and answer what it said. */
@@ -877,7 +854,8 @@ async function connect({
       const answer = await ask({CatalogueRequest: {correlation, query: {max_results: 200, ...query}}});
       const result = answer.CatalogueResponse?.result;
       if (result?.Ok) return result.Ok;
-      throw failure(result?.Err ?? {code: 'unavailable', reason: 'the host did not answer'});
+      if (!result?.Err) throw new ActionsError('unavailable', 'the host did not answer');
+      throw failure(result.Err);
     }
 
     /** Run one action; `target` is `{provider, address: {resource, action}}` from a catalogue row. */

@@ -64,6 +64,20 @@ pub(crate) fn refusal_error(refusal: &HostRefusal) -> JsValue {
     error.into()
 }
 
+/// A refusal of a workspace's host, `wire` as it travels (an `ActionHostError`'s JSON), read as
+/// every caller reads it ([`HostRefusal::of`]): `{code, message, refusal}` JSON, `refusal` the
+/// host's typed refusal where it gave one.
+///
+/// # Errors
+///
+/// Throws for text that is no refusal of a host's.
+#[wasm_bindgen(js_name = hostRefusal)]
+pub fn host_refusal(wire: &str) -> Result<String, JsError> {
+    let error: tilo_actions::remote::ActionHostError =
+        serde_json::from_str(wire).map_err(js_error)?;
+    serde_json::to_string(&HostRefusal::of(&error)).map_err(js_error)
+}
+
 /// The page store without a surface; a desktop surface; its asset.
 fn failure_subject(surface: Option<String>, asset: Option<String>) -> FailureSubject {
     match (surface, asset) {
