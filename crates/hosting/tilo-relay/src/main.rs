@@ -87,8 +87,11 @@ enum Cmd {
 /// workspace service reads, which dropped every log line, so a hosted relay's
 /// refusals and errors were never seen anywhere.
 fn install_logging() {
+    // The channel service says at info what an operator acts on once: state
+    // an earlier build saved upgraded in place, or a copied machine joining
+    // as itself.
     let filter = EnvFilter::try_from_env("TILO_RELAY_LOG")
-        .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,warn"));
+        .unwrap_or_else(|_| EnvFilter::new("tilo_relay=info,tilo_channels=info,warn"));
     fmt()
         .with_env_filter(filter)
         .with_target(true)
