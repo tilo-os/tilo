@@ -119,6 +119,7 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             catalogue: options.catalogue,
             feedback_reviewer: options.feedback_reviewer,
             shell: options.shell,
+            browsers: None,
         },
     )
     .await
