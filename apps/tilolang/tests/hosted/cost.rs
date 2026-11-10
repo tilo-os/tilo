@@ -2344,3 +2344,119 @@ fn choosing_a_note_in_the_tree_opens_it_without_composing_the_window() {
         );
     }
 }
+
+/// The nodes another document may invalidate: the editor's own stack, its own node and the
+/// nodes that hold it up to the window's column, never the window's composition.
+const EDITOR_SUBTREE: usize = 12;
+
+/// Reading one note after another: choosing another note in the tree shows that note where the
+/// last one stood — the column's editor lays its own blocks out again — and nothing above the
+/// editor is replaced, so no frame composes the window's layout tree for the note a person
+/// turned to. Notes are read one after another all day, and the window around them stands.
+#[test]
+fn choosing_another_note_in_the_tree_keeps_the_windows_composition() {
+    let _motion = ui::motion::testing::settled();
+    let mut session = Session::rich();
+    let plus = session.new_note_button();
+    for round in 0..2 {
+        session.window.click_at(plus.0, plus.1);
+        session.settle();
+        let title = session.field("Untitled");
+        session.window.click_at(title.0, title.1);
+        session.window.type_text(&format!("Note {round}"));
+        session.settle();
+        // The notes read differently: it is their bodies that another note replaces.
+        let body = session.field("Write something");
+        session.window.click_at(body.0, body.1);
+        session
+            .window
+            .type_text(&format!("What note {round} is about."));
+        session.settle();
+    }
+    let titles = session.titles();
+    assert_eq!(titles.len(), 2, "the tree shows the notes made: {titles:?}");
+    // The first press chooses the note the window then reads; what is measured is the next
+    // choice, the one a person makes over and over.
+    let (x, y) = shown_at(&mut session, &titles[0]);
+    session.window.click_at(x, y);
+    session.settle();
+    let before = Lay::of(&mut session);
+    let drawn = session.window.harness().drawn_commands();
+    let (x, y) = shown_at(&mut session, &titles[1]);
+    session.window.click_at(x, y);
+    let rest = at_rest(&mut session, drawn);
+    let after = Lay::of(&mut session);
+    assert_eq!(
+        after.rebuilt,
+        before.rebuilt,
+        "choosing {} composed the window's layout tree {} time(s) in the {} rounds that showed \
+         it: the note is read in the editor that stands",
+        titles[1],
+        after.rebuilt - before.rebuilt,
+        rest.rounds
+    );
+    assert!(
+        rest.marked <= EDITOR_SUBTREE,
+        "choosing {} asked the layout to measure {} of the window's {} nodes: the editor's own \
+         stack and what holds it",
+        titles[1],
+        rest.marked,
+        after.nodes
+    );
+    assert_eq!(
+        rest.full_unasked, 0,
+        "a frame placed the whole window with nothing composed or measured"
+    );
+}
+
+/// The same where the document is a task's: opening another task in the list reads its notes
+/// in the editor that stands, so the page a person turns to costs its own blocks and never the
+/// window's composition.
+#[test]
+fn choosing_another_task_keeps_the_windows_composition() {
+    let _motion = ui::motion::testing::settled();
+    let chunks = seeded_tasks(SMALL);
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = on_the_frame_clock(Session::tasks_over_in(&route, chunks, None));
+    session.settle();
+    let titles = session.titles();
+    assert!(titles.len() > 1, "the list shows rows: {titles:?}");
+    let (x, y) = shown_at(&mut session, &titles[0]);
+    session.window.click_at(x, y);
+    session.settle();
+    let first = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person opened shows the page of {}", titles[0]));
+    assert!(!first.is_empty(), "the page of {} stands", titles[0]);
+    let before = Lay::of(&mut session);
+    let drawn = session.window.harness().drawn_commands();
+    let (x, y) = shown_at(&mut session, &titles[1]);
+    session.window.click_at(x, y);
+    let rest = at_rest(&mut session, drawn);
+    let after = Lay::of(&mut session);
+    let second = opened_title_field(&mut session)
+        .unwrap_or_else(|| panic!("the row a person chose shows the page of {}", titles[1]));
+    assert_ne!(
+        second, first,
+        "the window shows the page of the task the person chose"
+    );
+    assert_eq!(
+        after.rebuilt,
+        before.rebuilt,
+        "choosing {} composed the window's layout tree {} time(s) in the {} rounds that showed \
+         it: its notes are read in the editor that stands",
+        titles[1],
+        after.rebuilt - before.rebuilt,
+        rest.rounds
+    );
+    assert!(
+        rest.marked <= after.nodes as usize,
+        "choosing {} asked the layout to measure {} of the window's {} nodes",
+        titles[1],
+        rest.marked,
+        after.nodes
+    );
+    assert_eq!(
+        rest.full_unasked, 0,
+        "a frame placed the whole window with nothing composed or measured"
+    );
+}

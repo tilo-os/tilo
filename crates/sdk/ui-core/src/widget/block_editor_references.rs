@@ -220,7 +220,9 @@ impl BlockEditor {
             Some(InlineView::Person { name, .. }) if !name.is_empty() => name.clone(),
             Some(InlineView::Unreadable) => crate::widget::rich_doc::unreadable_phrase(),
             // A record with no reading here, or one of another app's, reads as it was written.
-            Some(InlineView::Elsewhere | InlineView::Resource { .. } | InlineView::Person { .. })
+            Some(
+                InlineView::Elsewhere | InlineView::Resource { .. } | InlineView::Person { .. },
+            )
             | None => written.to_owned(),
         }
     }

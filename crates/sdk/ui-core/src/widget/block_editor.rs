@@ -11,7 +11,6 @@ use tilo_sort::CompactSort as _;
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
-use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
@@ -33,7 +32,7 @@ use crate::widget::link_popover::{LinkPopover, PageEntry};
 use crate::widget::marks::{Mark, MarkSpan, PageId};
 use crate::widget::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::widget::slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
-use crate::widget::{EventCtx, Widget};
+use crate::widget::{EventCtx, Remount, StructureChange, Widget};
 
 /// Deeper nesting runs off the panel's right edge.
 pub const MAX_LIST_INDENT: u8 = 5;
@@ -516,7 +515,11 @@ struct ImageAttachment {
     command: std::rc::Rc<std::cell::Cell<Option<bool>>>,
     edit: Button,
     done: Button,
+    /// The node the control it showed was laid out in, and whether that was the
+    /// editing one: a picture that starts being re-sourced shows its other
+    /// control, which is laid out in its own node.
     node: Option<NodeId>,
+    node_editing: bool,
 }
 
 impl ImageAttachment {
@@ -528,6 +531,7 @@ impl ImageAttachment {
             source: source.into(),
             editing: false,
             node: None,
+            node_editing: false,
             edit: Button::new(&format!("notes.image-edit:{id}"), "notes-image-edit")
                 .on_view(move || edit_command.set(Some(true))),
             done: Button::new(&format!("notes.image-done:{id}"), "notes-image-done")
@@ -545,6 +549,18 @@ impl ImageAttachment {
         } else {
             &mut self.edit
         }
+    }
+
+    /// The node the picture's control was laid out in, while that is the
+    /// control the attachment shows now: a picture being re-sourced shows the
+    /// other one, whose node is the attachment's to let go of.
+    fn laid_out_node(&self) -> Option<NodeId> {
+        self.node.filter(|_| self.node_editing == self.editing)
+    }
+
+    /// The node the attachment placed, whichever of its controls it was.
+    fn placed_node(&self) -> Option<NodeId> {
+        self.node
     }
 }
 
@@ -592,6 +608,9 @@ pub struct BlockEditor {
     compact_paragraph_spacing: bool,
     /// The measured leaf that stands for the block stack in the layout tree.
     content_node: Option<NodeId>,
+    /// The editor's own node in the layout tree, where its change is carried
+    /// out in place ([`crate::widget::Widget::remount_children`]).
+    layout_node: Option<NodeId>,
     stack_leaf: Box<BlockStackLeaf>,
     /// Per-block margins and height bounds, resolved when the tree is built.
     stack_boxes: Vec<StackBox>,
@@ -924,6 +943,7 @@ impl BlockEditor {
             compact_paragraph_spacing: false,
             marker_x_height: None,
             content_node: None,
+            layout_node: None,
             stack_leaf: Box::new(BlockStackLeaf {
                 editor: std::ptr::null_mut(),
             }),
@@ -1516,8 +1536,10 @@ impl BlockEditor {
         self.formula_chrome.clear();
         self.visual_formulas.clear();
         self.visual_formula_focus = None;
-        self.structure_dirty = true;
-        self.dirty = true;
+        // Another document is another block stack, not another editor: the
+        // stack is laid out again in place, and the pictures' controls the
+        // document keeps are its own children.
+        self.restack();
     }
 
     /// Show the blocks without taking input or focus: a read-only view of
@@ -4471,7 +4493,7 @@ impl BlockEditor {
                     || hovered
                     || image.button().is_focused()
                     || (self.is_focused && self.focused == Some(index));
-                if visible && let Some(node) = image.node {
+                if visible && let Some(node) = image.laid_out_node() {
                     image
                         .button_mut()
                         .handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -4618,7 +4640,7 @@ impl BlockEditor {
     }
 
     fn refresh_image_attachments(&mut self) {
-        let previous_count = self.image_attachments.len();
+        let had: Vec<String> = self.image_attachments.keys().cloned().collect();
         let commands = self
             .image_attachments
             .iter()
@@ -4645,7 +4667,13 @@ impl BlockEditor {
                 attachment.source = block.text().into();
             }
         }
-        if self.image_attachments.len() != previous_count {
+        // A picture that came or went changes the controls under the editor: one
+        // it keeps is no change, whatever a new document kept the same count.
+        if self.image_attachments.len() != had.len()
+            || had
+                .iter()
+                .any(|id| !self.image_attachments.contains_key(id))
+        {
             self.structure_dirty = true;
             self.dirty = true;
         }
@@ -9026,46 +9054,12 @@ impl Widget for BlockEditor {
                 style.position = taffy::Position::Absolute;
                 let _ = taffy.set_style(button_node, style);
                 image.node = Some(button_node);
+                image.node_editing = image.editing;
                 layout_children.push(button_node);
             }
         }
-        let style = Style {
-            display: taffy::Display::Flex,
-            flex_direction: taffy::FlexDirection::Column,
-            align_items: Some(taffy::AlignItems::Stretch),
-            gap: taffy::Size {
-                width: length(0.0_f32),
-                height: length(0.0_f32),
-            },
-            // The drag handles stand in the editor's own leading column,
-            // so a host leaves no gutter for them and they are never
-            // clipped by the window edge at any text scale.
-            padding: taffy::Rect {
-                left: length(self.handle_column() as f32),
-                right: length(0.0_f32),
-                top: length(0.0_f32),
-                bottom: length(0.0_f32),
-            },
-            size: Size {
-                width: Dimension::percent(1.0),
-                height: Dimension::auto(),
-            },
-            ..Default::default()
-        };
-        let node = taffy.widget_node(style, &layout_children, node_map, self);
-        // A document's body hangs its handle lane outside the text column, so its text starts
-        // on the page's content edge, under the title, and still runs to the column's end, as
-        // native Notes lines a note's title up with its text. It is placed there, not margined
-        // there: a margin would have the layout ask the block stack for heights at a second
-        // width than the one it is applied at, and its blocks then paint taller than the rect
-        // they got.
-        if self.body.is_some() {
-            let inset = self.text_inset(theme);
-            if let Ok(mut hung) = taffy.style(node).cloned() {
-                hung.inset.left = length(-inset as f32);
-                let _ = taffy.set_style(node, hung);
-            }
-        }
+        let node = taffy.widget_node(self.own_style(theme), &layout_children, node_map, self);
+        self.layout_node = Some(node);
         node
     }
 
@@ -10914,21 +10908,25 @@ impl Widget for BlockEditor {
     }
 
     fn take_structure_dirty(&mut self) -> bool {
-        // Blocks that came or went may bring or take an image's button: a
-        // widget, which only a rebuild adds or removes.
-        if self.restack {
-            self.refresh_image_attachments();
-        }
-        let was = self.structure_dirty;
-        self.structure_dirty = false;
-        was
+        self.take_structure_change().rebuilds()
     }
 
-    /// The editor is a column of one taffy node per line; its own margins
-    /// and formula minimums are styles set at build time (a structural
-    /// change), so its size can only move when a line's does. Forwarded per
-    /// line rather than through `children()`, which the editor does not
-    /// expose, so an idle document re-measures nothing.
+    /// What changes under the editor — a document's blocks, a picture's
+    /// control, its find bar — is a change of its own children, which it
+    /// mounts and lets go of in place ([`Self::remount_children`]): every
+    /// widget it holds stays alive, so no widget above it is replaced and the
+    /// window around it is not composed again for what a note, a task or a
+    /// picture shows.
+    fn take_structure_change(&mut self) -> StructureChange {
+        self.change_of_its_own()
+    }
+
+    /// The change the editor reported, carried out where it stands: see
+    /// [`Self::remount_own`].
+    fn remount_children(&mut self, remount: &mut Remount<'_>) -> bool {
+        self.remount_own(remount)
+    }
+
     fn is_layout_dirty(&self) -> bool {
         self.restack
             || self.table_relayout
@@ -12027,6 +12025,8 @@ mod presence;
 mod present;
 #[path = "block_editor_references.rs"]
 pub mod references;
+#[path = "block_editor_remount.rs"]
+mod remount;
 #[path = "block_editor_text_menu.rs"]
 mod text_menu;
 pub use present::{BlockContent, EditScope, PresenceKeyFn};
@@ -13179,6 +13179,10 @@ impl BlockEditor {
 #[cfg(test)]
 #[path = "block_editor_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "block_editor_structure_tests.rs"]
+mod structure_tests;
 
 #[cfg(test)]
 #[path = "block_editor_access_tests.rs"]
