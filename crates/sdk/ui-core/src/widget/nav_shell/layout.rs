@@ -591,8 +591,12 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         SidebarPlacement::Screen => {
             let x = screen_x(NavPane::Sidebar);
             if x > -w && x < w {
-                g.sidebar_column = Rect::new(x, 0.0, x + w, h);
-                sidebar_body = Rect::new(x, bt_of(Column::Sidebar), x + w, h);
+                // A list standing as the window's screen keeps the gutter a phone's content
+                // keeps, as the drawer's does: its rows start inside the window's edge, not on
+                // it.
+                let inset = m.gap.min(w / 2.0);
+                g.sidebar_column = Rect::new(x + inset, 0.0, x + w - inset, h);
+                sidebar_body = Rect::new(x + inset, bt_of(Column::Sidebar), x + w - inset, h);
                 sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
             }
         }
