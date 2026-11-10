@@ -22,8 +22,7 @@ use tilo_desktop_model::{Workspace, WorkspaceId};
 pub use crate::collab_app_broker::{
     AudioOutputFuture, AudioOutputServices, AwaitingHistory, CertifiedPersonContext, DocumentBytes,
     HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
-    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, PreparedElsewhere,
-    PreparingElsewhere, RecordRead,
+    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, RecordRead,
 };
 
 /// A workspace's status once it changed ([`WorkspaceMemberships::workspace_status_change`]).

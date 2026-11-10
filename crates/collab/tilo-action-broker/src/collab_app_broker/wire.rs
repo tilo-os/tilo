@@ -243,11 +243,7 @@ impl JoinedChannel {
         if let Some(waiting) = self.committed_history_wait(&request) {
             waiting.await;
         }
-        let prepared = match self.committed_creation_elsewhere(&request) {
-            Some(preparing) => Some(preparing.await),
-            None => None,
-        };
-        self.committed_document_dispatch_prepared(&request, prepared)
+        self.committed_document_dispatch(&request)
     }
 }
 
