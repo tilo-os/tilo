@@ -23,6 +23,8 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilo-live = { path = "../../collab/tilo-live", features = ["plane"] }
 # The undo log and the clock are the toolkit's shared, portable parts.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
+# The event sounds a notice makes, played by the host that shows it.
+settings-store = { version = "0.1.0", path = "../../system/settings-store" }
 # A request another device answers, and the lock that holds what waits for it.
 tilo-lock = { version = "0.1.0", path = "../../platform/tilo-lock" }
 web-time = "1"

@@ -316,17 +316,13 @@ impl Shared {
     /// card or link it came from is gone: the person hears it as a notice,
     /// naming what they asked for and why it did not happen.
     pub(crate) fn answer_failed(&self, asked: &str, why: &impl std::fmt::Display) {
-        let notice = crate::notices::Notice {
-            app: t("action-failed-app"),
-            urgency: 1,
-            title: t_args("action-failed-title", &[("what", asked.into())]),
-            body: t_args("action-failed-body", &[("reason", why.to_string().into())]),
-            actions: Vec::new(),
-            expires_after: None,
-            machine_wide: true,
-            sound: None,
-        };
-        self.notifications.borrow().tell(notice);
+        let notice = crate::platform::notice::Notice::new(
+            t("action-failed-app"),
+            1,
+            t_args("action-failed-title", &[("what", asked.into())]),
+            t_args("action-failed-body", &[("reason", why.to_string().into())]),
+        );
+        self.notifications.borrow().tell(&notice);
     }
 
     /// What the pointer asked of Alt+Tab's panel: hovering a card reaches it,

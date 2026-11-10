@@ -21,7 +21,7 @@ use crate::platform::fabric::{DeviceId, PersonalFabricAction, PersonalFabricActi
 
 use crate::Shared;
 use crate::i18n::{t, t_args};
-use crate::notices::Notice;
+use crate::platform::notice::Notice;
 
 /// How long one move may take before both devices give it up and the accessory goes back where it
 /// was.
@@ -813,7 +813,7 @@ fn label(fabric: &SharedLink, peer: &DeviceId) -> String {
 
 /// Tell the person how one move went.
 fn tell(shared: &Shared, urgency: u8, title: String, body: String) {
-    shared.notifications.borrow().tell(Notice::new(
+    shared.notifications.borrow().tell(&Notice::new(
         t("session-bluetooth-app"),
         urgency,
         title,

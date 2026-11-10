@@ -741,7 +741,7 @@ impl Shared {
         for agent in door.lost.drain(..) {
             self.notifications
                 .borrow()
-                .tell(crate::notices::agent_bindings_notice(agent.as_deref()));
+                .tell(&crate::notices::agent_bindings_notice(agent.as_deref()));
         }
     }
 }

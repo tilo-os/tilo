@@ -2,14 +2,10 @@
 //!
 //! A mention is a run of a record's rich text marked with a participant's id, whichever app wrote
 //! it ([`ui::mentions::in_record_for`]). Every record a change reaches is looked at as the change
-//! arrives — open in a window or not — and each new mention of the person here is one notice
-//! ([`platform::notice`]), whose choosing opens the place it was written in. A mention is never
-//! told twice, is taken back when it is edited away, and one that was already there when this
-//! device started following the record is not news.
-//!
-//! What was told is kept in the session's store ([`Held`]: one package document), so a restart
-//! tells nothing again. The records and the notices are the host's, through [`Records`] and
-//! [`Notices`].
+//! arrives, and each new mention of the person here is one [`Notice`]. A mention is never told
+//! twice, is taken back when it is edited away, and one that was already there when this device
+//! started following the record is not news. What was told is kept in the session's store, so a
+//! restart tells nothing again.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
@@ -19,7 +15,7 @@ use durable_store::{DurableStore, StorageKey, WriteOp};
 use ui::automerge::AutoCommit;
 
 use crate::platform::Store;
-use crate::platform::notice::{Notice, Notices, Place};
+use crate::platform::notice::{Notice, Notices, OPEN_ACTION, Place};
 use crate::platform::records::{Changed, Records};
 
 /// The package this device's told state is kept under: the session's.
@@ -28,6 +24,9 @@ const PACKAGE: &str = "so.tilo.session.mentions";
 /// Least time between two looks, in milliseconds: changes arriving in a burst (a replay, someone
 /// typing) are looked at together.
 const LOOK_EVERY_MS: u64 = 750;
+
+/// How long a mention's notice stays on screen: what the person was told, not a demand.
+const NOTICE_SECONDS: u64 = 8;
 
 /// What one look at a record changed: notices to show, and the tags of those whose mention is
 /// gone.
@@ -133,13 +132,19 @@ impl Held {
             };
             standing.insert(
                 tag.clone(),
-                Notice {
-                    tag,
-                    app: tilo_desktop_search::names::app_name(look.app),
+                Notice::opens(
+                    tilo_desktop_search::names::app_name(look.app),
                     title,
-                    body: mention.excerpt,
+                    mention.excerpt,
                     place,
-                },
+                )
+                .tagged(tag)
+                .choosing(vec![(
+                    OPEN_ACTION.to_owned(),
+                    crate::i18n::t("mention-notice-open"),
+                )])
+                // News, not a demand: it leaves the banner by itself and the centre keeps it.
+                .staying(Some(ui::time::Duration::from_secs(NOTICE_SECONDS))),
             );
         }
         let told = self.told.entry((look.app.to_owned(), route)).or_default();

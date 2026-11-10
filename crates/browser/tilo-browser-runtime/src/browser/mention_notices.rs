@@ -72,7 +72,10 @@ pub(super) fn role(
                     .unwrap_or_default()
             }),
         })),
-        notices: Some(Rc::new(Toolkit::new(ui::host::current().notifications))),
+        notices: Some(Rc::new(Toolkit::new(
+            ui::host::current().notifications,
+            ui::mentions::TAGS,
+        ))),
         name,
         wake: Some(wake),
     })

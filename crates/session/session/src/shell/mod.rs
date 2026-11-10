@@ -1354,7 +1354,7 @@ impl crate::Session {
             if let Some(notice) = shell.note_style_failure(&failure) {
                 // Raised through the session's own notices, as every notice it tells: the
                 // notifications service when one runs, the desk's own otherwise.
-                notices.borrow().tell(notice);
+                notices.borrow().tell(&notice);
             }
         }
         let (apps, calls) = recoveries;

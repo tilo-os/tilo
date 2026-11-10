@@ -1081,7 +1081,7 @@ fn the_desktops_own_notice_stays_on_this_machine() {
     };
     rig.bridge
         .borrow_mut()
-        .tell(crate::notices::version_mismatch_notice(
+        .tell(&crate::notices::version_mismatch_notice(
             &mismatch,
             Some("Framework 16"),
         ));
@@ -1399,7 +1399,7 @@ fn a_device_on_another_version_is_named_on_the_desk() {
     };
     rig.bridge
         .borrow_mut()
-        .tell(crate::notices::version_mismatch_notice(
+        .tell(&crate::notices::version_mismatch_notice(
             &mismatch,
             Some("Framework 16"),
         ));

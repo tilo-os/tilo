@@ -252,7 +252,7 @@ impl Session {
                     body: notice.body.clone(),
                     critical: battery.critical,
                 });
-                self.shared.notifications.borrow().tell(notice);
+                self.shared.notifications.borrow().tell(&notice);
             }
         }
         Ok(())

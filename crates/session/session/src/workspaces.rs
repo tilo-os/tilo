@@ -1130,7 +1130,7 @@ impl crate::Shared {
         {
             self.notifications
                 .borrow()
-                .tell(crate::notices::workspaces_notice());
+                .tell(&crate::notices::workspaces_notice());
         }
         let borrowed = self
             .personal

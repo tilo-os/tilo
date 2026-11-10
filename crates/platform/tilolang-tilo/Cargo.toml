@@ -24,6 +24,8 @@ tracing.workspace = true
 tilo-automerge.workspace = true
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 tilo-service = { path = "../../session/service" }
+# The one notice type, and the seam a device shows it through.
+tilo-session-core = { path = "../../session/core" }
 # The one policy what the runtime invokes is decided by.
 tilo-action-policy = { version = "0.1.0", path = "../../collab/action-policy" }
 # The patch protocol an instance sends its window over.

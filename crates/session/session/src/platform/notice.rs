@@ -1,79 +1,15 @@
-//! One notice a role tells the person, and where choosing it lands.
+//! One notice a role tells the person, as this host shows it.
 //!
-//! A role that knows something the person should know — a mention of them in a record, a change
-//! they asked to hear of — tells it through [`Notices`]: a tag it shows under, whether the notice
-//! is showing already, and the [`Place`] choosing it opens. What a host does with it is the
-//! host's: the native session posts it to the person's notifications, the page hands it to the
-//! notifier its host serves.
-//!
-//! What the person chose comes back through the same seam ([`Notices::take_chosen`]), so a role
-//! never reads a platform's notification log. Opening the place is the host's own door, as any
-//! other open is: [`open_target`] is the address it is opened at.
+//! The notice and the [`Notices`] seam are the session core's ([`tilo_session_core::notice`]):
+//! what it says, where choosing it lands, and what the person chose. This is the page's own way
+//! of showing one — the notifier its host serves — and the address an open of a notice's place is
+//! carried at.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
-use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, RemoteActionTarget, application_record_target,
+pub use tilo_session_core::notice::{
+    Closed, Notice, Notices, OPEN_ACTION, Place, SCHEME, open_target,
 };
-
-/// Where choosing a notice lands, and the URI a host carries it by.
-pub use ui::mentions::{Place, SCHEME};
-
-/// The request that opens `place` in `workspace` as the person: the app's `open` of its item on
-/// the record the item is in.
-#[must_use]
-pub fn open_target(workspace: &str, place: &Place) -> RemoteActionTarget {
-    if place.record.is_empty() {
-        tilo_actions::remote::application_action_target(
-            workspace,
-            &place.app,
-            place.resource.clone(),
-            APPLICATION_OPEN_ACTION,
-        )
-    } else {
-        application_record_target(
-            workspace,
-            &place.app,
-            &place.record,
-            place.resource.clone(),
-            APPLICATION_OPEN_ACTION,
-        )
-    }
-}
-
-/// One notice to tell the person: what it says, and what choosing it opens.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    /// The name it shows under: one per notice, so telling it twice tells it once and taking it
-    /// back names it.
-    pub tag: String,
-    /// The name the person sees it came from.
-    pub app: String,
-    pub title: String,
-    pub body: String,
-    /// Where choosing it lands.
-    pub place: Place,
-}
-
-impl Notice {
-    /// The notification a platform notifier shows for it: what the person clicks carries the
-    /// place's activation.
-    #[must_use]
-    pub fn notification(&self) -> ui::notify::Notification {
-        ui::notify::Notification::new(&self.tag, &self.title, &self.body)
-            .with_activation(self.place.activation())
-    }
-}
-
-/// Showing a role's notices on one host, and taking back what the person chose.
-pub trait Notices {
-    /// Show `notice`, replacing one showing under its tag.
-    fn show(&self, notice: &Notice);
-    /// Take the notice under `tag` back: what it told is gone.
-    fn withdraw(&self, tag: &str);
-    /// The places the person chose since this was last taken.
-    fn take_chosen(&self) -> Vec<Place>;
-}
 
 /// A host's notifier as a role's notices: the notification platform the toolkit serves, which is
 /// the page's `ui::host::current().notifications`.
@@ -81,12 +17,15 @@ pub struct Toolkit {
     notifier: Arc<dyn ui::notify::Notifier>,
     /// The places the person chose since this was last taken.
     chosen: Arc<Mutex<Vec<Place>>>,
+    /// The notices that closed since this was last taken, each with why.
+    closed: Arc<Mutex<Vec<(String, Closed)>>>,
 }
 
 impl Toolkit {
-    /// The notices `notifier` shows, reporting every place the person chooses from one.
+    /// The notices `notifier` shows under tags starting `tags`, reporting every place the person
+    /// chooses from one and why every one of them closed.
     #[must_use]
-    pub fn new(notifier: Arc<dyn ui::notify::Notifier>) -> Self {
+    pub fn new(notifier: Arc<dyn ui::notify::Notifier>, tags: &str) -> Self {
         let chosen: Arc<Mutex<Vec<Place>>> = Arc::default();
         let reporting = Arc::clone(&chosen);
         ui::notify::set_activation_handler(SCHEME, move |uri| {
@@ -94,7 +33,28 @@ impl Toolkit {
                 lock(&reporting).push(place);
             }
         });
-        Self { notifier, chosen }
+        let closed: Arc<Mutex<Vec<(String, Closed)>>> = Arc::default();
+        let closing = Arc::clone(&closed);
+        let prefix = tags.to_owned();
+        ui::notify::set_close_handler(tags, move |tag, reason| {
+            if tag.starts_with(&prefix) {
+                lock(&closing).push((tag.to_owned(), closed_as(reason)));
+            }
+        });
+        Self {
+            notifier,
+            chosen,
+            closed,
+        }
+    }
+}
+
+/// Why the platform closed a notification, as a role reads it.
+fn closed_as(reason: ui::notify::CloseReason) -> Closed {
+    match reason {
+        ui::notify::CloseReason::Expired => Closed::Expired,
+        ui::notify::CloseReason::Dismissed => Closed::Dismissed,
+        ui::notify::CloseReason::Closed => Closed::Withdrawn,
     }
 }
 
@@ -113,6 +73,10 @@ impl Notices for Toolkit {
 
     fn take_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *lock(&self.chosen))
+    }
+
+    fn take_closed(&self) -> Vec<(String, Closed)> {
+        std::mem::take(&mut *lock(&self.closed))
     }
 }
 

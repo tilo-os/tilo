@@ -333,7 +333,7 @@ fn answer(fabric: &SharedLink, target: &DeviceId, action: PersonalFabricAction) 
 /// Tell the person how one request ended, if the outcome is one to tell.
 fn tell(notifications: &SessionNotifications, event: &WakeEvent) {
     if let Some(notice) = crate::notices::wake_notice(event) {
-        notifications.tell(notice);
+        notifications.tell(&notice);
     }
 }
 

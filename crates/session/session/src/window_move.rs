@@ -28,7 +28,8 @@ use crate::Shared;
 use crate::apps::launch_of;
 use crate::continuations::{Continuations, HandoffNote};
 use crate::i18n::{t, t_args};
-use crate::notices::Notice;
+use crate::notifications::tell_desk;
+use crate::platform::notice::Notice;
 use crate::window_transfer::{self, Arrived, Fault, Merged, Profile};
 
 /// The action a move's notice offers: carry the window into its destination.
@@ -278,12 +279,11 @@ impl Moves {
                 &[("workspace", asked.from_name.clone().into())],
             ));
         }
-        let mut notice = Notice::new(t("window-move-app-name"), 1, title, body);
-        notice.actions = vec![
+        let notice = Notice::new(t("window-move-app-name"), 1, title, body).choosing(vec![
             (CARRY.to_owned(), t("window-move-ask-carry")),
             (STAY.to_owned(), t("window-move-ask-stay")),
-        ];
-        let id = notice.tell_desk(&self.notices);
+        ]);
+        let id = tell_desk(&notice, &self.notices);
         self.asking.borrow_mut().insert(id, asked);
     }
 
@@ -920,7 +920,10 @@ impl Moves {
             "window-move-failed-body",
             &[("workspace", source.to_owned().into())],
         );
-        Notice::new(t("window-move-app-name"), 1, title, body).tell_desk(&self.notices);
+        tell_desk(
+            &Notice::new(t("window-move-app-name"), 1, title, body),
+            &self.notices,
+        );
     }
 
     /// Say the record the window shows could not be moved, where it stayed and why.
@@ -939,7 +942,10 @@ impl Moves {
                 ("reason", why.to_owned().into()),
             ],
         );
-        Notice::new(t("window-move-app-name"), 1, title, body).tell_desk(&self.notices);
+        tell_desk(
+            &Notice::new(t("window-move-app-name"), 1, title, body),
+            &self.notices,
+        );
     }
 
     /// Put the move back in flight, waiting for `phase` .

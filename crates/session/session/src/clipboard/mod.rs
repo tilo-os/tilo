@@ -275,7 +275,7 @@ impl Clipboard {
     }
 
     /// What the paste that just ended has to tell the person, if anything.
-    pub(crate) fn step_files(&self) -> Vec<crate::notices::Notice> {
+    pub(crate) fn step_files(&self) -> Vec<crate::platform::notice::Notice> {
         let mut paste = self.paste.borrow_mut();
         if !paste.as_ref().is_some_and(paste::Paste::finished) {
             return Vec::new();

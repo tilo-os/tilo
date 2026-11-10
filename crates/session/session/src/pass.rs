@@ -598,7 +598,7 @@ impl Session {
         // A paste of files runs on its own thread; the loop only asks whether it is over and tells
         // the person how it went.
         for notice in self.shared.clipboard.step_files() {
-            self.shared.notifications.borrow().tell(notice);
+            self.shared.notifications.borrow().tell(&notice);
         }
         // What was copied here reaches the person's other devices, and what they copied there joins
         // the clipboard here.

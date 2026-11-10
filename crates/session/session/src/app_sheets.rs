@@ -336,7 +336,7 @@ impl Shared {
                     tracing::warn!(%error, "the downloaded apps registry does not read back");
                     self.notifications
                         .borrow()
-                        .tell(crate::notices::downloaded_apps_notice());
+                        .tell(&crate::notices::downloaded_apps_notice());
                 }
                 None
             }

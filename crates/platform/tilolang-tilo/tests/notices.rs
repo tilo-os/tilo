@@ -5,10 +5,10 @@
 use automerge::AutoCommit;
 use serde_json::{Map, Value as Json, json};
 use tilo_service::{Service, Started};
+use tilo_session_core::notice::{Closed, Notice};
 use tilolang_runtime::{InvokeOutcome, Meta, Principal, Resolution, Value};
 use tilolang_tilo::host::Host;
 use tilolang_tilo::meta::MetaExt as _;
-use tilolang_tilo::notices::{Closed, Notice, Tell};
 use tilolang_tilo::records_service::RecordService;
 
 use crate::fixtures::Replica;
@@ -97,7 +97,7 @@ impl Recorder {
     }
 }
 
-impl Tell for Recorder {
+impl tilo_session_core::notice::Notices for Recorder {
     fn show(&self, notice: &Notice) {
         self.shown.borrow_mut().push(notice.clone());
     }
@@ -106,7 +106,7 @@ impl Tell for Recorder {
         self.withdrawn.borrow_mut().push(tag.to_owned());
     }
 
-    fn closed(&self) -> Vec<(String, Closed)> {
+    fn take_closed(&self) -> Vec<(String, Closed)> {
         std::mem::take(&mut *self.closures.borrow_mut())
     }
 }
@@ -231,11 +231,7 @@ fn id_of(tag: &str) -> String {
 
 /// Where choosing the notice lands, as the session makes it.
 fn place(notice: &Notice) -> ui::mentions::Place {
-    ui::mentions::Place {
-        app: notice.opens.app.clone(),
-        record: notice.opens.record.clone(),
-        resource: notice.opens.resource.clone(),
-    }
+    notice.place.clone().expect("it opens what it names")
 }
 
 /// Invoke the action `name` of `meta`'s package on `args` as the replica's own person, commit
@@ -486,8 +482,9 @@ fn a_notice_reaches_the_devices_of_the_person_it_names_and_no_one_else() {
         assert_eq!(shown.len(), 1, "one notice: {shown:#?}");
         assert_eq!(shown[0].title, "Call the landlord");
         assert_eq!(shown[0].body, "Due 2026-10-27");
-        assert_eq!(shown[0].opens.app, TASKS_APP);
-        assert_eq!(shown[0].opens.resource, call);
+        let opens = shown[0].place.as_ref().expect("it opens what it names");
+        assert_eq!(opens.app, TASKS_APP);
+        assert_eq!(opens.resource, call);
     }
 
     // Ada's device tells nothing: the notice is Bo's, though her own ran the trigger.

@@ -47,8 +47,72 @@ use tilo_session_power::PowerLink;
 
 use crate::app_icons;
 use crate::i18n::{t, t_args};
+use crate::platform::notice::{Closed, Notice, Notices, Place};
 use crate::portal_link::PortalSide;
 use crate::system_sounds::SystemSounds;
+
+/// `notice` as the notifications service carries it: the session's own word about the machine, or
+/// a role's, shown as any other notification and read back by the desk from it.
+#[must_use]
+pub(crate) fn served(
+    notice: &Notice,
+    notifications: &Notifications,
+) -> tilo_notifications_service::Notification {
+    tilo_notifications_service::Notification {
+        id: notifications.alloc_id(),
+        app_name: notice.app.clone(),
+        summary: notice.title.clone(),
+        body: notice.body.clone(),
+        actions: notice.actions.clone(),
+        expire_timeout: notice.expires_after.map_or(-1, |after| {
+            i32::try_from(after.as_millis()).unwrap_or(i32::MAX)
+        }),
+        urgency: notice.urgency,
+        machine_wide: notice.machine_wide,
+        suppress_sound: notice.sound.is_some(),
+        // The session raises its own notice: it is the system's word about the machine, not a
+        // sender's.
+        system: true,
+        ..tilo_notifications_service::Notification::new(0)
+    }
+}
+
+/// Show `notice` through the notifications service, and say which notification went out: a
+/// producer whose notice the person acts on finds their answer by that id.
+pub(crate) fn tell_daemon(notice: &Notice, notifications: &Notifications) -> u32 {
+    let notification = served(notice, notifications);
+    let id = notification.id;
+    notifications.push(notification);
+    id
+}
+
+/// Show `notice` on `desk` directly, for a session with no notifications service: what the session
+/// raises is kept there rather than lost, and it stays until the person lets it go. Says which
+/// notification went out.
+pub(crate) fn tell_desk(notice: &Notice, desk: &DesktopNotifications) -> u64 {
+    let severity = match notice.urgency {
+        0 => NotificationSeverity::Info,
+        1 => NotificationSeverity::Warning,
+        _ => NotificationSeverity::Error,
+    };
+    // The notice's own timing, as the notifications service would apply it: nothing asks to stay,
+    // or asks for no time at all, stays.
+    let dismiss_after = notice
+        .expires_after
+        .filter(|after| !after.is_zero())
+        .unwrap_or(PERSISTENT_DISMISS);
+    let mut shown = Notification::new(notice.title.clone(), notice.body.clone())
+        .with_app_name(notice.app.clone())
+        .with_icon_kind(NotificationIconKind::System)
+        .with_severity(severity)
+        .with_dismiss_after(dismiss_after);
+    shown.actions.clone_from(&notice.actions);
+    desk.post(if notice.machine_wide {
+        shown.machine_wide()
+    } else {
+        shown
+    })
+}
 
 /// Mount the banners app on the desk: what it shows of the desktop's notifications, and its own
 /// link to them.
@@ -374,17 +438,14 @@ type Opened = Rc<RefCell<Vec<(String, String)>>>;
 /// The senders whose notification the person chose, as `(sender, action)` .
 type Chosen = Rc<RefCell<Vec<(u32, Option<String>)>>>;
 
-/// The action a role's notice offers: choosing it goes where the notice names.
-const OPEN_NOTICE_ACTION: &str = "open";
-
-/// How long a role's notice stays on screen: what the person was told, not a demand.
-const NOTICE_SECONDS: u64 = 8;
-
 /// The place each of a role's notices opens, by the desk's notification.
-type Places = Rc<RefCell<BTreeMap<u64, (String, crate::platform::notice::Place)>>>;
+type Places = Rc<RefCell<BTreeMap<u64, (String, Place)>>>;
 
 /// The places the person chose from a role's notices since the last look.
-type PlacesChosen = Rc<RefCell<Vec<crate::platform::notice::Place>>>;
+type PlacesChosen = Rc<RefCell<Vec<Place>>>;
+
+/// The notices that closed since the host last took them, each with why.
+type ClosedTags = Rc<RefCell<Vec<(String, Closed)>>>;
 
 /// Which notification shows a notice a role told.
 #[derive(Clone, Copy)]
@@ -448,6 +509,8 @@ pub(crate) struct SessionNotifications {
     places_chosen: PlacesChosen,
     /// The notification showing each notice a role told, by its tag.
     showing: RefCell<BTreeMap<String, Showing>>,
+    /// The notices that closed since the host last took them, each with why.
+    closed: ClosedTags,
     /// A notice that went out through the notifications service, by its id, waiting to learn which
     /// of the desk's notifications it became.
     awaited: RefCell<BTreeMap<u32, (String, crate::platform::notice::Place)>>,
@@ -474,6 +537,8 @@ impl SessionNotifications {
         let showing_places = Rc::clone(&places);
         let places_chosen: PlacesChosen = Rc::default();
         let telling_places = Rc::clone(&places_chosen);
+        let closed: ClosedTags = Rc::default();
+        let telling_closed = Rc::clone(&closed);
         desktop.on_outcome(move |outcome| match outcome {
             NotificationOutcome::Activated {
                 notification,
@@ -514,7 +579,9 @@ impl SessionNotifications {
                 }
             }
             NotificationOutcome::Dismissed { id } => {
-                showing_places.borrow_mut().remove(id);
+                if let Some((tag, _)) = showing_places.borrow_mut().remove(id) {
+                    telling_closed.borrow_mut().push((tag, Closed::Dismissed));
+                }
                 // Dismissing another device's notification here dismisses it there too: the app's
                 // notification closes, and every other copy goes with it.
                 answered.answer(*id, |_, id| PersonalFabricAction::NotificationDismiss {
@@ -546,6 +613,7 @@ impl SessionNotifications {
             places,
             places_chosen,
             showing: RefCell::default(),
+            closed,
             awaited: RefCell::default(),
         }
     }
@@ -824,59 +892,36 @@ impl SessionNotifications {
         self.desktop.undo_clear();
     }
 
-    /// Tell the person `notice` , which the session itself raised rather than one of their apps.
-    pub(crate) fn tell(&self, notice: crate::notices::Notice) {
+    /// Tell the person `notice`: the machine's own news, or what a role knows they should know.
+    /// One showing under its tag replaces the one before, and where choosing it lands is kept, so
+    /// the place reaches the door that opens it.
+    pub(crate) fn tell(&self, notice: &Notice) {
         // The session raises the notice, so it plays its sound here: a sender's category never
         // reaches the events only the session may claim, and the notification carries none for the
         // arrival to repeat.
         if let Some(event) = notice.sound {
             self.sounds.play(event, self.quiet_state(), true);
         }
-        match &self.daemon {
-            Some(daemon) => {
-                notice.tell_as(daemon);
-            }
-            // A session without a notifications service still draws its desk: what it raises is
-            // kept there, so nothing it says is lost.
-            None => {
-                notice.tell_desk(&self.desktop);
-            }
-        }
-    }
-
-    /// When the desk's banners next change with no one asking: one running out, or a Clear all's
-    /// undo closing.
-    pub(crate) fn next_deadline(&self) -> Option<Instant> {
-        self.desktop.next_deadline()
-    }
-
-    /// Tell the person `notice` a role raised, replacing one showing under its tag, and remember
-    /// where choosing it lands.
-    pub(crate) fn tell_notice(&self, notice: &crate::platform::notice::Notice) {
         self.withdraw_notice(&notice.tag);
-        let mut machine = crate::notices::Notice::new(
-            notice.app.clone(),
-            1,
-            notice.title.clone(),
-            notice.body.clone(),
-        );
-        machine
-            .actions
-            .push((OPEN_NOTICE_ACTION.to_owned(), t("mention-notice-open")));
-        // News, not a demand: it leaves the banner by itself and the centre keeps it.
-        machine.expires_after = Some(Duration::from_secs(NOTICE_SECONDS));
-        let place = (notice.tag.clone(), notice.place.clone());
+        // A session without a notifications service still draws its desk: what it tells is kept
+        // there rather than lost.
         let showing = if let Some(daemon) = &self.daemon {
-            let notification = machine.into_notification(daemon);
+            let notification = served(notice, daemon);
             let id = notification.id;
             daemon.push(notification);
-            self.awaited.borrow_mut().insert(id, place);
+            if let Some(place) = &notice.place {
+                self.awaited
+                    .borrow_mut()
+                    .insert(id, (notice.tag.clone(), place.clone()));
+            }
             Showing::Served(id)
         } else {
-            // A session without a notifications service still draws its desk: what it tells is
-            // kept there rather than lost.
-            let id = machine.tell_desk(&self.desktop);
-            self.places.borrow_mut().insert(id, place);
+            let id = tell_desk(notice, &self.desktop);
+            if let Some(place) = &notice.place {
+                self.places
+                    .borrow_mut()
+                    .insert(id, (notice.tag.clone(), place.clone()));
+            }
             Showing::Desk(id)
         };
         self.showing
@@ -901,12 +946,25 @@ impl SessionNotifications {
                 self.desktop.withdraw(id);
             }
         }
+        self.closed
+            .borrow_mut()
+            .push((tag.to_owned(), Closed::Withdrawn));
     }
 
-    /// The places the person chose from a role's notices since this was last taken, each with its
-    /// tag.
-    pub(crate) fn take_places_chosen(&self) -> Vec<crate::platform::notice::Place> {
+    /// When the desk's banners next change with no one asking: one running out, or a Clear all's
+    /// undo closing.
+    pub(crate) fn next_deadline(&self) -> Option<Instant> {
+        self.desktop.next_deadline()
+    }
+
+    /// The places the person chose from a role's notices since this was last taken.
+    pub(crate) fn take_places_chosen(&self) -> Vec<Place> {
         std::mem::take(&mut *self.places_chosen.borrow_mut())
+    }
+
+    /// The notices that closed since this was last taken, each with why.
+    pub(crate) fn take_closed(&self) -> Vec<(String, Closed)> {
+        std::mem::take(&mut *self.closed.borrow_mut())
     }
 
     /// Take in what arrived and what the banners asked, and hand the banners what they show now.
@@ -938,6 +996,17 @@ impl SessionNotifications {
         // devices with it.
         let shown = self.shown_ids();
         self.mirror.prune(&shown, tilo_clock::unix_now_ms());
+        // A notice the service no longer holds and the desk no longer shows is done with: nothing
+        // is taken back under its tag again, so it is not kept for that.
+        self.showing
+            .borrow_mut()
+            .retain(|_, showing| match showing {
+                Showing::Served(id) => self
+                    .daemon
+                    .as_ref()
+                    .is_some_and(|daemon| daemon.notification(*id).is_some()),
+                Showing::Desk(id) => shown.contains(id),
+            });
         // Every banner the desk puts up passes through its log, whether an app sent it or the
         // session raised it: a new one there is what the person was just told.
         let banners: BTreeSet<u64> = self
@@ -1402,17 +1471,21 @@ impl RoleNotices {
     }
 }
 
-impl crate::platform::notice::Notices for RoleNotices {
-    fn show(&self, notice: &crate::platform::notice::Notice) {
-        self.0.borrow().tell_notice(notice);
+impl Notices for RoleNotices {
+    fn show(&self, notice: &Notice) {
+        self.0.borrow().tell(notice);
     }
 
     fn withdraw(&self, tag: &str) {
         self.0.borrow().withdraw_notice(tag);
     }
 
-    fn take_chosen(&self) -> Vec<crate::platform::notice::Place> {
+    fn take_chosen(&self) -> Vec<Place> {
         self.0.borrow().take_places_chosen()
+    }
+
+    fn take_closed(&self) -> Vec<(String, Closed)> {
+        self.0.borrow().take_closed()
     }
 }
 

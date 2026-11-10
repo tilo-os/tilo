@@ -1,16 +1,12 @@
-//! What the session itself tells the person, through their notifications.
-//! The desktop knows things the person should: storage and battery running out,
-//! the media codecs they asked for, a session or computer that stopped and started
-//! again, an update waiting for a restart, a deployment it went back from, graphics
-//! that fell back to software, a drive ready to open, and the state of their own
-//! workspaces, agents and apps it could not read. Each becomes an ordinary
-//! notification ([`tilo_notifications_service::Notification`]) published by the
-//! notifications service, so the banners and the centre show it as any app's, and
-//! nothing here draws. They are the whole machine's news and show on every display
-//! ([`Notification::machine_wide`]); the one about the saved desk belongs to the
-//! desk the person is looking at. Nothing is polled hard: storage is one `statvfs`
-//! per filesystem every two minutes (twenty seconds while one is low), codecs are a
-//! watch on the helper's status file, and the rest is read once per session pass.
+//! What the machine's own news tells the person, and where the session reads it.
+//! The desktop knows things the person should: storage and battery running out, the media codecs
+//! they asked for, a session or computer that stopped and started again, an update waiting for a
+//! restart, a deployment it went back from, graphics that fell back to software, a drive ready to
+//! open, and the state of their own workspaces, agents and apps it could not read. Each is one
+//! [`Notice`], shown by the notifications this host serves like any app's, and nothing here draws.
+//! The sources stay here: storage is one `statvfs` per filesystem every two minutes (twenty
+//! seconds while one is low), codecs are a watch on the helper's status file, and the rest is read
+//! once per session pass.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,19 +15,17 @@ use std::time::Duration;
 
 use settings_store::system_sounds::SystemSoundEvent;
 use tilo_desktop_surface::DesktopNotifications;
-use tilo_desktop_surface::notifications::{
-    Notification as DeskNotification, NotificationIconKind, NotificationSeverity,
-    PERSISTENT_DISMISS,
-};
 use tilo_files::native::ChangeWatch;
 use tilo_liveness::watchdog::{Policy, Watchdog, end_process};
-use tilo_notifications_service::{Notification, Notifications};
+use tilo_notifications_service::Notifications;
 use tilo_system_service::update;
 use ui::format::NaiveDate;
 
 use crate::desk_doc::StateNotice;
 use crate::drives::Medium;
 use crate::i18n::{t, t_args};
+use crate::notifications::tell_daemon;
+pub(crate) use crate::platform::notice::Notice;
 
 /// The action the update notice offers: restart the machine into the staged update.
 pub const RESTART_ACTION: &str = update::RESTART_TO_UPDATE;
@@ -49,109 +43,6 @@ const STORAGE_LOW_EVERY: Duration = Duration::from_secs(20);
 
 const GIB: u64 = 1024 * 1024 * 1024;
 const MIB: u64 = 1024 * 1024;
-
-/// One notice to show, before it becomes a notification.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Notice {
-    /// The name the person sees it came from ("Storage").
-    pub app: String,
-    /// `0` low, `1` normal, `2` critical: what the banner and the centre order it by.
-    pub urgency: u8,
-    pub title: String,
-    pub body: String,
-    /// `(key, label)` pairs, as a notification's actions.
-    pub actions: Vec<(String, String)>,
-    /// How long it stays on screen; `None` leaves that to the person's own notification settings.
-    pub expires_after: Option<Duration>,
-    /// Whether every display shows it: the whole machine's news, or, for a heads-up about the pack,
-    /// the display the person is using.
-    pub machine_wide: bool,
-    /// The event sound the notice makes, played by the session itself: a sender's category never
-    /// reaches the one an app may not ask for ([`SystemSoundEvent::LowBattery`]), so the notice
-    /// that needs it plays it here and tells the service no sound is owed.
-    pub sound: Option<SystemSoundEvent>,
-}
-
-impl Notice {
-    /// A notice `app` tells the person, at `urgency` .
-    pub(crate) fn new(app: String, urgency: u8, title: String, body: String) -> Self {
-        Self {
-            app,
-            urgency,
-            title,
-            body,
-            actions: Vec::new(),
-            expires_after: None,
-            machine_wide: true,
-            sound: None,
-        }
-    }
-
-    /// This notice as an ordinary notification, under a fresh id.
-    pub(crate) fn into_notification(self, notifications: &Notifications) -> Notification {
-        Notification {
-            id: notifications.alloc_id(),
-            app_name: self.app,
-            summary: self.title,
-            body: self.body,
-            actions: self.actions,
-            expire_timeout: self.expires_after.map_or(-1, |after| {
-                i32::try_from(after.as_millis()).unwrap_or(i32::MAX)
-            }),
-            urgency: self.urgency,
-            machine_wide: self.machine_wide,
-            suppress_sound: self.sound.is_some(),
-            // The session raises its own notice: it is the system's word about the machine, not a
-            // sender's.
-            system: true,
-            ..Notification::new(0)
-        }
-    }
-
-    /// Show it to the person.
-    pub(crate) fn tell(self, notifications: &Notifications) {
-        notifications.push(self.into_notification(notifications));
-    }
-
-    /// Show it on the desk this session draws, for a session with no notifications service: what
-    /// the session raises is kept there rather than lost, and it stays until the person lets it go.
-    /// What the notice offers the person it offers there too, so a question keeps its answers. Says
-    /// which notification went out: the notice whose answer the session waits on finds it by that
-    /// id.
-    pub(crate) fn tell_desk(self, desk: &DesktopNotifications) -> u64 {
-        let severity = match self.urgency {
-            0 => NotificationSeverity::Info,
-            1 => NotificationSeverity::Warning,
-            _ => NotificationSeverity::Error,
-        };
-        // The notice's own timing, as the notifications service would apply it: nothing asks to
-        // stay, or asks for no time at all, stays.
-        let dismiss_after = self
-            .expires_after
-            .filter(|after| !after.is_zero())
-            .unwrap_or(PERSISTENT_DISMISS);
-        let mut desk_notice = DeskNotification::new(self.title, self.body)
-            .with_app_name(self.app)
-            .with_icon_kind(NotificationIconKind::System)
-            .with_severity(severity)
-            .with_dismiss_after(dismiss_after);
-        desk_notice.actions = self.actions;
-        desk.post(if self.machine_wide {
-            desk_notice.machine_wide()
-        } else {
-            desk_notice
-        })
-    }
-
-    /// Show it to the person, and say which notification went out: a producer whose notice the
-    /// person acts on needs its id to know what they meant.
-    pub(crate) fn tell_as(self, notifications: &Notifications) -> u32 {
-        let notification = self.into_notification(notifications);
-        let id = notification.id;
-        notifications.push(notification);
-        id
-    }
-}
 
 /// How far a filesystem has run out.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -249,18 +140,12 @@ pub fn battery_notice(percent: u8, critical: bool, suspending: bool) -> Notice {
     } else {
         (1, t("battery-low-title"), t_args("battery-low-body", &args))
     };
-    Notice {
-        app: t("battery-app-name"),
-        urgency,
-        title,
-        body,
-        actions: Vec::new(),
+    let notice = Notice::new(t("battery-app-name"), urgency, title, body)
         // The critical warning stays until the person lets it go; the heads-up leaves on the
         // person's own notification timing.
-        expires_after: critical.then_some(Duration::ZERO),
-        machine_wide: critical,
-        sound: Some(SystemSoundEvent::LowBattery),
-    }
+        .staying(critical.then_some(Duration::ZERO))
+        .sounding(SystemSoundEvent::LowBattery);
+    if critical { notice } else { notice.here() }
 }
 
 /// The notice for the medium a person just plugged in: what it is called and how much it holds, and
@@ -275,19 +160,17 @@ pub fn medium_notice(medium: &Medium) -> Notice {
             ("size", ui::format::size(medium.size).into()),
         ],
     );
-    let mut notice = Notice::new(t("drives-app-name"), 1, title, t("drives-body"));
-    notice.actions = vec![
+    Notice::new(t("drives-app-name"), 1, title, t("drives-body")).choosing(vec![
         (OPEN_MEDIUM_ACTION.to_owned(), t("drives-open")),
         (EJECT_MEDIUM_ACTION.to_owned(), t("drives-eject")),
-    ];
-    notice
+    ])
 }
 
 /// Tell the person what they just plugged in, and return the notification's id, so what they ask of
 /// it can be carried out.
 #[must_use]
 pub fn announce_medium(notifications: &Notifications, medium: &Medium) -> u32 {
-    medium_notice(medium).tell_as(notifications)
+    tell_daemon(&medium_notice(medium), notifications)
 }
 
 /// The notice for how a request to wake one of the person's devices ended,
@@ -319,11 +202,15 @@ pub fn wake_notice(event: &crate::platform::fabric::wake::WakeEvent) -> Option<N
 /// and this session starts on an empty desk and keeps nothing, so it cannot be written over. It
 /// stays until they let it go — a desk that is not theirs looks exactly like theirs.
 pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &StateNotice) {
-    notices.post(
-        DeskNotification::new(refusal.title(), refusal.explains())
-            .with_app_name(t("desk-not-opened-app-name"))
-            .with_severity(NotificationSeverity::Error)
-            .with_dismiss_after(PERSISTENT_DISMISS),
+    crate::notifications::tell_desk(
+        &Notice::new(
+            t("desk-not-opened-app-name"),
+            2,
+            refusal.title(),
+            refusal.explains(),
+        )
+        .staying(Some(Duration::ZERO)),
+        notices,
     );
 }
 
@@ -333,7 +220,7 @@ pub(crate) fn tell_desk_not_opened(notices: &DesktopNotifications, refusal: &Sta
 /// switch names it, and `reason` what failed. It stays until they let it go: it says what the
 /// desk is showing instead of what they picked.
 pub(crate) fn desk_style_failed_notice(style: &str, reason: &str) -> Notice {
-    let mut notice = Notice::new(
+    Notice::new(
         t("desk-style-failed-app-name"),
         2,
         t("desk-style-failed-title"),
@@ -344,10 +231,9 @@ pub(crate) fn desk_style_failed_notice(style: &str, reason: &str) -> Notice {
                 ("reason", reason.to_owned().into()),
             ],
         ),
-    );
-    notice.machine_wide = false;
-    notice.expires_after = Some(Duration::from_secs(30));
-    notice
+    )
+    .here()
+    .staying(Some(Duration::from_secs(30)))
 }
 
 /// What a paste of files has to tell the person, or `None` when it went through: the files it could
@@ -576,24 +462,22 @@ pub fn tell_graphics_fallback(notifications: &Notifications) {
         return;
     }
     GRAPHICS_TOLD.store(true, Ordering::Relaxed);
-    graphics_notice().tell(notifications);
+    tell_daemon(&graphics_notice(), notifications);
 }
 
 /// The notice that an update waits for a restart of the machine, offering the action that takes it:
 /// raised by the update's own clock ([`crate::update_finish`]), at most every two days.
 pub(crate) fn update_notice() -> Notice {
-    Notice {
-        app: t("system-update-app-name"),
-        urgency: 1,
-        title: t("system-update-restart-title"),
-        body: t("system-update-restart-body"),
-        actions: vec![(RESTART_ACTION.to_owned(), t("power-restart"))],
-        // It waits in the notification centre; the banner goes after the person has had time to
-        // read it.
-        expires_after: Some(Duration::from_secs(30)),
-        machine_wide: true,
-        sound: None,
-    }
+    Notice::new(
+        t("system-update-app-name"),
+        1,
+        t("system-update-restart-title"),
+        t("system-update-restart-body"),
+    )
+    .choosing(vec![(RESTART_ACTION.to_owned(), t("power-restart"))])
+    // It waits in the notification centre; the banner goes after the person has had time to
+    // read it.
+    .staying(Some(Duration::from_secs(30)))
 }
 
 /// The notice that the update state the services last published does not read back: this machine
@@ -601,16 +485,12 @@ pub(crate) fn update_notice() -> Notice {
 /// once. Raised by the update's own clock ([`crate::update_finish`]), which keeps the warning for
 /// operators.
 pub(crate) fn update_state_notice() -> Notice {
-    Notice {
-        app: t("system-update-app-name"),
-        urgency: 1,
-        title: t("update-state-unreadable-title"),
-        body: t("update-state-unreadable-body"),
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    Notice::new(
+        t("system-update-app-name"),
+        1,
+        t("update-state-unreadable-title"),
+        t("update-state-unreadable-body"),
+    )
 }
 
 /// The notice that a collaborator's device speaks another peer protocol version, so the two cannot
@@ -654,16 +534,7 @@ pub(crate) fn version_mismatch_notice(
             t("version-mismatch-unknown-needs-update-body"),
         ),
     };
-    Notice {
-        app: t("system-update-app-name"),
-        urgency: 1,
-        title,
-        body,
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    Notice::new(t("system-update-app-name"), 1, title, body)
 }
 
 /// The notice of a deployment this machine went back from: what did not start, how many tries it
@@ -690,16 +561,12 @@ pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {
         ("running", running.into()),
         ("summary", fallback.summary.as_str().into()),
     ];
-    Notice {
-        app: t("system-update-app-name"),
-        urgency: 2,
-        title: t("system-update-went-back-title"),
-        body: t_args("system-update-went-back-body", &args),
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    Notice::new(
+        t("system-update-app-name"),
+        2,
+        t("system-update-went-back-title"),
+        t_args("system-update-went-back-body", &args),
+    )
 }
 
 /// The notice that the workspaces this computer remembered do not read back: the list starts empty,
@@ -707,16 +574,12 @@ pub(crate) fn went_back_notice(fallback: &update::Fallback) -> Notice {
 /// once, by the pass that opens the list ([`crate::workspaces::Personal::open`]), which keeps the
 /// warning for operators.
 pub(crate) fn workspaces_notice() -> Notice {
-    Notice {
-        app: t("workspaces-app-name"),
-        urgency: 1,
-        title: t("workspaces-unreadable-title"),
-        body: t("workspaces-unreadable-body"),
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    Notice::new(
+        t("workspaces-app-name"),
+        1,
+        t("workspaces-unreadable-title"),
+        t("workspaces-unreadable-body"),
+    )
 }
 
 /// The notice that the "Always allow" answers this computer kept for the agents at its door do not
@@ -735,16 +598,7 @@ pub(crate) fn agent_bindings_notice(agent: Option<&str>) -> Notice {
             t("agent-bindings-unreadable-body"),
         ),
     };
-    Notice {
-        app: t("agent-bindings-app-name"),
-        urgency: 1,
-        title,
-        body,
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    Notice::new(t("agent-bindings-app-name"), 1, title, body)
 }
 
 /// The notice that the registry of the programs the person downloaded does not read back: none of
@@ -752,16 +606,12 @@ pub(crate) fn agent_bindings_notice(agent: Option<&str>) -> Notice {
 /// once, by the pass that reads it ([`crate::Shared::downloaded_apps`]), which keeps the warning
 /// for operators.
 pub(crate) fn downloaded_apps_notice() -> Notice {
-    Notice {
-        app: t("downloaded-apps-app-name"),
-        urgency: 1,
-        title: t("downloaded-apps-unreadable-title"),
-        body: t("downloaded-apps-unreadable-body"),
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    Notice::new(
+        t("downloaded-apps-app-name"),
+        1,
+        t("downloaded-apps-unreadable-title"),
+        t("downloaded-apps-unreadable-body"),
+    )
 }
 
 /// Why a device or a workspace did not take a change, in the person's own words: the rest of the
@@ -786,19 +636,15 @@ pub(crate) fn reason_in_words(reason: neighbour_wire::RefusalReason) -> String {
 /// nothing, so the change stays on the devices that took it and the person hears it once. Raised by
 /// the pass that serves the activity ([`crate::Shared::serve_activity`]).
 pub(crate) fn refused_write_notice(device: &str, reason: neighbour_wire::RefusalReason) -> Notice {
-    Notice {
-        app: t("refused-write-app"),
-        urgency: 2,
-        title: t_args("refused-write-title", &[("device", device.into())]),
-        body: t_args(
+    Notice::new(
+        t("refused-write-app"),
+        2,
+        t_args("refused-write-title", &[("device", device.into())]),
+        t_args(
             "refused-write-body",
             &[("reason", reason_in_words(reason).into())],
         ),
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    )
 }
 
 /// The workspace did not take what the person changed on its shared desk: what they changed stays
@@ -807,19 +653,15 @@ pub(crate) fn desk_not_shared_notice(
     workspace: &str,
     reason: neighbour_wire::RefusalReason,
 ) -> Notice {
-    Notice {
-        app: t("desk-not-shared-app"),
-        urgency: 2,
-        title: t_args("desk-not-shared-title", &[("workspace", workspace.into())]),
-        body: t_args(
+    Notice::new(
+        t("desk-not-shared-app"),
+        2,
+        t_args("desk-not-shared-title", &[("workspace", workspace.into())]),
+        t_args(
             "desk-not-shared-body",
             &[("reason", reason_in_words(reason).into())],
         ),
-        actions: Vec::new(),
-        expires_after: None,
-        machine_wide: true,
-        sound: None,
-    }
+    )
 }
 
 /// Tell the person what the workspace did not take of their shared desk: it is on the desk they
@@ -837,7 +679,7 @@ pub(crate) fn tell_desk_not_taken(
     let reason = neighbour_wire::RefusalReason::of(&why);
     notifications
         .borrow()
-        .tell(desk_not_shared_notice(&workspace, reason));
+        .tell(&desk_not_shared_notice(&workspace, reason));
 }
 
 /// Tell the person what the crash records in `dir` say happened before this start: a session that
@@ -848,7 +690,7 @@ pub fn tell_crash_news(notifications: &Notifications, dir: &Path) {
         return;
     };
     let today = ui::clock::local_now().date_naive();
-    news_notice(&news, today).tell(notifications);
+    tell_daemon(&news_notice(&news, today), notifications);
 }
 
 /// The codecs status last seen by the watch.
@@ -874,7 +716,7 @@ fn follow_codecs(notifications: &Notifications) {
         if let Some(before) = last.as_ref()
             && let Some(notice) = codec_notice(before, &after)
         {
-            notice.tell(&held);
+            tell_daemon(&notice, &held);
         }
         *last = Some(after);
     });
@@ -975,7 +817,9 @@ fn watch_storage(notifications: &Notifications) {
             .iter()
             .map(|(volume, path)| (*volume, room(path)))
             .collect();
-        let low = sweep_rooms(&rooms, &mut levels, |notice| notice.tell(notifications));
+        let low = sweep_rooms(&rooms, &mut levels, |notice| {
+            tell_daemon(&notice, notifications);
+        });
         std::thread::sleep(if low {
             STORAGE_LOW_EVERY
         } else {
@@ -1036,8 +880,8 @@ mod tests {
     #[test]
     fn a_battery_running_out_reaches_the_person_as_a_notification() {
         let notifications = Notifications::new();
-        battery_notice(15, false, false).tell(&notifications);
-        battery_notice(5, true, true).tell(&notifications);
+        tell_daemon(&battery_notice(15, false, false), &notifications);
+        tell_daemon(&battery_notice(5, true, true), &notifications);
         let live = notifications.live();
         assert_eq!(live.len(), 2);
         let low = live
@@ -1086,7 +930,7 @@ mod tests {
         let mut levels = [Level::Plenty];
         let watched = [(Volume::Home, Some(room(44, 300)))];
         let low = sweep_rooms(&watched, &mut levels, |notice| {
-            notice.tell(&notifications);
+            tell_daemon(&notice, &notifications);
         });
         assert!(low);
         assert_eq!(levels, [Level::Full]);
@@ -1390,8 +1234,8 @@ mod tests {
     #[test]
     fn what_this_computer_could_not_read_reaches_the_person() {
         let notifications = Notifications::new();
-        workspaces_notice().tell(&notifications);
-        update_state_notice().tell(&notifications);
+        tell_daemon(&workspaces_notice(), &notifications);
+        tell_daemon(&update_state_notice(), &notifications);
 
         let live = notifications.live();
         assert_eq!(live.len(), 2, "each failure is its own notice");
@@ -1469,17 +1313,14 @@ mod tests {
             }
         });
         let notice = update_notice();
-        let id = notifications.alloc_id();
-        let resource = tilo_notifications_service::notification_resource(id);
-        notifications.push(Notification {
-            id,
-            app_name: notice.app,
-            summary: notice.title,
-            body: notice.body,
-            actions: notice.actions,
-            machine_wide: true,
-            ..Notification::new(id)
-        });
+        assert_eq!(notice.title, "Restart to finish updating");
+        assert_eq!(
+            notice.actions,
+            [(RESTART_ACTION.to_owned(), "Restart".to_owned())]
+        );
+        let resource =
+            tilo_notifications_service::notification_resource(tell_daemon(&notice, &notifications));
+        let id = notifications.live()[0].id;
         let mut arguments = serde_json::Map::new();
         arguments.insert("action".into(), RESTART_ACTION.into());
         let mut published = notifications;
@@ -1554,7 +1395,10 @@ mod tests {
             theirs: 31,
             ours: 30,
         };
-        version_mismatch_notice(&newer, Some("Framework 16")).tell_desk(&desks);
+        crate::notifications::tell_desk(
+            &version_mismatch_notice(&newer, Some("Framework 16")),
+            &desks,
+        );
         let banner = desks.log().active().first().cloned().expect("it is shown");
         assert_eq!(banner.app_name.as_deref(), Some("Updates"));
         assert_eq!(banner.mark().icon, Some(ui::icons::Icon::Bell));

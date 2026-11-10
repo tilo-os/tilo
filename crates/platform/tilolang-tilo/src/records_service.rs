@@ -63,7 +63,7 @@ pub struct RecordService {
     /// ([`crate::notices::Notices`]).
     notices: crate::notices::Notices,
     /// Where they are shown: the session's notifications. Until it is set, nothing is shown.
-    tell: Option<Box<dyn crate::notices::Tell>>,
+    tell: Option<Box<dyn tilo_session_core::notice::Notices>>,
 }
 
 impl RecordService {
@@ -591,7 +591,7 @@ impl RecordService {
 
     /// Where the notices the workspace holds for this device's person are shown: the session's
     /// notifications, the ones every app's notification goes through.
-    pub fn set_tell(&mut self, tell: impl crate::notices::Tell + 'static) {
+    pub fn set_tell(&mut self, tell: impl tilo_session_core::notice::Notices + 'static) {
         self.tell = Some(Box::new(tell));
     }
 
@@ -619,16 +619,16 @@ impl RecordService {
     }
 
     /// Mark seen the notices the person dismissed on this device since the last look: their
-    /// notification closed because they dismissed it ([`crate::notices::Closed::Dismissed`]),
+    /// notification closed because they dismissed it ([`tilo_session_core::notice::Closed::Dismissed`]),
     /// not because it ran out or because another device of theirs saw it.
     fn dismissed(&mut self) {
         let Some(tell) = &self.tell else {
             return;
         };
         let ids: Vec<String> = tell
-            .closed()
+            .take_closed()
             .into_iter()
-            .filter(|(_, reason)| *reason == crate::notices::Closed::Dismissed)
+            .filter(|(_, reason)| *reason == tilo_session_core::notice::Closed::Dismissed)
             .filter_map(|(tag, _)| self.notices.shown_as(&tag).map(str::to_owned))
             .collect();
         for id in ids {

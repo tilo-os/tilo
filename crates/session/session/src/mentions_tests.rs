@@ -203,18 +203,16 @@ fn a_mention_in_a_record_is_one_notice_for_the_reader_it_names() {
     assert_eq!(notice.title, "Ada mentioned you in ‘Launch plan’");
     assert_eq!(notice.body, "Ask @Bea about the date");
     assert_eq!(notice.app, "Notes");
+    let place = notice.place.clone().expect("it opens what it names");
     assert_eq!(
-        notice.place,
+        place,
         Place {
             app: NOTES.into(),
             record: NOTE.into(),
             resource: "notes.notebook/pages/p1".into(),
         }
     );
-    assert_eq!(
-        Place::from_activation(&notice.place.activation()),
-        Some(notice.place.clone())
-    );
+    assert_eq!(Place::from_activation(&place.activation()), Some(place));
 }
 
 #[test]
@@ -311,7 +309,7 @@ fn choosing_a_notice_gives_the_place_the_host_opens() {
         .borrow()
         .values()
         .next()
-        .map(|notice| notice.place.clone())
+        .and_then(|notice| notice.place.clone())
         .unwrap();
     shown.chosen.borrow_mut().push(place.clone());
     mentions.step();
@@ -387,7 +385,7 @@ fn chat_part_mention(write_value: &dyn Fn(&mut AutoCommit, &ObjId)) {
     assert_eq!(notice.title, "Ada mentioned you in #general");
     assert_eq!(notice.body, "@Bea can you look?");
     assert_eq!(
-        notice.place,
+        notice.place.clone().expect("it opens what it names"),
         Place {
             app: CHAT.into(),
             record: String::new(),

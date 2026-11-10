@@ -191,7 +191,7 @@ impl Finish {
     pub(crate) fn tell_went_back(
         &mut self,
         fell_back: &[Fallback],
-        mut tell: impl FnMut(crate::notices::Notice),
+        mut tell: impl FnMut(&crate::platform::notice::Notice),
     ) {
         if fell_back.is_empty() {
             return;
@@ -206,7 +206,7 @@ impl Finish {
             if told.contains(&fallback.id) {
                 continue;
             }
-            tell(crate::notices::went_back_notice(fallback));
+            tell(&crate::notices::went_back_notice(fallback));
             told.push(fallback.id.clone());
             record_heard(&heard, told);
         }
@@ -313,7 +313,7 @@ impl Session {
             self.shared
                 .notifications
                 .borrow()
-                .tell(crate::notices::version_mismatch_notice(
+                .tell(&crate::notices::version_mismatch_notice(
                     &mismatch,
                     device.as_deref(),
                 ));
@@ -341,7 +341,7 @@ impl Session {
                     self.shared
                         .notifications
                         .borrow()
-                        .tell(crate::notices::update_state_notice());
+                        .tell(&crate::notices::update_state_notice());
                 }
                 Update::default()
             }
@@ -366,7 +366,7 @@ impl Session {
                 .shared
                 .notifications
                 .borrow()
-                .tell(crate::notices::update_notice()),
+                .tell(&crate::notices::update_notice()),
             Due::UpdateNow => self.finish_update(update::UPDATE_NOW),
             Due::RestartDesktop => self.finish_update(update::RESTART_DESKTOP),
             Due::RestartMachine => self.finish_update(update::RESTART_TO_UPDATE),
@@ -672,7 +672,7 @@ mod tests {
             "nothing fell back before the reading says so"
         );
         finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
-            notice.tell(&notifications);
+            crate::notifications::tell_daemon(notice, &notifications);
         });
 
         let live = notifications.live();
@@ -703,7 +703,7 @@ mod tests {
         // The reading keeps carrying the report of every earlier fallback: this session says
         // nothing more of it.
         finish.tell_went_back(std::slice::from_ref(&fallback), |notice| {
-            notice.tell(&notifications);
+            crate::notifications::tell_daemon(notice, &notifications);
         });
         assert_eq!(notifications.live().len(), 1, "said once per session");
 
@@ -711,7 +711,7 @@ mod tests {
         // fallback once, however many sign-ins follow.
         let mut later = Finish::new(Instant::now(), None, Some(heard.clone()), None);
         later.tell_went_back(std::slice::from_ref(&fallback), |notice| {
-            notice.tell(&notifications);
+            crate::notifications::tell_daemon(notice, &notifications);
         });
         assert_eq!(notifications.live().len(), 1, "said once per person");
         assert_eq!(heard_ids(&heard), [id.to_owned()], "and recorded once");
@@ -731,14 +731,16 @@ mod tests {
         };
         let mut finish = Finish::new(Instant::now(), None, Some(heard.clone()), None);
         finish.tell_went_back(&[fallback("20261025T101010Z-aaaa")], |notice| {
-            notice.tell(&notifications);
+            crate::notifications::tell_daemon(notice, &notifications);
         });
         finish.tell_went_back(
             &[
                 fallback("20261025T101010Z-aaaa"),
                 fallback("20261102T090000Z-bbbb"),
             ],
-            |notice| notice.tell(&notifications),
+            |notice| {
+                crate::notifications::tell_daemon(notice, &notifications);
+            },
         );
         assert_eq!(
             notifications.live().len(),
@@ -752,7 +754,7 @@ mod tests {
 
         let mut nowhere = Finish::new(Instant::now(), None, None, None);
         nowhere.tell_went_back(&[fallback("20261103T090000Z-cccc")], |notice| {
-            notice.tell(&notifications);
+            crate::notifications::tell_daemon(notice, &notifications);
         });
         assert_eq!(notifications.live().len(), 2, "nothing repeats");
     }

@@ -420,6 +420,10 @@ pub struct Place {
 /// back when the person chooses it.
 pub const SCHEME: &str = "tilo-mention";
 
+/// What the tag of a mention's notice starts with ([`Place::tag`]): how a host showing them knows
+/// which of its notifications are theirs.
+pub const TAGS: &str = "mention:";
+
 impl Place {
     /// The activation URI a host carries the place by: `tilo-mention:<app>?<record>#<resource>`,
     /// each part percent-encoded.
@@ -452,7 +456,7 @@ impl Place {
     #[must_use]
     pub fn tag(&self, person: &str) -> String {
         format!(
-            "mention:{}/{}/{}/{}",
+            "{TAGS}{}/{}/{}/{}",
             self.app, self.record, self.resource, person
         )
     }
