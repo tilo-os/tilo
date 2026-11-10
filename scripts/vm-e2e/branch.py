@@ -826,13 +826,28 @@ def groups_in(state: dict, room: str) -> list[dict]:
     return [g for s in (ws or {}).get("strips") or [] for g in s.get("window_groups") or []]
 
 
+# Apps every image carries, in the order a new window is opened from them: an app already
+# showing in the workspace brings its window forward rather than opening another, so the next
+# one is tried.
+WINDOW_APPS = ("so.tilo.terminal", "so.tilo.notes", "so.tilo.calculator", "so.tilo.calendar",
+               "so.tilo.chat")
+
+
 def open_window(vm: TiloVm, ws: dict) -> object:
-    """A window on the workspace's desk: a new Terminal there. Its group id."""
+    """A new window on the workspace's desk, from the first app that opens one there. Its
+    group id."""
     select_workspace(vm, ws["room"])
     before = {g["id"] for g in groups_in(vm.state(), ws["room"])}
-    open_app(vm, "so.tilo.terminal")
-    new = wait_until(lambda: [g for g in groups_in(vm.state(), ws["room"]) if g["id"] not in before],
-                     60, interval=0.5)
+    new = None
+    for app in WINDOW_APPS:
+        try:
+            open_app(vm, app)
+        except (Failed, VmError):
+            continue
+        new = wait_until(lambda: [g for g in groups_in(vm.state(), ws["room"])
+                                  if g["id"] not in before], 30, interval=0.5)
+        if new:
+            break
     if not new:
         st = vm.state()
         where = {w.get("name"): [g["id"] for g in groups_in(st, w.get("room"))] for w in workspaces(st)}
