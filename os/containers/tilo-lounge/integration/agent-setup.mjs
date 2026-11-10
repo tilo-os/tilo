@@ -63,7 +63,7 @@ const finish = async (code, message) => {
   for (const browser of browsers) await browser.close().catch(() => {});
   if (message) {
     for (const {name, tab} of tabs) {
-      const lines = (tab.log ?? []).slice(-30);
+      const lines = (tab.log ?? []).slice(-60);
       if (lines.length) console.error(`--- ${name} said:\n${lines.join('\n')}`);
     }
     for (const {name} of tabs) console.error(`--- ${name} kept: ${report[`${name}Kept`]}\n--- ${name} people: ${report[`${name}People`]}`);
@@ -131,6 +131,19 @@ const visit = async name => {
   browsers.push(browser);
   const tab = await browser.tab({firstRun: true});
   tabs.push({name, tab});
+  // The tab's whole console and every request that failed, beside the
+  // errors the harness keeps: a step that stops leaves what led to it.
+  tab.log ??= [];
+  const asked = new Map();
+  browser.on(({sessionId, method, params}) => {
+    if (sessionId !== tab.sessionId) return;
+    if (method === 'Network.requestWillBeSent') asked.set(params.requestId, params.request.url);
+    else if (method === 'Network.loadingFailed') tab.log.push(`NET ${asked.get(params.requestId) ?? params.requestId}: ${params.errorText}`);
+    else if (method === 'Runtime.consoleAPICalled' && !['error', 'warning'].includes(params.type)) {
+      tab.log.push(`${params.type.toUpperCase()} ${params.args.map(a => a.value ?? a.description ?? '').join(' ')}`.slice(0, 600));
+    }
+  });
+  await tab.send('Network.enable', {}).catch(() => {});
   await tab.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false}).catch(() => {});
   await tab.send('Browser.grantPermissions', {origin: new URL(site).origin,
     permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']}).catch(() => {});
