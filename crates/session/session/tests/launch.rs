@@ -922,13 +922,17 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
         &apps.workspace_named(&workspace),
     )
     .expect("the app starts");
-    until(session, "the app runs", |_| started.exists());
-    let pid = fs::read_to_string(started)
-        .unwrap()
-        .lines()
-        .next()
-        .expect("the app's pid")
-        .trim()
+    // The launcher records its pid with a redirect that makes the file before it writes the
+    // number, so a file that is there is not yet a file that says anything.
+    let recorded = || {
+        fs::read_to_string(started)
+            .ok()
+            .and_then(|text| text.lines().next().map(str::trim).map(str::to_owned))
+            .filter(|pid| !pid.is_empty())
+    };
+    until(session, "the app runs", |_| recorded().is_some());
+    let pid = recorded()
+        .expect("the launcher recorded its pid")
         .parse()
         .expect("a pid");
     session
