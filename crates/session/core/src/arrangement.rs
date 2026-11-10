@@ -16,6 +16,7 @@ use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as Json;
+use tilo_actions::remote::session_actions;
 use tilo_actions::{
     ActionArgs, ActionContract, ActionParam, ActionSpec, EncodedAction, ExecutionMode,
     OperationKind, ParamType, ResourceSpec, ResultSpec,
@@ -42,8 +43,10 @@ const FLOAT_HEIGHT: u32 = 480;
 
 /// The operation type every arranging action carries.
 pub const OPERATION: &str = "tilo.shell.arranging";
-/// The resource the person's arrangement is published as.
-pub const RESOURCE: &str = "shell:arrangement";
+/// The resource the person's arrangement is published as. Its id is the one every door that names
+/// the system's `open` names ([`session_actions::ARRANGEMENT_RESOURCE`]): the broker rewrites a
+/// served app's `open` into the arrangement's own, so the two are one address.
+pub const RESOURCE: &str = session_actions::ARRANGEMENT_RESOURCE;
 /// The resource its history is published as: its undo and redo.
 pub const RECORD_RESOURCE: &str = "shell:arrangement-record";
 /// The kind of a place's own resource.

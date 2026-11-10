@@ -317,41 +317,202 @@ async fn native_task_activation_refuses_missing_host_signer_before_launching() {
         .await;
 }
 
+/// The session's own arrangement, as a host step that records the `open` it is handed: what the
+/// session's `SessionActions` does on its own pass, stood in for by recording the place asked
+/// for (`docs/designs/app-language/one-app-model.md` §3).
+#[derive(Default)]
+struct ServedOpenSteps {
+    /// The resource each `open` named, by the actor that asked.
+    placed: Mutex<Vec<(String, String)>>,
+}
+
+impl crate::services::HostStepServices for ServedOpenSteps {
+    fn provider(&self) -> &'static str {
+        tilo_actions::remote::session_actions::PROVIDER
+    }
+    fn app_id(&self) -> &'static str {
+        tilo_actions::remote::session_actions::PROVIDER
+    }
+    fn for_turns(&self) -> bool {
+        true
+    }
+    fn descriptors(&self) -> Vec<tilo_actions::ActionDescriptor> {
+        vec![tilo_actions::ActionDescriptor {
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            address: tilo_actions::ActionAddress::new(
+                tilo_actions::remote::session_actions::ARRANGEMENT_RESOURCE,
+                tilo_actions::remote::session_actions::OPEN,
+            ),
+            resource_kind: "shell".into(),
+            resource_label: "The person's arrangement".into(),
+            action_label: "Open a resource with its own view".into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            locus: tilo_actions::ExecutionLocus::default(),
+            kind: tilo_actions::OperationKind::Effect,
+            contract: tilo_actions::ActionContract {
+                kind: tilo_actions::ActionKind::Undoable,
+                ..tilo_actions::ActionContract::default()
+            },
+            input: tilo_actions::InputSpec::None,
+            params: Vec::new(),
+            view: None,
+        }]
+    }
+    fn start(
+        &self,
+        request: &crate::services::HostStepRequest<'_>,
+    ) -> Result<tilo_actions::remote::Pending<crate::services::HostStepOutcome>, String> {
+        let resource = match tilo_actions::remote::InvokeArgument::from_slot(request.argument) {
+            tilo_actions::remote::InvokeArgument::Json(arguments) => arguments
+                .get("resource")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or("the arrangement's open names no resource")?,
+            _ => return Err("the arrangement's open takes its arguments by name".into()),
+        };
+        self.placed
+            .lock()
+            .unwrap()
+            .push((request.actor.id().to_owned(), resource));
+        Ok(tilo_actions::remote::Pending::ready(Ok(
+            tilo_actions::ActionOutput::default(),
+        )))
+    }
+}
+
+/// The fixture with the session's arrangement among the host's steps, and the launcher's channel.
+fn fixture_with_arrangement() -> (
+    SignedLaunchFixture,
+    Arc<ServedOpenSteps>,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
+    let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
+    let launcher = Arc::new(Launcher {
+        launches: sender,
+        custody: Mutex::new(None),
+        workspaces: Mutex::new(Vec::new()),
+        served: Mutex::new(std::collections::BTreeMap::new()),
+    });
+    let steps = Arc::new(ServedOpenSteps::default());
+    let f = Fixture::with_services(
+        Some(launcher.clone()),
+        vec![steps.clone() as Arc<dyn crate::services::HostStepServices>],
+    );
+    *launcher.custody.lock().unwrap() = Some(f.directory.path().join("journal"));
+    permission(&f, true);
+    (
+        SignedLaunchFixture {
+            fixture: f,
+            launcher,
+        },
+        steps,
+        receiver,
+    )
+}
+
+/// Let the turn's agent `open` a resource through the session's arrangement, as the person who
+/// started the turn.
+fn grant_the_system_open(f: &Fixture) {
+    use tilo_action_policy::{Answer, Grant, KindSet, Subject, TreePath};
+    let node = tilo_actions::action_node(
+        &TreePath::workspace(workspace_id().to_string()),
+        tilo_actions::remote::session_actions::PROVIDER,
+        "shell",
+        tilo_actions::remote::session_actions::ARRANGEMENT_RESOURCE,
+        None,
+        tilo_actions::remote::session_actions::OPEN,
+    );
+    put_grant(
+        f,
+        Grant::new(
+            "fixture-arrangement-open",
+            Subject::agent("scribe"),
+            node,
+            KindSet::UNDOABLE,
+            Answer::Allow,
+            Subject::person(hex::encode(f.native.certificate.user_public_key)),
+        ),
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn a_task_open_of_an_app_the_session_serves_is_refused_before_any_wait() {
-    // An app whose model the session runs itself has no window process: a task's `open` of it is
-    // refused at once, naming the resource to open, rather than left to the delivery wait for a
-    // process that never publishes (`docs/designs/app-language/one-app-model.md` §3). Before this,
-    // the request waited the whole bounded delivery and the agent heard nothing for ten seconds.
+async fn a_task_open_of_an_app_the_session_serves_places_its_root() {
+    // Opening an app whose model the session runs itself *is* opening its root with its default
+    // view (`docs/designs/app-language/one-app-model.md` §3, "Opening Tube places its root
+    // resource with its default view"). A turn's `open` of such an app is never a refusal to
+    // read and retry, and never a launch of a window process that does not exist: the broker
+    // rewrites it into the session's own `open`, handed the root the session serves the app at,
+    // and the step places that root beside the conversation of the turn that asked.
     tokio::task::LocalSet::new()
         .run_until(async {
-            let (f, mut launches) = fixture();
+            let (f, steps, mut launches) = fixture_with_arrangement();
             // The launcher reports the Writer as served by the session, at its root.
             f.launcher
                 .served_with(WRITER, "tl:so.tilo.word-processor:root-main");
             f.approve();
-            let agent = f.channel(100, true);
-            let run = delivered(&agent).await;
-            let started = std::time::Instant::now();
-            let result = invoke_provider(
-                &agent,
-                &run,
-                &tilo_actions::remote::workspace_provider(&workspace_id().to_string()),
-                &format!("app.{WRITER}"),
-                "open",
-                serde_json::json!({}),
+            // The run answers the person's message, so its step is the turn's.
+            let turn =
+                tilo_action_policy::turn::Turn::new("chat.workspace/channels/c_tide", "message-1");
+            f.on_run(|run| run.turn = Some(turn.clone()));
+            f.caused("message-1");
+            grant_the_system_open(&f);
+            // The agent answering the person's turn, as the agent door's connection is.
+            let agent = Caller::agent_turn(
+                "scribe",
+                hex::encode(f.native.certificate.user_public_key),
+                turn,
             )
-            .await;
-            let error = result.expect_err("the served app has no window to open");
+            .in_workspace(workspace_id().to_string());
+            let started = std::time::Instant::now();
+            let receipt = f
+                .state
+                .action_invoke(
+                    &agent,
+                    None,
+                    None,
+                    &InvokeRequest {
+                        invocation: tilo_actions::InvocationId(uuid::Uuid::new_v4()),
+                        target: tilo_actions::remote::RemoteActionTarget {
+                            provider: tilo_actions::remote::workspace_provider(
+                                &workspace_id().to_string(),
+                            ),
+                            address: tilo_actions::ActionAddress::new(
+                                format!("app.{WRITER}"),
+                                "open",
+                            ),
+                        },
+                        argument: tilo_actions::remote::InvokeArgument::None,
+                        context: None,
+                        confirmation: None,
+                        revision: None,
+                        on_behalf_of: None,
+                        appearance: None,
+                        wait_ms: None,
+                    },
+                )
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("the served app's open places its root, never a refusal")
+                .expect("the turn takes the session's open");
             assert!(
-                error.to_string().contains("served by this session"),
-                "{error}"
+                matches!(
+                    receipt.status,
+                    tilo_actions::remote::ReceiptStatus::Completed { .. }
+                ),
+                "the step ran: {:?}",
+                receipt.status
             );
-            assert!(
-                error
-                    .to_string()
-                    .contains("tl:so.tilo.word-processor:root-main"),
-                "the refusal names the resource to open instead: {error}"
+            assert_eq!(
+                steps.placed.lock().unwrap().as_slice(),
+                [(
+                    "agent:scribe".to_owned(),
+                    "tl:so.tilo.word-processor:root-main".to_owned()
+                )],
+                "the session's open was handed the root the app is served at, as the turn's agent"
             );
             assert!(
                 started.elapsed() < std::time::Duration::from_secs(2),

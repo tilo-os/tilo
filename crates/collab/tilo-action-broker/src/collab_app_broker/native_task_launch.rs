@@ -61,6 +61,35 @@ pub(super) struct NativeLaunch {
     witness: Option<String>,
 }
 
+impl AppBrokerState {
+    /// The root `reask`'s child opens, when it is the plain `open` of an app this session
+    /// serves: opening such an app *is* opening its root with its default view, beside the place
+    /// the ask is in (`docs/designs/app-language/one-app-model.md` §3). The app is named as the
+    /// door names it ([`AppBrokerState::opened_app`]), read off the child's target. `None` for
+    /// every other child, and for an app a window of starts.
+    pub(super) fn native_served_open_root(
+        &self,
+        reask: &super::native_task_execution::ChildReask<'_>,
+    ) -> Option<String> {
+        let target = reask.target;
+        let asked = tilo_actions::remote::InvokeRequest {
+            invocation: reask.invocation,
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: target.provider.to_owned(),
+                address: tilo_actions::ActionAddress::new(target.resource, target.action),
+            },
+            argument: tilo_actions::remote::InvokeArgument::None,
+            context: None,
+            confirmation: None,
+            revision: None,
+            on_behalf_of: None,
+            appearance: None,
+            wait_ms: None,
+        };
+        self.served_open_root(&asked)
+    }
+}
+
 impl NativeLaunch {
     fn binding(&self) -> Result<crate::services::NativeTaskBinding, String> {
         let mut binding = self.run.native.clone();
@@ -633,19 +662,17 @@ impl AppBrokerState {
     ) -> Result<(u64, tilo_actions::InvocationUpdate), String> {
         let target = reask.target;
         let mut native = self.native_launch_for(reask)?;
-        // An app whose model this session runs itself has no window process to launch: a task's
-        // `open` of it is refused at once, naming the resource to open, rather than left to the
-        // delivery wait for a process that never publishes
-        // (`docs/designs/app-language/one-app-model.md` §3).
-        if let Some(root) = self
+        // An app whose model this session runs itself has no window process: a task's plain
+        // `open` of it is the system's `open` of its root, rewritten before this path
+        // (`docs/designs/app-language/one-app-model.md` §3). Reached here, never launch it.
+        if self
             .services
             .launcher
             .as_ref()
-            .and_then(|launcher| launcher.served(&native.app))
+            .is_some_and(|launcher| launcher.served(&native.app).is_some())
         {
             return Err(format!(
-                "{} is served by this session: it has no window to open; open its resource {root} \
-                 instead",
+                "{} is served by this session and opens no window process",
                 native.app
             ));
         }

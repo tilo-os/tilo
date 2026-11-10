@@ -43,7 +43,7 @@ mod app_admission;
 mod directory;
 mod launch_child;
 mod own_device;
-mod publishers;
+pub(super) mod publishers;
 mod readmit;
 mod shortcut_run;
 mod workspace_nodes;
@@ -1651,6 +1651,16 @@ impl AppBrokerState {
         if let Err(error) = check_execution(caller) {
             return Pending::ready(Err(error));
         }
+        // Opening an app this session serves is opening its root with its default view, beside
+        // the place the ask is in: the request becomes the arrangement's own `open` and is
+        // dispatched again, so there is one path and no refusal-and-retry
+        // (`docs/designs/app-language/one-app-model.md` §3). Every dispatch enters here — the
+        // eager door, a launchable provider's delivery, and a re-asked child alike — so the
+        // rewrite is made once, at the front of the door.
+        if let Some(root) = self.served_open_root(request) {
+            let opened = publishers::opened_request(request, &root);
+            return self.action_invoke_with_origin(caller, own_peer, launch, origin, &opened);
+        }
         // Host-service replay is an observation under the original custody,
         // not another dispatch through a possibly changed live catalogue.
         if let Some(origin) = origin {
@@ -1875,11 +1885,13 @@ impl AppBrokerState {
                 Some(offered),
             )
         };
-        // An app whose model this session runs itself has no window process to launch: the plain
-        // `open` of it is the session's own `open` step, which places its root
-        // (`docs/designs/app-language/one-app-model.md` §3).
-        if let Some(reason) = self.served_open_refusal(&app_id) {
-            return Err(ActionHostError::Unavailable { reason });
+        // An app whose model this session runs itself has no window process: its plain `open` is
+        // the session's own `open` step, which places its root, and `action_invoke_with_origin`
+        // rewrites every dispatch into it before any launch is admitted
+        // (`docs/designs/app-language/one-app-model.md` §3). Reached here, the rewrite was
+        // bypassed — never answer a served app's `open` with a launch.
+        if self.served_root(&app_id).is_some() {
+            return Err(ActionHostError::UnknownAction);
         }
         // Only a caller on this machine launches apps on this desktop.
         if caller.workspace().is_none() {
@@ -2810,11 +2822,12 @@ impl AppBrokerState {
             if caller.workspace().is_none() {
                 return Err(ActionHostError::UnknownAction);
             }
-            // An app whose model this session runs has no window to open: answer its `open` at
-            // once, naming the resource the session places
-            // (`docs/designs/app-language/one-app-model.md` §3).
-            if let Some(reason) = self.served_open_refusal(app_id) {
-                return Err(ActionHostError::Unavailable { reason });
+            // An app whose model this session runs has no window to open: its `open` is the
+            // session's own, placing its root, and the request was rewritten into that step
+            // before it reached here (`docs/designs/app-language/one-app-model.md` §3). Never
+            // launch a served app.
+            if self.served_root(app_id).is_some() {
+                return Err(ActionHostError::UnknownAction);
             }
             if !policy.may_in(
                 &workspace,

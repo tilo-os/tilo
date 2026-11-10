@@ -1490,7 +1490,7 @@ impl PendingInvocation {
 }
 
 // Remote-action host: the broker as a `tilo_actions::remote::ActionHost`.
-mod action_host;
+pub(super) mod action_host;
 mod admission_memo;
 mod app_consent;
 mod app_open_door;
