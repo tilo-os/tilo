@@ -2000,6 +2000,14 @@ fn steps_costs(n: usize) -> (Vec<(&'static str, Done)>, u64) {
         "scroll",
         step(&mut session, |session| session.window.scroll(0.0, -3.0)),
     ));
+    // The page of the row at the top of the list, opened where it stands: the page reads the
+    // task it shows and the index around it, never the workspace the task is one of.
+    let first = top_title(&mut session);
+    let (x, y) = shown_at(&mut session, &first);
+    out.push((
+        "open a task page",
+        step(&mut session, |session| session.window.click_at(x, y)),
+    ));
     (out, rows)
 }
 

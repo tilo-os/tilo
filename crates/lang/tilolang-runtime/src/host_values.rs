@@ -227,20 +227,25 @@ impl Core {
     fn index_of(&self, a: &Args<'_>) -> HResult<Option<Wasm>> {
         // A scalar item comes boxed (`some_i`, `some_f`), as a set's elements do.
         let want = crate::host_res::unboxed(self.val_whole(a.h(1)?)?);
-        let at = self.with_val(a.h(0)?, |v| match v {
+        let mut at: Option<Option<usize>> = self.with_val(a.h(0)?, |v| match v {
             Value::List(items) => Ok(Some(items.iter().position(|item| same_value(item, &want)))),
             Value::Coll(_) => Ok(None),
             other => trap(format!("expected a list, got {}", other.kind_name())),
         })?;
-        // A collection's items are the store's to order, so it is read through its items.
-        let at = match at {
-            Some(at) => at,
-            None => self
-                .items_of(self.val(a.h(0)?)?, "index_of")?
-                .iter()
-                .position(|item| same_value(item, &want)),
-        };
-        let at = at.map_or_else(Value::none, |at| {
+        // A collection's items are the store's to order: where one stands is read of its
+        // listing, which finds it by what orders it rather than by reading the items before it.
+        if at.is_none() {
+            let held = self.val(a.h(0)?)?;
+            let found = match (&held, Self::item_id(&want)) {
+                (Value::Coll(coll), Some(id)) => self.coll_index_of(coll, id)?,
+                _ => self
+                    .items_of(held, "index_of")?
+                    .iter()
+                    .position(|item| same_value(item, &want)),
+            };
+            at = Some(found);
+        }
+        let at = at.flatten().map_or_else(Value::none, |at| {
             Value::some(Value::Int(i64::try_from(at).unwrap_or(i64::MAX)))
         });
         self.ret_h(at)

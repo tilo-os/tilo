@@ -2594,7 +2594,11 @@ fn typing_into_a_shown_items_title_keeps_the_windows_tree() {
         workspace.settle();
         // The page stands in the row's place, so the page a keystroke renders again is the
         // row's own; the rows the list holds are the rows it held.
-        let _ = workspace.window.take_structure_change();
+        let change = workspace.window.take_structure_change();
+        assert!(
+            change <= ui::widget::StructureChange::Children,
+            "a keystroke in the page changed the window's structure: {change:?}"
+        );
         assert_eq!(
             workspace.rows().len(),
             rows,

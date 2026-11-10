@@ -68,6 +68,14 @@ impl ResourceRef {
             ty: ty.into(),
         })
     }
+
+    /// Whether this names the same resource as `other`: the document and the item, which is
+    /// what a reference is. The type is what the store holds of it, read where the item is, so
+    /// two references of one resource written with and without it are the one resource.
+    #[must_use]
+    pub fn same(&self, other: &Self) -> bool {
+        self.doc == other.doc && self.item == other.item
+    }
 }
 
 /// The document and the item (if any) of a resource written as [`ResourceRef::id_string`], or
@@ -736,7 +744,9 @@ pub fn same_value(lhs: &Value, rhs: &Value) -> bool {
                 .all(|(one, other)| same_value(one, other))
     };
     match (lhs, rhs) {
-        (Value::Ref(left), Value::Ref(right)) => left.target == right.target,
+        // A reference is the resource it names: its type is read from where it is, so two
+        // references of one resource are one, whichever of them was read with its type.
+        (Value::Ref(left), Value::Ref(right)) => left.target.same(&right.target),
         (Value::List(left), Value::List(right)) | (Value::Tuple(left), Value::Tuple(right)) => {
             all(left, right)
         }
@@ -793,6 +803,31 @@ mod tests {
         let text = serde_json::to_string(&json).unwrap();
         let back = from_json(&serde_json::from_str(&text).unwrap()).unwrap();
         assert_eq!(back, v);
+    }
+
+    #[test]
+    fn a_reference_is_the_resource_it_names_whichever_type_it_was_read_with() {
+        // A reference read where its type is known, and the same one read from an id alone (a
+        // row's item, a press): they name one resource, so they compare as one.
+        let typed = ResourceRef {
+            ty: "U".into(),
+            ..ResourceRef::root("d1", "T").item("i-1", "U")
+        };
+        let bare = ResourceRef::parse_id("d1/i-1", "").expect("an id");
+        assert_ne!(typed, bare, "the type is what the store holds of it");
+        assert!(typed.same(&bare), "and the resource is the one it names");
+        assert!(same_value(
+            &Value::Ref(RefValue {
+                target: Rc::new(typed.clone()),
+                author: None,
+            }),
+            &Value::Ref(RefValue {
+                target: Rc::new(bare),
+                author: Some(ModuleHash("m".into())),
+            }),
+        ));
+        let other = ResourceRef::parse_id("d1/i-2", "").expect("an id");
+        assert!(!typed.same(&other), "another item is another resource");
     }
 
     #[test]

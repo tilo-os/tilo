@@ -42,6 +42,10 @@ action add_card(c: Column, title: Text) -> Card { c.cards.insert(Card(title: tit
 
 action file(c: Column, card: Card) { c.cards.move(card, to: c.cards.len()) }
 
+action holds(c: Column, card: Card) -> Bool { c.cards.contains(card) }
+
+action where_it_stands(c: Column, card: Card) -> Option<Int> { c.cards.index_of(card) }
+
 action place(c: Column, card: Card, at: Int) { c.cards.move(card, to: at) }
 
 action retitle(card: Card, title: Text) { card.title = title }
@@ -335,6 +339,113 @@ fn shape(resource: &tilo_actions::ResourceSpec) -> String {
         resource.label,
         children.join(",")
     )
+}
+
+#[test]
+fn a_cards_place_is_read_of_the_collections_index_not_its_items() {
+    let mut r = workspace();
+    let todo = r.column("ada", "To do");
+    let doing = r.column("ada", "Doing");
+    let first = r.card("ada", &todo, "first");
+    let second = r.card("ada", &todo, "second");
+    let elsewhere = r.card("ada", &doing, "elsewhere");
+    let todo_at = r.at(&todo);
+    let walked = |r: &Replica| r.host.store().read_stats().doc.entries;
+    let stands = |r: &mut Workspace, card: &str| -> Option<i64> {
+        let card_at = r.at(card);
+        let (todo_at, card_at) = (todo_at.clone(), card_at.clone());
+        let value = call(r, "where_it_stands", &todo_at, &card_at);
+        match value {
+            Value::Opt(Some(inner)) => match *inner {
+                Value::Int(at) => Some(at),
+                other => panic!("{other:?}"),
+            },
+            Value::Opt(None) => None,
+            other => panic!("{other:?}"),
+        }
+    };
+    let holds = |r: &mut Workspace, card: &str| -> bool {
+        let (todo_at, card_at) = (todo_at.clone(), r.at(card));
+        match call(r, "holds", &todo_at, &card_at) {
+            Value::Bool(held) => held,
+            other => panic!("{other:?}"),
+        }
+    };
+    // Where a card stands, and whether the column holds it, are read of the column's index:
+    // what the record would be walked for — its entries — stays where it was.
+    let before = walked(&r.ada);
+    assert_eq!(stands(&mut r, &first), Some(0), "the first card's place");
+    assert_eq!(stands(&mut r, &second), Some(1), "the second card's place");
+    assert_eq!(
+        stands(&mut r, &elsewhere),
+        None,
+        "a card of another column stands in this one nowhere"
+    );
+    assert!(holds(&mut r, &first), "the column holds its first card");
+    assert!(holds(&mut r, &second), "the column holds its second card");
+    assert!(
+        !holds(&mut r, &elsewhere),
+        "the column does not hold a card of another column"
+    );
+    assert_eq!(
+        walked(&r.ada),
+        before,
+        "reading a card's place walked the record's entries"
+    );
+    // A card that leaves is one the column no longer holds, and the one after it stands where
+    // the one before it did.
+    r.file("ada", &doing, &first);
+    assert!(!holds(&mut r, &first), "the card moved out is not held");
+    assert_eq!(stands(&mut r, &second), Some(0), "the card moved up");
+    r.act(
+        "ada",
+        ("Column", &todo_at),
+        "place",
+        json!({ "card": r.at(&first), "at": 0 }),
+    );
+    assert_eq!(stands(&mut r, &first), Some(0), "the card moved back");
+    assert_eq!(stands(&mut r, &second), Some(1), "and the other after it");
+}
+
+/// What the action `name` answers for the card `card` of the column `column`, run as `ada`.
+fn call(r: &mut Workspace, name: &str, column: &str, card: &str) -> Value {
+    let meta = r.meta.clone();
+    let id = meta
+        .actions
+        .iter()
+        .find(|a| a.name == name)
+        .unwrap_or_else(|| panic!("no action {name}"))
+        .id
+        .clone();
+    let ty = |name: &str| {
+        r.meta
+            .types
+            .iter()
+            .find(|t| t.name == name)
+            .expect("the type the package declares")
+            .id
+            .clone()
+    };
+    let (column, card) = (
+        ResourceRef::parse_id(column, ty("Column")).unwrap(),
+        ResourceRef::parse_id(card, ty("Card")).unwrap(),
+    );
+    let outcome = r
+        .ada
+        .host
+        .runtime()
+        .invoke_action(
+            &tilolang_runtime::Principal::new("ada"),
+            (
+                id.as_str(),
+                vec![Value::resource(&column), Value::resource(&card)],
+            ),
+        )
+        .unwrap();
+    match outcome {
+        tilolang_runtime::InvokeOutcome::Done(value) => value,
+        other => panic!("{name}: {other:?}"),
+    }
 }
 
 #[test]
