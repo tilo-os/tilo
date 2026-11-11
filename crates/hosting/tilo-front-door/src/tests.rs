@@ -864,6 +864,19 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     );
     assert!(page.contains("approved on Laptop"), "{page}");
     assert!(page.contains("lasts until revoked"), "{page}");
+    // What a person reads of the scope: on the key's row, and the box the
+    // next key is made with.
+    assert!(page.contains("operates web pages in Browser"), "{page}");
+    assert!(page.contains("name=\"browser_pages\""), "{page}");
+    assert!(
+        page.contains("The key opens, fills in and clicks the page without asking you"),
+        "{page}"
+    );
+    assert!(
+        pages::key_created(&grant, "tilo_sk_secret")
+            .contains("It operates web pages in Browser; submitting a page still asks you."),
+        "the key shown once says what it may do"
+    );
     assert!(page.contains(&format!("action=\"/grants/{}/revoke\"", grant.id)));
     // Revoking it ends it.
     assert!(door.revoke_grant(&alice.id(), &grant.id).await.unwrap());

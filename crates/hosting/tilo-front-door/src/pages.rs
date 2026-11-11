@@ -170,7 +170,7 @@ pub fn key_created(grant: &Grant, token: &str) -> String {
     let pages = if grant.browser_pages {
         " It operates web pages in Browser; submitting a page still asks you."
     } else {
-        " It operates no web pages in Browser."
+        " It may not operate web pages in Browser."
     };
     let lasts = grant.expires_ms.map_or_else(
         || format!("It works until you revoke it on your grants page.{pages}"),
