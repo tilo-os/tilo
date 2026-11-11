@@ -2216,6 +2216,22 @@ impl Compositor {
         self.data.state.set_layer_shown(namespace, shown);
     }
 
+    /// Show the session's layer surface `namespace` once its app has drawn a frame after the
+    /// `after`th it committed: the page the session asked it for, at the size it asked, rather
+    /// than the one the app was left on.
+    pub fn show_layer_after(&mut self, namespace: &str, after: u64) {
+        self.data
+            .state
+            .set_layer_shown_after(namespace, true, Some(after));
+    }
+
+    /// How many frames the client of the layer surface `namespace` has committed: what a show asks
+    /// to be drawn after.
+    #[must_use]
+    pub fn layer_frames(&self, namespace: &str) -> u64 {
+        self.data.state.layer_frames(namespace)
+    }
+
     /// Hand the keyboard to the session's layer surface `namespace` until it is hidden, when it
     /// takes the keyboard at all; false while it does not stand yet.
     pub fn lend_layer_keyboard(&mut self, namespace: &str) -> bool {

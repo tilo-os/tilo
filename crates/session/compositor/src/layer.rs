@@ -66,9 +66,10 @@ pub(crate) struct Layers {
     /// before: it goes back there when that surface is hidden while it still holds it.
     lent: Option<(String, Option<WlSurface>)>,
     /// The layer surfaces the session has shown that have not yet drawn the size they asked for,
-    /// by name, and when showing them gives up waiting: the first frame a person sees is at the
-    /// size the panel fits, never a room-sized frame its app draws before it resizes.
-    settling: std::collections::BTreeMap<String, Instant>,
+    /// by name, when showing them gives up waiting, and the commit they must follow: the first
+    /// frame a person sees is at the size the panel fits, never a room-sized frame its app draws
+    /// before it resizes, and never one drawn before the page the session asked it for.
+    settling: std::collections::BTreeMap<String, (Instant, u64)>,
 }
 
 /// Where the session stands a layer surface it places: the room it may take in the layout's
@@ -94,6 +95,9 @@ struct Placed {
     /// Its rectangle in the logical layout, from its anchors, margins and size on the output it is
     /// on; empty before it has an output.
     rect: Rectangle<i32, Logical>,
+    /// How many frames its client has committed: what says a frame was drawn after something the
+    /// session asked it for.
+    frames: u64,
 }
 
 impl Placed {
@@ -182,15 +186,24 @@ impl Layers {
 
     /// When showing a surface next gives up waiting for its app to draw the size it asked for.
     fn settle_deadline(&self) -> Option<Instant> {
-        self.settling.values().copied().min()
+        self.settling.values().map(|(until, _)| *until).min()
     }
 
     /// Showing surfaces that waited too long for their app take the frame they have: whether any
     /// gave up.
     fn expire_settling(&mut self, now: Instant) -> bool {
         let before = self.settling.len();
-        self.settling.retain(|_, until| *until > now);
+        self.settling.retain(|_, (until, _)| *until > now);
         self.settling.len() != before
+    }
+
+    /// How many frames the client of the layer surface `namespace` has committed: 0 before it
+    /// stands anywhere.
+    fn frames(&self, namespace: &str) -> u64 {
+        self.surfaces
+            .iter()
+            .find(|placed| placed.namespace == namespace)
+            .map_or(0, |placed| placed.frames)
     }
 
     /// Whether the client of `namespace` has drawn it: a surface shows nothing before its first
@@ -283,6 +296,7 @@ impl State {
             output,
             layer,
             rect: Rectangle::default(),
+            frames: 0,
         });
         let index = self.layers.surfaces.len().saturating_sub(1);
         self.place_layer(index, true);
@@ -356,14 +370,22 @@ impl State {
         let Some(index) = self.layers.index_of(surface) else {
             return;
         };
+        if let Some(placed) = self.layers.surfaces.get_mut(index) {
+            placed.frames = placed.frames.saturating_add(1);
+        }
         self.place_layer(index, true);
-        // The frame it committed is at the size its app asks for: the one the person may see.
+        // The frame it committed is at the size its app asks for, and it was drawn after what the
+        // session last asked of it: the one the person may see.
         let settled = self.layers.surfaces.get(index).and_then(|placed| {
             let at_asked = placed.buffer_size().is_some_and(|size| {
                 (size.w - placed.rect.size.w).abs() <= 1 && (size.h - placed.rect.size.h).abs() <= 1
             });
-            (at_asked && self.layers.settling.contains_key(&placed.namespace))
-                .then(|| placed.namespace.clone())
+            let after = self
+                .layers
+                .settling
+                .get(&placed.namespace)
+                .is_some_and(|(_, after)| placed.frames > *after);
+            (at_asked && after).then(|| placed.namespace.clone())
         });
         if let Some(namespace) = settled {
             self.layers.settling.remove(&namespace);
@@ -383,9 +405,26 @@ impl State {
         self.mark_redraw_all();
     }
 
+    /// How many frames the client of the layer surface `namespace` has committed.
+    pub(crate) fn layer_frames(&self, namespace: &str) -> u64 {
+        self.layers.frames(namespace)
+    }
+
     /// Show the session's layer surface `namespace` , or hide it: a surface whose app the session
     /// keeps running between openings stands here without drawing, taking input or keeping room.
     pub(crate) fn set_layer_shown(&mut self, namespace: &str, shown: bool) {
+        self.set_layer_shown_after(namespace, shown, None);
+    }
+
+    /// Show the session's layer surface `namespace` only once its app has committed a frame after
+    /// the `after`th, or if it already has: the frame a person sees is drawn after the page the
+    /// session asked the app for, at the size it asked, never the one the app was left on.
+    pub(crate) fn set_layer_shown_after(
+        &mut self,
+        namespace: &str,
+        shown: bool,
+        after: Option<u64>,
+    ) {
         if self.layers.shown(namespace) == Some(shown) {
             return;
         }
@@ -394,9 +433,24 @@ impl State {
             // A surface the session places fits itself: the person sees the frame its app draws
             // once it is shown, not one drawn while it was hidden and never answered. Hold it
             // back until that frame is the size it asked for.
-            self.layers
-                .settling
-                .insert(namespace.to_owned(), Instant::now() + SETTLE);
+            // Only a show that names the commit it waits for can find its frame already drawn; one
+            // that names none waits for the next, as it always has.
+            let ready = after.is_some_and(|after| {
+                self.layers.surfaces.iter().any(|placed| {
+                    placed.namespace == namespace
+                        && placed.frames > after
+                        && placed.buffer_size().is_some_and(|size| {
+                            (size.w - placed.rect.size.w).abs() <= 1
+                                && (size.h - placed.rect.size.h).abs() <= 1
+                        })
+                })
+            });
+            if !ready {
+                let after = after.unwrap_or(0);
+                self.layers
+                    .settling
+                    .insert(namespace.to_owned(), (Instant::now() + SETTLE, after));
+            }
         } else if !shown {
             self.layers.settling.remove(namespace);
             self.return_layer_keyboard(namespace);

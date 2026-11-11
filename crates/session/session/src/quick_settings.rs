@@ -245,11 +245,12 @@ impl crate::Session {
         // already stands for costs nothing.
         let opening = self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true);
         // What the keys asked the panel to show, which it can only be told while it runs. It is
-        // told before it shows, so the first frame it commits is that page, fitted, rather than
-        // the page it was left on.
+        // told before it shows, and shows only once it has drawn a frame after the asking: the
+        // first frame a person sees is that page, fitted, rather than the one it was left on.
+        let drawn_before = self.compositor.layer_frames(SURFACE_NAMESPACE);
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
         self.ask_panel(&asked);
-        self.show_quick_settings();
+        self.show_quick_settings(opening.then_some(drawn_before));
         // The panel takes the keyboard once the person sees it: Tab walks its controls and Enter
         // opens a section; opened to paste, the person types to find a copy and Enter pastes it.
         // Until then the keys and what they asked (a copy made just before) stay with the field
@@ -388,12 +389,16 @@ impl crate::Session {
         self.shared.panel_back.set(None);
     }
 
-    /// Show the panel where it stands, posed as far as it has come.
-    fn show_quick_settings(&mut self) {
+    /// Show the panel where it stands, posed as far as it has come. Opened with `after`, it shows
+    /// once its app has drawn a frame after that commit: the page it was just asked for.
+    fn show_quick_settings(&mut self, after: Option<u64>) {
         self.compositor
             .set_layer_pose(SURFACE_NAMESPACE, self.quick_settings_panel.pose());
         if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true) {
-            self.compositor.show_layer(SURFACE_NAMESPACE, true);
+            match after {
+                Some(after) => self.compositor.show_layer_after(SURFACE_NAMESPACE, after),
+                None => self.compositor.show_layer(SURFACE_NAMESPACE, true),
+            }
         }
     }
 
