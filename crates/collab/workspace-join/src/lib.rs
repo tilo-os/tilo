@@ -789,6 +789,39 @@ pub fn verify_join_proof(
     })
 }
 
+/// Verify the redemption of `signed_invitation` by the device `device_cert`
+/// certifies, which already proved it holds its key on the connection that
+/// carries the redemption: a signature over keying material exported from
+/// that connection's TLS session, which its host checked. That proof is fresh
+/// and unique to the connection as a host challenge's answer is to the
+/// challenge, so no challenge is issued: the invitation and the certificate
+/// are checked as [`verify_join_proof`] checks them.
+///
+/// # Errors
+///
+/// The certificate does not verify or is revoked, or the invitation does not
+/// verify for its person.
+pub fn verify_connection_redemption(
+    signed_invitation: &[u8],
+    device_cert: &DeviceCert,
+    request_id: [u8; 32],
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<VerifiedRedemption, String> {
+    validate_certificate(device_cert, revocations, now_ns)?;
+    let join = decode_and_verify_invitation(
+        signed_invitation,
+        Some(device_cert.user_public_key),
+        revocations,
+        now_ns,
+    )?;
+    Ok(VerifiedRedemption {
+        join,
+        certificate: device_cert.clone(),
+        request_id,
+    })
+}
+
 /// Verify a stored `JoinTransportRequest::Complete`, in whichever challenge
 /// layout its bytes hold.
 ///

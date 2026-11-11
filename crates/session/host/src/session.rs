@@ -1260,6 +1260,9 @@ enum Exit {
     /// The door this session entered by refused it, as the host said: the
     /// session stops until the page acts.
     Refused(&'static str, String),
+    /// The session's host never proved itself: an entering session starts
+    /// before the host's proof is read, so this is its failed connect.
+    Unproved(LinkError),
 }
 
 struct Task {
@@ -1769,10 +1772,8 @@ impl Task {
                 };
                 status.next_attempt_at_ms = None;
             });
-            match self.connect().await {
+            let failed = match self.connect().await {
                 Ok(client) => {
-                    attempt = 0;
-                    refusals = 0;
                     // Waiting for admission is timed from when this page
                     // subscribes, not from the moment the host answers, so a
                     // host that holds the connection open still reports.
@@ -1781,44 +1782,50 @@ impl Task {
                     // A request the host had not answered is answered here:
                     // nothing waits on a connection that is gone.
                     self.requests_lost();
+                    if !matches!(exit, Exit::Unproved(_)) {
+                        attempt = 0;
+                        refusals = 0;
+                    }
                     match exit {
                         Exit::Closed => return self.closed().await,
                         Exit::Reconnect => continue,
-                        Exit::Lost(reason) => self.fail("transport-ended", reason),
+                        Exit::Lost(reason) => {
+                            self.fail("transport-ended", reason);
+                            None
+                        }
                         Exit::Refused(code, message) => {
                             if !self.stop_until_asked(code, message, &mut commands).await {
                                 return self.closed().await;
                             }
                             continue;
                         }
+                        Exit::Unproved(error) => Some(error),
                     }
                 }
-                Err(error) => {
-                    if let LinkError::Entry(refused) = &error {
-                        self.update(|status| status.entry = Some(Entry::refused(refused)));
+                Err(error) => Some(error),
+            };
+            if let Some(error) = failed {
+                let stop = match refusal(&error) {
+                    Refusal::Final(code, message) => Some((code, message)),
+                    Refusal::Unexplained => {
+                        refusals = refusals.saturating_add(1);
+                        (refusals >= REFUSALS_BEFORE_FAILING)
+                            .then(|| (NOT_ADMITTED.0, NOT_ADMITTED.1.to_owned()))
                     }
-                    let stop = match refusal(&error) {
-                        Refusal::Final(code, message) => Some((code, message)),
-                        Refusal::Unexplained => {
-                            refusals = refusals.saturating_add(1);
-                            (refusals >= REFUSALS_BEFORE_FAILING)
-                                .then(|| (NOT_ADMITTED.0, NOT_ADMITTED.1.to_owned()))
-                        }
-                        Refusal::Reachability => {
-                            refusals = 0;
-                            None
-                        }
-                    };
-                    if let Some((code, message)) = stop {
-                        if !self.stop_until_asked(code, message, &mut commands).await {
-                            return self.closed().await;
-                        }
-                        attempt = 0;
+                    Refusal::Reachability => {
                         refusals = 0;
-                        continue;
+                        None
                     }
-                    self.fail("transport-unavailable", error.to_string());
+                };
+                if let Some((code, message)) = stop {
+                    if !self.stop_until_asked(code, message, &mut commands).await {
+                        return self.closed().await;
+                    }
+                    attempt = 0;
+                    refusals = 0;
+                    continue;
                 }
+                self.fail("transport-unavailable", error.to_string());
             }
             attempt = attempt.saturating_add(1);
             let sleep = n0_future::time::sleep(self.offline(attempt));
@@ -1964,7 +1971,10 @@ impl Task {
                 },
                 envelope = client.recv() => {
                     let Some(mut envelope) = envelope else {
-                        return Exit::Lost("the host closed the session".into());
+                        return client.handshake_failure().map_or_else(
+                            || Exit::Lost("the host closed the session".into()),
+                            |error| Exit::Unproved(connect::iroh_link_error(error)),
+                        );
                     };
                     // What else the host sent is read in the same pass, so
                     // governance it replayed as many frames is admitted at

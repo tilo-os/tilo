@@ -143,7 +143,11 @@ async fn connect_entering(
             entering: config
                 .entering
                 .clone()
-                .map(|entering| tilo_relay_session::Entry { entering, access }),
+                .map(|entering| tilo_relay_session::Entry {
+                    entering,
+                    access,
+                    host_cert: config.host_cert.clone(),
+                }),
         },
     )
     .await
@@ -204,8 +208,6 @@ pub(super) fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkErr
         // A host that turns a device away closes the handshake stream
         // without a word.
         ClientError::NoHandshakeAnswer(reason) => LinkError::Refused(reason),
-        // The door said why it did not let this device in.
-        ClientError::Refused(refusal) => LinkError::Entry(refusal),
         // A host that rejects the device either fails its ack (auth) or
         // closes the handshake stream, which surfaces as an I/O error on the
         // next frame read.

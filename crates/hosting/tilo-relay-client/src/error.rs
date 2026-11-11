@@ -34,10 +34,6 @@ pub enum LinkError {
         /// The host's version.
         theirs: u32,
     },
-    /// The door this device entered a workspace by, or the workspace, did
-    /// not let it in ([`tilo_relay_protocol::entering`]).
-    #[error("{}", .0.reason())]
-    Entry(tilo_relay_protocol::entering::EnterRefusal),
 }
 
 /// Why a certification did not produce a certificate: the request could not

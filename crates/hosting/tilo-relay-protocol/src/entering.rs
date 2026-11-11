@@ -2,29 +2,40 @@
 //! with the workspace's host, rather than in requests of its own before it.
 //!
 //! The device is a stranger to the host until the workspace admits it, so its
-//! session carries the entry and nothing else until then:
+//! session carries the entry and nothing else until then. The device proves
+//! everything in its first message, so the host answers once:
 //!
 //! ```text
-//! client → server:  Hello { .., entering: Some(Entering) }
-//! server → client:  HelloAck, then EnterStep::Challenge (or ::Refused, and the end)
-//! client → server:  HelloAck2, then EnterProof (with its channel access request)
-//! server → client:  Envelope::Entered, then the session, or nothing more
+//! client → server:  Hello { .., entering: Some(Entry) }, its first requests right behind
+//! server → client:  HelloAck, then Envelope::Entered, then the session (or nothing more)
 //! ```
 //!
 //! The door lets the person in as its HTTP form did: an invitation bound to
 //! their user root and the one-time token that admits them, both kept on the
-//! host. The challenge is the workspace's own join challenge for that
-//! invitation and this device, and the proof is the device's signature over
-//! it, so the workspace admits exactly as it admits every redemption. The
-//! handshake's own proof (`HelloAck2`) shows the device holds its key before
-//! the workspace changes for it.
+//! host, and the workspace admits the device with that invitation as it
+//! admits every redemption.
+//!
+//! **The proof.** A host's challenge used to make the device's proofs fresh:
+//! the device signed the host's nonce (`HelloAck2`) and the workspace's join
+//! challenge, a round trip after its hello. The entry's proof
+//! ([`Entry::proof`]) is the device's signature over [`entry_digest`] instead:
+//! the entry, under keying material both ends export from the TLS session of
+//! the QUIC connection that carries it ([`ENTRY_BINDING_LABEL`], RFC 5705).
+//! That material is derived from both ends' handshake randomness and their
+//! key exchange, so it is unique to the connection and nobody outside it
+//! learns it: a captured proof proves nothing on any other connection, as an
+//! answer to one host challenge proved nothing under another. The host checks
+//! it against its own export before the door is asked, and then admits the
+//! device without a challenge of the workspace's own
+//! (`verify_connection_redemption`). An entry rides only a connection that
+//! has such a session; the host refuses it anywhere else.
 //!
 //! A server reads nothing else from an entering session until the workspace
-//! admitted it: a frame that is not the next step of the entry ends the
-//! session. A client may send its first requests right behind its proof; the
-//! host reads them only once it answered [`Entered::Admitted`].
+//! admitted it. A client sends its first requests right behind its hello; the
+//! host reads them only once it answered [`Entered::Admitted`]. The client
+//! checks the host's `HelloAck` before anything else it reads.
 //!
-//! The proof also carries the device's request to join the workspace's
+//! The entry also carries the device's request to join the workspace's
 //! channel group ([`collab_types::workspace_scope`]), which its channels
 //! prepare before they know anything of the workspace's governance. The host
 //! hands it to the workspace's channel participants as it admits the device,
@@ -47,6 +58,13 @@ pub const MAX_ENTERING: usize = 64;
 /// iroh join service's bound on one exchange.
 pub const ENTERING_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
+/// The label both ends export the connection's keying material under
+/// (RFC 5705), with an empty context: what [`entry_digest`] binds an entry to.
+pub const ENTRY_BINDING_LABEL: &[u8] = b"tilo/session-entry/v1";
+
+/// The domain of the device's signature over an entry ([`entry_digest`]).
+const ENTRY_PROOF_DOMAIN: &[u8] = b"tilo/session-entry-proof/v1\0";
+
 /// What a device that is not in the workspace yet asks for in its hello: to
 /// come in through `workspace`'s door.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -61,30 +79,11 @@ pub struct Entering {
     pub request_id: [u8; 32],
 }
 
-/// The host's step of an entry, right after its `HelloAck`.
+/// An entry as the hello carries it: what the device asks, its request for
+/// the workspace's channel keys, and its proof.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum EnterStep {
-    /// The workspace's join challenge for the invitation its door issued and
-    /// this device: what [`EnterProof`] signs.
-    Challenge {
-        #[serde(with = "serde_bytes")]
-        challenge: Vec<u8>,
-    },
-    /// The workspace already admitted this device under this entry, on a
-    /// connection that ended before its answer arrived: the device proves its
-    /// key (`HelloAck2`) and sends no [`EnterProof`].
-    In,
-    /// The door does not let the person in. The host closes the session.
-    Refused(EnterRefusal),
-}
-
-/// The device's signature over the challenge's join proof digest
-/// (`tilo_relay_protocol::workspaces::join_proof_digest`), right after its
-/// `HelloAck2`, and its request to join the workspace's channel group.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EnterProof {
-    #[serde(with = "serde_bytes")]
-    pub signature: [u8; 64],
+pub struct Entry {
+    pub entering: Entering,
     /// The device's signed request for the keys of the workspace's channel
     /// group ([`collab_types::workspace_scope`]), as it would publish it once
     /// a member: handed to the group's participants once the workspace
@@ -92,6 +91,27 @@ pub struct EnterProof {
     /// state, which asks as a member later. A request for another group, or
     /// from another device, is not handed on.
     pub access: Option<collab_types::MlsAccessRequestV1>,
+    /// The device's signature over [`entry_digest`] of this entry, under the
+    /// connection's keying material: it proves the device holds its key on
+    /// this connection and asks exactly this.
+    #[serde(with = "serde_bytes")]
+    pub proof: [u8; 64],
+}
+
+/// What a device signs to enter as `entering` asks, on the connection whose
+/// keying material ([`ENTRY_BINDING_LABEL`]) is `binding`, as `device`.
+#[must_use]
+pub fn entry_digest(binding: &[u8; 32], device: &[u8; 32], entering: &Entering) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(ENTRY_PROOF_DOMAIN);
+    hasher.update(binding);
+    hasher.update(device);
+    for field in [entering.workspace.as_bytes(), entering.name.as_bytes()] {
+        hasher.update(&u64::try_from(field.len()).unwrap_or(u64::MAX).to_le_bytes());
+        hasher.update(field);
+    }
+    hasher.update(&entering.request_id);
+    *hasher.finalize().as_bytes()
 }
 
 /// Why a door or its workspace did not let a device in.
@@ -151,7 +171,7 @@ pub enum Entered {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
 mod tests {
-    use super::{EnterRefusal, EnterStep};
+    use super::{EnterRefusal, Entered};
     use crate::directory::{DoorRefusalCode, DoorRefused};
 
     /// A door's refusal reaches the device whatever it names: an empty one, and
@@ -172,12 +192,12 @@ mod tests {
         };
         for refused in [plain, waiting] {
             for retry_after_secs in [None, Some(30)] {
-                let step = EnterStep::Refused(EnterRefusal::Door {
+                let step = Entered::Refused(EnterRefusal::Door {
                     refused: refused.clone(),
                     retry_after_secs,
                 });
                 let bytes = postcard::to_allocvec(&step).unwrap();
-                assert_eq!(postcard::from_bytes::<EnterStep>(&bytes).unwrap(), step);
+                assert_eq!(postcard::from_bytes::<Entered>(&bytes).unwrap(), step);
             }
         }
     }

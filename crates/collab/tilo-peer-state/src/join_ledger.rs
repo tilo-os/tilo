@@ -32,7 +32,8 @@ use crate::join::{
     InviteGrant, Inviter, JoinBootstrap, JoinChallenge, JoinChallengeRequest, JoinProof,
     MemberRole, MembershipChallenge, MembershipChallengeRequest, MembershipCompleteRequest,
     TransportHint, VerifiedJoin, VerifiedRedemption, decode_and_verify_invitation,
-    issue_invitation, issue_invitation_from, verify_join_proof, verify_membership_proof,
+    issue_invitation, issue_invitation_from, verify_connection_redemption, verify_join_proof,
+    verify_membership_proof,
 };
 
 /// Whether a device joining under this certificate names its person as it
@@ -799,6 +800,40 @@ impl JoinLedger {
             &workspace.revocations()?,
             now,
         )?;
+        self.redeemable(redemption.join().invite_id())?;
+        Ok(redemption)
+    }
+
+    /// Verify the redemption of `signed_invitation` by the device `cert`
+    /// certifies, whose host checked it holds its key on the connection that
+    /// carries the redemption ([`verify_connection_redemption`]): no
+    /// challenge of this workspace's stands in between. The invitation must
+    /// be this workspace's and still redeemable.
+    ///
+    /// # Errors
+    ///
+    /// The certificate or the invitation does not verify, the invitation is
+    /// another workspace's, or it was spent or cancelled.
+    pub fn redeem_on_connection(
+        &self,
+        workspace: &Governed<'_>,
+        signed_invitation: &[u8],
+        cert: &DeviceCert,
+        request_id: [u8; 32],
+        now: u64,
+    ) -> Result<VerifiedRedemption, JoinError> {
+        let redemption = verify_connection_redemption(
+            signed_invitation,
+            cert,
+            request_id,
+            &workspace.revocations()?,
+            now,
+        )?;
+        if redemption.join().grant().room != workspace.peer.workspace_id()
+            || redemption.join().grant().workspace_id != workspace.workspace_id
+        {
+            return Err(JoinError::new("invitation is not for this workspace"));
+        }
         self.redeemable(redemption.join().invite_id())?;
         Ok(redemption)
     }

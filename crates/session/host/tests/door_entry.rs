@@ -21,11 +21,14 @@ tilo_automerge_isolate::test_worker!();
 use std::sync::Arc;
 use std::time::Duration;
 
+use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::frame::{read_frame, read_frame_or_eof, write_frame};
 use tilo_relay_protocol::auth::{Hello, HelloAck};
-use tilo_relay_protocol::entering::{EnterRefusal, EnterStep, Entering as DoorEntry};
+use tilo_relay_protocol::entering::{
+    ENTRY_BINDING_LABEL, EnterRefusal, Entered, Entering as DoorEntry, Entry, entry_digest,
+};
 use tilo_relay_protocol::transport::{ALPN, Envelope};
 use tilo_session_host::device::{Entering, Held, door_entry, entered};
 use tilo_session_host::{MemoryPeerStore, TransportPhase};
@@ -164,6 +167,15 @@ async fn guest(root: &SigningKey, device: &SigningKey) -> DeviceCert {
     .unwrap()
 }
 
+/// The keying material an entry on `connection` is bound to, as this end exports it.
+fn binding(connection: &iroh::endpoint::Connection) -> [u8; 32] {
+    let mut binding = [0u8; 32];
+    connection
+        .export_keying_material(&mut binding, ENTRY_BINDING_LABEL, &[])
+        .unwrap();
+    binding
+}
+
 /// A raw session stream to the host, as anyone on the internet opens one.
 async fn dial(
     host: &support::TestHost,
@@ -213,80 +225,81 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     let root = new_key();
     let device = new_key();
     let cert = guest(&root, &device).await;
+    let device_key = cert.device_public_key;
     let entry = |workspace: &str| DoorEntry {
         workspace: workspace.to_owned(),
         name: "Stranger".to_owned(),
         request_id: rand::random(),
     };
-    let hello = |entering: Option<DoorEntry>| {
-        let hello = match entering {
-            Some(entering) => Hello::entering(cert.clone(), rand::random(), entering),
-            None => Hello::new(cert.clone(), rand::random()),
-        };
-        postcard::to_allocvec(&hello).unwrap()
+    // An entry's hello, its proof signed over `connection`'s keying material.
+    let hello_on = |connection: &iroh::endpoint::Connection,
+                    entering: DoorEntry,
+                    access: Option<collab_types::MlsAccessRequestV1>| {
+        let proof = device
+            .sign(&entry_digest(&binding(connection), &device_key, &entering))
+            .to_bytes();
+        Hello::entering(
+            cert.clone(),
+            rand::random(),
+            Entry {
+                entering,
+                access,
+                proof,
+            },
+        )
+    };
+    let frame = |hello: &Hello| postcard::to_allocvec(hello).unwrap();
+    let records = |workspace_id: u64| {
+        [Envelope::Subscribe { workspace_id }, Envelope::Ping].map(|asked| {
+            tilo_delivery_protocol::transport_v2::encode(
+                &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(asked),
+            )
+            .unwrap()
+        })
     };
 
     // A stranger's plain hello is turned away without a word.
     let (_endpoint, _connection, mut send, mut recv) = dial(&host).await;
-    write_frame(&mut send, &hello(None)).await.unwrap();
-    says_nothing_more(&mut recv).await;
-
-    // A stranger asking to enter a workspace with no door is told so, and nothing else.
-    let (_endpoint, _connection, mut send, mut recv) = dial(&host).await;
-    write_frame(&mut send, &hello(Some(entry(&private.workspace))))
+    write_frame(&mut send, &frame(&Hello::new(cert.clone(), rand::random())))
         .await
         .unwrap();
+    says_nothing_more(&mut recv).await;
+
+    // A stranger asking to enter a workspace with no door, with the workspace's records asked
+    // right behind, is told so and nothing else: what followed its hello is never read.
+    let (_endpoint, connection, mut send, mut recv) = dial(&host).await;
+    write_frame(
+        &mut send,
+        &frame(&hello_on(&connection, entry(&private.workspace), None)),
+    )
+    .await
+    .unwrap();
+    for asked in records(private.workspace_id) {
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut send, &asked).await;
+    }
     let _: HelloAck = postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
-    let step: EnterStep =
-        postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
+    let answer = tilo_delivery_protocol::transport_v2::decode(
+        &tokio::time::timeout(Duration::from_secs(20), read_frame(&mut recv, 1 << 20))
+            .await
+            .expect("the host answers the entry")
+            .unwrap(),
+    )
+    .unwrap();
     assert!(
-        matches!(step, EnterStep::Refused(EnterRefusal::Door { .. })),
-        "{step:?}"
+        matches!(
+            answer,
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Entered(
+                Entered::Refused(EnterRefusal::Door { .. })
+            ))
+        ),
+        "{answer:?}"
     );
     says_nothing_more(&mut recv).await;
 
-    // A stranger who asks to enter and then, instead of proving its key, asks for the
-    // workspace's records is cut off: nothing is served, and it is admitted nowhere.
+    // A stranger whose proof is not its key's signature, carrying a request for the workspace's
+    // channel keys and its records asked behind, is turned away without a word: nothing is
+    // served, the request goes nowhere, and it is admitted nowhere.
     let (_endpoint, _connection, mut send, mut recv) = dial(&host).await;
-    write_frame(&mut send, &hello(Some(entry(&lounge.workspace))))
-        .await
-        .unwrap();
-    let _: HelloAck = postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
-    let step: EnterStep =
-        postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
-    assert!(matches!(step, EnterStep::Challenge { .. }), "{step:?}");
-    for asked in [
-        Envelope::Subscribe {
-            workspace_id: lounge.workspace_id,
-        },
-        Envelope::Ping,
-    ] {
-        let frame = tilo_delivery_protocol::transport_v2::encode(
-            &tilo_delivery_protocol::transport_v2::EnvelopeV2::State(asked),
-        )
-        .unwrap();
-        let _ = tokio::io::AsyncWriteExt::write_all(&mut send, &frame).await;
-    }
-    says_nothing_more(&mut recv).await;
-
-    // A stranger who proves its key but not the workspace's challenge, its proof carrying a
-    // request for the workspace's channel keys, is refused: the request goes nowhere, and the
-    // stream says nothing after the refusal.
-    let (_endpoint, _connection, mut send, mut recv) = dial(&host).await;
-    write_frame(&mut send, &hello(Some(entry(&lounge.workspace))))
-        .await
-        .unwrap();
-    let ack: HelloAck =
-        postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
-    let step: EnterStep =
-        postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
-    assert!(matches!(step, EnterStep::Challenge { .. }), "{step:?}");
-    let ack2 = tilo_relay_client::signer::signed_ack2(&device, &ack.server_nonce)
-        .await
-        .unwrap();
-    write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
-        .await
-        .unwrap();
     let access = collab_types::MlsAccessRequestV1::signed(
         collab_types::workspace_scope(&lounge.workspace),
         vec![7; 512],
@@ -294,28 +307,40 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         &device,
     )
     .unwrap();
-    let proof = tilo_relay_protocol::entering::EnterProof {
-        signature: [0; 64],
-        access: Some(access),
-    };
-    write_frame(&mut send, &postcard::to_allocvec(&proof).unwrap())
-        .await
-        .unwrap();
-    let answer = tokio::time::timeout(Duration::from_secs(20), read_frame(&mut recv, 1 << 20))
-        .await
-        .expect("the host answers the proof")
-        .unwrap();
-    let answer = tilo_delivery_protocol::transport_v2::decode(&answer).unwrap();
-    assert!(
-        matches!(
-            answer,
-            tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Entered(
-                tilo_relay_protocol::entering::Entered::Refused(_)
-            ))
-        ),
-        "{answer:?}"
+    let forged = Hello::entering(
+        cert.clone(),
+        rand::random(),
+        Entry {
+            entering: entry(&lounge.workspace),
+            access: Some(access),
+            proof: [0; 64],
+        },
     );
+    write_frame(&mut send, &frame(&forged)).await.unwrap();
+    for asked in records(lounge.workspace_id) {
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut send, &asked).await;
+    }
     says_nothing_more(&mut recv).await;
+
+    // A proof captured from one connection proves nothing on another: the stranger's own proof,
+    // replayed on a second connection, is turned away there without a word, as an answer to one
+    // host challenge was under the next.
+    let (_endpoint, first, _send, _recv) = dial(&host).await;
+    let captured = hello_on(&first, entry(&lounge.workspace), None);
+    let (_endpoint, second, mut send, mut recv) = dial(&host).await;
+    assert_ne!(binding(&first), binding(&second));
+    write_frame(&mut send, &frame(&captured)).await.unwrap();
+    for asked in records(lounge.workspace_id) {
+        let _ = tokio::io::AsyncWriteExt::write_all(&mut send, &asked).await;
+    }
+    says_nothing_more(&mut recv).await;
+    let members = workspaces.summary(&lounge.workspace).await.unwrap().members;
+    assert!(
+        members
+            .iter()
+            .all(|member| member.user_public_key != cert.user_public_key),
+        "a stranger whose entry never proved itself is a member"
+    );
 
     // Its key, in a session of its own, is still a stranger's: the host admits it nowhere.
     let probe = start_peer(

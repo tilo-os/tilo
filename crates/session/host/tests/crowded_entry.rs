@@ -635,18 +635,21 @@ const KEY_RECHECK: Duration = Duration::from_secs(1);
 /// - the session's QUIC handshake, its Initial right behind the answer to
 ///   that challenge rather than a round trip later, after the relay's
 ///   confirmation: 1;
-/// - the hello, whose answer carries the door's challenge, and the proof
-///   that admits the guest: 1.5;
-/// - the replay of governance and the desktop, about 0.45 MB, from a
-///   256 KiB initial window rather than QUIC's 14 KB, which took six: 1.5.
+/// - the hello, which carries the entry with its proof (bound to the QUIC
+///   connection, so no challenge of the host's comes first) and has the
+///   guest's first requests right behind it: 0.5;
+/// - the host's answer and the replay of governance and the desktop behind
+///   it, about 0.45 MB, from a 256 KiB initial window rather than QUIC's
+///   14 KB, which took six: 1.5.
 ///
-/// The desktop's keys take none of their own: the proof carries the guest's
+/// The desktop's keys take none of their own: the hello carries the guest's
 /// request for them, and the Welcome is the first thing its replay writes.
-/// Six in all; at 400 ms the desktop shows in about 3.4 s.
-const MAX_ROUND_TRIPS: f64 = 6.5;
+/// Five in all, which the fixed allowance reads as about four; at 400 ms the
+/// desktop shows in about 2.9 s.
+const MAX_ROUND_TRIPS: f64 = 4.75;
 
 /// The HTTPS requests a fresh guest makes to enter: the host's certificate.
-/// The door, the workspace's challenge and the admission ride the session.
+/// The door and the admission ride the session.
 const MAX_REQUESTS: usize = 1;
 
 /// What a fresh guest may receive before its desktop shows, about 0.49 MB

@@ -22,9 +22,7 @@ use crate::auth::{
 use crate::frame::{read_frame, write_frame};
 use crate::policy::TrustPolicy;
 use tilo_lock::RwLockRecover as _;
-use tilo_relay_protocol::entering::{
-    ENTERING_DEADLINE, EnterProof, EnterRefusal, EnterStep, Entered, Entering, MAX_ENTERING,
-};
+use tilo_relay_protocol::entering::{ENTERING_DEADLINE, Entered, Entry, MAX_ENTERING};
 
 /// The most bytes a pre-authentication frame may declare. The session's
 /// 64 MiB limit would let a few hundred idle peers pin the host's memory.
@@ -44,40 +42,13 @@ pub type EntryFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output =
 /// Where an entering device comes in: the host's workspaces, as their door
 /// and join answer it.
 pub trait Doorway: Send + Sync {
-    /// Let `cert`'s person in through the door `entering` names and
-    /// challenge the device for the invitation the door issued.
-    fn ask<'a>(
-        &'a self,
-        cert: &'a DeviceCert,
-        entering: &'a Entering,
-    ) -> EntryFuture<'a, Result<Asked, EnterRefusal>>;
-    /// Admit `cert`'s device, which signed `challenge` with `proof`'s
-    /// signature under the door's `token`, shown to the workspace's people as
-    /// `entering`'s name; and once admitted, hand the workspace's channel
-    /// participants the device's request for the keys of its group.
-    fn prove<'a>(
-        &'a self,
-        cert: &'a DeviceCert,
-        entering: &'a Entering,
-        challenge: Vec<u8>,
-        token: String,
-        proof: EnterProof,
-    ) -> EntryFuture<'a, Entered>;
-}
-
-/// What a door answered an entering device.
-pub enum Asked {
-    /// The workspace's challenge, which goes to the device, and the door's
-    /// one-time token its admission is redeemed with, which stays here.
-    Challenge {
-        /// The join challenge the device signs.
-        challenge: Vec<u8>,
-        /// The door's one-time token for the invitation it issued.
-        token: String,
-    },
-    /// The workspace already admitted the device under this entry: its
-    /// answer was lost with an earlier connection.
-    In(Entered),
+    /// Let `cert`'s person in through the door `entry` names and have the
+    /// workspace admit the device, which proved it holds its key on the
+    /// connection carrying the entry; and once admitted, hand the
+    /// workspace's channel participants the device's request for the keys of
+    /// its group. An entry the workspace already admitted (its answer was
+    /// lost with an earlier connection) is answered again.
+    fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -126,10 +97,6 @@ pub enum HandshakeError {
     /// one ([`crate::entering`]): only the session endpoint does.
     #[error("this endpoint lets no one enter a workspace")]
     NotEntering,
-    /// The door or its workspace did not let the entering device in; it was
-    /// told why.
-    #[error("entry refused: {}", .0.reason())]
-    Refused(EnterRefusal),
 }
 
 /// The relay's own identity and its live revocation list, shared by every
@@ -245,13 +212,16 @@ impl LiveIdentity {
 
     /// The session endpoint's handshake: as [`Self::authenticate`] under
     /// `trust`, or, for a hello that asks to enter a workspace, the entry
-    /// through `doorway` ([`crate::entering`]). Resolves to the peer and,
-    /// for an entry, what the workspace answered it.
+    /// through `doorway` ([`crate::entering`]), whose proof is checked under
+    /// `binding`, the keying material this end exported from the connection
+    /// carrying the stream. A stream with no such connection (`None`) takes
+    /// no entry. Resolves to the peer and, for an entry, what the workspace
+    /// answered it.
     ///
     /// # Errors
     ///
-    /// As [`Self::authenticate`]; [`HandshakeError::Refused`] when the door
-    /// refused the entering device, which was told so.
+    /// As [`Self::authenticate`]; [`HandshakeError::NotEntering`] for an entry
+    /// with no doorway or no connection to bind it to.
     pub async fn authenticate_or_enter<R, W>(
         &self,
         trust: EndpointTrust<'_>,
@@ -259,6 +229,7 @@ impl LiveIdentity {
         send: &mut W,
         max_frame: usize,
         doorway: Option<&dyn Doorway>,
+        binding: Option<[u8; 32]>,
     ) -> Result<(AuthenticatedPeer, Option<Entered>), HandshakeError>
     where
         R: AsyncRead + Unpin + Send,
@@ -266,23 +237,26 @@ impl LiveIdentity {
     {
         let permit = PENDING_HANDSHAKES.try_acquire().map_err(|_| busy())?;
         let max_frame = max_frame.min(MAX_HANDSHAKE_FRAME_BYTES);
-        let hello = n0_future::time::timeout(HANDSHAKE_DEADLINE, async {
+        let mut hello = n0_future::time::timeout(HANDSHAKE_DEADLINE, async {
             decode_hello(&read("read hello", recv, max_frame).await?, send).await
         })
         .await
         .map_err(|_| timed_out())??;
-        let Some(entering) = hello.entering.clone() else {
+        let Some(entry) = hello.entering.take() else {
             drop(permit);
             return self
                 .authenticate_hello(trust, &hello, recv, send, max_frame)
                 .await
                 .map(|peer| (peer, None));
         };
-        let doorway = doorway.ok_or(HandshakeError::NotEntering)?;
+        hello.entering = Some(entry);
+        let (Some(doorway), Some(binding)) = (doorway, binding) else {
+            return Err(HandshakeError::NotEntering);
+        };
         let entry = ENTERING.try_acquire().map_err(|_| busy())?;
         let entered = n0_future::time::timeout(
             ENTERING_DEADLINE,
-            enter(self, &hello, &entering, recv, send, max_frame, doorway),
+            enter(self, hello, &binding, send, doorway),
         )
         .await
         .map_err(|_| timed_out())?;
@@ -309,67 +283,52 @@ fn timed_out() -> HandshakeError {
     }
 }
 
-/// One entry, after its hello: the device's certificate checked as any
-/// device's (valid and unrevoked, of any person), the door asked and the
-/// device challenged, the device's proof of its key and of the challenge
-/// read, and the workspace's answer. Nothing but these frames is read.
-async fn enter<R, W>(
+/// One entry, after its hello: the device's certificate and its proof on
+/// this connection checked ([`auth::server_enter`]), this server's proof
+/// written at once, and the workspace's answer once the door let the person
+/// in and the workspace admitted the device. Nothing after the hello is read.
+async fn enter<W>(
     identity: &LiveIdentity,
-    hello: &Hello,
-    entering: &Entering,
-    recv: &mut R,
+    mut hello: Hello,
+    binding: &[u8; 32],
     send: &mut W,
-    max_frame: usize,
     doorway: &dyn Doorway,
 ) -> Result<(AuthenticatedPeer, Entered), HandshakeError>
 where
-    R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    let (pending, ack) = identity.begin(
-        EndpointTrust::Fixed(HandshakeTrust::AnyCertifiedDevice),
-        hello,
-    )?;
-    let asking = crate::timing::start();
-    let asked = doorway.ask(&hello.cert, entering).await;
-    crate::timing::event("entry.door_ask", asking, 0);
-    let step = match &asked {
-        Ok(Asked::Challenge { challenge, .. }) => EnterStep::Challenge {
-            challenge: challenge.clone(),
-        },
-        Ok(Asked::In(_)) => EnterStep::In,
-        Err(refusal) => EnterStep::Refused(refusal.clone()),
+    let (peer, ack) = {
+        let server = ServerIdentity {
+            own_user: &identity.user_public_key,
+            cert: &identity.cert,
+            key: &identity.signing_key,
+        };
+        let revocations = identity.revocations.read_recover();
+        auth::server_enter(
+            &server,
+            &revocations,
+            &hello,
+            binding,
+            tilo_clock::unix_now_ns(),
+            rand::random(),
+        )?
     };
-    for (stage, frame) in [
-        ("encode ack", postcard::to_allocvec(&ack)),
-        ("encode entry step", postcard::to_allocvec(&step)),
-    ] {
-        let frame = frame.map_err(|source| HandshakeError::Codec { stage, source })?;
-        write_frame(send, &frame)
-            .await
-            .map_err(|source| HandshakeError::Io {
-                stage: "write ack",
-                source,
-            })?;
-    }
-    let asked = asked.map_err(HandshakeError::Refused)?;
-    // From the host's answer to the device's proof: a round trip, and the
-    // device's signing.
-    let proving = crate::timing::start();
-    let ack2: HelloAck2 = decode("decode ack2", &read("read ack2", recv, max_frame).await?)?;
-    let peer = pending.finish(&ack2)?;
-    let (challenge, token) = match asked {
-        Asked::Challenge { challenge, token } => (challenge, token),
-        Asked::In(entered) => return Ok((peer, entered)),
+    let ack = postcard::to_allocvec(&ack).map_err(|source| HandshakeError::Codec {
+        stage: "encode ack",
+        source,
+    })?;
+    write_frame(send, &ack)
+        .await
+        .map_err(|source| HandshakeError::Io {
+            stage: "write ack",
+            source,
+        })?;
+    let Some(entry) = hello.entering.take() else {
+        return Err(HandshakeError::NotEntering);
     };
-    let proof: EnterProof = decode(
-        "decode entry proof",
-        &read("read entry proof", recv, max_frame).await?,
-    )?;
-    crate::timing::event("entry.proof_wait", proving, 0);
-    let entered = doorway
-        .prove(&hello.cert, entering, challenge, token, proof)
-        .await;
+    let admitting = crate::timing::start();
+    let entered = doorway.enter(&hello.cert, entry).await;
+    crate::timing::event("entry.admitted", admitting, 0);
     Ok((peer, entered))
 }
 
@@ -802,10 +761,14 @@ mod tests {
         let entering = Hello::entering(
             identity.cert.clone(),
             [1; 32],
-            Entering {
-                workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
-                name: "Stranger".to_owned(),
-                request_id: [2; 32],
+            Entry {
+                entering: tilo_relay_protocol::entering::Entering {
+                    workspace: "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71".to_owned(),
+                    name: "Stranger".to_owned(),
+                    request_id: [2; 32],
+                },
+                access: None,
+                proof: [0; 64],
             },
         );
         for supplied in [false, true] {

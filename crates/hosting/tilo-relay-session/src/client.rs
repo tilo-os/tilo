@@ -32,7 +32,7 @@ mod handshake;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::session_carrier::StreamCarrier;
 use crate::session_carrier::{CarrierHandle, IrohCarrier, SessionChannels};
-use handshake::authenticate_server;
+use handshake::{authenticate_server, enter_server};
 use tilo_delivery_protocol::transport_v2::{EnvelopeV2, SessionReader};
 
 /// A live authenticated session with a relay. Handles are cheap;
@@ -53,6 +53,10 @@ pub struct RelayClient {
     /// Owns the authenticated pump's transport lifetime, independently of the
     /// state channel and its certification rules.
     carrier: CarrierHandle,
+    /// Why an entering session's host did not prove itself: its proof is
+    /// read after the session started ([`Entry`]), so a session that ended
+    /// before saying anything says here why ([`Self::handshake_failure`]).
+    handshake: Arc<Mutex<Option<ClientError>>>,
 }
 
 #[derive(Clone, Debug)]
@@ -92,8 +96,12 @@ pub struct Entry {
     /// The workspace whose door it enters by, as its hello names it.
     pub entering: tilo_relay_protocol::entering::Entering,
     /// Its signed request for the keys of the workspace's channel group,
-    /// which its proof carries ([`tilo_relay_protocol::entering::EnterProof`]).
+    /// which its hello carries ([`tilo_relay_protocol::entering::Entry`]).
     pub access: Option<collab_types::MlsAccessRequestV1>,
+    /// The host's certificate, pinned: the session is taken as this host's
+    /// from its start, before the host's proof arrives, and that proof is
+    /// checked first of all it reads.
+    pub host_cert: DeviceCert,
 }
 
 fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> bool {
@@ -214,10 +222,6 @@ pub enum ClientError {
     /// hello; [`RelayClient::probe_handshake_version`] tells the two apart.
     #[error("the host closed the stream without answering: {0}")]
     NoHandshakeAnswer(String),
-    /// The door this device entered by, or its workspace, did not let it in
-    /// ([`tilo_relay_protocol::entering`]).
-    #[error("{}", .0.reason())]
-    Refused(tilo_relay_protocol::entering::EnterRefusal),
 }
 
 /// What a host answered a hello without a leading version
@@ -291,6 +295,19 @@ fn handshake_frame<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T, Cl
         crate::auth::HandshakeFrameError::Version { theirs } => ClientError::PeerVersion { theirs },
         crate::auth::HandshakeFrameError::Codec(error) => ClientError::Codec(error.to_string()),
     })
+}
+
+/// The keying material this end exports from `conn`'s TLS session, which an
+/// entry's proof is bound to ([`tilo_relay_protocol::entering::ENTRY_BINDING_LABEL`]).
+fn entry_binding(conn: &iroh::endpoint::Connection) -> Result<[u8; 32], ClientError> {
+    let mut binding = [0u8; 32];
+    conn.export_keying_material(
+        &mut binding,
+        tilo_relay_protocol::entering::ENTRY_BINDING_LABEL,
+        &[],
+    )
+    .map_err(|error| ClientError::Iroh(format!("no keying material to enter with: {error:?}")))?;
+    Ok(binding)
 }
 
 fn classify_connect_error(error: &iroh::endpoint::ConnectError) -> ClientError {
@@ -653,15 +670,17 @@ impl RelayClient {
     /// valid host certificate behind the pinned endpoint);
     /// `expected_server_device` additionally pins its device key. With
     /// `credentials.entering`, a device the host has not admitted yet enters a workspace
-    /// through its door on this session: the host's answer is the session's
-    /// first envelope ([`Envelope::Entered`]), and requests sent before it are
-    /// read once the workspace admitted the device.
+    /// through its door on this session: the hello carries it with its proof,
+    /// the client returns as soon as it is written, so requests follow right
+    /// behind; the host reads them once the workspace admitted the device.
+    /// The host's answer is the session's first envelope
+    /// ([`Envelope::Entered`]); its proof is checked before it, and a session
+    /// that ends unproved says why in [`Self::handshake_failure`].
     ///
     /// # Errors
     ///
-    /// Returns [`ClientError`] as [`Self::connect`] does,
-    /// [`ClientError::Sign`] when the signer fails, or
-    /// [`ClientError::Refused`] when the door did not let the device in.
+    /// Returns [`ClientError`] as [`Self::connect`] does, or
+    /// [`ClientError::Sign`] when the signer fails.
     pub async fn connect_with_signer(
         endpoint: Endpoint,
         relay_addr: EndpointAddr,
@@ -815,14 +834,23 @@ impl RelayClient {
                 own_device: true,
                 interactive_scope: None,
             },
-            None,
         )
         .await?;
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
         let carrier = StreamCarrier::start(async move {
-            let mut reader = SessionReader::new(read);
-            if run_v2_pump(&mut write, &mut reader, &mut outbound_rx, &inbound_tx, None).await {
+            let handshake = Mutex::new(None);
+            if run_v2_pump(
+                &mut write,
+                read,
+                None,
+                &handshake,
+                &mut outbound_rx,
+                &inbound_tx,
+                None,
+            )
+            .await
+            {
                 use tokio::io::AsyncWriteExt as _;
                 let _ = write.shutdown().await;
             }
@@ -899,29 +927,55 @@ impl RelayClient {
             .open_bi()
             .await
             .map_err(|e| ClientError::Iroh(e.to_string()))?;
-        let relay_peer = authenticate_server(
-            &mut send,
-            &mut recv,
-            &own_cert,
-            signer,
-            &revocations,
-            &server,
-            entering,
-        )
-        .await?;
+        let (relay_peer, awaiting) = match entering {
+            None => (
+                authenticate_server(
+                    &mut send,
+                    &mut recv,
+                    &own_cert,
+                    signer,
+                    &revocations,
+                    &server,
+                )
+                .await?,
+                None,
+            ),
+            Some(entry) => {
+                let binding = entry_binding(&conn)?;
+                let host = AuthenticatedPeer {
+                    user_public_key: entry.host_cert.user_public_key,
+                    device_public_key: entry.host_cert.device_public_key,
+                    cert: entry.host_cert.clone(),
+                };
+                let awaiting = enter_server(
+                    &mut send,
+                    &own_cert,
+                    signer,
+                    revocations,
+                    server,
+                    entry,
+                    &binding,
+                )
+                .await?;
+                (host, Some(awaiting))
+            }
+        };
 
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<Envelope>(256);
         let (inbound_tx, inbound_rx) = mpsc::channel::<Envelope>(256);
-        let mut reader = SessionReader::new(recv);
         let pump_connection = conn.clone();
         let pump_scope = interactive_scope.clone();
+        let handshake = Arc::new(Mutex::new(None));
+        let pump_handshake = Arc::clone(&handshake);
         let pump = n0_future::task::spawn(async move {
             // Keep the socket alive through the final queued Unsubscribe and
             // FIN even if the caller handed this client its only Endpoint.
             let _endpoint_keepalive = endpoint_keepalive;
             if run_v2_pump(
                 &mut send,
-                &mut reader,
+                recv,
+                awaiting,
+                &pump_handshake,
                 &mut outbound_rx,
                 &inbound_tx,
                 pump_scope.as_ref(),
@@ -946,6 +1000,7 @@ impl RelayClient {
         // Install the verified interactive scope before exposing the client.
         // Keep the carrier assembly boundary independent of trust DTOs.
         client.workspace_scope = interactive_scope;
+        client.handshake = handshake;
         Ok(client)
     }
 
@@ -967,7 +1022,18 @@ impl RelayClient {
             subscriptions: Mutex::new(HashSet::new()),
             workspace_scope: None,
             carrier,
+            handshake: Arc::default(),
         }
+    }
+
+    /// Why this entering session's host did not prove itself, once the
+    /// session ended without its proof ([`Self::connect_with_signer`]): what
+    /// a failed handshake answers, taken once.
+    pub fn handshake_failure(&self) -> Option<ClientError> {
+        self.handshake
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
     }
 
     /// Convenience: send an envelope.
@@ -1047,9 +1113,15 @@ impl RelayClient {
 
 /// Drive the v2 wire until either half ends. `true` requests a graceful send
 /// finish because the state producer closed; all other exits close the session.
+/// Carry a session's frames both ways over `send`/`recv`. With `awaiting`
+/// (an entry's hello written, its host's proof not read yet), outbound frames
+/// go at once while the host's proof is read and checked first of all
+/// inbound; a proof that fails ends the pump, its reason kept in `handshake`.
 async fn run_v2_pump<R, W>(
     send: &mut W,
-    reader: &mut SessionReader<R>,
+    mut recv: R,
+    awaiting: Option<handshake::AwaitingAck>,
+    handshake: &Mutex<Option<ClientError>>,
     states: &mut mpsc::Receiver<Envelope>,
     state_sink: &mpsc::Sender<Envelope>,
     scope: Option<&InteractiveWorkspaceScope>,
@@ -1059,7 +1131,18 @@ where
     W: tokio::io::AsyncWrite + Unpin,
 {
     let writing = run_v2_writer(send, states, scope);
-    let reading = run_v2_reader(reader, state_sink, scope);
+    let reading = async move {
+        if let Some(awaiting) = awaiting
+            && let Err(error) = awaiting.verify(&mut recv).await
+        {
+            *handshake
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+            return;
+        }
+        let mut reader = SessionReader::new(recv);
+        run_v2_reader(&mut reader, state_sink, scope).await;
+    };
     tokio::pin!(writing);
     tokio::pin!(reading);
     tokio::select! {
@@ -1356,10 +1439,19 @@ mod scheduling_tests {
             bytes: written.clone(),
         };
         let (mut relay_write, client_read) = tokio::io::duplex(4096);
-        let mut reader = SessionReader::new(client_read);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
-            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
+            let handshake = Mutex::new(None);
+            run_v2_pump(
+                &mut writer,
+                client_read,
+                None,
+                &handshake,
+                &mut states,
+                &state_sink,
+                None,
+            )
+            .await
         });
 
         started_rx.await.unwrap();
@@ -1417,10 +1509,19 @@ mod scheduling_tests {
             frames: frames.clone(),
         };
         let (mut relay_write, client_read) = tokio::io::duplex(4096);
-        let mut reader = SessionReader::new(client_read);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
-            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
+            let handshake = Mutex::new(None);
+            run_v2_pump(
+                &mut writer,
+                client_read,
+                None,
+                &handshake,
+                &mut states,
+                &state_sink,
+                None,
+            )
+            .await
         });
 
         let response = Envelope::Subscribe { workspace_id };
@@ -1466,10 +1567,19 @@ mod scheduling_tests {
             bytes: Arc::new(Mutex::new(Vec::new())),
         };
         let (relay_write, client_read) = tokio::io::duplex(4096);
-        let mut reader = SessionReader::new(client_read);
         let pump = tokio::spawn(async move {
             let mut writer = writer;
-            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
+            let handshake = Mutex::new(None);
+            run_v2_pump(
+                &mut writer,
+                client_read,
+                None,
+                &handshake,
+                &mut states,
+                &state_sink,
+                None,
+            )
+            .await
         });
 
         started_rx.await.unwrap();
@@ -1498,9 +1608,18 @@ mod scheduling_tests {
             waker: waker.clone(),
         };
         let pump = tokio::spawn(async move {
-            let mut reader = SessionReader::new(reader);
             let mut writer = tokio::io::sink();
-            run_v2_pump(&mut writer, &mut reader, &mut states, &state_sink, None).await
+            let handshake = Mutex::new(None);
+            run_v2_pump(
+                &mut writer,
+                reader,
+                None,
+                &handshake,
+                &mut states,
+                &state_sink,
+                None,
+            )
+            .await
         });
 
         started_rx.await.unwrap();

@@ -1,15 +1,17 @@
 //! A device entering a workspace through its door on its session
-//! ([`tilo_relay_protocol::entering`]): the same door and join steps its HTTP
-//! form took, answered on the session's handshake.
+//! ([`tilo_relay_protocol::entering`]): the door lets the person in as its
+//! HTTP form did, and the workspace admits the device, which proved it holds
+//! its key on the session's connection, with the invitation the door issued.
 
 use tilo_relay_protocol::directory::DoorJoin;
-use tilo_relay_protocol::entering::{EnterProof, EnterRefusal, Entered, Entering};
+use tilo_relay_protocol::entering::{EnterRefusal, Entered, Entry};
 use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
-use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
+use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
-use crate::handshake::{Asked, Doorway, EntryFuture};
+use crate::handshake::{Doorway, EntryFuture};
 use crate::workspaces::Workspaces;
+use crate::workspaces::pages::Presented;
 
 /// A refusal of the join itself, after the door let the person in.
 const fn refused(reason: String) -> EnterRefusal {
@@ -17,77 +19,65 @@ const fn refused(reason: String) -> EnterRefusal {
 }
 
 impl Doorway for Workspaces {
-    fn ask<'a>(
-        &'a self,
-        cert: &'a DeviceCert,
-        entering: &'a Entering,
-    ) -> EntryFuture<'a, Result<Asked, EnterRefusal>> {
+    fn enter<'a>(&'a self, cert: &'a DeviceCert, entry: Entry) -> EntryFuture<'a, Entered> {
         Box::pin(async move {
+            let Entry {
+                entering, access, ..
+            } = entry;
             let device = cert.device_public_key;
             // A device asking again under an entry the workspace already
             // admitted (its answer was lost with its connection) is in.
             if let Ok(governed) = self.workspace(&entering.workspace).await {
-                let workspace = governed.lock().await;
-                if workspace.admitted_device(entering.request_id) == Some(device) {
-                    let now = tilo_clock::unix_now_ns();
-                    return Self::admitted(&workspace, device, now)
-                        .map(|reply| Asked::In(entered(reply)))
-                        .map_err(|error| refused(error.to_string()));
+                let again = {
+                    let workspace = governed.lock().await;
+                    (workspace.admitted_device(entering.request_id) == Some(device)).then(|| {
+                        Self::admitted(&workspace, device, tilo_clock::unix_now_ns()).map_or_else(
+                            |error| Entered::Refused(refused(error.to_string())),
+                            entered,
+                        )
+                    })
+                };
+                if let Some(again) = again {
+                    return self.with_desktop_scope(&entering.workspace, again).await;
                 }
             }
             let join = DoorJoin {
                 user_public_key: hex::encode(cert.user_public_key),
                 display_name: kept(&entering.name, MAX_DISPLAY_NAME_CHARS),
             };
-            let (issued, token) = self
-                .admit_listed(&entering.workspace, &join)
-                .await
-                .map_err(|refusal| EnterRefusal::Door {
-                    retry_after_secs: match refusal {
-                        crate::workspaces::DoorRefusal::Full { retry_after_secs } => {
-                            Some(retry_after_secs)
-                        }
-                        _ => None,
-                    },
-                    refused: refusal.answer_with(self.wait_list_door()),
-                })?;
-            match self
-                .page_join(JoinStep::Ask {
-                    invitation: issued.signed_invitation,
-                    device_cert: cert.clone(),
-                    request_id: entering.request_id,
-                })
-                .await
-            {
-                JoinReply::Challenge { challenge } => Ok(Asked::Challenge { challenge, token }),
-                JoinReply::Refused(reason) => Err(refused(reason)),
-                _ => Err(refused("the workspace answered no challenge".to_owned())),
-            }
-        })
-    }
-
-    fn prove<'a>(
-        &'a self,
-        cert: &'a DeviceCert,
-        entering: &'a Entering,
-        challenge: Vec<u8>,
-        token: String,
-        proof: EnterProof,
-    ) -> EntryFuture<'a, Entered> {
-        Box::pin(async move {
+            let asking = crate::timing::start();
+            let admitted = self.admit_listed(&entering.workspace, &join).await;
+            crate::timing::event("entry.door", asking, 0);
+            let (issued, token) = match admitted {
+                Ok(admitted) => admitted,
+                Err(refusal) => {
+                    return Entered::Refused(EnterRefusal::Door {
+                        retry_after_secs: match refusal {
+                            crate::workspaces::DoorRefusal::Full { retry_after_secs } => {
+                                Some(retry_after_secs)
+                            }
+                            _ => None,
+                        },
+                        refused: refusal.answer_with(self.wait_list_door()),
+                    });
+                }
+            };
             let entered = entered(
-                self.page_join(JoinStep::ProvePreAdmitted {
-                    challenge,
-                    signature: proof.signature,
-                    name: entering.name.clone(),
-                    token: token.into_bytes(),
-                })
+                self.redeem_on_connection(
+                    Presented::OnConnection {
+                        invitation: issued.signed_invitation,
+                        cert: cert.clone(),
+                        request_id: entering.request_id,
+                    },
+                    &entering.name,
+                    Some(token.as_bytes()),
+                )
                 .await,
             );
             if !matches!(entered, Entered::Admitted { .. }) {
                 return entered;
             }
-            if let Some(access) = proof.access {
+            if let Some(access) = access {
                 self.key_arrival(&entering.workspace, cert, access).await;
             }
             self.with_desktop_scope(&entering.workspace, entered).await

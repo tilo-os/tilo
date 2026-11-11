@@ -50,11 +50,95 @@ pub struct PreAdmitRequest {
 /// A pre-admitted redemption waiting for its workspace's next admission pass,
 /// and where its answer goes.
 pub(super) struct QueuedAdmission {
-    proof: JoinProof,
+    presented: Presented,
     proof_digest: [u8; 32],
     name: String,
     token: Vec<u8>,
     answer: tokio::sync::oneshot::Sender<Result<JoinReply, CollaborationError>>,
+}
+
+/// How a device shows it holds the key of the certificate it redeems an
+/// invitation with.
+pub(crate) enum Presented {
+    /// Its signature over the challenge this workspace issued it.
+    Proof(JoinProof),
+    /// Its host checked it on the connection carrying the redemption: the
+    /// device signed keying material exported from that connection
+    /// ([`tilo_relay_protocol::entering`]).
+    OnConnection {
+        invitation: Vec<u8>,
+        cert: DeviceCert,
+        request_id: [u8; 32],
+    },
+}
+
+impl Presented {
+    /// The device redeeming.
+    const fn device(&self) -> [u8; 32] {
+        match self {
+            Self::Proof(proof) => proof.challenge.device_public_key,
+            Self::OnConnection { cert, .. } => cert.device_public_key,
+        }
+    }
+
+    const fn request_id(&self) -> [u8; 32] {
+        match self {
+            Self::Proof(proof) => proof.challenge.request_id,
+            Self::OnConnection { request_id, .. } => *request_id,
+        }
+    }
+
+    /// The workspace the invitation names, read without trusting it: the
+    /// redemption is then verified against what that workspace issued.
+    fn workspace(&self, now: u64) -> Result<String, CollaborationError> {
+        match self {
+            Self::Proof(proof) => Ok(proof.challenge.room.clone()),
+            Self::OnConnection { invitation, .. } => Ok(
+                tilo_peer_state::join_ledger::invitation_workspace(invitation, now)?,
+            ),
+        }
+    }
+
+    /// What the workspace's join receipt keeps of the request, so the same
+    /// request again is answered rather than redeemed twice.
+    fn digest(&self) -> Result<[u8; 32], CollaborationError> {
+        Ok(match self {
+            Self::Proof(proof) => super::collaboration::request_digest(proof)?,
+            Self::OnConnection {
+                invitation,
+                cert,
+                request_id,
+            } => super::collaboration::request_digest(&(
+                "tilo/redeemed-on-connection/v1",
+                invitation,
+                cert.device_public_key,
+                request_id,
+            ))?,
+        })
+    }
+
+    /// The verified redemption, for an invitation `workspace` issued and
+    /// still holds redeemable.
+    fn redeem(
+        &self,
+        workspace: &GovernedWorkspace,
+        now: u64,
+    ) -> Result<VerifiedRedemption, CollaborationError> {
+        match self {
+            Self::Proof(proof) => Workspaces::redeem(workspace, self.device(), proof, now),
+            Self::OnConnection {
+                invitation,
+                cert,
+                request_id,
+            } => Ok(workspace.collaboration().redeem_on_connection(
+                &workspace.governed(),
+                invitation,
+                cert,
+                *request_id,
+                now,
+            )?),
+        }
+    }
 }
 
 pub(super) const fn member_role(role: WorkspaceRole) -> MemberRole {
@@ -1074,12 +1158,39 @@ impl Workspaces {
     ) -> Result<JoinReply, CollaborationError> {
         let challenge: JoinChallenge = postcard::from_bytes(challenge)
             .map_err(|_| CollaborationError::new("join challenge is malformed"))?;
-        let proof = JoinProof {
+        let presented = Presented::Proof(JoinProof {
             challenge,
             signature,
-        };
+        });
+        self.presented(presented, name, token, now).await
+    }
+
+    /// Admit the device `presented` names with its invitation, as
+    /// [`Self::proved`] admits a page: what a session entering with an
+    /// invitation, or through a door, is answered.
+    pub(crate) async fn redeem_on_connection(
+        &self,
+        presented: Presented,
+        name: &str,
+        token: Option<&[u8]>,
+    ) -> JoinReply {
+        let now = tilo_clock::unix_now_ns();
+        self.presented(presented, name, token, now)
+            .await
+            .unwrap_or_else(|error| JoinReply::Refused(error.to_string()))
+    }
+
+    async fn presented(
+        &self,
+        presented: Presented,
+        name: &str,
+        token: Option<&[u8]>,
+        now: u64,
+    ) -> Result<JoinReply, CollaborationError> {
         let proving = crate::timing::start();
-        let reply = self.prove(proof, &valid_name(name)?, token, now).await?;
+        let reply = self
+            .prove(presented, &valid_name(name)?, token, now)
+            .await?;
         crate::timing::event("join.prove.admitted", proving, 0);
         let retaining = crate::timing::start();
         self.retained_for(&reply).await;
@@ -1105,18 +1216,18 @@ impl Workspaces {
     )]
     async fn prove(
         &self,
-        proof: JoinProof,
+        presented: Presented,
         name: &str,
         token: Option<&[u8]>,
         now: u64,
     ) -> Result<JoinReply, CollaborationError> {
         if let Some(token) = token {
-            return self.prove_pre_admitted(proof, name, token).await;
+            return self.prove_pre_admitted(presented, name, token, now).await;
         }
-        let identity = proof.challenge.room.clone();
-        let request_id = proof.challenge.request_id;
-        let device = proof.challenge.device_public_key;
-        let proof_digest = super::collaboration::request_digest(&proof)?;
+        let identity = presented.workspace(now)?;
+        let request_id = presented.request_id();
+        let device = presented.device();
+        let proof_digest = presented.digest()?;
         let governed = self.workspace(&identity).await?;
         let mut workspace = governed.lock().await;
         // A page that asked again under the same request — a reload, a lost
@@ -1124,7 +1235,7 @@ impl Workspaces {
         if workspace.admitted_device(request_id) == Some(device) {
             return Self::admitted(&workspace, device, now);
         }
-        let redemption = Self::redeem(&workspace, device, &proof, now)?;
+        let redemption = presented.redeem(&workspace, now)?;
         let invite_id = redemption.join().invite_id();
         if workspace.redeemed(invite_id) {
             return Err(CollaborationError::new("invitation was already redeemed"));
@@ -1195,17 +1306,18 @@ impl Workspaces {
     /// that takes the workspace once and admits all of them in one change.
     async fn prove_pre_admitted(
         &self,
-        proof: JoinProof,
+        presented: Presented,
         name: &str,
         token: &[u8],
+        now: u64,
     ) -> Result<JoinReply, CollaborationError> {
-        let workspace = proof.challenge.room.clone();
-        let proof_digest = super::collaboration::request_digest(&proof)?;
+        let workspace = presented.workspace(now)?;
+        let proof_digest = presented.digest()?;
         let (answer, answered) = tokio::sync::oneshot::channel();
         let first = self.queue_admission(
             &workspace,
             QueuedAdmission {
-                proof,
+                presented,
                 proof_digest,
                 name: name.to_owned(),
                 token: token.to_vec(),
@@ -1384,8 +1496,9 @@ impl Workspaces {
         (VerifiedRedemption, String, WorkspaceRole),
         Box<Result<JoinReply, CollaborationError>>,
     > {
-        let device = join.proof.challenge.device_public_key;
-        let redemption = Self::redeem(workspace, device, &join.proof, now)
+        let redemption = join
+            .presented
+            .redeem(workspace, now)
             .map_err(|error| Box::new(Err(error)))?;
         let invite_id = redemption.join().invite_id();
         if workspace.redeemed(invite_id) || !invites.insert(invite_id) {

@@ -408,7 +408,9 @@ impl HostSessions {
                 // The sender lives as long as the host; its end is one too.
                 let _ = closing.wait_for(|closing| *closing).await;
             };
-            if let Err(error) = serve_session(handler, server_read, server_write, closed).await {
+            if let Err(error) =
+                serve_session(handler, server_read, server_write, None, closed).await
+            {
                 tracing::debug!(%error, "in-process session ended");
             }
         });
@@ -1120,6 +1122,9 @@ async fn serve_streams(
     first: (SendStream, RecvStream),
 ) {
     let sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    // What an entry's proof is bound to: unique to this connection, so a proof
+    // captured from it proves nothing on another.
+    let binding = entry_binding(&connection);
     let mut first = Some(first);
     loop {
         let (send, recv) = match first.take() {
@@ -1134,7 +1139,7 @@ async fn serve_streams(
         let sessions = Arc::clone(&sessions);
         tokio::spawn(async move {
             let closed = connection.clone();
-            let result = Box::pin(serve_session(ctx, recv, send, async move {
+            let result = Box::pin(serve_session(ctx, recv, send, binding, async move {
                 closed.closed().await;
             }))
             .await;
@@ -1149,10 +1154,27 @@ async fn serve_streams(
     }
 }
 
+/// The keying material an entry on `connection` is bound to
+/// ([`tilo_relay_protocol::entering::ENTRY_BINDING_LABEL`]), as this end
+/// exports it from the connection's TLS session; `None` when it does not
+/// export, which takes no entry.
+fn entry_binding(connection: &Connection) -> Option<[u8; 32]> {
+    let mut binding = [0u8; 32];
+    connection
+        .export_keying_material(
+            &mut binding,
+            tilo_relay_protocol::entering::ENTRY_BINDING_LABEL,
+            &[],
+        )
+        .ok()?;
+    Some(binding)
+}
+
 /// One member session over `recv`/`send`: the bounded shared handshake
 /// under the live policy (the owner and every user the host currently
 /// admits), then the peer loop until the stream ends or `closed` resolves.
-/// Every carrier runs this: an iroh stream, and an in-process stream.
+/// Every carrier runs this: an iroh stream, and an in-process stream. Only a
+/// stream with a connection's keying material (`binding`) takes an entry.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the context is a set of shared handles moved into the peer session it runs"
@@ -1161,6 +1183,7 @@ async fn serve_session<R, W>(
     ctx: RelayProtocol,
     mut recv: R,
     mut send: W,
+    binding: Option<[u8; 32]>,
     closed: impl std::future::Future<Output = ()> + Send,
 ) -> Result<(), HostError>
 where
@@ -1181,16 +1204,14 @@ where
             doorway
                 .as_deref()
                 .map(|workspaces| workspaces as &dyn crate::handshake::Doorway),
+            binding,
         )
         .await
     {
         Ok(entered) => entered,
         Err(error) => {
-            if matches!(error, HandshakeError::Auth(_) | HandshakeError::Refused(_)) {
+            if matches!(error, HandshakeError::Auth(_)) {
                 ctx.metrics.inc_auth_rejected();
-            }
-            if matches!(error, HandshakeError::Refused(_)) {
-                told_then_closed(&mut send, closed).await;
             }
             return Err(HostError::Handshake(error.to_string()));
         }

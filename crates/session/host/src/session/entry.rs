@@ -32,9 +32,6 @@ pub(super) fn refusal(error: &LinkError) -> Refusal {
             "host-changed",
             "This workspace’s host was set up again.".to_owned(),
         ),
-        LinkError::Entry(refusal) => {
-            Refusal::Final(door_code(refusal), refusal.reason().to_owned())
-        }
         LinkError::Unavailable(_) | LinkError::Malformed(_) | LinkError::Sign(_) => {
             Refusal::Reachability
         }
