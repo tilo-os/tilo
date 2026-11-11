@@ -99,6 +99,8 @@ impl WindowBarLink {
 /// The action ids of the shell's own slots in the window's bar
 /// ([`NavShell::window_toolbar`]).
 pub const WINDOW_BACK: &str = "nav-shell-back";
+/// The test id of the sidebar toggle the shell's header row holds.
+pub const WINDOW_SIDEBAR: &str = "nav-shell-sidebar";
 pub const WINDOW_INSPECTOR: &str = "nav-shell-inspector";
 
 impl NavShell {

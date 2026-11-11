@@ -1908,6 +1908,12 @@ pub trait Widget {
         None
     }
 
+    /// Whether this is an item of a list opened where its row stands, among the list's other
+    /// rows: what it shows is that item's, never the page's, so its title is not the page's own.
+    fn is_item_opened_in_place(&self) -> bool {
+        false
+    }
+
     /// Whether `own_page_title` is a heading a screen reader reads as the
     /// page's name, or only the field the person types it in, which names
     /// itself. A shell takes its bar's title away for the former, and keeps
@@ -3424,7 +3430,8 @@ pub mod window_header;
 pub(crate) mod window_toolbar_row;
 pub use nav_shell::{
     ContentKind, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
-    NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
+    NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WINDOW_SIDEBAR,
+    WindowBarLink,
 };
 pub use window_header::{
     ColumnFrame, HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,

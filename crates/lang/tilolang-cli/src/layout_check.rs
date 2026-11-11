@@ -578,6 +578,85 @@ fn declared_headers(shell: &tilo_ui_host::UiNode) -> Vec<&'static str> {
     .collect()
 }
 
+/// One control standing in a column's header row: what the person reads at the top of the
+/// column, and what pressing it does there.
+#[cfg(test)]
+#[derive(Clone, Debug)]
+pub(crate) struct RowControl {
+    pub name: String,
+    pub id: String,
+    pub rect: [f64; 4],
+    /// The window's one main action, drawn on the accent.
+    pub primary: bool,
+    /// The row's own door to the actions that do not fit it.
+    pub menu: bool,
+    /// It says its words beside its icon, rather than standing as its icon alone.
+    pub labelled: bool,
+}
+
+/// The controls standing in the window's header rows, in reading order: every button whose
+/// middle stands in a column's header row where the person reaches it.
+#[cfg(test)]
+pub(crate) fn header_row_controls(staged: &stage::Staged, viewport: (u32, u32)) -> Vec<RowControl> {
+    fn walk(
+        node: &ui::headless::InspectionNode,
+        rows: &[ui::kurbo::Rect],
+        root: &dyn ui::widget::Widget,
+        viewport: (u32, u32),
+        out: &mut Vec<RowControl>,
+    ) {
+        let [x, y, w, h] = node.rect;
+        let middle = ui::kurbo::Point::new(x + w / 2.0, y + h / 2.0);
+        if let Some(access) = &node.semantics
+            && access.role == ui::a11y::Role::Button
+            && reachable(node, viewport)
+            && rows.iter().any(|row| row.contains(middle))
+        {
+            let id = node.test_id.clone().unwrap_or_default();
+            let primary = ui::widget::find_test_id(root, &id).is_some_and(is_primary_button);
+            out.push(RowControl {
+                name: access.name.clone().unwrap_or_default(),
+                menu: node.widget == "OverflowDoor",
+                id,
+                rect: node.rect,
+                primary,
+                labelled: w > h * 1.5,
+            });
+            return;
+        }
+        for child in &node.children {
+            walk(child, rows, root, viewport, out);
+        }
+    }
+    fn is_primary_button(widget: &dyn ui::widget::Widget) -> bool {
+        if let Some(button) = widget
+            .as_any()
+            .and_then(|any| any.downcast_ref::<ui::widget::Button>())
+        {
+            return button.is_primary();
+        }
+        let mut found = false;
+        widget.for_each_child(&mut |child| found = found || is_primary_button(child));
+        found
+    }
+    let harness = staged.harness();
+    let rows: Vec<ui::kurbo::Rect> = harness
+        .column_frames()
+        .iter()
+        .map(|frame| frame.header)
+        .filter(|header| header.height() > 0.0)
+        .collect();
+    let mut out = Vec::new();
+    walk(
+        &harness.inspection().root,
+        &rows,
+        harness.root_widget(),
+        viewport,
+        &mut out,
+    );
+    out
+}
+
 /// The names of the buttons the window draws where the person reaches them.
 fn button_names(node: &ui::headless::InspectionNode, viewport: (u32, u32), out: &mut Vec<String>) {
     if let Some(access) = &node.semantics
@@ -1451,36 +1530,25 @@ fn first_row(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> Optio
 }
 
 /// Whether the window shows its way back where a finger reaches it: how a person holding a
-/// narrow window comes back to the list it opened something from. The desktop's bar over the
-/// window carries it, as its own navigation or the shell's slot; an app in a window of its own
-/// draws a chip in its frame.
-fn back_chip(staged: &mut stage::Staged, viewport: (u32, u32)) -> bool {
+/// narrow window comes back to the list it opened something from: the chip the shell's header
+/// row holds.
+fn back_chip(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
     fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
         (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_BACK))
             || node.children.iter().any(|child| in_frame(child, viewport))
     }
-    if in_frame(&staged.harness().inspection().root, viewport) {
-        return true;
-    }
-    let bar = staged
-        .harness_mut()
-        .window_bar_layout(f64::from(viewport.0));
-    bar.controls.iter().any(|control| {
-        (control.slot == "back" || control.id == ui::widget::WINDOW_BACK)
-            && control.rect[2] > 0.0
-            && control.rect[3] > 0.0
-    })
+    in_frame(&staged.harness().inspection().root, viewport)
 }
 
-/// Whether the window's bar carries its sidebar toggle where a finger reaches it: how a person
-/// holding a window whose list stands over what it shows as a drawer brings that list forward.
-fn sidebar_toggle(staged: &mut stage::Staged, viewport: (u32, u32)) -> bool {
-    let bar = staged
-        .harness_mut()
-        .window_bar_layout(f64::from(viewport.0));
-    bar.controls
-        .iter()
-        .any(|control| control.slot == "sidebar" && control.rect[2] > 0.0 && control.rect[3] > 0.0)
+/// Whether the window's header row carries its sidebar toggle where a finger reaches it: how a
+/// person holding a window whose list stands over what it shows as a drawer brings that list
+/// forward.
+fn sidebar_toggle(staged: &stage::Staged, viewport: (u32, u32)) -> bool {
+    fn in_frame(node: &ui::headless::InspectionNode, viewport: (u32, u32)) -> bool {
+        (reachable(node, viewport) && node.test_id.as_deref() == Some(ui::widget::WINDOW_SIDEBAR))
+            || node.children.iter().any(|child| in_frame(child, viewport))
+    }
+    in_frame(&staged.harness().inspection().root, viewport)
 }
 
 /// Where a finger taps to open a row of the list the window shows now: the row it keeps
@@ -1803,8 +1871,8 @@ impl AppCheck<'_> {
                 // A window whose list stands over what it shows as a drawer brings it forward
                 // by its sidebar toggle, which the app's page never covers: the list is a screen
                 // of the window's, not a page pressed over the page it opened.
-                if sidebar_toggle(&mut staged, viewport) {
-                    staged.press_sidebar_toggle()?;
+                if sidebar_toggle(&staged, viewport) {
+                    staged.press_shell(ui::widget::WINDOW_SIDEBAR)?;
                     layer = format!("{layer}, then the sidebar");
                     for layout in of_size.iter().copied() {
                         staged.lay_out(
@@ -1818,9 +1886,9 @@ impl AppCheck<'_> {
                     // A row of the list arrives in front of what the window showed, which goes
                     // behind it: the tap that opens the row brings that page back.
                     tapped = unchosen_row(&staged, viewport);
-                } else if back_chip(&mut staged, viewport) {
+                } else if back_chip(&staged, viewport) {
                     let shown = staged.front_target();
-                    staged.press_bar_slot(ui::widget::WINDOW_BACK)?;
+                    staged.press_shell(ui::widget::WINDOW_BACK)?;
                     layer = format!("{layer}, then Back pressed");
                     for layout in of_size.iter().copied() {
                         staged.lay_out(

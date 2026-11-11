@@ -744,6 +744,12 @@ impl Button {
         self
     }
 
+    /// Whether this is the window's one main action, drawn on the accent.
+    #[must_use]
+    pub fn is_primary(&self) -> bool {
+        self.role == ButtonRole::Primary
+    }
+
     /// What the button does; the role decides its whole look.
     #[must_use]
     pub fn role(mut self, role: ButtonRole) -> Self {

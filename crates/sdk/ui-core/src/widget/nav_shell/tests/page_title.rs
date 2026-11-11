@@ -206,7 +206,7 @@ fn an_item_opened_among_a_lists_rows_leaves_the_column_its_title() {
     );
 }
 
-/// A row of a list, holding what it shows.
+/// A row of a list opened where it stands into the item it shows.
 struct ListRow(crate::widget::Column);
 
 impl crate::widget::Decorator for ListRow {
@@ -220,7 +220,7 @@ impl crate::widget::Decorator for ListRow {
         &mut self.0
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(crate::a11y::AccessNode::new(crate::a11y::Role::ListItem))
+    fn is_item_opened_in_place(&self) -> bool {
+        true
     }
 }

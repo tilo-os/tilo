@@ -67,7 +67,7 @@ pub use layout::NavGeometry;
 use layout::{layout_of, stack_index};
 use sidebar_resize::AdaptiveSidebar;
 use window_toolbar::Requests;
-pub use window_toolbar::{WINDOW_BACK, WindowBarLink};
+pub use window_toolbar::{WINDOW_BACK, WINDOW_SIDEBAR, WindowBarLink};
 
 /// What the sidebar becomes when the window is too narrow to dock it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -869,7 +869,7 @@ impl NavShell {
         let policy: Rc<crate::widget::manual::Policy> =
             Rc::new(move |ctx: &mut ManualContext<'_>| place_parts(&policy_inputs.borrow(), ctx));
         let toggle = Self::shell_button(
-            "nav-shell-sidebar",
+            WINDOW_SIDEBAR,
             Icon::PanelLeft,
             &crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar"),
             {
@@ -878,7 +878,7 @@ impl NavShell {
             },
         );
         let back = Self::shell_button(
-            "nav-shell-back",
+            WINDOW_BACK,
             Icon::ChevronLeft,
             &crate::i18n::I18nManager::lookup_plain("window-toolbar-back"),
             {
@@ -3764,14 +3764,9 @@ fn is_app_search(action: &dyn Widget) -> bool {
 /// field does, so the page keeps the name a screen reader reads.
 fn page_title_shown(body: &dyn Widget, region: Rect) -> Option<TitleShown> {
     fn walk(widget: &dyn Widget, clip: Rect) -> Option<TitleShown> {
-        // A row of a list is one item among others, never the page: an item opened in place
-        // among its list's rows titles that item, and the column keeps its own title.
-        if widget.accessibility().is_some_and(|access| {
-            matches!(
-                access.role,
-                crate::a11y::Role::ListItem | crate::a11y::Role::Row | crate::a11y::Role::TreeItem
-            )
-        }) {
+        // An item opened in place among its list's rows titles that item, never the page: the
+        // column keeps its own title.
+        if widget.is_item_opened_in_place() {
             return None;
         }
         let clip = widget

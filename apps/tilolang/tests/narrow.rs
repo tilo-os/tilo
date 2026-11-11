@@ -241,7 +241,7 @@ fn tree_row_node(harness: &FrameHarness, name: &str) -> ui::accesskit::NodeId {
 #[test]
 fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
     let mut app = staged();
-    // The window stands in the desktop's bar, where its way back is.
+    // The window stands in the desktop's bar; its way back stands in its header row.
     app.harness().present_in_window_bar();
     app.harness().relayout();
     assert!(
@@ -259,7 +259,8 @@ fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
         "the tree went behind the note its row opened"
     );
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+        .click_named(ui::widget::WINDOW_BACK)
+        .expect("the row holds Back");
     app.harness().relayout();
     assert!(
         named_control(app.harness(), "Groceries").is_some(),
@@ -270,7 +271,7 @@ fn a_row_of_the_tree_pushes_its_note_and_back_returns_to_the_tree() {
 #[test]
 fn back_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
     let mut app = phone_driven();
-    // The window stands in the desktop's bar, where its way back is.
+    // The window stands in the desktop's bar; its way back stands in its header row.
     app.harness().present_in_window_bar();
     let motion = push_motion(app.harness());
     assert_settles(&mut app, motion, "the staged tree");
@@ -284,7 +285,8 @@ fn back_in_a_driven_phone_window_shows_the_tree_in_the_frame_it_takes() {
         "the tree stands behind the note's page"
     );
     app.harness()
-        .press_window_slot(ui::window_toolbar::ToolbarEvent::Back);
+        .click_named(ui::widget::WINDOW_BACK)
+        .expect("the row holds Back");
     // The frame the press asks for shows the tree it returned to: the press's own frame is
     // never one that rested on what stood before it.
     app.frame();

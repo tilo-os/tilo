@@ -758,11 +758,11 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         None
     };
-    // A screen that went somewhere deeper has one way back, at the leading edge: where the
-    // sidebar is no docked column but a drawer of the phone, its toggle stands aside for it,
-    // and comes back with the first screen. An open drawer keeps its way to close.
-    let back_leads =
-        back_column.is_some() && g.sidebar != SidebarPlacement::Docked && !sidebar_open;
+    // A screen that went somewhere deeper has one way back, at the leading edge: while the
+    // sidebar is not showing, its toggle stands aside for it, and comes back with the first
+    // screen. An open drawer keeps its way to close, and a docked sidebar that shows keeps its
+    // toggle in its own row, apart from the way back.
+    let back_leads = back_column.is_some() && !sidebar_open;
     // The toggle reaches the sidebar wherever it stands beside the window or over it; the
     // sidebar's own screen shows the screen under it instead and keeps no toggle.
     let toggle_leads = match g.sidebar {
@@ -806,7 +806,12 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         } else {
             g.header(column)
         };
-        g.back = if slot == 0 {
+        // An open drawer over the screen keeps its one way out, its toggle: Back comes back
+        // with the screen once the drawer is put away.
+        let drawer_open = g.sidebar == SidebarPlacement::Drawer && sidebar_open;
+        g.back = if drawer_open {
+            Rect::ZERO
+        } else if slot == 0 {
             m.row.leading_chip(row, 0)
         } else {
             // After the toggle, which is pinned to the window's corner.

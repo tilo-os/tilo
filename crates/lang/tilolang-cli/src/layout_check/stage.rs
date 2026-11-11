@@ -709,24 +709,13 @@ impl Staged {
         self.settle()
     }
 
-    /// Press one of the window's bar slots by its id, as the desktop hands the press over: the
-    /// shell's own Back, an action the app's page declared. The bar is the window's, so the press
-    /// reaches the app through it, never through a widget of the frame.
-    pub fn press_bar_slot(&mut self, id: &str) -> Result<(), String> {
-        self.harness
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
-        self.exchange();
-        self.settle()
-    }
-
-    /// Press the window's sidebar toggle in its bar, as a person holding a window whose list
-    /// stands over what it shows brings that list forward: the shell's own slot, which the bar
-    /// hands the app through the window.
-    pub fn press_sidebar_toggle(&mut self) -> Result<(), String> {
-        self.harness
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
-        self.exchange();
-        self.settle()
+    /// Press the shell's own control `id` in the window's header row — its Back, its sidebar
+    /// toggle — as the person holding the window presses it: a finger's tap where the window is
+    /// held in the hand, a click otherwise.
+    pub fn press_shell(&mut self, id: &str) -> Result<(), String> {
+        let touch = self.harness.interaction_environment().modality
+            == ui::interaction::InputModality::Touch;
+        self.press(id, touch)
     }
 
     /// Press `x`, `y` as a person presses them, and let the window and its instance answer: what
@@ -1091,11 +1080,10 @@ mod tests {
         (before, staged.harness().render_rgba())
     }
 
-    /// The bar the desktop draws over the app's frame keeps one "…" and shows each control
-    /// once: an app's own door to what does not fit is the bar's door, not a second one beside
-    /// it.
+    /// The window's header row keeps one "…" and shows each control once, and the bar over it
+    /// offers none of them again: what does not fit the row goes behind the row's one door.
     #[test]
-    fn the_window_bar_shows_each_control_once() {
+    fn the_window_shows_each_control_once() {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1119,33 +1107,38 @@ mod tests {
             )
             .expect("the window lies out");
         let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-        let named = |bar: &ui::window_toolbar::BarLayout| -> String {
-            bar.controls
-                .iter()
-                .map(|control| format!("{}:{}", control.slot, control.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let doors = bar
-            .controls
+        let row = crate::layout_check::header_row_controls(&staged, (width, height));
+        let named = row
             .iter()
-            .filter(|control| {
-                control.icon.as_deref() == Some(ui::icons::Icon::MoreHorizontal.name())
-            })
-            .count();
-        assert_eq!(doors, 1, "one bar keeps one \"…\": {}", named(&bar));
-        let problems = crate::layout_check::audit::bar(&bar);
+            .map(|control| control.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let doors = row.iter().filter(|control| control.menu).count();
+        assert_eq!(doors, 1, "the window's row keeps one \"…\": {named}");
+        let mut distinct: Vec<&str> = row.iter().map(|control| control.name.as_str()).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            row.len(),
+            "the row shows each control once: {named}"
+        );
+        let buttons: Vec<String> = row.iter().map(|control| control.name.clone()).collect();
+        let problems: Vec<_> = crate::layout_check::audit::bar(&bar)
+            .into_iter()
+            .chain(crate::layout_check::audit::offered_twice(&bar, &buttons))
+            .collect();
         assert!(
             problems.is_empty(),
-            "the bar shows each control once: {:?} ({})",
+            "the bar offers nothing the row does: {:?} ({named})",
             problems.iter().map(|p| p.kind).collect::<Vec<_>>(),
-            named(&bar),
         );
     }
 
     /// A window with nothing to act on offers no action: Mail with no account yet says where an
-    /// account comes from and stands no New message in its bar, at every width the bar has room
-    /// for the words or not, while a window with an account offers it as the primary button.
+    /// account comes from and stands no New message in its header row, at every width the row
+    /// has room for the words or not, while a window with an account offers it as the primary
+    /// button.
     #[test]
     fn a_mail_window_with_no_account_offers_no_new_message() {
         tilo_ui_host::i18n::ensure();
@@ -1171,11 +1164,10 @@ mod tests {
                     1.0,
                 )
                 .expect("the window lies out");
-            let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-            bar.controls
+            crate::layout_check::header_row_controls(&staged, (width, height))
                 .into_iter()
                 .filter(|control| control.name == "New message")
-                .map(|control| (control.slot, control.primary))
+                .map(|control| control.primary)
                 .collect::<Vec<_>>()
         };
         for (size, text) in [((320, 568), 1.0_f32), ((390, 844), 1.5), ((1280, 800), 1.0)] {
@@ -1186,14 +1178,14 @@ mod tests {
         }
         assert_eq!(
             shown("a busy inbox", (1280, 800), 1.0),
-            [("action", true)],
+            [true],
             "an account's window offers New message as its primary button"
         );
     }
 
     /// A window has a way back only when it went somewhere: the scenario that stages the feed of
-    /// the app's own root stands where the app opens, and its bar carries no Back, while a page
-    /// opened over the feed does.
+    /// the app's own root stands where the app opens, and its header row carries no Back, while
+    /// a page opened over the feed does.
     #[test]
     fn a_window_on_its_own_root_offers_no_way_back() {
         tilo_ui_host::i18n::ensure();
@@ -1220,8 +1212,9 @@ mod tests {
                     1.0,
                 )
                 .expect("the window lies out");
-            let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-            bar.controls.iter().any(|control| control.name == "Back")
+            crate::layout_check::header_row_controls(&staged, (width, height))
+                .iter()
+                .any(|control| control.id == ui::widget::WINDOW_BACK)
         };
         assert!(
             !back("YouTube cannot be reached"),
@@ -2017,11 +2010,11 @@ mod tests {
                     "pressing the row opens the task in front of the list at {width}×{height}"
                 );
                 assert!(
-                    crate::layout_check::back_chip(&mut staged, (width, height)),
+                    crate::layout_check::back_chip(&staged, (width, height)),
                     "the page carries the shell's way back at {width}×{height}"
                 );
                 staged
-                    .press_bar_slot(ui::widget::WINDOW_BACK)
+                    .press_shell(ui::widget::WINDOW_BACK)
                     .expect("the shell's back presses");
                 staged.freshen().expect("the list comes back to rest");
                 let root = &staged.harness().inspection().root;
@@ -2366,7 +2359,7 @@ mod tests {
                 "the window shows the task as a page at {width}×{height}"
             );
             assert!(
-                crate::layout_check::back_chip(&mut staged, (width, height)),
+                crate::layout_check::back_chip(&staged, (width, height)),
                 "the page carries the shell's way back at {width}×{height}, not one of its own"
             );
             assert!(
@@ -2375,7 +2368,7 @@ mod tests {
             );
 
             staged
-                .press_bar_slot(ui::widget::WINDOW_BACK)
+                .press_shell(ui::widget::WINDOW_BACK)
                 .expect("the shell's back presses");
             staged.freshen().expect("the list comes back to rest");
             assert_ne!(
@@ -2640,9 +2633,11 @@ mod tests {
                 .expect("lays out");
             // The task the scenario answers with opens where it stands, or as a page of its own
             // from the list a finger comes back to.
-            staged
-                .press_bar_slot(ui::widget::WINDOW_BACK)
-                .expect("back to the list");
+            if crate::layout_check::back_chip(&staged, (width, height)) {
+                staged
+                    .press_shell(ui::widget::WINDOW_BACK)
+                    .expect("back to the list");
+            }
             staged
                 .lay_out(
                     (width, height),
@@ -2685,7 +2680,7 @@ mod tests {
     }
 
     /// A service that cannot be reached says so in the page's one content gutter: the notice
-    /// stands as far under the window's bar as the list under it stands below the notice, in
+    /// stands as far under its column's header row as the list under it stands below the notice, in
     /// every app and at every width. A page whose gutter grew with the window (48 at a desktop
     /// width, 24 on a phone) put 48 over the notice and 24 under it beside Mail's 24, so one app
     /// said a thing and its neighbour said another.
@@ -2722,6 +2717,15 @@ mod tests {
                 .position(|node| node.widget == "Banner")
                 .expect("the notice shows");
             let notice = order[at];
+            // The notice stands under the header row of the column it is in.
+            let top = staged
+                .harness()
+                .column_frames()
+                .iter()
+                .find(|frame| {
+                    frame.column.x0 <= notice.rect[0] + 0.5 && notice.rect[0] < frame.column.x1
+                })
+                .map_or(0.0, |frame| frame.header.y1);
             // What stands under the notice: the first box after it that starts below it.
             let below = order[at..]
                 .iter()
@@ -2731,7 +2735,7 @@ mod tests {
                 })
                 .map(|node| node.rect[1] - (notice.rect[1] + notice.rect[3]))
                 .expect("the list under the notice stands");
-            (notice.rect[1], below)
+            (notice.rect[1] - top, below)
         };
         let gutter = f64::from(ui::Theme::light().tokens.spacing.rhythm.group);
         for size in [(390, 844), (1280, 800)] {

@@ -185,6 +185,10 @@ impl Decorator for RowOpen {
         "RowOpen"
     }
 
+    fn is_item_opened_in_place(&self) -> bool {
+        true
+    }
+
     /// The row the document stands in for, named by the title the document itself states. A
     /// document that says no title of its own is the row's own name already.
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
