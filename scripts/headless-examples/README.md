@@ -35,6 +35,10 @@ it again, and reads the text back off the record on disk. It needs the session
 and its apps built (`dist/dev/nested-session-build.sh`) and so is not part of
 `tools/ci/session-proofs.sh`.
 
+`notes-caret-proof.py` opens Notes the same way, types a page with no input
+method running, and checks that the desk holds the body's caret, that it follows
+the typing, and that Super+V opens the clipboard pane under the caret's line.
+
 For examples that connect to an existing compositor, start it once with:
 
 ```bash
