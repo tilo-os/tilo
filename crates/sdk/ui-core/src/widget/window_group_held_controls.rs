@@ -104,6 +104,13 @@ impl Widget for HeldControl {
         self.rect
     }
 
+    /// It takes no room and measures nothing, so nothing about it ever asks the layout to
+    /// measure again: a leaf's default answer would re-measure the window's whole path to the
+    /// root on every frame.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn is_focusable(&self) -> bool {
         self.placed()
     }

@@ -1700,3 +1700,27 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
         "Enter on the mark opens its run, as a press does"
     );
 }
+
+/// The window's own keyboard stops (the agent's mark, the furniture of a row holding the bar) take
+/// no room and measure nothing: they never ask the layout to measure again, whatever the keyboard
+/// or the bar does with them. Were they to, every frame of the window, a keystroke's included,
+/// would re-measure its whole path to the root.
+#[test]
+fn the_windows_own_stops_never_ask_for_a_measure() {
+    let mut stop = OpenedByStop::default();
+    let mut controls = crate::widget::window_header::ROW_CONTROLS.map(HeldControl::new);
+    let mut stops: Vec<&mut dyn Widget> = vec![&mut stop];
+    stops.extend(
+        controls
+            .iter_mut()
+            .map(|control| control as &mut dyn Widget),
+    );
+    for stop in stops {
+        stop.set_focus(true);
+        assert!(
+            !stop.is_layout_dirty() && !stop.layout_needs_measure(),
+            "{} asks for a measure",
+            stop.name()
+        );
+    }
+}

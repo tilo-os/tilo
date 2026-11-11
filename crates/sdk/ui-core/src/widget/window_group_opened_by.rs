@@ -70,6 +70,14 @@ impl Widget for OpenedByStop {
         self.shown.as_ref().map_or(Rect::ZERO, |(rect, _)| *rect)
     }
 
+    /// It takes no room and measures nothing, so nothing about it ever
+    /// asks the layout to measure again. A leaf's default answer is that it
+    /// may have changed size, which would re-measure the window's whole path
+    /// to the root on every frame, a keystroke's included.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn is_focusable(&self) -> bool {
         self.shown.is_some()
     }
