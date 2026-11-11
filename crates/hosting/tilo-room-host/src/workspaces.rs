@@ -1879,7 +1879,7 @@ impl Workspaces {
                     notice = notices.recv() => {
                         let Some((author, body)) = notice else { break };
                         let Some(inner) = workspaces.upgrade() else { break };
-                        if let Err(error) = (Self { inner }).absorb(&workspace, author, &body).await {
+                        if let Err(error) = (Self { inner }).absorb_kept(&workspace, author, &body).await {
                             tracing::warn!(%workspace, %error, "governed room did not follow a record write");
                         }
                     }
@@ -1980,7 +1980,7 @@ impl Workspaces {
         };
         for retained in missing {
             if let Err(error) = self
-                .absorb(workspace, retained.author, &retained.body)
+                .absorb_kept(workspace, retained.author, &retained.body)
                 .await
             {
                 tracing::warn!(%workspace, %error, "governed room did not found a record its members wrote");
@@ -2075,9 +2075,10 @@ impl Workspaces {
         workspace: &str,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
+        carried: Carried,
     ) -> Result<Option<neighbour_wire::NeighbourMsg>, String> {
         if message.channel_workspace().is_some() {
-            self.take_channel_governance(workspace, author, message)
+            self.take_channel_governance(workspace, author, message, carried)
                 .await?;
             return Ok(None);
         }
@@ -2095,6 +2096,25 @@ impl Workspaces {
         .map(|()| None)
     }
 
+    /// [`Self::absorb`] for `body`, a write the relay already keeps: one a
+    /// member sent over its session, which the governor follows as it is kept.
+    async fn absorb_kept(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+    ) -> Result<(), String> {
+        self.absorb_carried(workspace, author, body, Carried::Kept)
+            .await
+    }
+
+    /// Take in the record write `body` of `author`, which reached the host
+    /// over the workspace's direct link: [`Self::absorb_carried`].
+    async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
+        self.absorb_carried(workspace, author, body, Carried::Unkept)
+            .await
+    }
+
     /// Take in the record write `body` of `author`. A record the workspace lacks
     /// is created from it, if `author` is a device of an editor: records are
     /// born only from a governor checkpoint. A write to a record the workspace has
@@ -2104,7 +2124,13 @@ impl Workspaces {
         clippy::significant_drop_tightening,
         reason = "the workspace stays locked until its decision is committed, published and answered"
     )]
-    async fn absorb(&self, workspace: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
+    async fn absorb_carried(
+        &self,
+        workspace: &str,
+        author: [u8; 32],
+        body: &[u8],
+        carried: Carried,
+    ) -> Result<(), String> {
         let host = &self.inner.host;
         // Every member's record write reaches the governor here, so this is
         // where one that does not decode is reported (the content classifier
@@ -2132,7 +2158,10 @@ impl Workspaces {
         {
             return Ok(());
         }
-        let Some(message) = self.absorb_notice(workspace, author, message).await? else {
+        let Some(message) = self
+            .absorb_notice(workspace, author, message, carried)
+            .await?
+        else {
             return Ok(());
         };
         let neighbour_wire::NeighbourMsg::AppDocument {
@@ -2802,4 +2831,17 @@ pub(crate) fn member_bootstrap(
         }),
     };
     postcard::to_stdvec(&answer).ok()
+}
+
+/// How a member's write reached the governor, which decides whether the host
+/// still has to keep what it carries.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Carried {
+    /// Over the member's relay session: the relay kept it before the
+    /// governor was told, so it is replayed to whoever catches up already.
+    Kept,
+    /// Some way the relay keeps nothing of, the workspace's direct link or
+    /// a device's entry: the host keeps it for the members on relay
+    /// sessions and whoever catches up later.
+    Unkept,
 }

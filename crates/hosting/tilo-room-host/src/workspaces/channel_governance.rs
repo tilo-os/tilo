@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use web_time::SystemTime;
 
-use super::Workspaces;
+use super::{Carried, Workspaces};
 
 /// Notices one workspace hands its channel service at once; a device asks
 /// again when its request is dropped.
@@ -105,11 +105,18 @@ impl Workspaces {
     /// ([`tilo_peer_state::direct::DirectSync`]). One whose device's channel
     /// service it runs also queues it for that service, which settles the
     /// groups.
+    ///
+    /// What the relay already kept as the member's own write
+    /// ([`Carried::Kept`]) is not kept again as the host's: each member's
+    /// request was written to the workspace twice, a second job on its
+    /// one-at-a-time queue for every request a crowd sends, and sent twice
+    /// to every device that admits others.
     pub(super) async fn take_channel_governance(
         &self,
         workspace: &str,
         author: [u8; 32],
         message: neighbour_wire::NeighbourMsg,
+        carried: Carried,
     ) -> Result<(), String> {
         // A host's word that a channel has no group is its own to say.
         if message.channel_workspace() != Some(workspace)
@@ -146,6 +153,9 @@ impl Workspaces {
             .is_some_and(|channels| channels.sink.is_some())
         {
             self.channel_notice(workspace, message.clone())?;
+        }
+        if carried == Carried::Kept {
+            return Ok(());
         }
         self.retain_channel_governance(workspace_id, vec![message])
             .await

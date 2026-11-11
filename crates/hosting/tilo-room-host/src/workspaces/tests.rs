@@ -1554,6 +1554,15 @@ struct AskedForAChannel {
 /// a member device of the person, and hand the workspace that device's MLS
 /// access request for a fresh record channel, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
+    a_member_asks_for_a_channel_through(capabilities, super::Carried::Unkept).await
+}
+
+/// [`a_member_asks_for_a_channel`], the request reaching the host as `carried`
+/// says.
+async fn a_member_asks_for_a_channel_through(
+    capabilities: DeviceCapabilities,
+    carried: super::Carried,
+) -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(capabilities);
     let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
@@ -1590,7 +1599,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     })
     .unwrap();
     workspaces
-        .absorb(&created.workspace, member.device_public_key, &body)
+        .absorb_carried(&created.workspace, member.device_public_key, &body, carried)
         .await
         .unwrap();
     AskedForAChannel {
@@ -1657,6 +1666,21 @@ async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
     assert!(
         asked.retains_the_request().await,
         "the room retained the member's request for its channels"
+    );
+    asked.shut_down().await;
+}
+
+/// A member's request that reached the host over the member's relay session
+/// is kept there already, as the member's own write: the host keeps no copy of
+/// its own. Each request a crowd sent was kept twice, a second job on the
+/// workspace's one-at-a-time queue for every one.
+#[tokio::test]
+async fn a_request_the_relay_kept_is_not_kept_again_as_the_hosts() {
+    let asked =
+        a_member_asks_for_a_channel_through(DeviceCapabilities::host(), super::Carried::Kept).await;
+    assert!(
+        !asked.retains_the_request().await,
+        "the host kept a second copy of a request its relay keeps as the member's"
     );
     asked.shut_down().await;
 }

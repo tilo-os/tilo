@@ -11,8 +11,8 @@ use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use crate::handshake::{Doorway, EntryFuture};
-use crate::workspaces::Workspaces;
 use crate::workspaces::pages::Presented;
+use crate::workspaces::{Carried, Workspaces};
 
 /// A refusal of the join itself, after the door let the person in.
 const fn refused(reason: String) -> EnterRefusal {
@@ -168,7 +168,7 @@ impl Workspaces {
         tokio::spawn(async move {
             let taking = crate::timing::start();
             if let Err(error) = workspaces
-                .take_channel_governance(&workspace, device, request)
+                .take_channel_governance(&workspace, device, request, Carried::Unkept)
                 .await
             {
                 tracing::warn!(%workspace, %error, "an entry's channel request was not taken");
