@@ -200,8 +200,11 @@ pub async fn approved_key(
     name: &str,
 ) -> String {
     // The person approves on the site, where their page came in through its
-    // door: the site let them in.
-    on_relay
+    // door: the door answers the page with an invitation, and the page enters
+    // on its session with it. The person is a member of the site's home
+    // workspace from then on, so every key of theirs reaches the relay as
+    // them.
+    let (issued, token) = on_relay
         .hosted
         .relay
         .workspaces()
@@ -215,6 +218,13 @@ pub async fn approved_key(
         )
         .await
         .unwrap();
+    enter_page(
+        on_relay,
+        device,
+        &issued.signed_invitation,
+        Some(token.as_bytes()),
+    )
+    .await;
     let door = &on_relay.door;
     let (status, asked) = json_of(
         door.dispatch(
@@ -320,8 +330,6 @@ pub async fn accept_invitation(
     name: &str,
 ) -> (Device, Value) {
     use base64::Engine as _;
-    use tilo_relay_protocol::workspaces::JoinReply;
-    use tilo_session_host::device::{Entering, Held, entered, invitation_entry};
     let text = if let Some((site, sealed)) = link.rsplit_once("/i/")
         && let Some((handle, key)) = sealed.split_once('#')
     {
@@ -338,29 +346,46 @@ pub async fn accept_invitation(
     let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(text)
         .expect("an invitation's text");
+    let page = enrol(root, name, DeviceCapabilities::member());
+    let joined = enter_page(on_relay, &page, &invitation, None).await;
+    (page, joined)
+}
+
+/// `page`, a device `root` holds, enters the workspace `invitation` (its
+/// signed bytes) names on its own session, under the pre-admission `token`
+/// where the door issued one: what the workspace admitted it to,
+/// `{workspace, name, role}`.
+pub async fn enter_page(
+    on_relay: &OnRelay,
+    page: &Device,
+    invitation: &[u8],
+    token: Option<&[u8]>,
+) -> Value {
+    use tilo_relay_protocol::workspaces::JoinReply;
+    use tilo_session_host::device::{Entering, Held, entered, invitation_entry};
     let client = tilo_net::Client::builder().build().unwrap();
     let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
-    let offer = tilo_relay_client::https::invitation(&host, &invitation)
+    let offer = tilo_relay_client::https::invitation(&host, invitation)
         .await
         .unwrap();
     assert!(matches!(offer, JoinReply::Invitation { .. }), "{offer:?}");
     // The page's session carries the invitation in its first message.
     let info = tilo_relay_client::https::host_info(&host).await.unwrap();
-    let page = enrol(root, name, DeviceCapabilities::member());
+    let label = page.cert.device_label.clone();
     let held = Held {
         cert: page.cert.clone(),
         host_cert: Some(info.host_cert.clone()),
     };
     let (_, entering) = invitation_entry(
         &info.host_cert,
-        &invitation,
+        invitation,
         &page.key,
         Entering {
             held: Some(&held),
             root: None,
-            label: name,
-            name,
-            token: None,
+            label: &label,
+            name: &label,
+            token,
         },
     )
     .await
@@ -382,10 +407,7 @@ pub async fn accept_invitation(
         .expect("the invitation admits the page");
     session.close();
     let role = format!("{:?}", admitted.role).to_lowercase();
-    (
-        page,
-        json!({"workspace": admitted.workspace, "name": admitted.name, "role": role}),
-    )
+    json!({"workspace": admitted.workspace, "name": admitted.name, "role": role})
 }
 
 /// Answer each `POST {link}` to `listener` as the person `root` would:
