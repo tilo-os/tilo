@@ -896,7 +896,14 @@ fn shot_page(now: u64) -> (serde_json::Value, serde_json::Value, serde_json::Val
             "target": {"role": "textbox", "name": "Portal password"}},
         {"seq": 5, "time_ms": ago(40), "actor": "agent:documents", "action": "click",
             "ok": false, "target": {"role": "button", "name": "Send application"}},
-    ], "next": 5, "more": false, "dropped": 0, "waiting": 0});
+        // The window is an agent's: what its page sends waits for the person.
+        {"seq": 6, "time_ms": ago(25), "actor": "agent:documents", "how": "hold",
+            "action": "submit", "ok": true, "message": "POST https://visas.example.org",
+            "to_url": "https://visas.example.org"},
+        {"seq": 7, "time_ms": ago(10), "actor": "", "how": "hold", "action": "allow",
+            "ok": true, "message": "POST https://visas.example.org",
+            "to_url": "https://visas.example.org"},
+    ], "next": 7, "more": false, "dropped": 0, "waiting": 0});
     (forms, fields, record)
 }
 
