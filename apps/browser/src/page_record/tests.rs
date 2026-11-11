@@ -837,6 +837,168 @@ fn what_a_person_types_is_set_down_in_its_place_as_the_persons() {
     assert_eq!(held(&record, &tab).len(), 7);
 }
 
+/// The engine holds the request `id` the page sends on its own, and sets
+/// that down at `seq` of its record: no actor's action reached it.
+fn engine_holds(engine: &TestEngine, seq: u64, id: u32) -> Value {
+    let mut request = ui::webview::HeldRequest::new(id, ui::webview::HeldKind::Request);
+    request.method = "POST".into();
+    request.origin = "https://orders.test".into();
+    engine.hold(request);
+    let entry = json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq, "actor": "",
+        "how": "hold", "action": "request", "ok": true, "message": "POST https://orders.test",
+        "url": PAGE, "to_url": "https://orders.test"});
+    engine.emit_page_record(seq, entry.clone());
+    entry
+}
+
+/// The engine ends the hold `id` as the window answered it and sets that
+/// down at `seq`, under the name the window's answer carries: the engine
+/// knows of no other.
+fn engine_ends_hold(engine: &TestEngine, seq: u64, id: u32) -> Value {
+    let (allow, by) = engine
+        .commands()
+        .into_iter()
+        .find_map(|command| match command {
+            WebViewCommand::AnswerHeldRequest {
+                id: answered,
+                allow,
+                by,
+            } if answered == id => Some((allow, by)),
+            _ => None,
+        })
+        .expect("the window answered the hold");
+    let ended = if allow {
+        "allow"
+    } else if by.expired() {
+        "drop"
+    } else {
+        "keep"
+    };
+    let entry = json!({"seq": seq, "time_ms": 1_700_000_000_000_u64 + seq,
+        "actor": by.actor().map_or("", PageActor::as_str), "how": "hold", "action": ended,
+        "ok": true, "message": "POST https://orders.test", "url": PAGE,
+        "to_url": "https://orders.test"});
+    engine.emit_page_record(seq, entry.clone());
+    engine.push_event(ui::webview::WebViewEvent::HeldRequestClosed { id });
+    entry
+}
+
+/// What the window held is in the tab's record: that something the page was
+/// about to send waited for the person, and how that ended, each in its
+/// place among the actions. Who answered is the name the window's own answer
+/// carried to the engine: an agent's answer is that agent's change, authored
+/// by the invoker the action door admitted it for, and the person's is the
+/// person's. Nobody at the door sets such an entry down.
+#[test]
+fn what_the_window_held_is_set_down_with_who_answered() {
+    let engine = TestEngine::new();
+    let mut app = open(&engine);
+    two_agents_answer_the_form(&mut app, &engine);
+    let record = record(&mut app);
+    let tab = only_tab(&record);
+    assert_eq!(held(&record, &tab).len(), 3);
+
+    // The page posts on its own and an agent keeps the page as it is.
+    let first = engine_holds(&engine, 4, 1);
+    app.settle();
+    let rev = agent_for_ada("agent:rev");
+    act(
+        &mut app,
+        Some(&rev),
+        &BrowserEffect::KeepHeldRequest { id: "1".into() },
+    )
+    .expect("the agent's answer is taken");
+    let kept = engine_ends_hold(&engine, 5, 1);
+    app.settle();
+    // It posts again, and the person at the window lets it leave.
+    let second = engine_holds(&engine, 6, 2);
+    app.settle();
+    act(
+        &mut app,
+        None,
+        &BrowserEffect::SendHeldRequest { id: "2".into() },
+    )
+    .expect("the person's answer is taken");
+    let left = engine_ends_hold(&engine, 7, 2);
+    app.settle();
+
+    assert_eq!(
+        (kept["action"].as_str(), kept["actor"].as_str()),
+        (Some("keep"), Some("agent:rev")),
+        "the window told the engine who kept the page"
+    );
+    assert_eq!(
+        (left["action"].as_str(), left["actor"].as_str()),
+        (Some("allow"), Some("")),
+        "and that the person let the second leave"
+    );
+    assert_eq!(
+        record.with(|state| state.page(&tab, 3).entries),
+        [first, kept, second, left],
+        "each is kept as the engine set it down, in its place"
+    );
+    let authors: Vec<String> = steps(&record, &tab)
+        .into_iter()
+        .map(|(author, ..)| author)
+        .collect();
+    let person = ada();
+    assert_eq!(
+        authors[3..],
+        [
+            person.as_str(),
+            "agent:rev",
+            person.as_str(),
+            person.as_str()
+        ],
+        "the agent's answer is the agent's change, and the rest the person's"
+    );
+    let answered_for: Vec<Option<String>> = record
+        .record()
+        .read(|doc| {
+            let mut doc = doc.clone();
+            history::versions(&mut doc)
+                .into_iter()
+                .filter_map(|version| version.context.as_ref()?.invoker.clone())
+                .filter(|invoker| invoker.actor == "agent:rev")
+                .map(|invoker| invoker.on_behalf_of)
+                .collect()
+        })
+        .expect("the record is open");
+    assert_eq!(
+        answered_for,
+        [Some(ada())],
+        "authored by the invoker the action door admitted the answer for"
+    );
+    // A reader of the record is told the same.
+    let read = review(&mut app, Some(3));
+    let entries = read["data"]["entries"].as_array().expect("entries");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (
+                entry["how"].as_str().unwrap_or_default(),
+                entry["action"].as_str().unwrap_or_default(),
+                entry["actor"].as_str().unwrap_or_default(),
+                entry["message"].as_str().unwrap_or_default(),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("hold", "request", "", "POST https://orders.test"),
+            ("hold", "keep", "agent:rev", "POST https://orders.test"),
+            ("hold", "request", "", "POST https://orders.test"),
+            ("hold", "allow", "", "POST https://orders.test"),
+        ]
+    );
+
+    // Nobody but the window sets a hold's answer down: an agent that writes
+    // the person's allow is refused, and the record is as it was.
+    let forged = json!({"seq": 8, "actor": "", "how": "hold", "action": "allow", "ok": true,
+        "message": "POST https://orders.test", "to_url": "https://orders.test"});
+    let refused = set_down(&record, Some(&agent("agent:mallory")), &tab, forged).unwrap_err();
+    assert!(refused.contains("the actor who did it"), "{refused}");
+    assert_eq!(held(&record, &tab).len(), 7);
+}
+
 /// What was written into a secret field is in the page and nowhere else,
 /// whatever wrote it: the record keeps of such an entry that the field was
 /// set, and no text, chosen value or answer it carries. A key pressed there

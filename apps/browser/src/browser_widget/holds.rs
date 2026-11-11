@@ -17,9 +17,23 @@
 //!
 //! A hold nobody answers is dropped after [`HELD_WAIT`]: the page is left as
 //! it was, and the window is never left waiting on a person who did not come.
+//!
+//! The tab's record says all of it ([`crate::page_record`]). The engine sets
+//! down that a departure was held, under the actor whose action reached it,
+//! and how it ended: let leave, kept, or dropped unanswered. It cannot know
+//! who answered, so each answer the window sends says ([`AnsweredBy`]):
+//!
+//! - the person, when their allow ran again the invocation that reached the
+//!   hold. That invocation is its actor's, whom the held entry already names,
+//!   and the action door runs it a second time only on the person's own
+//!   answer, so the one who let it leave is the person;
+//! - whoever the action door admitted `send-held-request` or
+//!   `keep-held-request` for, by the name the tab keeps their page actions
+//!   under, and the person at the window when it names nobody;
+//! - nobody, when the window dropped it at its own deadline.
 
-use ui::tilo_actions::InvocationId;
-use ui::webview::HeldRequest;
+use ui::tilo_actions::{ActionInvoker, InvocationId};
+use ui::webview::{AnsweredBy, HeldRequest, PageActor};
 
 use super::{BrowserWidget, WebViewCommand, action_failed};
 
@@ -235,12 +249,25 @@ impl BrowserWidget {
         self.structure_dirty = true;
     }
 
-    /// Send one held request on its way (`allow`) or drop it, and answer the
-    /// invocation that waited for the release once the engine says it is over.
+    /// Who answers a hold when the action door admitted the answer for
+    /// `invoker`: that actor, by the name the tab keeps their page actions
+    /// under, and the person at the window for nobody. The engine sets the
+    /// answer down under that name, so the tab's record is told whose name
+    /// it is.
+    pub(crate) fn answering(&mut self, invoker: Option<&ActionInvoker>) -> AnsweredBy {
+        let actor = invoker.and_then(|invoker| PageActor::named(&invoker.actor));
+        self.page_record.acts_as(actor.as_ref(), invoker);
+        AnsweredBy::admitted(actor)
+    }
+
+    /// Send one held request on its way (`allow`) or drop it, as `invoker`
+    /// (nobody: the person at the window), and answer the invocation that
+    /// waited for the release once the engine says it is over.
     pub(crate) fn answer_hold(
         &mut self,
         id: &str,
         allow: bool,
+        invoker: Option<&ActionInvoker>,
     ) -> Result<serde_json::Value, String> {
         let id: u32 = id.parse().map_err(|_| {
             "a held request is named by the id the page's request carries".to_string()
@@ -248,7 +275,8 @@ impl BrowserWidget {
         let Some(held) = self.holds.answered(id, allow) else {
             return Err("the page is not waiting on that any more".into());
         };
-        self.release_held(held.request.id, held.request.kind, allow);
+        let by = self.answering(invoker);
+        self.release_held(held.request.id, held.request.kind, allow, by);
         self.structure_dirty = true;
         Ok(serde_json::json!({
             "kind": held.request.kind.as_str(),
@@ -259,16 +287,23 @@ impl BrowserWidget {
     }
 
     /// Let `id` leave, or cancel it: the engine resumes it exactly once, or
-    /// drops it and leaves the page as it was.
-    pub(crate) fn release_held(&self, id: u32, kind: ui::webview::HeldKind, allow: bool) {
+    /// drops it and leaves the page as it was. `by` is who answered, which
+    /// the engine sets down in the tab's record.
+    pub(crate) fn release_held(
+        &self,
+        id: u32,
+        kind: ui::webview::HeldKind,
+        allow: bool,
+        by: AnsweredBy,
+    ) {
         if kind == ui::webview::HeldKind::Download {
             // A download the page offers is the engine's own question, and
             // its answer is the one a person's click on the offer gives.
             self.engine
-                .send(WebViewCommand::DownloadDecision { id, allow });
+                .send(WebViewCommand::DownloadDecision { id, allow, by });
         } else {
             self.engine
-                .send(WebViewCommand::AnswerHeldRequest { id, allow });
+                .send(WebViewCommand::AnswerHeldRequest { id, allow, by });
         }
     }
 
@@ -310,8 +345,18 @@ impl BrowserWidget {
 
     /// Drop the holds nobody answered: the page stays as it was filled.
     pub(crate) fn expire_holds(&mut self) {
-        for held in self.holds.expire(std::time::Instant::now()) {
-            self.release_held(held.request.id, held.request.kind, false);
+        self.expire_holds_at(std::time::Instant::now());
+    }
+
+    /// Drop the holds nobody answered by `now`, and say that nobody did.
+    pub(crate) fn expire_holds_at(&mut self, now: std::time::Instant) {
+        for held in self.holds.expire(now) {
+            self.release_held(
+                held.request.id,
+                held.request.kind,
+                false,
+                AnsweredBy::Nobody,
+            );
             self.structure_dirty = true;
         }
     }

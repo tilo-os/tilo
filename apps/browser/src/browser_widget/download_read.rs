@@ -42,9 +42,16 @@ impl BrowserWidget {
         Ok(text)
     }
 
-    /// Answer the page's offer to download `id`: save it when `allow`, else
-    /// discard it. The engine continues the transfer only when kept.
-    pub(super) fn answer_download(&mut self, id: &str, allow: bool) -> Result<String, String> {
+    /// Answer the page's offer to download `id` as `invoker` (nobody: the
+    /// person at the window): save it when `allow`, else discard it. The
+    /// engine continues the transfer only when kept, and of a download it
+    /// held for the person its record says who answered.
+    pub(super) fn answer_download(
+        &mut self,
+        id: &str,
+        allow: bool,
+        invoker: Option<&ui::tilo_actions::ActionInvoker>,
+    ) -> Result<String, String> {
         let entry = self
             .downloads
             .get(id)
@@ -57,8 +64,12 @@ impl BrowserWidget {
         }
         let name = entry.display_name().to_string();
         if let Some(native) = self.native_download_id(id) {
-            self.engine
-                .send(WebViewCommand::DownloadDecision { id: native, allow });
+            let by = self.answering(invoker);
+            self.engine.send(WebViewCommand::DownloadDecision {
+                id: native,
+                allow,
+                by,
+            });
         } else if allow {
             // A saved-list row with no live engine download has no file to
             // save; the offer expired with its session.

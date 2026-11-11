@@ -2912,3 +2912,62 @@ fn owned_navigation_cancel_refusal_wakes_without_holding_command_order() {
         "cancellation failure must reap its owned helper"
     );
 }
+
+/// The engine sets down in the tab's record who answered what a window held,
+/// and only the window knows: the answer carries it. The person's answer
+/// says nothing more than it always did, so a host that knows no answerer
+/// reads it as before.
+#[test]
+fn an_answer_to_what_a_window_held_says_who_answered() {
+    use crate::webview::{AnsweredBy, PageActor};
+    let rev = || AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"));
+    assert_eq!(
+        encode_command(WebViewCommand::AnswerHeldRequest {
+            id: 3,
+            allow: true,
+            by: AnsweredBy::Person,
+        }),
+        Some(json!({"op":"hold_answer","id":3,"allow":true}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::AnswerHeldRequest {
+            id: 3,
+            allow: false,
+            by: rev(),
+        }),
+        Some(json!({"op":"hold_answer","id":3,"allow":false,"actor":"agent:rev"}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::AnswerHeldRequest {
+            id: 3,
+            allow: false,
+            by: AnsweredBy::Nobody,
+        }),
+        Some(json!({"op":"hold_answer","id":3,"allow":false,"reason":"expired"}))
+    );
+    // A download a window held is answered by the download's own decision.
+    assert_eq!(
+        encode_command(WebViewCommand::DownloadDecision {
+            id: 9,
+            allow: true,
+            by: AnsweredBy::Person,
+        }),
+        Some(json!({"op":"download_decision","id":9,"allow":true}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::DownloadDecision {
+            id: 9,
+            allow: false,
+            by: rev(),
+        }),
+        Some(json!({"op":"download_decision","id":9,"allow":false,"actor":"agent:rev"}))
+    );
+    assert_eq!(
+        encode_command(WebViewCommand::DownloadDecision {
+            id: 9,
+            allow: false,
+            by: AnsweredBy::Nobody,
+        }),
+        Some(json!({"op":"download_decision","id":9,"allow":false,"reason":"expired"}))
+    );
+}

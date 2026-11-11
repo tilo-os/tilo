@@ -1098,7 +1098,11 @@ fn downloads_read_and_answer_their_offer_through_resource_actions() {
             .expect("the offer is kept");
         assert!(engine.commands().iter().any(|command| matches!(
             command,
-            WebViewCommand::DownloadDecision { id: 1, allow: true }
+            WebViewCommand::DownloadDecision {
+                id: 1,
+                allow: true,
+                ..
+            }
         )));
     }
 }

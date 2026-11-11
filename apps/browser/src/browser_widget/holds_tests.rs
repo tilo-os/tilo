@@ -5,7 +5,8 @@
 use std::sync::Arc;
 
 use ui::webview::{
-    HeldKind, HeldRequest, PageKey, PageRequest, WebViewCommand, WebViewEngine as _,
+    AnsweredBy, HeldKind, HeldRequest, PageActor, PageKey, PageRequest, WebViewCommand,
+    WebViewEngine as _,
 };
 
 use super::tests::{effect_operation, synced};
@@ -86,10 +87,65 @@ fn held_answers(engine: &TestEngine) -> Vec<(u32, bool)> {
         .commands()
         .into_iter()
         .filter_map(|command| match command {
-            WebViewCommand::AnswerHeldRequest { id, allow } => Some((id, allow)),
+            WebViewCommand::AnswerHeldRequest { id, allow, .. } => Some((id, allow)),
             _ => None,
         })
         .collect()
+}
+
+/// Every answer the window gave to something it held, a request or a
+/// download, with who it says answered, in order.
+fn answered_by(engine: &TestEngine) -> Vec<(u32, bool, AnsweredBy)> {
+    engine
+        .commands()
+        .into_iter()
+        .filter_map(|command| match command {
+            WebViewCommand::AnswerHeldRequest { id, allow, by }
+            | WebViewCommand::DownloadDecision { id, allow, by } => Some((id, allow, by)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// An agent the action door admitted, by its principal.
+fn agent(principal: &str) -> ui::tilo_actions::ActionInvoker {
+    ui::tilo_actions::ActionInvoker::actor(principal).with_kind(ui::tilo_actions::ActorKind::Agent)
+}
+
+/// The payload of the page's action `id` with `args`, as a caller sends it.
+fn payload_with(widget: &BrowserWidget, id: &str, args: &serde_json::Value) -> Vec<u8> {
+    page_resource(widget)
+        .actions
+        .into_iter()
+        .find(|action| action.id == id)
+        .unwrap_or_else(|| panic!("{id} is published on the page"))
+        .build_json(args.as_object().expect("arguments are an object"))
+        .expect("the action takes these arguments")
+        .payload
+}
+
+/// The payload of the page's `answer` (`send-held-request` or
+/// `keep-held-request`) to the held request `held`, as a caller sends it: of
+/// the answers the page publishes, the one bound to that id.
+fn answer_payload(widget: &BrowserWidget, answer: &str, held: u32) -> Vec<u8> {
+    let wanted = held.to_string();
+    let stated = serde_json::json!({ "id": wanted });
+    page_resource(widget)
+        .actions
+        .into_iter()
+        .find(|action| {
+            action.id == answer
+                && action
+                    .params()
+                    .iter()
+                    .find(|param| param.name == "id")
+                    .and_then(|param| param.choices.first())
+                    .is_some_and(|bound| bound.to_string() == wanted)
+        })
+        .unwrap_or_else(|| panic!("{answer} is published for the held request {held}"))
+        .build_json(stated.as_object().expect("an id"))
+        .expect("the answer names the held request")
+        .payload
 }
 
 /// A submission the engine reports holding, as the visa form's is.
@@ -425,9 +481,13 @@ fn a_download_is_held_like_every_other_departure_the_page_starts() {
     assert!(
         engine.commands().into_iter().any(|command| matches!(
             command,
-            WebViewCommand::DownloadDecision { id: 9, allow: true }
+            WebViewCommand::DownloadDecision {
+                id: 9,
+                allow: true,
+                by: AnsweredBy::Person,
+            }
         )),
-        "the person's allow keeps the file"
+        "the person's allow keeps the file, and says it was theirs"
     );
     assert!(
         widget.capabilities.prompt(&widget.engine).is_none(),
@@ -445,18 +505,12 @@ fn a_hold_nobody_answers_is_dropped_and_the_page_stays() {
     widget.sync(&doc, &root);
     assert_eq!(widget.holds.waiting().count(), 1);
     // The window's own deadline passes with nobody answering.
-    let dropped = widget
-        .holds
-        .expire(std::time::Instant::now() + std::time::Duration::from_secs(60 * 60));
-    for held in dropped {
-        let (id, kind) = (held.request.id, held.request.kind);
-        widget.release_held(id, kind, false);
-    }
+    widget.expire_holds_at(std::time::Instant::now() + std::time::Duration::from_secs(60 * 60));
     assert!(widget.holds.waiting().next().is_none());
     assert_eq!(
-        held_answers(&engine),
-        vec![(5, false)],
-        "the window drops what nobody answered"
+        answered_by(&engine),
+        vec![(5, false, AnsweredBy::Nobody)],
+        "the window drops what nobody answered, and says that nobody did"
     );
     assert_eq!(page_requests(&engine), Vec::new(), "nothing left the page");
 }
@@ -626,4 +680,127 @@ fn a_release_and_another_actors_action_are_both_answered() {
         panic!("the released submission answers what left: {released:?}");
     };
     assert_eq!(output.value.clone().unwrap()["released"], true);
+}
+
+/// The tab's record says who let a held departure leave, and the engine that
+/// keeps it cannot know: the window's answer says. An agent's action reached
+/// the submission, and the engine sets the hold down under that agent. The
+/// person's allow runs the agent's invocation again, and what lets the
+/// submission leave is their answer: the window says so, not the agent.
+#[test]
+fn the_persons_allow_of_an_agents_held_action_is_answered_as_the_persons() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    let intake = agent("agent:intake");
+    let asked = payload_with(
+        &widget,
+        "submit-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    engine.hold(held_submit(1));
+    let submit = ui::tilo_actions::InvocationId::new();
+    assert!(matches!(
+        widget.admit_for(submit, Some(&intake), effect_operation(&asked)),
+        Ok(ui::framework::Effected::Pending)
+    ));
+    widget.sync(&doc, &root);
+    assert!(
+        engine.commands().into_iter().any(|command| matches!(
+            command,
+            WebViewCommand::Page { actor: Some(actor), request: PageRequest::Submit { .. }, .. }
+                if actor.as_str() == "agent:intake"
+        )),
+        "the submission reaches the page as the agent's, and its hold is set down as theirs"
+    );
+    let needs = answer(&mut widget, &doc, &root, submit);
+    assert!(needs_the_person(&needs), "{needs:?}");
+    assert!(answered_by(&engine).is_empty(), "nobody answered yet");
+    // The person allowed it: the door hands the agent's invocation to the
+    // window again.
+    assert!(matches!(
+        widget.admit_for(submit, Some(&intake), effect_operation(&asked)),
+        Ok(ui::framework::Effected::Pending)
+    ));
+    assert_eq!(
+        answered_by(&engine),
+        vec![(1, true, AnsweredBy::Person)],
+        "the person let it leave: the agent could not have"
+    );
+}
+
+/// A hold the window publishes is answered by whoever the action door admits
+/// its answer for, and the answer names them: an agent by the name the tab
+/// keeps its page actions under, the person at the window by none.
+#[test]
+fn whoever_answers_a_published_hold_is_named_with_the_answer() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    let hold = |id: u32, origin: &str| {
+        let mut request = HeldRequest::new(id, HeldKind::Request);
+        request.method = "POST".into();
+        request.origin = origin.into();
+        engine.hold(request);
+    };
+    hold(4, "https://orders.example");
+    widget.sync(&doc, &root);
+    let keep = answer_payload(&widget, "keep-held-request", 4);
+    widget
+        .admit_for(
+            ui::tilo_actions::InvocationId::new(),
+            Some(&agent("agent:rev")),
+            effect_operation(&keep),
+        )
+        .expect("the agent's answer is accepted");
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 4 });
+    hold(5, "https://pay.example");
+    widget.sync(&doc, &root);
+    let send = answer_payload(&widget, "send-held-request", 5);
+    widget
+        .admit(
+            ui::tilo_actions::InvocationId::new(),
+            effect_operation(&send),
+        )
+        .expect("the person's answer is accepted");
+    assert_eq!(
+        answered_by(&engine),
+        vec![
+            (
+                4,
+                false,
+                AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"))
+            ),
+            (5, true, AnsweredBy::Person),
+        ],
+        "each answer says whose it was"
+    );
+}
+
+/// A held download is answered through the download's own decision, which
+/// says who answered as the answer to any other hold does.
+#[test]
+fn whoever_answers_a_held_download_is_named_with_the_answer() {
+    let (engine, mut widget, doc, root) = page_in(BrowsingMode::Visitor, "https://files.example/");
+    engine.push_event(WebViewEvent::NativeDownloadRequested {
+        id: 9,
+        url: "https://files.example/return.pdf".into(),
+        name: "return.pdf".into(),
+    });
+    widget.sync(&doc, &root);
+    let keep = answer_payload(&widget, "keep-held-request", 9);
+    widget
+        .admit_for(
+            ui::tilo_actions::InvocationId::new(),
+            Some(&agent("agent:rev")),
+            effect_operation(&keep),
+        )
+        .expect("the agent's answer is accepted");
+    assert_eq!(
+        answered_by(&engine),
+        vec![(
+            9,
+            false,
+            AnsweredBy::Actor(PageActor::named("agent:rev").expect("a named actor"))
+        )],
+        "the download's decision says who discarded it"
+    );
 }

@@ -2663,6 +2663,20 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
     (output.len() <= limit).then_some(output)
 }
 
+/// `wire`, the answer to something a window held for the person, saying who
+/// answered: an actor by the name its page actions carry, and `reason:
+/// "expired"` when nobody did. The person at the window is said by neither,
+/// which is also how a host that names no answerer is read.
+fn answered_by(mut wire: Value, by: &super::hold::AnsweredBy) -> Value {
+    if let Some(actor) = by.actor() {
+        wire["actor"] = actor.as_str().into();
+    }
+    if by.expired() {
+        wire["reason"] = "expired".into();
+    }
+    wire
+}
+
 fn encode_command(command: WebViewCommand) -> Option<Value> {
     Some(match command {
         WebViewCommand::Credentials(request) => request.encode()?,
@@ -2833,8 +2847,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
         WebViewCommand::PermissionDismissed { id } => {
             json!({"op":"permission_decision","id":id,"allow":false,"dismiss":true})
         }
-        WebViewCommand::DownloadDecision { id, allow } => {
-            json!({"op":"download_decision","id":id,"allow":allow})
+        WebViewCommand::DownloadDecision { id, allow, by } => {
+            answered_by(json!({"op":"download_decision","id":id,"allow":allow}), &by)
         }
         WebViewCommand::Find {
             id,
@@ -2849,8 +2863,8 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             Some(text) => json!({"op":"js_dialog_reply","id":id,"accept":accept,"text":text}),
             None => json!({"op":"js_dialog_reply","id":id,"accept":accept}),
         },
-        WebViewCommand::AnswerHeldRequest { id, allow } => {
-            json!({"op":"hold_answer","id":id,"allow":allow})
+        WebViewCommand::AnswerHeldRequest { id, allow, by } => {
+            answered_by(json!({"op":"hold_answer","id":id,"allow":allow}), &by)
         }
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),

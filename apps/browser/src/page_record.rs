@@ -33,6 +33,17 @@
 //! ([`TabRecorder::heard`]). It is written in its place among the actions
 //! around it, as the person's.
 //!
+//! What a window an agent operates held is no action either. The engine sets
+//! down that something the page was about to send waits for the person (a
+//! form submission, a request with data, a download), and then how that
+//! ended: let leave, kept as the page is, or dropped with nobody answering.
+//! Such an entry has `how: "hold"`. One that says a hold began names what
+//! waits as its `action`, where it would go as `to_url` and its method there
+//! as its message, under the actor whose action reached it. One that says how
+//! it ended names who answered: the engine cannot know that, so the window
+//! says it with the answer ([`TabRecorder::acts_as`]). Neither carries what
+//! was about to leave.
+//!
 //! The record is bounded as the engine bounds its own: a tab keeps its newest
 //! [`MAX_TAB_ACTIONS`] actions and the record its [`MAX_TABS`] most recently
 //! used tabs. What goes beyond leaves the record's state, counted in the
@@ -91,10 +102,12 @@ pub struct PageAction {
     pub time_ms: u64,
     /// The name its actor acted under; empty for the person at the window.
     pub actor: Atom,
-    /// `input` for what was typed straight into the page; empty for an
-    /// action.
+    /// `input` for what was typed straight into the page and `hold` for what
+    /// the window held the page from sending; empty for an action.
     pub how: Atom,
-    /// What was asked for (`click`, `fill`, `select`).
+    /// What was asked for (`click`, `fill`, `select`). Of a hold, what was
+    /// held (`submit`, `request`, `download`) or how it ended (`allow`,
+    /// `keep`, `drop`).
     pub action: Atom,
     /// Whether it did what was asked.
     pub ok: bool,
@@ -105,7 +118,8 @@ pub struct PageAction {
     pub message: Atom,
     /// The page it ran on.
     pub url: Atom,
-    /// The page it left that one for.
+    /// The page it left that one for. Of a hold, where what was held would
+    /// go, by its origin.
     pub to_url: Atom,
     /// Whether it led the page away.
     pub navigation: Atom,
@@ -629,14 +643,7 @@ impl TabRecorder {
         if !self.attached() {
             return;
         }
-        if let (Some(actor), Some(invoker)) = (actor, invoker) {
-            self.actors.retain(|(name, _)| name != actor.as_str());
-            if self.actors.len() >= MAX_ACTORS {
-                self.actors.remove(0);
-            }
-            self.actors
-                .push((actor.as_str().to_owned(), invoker.clone()));
-        }
+        self.acts_as(actor, invoker);
         if let PageRequest::Fill {
             secret: true, text, ..
         } = request
@@ -651,6 +658,23 @@ impl TabRecorder {
                     self.withheld.push(digest);
                 }
             }
+        }
+    }
+
+    /// `invoker` acts in the tab as `actor`: what the engine sets down under
+    /// that name is authored by that invoker, whether it is a page action of
+    /// theirs or their answer to something the window held.
+    pub(crate) fn acts_as(&mut self, actor: Option<&PageActor>, invoker: Option<&ActionInvoker>) {
+        if !self.attached() {
+            return;
+        }
+        if let (Some(actor), Some(invoker)) = (actor, invoker) {
+            self.actors.retain(|(name, _)| name != actor.as_str());
+            if self.actors.len() >= MAX_ACTORS {
+                self.actors.remove(0);
+            }
+            self.actors
+                .push((actor.as_str().to_owned(), invoker.clone()));
         }
     }
 
@@ -756,9 +780,11 @@ impl TabRecorder {
     }
 
     /// The engine says it set `entry` down at its place `seq` of its own
-    /// accord: what a person typed straight into the page, which no action's
-    /// answer carries. The entry that follows what this window has written
-    /// is written at once, as the person's. One further on has actions
+    /// accord: what a person typed straight into the page, or what the
+    /// window held the page from sending and how that ended, which no
+    /// action's answer carries. The entry that follows what this window has
+    /// written is written at once, as its actor's, and as the person's when
+    /// it names none. One further on has actions
     /// before it this window has not read: it is written in its place once
     /// they are, from the engine's own listing. Whether the window is to
     /// read the engine's record for that.

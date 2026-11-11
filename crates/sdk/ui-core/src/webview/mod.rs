@@ -31,7 +31,9 @@ pub mod hold;
 pub mod page;
 pub mod paint;
 pub mod text_input;
-pub use hold::{HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN};
+pub use hold::{
+    AnsweredBy, HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN,
+};
 pub use page::{
     FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure, PageFieldChange,
     PageFormChange, PageKey, PageNavigation, PageRecordNote, PageReply, PageRequest, PointerButton,
@@ -602,10 +604,12 @@ pub enum WebViewCommand {
     /// Answer the request `id` an agent's window held
     /// ([`WebViewEvent::HeldRequest`]): let it leave exactly once, or keep
     /// the page as it is and drop it. Answered once: a second answer for the
-    /// same id does nothing.
+    /// same id does nothing. `by` is who answered: the engine sets it down
+    /// in the tab's record beside how the hold ended, since it cannot know.
     AnswerHeldRequest {
         id: u32,
         allow: bool,
+        by: AnsweredBy,
     },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`]
@@ -878,9 +882,14 @@ pub enum WebViewCommand {
         key: KeyInput,
         modifiers: KeyModifiers,
     },
+    /// Save the download `id` the page offered, or discard it. `by` is who
+    /// answered: of a download an agent's window held for the person, the
+    /// engine sets it down in the tab's record as it does for
+    /// [`Self::AnswerHeldRequest`].
     DownloadDecision {
         id: u32,
         allow: bool,
+        by: AnsweredBy,
     },
     CancelNativeDownload {
         id: u32,

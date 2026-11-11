@@ -437,7 +437,9 @@ impl Capabilities {
                 engine.send(if permission {
                     WebViewCommand::PermissionDecision { id, allow }
                 } else {
-                    WebViewCommand::DownloadDecision { id, allow }
+                    // The person at the window chose.
+                    let by = ui::webview::AnsweredBy::Person;
+                    WebViewCommand::DownloadDecision { id, allow, by }
                 });
             })
         };
@@ -613,7 +615,11 @@ impl Capabilities {
         } else if let Some((&id, _)) = self.permissions.first_key_value() {
             engine.send(WebViewCommand::PermissionDismissed { id });
         } else if let Some((&id, _)) = self.downloads.borrow().prompts.first_key_value() {
-            engine.send(WebViewCommand::DownloadDecision { id, allow: false });
+            engine.send(WebViewCommand::DownloadDecision {
+                id,
+                allow: false,
+                by: ui::webview::AnsweredBy::Person,
+            });
         }
     }
     #[cfg(test)]

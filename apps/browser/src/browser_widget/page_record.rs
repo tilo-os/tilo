@@ -94,8 +94,10 @@ impl BrowserWidget {
     }
 
     /// The engine set `entry` down at its place `seq` and no action's
-    /// answer carries it: what a person typed straight into the page. It
-    /// joins the tab's record in its place, as the person's.
+    /// answer carries it: what a person typed straight into the page, or
+    /// what the window held the page from sending and how that ended. It
+    /// joins the tab's record in its place, as its actor's, and as the
+    /// person's when it names none.
     pub(super) fn hear_page_record(&mut self, seq: u64, entry: &serde_json::Value) {
         if self.page_record.attached() {
             self.page_record.engine_is(self.page_engine());

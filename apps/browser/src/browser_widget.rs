@@ -6135,11 +6135,11 @@ impl BrowserWidget {
                 return Ok(ui::framework::Effected::value(value));
             }
             BrowserOperation::AnswerDownload { id, allow } => {
-                let value = self.answer_download(id, *allow)?;
+                let value = self.answer_download(id, *allow, invoker)?;
                 return Ok(ui::framework::Effected::value(value));
             }
             BrowserOperation::AnswerHeldRequest { id, allow } => {
-                let value = self.answer_hold(id, *allow)?;
+                let value = self.answer_hold(id, *allow, invoker)?;
                 return Ok(ui::framework::Effected::value(value));
             }
             _ => {}
@@ -6155,7 +6155,7 @@ impl BrowserWidget {
             BrowserOperation::Form(_) | BrowserOperation::Page(_)
         ) && let Some((id, kind)) = self.holds.release_for(invocation)
         {
-            self.release_held(id, kind, true);
+            self.release_held(id, kind, true, ui::webview::AnsweredBy::Person);
             return Ok(ui::framework::Effected::Pending);
         }
         if let BrowserOperation::Form(run) = operation {

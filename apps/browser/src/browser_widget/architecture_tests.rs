@@ -732,7 +732,11 @@ fn hosted_browser_affordances_are_canonical_peer_local_actions() {
         assert!(
             capture
                 .commands()
-                .contains(&WebViewCommand::DownloadDecision { id: 1, allow: true })
+                .contains(&WebViewCommand::DownloadDecision {
+                    id: 1,
+                    allow: true,
+                    by: ui::webview::AnsweredBy::Person,
+                })
         );
     }
 
