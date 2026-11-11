@@ -189,21 +189,22 @@ runs in that workspace's VM, on the guest image this checkout built.
 9. the guest the VM host boots carries the Browser: the headless session
    (`/usr/libexec/tilo/browser-session`) and the image's unprivileged
    `tilo-browser` user. A guest without them fails here, saying so.
-10. a one-workspace key opens Browser (`integration/hosted-visa.py`): the
-    open answers once the VM's window is live, and the time it took is
-    printed with a second open's attach time; the agent fills the form
-    through page actions, captures it as a PNG, and stops before submitting;
-    a reviewer who joined by invitation reads the agent's run in History; and
-    page actions past the plans file's free ones (`TILO_SH_BROWSER_FREE_ACTIONS`,
-    8 here) are refused until the account is added to it, which the check does
+10. a key opens Browser in a hosted workspace (`integration/hosted-visa.py`):
+    the open answers once the VM's window is live, and the time it took is
+    printed with a second open's attach time.
+11. the VM's own proofs (`integration/vm-proofs.py`, run while the window is
+    up): every renderer of the engine host has a seccomp filter and no new
+    privileges, and network, pid and user namespaces of its own; nothing runs
+    the engine `--no-sandbox`; the session and the engine run as the image's
+    browser user, whose device key no one else may read; the image's launcher
+    entitlement lists name Browser; and what the session and its Chromium hold
+    in memory, beside the VM's own, are printed and saved.
+12. the agent fills the visa test page through page actions, captures it as a
+    PNG and stops before submitting; a reviewer who joined by invitation reads
+    its run in History; and page actions past the plans file's free ones
+    (`TILO_SH_BROWSER_FREE_ACTIONS`, 40 here: what an agent filling a form
+    takes) are refused until the account is added to it, which the check does
     as the provider would.
-11. the VM's own proofs (`integration/vm-proofs.py`): every renderer of the
-    engine host has a seccomp filter and no new privileges, and network, pid
-    and user namespaces of its own; nothing runs the engine `--no-sandbox`;
-    the session and the engine run as the image's browser user, whose device
-    key no one else may read; the image's launcher entitlement lists name
-    Browser; and what the session and its Chromium hold in memory, beside the
-    VM's own, are printed and saved.
 
 The page shows only what it must: the capture, the page as the agent read it
 back, the reviewer's History and `vm-proofs.json` are in the work directory,

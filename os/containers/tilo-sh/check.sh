@@ -21,15 +21,16 @@
 #   8. the visa test page (apps/browser/test-pages/visa-form.html), served
 #      where a VM's network may reach it: the relay endpoint's own address and
 #      port, the one destination besides the internet a VM is given;
-#   9. a one-workspace key opens Browser (`integration/hosted-visa.py`): the
-#      open answers once the VM's window is live, timed; the agent fills the
-#      form with page actions, captures it, and stops before submitting; a
-#      reviewer who joined by invitation reads its run in History, and the
-#      page actions past the plans file's free ones are refused until the
-#      provider adds the account there;
-#  10. the VM it all ran in: every renderer sandboxed, the session running as
-#      the image's browser user, its device key, and what the page costs in
-#      memory (integration/vm-proofs.py).
+#   9. the guest this stack's VM host boots carries the Browser there: the
+#      headless session and the image's unprivileged browser user;
+#  10. a key opens Browser in a hosted workspace, timed to a live window;
+#  11. the VM it runs in: every renderer sandboxed, the session running as the
+#      image's browser user, its device key, and what the page costs in memory
+#      (integration/vm-proofs.py);
+#  12. the agent fills the visa test page through page actions, captures it,
+#      stops before submitting; a reviewer who joined by invitation reads its
+#      run in History, and page actions past the plans file's free ones are
+#      refused until the provider adds the account there.
 #
 # usage: check.sh [WORK]
 # The stack runs this checkout's programs natively, or the images with
@@ -140,20 +141,22 @@ if [[ $hosted == 1 ]]; then
   grep -qx 'browser-in-vm' <<<"$guest_says" || fail "the workspace guest this stack boots carries no hosted Browser: /usr/libexec/tilo/browser-session runs a headless session as the image's tilo-browser user, and this guest has no such thing (os/Containerfile.hosted-guest). The Browser of a hosted workspace runs in the workspace's own VM, so the check can go no further until the guest that carries it is in this tree."
   echo "ok: the guest carries the headless Browser session"
 
-  step '10. a hosted workspace fills the visa form in its VM'
+  step '10. a key opens Browser in a hosted workspace, in its VM'
+  hosted_run() { # PHASE
+    TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
+      HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
+      sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" "$1"
+  }
   launch=$SECONDS
   set +e
-  TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
-    HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
-    sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" \
-    2>&1 | tee "$work/hosted.log"
+  hosted_run --open 2>&1 | tee "$work/hosted-open.log"
   hosted_status=${PIPESTATUS[0]}
   set -e
   hosted_seconds=$((SECONDS - launch))
   if [[ $hosted_status != 0 ]]; then
     echo '--- the VM host said:' >&2
     sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
-    fail "the hosted Browser run failed (see $work/hosted.log)"
+    fail "Browser did not open in the workspace's VM (see $work/hosted-open.log)"
   fi
   hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
 
@@ -162,6 +165,14 @@ if [[ $hosted == 1 ]]; then
     VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
     python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_run_account" "$work/vm" \
     || fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
+
+  step '12. the agent fills the visa form in the hosted Browser'
+  set +e
+  hosted_run --fill 2>&1 | tee "$work/hosted-fill.log"
+  fill_status=${PIPESTATUS[0]}
+  set -e
+  [[ $fill_status == 0 ]] || fail "the hosted Browser flow failed (see $work/hosted-fill.log)"
+  echo "ok: the hosted Browser ran in $((SECONDS - launch))s, its open taking ${hosted_seconds}s"
 fi
 
 step '2-6. the visa run against the local door'

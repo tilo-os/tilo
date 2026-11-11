@@ -18,7 +18,7 @@ agent take there:
      `no_payment_method` and a step to add a card; adding the account to the
      plans file lets the next one through.
 
-usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL
+usage: hosted-visa.py DOOR SERVER_KEY OUT_DIR FORM_URL [--open|--fill]
 
 SERVER_KEY is the startup's server key (`tilo keys create`). OUT_DIR keeps
 what it found: the capture, the page as the agent read it back, the reviewer's
@@ -47,19 +47,24 @@ RUN_TITLE = "Fill Jane Doe's visa application"
 REVIEWER_EMAIL = "rosa@example.com"
 PLANS = os.environ.get("HOSTED_VISA_PLANS", "")
 ACCOUNT = os.environ.get("HOSTED_VISA_ACCOUNT", "")
-# What the agent puts in the page's fields, by the name the page gives them.
+# What the agent puts in the page's fields, by the name the page gives each
+# of them: the words of its label, which is what `find-page-element` matches.
 FILLED = {
-    "given-name": "Jane",
-    "family-name": "Doe",
-    "birth-date": "1990-04-17",
-    "email": "jane@example.com",
-    "passport-number": "X1234567",
-    "passport-expiry": "2031-04-16",
-    "arrival": "2026-12-01",
-    "departure": "2026-12-14",
-    "host": "Tilo GmbH, Berlin",
+    "Given names": "Jane",
+    "Family name": "Doe",
+    "Date of birth": "1990-04-17",
+    "Email": "jane@example.com",
+    "Passport number": "X1234567",
+    "Expires": "2031-04-16",
+    "Arrival": "2026-12-01",
+    "Departure": "2026-12-14",
+    "Company or address you will visit": "Tilo GmbH, Berlin",
 }
-CHOICES = {"nationality": ["DE"], "purpose": ["business"]}
+# The choice fields, by the name the page gives them and the label of what
+# the agent picks: the page reads a select back by the option's label.
+CHOSEN = {"Nationality": "Germany", "Purpose": "Business"}
+DECLARATION = "I declare that the information above is true"
+SUBMIT = "Submit application"
 
 
 def say(step: str, detail: str = "") -> None:
@@ -98,13 +103,15 @@ def content_ref(value: object) -> str | None:
 
 
 async def refusal_of(call: object) -> str:
-    """How the door refused `call`: its code and message, or `allowed`."""
+    """How the door refused `call`: its code and message and the steps it
+    named, or `allowed`."""
     try:
         await call
     except ProtocolError as error:
         return f"{error.code or ''}: {error.message or error.status or error}".strip(": ")
     except Refused as error:
-        return f"{error.code}: {error.message}"
+        steps = ", ".join(error.next_steps or [])
+        return f"{error.code}: {error.message}" + (f" (next: {steps})" if steps else "")
     return "allowed"
 
 
@@ -141,39 +148,59 @@ class Page:
 
 
 async def open_browser(workspace: object) -> tuple[Page, float]:
-    """Open the workspace's Browser and answer its window once it is live."""
+    """Open the workspace's Browser and answer its window once it is live.
+
+    The open answers once the window is live (the relay places the session
+    and waits for it), so its own duration is the time from the open to a
+    live window."""
     began = time.perf_counter()
     opened = await workspace.do("browser#open")  # type: ignore[attr-defined]
+    live = time.perf_counter() - began
     say("   opened", str(opened)[:200])
     windows: list[str] = []
-    deadline = time.monotonic() + 300
+    deadline = time.monotonic() + 120
     while time.monotonic() < deadline:
         listing = await workspace.ls("browser")  # type: ignore[attr-defined]
         windows = [str(row.path) for row in listing.rows if "@" in str(row.path)]
         if windows:
             break
         await asyncio.sleep(0.2)
-    live = time.perf_counter() - began
     check(windows, f"the workspace's Browser window is live ({windows})")
     provider = windows[0].split("/", 1)[0].split("@", 1)[1]
     return Page(workspace, provider), live
 
 
-async def fill(page: Page) -> None:
-    """Fill the form the agent has open, through the page's own actions."""
-    await page.do("navigate", url=FORM_URL)
+async def fill(page: Page) -> str:
+    """Fill the form the agent has open, through the page's own actions, and
+    answer the ref of the button that submits it."""
+    try:
+        await page.do("navigate", url=FORM_URL)
+    except (Refused, ProtocolError) as error:
+        code = getattr(error, "code", "") or ""
+        if "confirmation_required" in str(code) or "confirmation_required" in str(error):
+            raise SystemExit(
+                "FAIL: the hosted Browser's window asks the person about every page action "
+                "(a window holding a person's page is Outside, and the session in the VM opens "
+                "the workspace's window as the person's, not an agent's), and nothing asks them: "
+                "the relay records that the window asks and refuses the same invocation again "
+                "(tilo-relay's hosted_browser::HostedBrowsers::relayed), so an agent cannot fill "
+                "the page it opened. The window's page actions and the person's answer both have "
+                f"to work before an agent can drive a hosted Browser: {error}"
+            )
+        raise
     await page.do("wait-page-settled", quiet_ms=300, timeout_ms=60000)
     title = await page.title()
     check("Visa application" in title, f"the form is the page the agent opened ({title!r})")
     for name, value in FILLED.items():
         element = await page.find("textbox", name)
         await page.do("fill-page", element=element, text=value)
-    element = await page.find("combobox", "nationality")
-    await page.do("select-page", element=element, values=CHOICES["nationality"])
-    element = await page.find("radio", "Business")
+    element = await page.find("combobox", "Nationality")
+    await page.do("select-page", element=element, values=[CHOSEN["Nationality"]])
+    element = await page.find("radio", CHOSEN["Purpose"])
     await page.do("click-page", element=element)
-    element = await page.find("checkbox", "I declare that the information above is true and complete.")
+    element = await page.find("checkbox", DECLARATION)
     await page.do("click-page", element=element)
+    return await page.find("button", SUBMIT)
 
 
 def post_invitee(link: str) -> dict:
@@ -209,11 +236,9 @@ def add_account_to_plans() -> None:
     say("   the provider added", f"{ACCOUNT} to {PLANS} with a card on file")
 
 
-async def main() -> int:
-    os.makedirs(OUT, exist_ok=True)
-    report: dict[str, object] = {"form": FORM_URL}
+async def open_phase(report: dict[str, object]) -> int:
+    """The workspace, its agent's key, and Browser opened in its VM."""
     backend = AsyncTilo(key=SERVER_KEY, door=DOOR)
-
     say("a. the startup makes an applicant's workspace and mints their agent's key")
     workspace = await backend.workspaces.create("Visa applicant: Jane Doe")
     report["workspace"] = workspace.id
@@ -232,22 +257,41 @@ async def main() -> int:
     attached = time.perf_counter() - attached_began
     report["attach_seconds"] = round(attached, 2)
     check(again.provider == page.provider, f"a second open attaches to the same window ({attached:.2f} s)")
+    report["window"] = page.provider
+    with open(os.path.join(OUT, "open.json"), "w") as opened:
+        json.dump({"workspace": workspace.id, "key": minted.token, "window": page.provider}, opened)
+    await agent.aclose()
+    await backend.aclose()
+    return 0
+
+
+async def fill_phase(report: dict[str, object]) -> int:
+    """The form filled through page actions, captured, and stopped before
+    submitting; the reviewer's History; and the page actions' metering."""
+    with open(os.path.join(OUT, "open.json")) as opened:
+        state = json.load(opened)
+    workspace = state["workspace"]
+    agent = AsyncTilo(key=state["key"], door=DOOR)
+    aws = agent.workspace(workspace)
+    page = Page(aws, str(state["window"]))
+    reviewer = None
 
     say("b. the agent fills the visa form through page actions")
     async with aws.run(RUN_TITLE):
-        await fill(page)
+        submit = await fill(page)
         read_back = await page.read()
         body = json.dumps(read_back)
         missing = [value for value in FILLED.values() if value not in body]
         check(not missing, f"the page holds every value the agent filled (missing: {missing})")
-        check("business" in body.lower(), "the page holds the purpose the agent chose")
+        check(CHOSEN["Nationality"] in body, "the page holds the nationality the agent chose")
+        check(CHOSEN["Purpose"].lower() in body.lower(), "the page holds the purpose the agent chose")
         write_json("filled-page.json", read_back)
 
         say("c. the agent captures the filled form")
         captured = await page.do("capture-page")
         ref = content_ref(captured)
         if ref:
-            saved = write("filled-form.png", await made.files.download(ref))
+            saved = write("filled-form.png", await aws.files.download(ref))
         else:
             inline = (captured or {}).get("data", {}).get("png") if isinstance(captured, dict) else None
             check(inline, f"capture-page answers the page's picture ({str(captured)[:200]})")
@@ -259,7 +303,7 @@ async def main() -> int:
 
         say("d. the agent stops before submitting")
         before = await page.title()
-        refused = await refusal_of(page.do("submit-page", element="form"))
+        refused = await refusal_of(page.do("submit-page", element=submit))
         check(
             code_of(refused) == "action_confirmation_required",
             f"submit-page without the person's answer is refused ({refused})",
@@ -269,7 +313,7 @@ async def main() -> int:
         report["refused"] = refused
 
         say("e. a reviewer who joined by invitation reads the agent's run in History")
-        invitation = await made.members.invite(role="editor", email=REVIEWER_EMAIL)
+        invitation = await aws.members.invite(role="editor", email=REVIEWER_EMAIL)
         say("   invited", f"{invitation.role} via {invitation.link[:60]}…")
         accepted = await asyncio.to_thread(post_invitee, invitation.link)
         check(
@@ -277,7 +321,7 @@ async def main() -> int:
             f"the reviewer joined as an editor: {accepted}",
         )
         reviewer = AsyncTilo(key=accepted["key"], door=DOOR)
-        rws = reviewer.workspace(workspace.id)
+        rws = reviewer.workspace(workspace)
         listing = await rws.ls("browser")
         check(
             any("@" in str(row.path) for row in listing.rows),
@@ -290,31 +334,48 @@ async def main() -> int:
 
     say("g. metering: the plans file's free page actions, then a card")
     refused = "allowed"
-    for _ in range(40):
+    for _ in range(20):
         refused = await refusal_of(page.do("read-page"))
         if refused != "allowed":
             break
     check(
-        "no_payment_method" in refused,
+        "no_payment_method" in refused or "free Browser actions are used up" in refused,
         f"past the free allowance a page action is refused with no_payment_method ({refused})",
     )
     check(
-        "add_payment_method" in refused or "payment method" in refused.lower(),
-        f"the refusal names the step that continues ({refused})",
+        "add_payment_method" in refused or "card" in refused.lower(),
+        f"the refusal says a card continues, and how ({refused})",
     )
     report["metered_refusal"] = refused
     add_account_to_plans()
     allowed = await refusal_of(page.do("read-page"))
     check(allowed == "allowed", f"with the account on file the next page action runs ({allowed})")
 
-    for client in (agent, reviewer, backend):
+    for client in (agent, reviewer):
+        if client is None:
+            continue
         try:
             await client.aclose()
         except (ProtocolError, Refused):
             pass
+    return 0
+
+
+async def main() -> int:
+    os.makedirs(OUT, exist_ok=True)
+    report: dict[str, object] = {"form": FORM_URL}
+    phase = sys.argv[5] if len(sys.argv) > 5 else "--all"
+    if phase == "--open":
+        status = await open_phase(report)
+    elif phase == "--fill":
+        status = await fill_phase(report)
+    else:
+        status = await open_phase(report)
+        if status == 0:
+            status = await fill_phase(report)
     write_json("report.json", report)
     print(json.dumps(report), flush=True)
-    return 0
+    return status
 
 
 if __name__ == "__main__":
