@@ -94,14 +94,15 @@ fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
     let target = resume.target.clone();
     let open = provider.clone();
     // The app the place is in and when the person was last there are two
-    // facts: the app under the place's name, the time at the row's end.
+    // facts, each on a line of its own under the place's name: beside the
+    // name, the time squeezed it to "…" on a phone.
     let app = resume
         .app
         .clone()
         .or_else(|| resume.target.app_label.clone())
         .filter(|app| !app.is_empty());
     let mut row =
-        ListRow::new("activity-resume", resume.target.label.clone()).meta(ago(resume.at_ms));
+        ListRow::new("activity-resume", resume.target.label.clone()).secondary(ago(resume.at_ms));
     if let Some(app) = app {
         row = row.subtitle(app);
     }
