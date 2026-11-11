@@ -135,6 +135,11 @@ deferred-dom-presenter = []
 # (`SHEETS`), which the browser desktop fetches as its own module the first
 # time the person opens one. Without it they are linked in.
 deferred-sheets = []
+# The bundling crate supplies what a person's agents on a host ask them
+# (`QUESTIONS`): the approver session and the question sheet it fills, which
+# the browser desktop fetches as its own module the first time a page holding
+# someone's root is asked to answer. Without it they are linked in.
+deferred-questions = []
 
 [dependencies]
 # The host's endpoint address, as the page receives and dials it.

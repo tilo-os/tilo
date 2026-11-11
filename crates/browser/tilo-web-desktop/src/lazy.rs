@@ -162,6 +162,14 @@ split_code! {
 }
 
 split_code! {
+    /// What a person's agents on a host ask them: a page asked to answer for
+    /// the root it holds fetches the session and the question sheet.
+    mod questions: tilo_browser_runtime::QuestionsCode = tilo_browser_runtime::builtin_questions()
+        => tilo_browser_runtime::QUESTIONS, module = "agent_questions", hash = "d5b3e8074c16a2f9",
+        then = tilo_browser_runtime::questions_arrived;
+}
+
+split_code! {
     /// The profile card: the first card that opens asks for it.
     mod profile_card: tilo_desktop::profile_card::MakeProfileCard = tilo_desktop::profile_card::builtin_profile_card()
         => tilo_desktop::profile_card::PROFILE_CARD, module = "profile_card", hash = "5f81c2e94a3d07b6";
@@ -273,6 +281,7 @@ pub(crate) fn register() {
     dom_presenter::register();
     profile_card::register();
     sheets::register();
+    questions::register();
     desktop_search::register();
     notification_centre::register();
 }

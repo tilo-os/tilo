@@ -498,8 +498,8 @@ pub(crate) struct BrowserShell {
     /// explaining and changing the table this page's desk answers.
     guide: crate::over_page::OverPage<PageGuide>,
     /// What the person's agents ask them, over everything while a question
-    /// waits: the session's own question sheet.
-    questions: crate::over_page::OverPage<crate::agent_questions::PageQuestions>,
+    /// waits: the session's own question sheet, made once its code is in.
+    questions: crate::over_page::OverPage<crate::over_page::LazyQuestions>,
     /// The window menu a secondary click on a window's bar opens, over everything.
     window_menu: crate::window_menu::PageWindowMenu,
     /// The linked accounts' revision the card last showed.
@@ -727,7 +727,7 @@ impl BrowserShell {
             directory,
             invite,
             guide,
-            questions: crate::over_page::OverPage::new(crate::agent_questions::PageQuestions::new()),
+            questions: crate::over_page::OverPage::new(crate::over_page::LazyQuestions::new()),
             window_menu: crate::window_menu::PageWindowMenu::new(),
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),

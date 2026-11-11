@@ -18,7 +18,7 @@ crate-type = ["cdylib", "rlib"]
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 # The Activity pane (src/activity.rs) and the Feedback composer
 # (src/feedback.rs) load as their own modules.
-tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients", "deferred-feedback-composer", "deferred-feedback", "deferred-dom-presenter", "deferred-sheets"] }
+tilo-browser-runtime = { path = "../tilo-browser-runtime", features = ["deferred-activity", "deferred-model-clients", "deferred-feedback-composer", "deferred-feedback", "deferred-dom-presenter", "deferred-sheets", "deferred-questions"] }
 # The notification centre loads the first time it opens.
 tilo-desktop-surface = { path = "../../session/desktop-surface", features = ["lazy-notification-centre"] }
 # The profile card loads the first time a card opens.

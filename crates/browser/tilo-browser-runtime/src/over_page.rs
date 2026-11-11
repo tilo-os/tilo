@@ -176,6 +176,43 @@ impl OverSheet for LazySheet {
     }
 }
 
+/// The sheet an agent's question is drawn on, made once the questions' code
+/// is in: until then the page shows no question, because nothing has asked it
+/// one ([`crate::questions`]).
+pub(crate) struct LazyQuestions {
+    sheet: Option<Box<dyn OverSheet>>,
+}
+
+impl LazyQuestions {
+    pub(crate) fn new() -> Self {
+        Self { sheet: None }
+    }
+}
+
+impl OverSheet for LazyQuestions {
+    fn follow_sheet(&mut self, show: &mut dyn FnMut(Option<Element>), missing: bool) -> bool {
+        if self.sheet.is_none()
+            && crate::questions::answering()
+            && let Some(code) = crate::questions::QUESTIONS.get()
+        {
+            self.sheet = Some((code.sheet)());
+        }
+        self.sheet
+            .as_mut()
+            .is_some_and(|sheet| sheet.follow_sheet(show, missing))
+    }
+
+    fn drawn(&self) -> bool {
+        self.sheet.as_ref().is_some_and(|sheet| sheet.drawn())
+    }
+
+    fn sheet_name(&self) -> &'static str {
+        self.sheet
+            .as_ref()
+            .map_or("questions", |sheet| sheet.sheet_name())
+    }
+}
+
 /// `sheet`, drawn over the whole page: out of the page's flow, with the sheet
 /// it shows as its only child.
 pub(crate) struct OverPage<S> {

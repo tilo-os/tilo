@@ -134,9 +134,14 @@ mod feedback_code;
 mod feedback_composer;
 #[cfg(target_arch = "wasm32")]
 mod feedback_crops;
-// What the person's agents on a workspace host ask them, on the page.
+// What the person's agents on a workspace host ask them, on the page: the
+// export JavaScript calls, and the sheet, which is code the page fetches.
 #[cfg(target_arch = "wasm32")]
 mod agent_questions;
+#[cfg(target_arch = "wasm32")]
+pub use questions::{
+    QUESTIONS, QuestionsCode, builtin_questions, code_arrived as questions_arrived,
+};
 #[cfg(target_arch = "wasm32")]
 mod guide;
 #[cfg(target_arch = "wasm32")]
@@ -151,6 +156,8 @@ mod page_apps;
 mod page_machine;
 #[cfg(target_arch = "wasm32")]
 mod page_search;
+#[cfg(target_arch = "wasm32")]
+mod questions;
 #[cfg(target_arch = "wasm32")]
 pub use feedback_code::{
     FEEDBACK, FeedbackCode, builtin_feedback, code_arrived as feedback_arrived,

@@ -6,6 +6,11 @@
 //! invocation, Deny refuses it; a question the host withdraws, or that
 //! expires, takes the sheet away. While the tab is out of view, a
 //! notification says an agent waits (the person did not cause it).
+//!
+//! This is the page's code for it, reached only through
+//! [`crate::questions::QuestionsCode`] so that a page which holds no root
+//! never fetches the session or the workspace transport it reaches the host
+//! over.
 
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
@@ -48,8 +53,7 @@ thread_local! {
 ///
 /// # Errors
 /// `address` names no host, or `root` is no custody.
-#[wasm_bindgen(js_name = answerAgentQuestions)]
-pub fn answer_agent_questions(address: &str, root: &JsValue) -> Result<(), JsError> {
+pub(crate) fn answer_for_root(address: &str, root: &JsValue) -> Result<(), JsError> {
     let host = host_at(address)?;
     let root = PageSigner::from_js(root)?;
     if !HOSTS.with_borrow_mut(|hosts| hosts.insert(host.addr().id)) {
@@ -230,6 +234,11 @@ impl PageQuestions {
         }
         changed
     }
+}
+
+/// The sheet an agent's question is drawn on, as the page lays it out.
+pub(crate) fn sheet() -> Box<dyn OverSheet> {
+    Box::new(PageQuestions::new())
 }
 
 impl OverSheet for PageQuestions {
