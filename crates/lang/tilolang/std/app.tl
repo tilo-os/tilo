@@ -380,7 +380,9 @@ view outline<T>(
 ///
 /// `add` draws the button a row shows over its trailing corner while it is hovered or holds
 /// focus, so the tree makes what a person needs beside where it will stand. The tree is named
-/// `name` for a reader, and a tree taller than the room it is given scrolls itself (`fill`).
+/// `name` for a reader, and a tree taller than the room it is given scrolls itself (`fill`);
+/// that tree is its pane's list, so its rows stand on the pane's content edge as a list's do,
+/// and a window a phone holds, where the pane is the whole screen, keeps its page gutter.
 template view tree_rows<T>(
     name: Text,
     items: Collection<T>,

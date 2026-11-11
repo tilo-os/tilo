@@ -262,7 +262,10 @@ pub struct TreeViewProps {
     /// What the tree is, for assistive technology.
     pub name: Option<String>,
     /// The tree takes the height it is given and scrolls inside itself, rather than sizing to
-    /// the rows inside another scroll.
+    /// the rows inside another scroll. Such a tree is the pane's list, so its rows stand on the
+    /// pane's content edge (where the pane's header starts its title) with their lift bleeding
+    /// past it, as every list in a column does — including a phone's window, where the pane is
+    /// the whole screen and the rows keep the page gutter at its glass.
     pub fill: bool,
     /// The tree's root node — the tree itself, labelled with its `name` — is not a row: the
     /// nodes at the top level are, at the first depth. Off, the tree's name stands over them
@@ -1492,10 +1495,12 @@ impl DescribedTreeView {
         if let Some(name) = &name {
             list = list.with_accessible_name(name.clone());
         }
-        // A tree inside another scroll is as tall as its rows; one that fills a pane takes its
-        // height and scrolls them itself.
+        // A tree inside another scroll is as tall as its rows, its rows keeping their own insets
+        // inside the page they stand in; one that fills a pane is the pane's list, so it takes
+        // its height, scrolls its rows itself, and stands them on the pane's content edge as
+        // every list in a column does.
         list = if fill {
-            list.filling()
+            list.filling().in_column()
         } else {
             list.fitting_rows()
         };
@@ -2194,6 +2199,56 @@ mod tests {
             "and it hangs inside the step in front of it: {} against {}",
             chevron.x0,
             branch.content_left
+        );
+    }
+
+    /// A tree that fills its pane is the pane's list: its rows stand on the pane's content edge,
+    /// their lift bleeding past it, as every list in a column does — so a tree standing as a
+    /// phone window's screen keeps the page gutter at the glass rather than running to it.
+    #[test]
+    fn a_tree_that_fills_its_pane_stands_its_rows_on_the_panes_content_edge() {
+        use crate::headless::{FrameHarness, InspectionNode};
+        use crate::theme::Theme;
+        use crate::widget::{LayoutInfo, RowLayout};
+
+        // Where the top-level row starts its content, for a tree in a 320 px window.
+        fn column(fill: bool) -> f64 {
+            let queue = crate::Intents::default();
+            let tree = DescribedTreeView::from_props(
+                "tree",
+                TreeViewProps {
+                    hide_root: true,
+                    fill,
+                    nodes: vec![node("A note", None, false, &queue)].into(),
+                    ..TreeViewProps::default()
+                },
+            );
+            let harness =
+                FrameHarness::for_root(crate::State::new(), tree, (320, 568), Theme::dark());
+            fn grid(node: &InspectionNode) -> Option<RowLayout> {
+                match node.layout {
+                    Some(LayoutInfo::Row(row)) => Some(row),
+                    _ => node.children.iter().find_map(grid),
+                }
+            }
+            let laid = grid(&harness.inspection().root).expect("the row lays its content out");
+            f64::from(laid.content_left)
+        }
+        let theme = Theme::dark();
+        let gutter = crate::chrome::column_gutter(&theme);
+        assert!(
+            (column(true) - gutter).abs() < 0.5,
+            "a tree filling its pane starts its rows on the pane's content edge, {} px in: {}",
+            gutter,
+            column(true)
+        );
+        let bleed = crate::chrome::row_bleed(&theme);
+        assert!(
+            (column(false) - bleed).abs() < 0.5,
+            "a tree inside another scroll starts its rows one lift's bleed in, the page it stands \
+             in keeping the gutter itself: {} against {}",
+            column(false),
+            bleed
         );
     }
 
