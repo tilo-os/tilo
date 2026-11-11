@@ -341,11 +341,14 @@ impl<'a> StatusClusterFace<'a> {
                         let (width, height) = badge_size(label_w, label_h, theme);
                         // The count sits on the bell's top right corner, as an
                         // application icon's count does: it covers only the
-                        // corner, so a silenced bell still reads as one, and
-                        // it takes none of the bar's width.
-                        // It stays inside the control, so it never pokes past the bar.
-                        let centre_y = (square.y0 + 1.0).max(rect.y0 + height / 2.0);
-                        let centre_x = square.x1.min(rect.x1 - width / 2.0);
+                        // corner, so the bell still reads as one, and it takes
+                        // none of the bar's width. It may reach into the room
+                        // the bar leaves around its controls (`s1`), never past
+                        // it: held inside the control, a count taller than the
+                        // corner's room was pushed down and in over the bell.
+                        let reach = f64::from(theme.tokens.spacing.s1);
+                        let centre_y = square.y0.max(rect.y0 - reach + height / 2.0);
+                        let centre_x = (square.x1 + 3.0).min(rect.x1 + reach - width / 2.0);
                         let badge =
                             Rect::from_center_size(Point::new(centre_x, centre_y), (width, height));
                         layout.badge = badge;
@@ -810,6 +813,31 @@ mod tests {
         assert_eq!(
             StatusClusterFace::glyph(&theme),
             f64::from(theme.tokens.metrics.icon_control)
+        );
+    }
+
+    /// The count covers the bell's corner, not the bell: most of the glyph stays in view, and the
+    /// count stays within the room the bar leaves around its controls.
+    #[test]
+    fn the_count_leaves_the_bell_in_view() {
+        let theme = Theme::dark();
+        let (layout, _) = paint(&[BELL], StatusCluster::new());
+        let glyph = StatusClusterFace::glyph(&theme);
+        let bell = Rect::from_center_size(layout.slots[0].center(), (glyph, glyph));
+        let covered = layout.badge.intersect(bell);
+        let share = covered.area() / bell.area();
+        assert!(
+            share <= 0.3,
+            "the count covers {:.0}% of the bell: {:?} on {bell:?}",
+            share * 100.0,
+            layout.badge
+        );
+        let reach = f64::from(theme.tokens.spacing.s1);
+        let control = StatusClusterFace::height(&theme);
+        assert!(
+            layout.badge.y0 >= -reach - 0.5 && layout.badge.y1 <= control + reach,
+            "the count stays within the bar: {:?}",
+            layout.badge
         );
     }
 
