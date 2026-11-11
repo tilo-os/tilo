@@ -92,6 +92,10 @@ pub struct Names {
 
 /// One message of a channel, as its page shows it.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the page's message carries independent facts the row draws (edited, pinned, retry, sending), each read off the record on its own"
+)]
 pub struct Message {
     /// Its id, after `chat.workspace/messages/`.
     #[serde(default)]
@@ -137,6 +141,10 @@ pub struct Message {
     /// attempt the agent answers in now. A reply is of the attempt its question is in.
     #[serde(default)]
     pub attempts: u32,
+    /// Sent from here and not written yet: the conversation's messages are on their way to this
+    /// device, and it is written once they are here. Its byline says so in place of its time.
+    #[serde(default)]
+    pub sending: bool,
 }
 
 /// What an agent recorded of its work on a reply, as the page shows it.
@@ -303,6 +311,7 @@ impl Channel {
                 text: row.text.clone(),
                 edited: row.edited,
                 attempts: row.attempts,
+                sending: row.sending,
                 reply_to: row.parent.as_deref().and_then(|parent| {
                     // A reply that answers the message right above it needs no quote: the person
                     // reads what is answered just over the answer. A reply to anything else
@@ -781,16 +790,22 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
             .role(ui::TextRole::Label)
             .into(),
         ];
-        head.push(
-            ui::TimeBuilder::new(&cx.key(format!("when-{}", message.id)), moment(message.ts))
+        let when = cx.key(format!("when-{}", message.id));
+        head.push(if message.sending {
+            ui::TextBuilder::new(&when, crate::i18n::t("chat-message-sending"))
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .into()
+        } else {
+            ui::TimeBuilder::new(&when, moment(message.ts))
                 .role(ui::TextRole::Caption)
                 .secondary(true)
                 .past(true)
                 // A message's line says when it was sent, by the clock the person reads
                 // ("5:16 AM"); the day it falls on is the divider over its run.
                 .clock(true)
-                .into(),
-        );
+                .into()
+        });
         vec![ui::row(
             &cx.key(format!("by-{}", message.id)),
             Gap::Tight,
@@ -2215,6 +2230,39 @@ mod tests {
             keyed(&tree, "ui.Banner", "@failed-").len(),
             1,
             "the page draws the row where the failure happened"
+        );
+    }
+
+    #[test]
+    fn a_message_still_being_sent_says_so_in_place_of_its_time() {
+        // Sent from here while its conversation's messages arrive: the page shows it as the
+        // window does, with "Sending…" where its time will stand.
+        let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
+        let mut rows = workspace.message_rows("c_crit");
+        // A day after the rest, so it starts a run of its own and carries its byline.
+        let ts = rows.iter().map(|row| row.ts).max().unwrap_or_default() + 86_400;
+        let mut sent = row("c_crit", "m_sent", crate::model::ME, ts, "On its way");
+        sent.sending = true;
+        rows.push(sent);
+        let chat = workspace.read();
+        let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
+        assert!(
+            channel
+                .messages
+                .last()
+                .is_some_and(|message| message.sending)
+        );
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let said: Vec<String> = keyed(&tree, "ui.Text", "@when-m_sent")
+            .iter()
+            .flat_map(|node| texts(node))
+            .collect();
+        assert_eq!(said, [crate::i18n::t("chat-message-sending")]);
+        assert!(
+            keyed(&tree, "ui.Time", "@when-m_sent").is_empty(),
+            "no time yet"
         );
     }
 }

@@ -349,3 +349,108 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
     assert_eq!(lines, ["one", "two", "three"]);
     assert!(chain.unwritten().is_none(), "nothing waits any more");
 }
+
+/// What the writer wrote reaches the reader's device: the workspace's part
+/// kept in its copy of the app's records.
+fn part_arrives(
+    theirs: &durable_store::MemoryStore,
+    ours: &durable_store::MemoryStore,
+    reader: &RecordStore,
+) {
+    use durable_store::{DurableStore as _, StorageKey};
+    let key = StorageKey::record(
+        "so.tilo.test-chain-log",
+        "workspace",
+        LogPart::chain().part(0).storage_key(),
+    );
+    let kept = theirs
+        .read(&key)
+        .unwrap()
+        .expect("the writer kept the part");
+    ours.hydrate(key, kept).unwrap();
+    reader.note_kept();
+}
+
+/// The lines a view of `chain` shows as being sent.
+fn sending(chain: &Chain<LogPart>) -> Vec<String> {
+    chain
+        .unwritten()
+        .map(|part| {
+            texts(&[(0, part)])
+                .into_iter()
+                .map(|(_, text)| text)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A device back from away: the writer wrote "one" into the head the reader
+/// waits for, and the reader wrote "two" meanwhile.
+fn written_while_away() -> (
+    Rc<durable_store::MemoryStore>,
+    Rc<durable_store::MemoryStore>,
+    RecordStore,
+) {
+    let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
+    let theirs = Rc::new(durable_store::MemoryStore::new());
+    chain_in(&device_keeping(&theirs), "ada")
+        .invoke(&written("one"))
+        .unwrap();
+    let ours = Rc::new(durable_store::MemoryStore::new());
+    let reader = device_keeping(&ours);
+    reader.ask_workspace_for_missing();
+    let window = chain_in(&reader, "bo");
+    assert_eq!(window.invoke(&written("two")).unwrap(), None, "it waits");
+    assert_eq!(sending(&window), ["two"]);
+    (theirs, ours, reader)
+}
+
+/// A line written while its part is on its way outlives the window it was
+/// written in: every other window of the app shows it as being sent, and it
+/// lands once the part arrives, once, however many windows hold the chain.
+#[test]
+fn a_write_waiting_for_its_part_outlives_its_window() {
+    let (theirs, ours, reader) = written_while_away();
+    let window = chain_in(&reader, "bo");
+    let another = chain_in(&reader, "bo");
+    assert_eq!(
+        sending(&window),
+        ["two"],
+        "the closed window's line still sends"
+    );
+    assert_eq!(sending(&another), ["two"]);
+
+    part_arrives(&theirs, &ours, &reader);
+    for chain in [&window, &another, &window] {
+        let lines: Vec<String> = texts(&chain.parts())
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect();
+        assert_eq!(lines, ["one", "two"], "written once, after what was there");
+        assert!(sending(chain).is_empty(), "nothing waits any more");
+    }
+}
+
+/// A line written while its part is on its way is kept with the app's
+/// records: after a restart it still shows as being sent, and lands once the
+/// part arrives.
+#[test]
+fn a_write_waiting_for_its_part_outlives_a_restart() {
+    let (theirs, ours, reader) = written_while_away();
+    reader.flush().unwrap();
+    drop(reader);
+
+    let reader = device_keeping(&ours);
+    reader.ask_workspace_for_missing();
+    let window = chain_in(&reader, "bo");
+    assert_eq!(sending(&window), ["two"], "kept across the restart");
+    assert!(window.parts().is_empty());
+
+    part_arrives(&theirs, &ours, &reader);
+    let lines: Vec<String> = texts(&window.parts())
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(lines, ["one", "two"]);
+    assert!(sending(&window).is_empty());
+}

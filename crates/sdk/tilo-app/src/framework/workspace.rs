@@ -460,9 +460,9 @@ impl<P: Resource> WorkspaceRecord<P> {
     }
 }
 
-/// The verb `action` invokes, as its record publishes it; `None` for a
-/// field edit.
-fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
+/// The verb `action` invokes, as its record publishes it and history names
+/// it (what a grant on one verb covers); `None` for a field edit.
+pub(crate) fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
     let mut doc = ui_core::automerge::AutoCommit::new();
     P::initialize(&mut doc).ok()?;
     match action.describe(&doc)?.what {
