@@ -38,6 +38,25 @@ mod timer {
     }
 }
 
+/// When the page must draw for an agent's finished notice. A frame posts it, and one falls due
+/// with nothing on the page changing: a notice due now asks for that frame, one due later is the
+/// wake returned.
+fn agent_notices_wake(m: &mut Mount, now: ui::time::Instant) -> Option<ui::time::Instant> {
+    let due_ms = m
+        .desktop
+        .as_ref()
+        .and_then(super::Desktop::agent_notices_due_ms)?;
+    let now_ms = crate::shell::now_ms();
+    if due_ms <= now_ms {
+        m.pending = true;
+        m.window.request_redraw();
+        return None;
+    }
+    now.checked_add(ui::time::Duration::from_millis(
+        due_ms.saturating_sub(now_ms),
+    ))
+}
+
 /// Hand a timeout to the page's timer.
 pub(super) fn set_timeout(handler: &Function, ms: u32) -> JsValue {
     timer::set_timeout(handler, ms)
@@ -367,6 +386,9 @@ impl ApplicationHandler<u64> for Runner {
                     return Ok(());
                 }
                 m.pending |= m.gpu.as_ref().is_some_and(Gpu::shows_lost_frame);
+                if let Some(at) = agent_notices_wake(m, now) {
+                    wake(at);
+                }
                 let output = m.frame.frame_schedule();
                 let desktop_woken = m
                     .desktop

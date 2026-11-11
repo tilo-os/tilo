@@ -128,6 +128,20 @@ impl Desktop {
         }
     }
 
+    /// When a notice of an agent finishing is next due, in unix ms: an agent gone past the
+    /// reconnect's grace, or a run's history read past its wait. The page wakes for it: it draws
+    /// only when something changes, and an agent that stays gone changes nothing.
+    pub(super) fn agent_notices_due_ms(&self) -> Option<u64> {
+        let reads = self
+            .finishing
+            .borrow()
+            .iter()
+            .map(|(_, _, asked_ms)| asked_ms.saturating_add(FINISHED_READ_MS))
+            .min();
+        let left = self.here.borrow().next_agent_finished_ms();
+        reads.into_iter().chain(left).min()
+    }
+
     /// Carry out what the person chose on a notice the page posted itself:
     /// an agent's notice opens its card in Console.
     pub(super) fn follow_notice_choices(&self) {

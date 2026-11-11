@@ -474,6 +474,26 @@ impl HereState {
         finished
     }
 
+    /// When an agent that left is next due to be said finished, on the clock
+    /// [`Self::take_agents_finished`] is handed: the reconnect's grace after it was last here.
+    /// `None` while every agent seen is still here. A page draws only when something changes, and
+    /// nothing changes when an agent stays gone: it wakes for this, or the notice waits for
+    /// whatever draws next.
+    #[must_use]
+    pub fn next_agent_finished_ms(&self) -> Option<u64> {
+        let here = |publisher: &str| {
+            self.members
+                .iter()
+                .flatten()
+                .any(|member| member.kind == "agent" && member.publisher == publisher)
+        };
+        self.working_agents
+            .iter()
+            .filter(|(publisher, _)| !here(publisher))
+            .map(|(_, (_, _, seen))| seen.saturating_add(REJOIN_QUIET_MS))
+            .min()
+    }
+
     /// Who joined since the last call, by the name everyone here sees: a person who was not in the
     /// workspace before. The first roster this page sees is who was already here, not arrivals;
     /// this page's person and agents are never announced, and leaving is not news. A device back
@@ -1399,6 +1419,24 @@ mod tests {
             }]
         );
         assert!(here.take_agents_finished(later + 1).is_empty(), "said once");
+    }
+
+    /// An agent that left is due to be said finished once the reconnect's grace has passed since
+    /// it was last here, so the page can wake for it; none is due while it is here.
+    #[test]
+    fn an_agent_gone_is_due_once_its_grace_passes() {
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![member("claude", "agent", "Claude Code")]));
+        assert!(here.take_agents_finished(1_000).is_empty());
+        assert_eq!(here.next_agent_finished_ms(), None, "it is still here");
+        here.set_members(None, Some(Vec::new()));
+        assert_eq!(here.next_agent_finished_ms(), Some(1_000 + REJOIN_QUIET_MS));
+        assert_eq!(here.take_agents_finished(1_000 + REJOIN_QUIET_MS).len(), 1);
+        assert_eq!(
+            here.next_agent_finished_ms(),
+            None,
+            "said, nothing more is due"
+        );
     }
 
     /// A person's screen is their device's layout; an agent has none, even when its frame says one.
