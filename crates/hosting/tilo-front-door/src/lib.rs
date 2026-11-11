@@ -928,12 +928,24 @@ impl Door {
                     .filter(|session| session.grant == grant.id)
                     .cloned();
                 let Some(session) = session else {
-                    return text(StatusCode::NOT_FOUND, "unknown session; initialize again");
+                    return json_reply(
+                        StatusCode::NOT_FOUND,
+                        &json!({"jsonrpc": "2.0", "id": request.get("id").cloned().unwrap_or(Value::Null),
+                                "error": {"code": -32600,
+                                          "message": "unknown session; initialize again"}}),
+                    );
                 };
                 let reply = session.handle(request).await;
                 session_reply(&reply, headers, None)
             }
-            (None, false) => text(StatusCode::BAD_REQUEST, "missing Mcp-Session-Id"),
+            // A JSON-RPC client reads the refusal as it reads any answer: a
+            // plain-text body reads to it as no answer at all.
+            (None, false) => json_reply(
+                StatusCode::BAD_REQUEST,
+                &json!({"jsonrpc": "2.0", "id": request.get("id").cloned().unwrap_or(Value::Null),
+                        "error": {"code": -32600,
+                                  "message": "no Mcp-Session-Id: this request belongs to a session, which `initialize` opens (an `initialize` refused opens none)"}}),
+            ),
         }
     }
 

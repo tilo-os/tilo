@@ -24,7 +24,11 @@ pub async fn json_of(reply: hyper::Response<http_body_util::Full<bytes::Bytes>>)
     use http_body_util::BodyExt as _;
     let status = reply.status().as_u16();
     let body = reply.into_body().collect().await.unwrap().to_bytes();
-    (status, serde_json::from_slice(&body).unwrap_or(Value::Null))
+    // A body that is not JSON (the door's plain-text refusals) is kept as
+    // its text, so an assertion on it says what the door said.
+    let value = serde_json::from_slice(&body)
+        .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&body).into_owned()));
+    (status, value)
 }
 
 pub fn headers(pairs: &[(&'static str, &str)]) -> hyper::HeaderMap {
