@@ -300,9 +300,10 @@ impl FilesState {
         }
     }
 
-    /// Tell the bar the slots, when what they are made from changed.
+    /// Tell the bar the slots, when what they are made from changed, or the
+    /// app is shown in another window than the one they were declared on.
     fn declare_window_toolbar(&mut self, chrome: &Chrome) {
-        let key = self.bar_key(chrome);
+        let key = (ui::window_toolbar::current_window(), self.bar_key(chrome));
         if self.declared_bar.as_ref() != Some(&key) {
             ui::window_toolbar::declare(Some(self.window_toolbar(chrome)));
             self.declared_bar = Some(key);

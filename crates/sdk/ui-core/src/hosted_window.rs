@@ -30,9 +30,23 @@ const MAX_PENDING: usize = 32;
 
 /// One window a host shows an app in, shared by the host and the app.
 /// Clones are the same window.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct HostedWindow {
     inner: Arc<Mutex<State>>,
+    /// Which window this is ([`Self::identity`]).
+    id: u64,
+}
+
+impl Default for HostedWindow {
+    fn default() -> Self {
+        /// Windows made so far, so that no two of them ever share an identity:
+        /// a cache keyed by it never mistakes one window for another.
+        static MADE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+        Self {
+            inner: Arc::new(Mutex::new(State::default())),
+            id: MADE.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -95,10 +109,11 @@ impl HostedWindow {
         Self::default()
     }
 
-    /// Which window this is: equal for clones of one window, different
-    /// for windows alive at the same time.
-    pub(crate) fn identity(&self) -> usize {
-        Arc::as_ptr(&self.inner).addr()
+    /// Which window this is: equal for clones of one window, and for no other
+    /// window ever, so what a reader keeps of one window never answers for
+    /// another ([`crate::window_toolbar::current_window`]).
+    pub fn identity(&self) -> u64 {
+        self.id
     }
 
     fn state(&self) -> MutexGuard<'_, State> {

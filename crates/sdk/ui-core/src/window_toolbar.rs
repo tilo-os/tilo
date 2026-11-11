@@ -1220,7 +1220,7 @@ pub fn enter(window: Option<&crate::hosted_window::HostedWindow>) -> WindowScope
 /// Leaves the window it entered when dropped: see [`enter`].
 pub struct WindowScope {
     /// Which window this guard entered ([`crate::hosted_window::HostedWindow::identity`]).
-    entered: Option<usize>,
+    entered: Option<u64>,
 }
 
 impl Drop for WindowScope {
@@ -1256,6 +1256,20 @@ pub(crate) fn window() -> Option<crate::hosted_window::HostedWindow> {
 #[must_use]
 pub fn workspace() -> Option<String> {
     window().and_then(|window| window.workspace())
+}
+
+/// Which window this module's calls act on now: the one a host lent the app it
+/// runs ([`crate::hosted_window::HostedWindow::identity`]), or `None` for the
+/// process's own window. What the app declares, shows and is told is that
+/// window's, and a window that arrives after it declared — a harness that hosts
+/// its bar once the app is open — is a different one: an app that keeps what it
+/// last declared compares this with it, so its slots are declared on the window
+/// that shows it.
+#[must_use]
+pub fn current_window() -> Option<u64> {
+    window()
+        .as_ref()
+        .map(crate::hosted_window::HostedWindow::identity)
 }
 
 /// Declare the window's slots (`None`: none). Cheap when nothing changed.

@@ -128,9 +128,11 @@ pub struct PasswordsWindow {
     overview_title: String,
     /// The overview header is in the window's bar ([`ui::window_toolbar`]).
     header_in_bar: bool,
-    /// The list title, the shell's own slots and the item's actions the
-    /// bar's slots were last declared with.
+    /// The window the bar's slots were declared on
+    /// ([`ui::window_toolbar::current_window`]), the list title, the shell's own
+    /// slots and the item's actions.
     declared_bar: Option<(
+        Option<u64>,
         String,
         ui::window_toolbar::WindowToolbar,
         Option<ItemActions>,
@@ -200,7 +202,12 @@ impl PasswordsWindow {
         // item in a narrow window has its list to go back to.
         let shell = self.shell.window_toolbar();
         let item = crate::pages::item_actions(&self.core.borrow());
-        let key = (self.overview_title.clone(), shell.clone(), item);
+        let key = (
+            ui::window_toolbar::current_window(),
+            self.overview_title.clone(),
+            shell.clone(),
+            item,
+        );
         if self.declared_bar.as_ref() != Some(&key) {
             let mut toolbar = WindowToolbar {
                 location: Some(ToolbarLocation {
@@ -214,7 +221,7 @@ impl PasswordsWindow {
                 "plus",
                 crate::CATALOG.t("passwords-new-item"),
             )];
-            if let Some(item) = &key.2 {
+            if let Some(item) = &key.3 {
                 actions.extend([
                     ToolbarAction::new(COPY_SECRET, "copy", item.copy.clone()),
                     ToolbarAction::new(EDIT_ITEM, "pencil", "Edit"),
@@ -239,7 +246,7 @@ impl PasswordsWindow {
                     NEW_ITEM => Request::NewItem,
                     COPY_SECRET => Request::CopySecret,
                     EDIT_ITEM => Request::Edit,
-                    FAVORITE => match self.declared_bar.as_ref().and_then(|key| key.2.as_ref()) {
+                    FAVORITE => match self.declared_bar.as_ref().and_then(|key| key.3.as_ref()) {
                         Some(item) => Request::ToggleFavorite(item.id.clone()),
                         None => continue,
                     },

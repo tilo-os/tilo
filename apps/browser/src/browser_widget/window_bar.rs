@@ -447,9 +447,9 @@ impl BrowserWidget {
     }
 
     /// Tell the window's bar the slots, when what they are made from
-    /// changed.
+    /// changed, or the window they are declared on did.
     pub(super) fn declare_window_toolbar(&mut self) {
-        let inputs = self.bar_inputs();
+        let inputs = (ui::window_toolbar::current_window(), self.bar_inputs());
         if self.declared_bar.as_ref() != Some(&inputs) {
             ui::window_toolbar::declare(Some(self.window_toolbar()));
             self.declared_bar = Some(inputs);

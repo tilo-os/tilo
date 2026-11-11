@@ -86,10 +86,14 @@ impl NotesApp {
         let title = self.main.title().map(str::to_owned);
         let anchor = self.main.page_id().map(crate::actions::page_resource_id);
         let open = self.shell.is_sidebar_open();
-        let key = (title.zip(anchor), open);
+        let key = (
+            ui::window_toolbar::current_window(),
+            title.zip(anchor),
+            open,
+        );
         if self.declared_bar.as_ref() != Some(&key) {
             let note = key
-                .0
+                .1
                 .as_ref()
                 .map(|(title, anchor)| (title.as_str(), anchor.clone()));
             ui::window_toolbar::declare(Some(Self::window_toolbar(note, open)));

@@ -548,8 +548,10 @@ pub struct BrowserWidget {
     /// load-finished.
     current_uri: String,
     /// What the window's bar slots were last declared from
-    /// (`window_bar::BarInputs`), so an unchanged frame declares nothing.
-    declared_bar: Option<window_bar::BarInputs>,
+    /// (`window_bar::BarInputs`), and the window they were declared on
+    /// ([`ui::window_toolbar::current_window`]), so an unchanged frame declares
+    /// nothing and a window that shows the app later gets them.
+    declared_bar: Option<(Option<u64>, window_bar::BarInputs)>,
     /// The press that selected the whole address: its release is the
     /// address bar's too, so the selection it made stays.
     swallow_address_release: bool,

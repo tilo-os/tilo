@@ -56,9 +56,11 @@ thread_local! {
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// What the window's bar was last declared with: the note shown (its title
-/// and anchor), and whether the page tree is open.
-type DeclaredBar = (Option<(String, String)>, bool);
+/// What the window's bar was last declared with: the window it was declared
+/// on ([`ui::window_toolbar::current_window`], so a note shown in another
+/// window declares its slots there), the note shown (its title and anchor),
+/// and whether the page tree is open.
+type DeclaredBar = (Option<u64>, Option<(String, String)>, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";

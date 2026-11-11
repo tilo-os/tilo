@@ -160,7 +160,7 @@ fn an_apps_dialog_centres_inside_its_window_not_the_screen() {
 /// An app that notes which window was current whenever the host reached
 /// it to run its callbacks or a wake.
 struct WindowProbe {
-    reached_in: std::rc::Rc<std::cell::RefCell<Vec<Option<usize>>>>,
+    reached_in: std::rc::Rc<std::cell::RefCell<Vec<Option<u64>>>>,
 }
 
 impl Widget for WindowProbe {

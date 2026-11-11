@@ -644,8 +644,10 @@ pub struct FilesState {
     /// What the person is typing into the location in the window's bar, as
     /// the bar last said; `None` while it is not edited there.
     bar_query: Option<String>,
-    /// What the bar's slots were last declared from.
-    declared_bar: Option<window_bar::BarKey>,
+    /// What the bar's slots were last declared from, and the window they were
+    /// declared on ([`ui::window_toolbar::current_window`]): a window that
+    /// shows this app after it declared gets them declared on it too.
+    declared_bar: Option<(Option<u64>, window_bar::BarKey)>,
     /// The commands of the bar's entries.
     bar_entries: window_bar::BarEntries,
     /// News ([`Self::status`], or that an archive is read-only on entering

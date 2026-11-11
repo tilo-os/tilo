@@ -279,8 +279,9 @@ pub struct DisksApp {
     presented: Option<(u64, u64)>,
     shell: NavShell,
     built: Option<ViewKey>,
-    /// The slots last declared to the bar.
-    declared_bar: Option<ui::window_toolbar::WindowToolbar>,
+    /// The slots last declared to the bar, and the window they were declared
+    /// on ([`ui::window_toolbar::current_window`]).
+    declared_bar: Option<(Option<u64>, ui::window_toolbar::WindowToolbar)>,
 }
 
 impl Store {
@@ -1092,8 +1093,9 @@ impl DisksApp {
                 store.tab,
             )
         };
+        let bar = (ui::window_toolbar::current_window(), bar);
         if self.declared_bar.as_ref() != Some(&bar) {
-            ui::window_toolbar::declare(Some(bar.clone()));
+            ui::window_toolbar::declare(Some(bar.1.clone()));
             self.declared_bar = Some(bar);
         }
     }
