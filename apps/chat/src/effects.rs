@@ -950,7 +950,7 @@ impl ChatApp {
     }
 
     /// What a message's row is called: who wrote it and how it begins.
-    fn message_label(&self, message: &crate::model::Message) -> String {
+    pub(crate) fn message_label(&self, message: &crate::model::Message) -> String {
         let author = if self.is_provider_output(message) {
             self.message_author_label(message)
         } else {

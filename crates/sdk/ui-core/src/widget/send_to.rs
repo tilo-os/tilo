@@ -1644,7 +1644,7 @@ fn is_overflow(line: &str) -> bool {
 /// how many more there are — else what the resource is called, else the item it
 /// is.
 #[must_use]
-fn subject_label(subject: &SharedSelection) -> String {
+pub(crate) fn subject_label(subject: &SharedSelection) -> String {
     if let Some(excerpt) = subject.anchor.excerpt.as_deref() {
         let lines: Vec<String> = excerpt
             .lines()

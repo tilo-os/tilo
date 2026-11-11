@@ -190,7 +190,22 @@ impl ChatApp {
             }
             items
         };
-        self.menu = Some(self.context_menu(MenuTarget::Message(msg), anchor, items));
+        // The menu is about the message, so a box it opens sends the message itself: the item of
+        // Chat's record, as its row publishes it.
+        let label = self.message_label(message);
+        let mut about = ui::shared_selection::SharedSelection::of_text(&label)
+            .at(ui::tilo_actions::SelectionPlace::item(msg.as_str()))
+            .in_resource(ui::tilo_actions::ActionResource {
+                id: crate::effects::item_row_id("messages", msg.as_str()),
+                kind: "chat.workspace.messages".to_owned(),
+                label,
+            });
+        if let Some(rect) = self.message_rect(msg.as_str()) {
+            about = about.within(rect);
+        }
+        let mut menu = self.context_menu(MenuTarget::Message(msg), anchor, items);
+        menu.widget.set_about(Some(about));
+        self.menu = Some(menu);
     }
 
     /// Open `msg`'s whole menu from its bar's More `button`: under it, its
