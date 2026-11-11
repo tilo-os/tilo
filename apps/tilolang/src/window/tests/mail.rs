@@ -661,6 +661,78 @@ fn a_sync_the_workspace_cannot_keep_leaves_nothing_behind_and_is_taken_in_again(
     );
 }
 
+// USER REQUIREMENT: a read the workspace cannot answer — its index has not caught up with what
+// it holds — is read again on the next sync, never taken as "the account is gone". An account
+// stays one account, and its mail fills its inbox once the workspace answers again.
+#[test]
+fn a_read_the_workspace_cannot_answer_keeps_one_account_and_its_inbox_fills() {
+    let servers = empty_servers();
+    let mut workspace = workspace_with(account(&servers));
+    workspace.until("the account to be made", |workspace| {
+        !workspace.accounts().is_empty()
+    });
+    let account = workspace.accounts().remove(0);
+    let root = workspace.host().root_of(APP).expect("the root");
+    let store = workspace.host().store().clone();
+    // Mail arrives, and the workspace cannot take the step that keeps it: the step waits for
+    // the next sync, though the account says nothing.
+    let package = crate::app::builtin::package_named("mail").expect("the mail package");
+    let thread = package
+        .types
+        .iter()
+        .find(|t| t.name == "Thread")
+        .expect("Mail keeps conversations")
+        .id
+        .clone();
+    store.fail_commits_adding(&thread);
+    servers.imap.append(
+        "INBOX",
+        &mail(
+            "plan@hopper.example",
+            "Grace Hopper <grace@hopper.example>",
+            "Launch plan",
+            "Here is the draft plan.",
+            None,
+        ),
+        &[],
+    );
+    workspace.press("check_now", vec![RtValue::resource(&account)]);
+    workspace.until("the account to say the mail is not saved", |workspace| {
+        workspace
+            .accounts()
+            .first()
+            .is_some_and(|a| workspace.text(a, "trouble").contains("could not be saved"))
+    });
+    // The step waits for the next sync — and the store answers none of the account's records
+    // while it takes it in again, as an index that has not caught up with the workspace does.
+    store.fail_reads_of(&root.id_string());
+    for _ in 0..3 {
+        workspace.settle();
+    }
+    // The workspace answers again: the account it holds is still the one account, and the mail
+    // the step waited on comes in.
+    store.take_reads();
+    store.take_commits();
+    let accounts = workspace.accounts();
+    assert_eq!(
+        accounts.len(),
+        1,
+        "a read that failed is no account gone, and no account was made again: {accounts:?}"
+    );
+    let account = accounts.into_iter().next().expect("the account");
+    assert_eq!(workspace.text(&account, "address"), ME);
+    workspace.until("the inbox to fill", |workspace| {
+        let threads = workspace.threads();
+        threads.len() == 1 && !workspace.refs(&threads[0], "messages").is_empty()
+    });
+    assert_eq!(
+        workspace.text(&account, "trouble"),
+        "",
+        "and the account says nothing is wrong"
+    );
+    assert!(workspace.flag(&account, "online"), "its server answers");
+}
+
 /// What the draft's window shows, as text.
 fn editor_of(workspace: &Workspace, draft: &ResourceRef) -> String {
     let view = workspace

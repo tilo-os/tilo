@@ -417,6 +417,9 @@ struct Inner {
     /// The type a commit adding it is refused for, as a test asks
     /// ([`TiloStore::fail_commits_adding`]): what a record that cannot take a change does.
     refused_commit: Option<String>,
+    /// The resource whose reads are refused, as a test asks ([`TiloStore::fail_reads_of`]):
+    /// what a store whose index has not caught up with the resource does.
+    refused_read: Option<String>,
     /// The runs that have not finished, as they began: where a run's first write stands in the
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
@@ -729,6 +732,7 @@ impl TiloStore {
                 burst: None,
                 edit_pause: DEFAULT_EDIT_PAUSE,
                 refused_commit: None,
+                refused_read: None,
                 runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
@@ -1008,6 +1012,24 @@ impl TiloStore {
     /// Refuse no commit: the store takes changes again ([`Self::fail_commits_adding`]).
     pub fn take_commits(&self) {
         self.mutate().refused_commit = None;
+    }
+
+    /// Refuse every read of the resource `at` (as [`ResourceRef::id_string`] names it), with
+    /// the `NotFound` a store whose index has not caught up with the resource answers, until
+    /// [`Self::take_reads`]: how a test reads a workspace whose index is behind what it holds.
+    pub fn fail_reads_of(&self, at: &str) {
+        self.mutate().refused_read = Some(at.to_owned());
+    }
+
+    /// Refuse no read: the store answers what it holds ([`Self::fail_reads_of`]).
+    pub fn take_reads(&self) {
+        self.mutate().refused_read = None;
+    }
+
+    /// Whether a test asked the reads of the resource `at` to be refused
+    /// ([`Self::fail_reads_of`]).
+    fn refuses_reads_of(&self, at: &ResourceRef) -> bool {
+        self.inner.borrow().refused_read.as_deref() == Some(at.id_string().as_str())
     }
 
     /// Take every action committed under a ticket of `first` or later, oldest first.

@@ -163,8 +163,17 @@ pub struct ImapOrigin {
     /// Set when the connector has an answer, from the thread it answers on.
     woken: Arc<AtomicBool>,
     state: Option<State>,
+    /// Whether the workspace must be read again before anything is taken into it: a step it
+    /// could not take wrote into `state` what the workspace does not hold.
+    reload: bool,
+    /// Whether the settings name an account the workspace was not read as holding yet: the
+    /// next poll asks again, once its index lists all of what it holds.
+    accounts_waiting: bool,
     /// What changed in the room since the last poll, as the store told it.
     changed: Rc<RefCell<Vec<FieldKey>>>,
+    /// Whether what changes in the workspace is being watched: the store is asked once, however
+    /// many times the workspace is read.
+    subscribed: bool,
     pending: BTreeMap<Request, Pending>,
     sends: HashMap<String, Sending>,
     /// Why each account's server could not be reached, until it can.
@@ -191,7 +200,10 @@ impl ImapOrigin {
             connector,
             woken,
             state: None,
+            reload: false,
+            accounts_waiting: false,
             changed: Rc::default(),
+            subscribed: false,
             pending: BTreeMap::new(),
             sends: HashMap::new(),
             trouble: HashMap::new(),
@@ -319,6 +331,12 @@ fn text(s: &str) -> Value {
     Value::text(s)
 }
 
+/// What an account is identified by: its address and its server, as the settings say them,
+/// without the case and the spaces mail addresses are written with.
+fn identity(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
 fn put(ty: &OriginType, fields: &mut Vec<(String, Value)>, name: &str, value: Value) {
     if let Some(id) = ty.field(name) {
         fields.push((id.to_owned(), value));
@@ -326,35 +344,83 @@ fn put(ty: &OriginType, fields: &mut Vec<(String, Value)>, name: &str, value: Va
 }
 
 fn read(host: &Host, at: &ResourceRef, ty: &OriginType, name: &str) -> Option<Value> {
-    host.runtime().read(at, ty.field(name)?).ok()
+    try_read(host, at, ty, name).ok().flatten()
+}
+
+/// What the field `name` of `at` holds, when the type declares it.
+///
+/// # Errors
+///
+/// The store could not answer for it: a read that failed is never read as a field that holds
+/// nothing (`NotFound` while the store's index has not caught up with the resource).
+fn try_read(
+    host: &Host,
+    at: &ResourceRef,
+    ty: &OriginType,
+    name: &str,
+) -> Result<Option<Value>, String> {
+    let Some(field) = ty.field(name) else {
+        return Ok(None);
+    };
+    host.runtime()
+        .read(at, field)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 fn read_text(host: &Host, at: &ResourceRef, ty: &OriginType, name: &str) -> String {
-    match read(host, at, ty, name) {
+    try_read_text(host, at, ty, name).unwrap_or_default()
+}
+
+/// [`read_text`], saying when the store could not answer.
+fn try_read_text(
+    host: &Host,
+    at: &ResourceRef,
+    ty: &OriginType,
+    name: &str,
+) -> Result<String, String> {
+    Ok(match try_read(host, at, ty, name)? {
         Some(Value::Text(t)) => t,
         _ => String::new(),
-    }
+    })
 }
 
 fn read_bool(host: &Host, at: &ResourceRef, ty: &OriginType, name: &str) -> bool {
-    match read(host, at, ty, name) {
+    try_read_bool(host, at, ty, name).unwrap_or_default()
+}
+
+/// [`read_bool`], saying when the store could not answer.
+fn try_read_bool(
+    host: &Host,
+    at: &ResourceRef,
+    ty: &OriginType,
+    name: &str,
+) -> Result<bool, String> {
+    Ok(match try_read(host, at, ty, name)? {
         Some(Value::Bool(b)) => b,
         Some(Value::Int(i)) => i != 0,
         _ => false,
-    }
+    })
 }
 
-fn items(host: &Host, at: &ResourceRef, field: &str) -> Vec<ResourceRef> {
-    match host.runtime().read(at, field) {
-        Ok(Value::List(items)) => items
-            .into_iter()
-            .filter_map(|v| match v {
-                Value::Ref(r) => Some((*r.target).clone()),
-                _ => None,
-            })
-            .collect(),
-        _ => Vec::new(),
-    }
+/// The items the collection `field` of `at` holds, saying when the store could not answer.
+fn try_items(host: &Host, at: &ResourceRef, field: &str) -> Result<Vec<ResourceRef>, String> {
+    Ok(
+        match host
+            .runtime()
+            .read(at, field)
+            .map_err(|error| error.to_string())?
+        {
+            Value::List(items) => items
+                .into_iter()
+                .filter_map(|v| match v {
+                    Value::Ref(r) => Some((*r.target).clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
+    )
 }
 
 fn snippet_of(body: &str) -> String {
@@ -391,8 +457,23 @@ fn types_of(host: &Host, app: &str) -> Option<(Types, String)> {
 }
 
 impl ImapOrigin {
-    /// The records the room holds already, read once: what was taken in before stays as it is.
-    fn load(host: &Host, types: Types, root: ResourceRef) -> State {
+    /// The workspace's records read once: what was taken in before stays as it is.
+    ///
+    /// The accounts are the ones the workspace lists and the ones `known` names by their
+    /// records: the workspace does not remove an account, so a listing that does not show one
+    /// yet is behind what it holds, and the account is read by its own record.
+    ///
+    /// # Errors
+    ///
+    /// The store could not answer for a record (a `NotFound` while its index has not caught up
+    /// with the workspace): then nothing is read, and no account is taken as gone.
+    fn load(
+        host: &Host,
+        types: Types,
+        root: ResourceRef,
+        known: BTreeMap<String, ResourceRef>,
+    ) -> Result<State, String> {
+        let mut records = known;
         let mut state = State {
             types,
             root,
@@ -400,72 +481,111 @@ impl ImapOrigin {
             by_record: HashMap::new(),
         };
         let t = &state.types;
-        for record in items(host, &state.root, &t.accounts_field) {
-            let key = read_text(host, &record, &t.account, "key");
-            let mut acct = Acct {
-                record: record.clone(),
-                boxes: HashMap::new(),
-                threads: HashMap::new(),
-                messages: HashMap::new(),
-            };
-            if let Some(field) = t.account.field("mailboxes") {
-                for b in items(host, &record, field) {
-                    acct.boxes.insert(read_text(host, &b, &t.mailbox, "key"), b);
-                }
-            }
-            if let Some(field) = t.account.field("threads") {
-                for th in items(host, &record, field) {
-                    let tkey = read_text(host, &th, &t.thread, "key");
-                    let mut keys = Vec::new();
-                    if let Some(mfield) = t.thread.field("messages") {
-                        for m in items(host, &th, mfield) {
-                            let mkey = read_text(host, &m, &t.message, "key");
-                            let confirmed = People {
-                                unread: read_bool(host, &m, &t.message, "unread"),
-                                flagged: read_bool(host, &m, &t.message, "flagged"),
-                                mailbox: read_text(host, &m, &t.message, "mailbox"),
-                            };
-                            let received = match read(host, &m, &t.message, "received") {
-                                Some(Value::Text(at)) => seconds_of(&at),
-                                _ => 0,
-                            };
-                            state
-                                .by_record
-                                .insert(m.id_string(), (key.clone(), mkey.clone()));
-                            acct.messages.insert(
-                                mkey.clone(),
-                                Msg {
-                                    record: m.clone(),
-                                    thread: tkey.clone(),
-                                    received,
-                                    from_name: read_text(host, &m, &t.message, "from_name"),
-                                    snippet: read_text(host, &m, &t.message, "snippet"),
-                                    confirmed,
-                                },
-                            );
-                            keys.push(mkey);
-                        }
-                    }
-                    acct.threads.insert(tkey, Thr { record: th, keys });
-                }
-            }
+        for record in try_items(host, &state.root, &t.accounts_field)? {
+            let key = try_read_text(host, &record, &t.account, "key")?;
+            records.insert(key, record);
+        }
+        for (key, record) in records {
+            let acct = Self::read_account(host, t, &key, &record, &mut state.by_record)?;
             state.accounts.insert(key, acct);
         }
-        state
+        Ok(state)
+    }
+
+    /// The account `key` holds, read from its record `record`: its mailboxes, conversations and
+    /// the messages of each, and where each message's record is.
+    fn read_account(
+        host: &Host,
+        t: &Types,
+        key: &str,
+        record: &ResourceRef,
+        by_record: &mut HashMap<String, (String, String)>,
+    ) -> Result<Acct, String> {
+        let mut acct = Acct {
+            record: record.clone(),
+            boxes: HashMap::new(),
+            threads: HashMap::new(),
+            messages: HashMap::new(),
+        };
+        if let Some(field) = t.account.field("mailboxes") {
+            for b in try_items(host, record, field)? {
+                acct.boxes
+                    .insert(try_read_text(host, &b, &t.mailbox, "key")?, b);
+            }
+        }
+        if let Some(field) = t.account.field("threads") {
+            for th in try_items(host, record, field)? {
+                let tkey = try_read_text(host, &th, &t.thread, "key")?;
+                let mut keys = Vec::new();
+                if let Some(mfield) = t.thread.field("messages") {
+                    for m in try_items(host, &th, mfield)? {
+                        let mkey = try_read_text(host, &m, &t.message, "key")?;
+                        let confirmed = People {
+                            unread: try_read_bool(host, &m, &t.message, "unread")?,
+                            flagged: try_read_bool(host, &m, &t.message, "flagged")?,
+                            mailbox: try_read_text(host, &m, &t.message, "mailbox")?,
+                        };
+                        let received = match try_read(host, &m, &t.message, "received")? {
+                            Some(Value::Text(at)) => seconds_of(&at),
+                            _ => 0,
+                        };
+                        by_record.insert(m.id_string(), (key.to_owned(), mkey.clone()));
+                        acct.messages.insert(
+                            mkey.clone(),
+                            Msg {
+                                record: m.clone(),
+                                thread: tkey.clone(),
+                                received,
+                                from_name: try_read_text(host, &m, &t.message, "from_name")?,
+                                snippet: try_read_text(host, &m, &t.message, "snippet")?,
+                                confirmed,
+                            },
+                        );
+                        keys.push(mkey);
+                    }
+                }
+                acct.threads.insert(tkey, Thr { record: th, keys });
+            }
+        }
+        Ok(acct)
     }
 
     /// Each account of the settings has its record and its mailboxes, made as one change of the
-    /// origin, and its servers are asked what they hold. A change the workspace cannot take
-    /// leaves no account without its mailboxes behind: the next poll makes it again.
+    /// origin, and its servers are asked what they hold. An account the workspace holds already
+    /// is not made again, by its key or by its address: an account is identified by where its
+    /// mail is, so adding one twice adds nothing. A change the workspace cannot take leaves no
+    /// account without its mailboxes behind: the next poll makes it again.
     fn add_accounts(&mut self, host: &Host, now: &str) -> bool {
         let Some(state) = self.state.as_mut() else {
             return false;
         };
+        // An account is only missing when the workspace was read whole: until its index lists
+        // all of what it holds, a listing does not say an account is not there, and the next
+        // poll asks again.
+        if !host.store().settled() {
+            self.accounts_waiting = true;
+            return false;
+        }
+        self.accounts_waiting = false;
         let t = &state.types;
         let mut writes = Vec::new();
         let mut new_accounts = Vec::new();
+        // What the workspace holds, by the key an account is known by and by its address.
+        let mut held: BTreeSet<String> = BTreeSet::new();
+        for (key, acct) in &state.accounts {
+            held.insert(identity(key));
+            held.insert(identity(&read_text(
+                host,
+                &acct.record,
+                &t.account,
+                "address",
+            )));
+        }
         for a in self.connector.accounts() {
-            if state.accounts.contains_key(&a.id) {
+            // The account's address, and the key the connector names it by: `key` is where its
+            // mail is, so a change in the key a record was made under adds nothing either.
+            let ids = [identity(&a.id), identity(&a.address)];
+            if ids.iter().any(|id| held.contains(id)) {
                 continue;
             }
             let mut fields = Vec::new();
@@ -479,13 +599,45 @@ impl ImapOrigin {
                 ty: t.account.ty.clone(),
                 fields,
             });
+            held.extend(ids);
             new_accounts.push(a.id);
         }
         if writes.is_empty() {
             return false;
         }
-        let made = host
-            .runtime()
+        let made = match Self::write_accounts(host, now, t, writes, new_accounts) {
+            Ok(made) => made,
+            Err(error) => {
+                // There is no account's record to say it on: it is said here, and the next poll
+                // makes the accounts again.
+                tracing::warn!(%error, "the mail accounts could not be written");
+                return false;
+            }
+        };
+        let mut new = Vec::new();
+        for (id, acct) in made {
+            state.accounts.insert(id.clone(), acct);
+            new.push(id);
+        }
+        for id in new {
+            for mailbox in SYNCED {
+                self.due.push((id.clone(), (*mailbox).to_owned()));
+            }
+            self.connector.watch(&id);
+        }
+        true
+    }
+
+    /// The records of the accounts `new_accounts` and their mailboxes, written as one change of
+    /// the origin: each account with the mailboxes every account shows.
+    fn write_accounts(
+        host: &Host,
+        now: &str,
+        t: &Types,
+        writes: Vec<OriginWrite>,
+        new_accounts: Vec<String>,
+    ) -> Result<Vec<(String, Acct)>, RuntimeError> {
+        host.runtime()
             .write_origin("imap", Some(now.to_owned()), |change| {
                 let records = change.write(writes)?;
                 let mut accounts: Vec<(String, Acct)> = Vec::new();
@@ -526,43 +678,27 @@ impl ImapOrigin {
                     ));
                 }
                 Ok(accounts)
-            });
-        let made = match made {
-            Ok(made) => made,
-            Err(error) => {
-                // There is no account's record to say it on: it is said here, and the next poll
-                // makes the accounts again.
-                tracing::warn!(%error, "the mail accounts could not be written");
-                return false;
-            }
-        };
-        let mut new = Vec::new();
-        for (id, acct) in made {
-            state.accounts.insert(id.clone(), acct);
-            new.push(id);
-        }
-        for id in new {
-            for mailbox in SYNCED {
-                self.due.push((id.clone(), (*mailbox).to_owned()));
-            }
-            self.connector.watch(&id);
-        }
-        true
+            })
     }
 
     /// What a server said changed, written into the account's conversations. A step the
-    /// workspace cannot take leaves nothing of itself behind and gives why: the account is read
-    /// again as the store holds it, so no message of the step is known, and the next poll takes
-    /// the step in again whole.
+    /// workspace cannot take leaves nothing of itself behind and gives why: what the step wrote
+    /// in memory is not what the workspace holds, so the workspace is read again before anything
+    /// else is taken into it, and no message of the step is known until then.
     fn take_in(&mut self, host: &Host, now: &str, changes: &Changes) -> Result<bool, RuntimeError> {
+        if self.reload {
+            return Err(RuntimeError::NotFound(
+                "the mail is taken in once the workspace is read again".into(),
+            ));
+        }
         let Some(state) = self.state.as_mut() else {
             return Ok(false);
         };
-        let (types, root) = (state.types.clone(), state.root.clone());
         match take_in_step(host, now, state, changes) {
             Ok(wrote) => Ok(wrote),
             Err(error) => {
-                *state = Self::load(host, types, root);
+                // Read again by [`Origin::poll`], which reads the workspace whole or not at all.
+                self.reload = true;
                 Err(error)
             }
         }
@@ -849,6 +985,26 @@ impl ImapOrigin {
         }
     }
 
+    /// What each account says of itself is written, and whether it was: what the window reads.
+    fn write_account_state(&self, host: &Host, now: &str) -> bool {
+        let states = self.account_state(host);
+        if states.is_empty() {
+            return false;
+        }
+        // The next poll writes it again: what the account says of itself is read back from it
+        // first.
+        match host
+            .runtime()
+            .apply_origin("imap", states, Some(now.to_owned()))
+        {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%error, "what an account says of itself was not written");
+                false
+            }
+        }
+    }
+
     /// Each account says whether its server answers, what is wrong with it, and why not.
     fn account_state(&self, host: &Host) -> Vec<OriginWrite> {
         let Some(state) = self.state.as_ref() else {
@@ -894,8 +1050,8 @@ impl ImapOrigin {
 ///
 /// # Errors
 ///
-/// A store that cannot take the change; then the change is taken back, and the account's record
-/// of itself is read again by [`ImapOrigin::take_in`].
+/// A store that cannot take the change; then the change is taken back, and the workspace is read
+/// again by [`ImapOrigin::take_in`] with nothing of the step known.
 fn take_in_step(
     host: &Host,
     now: &str,
@@ -907,7 +1063,12 @@ fn take_in_step(
         return Ok(false);
     };
     let Some(acct) = state.accounts.get_mut(&changes.account) else {
-        return Ok(false);
+        // The workspace holds an account the origin has not read: what a server said of it is
+        // kept for the next poll, never taken as nothing to write.
+        return Err(RuntimeError::NotFound(format!(
+            "no mail account {} in the workspace as it was read",
+            changes.account
+        )));
     };
     // The messages inserted, by their record and the server's key, to be known by their record
     // once the change is kept.
@@ -1205,6 +1366,8 @@ impl Origin for ImapOrigin {
 
     fn due(&self) -> bool {
         self.state.is_none()
+            || self.reload
+            || self.accounts_waiting
             || self.woken.load(Ordering::Acquire)
             || self.reconnected.load(Ordering::Acquire)
             || !self.due.is_empty()
@@ -1215,23 +1378,50 @@ impl Origin for ImapOrigin {
     fn poll(&mut self, cx: &OriginCx<'_>) -> Polled {
         self.woken.store(false, Ordering::Release);
         let mut polled = Polled::default();
-        if self.state.is_none() {
+        // The workspace, read whole or not at all: the first time, and again once a step it
+        // could not take left what it wrote in memory not what the workspace holds.
+        if self.state.is_none() || self.reload {
             let Some((types, _)) = types_of(cx.host, cx.app) else {
                 return polled;
             };
             let Ok(root) = cx.host.root_of(cx.app) else {
                 return polled;
             };
-            let state = Self::load(cx.host, types, root.clone());
-            let changed = Rc::clone(&self.changed);
-            let mut store = cx.host.store().clone();
-            store.subscribe(
-                &root.doc,
-                Box::new(move |summary| {
-                    changed.borrow_mut().extend(summary.fields.iter().cloned());
-                }),
-            );
+            // The accounts the origin knows, by their records: the workspace lists them too,
+            // unless its listing is behind what it holds.
+            let known = self.state.as_ref().map_or_else(BTreeMap::new, |state| {
+                state
+                    .accounts
+                    .iter()
+                    .map(|(key, acct)| (key.clone(), acct.record.clone()))
+                    .collect()
+            });
+            let state = match Self::load(cx.host, types, root.clone(), known) {
+                Ok(state) => state,
+                Err(error) => {
+                    // The workspace could not be read: its accounts are not known, and none of
+                    // them is taken as gone. Nothing is taken into it, and the next poll (`due`)
+                    // reads it again; what each account already says of itself still stands.
+                    tracing::warn!(%error, "the mail accounts could not be read");
+                    if self.state.is_some() {
+                        polled.wrote |= self.write_account_state(cx.host, &cx.now);
+                    }
+                    return polled;
+                }
+            };
+            if !self.subscribed {
+                let changed = Rc::clone(&self.changed);
+                let mut store = cx.host.store().clone();
+                store.subscribe(
+                    &root.doc,
+                    Box::new(move |summary| {
+                        changed.borrow_mut().extend(summary.fields.iter().cloned());
+                    }),
+                );
+                self.subscribed = true;
+            }
             self.state = Some(state);
+            self.reload = false;
             polled.wrote = true;
         }
         // What the workspace could not take last time, before anything newer: a step waits
@@ -1240,6 +1430,13 @@ impl Origin for ImapOrigin {
         let events = self.take_events(cx.host, &cx.now);
         polled.wrote |= events.wrote;
         polled.settle |= events.settle;
+        if self.reload {
+            // A step the workspace could not take leaves the state unknown: each account still
+            // says what it says of itself, and the next poll reads the workspace before
+            // anything else is done with it.
+            polled.wrote |= self.write_account_state(cx.host, &cx.now);
+            return polled;
+        }
         // The accounts as the connector says them now (one in another process says them
         // with its first answers), then what to ask of each.
         polled.wrote |= self.add_accounts(cx.host, &cx.now);
@@ -1254,21 +1451,7 @@ impl Origin for ImapOrigin {
             }
         }
         polled.wrote |= self.push(cx.host, &cx.now);
-        let states = self.account_state(cx.host);
-        if !states.is_empty() {
-            // The next poll writes it again: what the account says of itself is read back from
-            // it first.
-            match cx
-                .host
-                .runtime()
-                .apply_origin("imap", states, Some(cx.now.clone()))
-            {
-                Ok(_) => polled.wrote = true,
-                Err(error) => {
-                    tracing::warn!(%error, "what an account says of itself was not written");
-                }
-            }
-        }
+        polled.wrote |= self.write_account_state(cx.host, &cx.now);
         polled
     }
 
