@@ -19,6 +19,7 @@ use winit::event::Modifiers;
 use tilo_doc::model::Region;
 use tilo_doc::paging::PageFlow;
 use tilo_doc::snapshot::{BlockView, NoteView};
+use ui::PresenceCtx;
 use ui::gesture::DragSelect;
 use ui::richtext::RichTextLayout;
 use ui::text_edit::EditCore;
@@ -2372,6 +2373,8 @@ struct PageContentInput<'a> {
     multi_selection: bool,
     spell_by_block: &'a HashMap<String, Vec<(usize, usize)>>,
     note_numbers: &'a HashMap<String, usize>,
+    /// Who is here, whose colours the review marks wear.
+    presence: &'a PresenceCtx,
 }
 
 struct NotesSpellcheckInput<'a> {

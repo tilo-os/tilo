@@ -25,6 +25,7 @@ use ui::permissions::UserId;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::Tone;
 use ui::widget::paint_damage::PaintParts;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -528,6 +529,7 @@ impl Editor {
             multi_selection: multi_sel,
             spell_by_block,
             note_numbers: note_nums,
+            presence,
             ..
         } = *input;
         if l.kind == "image" {
@@ -576,6 +578,7 @@ impl Editor {
             text_renderer,
             &item,
             multi_sel,
+            presence,
             &mut markers.comment_markers,
         );
         self.draw_laid_change_decos(scene, fg, &item, &mut markers.change_markers);
@@ -850,6 +853,7 @@ impl Editor {
         text_renderer: &mut TextRenderer,
         item: &LaidItemCtx,
         multi_sel: bool,
+        presence: &PresenceCtx,
         comment_markers: &mut Vec<(String, f64, f64)>,
     ) {
         let (l, layout, ly) = (item.l, item.layout, item.ly);
@@ -920,8 +924,9 @@ impl Editor {
         {
             for (bs, be, cid) in block_comment_ranges(b) {
                 let author = self.review.comment_author(&cid).unwrap_or("");
+                let tone = Tone::Presence(presence.hue_of(author));
                 let wash =
-                    ReviewColors::comment_highlight(&self.paper_theme, self.chrome.paper, author);
+                    ReviewColors::comment_highlight(&self.paper_theme, self.chrome.paper, tone);
                 let rects = layout.selection_rects(l.shown(bs), l.shown(be));
                 for &(rx0, ry0, rx1, ry1) in &rects {
                     let r = Rect::new(

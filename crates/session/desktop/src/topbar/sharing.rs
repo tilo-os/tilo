@@ -493,34 +493,3 @@ pub(super) struct FaceLook {
     /// A wave's bounce (1 at rest).
     pub(super) scale: f64,
 }
-
-/// Cursor and avatar colours for a workspace, settled over the whole roster so a peer's avatar
-/// matches the colour their cursor is drawn in elsewhere. An explicit `cursor_color` outranks
-/// anything computed; the local user takes part in the settlement (never the avatar stack) so every
-/// host agrees.
-pub(super) fn roster_colors(
-    roster: &[tilo_desktop_model::Collaborator],
-    local: &str,
-) -> HashMap<String, (u8, u8, u8)> {
-    let explicit: HashMap<_, _> = roster
-        .iter()
-        .filter_map(|c| {
-            c.cursor_color
-                .as_deref()
-                .and_then(ui::presence::parse_hex_color)
-                .map(|rgb| (c.id.clone(), rgb))
-        })
-        .collect();
-    let mut ids: Vec<_> = roster
-        .iter()
-        .filter(|c| !explicit.contains_key(&c.id))
-        .map(|c| c.id.as_str())
-        .collect();
-    if !local.is_empty() && !explicit.contains_key(local) {
-        ids.push(local);
-    }
-    let mut assigned =
-        ui::presence::assign_peer_colors(&ids, &explicit.values().copied().collect::<Vec<_>>());
-    assigned.extend(explicit);
-    assigned
-}

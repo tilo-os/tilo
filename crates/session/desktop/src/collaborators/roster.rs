@@ -258,28 +258,20 @@ pub fn roster_colors_with_local_user(
     roster: &[Collaborator],
     local: &str,
 ) -> HashMap<String, (u8, u8, u8)> {
-    let mut explicit: HashMap<String, (u8, u8, u8)> = HashMap::new();
-    for c in roster {
-        if let Some(rgb) = c
-            .cursor_color
-            .as_deref()
-            .and_then(ui::presence::parse_hex_color)
-        {
-            explicit.insert(c.id.clone(), rgb);
-        }
-    }
-    let mut ids: Vec<&str> = roster
+    let chosen: HashMap<String, (u8, u8, u8)> = roster
         .iter()
-        .filter(|c| !explicit.contains_key(&c.id))
-        .map(|c| c.id.as_str())
+        .filter_map(|c| {
+            c.cursor_color
+                .as_deref()
+                .and_then(ui::presence::parse_hex_color)
+                .map(|rgb| (c.id.clone(), rgb))
+        })
         .collect();
-    if !explicit.contains_key(local) {
+    let mut ids: Vec<&str> = roster.iter().map(|c| c.id.as_str()).collect();
+    if !local.is_empty() {
         ids.push(local);
     }
-    let reserved: Vec<(u8, u8, u8)> = explicit.values().copied().collect();
-    let mut assigned = ui::presence::assign_peer_colors(&ids, &reserved);
-    assigned.extend(explicit);
-    assigned
+    ui::presence::settle_colors(&ids, &chosen)
 }
 
 fn roster_initial(name: &str) -> char {

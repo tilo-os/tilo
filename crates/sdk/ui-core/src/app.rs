@@ -757,7 +757,7 @@ impl AppConstructionInputs {
                     None
                 }
             },
-            your_colour: App::stored_your_colour,
+            your_colour: crate::local_identity::own_colour,
             high_contrast: || crate::host::environment().accessibility.high_contrast,
             reduce_motion: || crate::host::environment().accessibility.reduce_motion,
             text_scale: || {
@@ -1051,7 +1051,14 @@ impl App {
         // Own identity: this person's id. Anything else is somebody else and
         // gets painted.
         let mut context = PresenceCtx::empty();
-        context.set_own_identity(std::iter::once(crate::collaboration::local_user_id().0));
+        let own = crate::collaboration::local_user_id().0;
+        context.set_own_identity(std::iter::once(own.clone()));
+        // The colour they chose, where they chose one: their own face, caret
+        // and byline wear it here from the window's first frame, as the member
+        // list says it to every other app.
+        if let Some(hue) = crate::local_identity::own_colour() {
+            context.set_presence_hue(crate::permissions::UserId(own), hue);
+        }
         context
     }
 
@@ -1817,13 +1824,6 @@ impl App {
             return false;
         };
         self.apply_appearance_intent(intent)
-    }
-
-    /// The person's stored colour (`identity.colour`) in the settings
-    /// document this process reads, if they chose one. The shell's
-    /// appearance message replaces it with the colour it resolved.
-    fn stored_your_colour() -> Option<crate::tokens::PresenceHue> {
-        crate::tokens::PresenceHue::chosen_in(&serde_json::Value::Object(settings_store::load()))
     }
 
     /// Where and for whom this window is shown, as the shell said it over

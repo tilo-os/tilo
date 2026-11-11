@@ -7204,13 +7204,21 @@ impl AppBrokerState {
                 let people = people
                     .into_iter()
                     .map(|person| {
-                        let name = workspace
-                            .collaborators
-                            .iter()
-                            .find(|row| row.id == person)
-                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                        let row = workspace.collaborators.iter().find(|row| row.id == person);
+                        let name = row.map_or_else(|| person.clone(), |row| row.name.clone());
+                        // The colour presence draws them in: the one they
+                        // chose, or the one their identity derives, so an app
+                        // paints a person as their desk and everyone else's
+                        // does. No word of them yet, and they are painted in
+                        // what their id derives, as everywhere.
+                        let colour = row
+                            .and_then(|row| row.cursor_color.as_deref())
+                            .and_then(ui::presence::parse_hex_color)
+                            .and_then(|(red, green, blue)| {
+                                ui::tokens::PresenceHue::nearest_to_srgb(red, green, blue)
+                            });
                         let joined = workspace.policy.joined_at(&person);
-                        (person, name, joined)
+                        (person, name, colour, joined)
                     })
                     .collect::<Vec<_>>();
                 Ok::<_, &str>((agents, people))
@@ -7229,18 +7237,18 @@ impl AppBrokerState {
                 is_self: true,
                 joined_at: people
                     .iter()
-                    .find(|(person, _, _)| *person == admitted.principal_id)
-                    .and_then(|(_, _, joined)| *joined),
+                    .find(|(person, _, _, _)| *person == admitted.principal_id)
+                    .and_then(|(_, _, _, joined)| *joined),
             });
         }
-        for (person, name, joined_at) in people {
+        for (person, name, colour, joined_at) in people {
             if admitted.agent_id.is_none() && person == admitted.principal_id {
                 continue;
             }
             collaborators.push(ui::collaboration::Collaborator {
                 id: person,
                 name,
-                colour: None,
+                colour,
                 is_agent: false,
                 is_self: false,
                 joined_at,

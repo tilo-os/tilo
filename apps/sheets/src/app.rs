@@ -781,7 +781,7 @@ impl Widget for SheetsApp {
             }
         });
         parts.draw(scene, "sheet-comment-markers", window, |scene| {
-            self.draw_comment_markers(scene, transform, theme);
+            self.draw_comment_markers(scene, transform, theme, presence);
         });
         parts.draw(scene, "sheet-cell-presence", window, |scene| {
             self.draw_cell_presence(scene, transform, tr, theme, presence);
@@ -791,7 +791,7 @@ impl Widget for SheetsApp {
         });
         // The open comment floats over the cells beside its own.
         parts.draw(scene, "sheet-comment", window, |scene| {
-            self.draw_comment_popover(scene, transform, tr, theme);
+            self.draw_comment_popover(scene, transform, tr, theme, presence);
         });
         parts.draw(scene, "sheet-tab-rename", window, |scene| {
             self.draw_tab_rename(scene, transform, tr, theme);

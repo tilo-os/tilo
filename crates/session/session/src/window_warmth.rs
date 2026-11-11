@@ -47,7 +47,7 @@ impl Windows {
     /// The windows of a desk wearing `theme` , with `person` sitting at this machine.
     pub(crate) fn new(theme: Theme, person: &str) -> Self {
         let document = settings_store::load();
-        let your_colour = colour_in(&document, person);
+        let your_colour = PresenceHue::worn_in(&Value::Object(document.clone()), person);
         Self {
             warmth: WindowWarmth::new(your_colour),
             theme,
@@ -69,8 +69,10 @@ impl Windows {
         }
         self.stamp = stamp;
         self.document = settings_store::load();
-        self.warmth
-            .set_your_colour(colour_in(&self.document, person));
+        self.warmth.set_your_colour(PresenceHue::worn_in(
+            &Value::Object(self.document.clone()),
+            person,
+        ));
         self.theme = desk_theme(&self.document);
         Some(self.theme.clone())
     }
@@ -137,13 +139,6 @@ fn workspace_sync(
         &workspace.name,
         workspace.app_writes_at(&person, app, tilo_clock::unix_now()),
     )
-}
-
-/// The person's colour, as they sit at this machine: the one they chose in Settings, else the one
-/// their identity derives — the same colour the desk's own chip and every face of them wears.
-fn colour_in(document: &Map<String, Value>, person: &str) -> PresenceHue {
-    PresenceHue::chosen_in(&Value::Object(document.clone()))
-        .unwrap_or_else(|| PresenceHue::of_identity(person))
 }
 
 /// The theme the desk and its windows wear: the settings document's, with the host's accessibility

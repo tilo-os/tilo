@@ -54,7 +54,7 @@ mod workspace;
 use clock::{time_bucket_secs, until_next_time_bucket};
 use controls::{FocusOrigin, TrayBell, navigates};
 pub use reveal::{Finger, Reveals};
-use sharing::{FaceLook, roster_colors};
+use sharing::FaceLook;
 pub use space::BarSpace;
 pub use workspace::paint_tilo_mark;
 
@@ -1010,7 +1010,8 @@ impl TopBarChrome {
         let now = tilo_clock::unix_now();
         // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
         // drawn in elsewhere on the desktop.
-        let colors = roster_colors(roster, local.unwrap_or(""));
+        let colors =
+            crate::collaborators::roster_colors_with_local_user(roster, local.unwrap_or(""));
         // Everyone present, the one this person follows first: the bar stands as many faces as it
         // has room for and folds the rest into the count badge, so a narrow bar keeps the face
         // being watched and never drops anyone uncounted.

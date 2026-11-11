@@ -83,6 +83,12 @@ pub struct LiveMember {
     /// `None` when they are in none.
     #[serde(default)]
     pub call: Option<String>,
+    /// The colour they wear, `#rrggbb`, as their shell publishes it: the one
+    /// they chose in their own card, or the one their identity derives.
+    /// Empty for a member that said none, whose colour is settled from their
+    /// identity here ([`HereState::colors`]).
+    #[serde(default)]
+    pub colour: String,
 }
 
 impl LiveMember {
@@ -106,6 +112,7 @@ impl LiveMember {
             // An agent has no availability of its own: it is always at work.
             availability: (!shown.agent).then(|| shown.availability.clone()),
             call: shown.call.clone(),
+            colour: shown.colour.clone(),
         }
     }
 }
@@ -753,35 +760,47 @@ impl HereState {
     }
 
     /// What colour everyone here is drawn in, by live publisher, this page included. Settled over
-    /// the whole workspace at once ([`ui::presence::assign_peer_colors`]): two people here together
+    /// the whole workspace at once ([`ui::presence::settle_colors`]): two people here together
     /// never share a colour while the ring has room for both, and every page, seeing the same
     /// workspace, settles it alike. A person is settled by who they are (their user root) so their
-    /// other devices wear their colour; an agent by its own publisher. The colour a page publishes
-    /// for itself is not consulted: a page picking alone cannot know who else is here, which is how
-    /// two visitors came to wear the same one.
+    /// other devices wear their colour; an agent by its own publisher.
+    ///
+    /// The colour someone claims for themselves is the one they wear: it is the colour they chose
+    /// in their own card, or the one their identity derives, as their shell publishes it — the same
+    /// colour their apps paint them in. Whoever else's identity names it steps to a free entry, so
+    /// two people who chose alike still read apart.
+    ///
     /// A person's device is in the live layer before its certificate pairs it with its person. Until they do it has no entry here, and takes no part in the
     /// settlement, so they are drawn neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a
     /// colour keyed by their device that changes once their person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
-        let present: Vec<(&str, &str)> = self
+        // Each device here, by the person it is (an agent by its own
+        // publisher), with the colour its shell claimed where it claimed one.
+        let present: Vec<Present<'_>> = self
             .members
             .iter()
             .flatten()
             .chain(self.own.as_ref())
             .filter_map(|member| {
                 let id = member.publisher.as_str();
-                if member.kind == "agent" {
-                    Some((id, id))
+                let key = if member.kind == "agent" {
+                    id
                 } else {
-                    self.user_of(id).map(|user| (id, user))
-                }
+                    self.user_of(id)?
+                };
+                let claimed = ui::presence::parse_hex_color(&member.colour);
+                Some((id, key, claimed))
             })
             .collect();
-        let keys: Vec<&str> = present.iter().map(|(_, key)| *key).collect();
-        let settled = ui::presence::assign_peer_colors(&keys, &[]);
+        let chosen: HashMap<String, (u8, u8, u8)> = present
+            .iter()
+            .filter_map(|(_, key, claimed)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
+            .collect();
+        let keys: Vec<&str> = present.iter().map(|(_, key, _)| *key).collect();
+        let settled = ui::presence::settle_colors(&keys, &chosen);
         let mut colors: HashMap<String, (u8, u8, u8)> = present
             .into_iter()
-            .filter_map(|(id, key)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
+            .filter_map(|(id, key, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
             .collect();
         // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
         // caret of it; one this build does not know keeps the hue it settled on.
@@ -973,6 +992,11 @@ impl HereState {
         }
     }
 }
+
+/// One device here as the settlement reads it: its publisher, the person it
+/// is (an agent, itself), and the colour its shell claimed for that person
+/// where it claimed one.
+type Present<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>);
 
 /// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the
 /// workspace has not settled one for it.
@@ -1175,6 +1199,7 @@ mod tests {
             following: None,
             availability: None,
             call: None,
+            colour: String::new(),
         }
     }
 
@@ -1598,6 +1623,47 @@ mod tests {
         let tree = DesktopTree::default();
         let shown = first.people(&tree, &[], &|_| None);
         assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
+    }
+
+    /// The colour someone chose in their own card is the colour they wear here,
+    /// on their own page and on everyone else's, and whoever else's identity
+    /// names the same one steps to a free entry: one person, one colour, on the
+    /// bar, in the People list and in every app they edit in.
+    #[test]
+    fn a_person_wears_the_colour_they_chose_and_the_others_step_aside() {
+        let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
+        let hex = format!("#{:02x}{:02x}{:02x}", violet.0, violet.1, violet.2);
+        let claiming = |device: &str, root: &str| LiveMember {
+            user: Some(root.into()),
+            colour: hex.clone(),
+            ..member(device, "person", device)
+        };
+        let quiet = |device: &str, root: &str| LiveMember {
+            user: Some(root.into()),
+            ..member(device, "person", device)
+        };
+        let mut own_page = HereState::default();
+        own_page.set_members(
+            Some(claiming("me", "me-root")),
+            Some(vec![quiet("bo", "bo-root")]),
+        );
+        assert_eq!(own_page.colors()["me"], violet, "they wear what they chose");
+        assert_eq!(own_page.own_rgb(), Some(violet), "and see themselves in it");
+        let mut peer_page = HereState::default();
+        peer_page.set_members(
+            Some(quiet("bo", "bo-root")),
+            Some(vec![claiming("me", "me-root")]),
+        );
+        assert_eq!(
+            peer_page.colors()["me"],
+            violet,
+            "every page paints them in it too"
+        );
+        assert_ne!(
+            peer_page.colors()["bo"],
+            violet,
+            "whoever else lands on it steps aside"
+        );
     }
 
     /// Someone whose device is live here before its certificate pairs it with their person is drawn

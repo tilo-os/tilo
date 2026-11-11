@@ -77,10 +77,7 @@ pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
 
 /// The hue of [`own_rgb`].
 pub(crate) fn own_hue(identity: &str) -> ui::tokens::PresenceHue {
-    settings_store::identity::COLOUR
-        .get()
-        .as_deref()
-        .and_then(ui::tokens::PresenceHue::from_id)
+    ui::local_identity::own_colour()
         .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity))
 }
 

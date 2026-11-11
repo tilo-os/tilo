@@ -185,7 +185,9 @@ fn seat_view(
     {
         stack = stack.tertiary(state);
     }
-    let avatar = ui::widget::Avatar::person(name, player.to_owned());
+    // The face wears the colour presence paints them in, the same one their
+    // caret and their byline wear.
+    let avatar = ui::widget::Avatar::person(name, player.to_owned()).with_hue(people.hue(player));
     let mut body = ui::column![
         ui::row![avatar, stack]
             .with_rhythm(Rhythm::Sibling)
@@ -195,7 +197,7 @@ fn seat_view(
     .with_no_padding()
     .with_intrinsic_height();
     if let Some(p) = in_hand.and_then(|at| hand.players.get(at)) {
-        body = body.push(hole_cards(table, p, you, number));
+        body = body.push(hole_cards(table, p, you, number, people));
     }
     seat_box(Box::new(body))
 }
@@ -245,7 +247,7 @@ fn seat_state(table: &Table, p: &InHand, to_act: bool, you: bool) -> Option<Stri
     moved.or_else(|| (hand.position(&p.player) == button).then(|| plain("poker-seat-dealer")))
 }
 
-fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize) -> Element {
+fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize, people: &People) -> Element {
     let mut row = Row::new().with_rhythm(Rhythm::Related).no_wrap();
     let open = you || p.shown;
     for (index, card) in p.cards.iter().enumerate() {
@@ -255,7 +257,7 @@ fn hole_cards(table: &Table, p: &InHand, you: bool, seat: usize) -> Element {
         } else if p.folded && table.hand.street.in_play() {
             continue;
         } else {
-            Showing::Back(ui::presence::user_color(&p.player))
+            Showing::Back(ui::presence::identity_rgb(people.hue(&p.player)))
         };
         row = row.push(Box::new(CardView::new(id, showing, CardSize::Small)));
     }
