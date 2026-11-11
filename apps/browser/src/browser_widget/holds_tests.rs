@@ -140,7 +140,7 @@ fn answer_payload(widget: &BrowserWidget, answer: &str, held: u32) -> Vec<u8> {
                     .iter()
                     .find(|param| param.name == "id")
                     .and_then(|param| param.choices.first())
-                    .is_some_and(|bound| bound.to_string() == wanted)
+                    .is_some_and(|bound| *bound == wanted)
         })
         .unwrap_or_else(|| panic!("{answer} is published for the held request {held}"))
         .build_json(stated.as_object().expect("an id"))

@@ -533,12 +533,12 @@ fn what_was_held_is_listed_with_who_let_it_leave() {
         &record,
     );
     invoke(&mut app, None, &BrowserEffect::ReviewPage);
-    let held = format!("Submission held for you: {visa}");
+    let waits = format!("Submission held for you: {visa}");
     eventually(&mut app, "the review lists what was held", |app| {
-        row(app, &held).is_some()
+        row(app, &waits).is_some()
     });
     assert_eq!(
-        row(&mut app, &held).as_deref(),
+        row(&mut app, &waits).as_deref(),
         Some("By intake"),
         "under the agent whose action reached it"
     );

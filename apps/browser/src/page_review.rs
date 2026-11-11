@@ -433,7 +433,62 @@ impl Fields {
     }
 }
 
-/// One action that operated the page, as the tab's record keeps it.
+/// What a step of the tab's record is: an actor's action on the page, or
+/// something no action made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StepKind {
+    /// An action, which the step's `action` names as the engine does
+    /// (`fill`, `click`).
+    Action,
+    /// A person typed it straight into the page.
+    Typed,
+    /// The window held something the page was about to send, or what it
+    /// held ended.
+    Hold(HoldStep),
+}
+
+/// What a hold's step says: that something waits for the person, or how what
+/// waited ended.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum HoldStep {
+    /// A form submission waits.
+    Submit,
+    /// A request with data waits.
+    Request,
+    /// A download waits.
+    Download,
+    /// Something waits that this review has no word of its own for.
+    Other,
+    /// What waited was let leave.
+    Allowed,
+    /// The page was kept as it is.
+    Kept,
+    /// What waited was dropped with nobody answering.
+    Dropped,
+}
+
+impl HoldStep {
+    /// What the record's `action` says of a hold.
+    fn read(action: &str) -> Self {
+        match action {
+            "submit" => Self::Submit,
+            "request" => Self::Request,
+            "download" => Self::Download,
+            "allow" => Self::Allowed,
+            "keep" => Self::Kept,
+            "drop" => Self::Dropped,
+            _ => Self::Other,
+        }
+    }
+
+    /// Whether it says how a hold ended, rather than that one began.
+    pub(crate) const fn ended(self) -> bool {
+        matches!(self, Self::Allowed | Self::Kept | Self::Dropped)
+    }
+}
+
+/// One step of the tab's record: an action that operated the page, or what
+/// no action made, as the record keeps it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Step {
     /// Its place in the record.
@@ -444,12 +499,8 @@ pub(crate) struct Step {
     /// What was asked, by the engine's name for it (`fill`, `click`); empty
     /// for what was typed straight into the page.
     pub(crate) action: String,
-    /// It is no action: a person typed it straight into the page.
-    pub(crate) typed: bool,
-    /// It is no action: the window held something the page was about to
-    /// send, which `action` names (`submit`, `request`, `download`), or what
-    /// it held ended, as `action` says (`allow`, `keep`, `drop`).
-    pub(crate) held: bool,
+    /// What it is: an action, what a person typed, or a hold.
+    pub(crate) kind: StepKind,
     /// Of a hold, what the page was about to send, as the record says it:
     /// its method and where it would go, and of a download the file. Never
     /// what it carried.
@@ -498,14 +549,17 @@ impl Step {
                 .filter(|name| !name.is_empty())
                 .map(str::to_owned),
         );
-        let held = text(entry, "how") == "hold";
+        let kind = match text(entry, "how") {
+            "input" => StepKind::Typed,
+            "hold" => StepKind::Hold(HoldStep::read(text(entry, "action"))),
+            _ => StepKind::Action,
+        };
         Some(Self {
             seq: whole(entry.get("seq"))?,
             actor: text(entry, "actor").to_owned(),
             action: text(entry, "action").to_owned(),
-            typed: text(entry, "how") == "input",
-            held,
-            leaving: if held {
+            kind,
+            leaving: if matches!(kind, StepKind::Hold(_)) {
                 text(entry, "message").to_owned()
             } else {
                 String::new()
@@ -774,11 +828,11 @@ mod tests {
                 "values": ["leaked"]},
         ], "next": 2, "more": false}));
         let typed = &record.steps[0];
-        assert!(typed.typed && !typed.secret);
+        assert!(typed.kind == StepKind::Typed && !typed.secret);
         assert_eq!((typed.action.as_str(), typed.actor.as_str()), ("", ""));
         assert_eq!(typed.wrote, ["ada@example.org"]);
         let secret = &record.steps[1];
-        assert!(!secret.typed && secret.secret);
+        assert!(secret.kind == StepKind::Action && secret.secret);
         assert!(secret.wrote.is_empty());
         assert!(!format!("{record:?}").contains("leaked"));
     }
@@ -798,9 +852,9 @@ mod tests {
                 "message": "POST https://visa.example", "to_url": "https://visa.example"},
         ], "next": 3, "more": false}));
         let clicked = &record.steps[0];
-        assert!(!clicked.held && clicked.leaving.is_empty());
+        assert!(clicked.kind == StepKind::Action && clicked.leaving.is_empty());
         let held = &record.steps[1];
-        assert!(held.held && !held.typed);
+        assert_eq!(held.kind, StepKind::Hold(HoldStep::Submit));
         assert_eq!(
             (
                 held.action.as_str(),
@@ -810,7 +864,7 @@ mod tests {
             ("submit", "agent:ada", "POST https://visa.example")
         );
         let allowed = &record.steps[2];
-        assert!(allowed.held);
+        assert_eq!(allowed.kind, StepKind::Hold(HoldStep::Allowed));
         assert_eq!(
             (allowed.action.as_str(), allowed.actor.as_str()),
             ("allow", "")
