@@ -56,7 +56,12 @@ def scan(root: Path) -> tuple[list[str], Counter[str]]:
     """Bare manager lookups, and the `i18n!` calls each file still makes."""
     bare, macro = [], Counter()
     for path, relative in sources(root):
-        text = rust.production_source(path.read_text())
+        # A source only resolves copy if its text names a resolver at all;
+        # reading the manager's methods is what the whole check is about.
+        raw = path.read_text()
+        if BARE.search(raw) is None and MACRO.search(raw) is None:
+            continue
+        text = rust.production_source(raw)
         name = relative.as_posix()
         for match in BARE.finditer(text):
             line = text.count("\n", 0, match.start()) + 1
