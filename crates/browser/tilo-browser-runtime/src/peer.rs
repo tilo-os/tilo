@@ -33,6 +33,7 @@ use tilo_live::live::Track;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
+use tilo_relay_protocol::web::{PageHost, PageHostAddress};
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::{
     DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
@@ -368,7 +369,7 @@ struct ConnectConfig {
     host_cert: DeviceCert,
     /// Where the host's iroh endpoint is dialled: the session and its planes
     /// reach it there.
-    address: JsHostAddress,
+    address: PageHostAddress,
     /// The person's chosen name, for history and presence; empty for none.
     #[serde(default)]
     display_name: String,
@@ -416,39 +417,14 @@ async fn post_decoded<T: serde::de::DeserializeOwned>(
     postcard::from_bytes(&bytes).map_err(js_error)
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct JsHostAddress {
-    /// The endpoint's key and the addresses it answers at.
-    endpoint_addr: iroh_base::EndpointAddr,
-    /// The packet relay the host is reached through, when it names one.
-    #[serde(default)]
-    relay_url: Option<String>,
-}
-
 /// The host `address` names (`hostInfo().address`, JSON).
 pub(crate) fn host_at(address: &str) -> Result<Host, JsError> {
-    Ok(serde_json::from_str::<JsHostAddress>(address)
-        .map_err(js_error)?
-        .host())
+    Ok(dialled(serde_json::from_str(address).map_err(js_error)?))
 }
 
-impl JsHostAddress {
-    /// The host as the peer dials it.
-    fn host(&self) -> Host {
-        Host::published(&tilo_relay_protocol::web::HostAddress {
-            endpoint_addr: self.endpoint_addr.clone(),
-            relay_url: self.relay_url.clone(),
-        })
-    }
-}
-
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-struct JsHostInfo {
-    host_cert: DeviceCert,
-    /// Where the host listens on iroh, when it names an endpoint.
-    address: Option<JsHostAddress>,
+/// The host at `address`, as the peer dials it.
+fn dialled(address: PageHostAddress) -> Host {
+    Host::published(&address.into())
 }
 
 /// What the host publishes before certification: its certificate. Resolves
@@ -457,14 +433,7 @@ struct JsHostInfo {
 pub async fn host_info(post: Function) -> Result<String, JsError> {
     let info: tilo_relay_protocol::web::HostInfo =
         post_decoded(&PageHttp(post), "/host", Vec::new()).await?;
-    serde_json::to_string(&JsHostInfo {
-        host_cert: info.host_cert,
-        address: info.address.map(|address| JsHostAddress {
-            endpoint_addr: address.endpoint_addr,
-            relay_url: address.relay_url,
-        }),
-    })
-    .map_err(js_error)
+    serde_json::to_string(&PageHost::from(info)).map_err(js_error)
 }
 
 /// Whether the owner of `workspace` (its id) deleted it, as the host `post` reaches says to
@@ -505,9 +474,7 @@ pub async fn certify_device(
             .map_err(|_| js_error("a pairing invite is 16 bytes"))?,
         None => [0; 16],
     };
-    let host = serde_json::from_str::<JsHostAddress>(&address)
-        .map_err(js_error)?
-        .host();
+    let host = host_at(&address)?;
     let (cert, host_cert) =
         tilo_relay_client::certify(&host, user, &label, invite, &signer, |code| {
             let _ = on_pairing_code.call1(&JsValue::NULL, &code.into());
@@ -1725,7 +1692,7 @@ impl WasmPeer {
         let revocations = own_revocations(config.revocations, &config.cert)?;
         let handle = PeerHandle::start(
             PeerConfig {
-                host: config.address.host(),
+                host: dialled(config.address),
                 cert: config.cert,
                 host_cert: config.host_cert,
                 revocations,

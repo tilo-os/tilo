@@ -436,9 +436,16 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     // whose every round trip takes `ROUND_TRIP`: the first is what the host and
     // the page spend, the second adds every round trip the guest waits through
     // one after another.
+    // What the site hands its page about the host, which its deployment asked
+    // once, as `tilo-relay page-host` does: no guest asks it again.
+    let site = tilo_relay_client::https::host_info(&*https)
+        .await
+        .unwrap()
+        .for_site();
+    assert_eq!(site.host_cert, host_device.cert);
     let place = Place {
         https: &*https,
-        host_cert: &host_device.cert,
+        site: &site,
         workspace: &lounge.workspace,
         workspace_id: lounge.workspace_id,
         host: address.id,
@@ -495,10 +502,12 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         slow.record,
         slow.ready
     );
+    // Its site says who the host is, and the door and the admission ride
+    // the session: a fresh guest asks the host nothing over HTTPS.
     assert!(
-        slow.http.len() <= MAX_REQUESTS,
-        "a fresh guest asked the host {} times over HTTPS, more than {MAX_REQUESTS}",
-        slow.http.len()
+        slow.http.is_empty(),
+        "a fresh guest asked the host over HTTPS: {:?}",
+        slow.http
     );
     for entry in [&quick, &slow] {
         assert!(
@@ -561,8 +570,9 @@ async fn through_the_door(
 /// shows first.
 struct Place<'a> {
     https: &'a dyn tilo_session_host::HttpClient,
-    /// The host's certificate, as it answers who it is.
-    host_cert: &'a tilo_user_identity::DeviceCert,
+    /// Who the host is and where it is dialled, as the page's site hands it
+    /// over with the page (`tilo-relay page-host`).
+    site: &'a tilo_relay_protocol::web::PageHost,
     workspace: &'a str,
     workspace_id: u64,
     host: iroh::EndpointId,
@@ -617,7 +627,6 @@ const COMPUTE: Duration = Duration::from_millis(1_300);
 /// showed sooner. Against a fixed allowance the count falls only as the
 /// visitor's wait does. It counts:
 ///
-/// - the host's certificate over HTTPS: 1;
 /// - the packet relay's WebSocket upgrade, which brings the relay's
 ///   challenge: 1 (a browser adds TCP's and TLS's own round trips here);
 /// - the session's QUIC handshake, its Initial right behind the answer to
@@ -632,13 +641,10 @@ const COMPUTE: Duration = Duration::from_millis(1_300);
 ///
 /// The desktop's keys take none of their own: the hello carries the guest's
 /// request for them, and the Welcome is the first thing its replay writes.
-/// Five in all, which the fixed allowance reads as about three; at 400 ms the
-/// desktop shows in about 2.5 s.
-const MAX_ROUND_TRIPS: f64 = 3.5;
-
-/// The HTTPS requests a fresh guest makes to enter: the host's certificate.
-/// The door and the admission ride the session.
-const MAX_REQUESTS: usize = 1;
+/// The host's certificate takes none either: the page's site hands it over
+/// with the page. Four in all, which the fixed allowance reads as about two;
+/// at 400 ms the desktop shows in about 2.1 s.
+const MAX_ROUND_TRIPS: f64 = 2.5;
 
 /// What a fresh guest may receive before its desktop shows, about 0.49 MB
 /// for 300 members: its Welcome first, once, then the workspace's bootstrap
@@ -722,12 +728,21 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     let mut marks: Vec<(&'static str, Duration)> = Vec::new();
     let root = new_key();
     let key = new_key();
-    // The page asks the host who it is, the one HTTPS request of its entry; its session enters
-    // through the door as it opens.
-    let info = tilo_relay_client::https::host_info(&network).await.unwrap();
-    assert_eq!(&info.host_cert, place.host_cert);
+    // The page's site says who the host is, so the page asks it nothing over HTTPS: its session
+    // enters through the door as it opens.
+    let named = place
+        .site
+        .address
+        .as_ref()
+        .expect("the site names the host's endpoint");
+    assert_eq!(named.endpoint_addr.id, place.host);
+    assert_eq!(
+        named.relay_url.as_deref(),
+        Some(place.relay.as_str()),
+        "the site names the packet relay pages reach the host through"
+    );
     let (cert, entry) = door_entry(
-        &info.host_cert,
+        &place.site.host_cert,
         place.workspace,
         &key,
         Entering {
@@ -740,14 +755,14 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     )
     .await
     .unwrap();
-    marks.push(("host asked and certificate made", started.elapsed()));
+    marks.push(("certificate made", started.elapsed()));
     let page = enter_page(
         // Only through the relay, as a page reaches its host: it holds no UDP
         // socket, so its session never takes a direct path.
         Host::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
             .over(tilo_session_host::Carrier::Relay),
         cert,
-        info.host_cert,
+        place.site.host_cert.clone(),
         key,
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,

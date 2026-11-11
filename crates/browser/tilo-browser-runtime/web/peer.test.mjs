@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {connectPeer, httpsPost, inspectInvitation, joinWorkspace, HOST_CHANGED, PROFILE_DEVICE, profileDevice, REFUSED_JOIN, renewDevice, UNUSABLE_INVITATION, rendererFailureCode, statusAsset, storageFailureCode, withCustody, withStartFields} from './peer.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 import {memberText} from './json-text.mjs';
+import {forgetSiteHosts, nameSiteHost, STALE_SITE_HOST} from './site-host.mjs';
 
 const WORKSPACE = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const settle = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -108,7 +109,8 @@ function fakeRuntime({phase = 'ready'} = {}) {
           admission: 'ready',
           failures: [],
           refreshes: 0,
-          snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1}},
+          snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1},
+            ...(peer.transport ? {transport: {phase: peer.transport}} : {})},
             ...(peer.entry ? {entry: peer.entry} : {})}),
           subscribe: listener => listeners.push(listener),
           sessionToken: () => 'ce'.repeat(32),
@@ -288,6 +290,98 @@ test('a session after an entry dials the host the entry asked, without asking it
   assert.equal(asked, 1, 'the host is asked who it is once, by the entry');
   assert.deepEqual(runtime.peer.config.address, HOST_ADDRESS);
   await peer.dispose();
+});
+
+/** What a site hands its page about the host at `https://host.example:8443` (`entry.json`
+ * `home.host.info`), the host's device key `device`. */
+const siteNamed = (device = 1) => `{"hostCert":{"user_public_key":[9],"device_public_key":[${device}],"issued_at_ns":${NANOS}},`
+  + `"address":{"endpointAddr":{"id":"e${device}","addrs":[]},"relayUrl":"https://live.host.example/"}}`;
+const home = (info = siteNamed()) => ({name: 'Lounge', host: {origin: 'https://host.example:8443', info}});
+/** A runtime whose host certifies this page's device as the host the site names. */
+const certifiedBySite = runtime => {
+  runtime.certifyDevice = async () => `{"cert":${LINUX_CERT},"hostCert":${memberText(siteNamed(), 'hostCert')}}`;
+  return runtime;
+};
+const doorOptions = (runtime, extra = {}) => ({
+  origin: 'https://host.example:8443', door: `https://host.example:8443/peer/v1/directory/${WORKSPACE}/`,
+  identity: {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xee), userPublicKey: 'ee'.repeat(32), sign: async () => new Uint8Array(64)},
+  displayName: 'Ana', runtime, custody, store: memoryStore(), storage: null,
+  fetch: async () => { throw new Error('no network in tests'); }, ...extra,
+});
+
+test('a door whose site names its host is entered with no request to the host', async t => {
+  t.after(forgetSiteHosts);
+  nameSiteHost(home());
+  const runtime = fakeRuntime();
+  let asked = 0;
+  runtime.hostInfo = async () => { asked += 1; throw new Error('the host is not asked'); };
+  const progress = [];
+  const peer = await joinWorkspace(doorOptions(runtime, {onProgress: event => progress.push(event)}));
+  assert.equal(asked, 0, 'the page asks the host nothing over HTTPS');
+  assert.equal(runtime.calls.doorEntry.hostCert, memberText(siteNamed(), 'hostCert'), 'the site\'s certificate reaches the entry byte for byte');
+  assert.deepEqual(runtime.peer.config.address, JSON.parse(siteNamed()).address, 'the session dials the host where the site says');
+  assert.equal(progress.at(-1).phase, 'admitted');
+  await peer.dispose();
+});
+
+test('a page its site told of the host connects to it again without asking it', async t => {
+  t.after(forgetSiteHosts);
+  nameSiteHost(home());
+  const runtime = certifiedBySite(fakeRuntime());
+  let asked = 0;
+  runtime.hostInfo = async () => { asked += 1; throw new Error('the host is not asked'); };
+  await connect(options(runtime, memoryStore()));
+  assert.equal(asked, 0);
+  assert.deepEqual(runtime.peer.config.address, JSON.parse(siteNamed()).address);
+});
+
+test('a site that names its host as it was before it was set up again stops the entry, and says why', async t => {
+  t.after(forgetSiteHosts);
+  nameSiteHost(home(siteNamed(1)));
+  const runtime = fakeRuntime();
+  // The host the site named answers no more: its entry is never answered.
+  runtime.calls.entry = {outcome: 'waiting'};
+  let asked = 0;
+  runtime.hostInfo = async () => { asked += 1; return siteNamed(2); };
+  const said = [];
+  const error = console.error;
+  console.error = message => said.push(String(message));
+  t.after(() => { console.error = error; });
+  const entering = joinWorkspace(doorOptions(runtime));
+  await until(() => runtime.peer, 'the session');
+  runtime.peer.transport = 'reconnecting';
+  runtime.peer.emit();
+  await assert.rejects(entering, failed => failed.name === 'AdmissionError' && failed.code === 'stale-entry'
+    && failed.message === STALE_SITE_HOST);
+  assert.equal(asked, 1, 'the host is asked who it is once, only once the session could not reach it');
+  assert.ok(said.some(line => line.includes('TILO_WEB_HOME_HOST_INFO') && line.includes('tilo-relay page-host https://host.example:8443')), said.join('\n'));
+  assert.ok(runtime.peer.disposed, 'the session is let go');
+});
+
+test('a session that cannot reach the host its site names as it is goes on trying', async t => {
+  t.after(forgetSiteHosts);
+  nameSiteHost(home());
+  const runtime = certifiedBySite(fakeRuntime());
+  let asked = 0;
+  runtime.hostInfo = async () => { asked += 1; return siteNamed(); };
+  const peer = await connect(options(runtime, memoryStore()));
+  const states = [];
+  peer.onStatus(snapshot => states.push(snapshot.phase));
+  runtime.peer.transport = 'reconnecting';
+  runtime.peer.emit('admitting');
+  await until(() => asked === 1, 'the host asked');
+  await settle();
+  runtime.peer.transport = 'connected';
+  runtime.peer.emit('ready');
+  assert.ok(!states.includes('failed'), states.join());
+  assert.equal(peer.getSnapshot().phase, 'ready');
+});
+
+test('a site naming its host in a form the page cannot read stops the page', () => {
+  for (const info of ['{', '{"hostCert":{}}', '{"address":{"endpointAddr":{}}}']) {
+    assert.throws(() => nameSiteHost(home(info)), /TILO_WEB_HOME_HOST_INFO/);
+  }
+  forgetSiteHosts();
 });
 
 test('a page holding the root certifies itself, with no pairing code, and renews a certificate about to expire', async () => {

@@ -38,6 +38,7 @@ import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, 
 import {rendererUnavailable} from './webgpu-safety.mjs';
 import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
+import {siteHost} from './site-host.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
@@ -51,8 +52,11 @@ const JOIN_NOW = 'tilo-embed-join';
 
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
-/** The host's certificate; a workspace that just started refuses briefly. */
+/** The host's certificate, as the page's site names it (`site-host.mjs`) or else as the host
+ * says; a workspace that just started refuses briefly. */
 async function hostCertificate(runtime, origin, {timeoutMs = 15_000} = {}) {
+  const named = siteHost(origin);
+  if (named) return named.info.hostCert;
   const deadline = Date.now() + timeoutMs;
   for (let delay = 100; ; delay = Math.min(delay * 2, 1000)) {
     try {
@@ -2132,8 +2136,9 @@ function loginCodes(runtime, origin) {
 function pairingAt({origin, identity, runtime, link}) {
   if (!runtime?.PairingHost || !link) return null;
   let host = null;
-  const at = () => (host ??= runtime.hostInfo(httpsPost(origin)).then(info => {
-    const {address} = JSON.parse(info);
+  const asked = async () => siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin)));
+  const at = () => (host ??= asked().then(info => {
+    const {address} = info;
     if (!address) throw new Error('this host takes no device connections');
     return new runtime.PairingHost(JSON.stringify(address));
   }).catch(error => { host = null; throw error; }));

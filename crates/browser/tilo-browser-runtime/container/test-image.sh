@@ -118,14 +118,24 @@ head_of() { curl -sS --max-time 20 -A "$browser" -o /dev/null -D - "${@:2}" "htt
 # Portable (BSD sed has no \L): lowercase each header's name, not the status line.
 lower_names() { awk '{ i = index($0, ":"); if (i) $0 = tolower(substr($0, 1, i)) substr($0, i + 1); print }'; }
 
+# Who a home host is and where its page dials it, as `tilo-relay page-host` prints it, and
+# as entry.json carries it: a JSON string.
+info='{"hostCert":{"device_label":"Commons workspace host","issued_at_ns":1},"address":{"endpointAddr":{"id":"ab12","addrs":[]},"relayUrl":"https://live.rooms.example/"}}'
+info_text=${info//\"/\\\"}
 entry TILO_WEB_HOME_NAME=X && fail "a home name without a host must refuse to start"
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H \
+  && fail "a home host without who it is (TILO_WEB_HOME_HOST_INFO) must refuse to start"
+for bad in 'ab12' '{"a":"b\c"}' "{\"a\":\"b'c\"}" '{"a":"$b"}'; do
+  entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$bad" \
+    && fail "a home host's info that is not the plain JSON page-host prints must refuse to start: $bad"
+done
 entry TILO_WEB_HOME_DOOR=https://rooms.example/peer/v1/directory/ws/ \
   && fail "a home door without a host must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_FEEDBACK='c"x' \
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_FEEDBACK='c"x' \
   && fail "a feedback channel that is not an id must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=https://rooms.example/join \
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_DOOR=https://rooms.example/join \
   && fail "a home door without a trailing / must refuse to start"
-entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H TILO_WEB_HOME_DOOR=http://rooms.example/ \
+entry TILO_WEB_HOME_HOST=h.example TILO_WEB_HOME_NAME=H "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_DOOR=http://rooms.example/ \
   && fail "a home door that is not https must refuse to start"
 entry TILO_WEB_ABOUT_COMMUNITY=javascript:x && fail "an About link that is not https must refuse to start"
 entry TILO_WEB_SHELF=http://shelf.example/i && fail "a shelf that is not an https address must refuse to start"
@@ -210,14 +220,14 @@ csp=$(head_of / | grep '^content-security-policy:' || true)
 [[ $(get /entry.json) == '{"embedder":"https://site.example"}' ]] \
   || fail "entry.json embedder: $(get /entry.json)"
 
-start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons TILO_WEB_HOME_APP=so.tilo.chat
-expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"app":"so.tilo.chat"},"directory":"https://rooms.example/directory"}'
+start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons "TILO_WEB_HOME_HOST_INFO=$info" TILO_WEB_HOME_APP=so.tilo.chat
+expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example","info":"'"$info_text"'"},"app":"so.tilo.chat"},"directory":"https://rooms.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json: $(get /entry.json)"
 
 # A workspace its host lists is joined through the door the host lists it at.
-start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons \
+start TILO_WEB_HOME_HOST=rooms.example TILO_WEB_HOME_NAME=Commons "TILO_WEB_HOME_HOST_INFO=$info" \
   TILO_WEB_HOME_DOOR=https://relay.example/peer/v1/directory/w1/
-expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example"},"admission":"https://relay.example/peer/v1/directory/w1/"},"directory":"https://rooms.example/directory"}'
+expected='{"home":{"name":"Commons","host":{"origin":"https://rooms.example","info":"'"$info_text"'"},"admission":"https://relay.example/peer/v1/directory/w1/"},"directory":"https://rooms.example/directory"}'
 [[ $(get /entry.json) == "$expected" ]] || fail "entry.json with a door: $(get /entry.json)"
 grep -q '^cache-control: no-cache' <(head_of /entry.json) || fail "entry.json must revalidate"
 csp=$(head_of / | grep '^content-security-policy:' || true)
@@ -316,7 +326,7 @@ class Shelf(http.server.BaseHTTPRequestHandler):
 http.server.ThreadingHTTPServer(("127.0.0.1", port), Shelf).serve_forever()
 PY
 shelf_pid=$!
-start TILO_WEB_HOME_HOST=127.0.0.1:18082 TILO_WEB_HOME_NAME=Lounge
+start TILO_WEB_HOME_HOST=127.0.0.1:18082 TILO_WEB_HOME_NAME=Lounge "TILO_WEB_HOME_HOST_INFO=$info"
 # An inviter's device leaves the invitation its link names, and says when it
 # lapses and with which secret it may be taken back.
 sealed=c2VhbGVkIGludml0YXRpb24

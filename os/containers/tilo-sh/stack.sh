@@ -299,11 +299,13 @@ door_env() {
     "TILO_DOOR_STATE=$door_state/door.json"
 }
 
-# The web entry's environment: apps/tilo-web/deployment.yaml.
+# The web entry's environment: apps/tilo-web/deployment.yaml. INFO is what
+# page_host printed.
 web_env() {
-  local room=$1
+  local room=$1 info=$2
   printf '%s\n' \
     "TILO_WEB_HOME_HOST=127.0.0.1:$relay_port" \
+    "TILO_WEB_HOME_HOST_INFO=$info" \
     TILO_WEB_HOME_NAME=Lounge \
     TILO_WEB_HOME_APP=so.tilo.chat \
     "TILO_WEB_HOME_DOOR=$relay_origin/peer/v1/directory/$room/" \
@@ -730,9 +732,27 @@ start_native_door() {
   run_native door "$state/door" "$programs/tilo-front-door"
 }
 
+# Who the Lounge's host is and where its page dials it, which the web entry
+# hands its page (TILO_WEB_HOME_HOST_INFO): what `tilo-relay page-host` prints
+# for the running relay, asked at its public origin, as production's operator
+# asks it to set apps/tilo-web. LOUNGE is the relay's image with --images.
+page_host() {
+  local lounge=${1:-}
+  if [[ $mode == images ]]; then
+    podman_ run --rm --network host --read-only --entrypoint /usr/local/bin/tilo-relay \
+      -v "$state/trust-bundle.pem:$ca_path:ro,Z" "$lounge" page-host "$relay_origin"
+  else
+    env -i PATH=/usr/bin:/bin "HOME=$runs" \
+      bwrap --dev-bind / / --ro-bind "$state/trust-bundle.pem" "$ca_path" -- \
+      "$programs/tilo-relay" page-host "$relay_origin"
+  fi
+}
+
 start_native_web() {
-  local room=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container
+  local room=$1 caddy container=$repo/crates/browser/tilo-browser-runtime/container info
   caddy=$(find_caddy)
+  info=$(page_host) || die 'the relay did not say who it is (tilo-relay page-host)'
+
   { private_env web "$(dirname "$caddy")"
     image_env_here "$container/Containerfile" \
       "XDG_DATA_HOME=$runs/web/data" "XDG_CONFIG_HOME=$runs/web/config"
@@ -740,7 +760,7 @@ start_native_web() {
     printf '%s\n' "TILO_WEB_SITE=$native/web/site" "TILO_WEB_INSTALL=$native/web/install" \
       "TILO_WEB_RUN=$runs/web/entry" "TILO_WEB_CADDYFILE=$container/Caddyfile" \
       TILO_WEB_BIND=127.0.0.1 "TILO_WEB_PORT=$site_port"
-    web_env "$room"
+    web_env "$room" "$info"
   } > "$runs/web.env"
   run_native web "$native/web" sh "$container/entrypoint.sh"
 }
@@ -1008,8 +1028,9 @@ up_images() {
   # network, published on the site's port, from which it reaches the relay's
   # plain listener (its shelf) and the releases on this machine's loopback.
   start_releases
-  local web_args=()
-  mapfile -d '' web_args < <(web_env "$room" | env_args)
+  local web_args=() info
+  info=$(page_host "$lounge") || die 'the relay did not say who it is (tilo-relay page-host)'
+  mapfile -d '' web_args < <(web_env "$room" "$info" | env_args)
   start web --network "pasta:-T,$plain_port,-T,$releases_port" -p "127.0.0.1:$site_port:8080" \
     --read-only --tmpfs /tmp --user 10001 \
     "${web_args[@]}" "$web"

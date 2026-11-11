@@ -23,6 +23,7 @@ import {takeLinkSecrets} from './link-secrets.mjs';
 import {UNAVAILABLE, openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
+import {nameSiteHost} from './site-host.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const PRIMARY_RECORD = '@tilo:package-primary';
@@ -300,6 +301,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // and the route chosen; admission waits for it, as the way in is its to say.
   const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
+  // The host the site names with its home workspace: the page dials it as named.
+  nameSiteHost(entry.home);
   const linked = loaded.then(runtime => grammar(runtime, entry));
   // Awaited below; a failure is the first door's to report.
   void linked.catch(() => {});

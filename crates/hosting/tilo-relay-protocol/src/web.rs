@@ -113,6 +113,86 @@ pub struct HostAddress {
     pub relay_url: Option<String>,
 }
 
+/// [`HostInfo`] as a page reads it (JSON): what `hostInfo()` in the page's
+/// runtime resolves to, and what a site hands its page about the host it
+/// opens (`entry.json`, from the web entry's `TILO_WEB_HOME_HOST_INFO`), so the
+/// page dials that host without asking it first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageHost {
+    /// The host's device certificate.
+    pub host_cert: tilo_user_identity::DeviceCert,
+    /// Where the host listens on iroh, when it names an endpoint.
+    pub address: Option<PageHostAddress>,
+}
+
+/// [`HostAddress`] as a page reads it (JSON).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageHostAddress {
+    /// The endpoint's key and the addresses it answers at.
+    pub endpoint_addr: iroh_base::EndpointAddr,
+    /// The packet relay the host is reached through, when it names one.
+    #[serde(default)]
+    pub relay_url: Option<String>,
+}
+
+impl From<HostAddress> for PageHostAddress {
+    fn from(address: HostAddress) -> Self {
+        Self {
+            endpoint_addr: address.endpoint_addr,
+            relay_url: address.relay_url,
+        }
+    }
+}
+
+impl From<PageHostAddress> for HostAddress {
+    fn from(address: PageHostAddress) -> Self {
+        Self {
+            endpoint_addr: address.endpoint_addr,
+            relay_url: address.relay_url,
+        }
+    }
+}
+
+impl From<HostInfo> for PageHost {
+    fn from(info: HostInfo) -> Self {
+        Self {
+            host_cert: info.host_cert,
+            address: info.address.map(Into::into),
+        }
+    }
+}
+
+impl HostInfo {
+    /// What a site hands its page about this host: its certificate, its
+    /// endpoint's key and the packet relay pages reach it through, without
+    /// the network addresses it answers at. A page has no UDP socket to dial
+    /// those, and they change whenever the host starts somewhere else, while
+    /// the rest stays as long as the host keeps its identity.
+    #[must_use]
+    pub fn for_site(&self) -> PageHost {
+        let address = self.address.as_ref().map(|address| {
+            let mut endpoint_addr = iroh_base::EndpointAddr::new(address.endpoint_addr.id);
+            if let Some(relay) = address
+                .relay_url
+                .as_deref()
+                .and_then(|url| url.parse::<iroh_base::RelayUrl>().ok())
+            {
+                endpoint_addr = endpoint_addr.with_relay_url(relay);
+            }
+            PageHostAddress {
+                endpoint_addr,
+                relay_url: address.relay_url.clone(),
+            }
+        });
+        PageHost {
+            host_cert: self.host_cert.clone(),
+            address,
+        }
+    }
+}
+
 /// Whether its owner deleted the workspace a device names by its id, below
 /// [`API_PREFIX`]: what a device the host no longer lets in (it was a member
 /// of only that workspace) learns about it. Any device that names it is told:

@@ -600,6 +600,37 @@ pub struct DevArgs {
     pub state: Option<PathBuf>,
 }
 
+/// `page-host`: the host a site's page opens, as the site hands it over.
+#[derive(clap::Args)]
+pub struct PageHostArgs {
+    /// The host's origin, as pages reach it (`https://eu1.example`), or its
+    /// plain listener on this machine's loopback (`http://127.0.0.1:PORT`).
+    origin: String,
+}
+
+/// Print what a site hands its page about the host at `args.origin`, so the
+/// page dials that host without asking it first: the web entry's
+/// `TILO_WEB_HOME_HOST_INFO`, as one line of JSON. The host is asked as a
+/// page would ask it, and what changes with each start (the network
+/// addresses it answers at) is left out, so the line stays right for as long
+/// as the host keeps its identity and the packet relay pages reach it through.
+pub async fn page_host(args: PageHostArgs) -> anyhow::Result<()> {
+    let client = tilo_net::Client::builder()
+        .build()
+        .context("an HTTPS client")?;
+    let host = tilo_relay_client::https::Origin::new(&client, &args.origin);
+    let info = tilo_relay_client::https::host_info(&host)
+        .await
+        .with_context(|| format!("ask {} who it is", args.origin))?;
+    anyhow::ensure!(
+        info.address.is_some(),
+        "{} takes no device sessions: it names no endpoint to dial",
+        args.origin
+    );
+    println!("{}", serde_json::to_string(&info.for_site())?);
+    Ok(())
+}
+
 /// Three seeds: user root, host device, approver device.
 fn dev_identity(state: &Path) -> anyhow::Result<[SigningKey; 3]> {
     let path = state.join("dev-identity.bin");

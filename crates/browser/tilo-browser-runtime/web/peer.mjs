@@ -35,6 +35,7 @@ import {idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {identityProfile} from './identity-profile.mjs';
 import {currentIdentity, fitDisplayName, IdentityError} from './identity.mjs';
 import {FETCH_PROXY_PATH} from './fetch-proxy.mjs';
+import {siteHost, STALE_SITE_HOST, staleSiteHost, staleSiteHostReport} from './site-host.mjs';
 
 export {
   addPasskey, browserIdentity, browserPerson, certifyDevice, createIdentity, currentIdentity, fetchEnvelope, fetchProfile, fitDisplayName, IdentityError, installNode,
@@ -487,10 +488,11 @@ async function connect({
   // desktop settles everyone here over the whole workspace instead, so people
   // here together never share one.
   const ownColor = () => runtime.presenceColor(userPublicKey);
-  // What the host said of itself: asked here, or handed on by the entry
-  // that just asked it (`join`), so the session dials without another
-  // round trip to the host first.
-  let host = answered?.address ? answered : JSON.parse(await runtime.hostInfo(post));
+  // Who the host is and where it is dialled: as the page's own site names
+  // it, handed on by the entry that took it (`enterOnSession`), else asked
+  // of the host here.
+  const named = siteHost(origin)?.info;
+  let host = answered?.address ? answered : named ?? JSON.parse(await runtime.hostInfo(post));
   if (!host.address) throw new Error('the host named no iroh endpoint to reach it at');
   const listeners = new Set();
   /** Called after each published status, so a surface follows the session
@@ -519,6 +521,30 @@ async function connect({
     publishParticipant();
   };
   let snapshot = {phase: 'authenticating', records: []};
+  // A session dialling the host as the site named it, which it has not
+  // reached yet, asks the host who it is once it fails or takes long: a host
+  // set up again since answers as another, and the page stops there with the
+  // site's deployment to fix (`site-host.mjs`) rather than wait on a host
+  // nobody answers as, or go on with one the site does not name.
+  let reached = host !== named;
+  let checking = null;
+  let stale = null;
+  const checkSiteHost = () => {
+    if (reached || checking || stale || disposed) return;
+    checking = runtime.hostInfo(post).then(text => {
+      if (reached || disposed || !staleSiteHost(host, JSON.parse(text))) return;
+      const report = staleSiteHostReport(origin);
+      console.error(report);
+      // The site's door logs what a page did not catch (`reportErrors` in entry-page.mjs).
+      globalThis.reportError?.(new Error(report));
+      stale = new AdmissionError('stale-entry', STALE_SITE_HOST);
+      publish();
+    }, () => {
+      // Not reached either: the session's own failure says so, and the next one asks again.
+      checking = null;
+    });
+  };
+  let siteHostCheck;
   // Desktop surfaces mounted through this peer, by surface id: their failures
   // are reported into SessionHealth and recovered through `recover`.
   const surfaces = new Map();
@@ -527,6 +553,17 @@ async function connect({
   const publish = () => {
     if (!peer) return;
     snapshot = JSON.parse(peer.snapshot());
+    if (!reached) {
+      const transport = snapshot.health?.transport?.phase;
+      if (transport === 'connected') {
+        reached = true;
+        clearTimeout(siteHostCheck);
+      } else if (stale) {
+        snapshot = {...snapshot, phase: 'failed', error: stale.message, errorCode: stale.code};
+      } else if (['reconnecting', 'offline', 'failed'].includes(transport)) {
+        checkSiteHost();
+      }
+    }
     // Once in, a session started again (a recovery) is a member's and enters no more.
     if (snapshot.entry?.outcome === 'admitted') entering = undefined;
     if (snapshot.phase === 'ready') admitted();
@@ -721,6 +758,7 @@ async function connect({
       channelVault,
     );
     peer.subscribe(publish);
+    if (!reached) siteHostCheck ??= setTimeout(checkSiteHost, SITE_HOST_CHECK_MS);
     if (workspace) {
       // A workspace of the person's own its host does not govern yet is placed
       // there under the workspace's name.
@@ -951,6 +989,7 @@ async function connect({
     let resolve, reject;
     disposal = new Promise((done, failed) => { resolve = done; reject = failed; });
     disposed = true;
+    clearTimeout(siteHostCheck);
     // Abort and explicit close can overlap. Every caller joins the same
     // settlement, installed before teardown can call back into dispose.
     (async () => {
@@ -1281,7 +1320,7 @@ async function connect({
         // record is pinned to the one before, so the page loads again and
         // joins the new host as the same person (`joinViaHost`), with the
         // kept certificate left as it is.
-        const answering = JSON.parse(await runtime.hostInfo(post));
+        const answering = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(post));
         const kept = await store.get(CERTIFICATE);
         if (reconnecting(kept, undefined, JSON.stringify(answering.hostCert)) === 'host-changed') {
           if (!globalThis.location) throw new AdmissionError('host-changed', HOST_CHANGED);
@@ -1378,7 +1417,7 @@ export async function pairDevice(options) {
   const pairing = async () => {
     const runtime = options.runtime ?? await pageRuntime(options.desktop);
     const custodyForWasm = own.kind === 'sealed-seed' ? await own.unseal() : own;
-    const info = JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
+    const info = siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin, options.fetch)));
     if (!info.address) throw new Error('the host named no iroh endpoint to reach it at');
     const certified = await runtime.certifyDevice(userPublicKey, label,
       options.invite ?? null, custodyForWasm, code => options.onPairingCode?.(code),
@@ -1443,6 +1482,9 @@ const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'ref
 /** How long a page waits for its host's answer to the entry its session asked for: the host
  * holds an entry for at most 30 seconds (`ENTERING_DEADLINE`), and a connection takes some. */
 const ENTRY_TIMEOUT_MS = 45_000;
+/** How long a session dialling the host its site named may go without reaching it before it
+ * asks the host who it is (`site-host.mjs`): an entry reaches it in about a second. */
+const SITE_HOST_CHECK_MS = 8_000;
 
 /** A refusal as the shared entry reads it (`HostRefusal`): its `code`, the wait the door
  * asked for in seconds, and, when a workspace's door turned the person away, the door's own
@@ -1487,18 +1529,20 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
 
 /** Enter `workspace` on the session itself, through its door or with an invitation (`entry`,
  * given the host's certificate as text, makes the entry: `doorEntry` or `invitationEntry` in
- * wasm). The host says who it is, the shared entry chooses the certificate (the one this very key
- * holds from this host, else one the root makes now), and the session asks to enter as it opens:
- * the door and the admission ride the session's own first message, so the page asks the host
- * nothing else first, and its first requests follow right behind. */
+ * wasm). Who the host is the page's own site says (`site-host.mjs`), else the host itself; the
+ * shared entry chooses the certificate (the one this very key holds from this host, else one the
+ * root makes now), and the session asks to enter as it opens: the door and the admission ride the
+ * session's own first message, so a page its site told of the host asks it nothing over HTTPS,
+ * and its first requests follow right behind. */
 async function enterOnSession({
   origin, workspace, entry, identity, person, label, displayName, signal, onProgress, runtime, custody,
   profile, fetcher, connectOptions,
 }) {
-  let hostText;
+  const named = siteHost(origin);
+  let hostText = named?.text;
   let entered;
   try {
-    hostText = await runtime.hostInfo(httpsPost(origin, fetcher));
+    hostText ??= await runtime.hostInfo(httpsPost(origin, fetcher));
     entered = await entry(memberText(hostText, 'hostCert'));
   } catch (error) {
     if (DOOR_CODES.has(error?.code)) throw error;
@@ -1513,7 +1557,7 @@ async function enterOnSession({
     // As text: the certificate's nanosecond timestamps exceed what a JavaScript number holds
     // exactly (json-text.mjs).
     fetch: fetcher, deviceCertificate: memberText(entered, 'certificate'),
-    hostInfo: JSON.parse(hostText),
+    hostInfo: named?.info ?? JSON.parse(hostText),
     entering,
   });
   try {
@@ -1522,6 +1566,8 @@ async function enterOnSession({
     return peer;
   } catch (error) {
     await peer.dispose?.().catch(() => {});
+    // The site names the host as it was before it was set up again: the site's to fix.
+    if (error?.code === 'stale-entry') throw new AdmissionError('stale-entry', STALE_SITE_HOST);
     // A door's own refusal (its code, and the wait it asked for) is the caller's to show:
     // `workspaces.mjs` reads it. The workspace refusing the device the door let in is a refusal
     // of what this browser brings, which the caller answers by coming again as a new device.
