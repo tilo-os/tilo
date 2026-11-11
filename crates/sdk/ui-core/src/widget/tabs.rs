@@ -3350,8 +3350,8 @@ impl TabBar {
     }
 
     /// The tab a right-click (or long press) at `p` opens the window menu for: the pill under it,
-    /// else the active tab, since the menu is the window's; the active tab's own slots keep their
-    /// gestures.
+    /// else the active tab, since the menu is the window's; the active tab's own controls keep
+    /// their gestures, and its location at rest is the window's title like a pill.
     fn context_menu_target(&self, p: Point) -> Option<(u64, Point)> {
         if let Some(idx) = self
             .tab_rects
@@ -3362,7 +3362,8 @@ impl TabBar {
             return Some((t.id, p));
         }
         let in_row = self.tab_row().contains(p);
-        (in_row && !self.toolbar_hit(p) && self.tabs.iter().any(|t| t.id == self.active_id))
+        let apps = self.active_toolbar().is_some() && self.toolbar_row.owns_secondary_press(p);
+        (in_row && !apps && self.tabs.iter().any(|t| t.id == self.active_id))
             .then_some((self.active_id, p))
     }
     pub fn take_max(&mut self) -> Option<u64> {

@@ -1739,6 +1739,16 @@ impl ToolbarRow {
         self.hit_slot(p).is_some()
     }
 
+    /// Whether a secondary press at `p` is the app's: on a control it put in the row, or in its
+    /// location while that is being edited. The location at rest names the window, as a tab's
+    /// title does, so a secondary press there opens the window's menu.
+    pub(crate) fn owns_secondary_press(&self, p: Point) -> bool {
+        match self.hit_slot(p) {
+            Some(Slot::Location) => self.field.is_some(),
+            slot => slot.is_some(),
+        }
+    }
+
     /// A left press at `p`. Returns whether a slot took it. A press
     /// outside the field while it is edited puts the location back.
     pub(crate) fn press(&mut self, p: Point) -> bool {
