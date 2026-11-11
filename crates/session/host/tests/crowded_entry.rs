@@ -784,13 +784,16 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
         }
         for event in page.drain() {
             match &event {
-                PeerEvent::Document(document) if document.route == *place.desktop => {
+                PeerEvent::Landed {
+                    route,
+                    author: Some(_),
+                } if route == place.desktop => {
                     desktop_doc.get_or_insert_with(|| started.elapsed());
                 }
-                PeerEvent::Document(document)
-                    if document.route.app_id == place.note.app_id
-                        || document.route.app_id == place.chat.app_id =>
-                {
+                PeerEvent::Landed {
+                    route,
+                    author: Some(_),
+                } if route.app_id == place.note.app_id || route.app_id == place.chat.app_id => {
                     notes_before += 1;
                 }
                 PeerEvent::Ready {
@@ -827,7 +830,10 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     while !note || opened.is_none() || when_opened.is_none() {
         for event in page.drain() {
             match event {
-                PeerEvent::Document(document) if document.route == *place.note => note = true,
+                PeerEvent::Landed {
+                    route,
+                    author: Some(_),
+                } if route == *place.note => note = true,
                 PeerEvent::RecordOpened { route, frames, .. } if route == *place.note => {
                     opened = Some(frames);
                 }
@@ -866,7 +872,10 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     while !part || answered.is_none() {
         for event in page.drain() {
             match event {
-                PeerEvent::Document(document) if document.route == *place.chat => part = true,
+                PeerEvent::Landed {
+                    route,
+                    author: Some(_),
+                } if route == *place.chat => part = true,
                 PeerEvent::RecordOpened { route, frames, .. } if route == head => {
                     answered = Some(frames);
                 }

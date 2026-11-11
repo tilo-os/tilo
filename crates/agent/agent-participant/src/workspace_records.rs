@@ -475,6 +475,7 @@ mod tests {
                 })
                 .collect(),
             authors: std::collections::BTreeMap::new(),
+            opened_by: std::collections::BTreeMap::new(),
         };
         let mut doc = AutoCommit::new();
         tilo_desktop_model::shared_record::write(&mut doc, &desktop).unwrap();

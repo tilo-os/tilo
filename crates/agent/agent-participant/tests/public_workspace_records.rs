@@ -373,8 +373,8 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .drain()
         .into_iter()
         .filter(|event| {
-            matches!(event, PeerEvent::Document(document)
-                if document.route == chat_route && document.author == agent_key)
+            matches!(event, PeerEvent::Landed { route, author: Some(author) }
+                if *route == chat_route && *author == agent_key)
         })
         .count();
     assert!(
