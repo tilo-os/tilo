@@ -8,13 +8,17 @@
 # the session never runs as anything else, so root would prove nothing.
 set -eu
 
-version=${CHROMIUM_RUNTIME_VERSION:?the engine runtime's version is not set}
+version=${CHROMIUM_RUNTIME_VERSION:?CHROMIUM_RUNTIME_VERSION is not set}
 engine="/usr/lib/tilo-runtime/$version/lib/chromium/tilo-chromium-host"
-test -x "$engine"
+missing() {
+    echo "the browser smoke: $1" >&2
+    exit 1
+}
+[ -x "$engine" ] || missing "no Chromium engine host at $engine"
 # The session runs on its own session bus, which this root filesystem serves
 # itself: there is no systemd here to have started one.
-command -v dbus-run-session >/dev/null
-command -v setpriv >/dev/null
+command -v dbus-run-session >/dev/null || missing 'no dbus-run-session'
+command -v setpriv >/dev/null || missing 'no setpriv'
 
 work=$(mktemp -d)
 trace() {
@@ -87,7 +91,8 @@ while [ "$tries" -gt 0 ] && [ -z "$display" ]; do
         echo 'the browser smoke: the session stopped before it served a display' >&2
         exit 1
     fi
-    display=$(find "$runtime_dir" -maxdepth 1 -name 'wayland-*' -print -quit 2>/dev/null)
+    # Until the session made its runtime directory, find has none to read.
+    display=$(find "$runtime_dir" -maxdepth 1 -name 'wayland-*' -print -quit 2>/dev/null || true)
     tries=$((tries - 1))
     [ -n "$display" ] || sleep 0.2
 done
@@ -96,11 +101,27 @@ if [ -z "$display" ]; then
     exit 1
 fi
 printf 'session: the headless session serves %s\n' "$display"
+# SIGTERM ends it, and in time: the profile is saved after the session ended,
+# and a VM host kills what has not ended within its grace.
 kill -TERM -"$session_pid" 2>/dev/null || true
+tries=50
+while [ "$tries" -gt 0 ] && kill -0 "$session_pid" 2>/dev/null; do
+    tries=$((tries - 1))
+    sleep 0.2
+done
+if kill -0 "$session_pid" 2>/dev/null; then
+    echo 'the browser smoke: the session did not end within 10 s of SIGTERM' >&2
+    ps -eo pid,pgid,stat,args >&2 || true
+    kill -KILL -"$session_pid" 2>/dev/null || true
+    exit 1
+fi
 wait "$session_pid" 2>/dev/null || true
+echo 'session: ends on SIGTERM'
 
 # The device the session made of this guest verifies the way a release gate
 # checks an installed machine.
-as_browser_user /usr/bin/tilo-session --verify-collaboration-identity > "$work/identity.log" 2>&1
+timeout 120 setpriv --reuid=tilo-browser --regid=tilo-browser --init-groups \
+    env HOME=/home/tilo-browser /usr/bin/tilo-session --verify-collaboration-identity \
+    > "$work/identity.log" 2>&1 || missing 'the session did not verify its identity within 120 s'
 grep -q 'identity verified' "$work/identity.log"
 echo 'identity: this guest is a device of its own'
