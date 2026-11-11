@@ -81,11 +81,12 @@ use keys::{Keys, catalogue_keys, invoke_keys};
 use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller,
-    CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending,
-    ReceiptStatus, RemoteActionMessage, application_provider, application_provider_record, pending,
-    provider_workspace, workspace_provider,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
+    ActionHostError, ActorPlace, Caller, CallerPrincipal, CataloguePage, CatalogueProvider,
+    CatalogueQuery, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
+    InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
+    application_provider, application_provider_record, pending, provider_workspace,
+    workspace_provider,
 };
 use tilo_actions::{
     ActionFailure, ActionOutput, ConfirmationPolicy, InvocationId, InvocationUpdate, PROMPTED_PARAM,
@@ -2329,7 +2330,11 @@ impl Worker {
             .address
             .resource
             .strip_prefix(APPLICATION_RESOURCE_PREFIX)
-            .filter(|_| target.address.action == APPLICATION_OPEN_ACTION)
+            // Its records have no window to show: starting the app is opening it.
+            .filter(|_| {
+                target.address.action == APPLICATION_OPEN_ACTION
+                    || target.address.action == APPLICATION_START_ACTION
+            })
             .filter(|app| self.catalogue.get(app).is_some())
             .ok_or_else(unknown_action)?
             .to_owned();

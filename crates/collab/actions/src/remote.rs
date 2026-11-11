@@ -77,8 +77,9 @@ pub use confirmation::{
     Confirmation, ConfirmationQuestion, ConfirmationReply, ConfirmedInvocation, argument_digest,
 };
 pub use providers::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX, OWN_PROVIDER,
-    RECORD_PROVIDER, SHARE_LINK_ACTION, WORKSPACE_PROVIDER, is_record_provider, record_parts,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_KIND, APPLICATION_RESOURCE_PREFIX,
+    APPLICATION_START_ACTION, OWN_PROVIDER, RECORD_PROVIDER, SHARE_LINK_ACTION, WORKSPACE_PROVIDER,
+    is_record_provider, record_parts,
 };
 
 pub use catalogue::{
