@@ -16,6 +16,8 @@
 #
 # Usage: browser-session [CONFIG]
 #   CONFIG  default: $TILO_BROWSER_SESSION_CONFIG, when it names one
+#   TILO_BROWSER_STORE names the folder of the workspace's files the profile
+#   is kept in between runs, when the workspace keeps it.
 #
 # The process it starts is the sandbox's own: nothing here runs as root, and
 # SIGTERM to this script ends the session and the bus beside it.
@@ -25,9 +27,46 @@ set -eu
 # Chromium's sandbox must not. The sudoers rule the image ships allows this one
 # hop and keeps the input, the output and the marks.
 user=tilo-browser
+as_browser() { sudo -n -u "$user" -- "$0" "$@"; }
 if [ "$(id -un)" != "$user" ]; then
-    exec sudo -n -u "$user" -- "$0" "$@"
+    store=${TILO_BROWSER_STORE:-}
+    [ -n "$store" ] || exec sudo -n -u "$user" -- "$0" "$@"
+    # The profile (cookies, storage) is kept among the workspace's own files
+    # between runs: restored before the session starts, written back once it
+    # ended, and replaced whole, so a save cut short keeps the last one.
+    profile=$store/profile.tar.gz
+    if [ -s "$profile" ]; then
+        as_browser --restore < "$profile" || echo 'browser-session: the saved profile did not restore' >&2
+    fi
+    # A background job's input is /dev/null unless named: the material is on 3.
+    exec 3<&0
+    as_browser "$@" <&3 &
+    session=$!
+    trap 'kill -TERM "$session" 2>/dev/null || true' TERM INT
+    status=0
+    wait "$session" || status=$?
+    # A signal ends the first wait; the session is still writing its profile.
+    wait "$session" 2>/dev/null || true
+    if as_browser --save > "$profile.new"; then
+        mv -f "$profile.new" "$profile"
+    else
+        rm -f "$profile.new"
+        echo 'browser-session: the profile was not saved' >&2
+    fi
+    exit "$status"
 fi
+
+# What a device is (its identity and secrets, handed fresh at every start), its
+# runtime directory, and what Chromium fetches again (caches) are never saved.
+case ${1:-} in
+    --restore)
+        cd "$(getent passwd "$(id -u)" | cut -d: -f6)" && exec tar -xzf - ;;
+    --save)
+        cd "$(getent passwd "$(id -u)" | cut -d: -f6)" && exec tar -czf - --exclude=./.config/tilo/identity \
+            --exclude=./.local/share/tilo/secrets --exclude=./.local/share/tilo/runtime \
+            --exclude=./.cache --exclude='*/Cache' --exclude='*/Code Cache' \
+            --exclude='*/GPUCache' . ;;
+esac
 
 config=${1:-${TILO_BROWSER_SESSION_CONFIG:-}}
 if [ -n "$config" ] && [ -r "$config" ]; then

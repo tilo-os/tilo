@@ -69,7 +69,8 @@ usage: tilo-legacy hosted <command>
                          with its status. For operators checking a host
   suspend --run DIR WORKSPACE ENVIRONMENT
   stop --run DIR WORKSPACE ENVIRONMENT
-  browser-open --run DIR --workspace ID --account ID [--size SIZE] [--material JSON]
+  browser-open --run DIR --workspace ID --account ID [--size SIZE] [--store DIR]
+               [--material JSON]
                          open or attach the browser session in a workspace's
                          VM, and say what it took
   browser-stop --run DIR WORKSPACE
@@ -149,6 +150,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                         workspace: flags.need("--workspace")?.to_string(),
                         account: flags.need("--account")?.to_string(),
                         size: vm_size(&flags)?,
+                        store: flags.get("--store").map(PathBuf::from),
                         material: flags.get("--material").unwrap_or("{}").to_string(),
                     },
                 },

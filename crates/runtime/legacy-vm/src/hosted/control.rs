@@ -47,6 +47,12 @@ pub struct OpenBrowser {
     pub account: String,
     /// The size the workspace's VM runs at, as its shells ask for it.
     pub size: VmSize,
+    /// Where the session keeps its profile (cookies, storage) between runs: a
+    /// folder of the workspace's own files on this host, which sync,
+    /// encrypted, as the workspace's files do. The VM sees it at the same
+    /// path; the session restores the profile from it when it starts and
+    /// writes it back when it ends.
+    pub store: Option<PathBuf>,
     /// What its session joins the workspace with — the workspace, the record
     /// to open and the device certificate — opaque here, and passed to the
     /// guest as one line of its session's input.

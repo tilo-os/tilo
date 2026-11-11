@@ -29,6 +29,9 @@ use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use crate::environment_browsers::BrowserHost;
 use crate::workspace_shell::{Payer, ShellRun, WorkspaceShells};
 
+/// Where, in a workspace's files, its Browser keeps its profile between runs.
+const PROFILE_STORE: &str = ".tilo/browser";
+
 /// How many runs the ledger remembers, finished ones forgotten first.
 const REMEMBERED: usize = 1024;
 
@@ -154,7 +157,10 @@ impl Inner {
                 (Some(mut asked), Some(browsers)) => {
                     // The workspace is the caller's, whatever the argument says.
                     asked.workspace.clone_from(&workspace);
-                    browsers.open(&asked).map(Some)
+                    // The profile is kept among the workspace's own files,
+                    // which sync, encrypted, as they do.
+                    let store = inner.shells.files(&workspace).join(PROFILE_STORE);
+                    browsers.open(&asked, store).map(Some)
                 }
                 (None, Some(browsers)) => browsers.stop(&workspace).map(|()| None),
                 _ => Err("this member runs no workspace VMs".to_owned()),

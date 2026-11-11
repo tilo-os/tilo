@@ -48,9 +48,9 @@ pub const BUSY: &str = "Starting another machine for it, about 3 minutes.";
 /// caller asks again every few seconds while it waits.
 const WAITING_FOR_MS: u64 = 15_000;
 
-/// How long a browser session is given to write its profile and end before
-/// it is killed.
-const BROWSER_GRACE: Duration = Duration::from_secs(5);
+/// How long a browser session is given to write its profile back and end
+/// before it is killed.
+const BROWSER_GRACE: Duration = Duration::from_secs(15);
 
 /// How long after a template was last tried another try waits.
 const TEMPLATE_RETRY_MS: u64 = 10 * 60 * 1000;
@@ -475,8 +475,23 @@ impl Service {
                 )));
             }
         }
+        let store = request
+            .store
+            .as_ref()
+            .map(|store| {
+                if !legacy_agent_protocol::share_path_allowed(store) {
+                    return Err(BrowserError::Invalid(format!(
+                        "{} cannot be shared with a VM",
+                        store.display()
+                    )));
+                }
+                std::fs::create_dir_all(store)
+                    .map(|()| store.clone())
+                    .map_err(|error| BrowserError::Vm(error.into()))
+            })
+            .transpose()?;
         let entry = self.admit(&vm, false)?;
-        let browser = self.browser_in(&entry, request.size)?;
+        let browser = self.browser_in(&entry, request.size, store)?;
         match browser.open(&material, UP_PATIENCE) {
             Ok(opened_ms) => {
                 let provider = browser.life().provider().ok_or_else(|| {
@@ -505,14 +520,27 @@ impl Service {
         browser::hand_off(material, relay.guest()).map_err(BrowserError::Invalid)
     }
 
-    /// The browser session in `entry`'s VM, woken at `size`: the one running,
-    /// or one that starts when the workspace's material is handed to it.
-    fn browser_in(&self, entry: &Entry, size: VmSize) -> Result<Arc<Browser>, BrowserError> {
+    /// The browser session in `entry`'s VM, woken at `size` with `store`
+    /// (where the session keeps its profile) mounted: the one running, or one
+    /// that starts when the workspace's material is handed to it.
+    fn browser_in(
+        &self,
+        entry: &Entry,
+        size: VmSize,
+        store: Option<PathBuf>,
+    ) -> Result<Arc<Browser>, BrowserError> {
+        let shares: Vec<Served> = store
+            .iter()
+            .map(|path| Served {
+                path: path.clone(),
+                read_only: false,
+            })
+            .collect();
         let mut vm = lock(&entry.vm);
         let woke = (|| {
             vm.resize(size)?;
             *lock(&entry.size) = size;
-            vm.ensure(&[], false)
+            vm.ensure(&shares, false)
         })();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
         drop(vm);
@@ -529,7 +557,8 @@ impl Service {
             .cloned();
         let browser = running.unwrap_or_else(|| {
             let life = Arc::new(Life::new((self.clock)()));
-            let starts = Launcher::new(link, Arc::clone(&life), log, Arc::clone(&self.clock));
+            let starts =
+                Launcher::new(link, store, Arc::clone(&life), log, Arc::clone(&self.clock));
             let browser = Arc::new(Browser::booted(life, Box::new(starts)));
             *held = Some(Arc::clone(&browser));
             browser
@@ -1182,6 +1211,7 @@ mod tests {
                 workspace: "ws1".into(),
                 account: "acct-1".into(),
                 size: VmSize::Small,
+                store: None,
                 material: browser::test_material("127.0.0.1:7704"),
             },
         }) else {

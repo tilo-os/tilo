@@ -326,6 +326,7 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
                 workspace,
                 account,
                 size,
+                store,
                 material,
             },
     } = &asked[0]
@@ -341,6 +342,12 @@ fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
         *size,
         legacy_vm::hosted::size::VmSize::Small,
         "in the workspace's VM, at the size its shells run at"
+    );
+    assert!(
+        store
+            .as_ref()
+            .is_some_and(|store| store.ends_with("ws-1/.tilo/browser")),
+        "its profile kept among the workspace's own files: {store:?}"
     );
 }
 
