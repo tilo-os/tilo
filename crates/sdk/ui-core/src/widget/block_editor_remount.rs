@@ -101,11 +101,21 @@ impl BlockEditor {
         if remount.set_children(node, &children).is_err() {
             return false;
         }
-        // The editor's own box carries what its change made of it: its handle lane, and where
-        // a document's body starts its text column.
+        // The editor's own box carries what its change made of it: its handle lane and the
+        // column its blocks stand in. Where the box stands in the host's page is the host's:
+        // every host places the editor itself, absolutely, under the header or the title it
+        // draws, with the insets its page leaves. Writing the whole style again would move the
+        // editor to the page's origin and set the host's title over its first blocks, so only
+        // the fields the editor owns are written over the ones the host set.
         let own = self.own_style(theme);
-        if remount.taffy().style(node).ok() != Some(&own) {
-            let _ = remount.taffy().set_style(node, own);
+        let mut placed = remount.taffy().style(node).cloned().unwrap_or_default();
+        placed.display = own.display;
+        placed.flex_direction = own.flex_direction;
+        placed.align_items = own.align_items;
+        placed.gap = own.gap;
+        placed.padding = own.padding;
+        if remount.taffy().style(node).ok() != Some(&placed) {
+            let _ = remount.taffy().set_style(node, placed);
         }
         self.structure_dirty = false;
         self.children_mut()
