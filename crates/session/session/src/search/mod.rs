@@ -846,8 +846,9 @@ impl SearchHost for SessionSearch {
         let (mut sources, published) = self.sources(workspace, scope);
         // A question typed by the person is answered here, by the model their AI settings choose:
         // never by a tool that searches. A host that runs no gateway asks nothing, and its palette
-        // offers no question.
-        if self.models.is_some() {
+        // offers no question. A window's search is about the window: what it holds and what can be
+        // done in it, never a question of its own.
+        if self.models.is_some() && !matches!(scope, Scope::InApp(_)) {
             sources.push(Held::new(crate::search_ask::Ask::new(
                 Arc::clone(&self.ask),
                 workspace,
