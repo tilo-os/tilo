@@ -13,14 +13,19 @@ name: CI / fast quality
 # an earlier one could, and one verdict at a time is all main needs. The
 # `supersede` job hands that verdict out with the same decision check.yml makes
 # (tools/ci/push_window.py): a push skips its gates while another run holds them,
-# and the first push after that run finishes takes over. The forge's own
-# `concurrency:` did this by cancelling the waiting runs, which reported a
-# cancelled run for every push main took and left the newest head waiting for the
-# run in front of it.
+# and the first push after that run finishes takes over.
 on:
   push:
     branches: ["main"]
   workflow_dispatch:
+
+# Without a `concurrency:` block the forge cancels every unfinished push run of
+# this workflow on main when the next push arrives, so the run holding the gates
+# never finished. One group per commit with `cancel-in-progress: false` turns
+# that off and queues nothing behind another commit's run.
+concurrency:
+  group: lint-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
 
 jobs:
   # Whose run lints the tree: see tools/ci/push_window.py for the rules.
