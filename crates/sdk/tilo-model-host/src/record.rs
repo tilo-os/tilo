@@ -322,7 +322,9 @@ impl Record {
             record: item.is_none(),
             invoker: None,
             on_behalf_of: None,
-            now_ms: 0,
+            // Every request carries the host's time, a reading as much as an invocation: the
+            // module has no clock of its own, and one it is handed is always the host's.
+            now_ms: tilo_resource::origin_now_ms(),
         }
     }
 

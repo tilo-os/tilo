@@ -107,7 +107,7 @@ pub mod testing {
         operation()
     }
 
-    struct RestoreWall(u64);
+    struct RestoreWall(Option<u64>);
 
     impl Drop for RestoreWall {
         fn drop(&mut self) {
@@ -234,7 +234,7 @@ pub mod testing {
     /// scopes and unwinding restore the previous reading.
     pub fn with_wall<T>(at: SystemTime, operation: impl FnOnce() -> T) -> T {
         let ms = super::wall_ms(at);
-        let _restore = RestoreWall(super::FROZEN_HERE_MS.with(|here| here.replace(ms)));
+        let _restore = RestoreWall(super::FROZEN_HERE_MS.with(|here| here.replace(Some(ms))));
         operation()
     }
 }
@@ -304,6 +304,21 @@ mod scoped_monotonic_tests {
     }
 
     #[test]
+    fn a_clock_lent_at_the_epoch_is_a_clock_the_code_reads() {
+        // `0` is a time, the epoch, not the absence of a hold. A host lends a model module its
+        // clock through here, and a hold that fell back to the machine's clock would trap the
+        // module: a bare wasm32 has no `std` clock at all.
+        let (ms, held, frozen) = with_wall_ms(0, || (unix_now_ms(), wall(), wall_frozen()));
+        assert_eq!(ms, 0, "the lent time is the time the code reads");
+        assert_eq!(held, UNIX_EPOCH);
+        assert!(frozen, "a hold at the epoch is a hold");
+        assert!(
+            unix_now_ms() > 0,
+            "the thread's own clock runs again after the hold"
+        );
+    }
+
+    #[test]
     fn two_threads_holding_different_wall_times_at_once_each_read_their_own() {
         let first = UNIX_EPOCH + Duration::from_secs(4_000_000_000);
         let second = UNIX_EPOCH + Duration::from_secs(4_100_000_000);
@@ -332,20 +347,25 @@ mod scoped_monotonic_tests {
 }
 
 thread_local! {
-    /// The wall time held on this thread: by [`testing::with_wall`], which
-    /// wins over the thread's part in a pin for a whole process.
-    static FROZEN_HERE_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The wall time held on this thread: by [`with_wall_ms`], a host lending code its clock, or
+    /// by [`testing::with_wall`], which wins over the thread's part in a pin for a whole process.
+    /// `None` while this thread reads its own clock, so a hold at the epoch is a hold like any
+    /// other.
+    static FROZEN_HERE_MS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
 }
 
-/// The pinned wall time this thread reads, in milliseconds; `0` while the
-/// clock runs.
-fn frozen_ms() -> u64 {
+/// The pinned wall time this thread reads, in milliseconds; `None` while
+/// the clock runs.
+fn frozen_ms() -> Option<u64> {
     match FROZEN_HERE_MS.with(std::cell::Cell::get) {
-        0 => match followed_ms() {
-            0 => pinned_ms(),
-            followed => followed,
+        Some(here) => Some(here),
+        None => match followed_ms() {
+            0 => match pinned_ms() {
+                0 => None,
+                pinned => Some(pinned),
+            },
+            followed => Some(followed),
         },
-        here => here,
     }
 }
 
@@ -357,14 +377,17 @@ fn frozen_ms() -> u64 {
 /// of its own (a bare wasm32 has no `std` clock at all), and a change the host replays has to
 /// carry the time the host says, not one the module picked. Other threads keep their own
 /// clock, where [`testing::with_wall`] and [`pin_wall`] are a test's and a capture's.
+///
+/// `now_ms` is the time and only the time: `0` is the epoch, held like any other reading, never
+/// "no hold" — a hold that fell back to the machine's clock would trap the module it lends to.
 pub fn with_wall_ms<T>(now_ms: u64, f: impl FnOnce() -> T) -> T {
-    struct Restore(u64);
+    struct Restore(Option<u64>);
     impl Drop for Restore {
         fn drop(&mut self) {
             FROZEN_HERE_MS.with(|here| here.set(self.0));
         }
     }
-    let _restore = Restore(FROZEN_HERE_MS.with(|here| here.replace(now_ms)));
+    let _restore = Restore(FROZEN_HERE_MS.with(|here| here.replace(Some(now_ms))));
     f()
 }
 
@@ -400,10 +423,10 @@ const fn followed_ms() -> u64 {
 #[inline]
 pub fn wall() -> SystemTime {
     match frozen_ms() {
-        0 => SystemTime::now(),
-        ms => UNIX_EPOCH
+        Some(ms) => UNIX_EPOCH
             .checked_add(Duration::from_millis(ms))
             .unwrap_or(UNIX_EPOCH),
+        None => SystemTime::now(),
     }
 }
 
@@ -434,10 +457,11 @@ fn wall_ms(at: SystemTime) -> u64 {
         .map_or(1, |since| saturating_u64(since.as_millis()).max(1))
 }
 
-/// Whether [`pin_wall`] pinned the wall clock.
+/// Whether a clock is held here, so a wall read answers the hold rather than the machine: by
+/// [`pin_wall`], by a host's [`with_wall_ms`], or by a test's [`testing::with_wall`].
 #[must_use]
 pub fn wall_frozen() -> bool {
-    frozen_ms() != 0
+    frozen_ms().is_some()
 }
 
 /// Whether this device's clock is synchronised with a time source, when the
