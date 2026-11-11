@@ -1,7 +1,9 @@
 //! What an agent tool answers typed: one answer for a call that ran, one
 //! for a call that did not, and the rows a listing and a refusal carry.
+use super::render::render_value;
 use super::{ActionDescriptor, Reply, Value, json};
 use crate::mcp::UNTRUSTED;
+use std::fmt::Write as _;
 
 /// The MCP result of an agent tool: its text alone, or the structured copy
 /// the caller asked for (its typed answer) as JSON, which is the text then: a
@@ -164,4 +166,94 @@ pub(super) fn action_row(action: &ActionDescriptor) -> Value {
 
 pub(super) fn action_rows(actions: &[ActionDescriptor]) -> Vec<Value> {
     actions.iter().map(action_row).collect()
+}
+
+/// What an invocation's final update says, as an agent reads it.
+pub(super) fn outcome(value: &Value) -> Reply {
+    let state = value
+        .pointer("/update/state")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let mut text = match state {
+        "succeeded" => {
+            let mut text = String::from("ok");
+            let output = value.pointer("/update/output");
+            if let Some(result) = output
+                .and_then(|output| output.get("value"))
+                .map(render_value)
+                .filter(|result| !result.is_empty())
+            {
+                text.push('\n');
+                text.push_str(&result);
+            }
+            for resource in output
+                .and_then(|output| output.get("resources"))
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .take(8)
+            {
+                let _ = write!(text, "\n-> {resource}");
+            }
+            text
+        }
+        "failed" => {
+            let code = value
+                .pointer("/update/error/code")
+                .and_then(Value::as_str)
+                .unwrap_or("failed");
+            let message = value
+                .pointer("/update/error/message")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            format!("failed: {code}: {message}")
+        }
+        "cancelled" => "cancelled".to_owned(),
+        "item" | "progress" => {
+            let id = value
+                .get("invocation_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            let mut text = format!("pending {id}: still running");
+            // A run in a shell says what it printed so far as it prints it.
+            if let Some(tail) = value
+                .pointer("/update/value/tail")
+                .and_then(Value::as_str)
+                .filter(|tail| !tail.trim().is_empty())
+            {
+                let total = value
+                    .pointer("/update/value/total")
+                    .and_then(Value::as_u64)
+                    .unwrap_or_default();
+                let _ = write!(
+                    text,
+                    "; its output so far ({total} bytes), newest last:\n{}",
+                    tail.trim_end()
+                );
+            }
+            let _ = write!(
+                text,
+                "\ntilo_status {{invocation_id}} says how it went; {{\"cancel\": true}} stops it"
+            );
+            text
+        }
+        _ => {
+            let id = value
+                .get("invocation_id")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            format!(
+                "pending {id}: not finished yet; tilo_status {{invocation_id}} says how it went"
+            )
+        }
+    };
+    if let Some(adjusted) = value.get("adjusted").and_then(Value::as_str) {
+        let _ = write!(text, "\n(adjusted: {adjusted})");
+    }
+    Reply {
+        failed: state != "succeeded",
+        text,
+        structured: None,
+    }
 }
