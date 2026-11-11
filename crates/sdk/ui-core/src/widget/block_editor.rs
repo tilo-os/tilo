@@ -492,6 +492,8 @@ struct BlockSnapshot {
 
 /// Display-only, bounded projection for a live page embed. The source CRDT
 /// keeps only the stable UUID mark; hosts refresh this projection on sync.
+/// The excerpt is the start of what the page says: a card shows a few lines of
+/// it, a line per paragraph it breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransclusionPreview {
     pub title: String,
@@ -751,6 +753,10 @@ pub struct BlockEditor {
     references: references::References,
     transclusion_previews: HashMap<PageId, TransclusionPreview>,
     transclusion_rects: Vec<Option<(Rect, Card)>>,
+    /// How tall the card of each embed stands, by the block it is the whole of: what it shows of
+    /// what it projects was measured at the width the stack laid it out at, and the stack starts
+    /// from it when nothing has measured it yet.
+    card_heights: HashMap<String, f32>,
     pending_transclusion_opens: Vec<PageId>,
     /// Where the links inside the cards painted last were painted, and what each names.
     card_links: Vec<(Rect, String)>,
@@ -1003,6 +1009,7 @@ impl BlockEditor {
             references: references::References::default(),
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
+            card_heights: HashMap::new(),
             pending_transclusion_opens: Vec::new(),
             card_links: Vec::new(),
             pending_resource_link_opens: Vec::new(),
@@ -4793,56 +4800,6 @@ impl BlockEditor {
         }
     }
 
-    fn activate_card(&mut self, event: &WindowEvent) -> bool {
-        let WindowEvent::MouseInput {
-            state: ElementState::Released,
-            button: MouseButton::Left,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let point = self.last_mouse_pos;
-        // A link inside a card stands in front of the card it is painted on.
-        if let Some(reference) = self
-            .card_links
-            .iter()
-            .find(|(rect, _)| rect.contains(point))
-            .map(|(_, reference)| reference.clone())
-        {
-            self.open_reference(&reference);
-            return true;
-        }
-        let Some(card) = self
-            .transclusion_rects
-            .iter()
-            .flatten()
-            .find(|(rect, _)| rect.contains(point))
-            .map(|(_, card)| card.clone())
-        else {
-            return false;
-        };
-        match card {
-            Card::Record(reference) => {
-                self.open_reference(&reference);
-                true
-            }
-            Card::Page(_) => false,
-        }
-    }
-
-    pub fn set_transclusion_previews(&mut self, previews: HashMap<PageId, TransclusionPreview>) {
-        if self.transclusion_previews != previews {
-            self.transclusion_previews = previews;
-            self.dirty = true;
-            self.structure_dirty = true;
-        }
-    }
-
-    pub fn take_transclusion_open(&mut self) -> Option<PageId> {
-        self.pending_transclusion_opens.pop()
-    }
-
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.pending_external_link_opens.pop()
     }
@@ -8591,7 +8548,14 @@ impl BlockEditor {
                 };
             }
             if transclusion_target(b).is_some() {
-                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
+                // The card shows what it projects, so its height is the height of that content:
+                // the stack measures it at the width it lays the blocks out at, and starts here
+                // from the height it measured last.
+                stack_box.min = self
+                    .card_heights
+                    .get(&b.id)
+                    .copied()
+                    .unwrap_or(TRANSCLUSION_MIN_HEIGHT * theme.text_scale);
             }
             self.stack_boxes.push(stack_box);
         }
@@ -8668,6 +8632,9 @@ impl BlockEditor {
     /// inputs are unchanged reuses its cached height, so the cost of an edit does not grow with the
     /// document; without a text renderer, a line keeps the height it last measured.
     fn stack_blocks(&mut self, width: f32, mut text_renderer: Option<&mut TextRenderer>) {
+        if let Some(text_renderer) = text_renderer.as_deref_mut() {
+            self.measure_card_heights(width, text_renderer);
+        }
         let stack = &mut self.stack;
         if let Some(text_renderer) = text_renderer.as_deref() {
             let shaping = (

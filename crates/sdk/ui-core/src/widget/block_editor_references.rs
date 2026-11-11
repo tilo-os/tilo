@@ -156,6 +156,8 @@ impl BlockEditor {
             self.references.previews = Rc::new(previews);
             self.dirty = true;
             self.structure_dirty = true;
+            // A card shows what it projects as it reads now: it takes the room that reads.
+            self.stack.width = None;
         }
         let changed_views = *self.references.views != views;
         if changed_views {

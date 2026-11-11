@@ -494,6 +494,11 @@ action import_markdown(nb: Notebook, file: File) -> Note {
 }
 ```
 
+`RichText.embed(r)` is the document whose one paragraph projects the resource `r`: where the text
+is drawn, that paragraph is a card of `r` — its title and the start of what it says, opening it,
+live as `r` changes. A paragraph that is one projection is a block of its own, so
+`RichText(n.body, RichText.embed(other))` puts `other` under what `n` says.
+
 A picture is the Markdown it is written as, a paragraph of its own holding `![alt](source)`:
 `r.markdown` writes the address of its bytes (`![](tilo-blob://…)`), which every device of the
 workspace holds, and `RichText.from_markdown` keeps the source a picture was written with, so

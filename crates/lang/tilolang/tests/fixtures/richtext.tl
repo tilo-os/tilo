@@ -82,6 +82,11 @@ action refer(p: Post, t: Task) {
     p.body = RichText(p.body, " see ", t)
 }
 
+/// Puts a task under what a post says, as a card of it where the post is drawn.
+action embed(p: Post, t: Task) {
+    p.body = RichText(p.body, RichText.embed(t))
+}
+
 /// Posts a Markdown document as its body.
 action import_body(b: Board, markdown: Text) -> Post {
     b.posts.insert(Post(body: RichText.from_markdown(markdown)))

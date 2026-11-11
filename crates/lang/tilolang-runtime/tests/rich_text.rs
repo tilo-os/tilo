@@ -359,6 +359,55 @@ mod cases {
     }
 
     #[test]
+    fn a_paragraph_projecting_a_resource_is_a_block_of_its_own_under_the_text() {
+        use tilolang_runtime::Store as _;
+
+        let store = AmStore::new();
+        let b = Workspace::on(&store, None);
+        let post = b.say("Standup");
+        let task = b.task("Fix the build");
+        b.done(
+            "embed",
+            vec![Value::resource(&post), Value::resource(&task)],
+        );
+        let body = b.body(&post);
+        assert_eq!(
+            body.blocks
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<Vec<_>>(),
+            ["Standup", "Fix the build"],
+            "the post says what it said, and the card it projects stands under it"
+        );
+        let card = body.blocks.get(1).expect("the card");
+        assert!(
+            card.marks.iter().any(|mark| {
+                mark.name == tilolang_runtime::rich::PROJECTION
+                    && mark.start == 0
+                    && mark.end == card.text.chars().count()
+            }),
+            "the whole paragraph projects it: {:?}",
+            card.marks
+        );
+        assert_eq!(
+            body.projections()
+                .iter()
+                .filter(|projection| projection.as_resource().is_some())
+                .count(),
+            1,
+            "what the post projects is the task: {body:?}"
+        );
+        // What links to the task says so: the post projects it.
+        let linked = store.linked(&task).expect("the task's links");
+        assert!(
+            linked
+                .iter()
+                .any(|link| link.how == tilolang_runtime::store::LinkHow::Mention),
+            "the post that embeds it, and how: {linked:?}"
+        );
+    }
+
+    #[test]
     fn anchors_resolve_to_the_paragraphs_they_cite() {
         let b = Workspace::on(&AmStore::new(), None);
         let post = b.say("Intro\nDetails\nOutro");

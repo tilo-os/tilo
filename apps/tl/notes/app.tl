@@ -778,3 +778,27 @@ scenario "a nested note" -> Note {
         Note(title: "Groceries", body: RichText("Oat milk, eggs, two lemons."), parent: home),
     )
 }
+
+/// A note that embeds another one, open: the embedded note stands in it as a card of its title
+/// and the start of what it says.
+scenario "a note with an embed" -> Note {
+    let home = notebook.notes.insert(
+        Note(title: "Home", body: RichText("What the flat needs, and what we cook in it.")),
+    )
+    let groceries = notebook.notes.insert(
+        Note(
+            title: "Groceries",
+            body: RichText(
+                "Oat milk, eggs, two lemons.\nBread and cheese for lunch.\nCoffee beans for the week.\nApples for the crumble.\nYoghurt, the plain one.\nSomething green for Sunday.",
+            ),
+            parent: home,
+        ),
+    )
+    notebook.notes.insert(
+        Note(
+            title: "Saturday shopping",
+            body: RichText("What to take to the market:\n", RichText.embed(groceries)),
+            parent: home,
+        ),
+    )
+}

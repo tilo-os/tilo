@@ -2356,14 +2356,23 @@ impl Checker<'_> {
         Ex::host(imp, vec![text, near], Ty::Option(Box::new(ty)))
     }
 
-    /// `RichText.from_markdown(text)`: the document a Markdown text says, as the type's one
-    /// method of its own. It reads nothing but the text, so it is as pure as a value's method.
+    /// `RichText.from_markdown(text)`, the document a Markdown text says, and `RichText.embed(r)`,
+    /// the text whose one paragraph projects the resource `r`: the type's methods of its own. They
+    /// read nothing but what they are given, so they are as pure as a value's method.
     fn rich_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
+        // `RichText.embed(r)`: the text whose one paragraph projects the resource `r`, which is
+        // what a card of it shows where the text is drawn.
+        if name.name == "embed" {
+            let Some(r) = self.resource_arg("RichText.embed", args, span) else {
+                return Ex::error();
+            };
+            return Ex::host(Imp::RichEmbed, vec![r], Ty::RichText);
+        }
         if name.name != "from_markdown" {
             self.err(
                 "E027",
                 name.span,
-                "`RichText` is a type, not a value; its one method of its own is `.from_markdown(text)`, the document a Markdown text says, and `RichText(…)` builds a value",
+                "`RichText` is a type, not a value; its methods of its own are `.from_markdown(text)`, the document a Markdown text says, and `.embed(r)`, the text projecting the resource `r`, and `RichText(…)` builds a value",
             );
             for a in args {
                 let _ = self.expr(&a.value, None);

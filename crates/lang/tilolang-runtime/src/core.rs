@@ -408,17 +408,17 @@ impl Core {
             PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
             RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
             RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH,
-            ResSetI, ResTextSet, ResourceRef, RichEmpty, RichFromMarkdown, RichNew, RichPart,
-            RichTime, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit,
-            SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains,
-            StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace,
-            StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest,
-            Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
-            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
-            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+            ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty, RichFromMarkdown, RichNew,
+            RichPart, RichTime, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI,
+            SortLit, SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat,
+            StrContains, StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower,
+            StrMatches, StrReplace, StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper,
+            StrWords, Suggest, Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan,
+            Today, TryInvoke, TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH,
+            TupleSetI, UiAction, UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn,
+            UiPropF, UiPropH, UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq,
+            VersionEnd, Versions, Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost,
+            WebStatus, WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | FloatToStr
@@ -452,7 +452,7 @@ impl Core {
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
-            RichNew | RichPart | RichEmpty | RichTime | RichFromMarkdown => {
+            RichNew | RichPart | RichEmpty | RichTime | RichFromMarkdown | RichEmbed => {
                 self.rich_import(imp, a)
             }
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH

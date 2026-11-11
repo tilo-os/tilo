@@ -97,6 +97,16 @@ fn paragraph(text: &str) -> BlockView {
     }
 }
 
+/// Whether `block` is one projection of a resource (an embed) and nothing else: a card of it
+/// where the text is drawn.
+fn projects(block: &BlockView) -> bool {
+    let len = block.text.chars().count();
+    block
+        .marks
+        .iter()
+        .any(|mark| mark.name == PROJECTION && mark.start == 0 && mark.end == len)
+}
+
 /// The paragraph `b` as one reader reads it ([`RichValue::read_text`]).
 fn read_block(
     b: &BlockView,
@@ -285,23 +295,45 @@ impl RichValue {
         }
     }
 
+    /// Append `label` as a paragraph of its own projecting `to` (an embed): what a card of it
+    /// shows where the text is drawn, opening it.
+    pub fn push_projection(&mut self, label: &str, to: &Reference) {
+        self.blocks.push(BlockView {
+            id: String::new(),
+            kind: "paragraph".to_owned(),
+            text: label.to_owned(),
+            marks: vec![MarkSpan {
+                start: 0,
+                end: label.chars().count(),
+                name: PROJECTION.to_owned(),
+                value: MarkValue::Str(to.mark_value()),
+            }],
+            attrs: std::collections::BTreeMap::new(),
+            children: Vec::new(),
+        });
+    }
+
     /// Append `other` with its formatting: its first paragraph continues the last one, the
-    /// rest follow it.
+    /// rest follow it. A paragraph that is one projection (an embed) is a block of its own, so
+    /// it never continues the paragraph before it.
     pub fn push_rich(&mut self, other: &Self) {
         let mut blocks = other.blocks.iter();
-        if let (Some(first), Some(last)) = (blocks.next(), self.blocks.last_mut()) {
-            let shift = last.text.chars().count();
-            last.text.push_str(&first.text);
-            last.marks.extend(first.marks.iter().map(|m| MarkSpan {
-                start: m.start.saturating_add(shift),
-                end: m.end.saturating_add(shift),
-                ..m.clone()
-            }));
-        } else if let Some(first) = other.blocks.first() {
-            self.blocks.push(BlockView {
+        let first = blocks.next();
+        match (first, self.blocks.last_mut()) {
+            (Some(first), Some(last)) if !projects(first) => {
+                let shift = last.text.chars().count();
+                last.text.push_str(&first.text);
+                last.marks.extend(first.marks.iter().map(|m| MarkSpan {
+                    start: m.start.saturating_add(shift),
+                    end: m.end.saturating_add(shift),
+                    ..m.clone()
+                }));
+            }
+            (Some(first), _) => self.blocks.push(BlockView {
                 id: String::new(),
                 ..first.clone()
-            });
+            }),
+            (None, _) => {}
         }
         self.blocks.extend(blocks.map(|b| BlockView {
             id: String::new(),

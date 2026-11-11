@@ -252,6 +252,7 @@ imports! {
     (RichEmpty, "rich_empty", "i", "i"),
     (RichTime, "rich_time", "i", "i"),
     (RichFromMarkdown, "rich_from_markdown", "i", "i"),
+    (RichEmbed, "rich_embed", "i", "i"),
     (Phrase, "phrase", "ii", "i"),
     (Word, "word", "iii", "i"),
     (EntryParts, "entry_parts", "ii", "i"),

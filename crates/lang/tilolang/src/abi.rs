@@ -268,6 +268,7 @@ imports! {
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
     RichFromMarkdown = "rich_from_markdown" ([H] -> [H]);
+    RichEmbed = "rich_embed" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);
     EntryParts = "entry_parts" ([H, H] -> [H]);

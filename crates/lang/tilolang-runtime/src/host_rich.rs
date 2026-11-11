@@ -80,6 +80,23 @@ impl Core {
                     Err(why) => trap(format!("this text is not a document: {why}")),
                 }
             }
+            // `RichText.embed(r)`: the text whose one paragraph projects `r`, which is what a
+            // card of it shows where the text is drawn.
+            Imp::RichEmbed => {
+                let referred = match self.val(a.h(0)?)? {
+                    Value::Ref(referred) => referred,
+                    other => {
+                        return trap(format!(
+                            "rich_embed: expected a resource, got {}",
+                            other.kind_name()
+                        ));
+                    }
+                };
+                let (title, reference) = self.reference_of(&referred)?;
+                let mut out = RichValue::default();
+                out.push_projection(&title, &reference);
+                self.ret_h(Value::Rich(out))
+            }
             Imp::RichTime => {
                 let at = match self.val(a.h(0)?)? {
                     Value::Text(at) => at,
