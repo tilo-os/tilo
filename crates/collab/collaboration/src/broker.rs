@@ -4339,17 +4339,31 @@ async fn ensure_sdk_route(
     // A workspace that seals its records takes every write encrypted under the
     // record channel's keys, whoever reads the record for the app. A route
     // whose endpoint has no keys to ask for refuses each write there.
-    let sealed = matches!(
-        channel
-            .committed_document(&runtime_collab::committed_document::Request::Writes)
-            .await,
-        Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
-    );
+    //
+    // A cluster-scope route (an empty app id: discovery and presence for
+    // every app of the workspace, as an agent joins to learn the catalogue)
+    // names no app of its own, so the identity service can never grant it
+    // channel keys: it refuses the question, and a route left waiting for an
+    // answer it cannot get asks again on the timer for the whole life of the
+    // connection. It carries no record and writes nothing, so it asks for no
+    // keys and reads nothing about sealing: it stays plaintext, and its
+    // timer is never armed for it.
+    let cluster_route = spec.app_id.is_empty();
+    let sealed = if cluster_route {
+        false
+    } else {
+        matches!(
+            channel
+                .committed_document(&runtime_collab::committed_document::Request::Writes)
+                .await,
+            Ok(runtime_collab::committed_document::Reply::Writes { sealed: true })
+        )
+    };
     // A committed route's owner admits and applies each edit itself, and a
     // committing host holds no channel keys: it could neither open a sealed
     // edit nor accept cleartext on the route after one. Committed routes
     // therefore stay cleartext end to end.
-    let encrypted = asks_channel_keys && (sealed || !committed);
+    let encrypted = asks_channel_keys && !cluster_route && (sealed || !committed);
     let encryption = std::sync::Arc::new(std::sync::Mutex::new(if encrypted {
         super::route_keys::RouteKeys::requested()
     } else if sealed {
@@ -9974,6 +9988,62 @@ mod tests {
     fn committed_routes_stay_out_of_channel_keys_while_op_routes_ask() {
         assert_eq!(channel_key_requests_on_route(true), 0);
         assert!(channel_key_requests_on_route(false) > 0);
+    }
+
+    /// A cluster-scope route (an empty app id, the workspace-wide discovery
+    /// route an agent joins) names no app, so the identity service could
+    /// never grant it channel keys — it refuses the question, and a route
+    /// left waiting for that answer asks again every second for the whole
+    /// life of the connection. It carries no record and seals nothing, so it
+    /// asks for no keys at all, and its timer stays quiet: the desktop's log
+    /// held thousands of refusals a second for one agent before.
+    #[test]
+    #[cfg(unix)]
+    fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
+        let broker = FakeBroker::default();
+        let (fd, _captures, thread) = stand_up_fake_broker(broker);
+        let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let sdk = CollaborationManager::spawn_sdk(
+            SdkConnectSource::Fd(fd),
+            Some(SdkJoinIdentity {
+                presentation: harness_presentation(),
+                participant_kind: "person",
+                signer: SdkDocumentSigner::Certified(Arc::new(KeyedIdentity {
+                    asked: Arc::clone(&asked),
+                })),
+            }),
+        )
+        .unwrap();
+        let mut manager = CollaborationManager::disabled();
+        manager.backend = Backend::Transport(Box::new(sdk));
+        assert!(manager.send(CollabRequest::Hello {
+            app_id: "so.tilo.test".into(),
+            cluster_id: Uuid::new_v4(),
+            record: None,
+            record_kind: None,
+            handle: None,
+        }));
+        manager.await_primary_route().unwrap();
+        let joined = asked.load(std::sync::atomic::Ordering::Acquire);
+        assert!(joined > 0, "the app's own route asks for its keys");
+        manager.join_route(
+            RouteSpec::cluster(Uuid::new_v4()),
+            crate::record::RecordKind::new(""),
+        );
+        // The join's key round, were there one, has run before this probe is
+        // answered: the shovel serves its commands in order.
+        let seen = key_schedule(&manager);
+        assert!(
+            !seen.armed && seen.timer_rounds == 0,
+            "a cluster route leaves the key timer armed to ask forever: {seen:?}"
+        );
+        assert_eq!(
+            asked.load(std::sync::atomic::Ordering::Acquire),
+            joined,
+            "a cluster route asked the identity service for channel keys it cannot be granted"
+        );
+        drop(manager);
+        thread.join().unwrap();
     }
 
     /// A certified endpoint on one ordinary route of a broker that says when
