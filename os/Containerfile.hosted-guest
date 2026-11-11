@@ -227,6 +227,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       fontconfig \
       freetype \
       glib2 \
+      gstreamer1 \
+      gstreamer1-plugins-base \
       harfbuzz \
       harfbuzz-icu \
       libICE \
@@ -269,6 +271,7 @@ RUN dnf install -y --setopt=install_weak_deps=False \
       nss \
       pango \
       pcre2 \
+      pipewire-libs \
       pixman \
       systemd-libs \
       vulkan-loader \
