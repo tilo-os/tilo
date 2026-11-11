@@ -77,6 +77,8 @@ pub struct IconWidget {
     rect: Rect,
     /// What it shows changed since the last frame drew it.
     dirty: bool,
+    /// What it holds changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 impl IconWidget {
@@ -91,6 +93,7 @@ impl IconWidget {
             description: None,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
@@ -120,6 +123,7 @@ impl IconWidget {
         self.size = size;
         self.tint = tint;
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     /// Take one of the theme's icon sizes.
@@ -198,7 +202,7 @@ impl Widget for IconWidget {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -236,12 +240,6 @@ impl Widget for IconWidget {
             .as_deref()
             .filter(|it| !it.is_empty())
             .map(std::borrow::Cow::Borrowed)
-    }
-
-    /// A leaf sized by the theme: layout is settled once the first
-    /// non-zero rect lands.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
     }
 
     crate::redraw_flag!();

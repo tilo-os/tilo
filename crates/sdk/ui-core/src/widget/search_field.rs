@@ -405,6 +405,33 @@ impl SearchField {
         self.prompt.as_deref()
     }
 
+    /// What names this field and what its description adds, for a surface that
+    /// draws the field itself and builds its own accessible node: the field
+    /// named as the search field it is, and what the query covers — the empty
+    /// field's words, the token narrowing it, the count it found.
+    #[must_use]
+    pub fn query_name_and_description(&self) -> (String, Option<String>) {
+        let name = if self.escalation.is_some() {
+            crate::i18n::widget_format("search-field-filter-name", &[])
+        } else {
+            crate::i18n::widget_format("search-field-name", &[])
+        };
+        let mut description = Vec::new();
+        if !self.placeholder.is_empty() {
+            description.push(crate::i18n!(&self.placeholder));
+        }
+        if let Some(token) = &self.scope_token {
+            description.push(token.clone());
+        }
+        if let Some(count) = self.count {
+            description.push(count.label());
+        }
+        (
+            name,
+            (!description.is_empty()).then(|| description.join(", ")),
+        )
+    }
+
     /// What the field holds, which decides its keyboard and how it reads
     /// to an input method; a secret is masked, kept off the clipboard and
     /// never read out ([`TextInput::set_secret`]).
@@ -1041,26 +1068,10 @@ impl Widget for SearchField {
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        let mut node = self
-            .input
-            .accessibility()?
-            .with_name(if self.escalation.is_some() {
-                "Filter"
-            } else {
-                "Search"
-            });
-        let mut description = Vec::new();
-        if !self.placeholder.is_empty() {
-            description.push(crate::i18n!(&self.placeholder));
-        }
-        if let Some(token) = &self.scope_token {
-            description.push(token.clone());
-        }
-        if let Some(count) = self.count {
-            description.push(count.label());
-        }
-        if !description.is_empty() {
-            node = node.with_description(description.join(", "));
+        let (name, description) = self.query_name_and_description();
+        let mut node = self.input.accessibility()?.with_name(name);
+        if let Some(description) = description {
+            node = node.with_description(description);
         }
         Some(node)
     }

@@ -238,6 +238,24 @@ impl Shown {
     }
 }
 
+/// Open the roster at `person`, their card in the roster's place, or, where their card stands
+/// already, everyone here in its place: the bar has no people button while it shows a face, so a
+/// second press on the face is how a pointer reaches the roster. Answers whether it opened a card.
+fn show_person_in(shown: &RefCell<Shown>, open: &Cell<bool>, person: &str) -> bool {
+    let mut shown = shown.borrow_mut();
+    shown.own_card = false;
+    if open.get() && shown.card_open.as_deref() == Some(person) {
+        shown.card_of = None;
+        shown.close_card = true;
+        return false;
+    }
+    // A row this roster has not read yet still opens: the next frame reads it and the card comes
+    // up under it.
+    shown.card_of = Some(person.to_owned());
+    open.set(true);
+    true
+}
+
 /// The People panel and the other people's pointers: one surface above the chrome, so the desk
 /// keeps its own drawing and the panel floats over it.
 pub struct People {
@@ -329,26 +347,9 @@ impl People {
     /// Open the roster at the person `person` , their card in the roster's place: a press on them
     /// elsewhere (a face in the bar, a wave, the launcher) lands here.
     pub fn show_person(&self, person: &str) {
-        // Their card stands already: the press asks for everyone here, in the card's place. The bar
-        // has no people button while it shows a face, so this is how a pointer reaches the roster.
-        if self.open.get() && self.shown.borrow().card_open.as_deref() == Some(person) {
-            let mut shown = self.shown.borrow_mut();
-            shown.own_card = false;
-            shown.card_of = None;
-            shown.close_card = true;
-            drop(shown);
-            self.redraw();
-            return;
+        if show_person_in(&self.shown, &self.open, person) {
+            self.dismissed.set(None);
         }
-        // A row this roster has not read yet still opens: the next frame reads it and the card
-        // comes up under it.
-        {
-            let mut shown = self.shown.borrow_mut();
-            shown.own_card = false;
-            shown.card_of = Some(person.to_owned());
-        }
-        self.open.set(true);
-        self.dismissed.set(None);
         self.redraw();
     }
 
@@ -555,6 +556,7 @@ pub fn mount(
         asks: Rc::clone(&asks),
         profile: ProfileCard::default(),
         card_node: None,
+        live_card: Cell::new(false),
         chats: RefCell::default(),
         motion_until: Cell::new(0.0),
         followed: RefCell::default(),
@@ -624,6 +626,9 @@ struct Panel {
     profile: ProfileCard,
     /// Where the card stands among this panel's children, while it is open.
     card_node: Option<NodeId>,
+    /// Someone else's card no longer says what the rows say of them: the next layout builds it
+    /// again, as the frame that opens one does ([`Self::settle_card`]).
+    live_card: Cell<bool>,
     /// What everyone here says beside their pointer, as the toolkit times it for every host.
     chats: RefCell<ui::presence::CursorChats>,
     /// Keep drawing until then: the newest pointer heard plus the window it eases to rest in.
@@ -685,6 +690,17 @@ impl Panel {
             self.profile.close();
             let _ = self.profile.take_choice();
             shown.card_open = None;
+        }
+        // The card standing is someone else's: what the roster says of them now is what it says,
+        // beside the row under it (an agent narrates every action). Built before the card is laid
+        // out, as it is opened here, never while the frame draws.
+        let standing = shown
+            .card_open
+            .clone()
+            .filter(|who| who != SELF_CARD)
+            .and_then(|who| self.person_model(&who, &shown.rows));
+        if let Some(model) = standing {
+            self.profile.updated(&model);
         }
         let asked = if shown.own_card {
             shown.own_card = false;
@@ -983,6 +999,16 @@ impl Panel {
         shown.rows = rows;
         shown.screens = screens;
         shown.workspace = workspace;
+        // The card standing is someone else's: when what the rows say of them moved (an agent
+        // narrates each action), this frame asks for the layout that builds the card with it.
+        // Widgets are never built while the frame draws ([`Self::settle_card`]).
+        if let Some(who) = shown.card_open.clone().filter(|who| who != SELF_CARD)
+            && self.profile.is_open()
+            && let Some(model) = self.person_model(&who, &shown.rows)
+            && !self.profile.shows(&model)
+        {
+            self.live_card.set(true);
+        }
     }
 
     /// Act on what a press or a key on the roster meant.
@@ -1604,14 +1630,23 @@ impl Widget for Panel {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let shown = self.shown.borrow();
-        if (self.open.get() || shown.standing()) && !self.profile.is_open() {
-            // Each control says where it stands and carries what pressing it does, so a reader
-            // presses the roster's own buttons as the person does.
-            return Some(shown.overlay.accessibility_with_targets());
-        }
+        // Each control says where it stands and carries what pressing it does, so a reader
+        // presses the roster's own buttons as the person does.
+        let roster = ((self.open.get() || shown.standing()) && !self.profile.is_open())
+            .then(|| shown.overlay.accessibility_with_targets());
         drop(shown);
-        // The banner stands beside the windows, so it is read whether the roster is up or not.
-        self.banner.accessibility()
+        // The banner stands beside the windows, so it is read whether the roster is up or not: a
+        // reader following someone with who is here open still hears whose view this is, and can
+        // stop following from the bar as the person does.
+        let banner = self.banner.accessibility();
+        match (banner, roster) {
+            (Some(banner), Some(roster)) => Some(
+                ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                    .with_hashed_key("people-layer")
+                    .with_children(vec![banner, roster]),
+            ),
+            (banner, roster) => banner.or(roster),
+        }
     }
 
     /// Following's Stop is the banner's own verb, and the pinned roster's controls are its own,
@@ -1627,6 +1662,16 @@ impl Widget for Panel {
             && matches!(action, ui::a11y::Action::Activate)
         {
             self.stop_following();
+            return true;
+        }
+        if target == tilo_desktop::follow_banner::CARD_TARGET
+            && matches!(action, ui::a11y::Action::Activate)
+            && let Some(followed) = self.followed.borrow().clone()
+        {
+            if let Some(sync) = &self.sync {
+                sync.keep_following_through_gesture();
+            }
+            show_person_in(&self.shown, &self.open, &followed);
             return true;
         }
         if !matches!(action, ui::a11y::Action::Activate) {
@@ -1652,7 +1697,9 @@ impl Widget for Panel {
     fn take_structure_dirty(&mut self) -> bool {
         let open = self.profile.is_open();
         let card = self.profile.take_structure_dirty();
-        card || open != self.card_node.is_some() || self.card_asked()
+        card || open != self.card_node.is_some()
+            || self.card_asked()
+            || self.live_card.replace(false)
     }
 
     fn draw(
@@ -1697,6 +1744,25 @@ impl Widget for Panel {
             && self.banner.stop_rect().contains(point)
         {
             self.stop_following();
+            *ctx.handled = true;
+            return;
+        }
+        // The rest of the banner is the face of the person followed: it opens their card, as their
+        // face in the bar does. On a phone the banner folds into that face, the only one the bar
+        // shows of them while following.
+        if let WindowEvent::MouseInput {
+            state: ui::winit::event::ElementState::Pressed,
+            ..
+        } = event
+            && let Some(point) = { self.shown.borrow().cursor }
+            && !self.banner.stop_rect().is_zero_area()
+            && self.banner.chip_rect().contains(point)
+            && let Some(followed) = self.followed.borrow().clone()
+        {
+            if let Some(sync) = &self.sync {
+                sync.keep_following_through_gesture();
+            }
+            show_person_in(&self.shown, &self.open, &followed);
             *ctx.handled = true;
             return;
         }

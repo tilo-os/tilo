@@ -164,9 +164,7 @@ pub fn session_row(
                 remote_path: String::new(),
             }
             .bound_asking(&["local_path", "remote_path"])
-            .with_description(
-                "Send one local file to this SSH machine: name the local path and where to write it remotely.",
-            ),
+            .with_description(crate::resource::CATALOG.t("remote-describe-put-file")),
             &["network", "session", "files"],
         ))
         .operation(tagged(
@@ -176,9 +174,7 @@ pub fn session_row(
                 local_path: asked,
             }
             .bound_asking(&["remote_path", "local_path"])
-            .with_description(
-                "Fetch one file from this SSH machine: name the remote path and where to write it here.",
-            ),
+            .with_description(crate::resource::CATALOG.t("remote-describe-fetch-file")),
             &["network", "session", "files"],
         ))
     } else {
@@ -200,9 +196,7 @@ pub fn session_row(
         Some(crate::ssh::HostKeyIssue::Changed { .. }) => row.operation(tagged(
             RemoteEffect::ForgetHostKey { connection: id }
                 .bound()
-                .with_description(
-                    "Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.",
-                ),
+                .with_description(crate::resource::CATALOG.t("remote-describe-forget-host-key")),
             HOST_KEY_TAGS,
         )),
         _ => row,

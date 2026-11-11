@@ -245,7 +245,7 @@ impl ChatApp {
             timeline.fingerprint(&m.id).hash(&mut hasher);
             show_header.hash(&mut hasher);
             (timeline.thread(&m.id) != 0).hash(&mut hasher);
-            self.expanded_reasoning.contains(&m.id).hash(&mut hasher);
+            self.expanded_agent.contains(&m.id).hash(&mut hasher);
             for file in m.files() {
                 self.embed_allowed(file.blob().unwrap_or_default())
                     .hash(&mut hasher);
@@ -413,7 +413,7 @@ impl ChatApp {
         (self.revealed_message.as_deref() == Some(m.id.as_str())).hash(&mut hasher);
         self.row_lifted(&m.id).hash(&mut hasher);
         (self.thread_open.as_deref() == Some(m.id.as_str())).hash(&mut hasher);
-        self.expanded_reasoning.contains(&m.id).hash(&mut hasher);
+        self.expanded_agent.contains(&m.id).hash(&mut hasher);
         if let Some(range) = &self.revealed_range
             && range.0 == m.id
         {

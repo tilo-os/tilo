@@ -2207,6 +2207,16 @@ pub(crate) fn serial() -> std::sync::MutexGuard<'static, ()> {
     notice::serial()
 }
 
+/// The page `bytes` a scanner wrote, decoded by the toolkit's codec: the
+/// browser's own decoder on the web. This runs in the scan job, off the
+/// frame, which is where decoding at once is allowed.
+fn scanned_page_image(bytes: &[u8]) -> Result<DecodedImage, String> {
+    ui::rt::app()
+        .block_on(ui::image_codec::decode(bytes, None))
+        .map_err(|error| error.to_string())?
+        .map_err(|error| format!("scanner returned an invalid image: {error}"))
+}
+
 /// A page the scanner returned as `png`, with its text recognized in
 /// `ocr_code` (named `ocr_language`).
 fn decode_scanned_page(
@@ -2214,10 +2224,7 @@ fn decode_scanned_page(
     ocr_code: &str,
     ocr_language: &str,
 ) -> Result<ScannedPage, String> {
-    let decoded = ui::png::decode_rgba8(&png)
-        .map_err(|error| format!("scanner returned an invalid image: {error}"))?;
-    let decoded = DecodedImage::from_rgba(decoded.width, decoded.height, decoded.rgba)
-        .ok_or_else(|| "scanner returned an invalid image".to_string())?;
+    let decoded = scanned_page_image(&png)?;
     let (width, height) = (decoded.width, decoded.height);
     let (recognized_text, ocr_note) = match tilo_ocr::recognize(&decoded, ocr_code) {
         Ok(document) if document.words.is_empty() => {

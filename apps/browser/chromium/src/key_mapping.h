@@ -69,12 +69,6 @@ inline KeyMapping MapKey(const std::string& key) {
   return {0,-1,0,character,character};
 }
 
-// Whether `key` is an upper-case Latin letter: a key a keyboard writes only
-// with Shift held or Caps Lock on.
-inline bool UpperCaseLetter(const std::string& key) {
-  return key.size()==1 && key[0]>='A' && key[0]<='Z';
-}
-
 // The US key at a place on the keyboard, named as a DOM KeyboardEvent.code
 // ("KeyY", "Digit1", "IntlBackslash"), or 0 for a place not named here.
 inline char UsCharacterAt(const std::string& code) {

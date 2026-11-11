@@ -29,6 +29,8 @@ mod rows;
 mod no_match_tests;
 #[cfg(test)]
 mod ready_rows_tests;
+#[cfg(test)]
+mod windowed_host_tests;
 
 use rows::{
     all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed,
@@ -132,11 +134,16 @@ impl Sources {
                 commands: Arc::new(Commands(data.commands)),
                 content: Content::new(Vec::new(), Vec::new()),
                 actions: Arc::new(Actions(Vec::new())),
-                published: Arc::new(Published(Vec::new())),
+                // What the app publishes through the host runs by address there: an app in a
+                // process of its own gives the desk no tree to read, so its window's actions are
+                // these.
+                published: Arc::new(Published(data.published)),
                 captures: Arc::new(Captures(Vec::new())),
                 answers: None,
                 window: Some(WindowSearch::new(data.resources, data.providers).within(anchor)),
-                host: Vec::new(),
+                // What the host adds for this window: the app's own entries in the session's
+                // index, which is what it holds whether or not it runs.
+                host: data.sources,
                 preferences: data.preferences,
                 now: data.now,
             };
@@ -617,9 +624,19 @@ impl DesktopSearch {
         let sources = self.sources.as_ref()?;
         let windowed = sources.window.is_some();
         let (mut all, switches): (Vec<&dyn Source>, Option<Switches>) = match &sources.window {
-            Some(window) => (vec![window as &dyn Source], None),
+            // A window's search asks what the window holds and what its host adds for it: the
+            // app's entries in the session's index, beside the app's own publication.
+            Some(window) => (
+                std::iter::once(window as &dyn Source)
+                    .chain(sources.host.iter().map(|source| source as &dyn Source))
+                    .collect(),
+                None,
+            ),
             None => everywhere(sources, &self.recents),
         };
+        if windowed {
+            all.retain(|source| sources.preferences.enabled(source.id()));
+        }
         if let Some(switches) = &switches {
             all.push(switches);
         }
@@ -653,9 +670,17 @@ impl DesktopSearch {
             return false;
         };
         let (mut all, switches): (Vec<&dyn Source>, Option<Switches>) = match &sources.window {
-            Some(window) => (vec![window as &dyn Source], None),
+            Some(window) => (
+                std::iter::once(window as &dyn Source)
+                    .chain(sources.host.iter().map(|source| source as &dyn Source))
+                    .collect(),
+                None,
+            ),
             None => everywhere(sources, &self.recents),
         };
+        if sources.window.is_some() {
+            all.retain(|source| sources.preferences.enabled(source.id()));
+        }
         if let Some(switches) = &switches {
             all.push(switches);
         }

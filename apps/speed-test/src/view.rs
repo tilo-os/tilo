@@ -767,3 +767,28 @@ mod tests {
         }
     }
 }
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        assert!(
+            crate::locales::CATALOG.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            crate::locales::CATALOG.languages()
+        );
+        crate::locales::CATALOG.set_locale("de-DE");
+        assert_eq!(
+            crate::locales::CATALOG.t("speed-test-clear"),
+            "Die Messungen gelöscht"
+        );
+        crate::locales::CATALOG.set_locale("en-US");
+        assert_eq!(
+            crate::locales::CATALOG.t("speed-test-clear"),
+            "Cleared the measurements"
+        );
+    }
+}

@@ -41,7 +41,7 @@ impl QuestionSheet for Person {
 
 /// Removing a book from the library: Undo cannot give the reader back the
 /// book's file, so the action asks first.
-const REMOVE: &str = "ebook/1 books#remove-from-library";
+const REMOVE: &str = "ebook/1 book#remove-from-library";
 
 /// The run the agent's call is a step of, by the title it gives it.
 const RUN: &str = "Fill Jane Doe’s visa application";
@@ -170,8 +170,8 @@ async fn a_page_holding_the_root_answers_what_the_agent_asks_through_the_door() 
     assert_eq!(question.run, RUN);
     assert_eq!(question.action_label, "Remove from library");
     assert_eq!(
-        question.resource_label, "1 books",
-        "the library by its name"
+        question.resource_label, "1 book",
+        "the library by its name: named by the state it holds, one book on the shelf"
     );
     assert_eq!(
         question.arguments,

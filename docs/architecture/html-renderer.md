@@ -115,7 +115,9 @@ transparent, as the input surface. Nothing changes for a mount without
    to its x, and a run followed on its line is exactly as wide as the step
    to the next run, so the browser's own advances never move what follows.
    Line breaks stay the toolkit's. A selection or find-in-page then reads a
-   paragraph as one text, with a line break between its lines.
+   paragraph as one text, with a line break between its lines. A justified
+   line is one run whose spaces the toolkit stretched; the page sets spaces
+   at the font's own width, so such a run goes over as one run per word.
 9. **Native selection holds.** A frame moves the fewest elements it can
    (the longest run already in order stays), and never the one holding the
    page's selection; moving a node takes the selection out of what it
@@ -123,6 +125,34 @@ transparent, as the input surface. Nothing changes for a mount without
    drawn at the root of another scene (a measuring pass) no longer
    renumbers the frame's own: on a press that blurred the editor, every
    root key changed and the note's panel was rebuilt under the selection.
+10. **Canvas islands.** A widget that says it is a picture
+    (`scene_parts::picture`: charts, plots, maps) or that makes
+    `ISLAND_DRAWS` (400) draws of its own is shown as one image of what it
+    drew, cut to the viewport, with its text still text over it. The
+    encoder rasterizes it with the CPU rasterizer the canvas path already
+    has, hashes what it drew, and hands the page a new image only when that
+    changed, naming the one it replaces. A widget that scrolls natively or
+    holds a field the page shows never becomes an image unasked.
+11. **Real `<input>` for single-line fields.** A text field's semantics
+    carry what it asks to be filled with (`AccessState::autofill`: username,
+    email, current or new password, one-time code, name, telephone), which a
+    `TextInput` takes from its kind or `with_autofill`. On a page shown as
+    HTML a single-line field leaves its text, caret, selection and
+    decorations to the page (`scene_parts::native_field`): it still draws
+    its chrome and placeholder, and reports where its line starts, its
+    baseline, the face, size and colour (`meta.fields`). The semantic
+    mirror makes the field an `<input>` (`type="password"` for a secret,
+    `autocomplete` from the purpose: `username webauthn` on a username, so
+    a page's conditional passkey request is offered there), the presenter
+    shows it in the field's painted element with padding that puts its line
+    where the toolkit's would stand, and the layer lets presses on it
+    through: the browser's caret, selection, IME, autofill and passkeys are
+    the field's. What the person types reaches the widget through the
+    mirror's value and selection actions. A password input keeps what was
+    typed: the tree never holds a secret, so it cannot empty it either. A
+    field moved to another element while the person types in it keeps its
+    focus and caret; the mirror is told the blur and focus are the page's
+    own.
 
 Everything that only an HTML mount runs is reached through `DOM_CODE`
 (`ui::lazy_code!`): drawing the frame, the toolkit's keying code (the
@@ -141,7 +171,7 @@ The baseline is the plain-DOM page (`baseline.html`, a contenteditable
 document with a sidebar) in the same run. 42 keystrokes, 60 wheel steps (30
 at 390 px), 60 ms apart. Latency is from the input event to the first
 animation frame after the page changed; for a native scroll the change is
-the scroll itself. Raw data of the last run:
+the scroll itself. Raw data of the latest run, with every change below:
 [`html-renderer/results.json`](html-renderer/results.json); the spike's is
 [`html-renderer/spike-results.json`](html-renderer/spike-results.json).
 
@@ -227,6 +257,50 @@ Against the targets:
   in the HTML screenshot and not the canvas one. The median keystroke
   still writes 2 properties and creates nothing; the largest frame of the
   run wrote 1,510 and created 287.
+- **The last run, with every change in this stage** (HTML, canvas and
+  plain DOM in one run; raw data in
+  [`html-renderer/results.json`](html-renderer/results.json)): typing p50 /
+  p90 19.6 / 32.8 ms at 1280 px and 16.1 / 30.8 ms at 390 px (plain DOM
+  2.8 / 3.6, the canvas 395 / 886 on SwiftShader); wheel p50 22.0 ms
+  (plain DOM 17.1). A keystroke frame writes 2 properties at the median
+  and at most 63, and creates at most 7 elements: since root keys hold,
+  no frame rebuilds the mount. The drag after typing selects what it
+  covers. Pixel parity 1.2 % at 1280 px (light, typed, dark) and 4.8 % at
+  390 px. A touch drag of 260 px pans the note 390 px natively. Memory, all
+  Chrome processes: 744 MB as HTML, 1105 MB on the canvas, 514 MB for the
+  plain page.
+- **Every app of the desktop bundle** (`parity.mjs`, all 39, 1280 px,
+  light, each mounted alone and left to settle, HTML and canvas in the same
+  run): the median app differs from the canvas in 0.16 % of its pixels, 37
+  apps in under 0.7 %; the diffs looked at (Maps, Notes, Passwords, Themes)
+  are glyph edges. Two stand out. Themes
+  (1.6 %): its theme previews are small text drawn as part of a picture of
+  a window. ebook (4.8 %): see the open items below. No app logs an error
+  as HTML. 1,074 semantic elements live inside their widget's painted
+  element and 371 in the mirror's layer (Model providers alone has 111 of
+  them); no painted text is exposed to assistive technology. Five apps show
+  a single-line field on their first screen, all as real inputs. Typing
+  into a first field: 6.7 – 23.5 ms p50 (plain DOM 2.1 in the same run).
+  Wheel steps over the middle of the app: 19.7 ms p50 over all apps (plain
+  DOM 18.2); the slowest, 25 – 31 ms, are apps whose middle does not scroll
+  natively, so the wheel goes to the runtime and waits for its frame.
+- **The wheel through the layer** (step 3's 30.7 – 36.6 ms p50, against
+  16.6 ms before it): two ways of scrolling, each run twice against plain
+  DOM on today's builder. With the layer setting the scroll container's offset in
+  the wheel event itself, as main does, the median is 21.0 – 22.8 ms (plain
+  DOM 16.4 – 21.3 ms in the same runs, one outlier at 8.4). Letting the
+  browser scroll the container itself, through a passive listener, gives
+  37.3 – 38.1 ms: Chrome animates a wheel scroll and its first step lands a
+  frame later. Step 3's numbers match the browser's own path, not the code
+  that landed; on main the wheel is at plain DOM's level, and no change was
+  needed.
+- **Size with `dom` off** (fields, islands and the keys' fixes): the
+  desktop bundle's start module is 21,649,224 bytes against 21,639,469 for
+  the main it is based on, built on the same builder: 9.8 KB, 0.05 %,
+  larger: the text field's call that hands its line to the page, the
+  autofill purpose in its semantics, and the picture calls of charts, plots
+  and maps. The HTML module (`dom_presenter`) grew from 53 KB to 91 KB with
+  the island rasterizer.
 - **Size with `dom` off:** keying every widget leaves the desktop bundle's
   start module (as the `sdk-web-size` check builds it,
   `tools/web/html-renderer/size.sh`) at 20,295,058 bytes against 20,281,659
@@ -254,37 +328,80 @@ Against the targets:
   a move takes the selection out of what it holds; and every root key
   changed on the press that blurred the editor, so the note's panel was
   rebuilt under the selection. Both are fixed (above, 9).
-- **Canvas islands.** Images and box gradients are done (above). A
-  widget that declares itself a picture, or a subtree with too many ops,
-  should still become one `<canvas>` rasterized by `tilo-cpu-raster` (or
-  WebGPU when present); gradients on paths and text still show their first
-  stop.
-- **Real `<input>` with autofill and passkeys.** With painted and semantic
-  elements now one node per widget, a single-line field's semantic element
-  can become the visible field at the widget's rect. It needs an autofill
-  purpose on text-input semantics and the field's text left out of the
-  scene.
+- **Canvas islands: done** (above, 10). Pictures are named by the widgets
+  that are pictures (charts, plots, maps); any other widget becomes one by
+  its draw count alone. An island is rasterized at one image pixel per CSS
+  pixel, so on a screen of more pixels per CSS pixel it is softer than the
+  canvas; gradients on paths and text still show their first stop.
+- **Real `<input>` with autofill and passkeys: done** (above, 11), proven
+  in Chrome on Passwords' new-item form (`fields.mjs`). The username field
+  is `<input autocomplete="username webauthn">` and the password field
+  `<input type="password" autocomplete="current-password">`, each where
+  the pointer finds it (`elementFromPoint` is the input). A click focuses
+  the input; typed keys, a value the browser inserts and a fill that sets
+  the value with an `input` event, as autofill does, all reach the app's
+  field (the tree's value follows), and no painted text shows the value
+  under the input. A passkey: with a virtual platform authenticator
+  holding one for the site, `isConditionalMediationAvailable()` is true
+  and a conditional `credentials.get` made by the page resolves with the
+  credential once the username field has the focus. What headless Chrome
+  cannot show is its own autofill and passkey menus, so the menus a person
+  picks from are proven only by the attributes they key on. A secret the
+  app clears (after a failed sign-in) does not clear the page's password
+  input yet: the tree never says a secret's value, empty or not.
 - **Paragraph grouping: done** (above, 8). Runs are grouped by how they
   follow one another inside one widget, not by what the toolkit knows of
   paragraphs: two labels a widget draws one under the other are one flow.
   Nothing marks a paragraph in the scene yet.
-- **Other apps.** Notes is the only app measured. Each app gets keys where
-  it draws its children through `draw_child_at`; the parity harness in
-  `tools/web/html-renderer` should run over every app's scenarios.
+- **Other apps: measured** (below). Open: ebook's pages are set in a
+  narrower face as HTML than on the canvas, and even the toolkit's line
+  breaks differ between the two runs; not explained yet. A widget that
+  leaves a child undrawn without saying so still renumbers the keys after
+  it (the gap under "Keys for every widget").
+
+## Is `dom: true` ready to be the web default?
+
+Not yet. What is ready: every app of the desktop bundle draws as HTML
+without an error and within 1 % of the canvas's pixels but for two; text
+is real, selectable and in one flow per paragraph; scroll containers are
+native, with the browser's wheel and touch; sign-in fields are real inputs
+that autofill and offer passkeys on; the semantic tree is one with the
+painted one for most widgets; the start module did not grow beyond noise.
+What blocks it:
+
+- **Typing in painted text** (the editors: Notes, the word processor) is
+  still 15 – 20 ms p50 and 25 – 50 ms p90 behind a plain page's 2 – 3 ms:
+  layout runs in wasm on every key, and its variance on a shared builder
+  is most of the p90. It needs a trace on a quiet machine and a quicker
+  path for a keystroke that changes one line.
+- **Not every app is measured past its first screen.** The parity run
+  mounts each app and types into its first field; menus, dialogs, drags,
+  the canvas app's drawing and the video editor's timeline are not driven
+  yet, and ebook's pages differ from the canvas for a reason not found.
+- **Phones.** Only Notes is measured at 390 px. Pictures are rasterized at
+  one pixel per CSS pixel, so they are soft on a phone's screen.
+- **Keys still shift** where a container leaves a child undrawn without
+  saying so: correct, but a rebuilt element loses a selection or a focus
+  inside it.
+- **A secret the app clears** does not clear the page's password input.
+- **Real hardware.** Every number here is headless Chrome without a GPU;
+  Safari and Firefox are not run at all.
 
 ## Reproducing
 
 ```sh
 # on a build machine, from a worktree of main; fetch the results back after
-tools/web/html-renderer/all.sh   # the desktop bundle's start module, with `dom` off
-tools/web/html-renderer/size.sh
+tools/web/html-renderer/all.sh   # Notes: --select, --wheel, --phone or --quick run one part
+tools/web/html-renderer/all-desktop.sh   # the sign-in fields, then every app of the desktop bundle
+tools/web/html-renderer/size.sh   # the desktop bundle's start module, with `dom` off
 ```
 
 The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`; open
 `app.html?render=dom` or `?render=gpu` (`&app=` names another app of the
 bundle, `&theme=light|dark` sets the person's setting). Results, screenshots and the HTML-against-WebGPU diff
-images land in `$CARGO_TARGET_DIR/htmlrenderer/measure`; they are not in
-the repository, which takes no binary files.
+images land in `$CARGO_TARGET_DIR/htmlrenderer/measure`, every app's in
+`$CARGO_TARGET_DIR/htmlrenderer/parity`; they are not in the repository,
+which takes no binary files.
 
 
 # The spike

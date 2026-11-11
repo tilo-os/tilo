@@ -472,8 +472,10 @@ impl Compositor {
         self.recorder.end_tick();
     }
 
-    /// Whether a client has drawn something no frame has shown yet: the frame the desk owes answers
-    /// it, and until it is drawn a client is waiting on this turn.
+    /// Whether something an output shows changed since its last frame: a client's commit, a place
+    /// the policy moved a window to, a hosted surface's layer. The display builds that frame for its
+    /// next blank, so an output owes a change for up to a refresh after it arrived, and a client
+    /// that drew it waits on this turn until it is drawn.
     pub fn owes_frame(&self) -> bool {
         !self.data.state.redraw.is_empty()
     }
@@ -500,30 +502,25 @@ impl Compositor {
         self.data.backend.next_deadline(&self.data.state)
     }
 
-    /// Answer the clients until it is time to build the frame a display owes:
-    /// what arrives while it waits joins that frame instead of each arrival
-    /// taking a turn of its own.
+    /// Answer the clients until it is time to build the frame a display owes: what arrives while
+    /// it waits joins that frame instead of each arrival taking a turn of its own. `arrived` runs
+    /// after each wait, for what a host serves at once rather than after the frame: input a tool
+    /// hands the desk, which joins the frame as a device's own input does, or an app someone is
+    /// waiting on, whose start then runs beside that frame.
     ///
     /// # Errors
     /// The compositor's clients failed.
-    pub fn await_frame(&mut self) -> Result<(), Error> {
-        self.await_frame_arrivals(|| {})
-    }
-
-    /// [`Self::await_frame`] that also runs `arrived` after each wait: what a host serves at once
-    /// rather than after the frame — an app someone is waiting on starts while the frame the desk
-    /// owes is still ahead, so its own start runs beside that frame.
-    ///
-    /// # Errors
-    /// The compositor's clients failed.
-    pub fn await_frame_arrivals(&mut self, mut arrived: impl FnMut()) -> Result<(), Error> {
+    pub fn await_frame_arrivals(
+        &mut self,
+        mut arrived: impl FnMut(&mut Self),
+    ) -> Result<(), Error> {
         while let Some(due) = self.frame_deadline() {
-            let wait = due.saturating_duration_since(std::time::Instant::now());
+            let wait = due.saturating_duration_since(tilo_clock::now());
             if wait.is_zero() {
                 break;
             }
             self.dispatch(wait)?;
-            arrived();
+            arrived(self);
         }
         Ok(())
     }
@@ -534,14 +531,15 @@ impl Compositor {
     /// # Errors
     /// The compositor's clients or its backend failed.
     pub fn draw_frame(&mut self) -> Result<(), Error> {
-        self.await_frame()?;
+        self.await_frame_arrivals(|_| {})?;
         self.render()
     }
 
     /// How long a loop may wait for clients, devices and its own work before the next frame is due;
     /// `None` when nothing is due, and it waits for an event.
     pub fn next_wait(&self) -> Option<Duration> {
-        let now = std::time::Instant::now();
+        // The deadlines are on the displays' clock, so the time they are counted from is too.
+        let now = tilo_clock::now();
         let backend = self.frame_deadline();
         // A running visual alert fades frame by frame.
         let alert = a11y::flashing(&self.data.state, now)
@@ -688,11 +686,7 @@ impl Compositor {
     /// the shortcut guide, which see keys before any client does.
     #[must_use]
     pub fn host_takes_keys(&self) -> bool {
-        self.data
-            .state
-            .hosts
-            .iter()
-            .any(|host| host.wants_keyboard())
+        self.data.state.host_holds_keys()
     }
 
     /// Whether a fullscreen window is up: it owns its display, and with it the controller in the
@@ -863,6 +857,7 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         self.display.dispatch_clients(&mut self.data.state)?;
+        self.data.state.sync_keyboard_owner();
         self.sync_text_input();
         self.data.state.refresh();
         if let Some(x11) = self.data.state.x11.clone() {
@@ -1027,6 +1022,13 @@ impl Compositor {
     /// field's last redraw.
     pub fn caret_settled(&mut self) -> bool {
         self.data.state.caret_settled()
+    }
+
+    /// When the wait for the focused field's caret gives up, while one runs: what a surface
+    /// waiting on [`Self::caret_settled`] is woken for.
+    #[must_use]
+    pub fn caret_deadline(&self) -> Option<std::time::Instant> {
+        self.data.state.caret_deadline()
     }
 
     /// Insert `text` into the field the person is typing into, whatever that field asks of its
@@ -1896,6 +1898,24 @@ impl Compositor {
             }
         }
         if drew {
+            self.data.state.mark_redraw_all();
+        }
+        // A hosted surface that drew its layers and drew none this frame leaves what it drew
+        // behind it — a sheet whose card has gone, a panel taken down — and nothing else redraws
+        // the screen it stood on: the display keeps its last frame, the card at whatever it had
+        // faded to, until the next thing that happens to damage it. What the hosts draw now is
+        // compared with the last frame, and a screen that lost a layer is drawn again.
+        let layer_counts: Vec<(usize, usize)> = self
+            .data
+            .state
+            .hosts
+            .iter()
+            .enumerate()
+            .map(|(index, host)| (index, host.layers().len()))
+            .filter(|(_, count)| *count > 0)
+            .collect();
+        if layer_counts != self.data.state.layer_counts {
+            self.data.state.layer_counts = layer_counts;
             self.data.state.mark_redraw_all();
         }
         // What the surfaces draw over the windows, by the window each part is of: a floating window

@@ -25,6 +25,11 @@ pub trait Indexes: Send + Sync {
 pub trait Index: Send + Sync {
     /// What the apps of this device published, as a source.
     fn content(&self) -> Held;
+    /// What `app` alone published, as a source: what a window's search is over,
+    /// whether or not the app is running. `None` where this host keeps no index.
+    fn content_for(&self, _app: &str) -> Option<Held> {
+        None
+    }
     /// The person's files, by their names and what they hold, as a source; `None` where this host
     /// indexes no file.
     fn files(&self) -> Option<Held>;

@@ -729,7 +729,7 @@ impl DiffView {
                     .map(|(show_right, label)| {
                         AccessNode::new(Role::ToggleButton)
                             .with_name(format!("Show {label} file"))
-                            .with_description("Switch the visible local diff source")
+                            .with_description(t("diff-a11y-switch-diff-source"))
                             .with_action_target(format!(
                                 "diffmerge.diff-source:{}",
                                 if show_right { "right" } else { "left" }
@@ -756,7 +756,7 @@ impl DiffView {
                     block.first_row.saturating_add(1),
                     block.last_row.saturating_add(1)
                 ))
-                .with_description("Show this local change block")
+                .with_description(t("diff-a11y-show-change"))
                 .with_action_target(format!(
                     "diffmerge.diff-block:{index}:{}",
                     self.block_fingerprint(index).unwrap_or_default()

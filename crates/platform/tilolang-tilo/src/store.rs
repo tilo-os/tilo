@@ -392,6 +392,11 @@ struct Inner {
     /// Where a chunk the store was not sent comes from when something reads into it or a write
     /// is addressed to it ([`TiloStore::set_chunk_loader`]).
     chunk_loader: Option<ChunkLoader>,
+    /// The chunks the store asked its source for and the source cannot give: they are not on
+    /// this device yet, or the peer holding them is away. Each is asked for once and waited on:
+    /// the sync that brings it reads it then ([`Inner::attach_document`]), and a window reads
+    /// what the store holds meanwhile, its counts not yet known ([`TiloStore::index_whole`]).
+    waited: BTreeSet<ChunkNo>,
     /// Called when an index built off the frame is ready to be taken in.
     wake: Option<Waker>,
     /// What the store read of the record so far: derivation, and reads no index answered.
@@ -730,6 +735,7 @@ impl TiloStore {
                 index_dir,
                 loader: None,
                 chunk_loader: None,
+                waited: BTreeSet::new(),
                 wake: None,
                 doc_reads: std::cell::Cell::default(),
                 evaluated: std::cell::Cell::new(0),

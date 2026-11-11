@@ -1592,7 +1592,7 @@ impl ui::widget::Decorator for ApiTesterApp {
                 .collect();
             node.children.push(
                 AccessNode::new(Role::Menu)
-                    .with_name("Row actions")
+                    .with_name(crate::locales::CATALOG.t("api-tester-row-actions"))
                     .with_hashed_key("api.row-menu")
                     .with_children(items),
             );

@@ -21,9 +21,32 @@ use crate::timeline_projection::{TimelineGeometry, TimelinePhoto};
 /// Present `doc`'s library to `app` as the framework does after a change,
 /// then sync it.
 fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
+    sync_once(app, doc);
+    sync_until_decoded(app, doc);
+}
+
+/// One pass: present `doc`'s library to `app` and sync, without waiting for
+/// the pixels the window asks the decoder for.
+fn sync_once(app: &mut PhotosApp, doc: &mut AutoCommit) {
     present(app, doc);
     Widget::sync(app, doc, &ROOT);
     settle(app, doc);
+}
+
+/// Run passes until the photograph the window shows has been decoded off the
+/// frame: the pass that asked for its pixels showed the loading state, and a
+/// later one shows the picture.
+fn sync_until_decoded(app: &mut PhotosApp, doc: &AutoCommit) {
+    let deadline = tilo_test_env::hang_deadline();
+    while app.state().decoding.is_some() {
+        assert!(
+            ui::time::now() < deadline,
+            "the photographed picture did not decode off the frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        present(app, doc);
+        Widget::sync(app, doc, &ROOT);
+    }
 }
 
 /// Apply what `app` submitted to `doc`, as the host does after a pass,
@@ -336,6 +359,38 @@ fn timeline_layout_stays_legible_justified_and_virtually_bounded() {
                 .all(|entry| (entry.width / entry.height - entry.photo.aspect_ratio).abs() < 0.01)
         );
     }
+}
+
+#[test]
+fn a_photograph_decodes_off_the_frame_and_appears_when_it_lands() {
+    let mut app = test_app();
+    let mut doc = crate::test_doc::new_doc();
+    let bytes = pixels::encode_png(&shots_pattern(40, 20)).expect("the fixture encodes");
+    app.state().open_contents("picked.png", &bytes);
+
+    // The pass that chooses it names it by its header's size and hands the
+    // pixels to the decoder: it draws the loading state rather than wait.
+    sync_once(&mut app, &mut doc);
+    assert_eq!(app.state().canvas_state, CanvasState::Loading);
+    assert!(
+        !app.state().has_image(),
+        "no frame decodes the photograph itself"
+    );
+    assert!(app.state().decoding.is_some());
+    assert_eq!(app.state().empty_state_text().0, tr("photos-loading-title"));
+
+    // Once the decoder hands the pixels over, the picture shows at the size
+    // its header promised.
+    sync_until_decoded(&mut app, &doc);
+    assert_eq!(app.state().canvas_state, CanvasState::Ready);
+    assert_eq!(
+        app.state()
+            .original
+            .as_ref()
+            .map(|(_, image)| (image.w, image.h)),
+        Some((40, 20))
+    );
+    assert!(app.state().has_image());
 }
 
 #[test]

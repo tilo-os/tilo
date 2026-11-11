@@ -148,6 +148,8 @@ impl Holder for NativeHolder {
 pub(super) struct NativeLink {
     pub scope: Arc<Scope>,
     pub link: Arc<DirectSync>,
+    /// What this link sent of the device's custody of the workspace.
+    sending: tilo_session_client::custody::Sending,
     /// Held while the workspace's hold runs this link; let go with it.
     held: Option<tokio::sync::oneshot::Sender<()>>,
     pump: tokio::task::JoinHandle<()>,
@@ -155,7 +157,6 @@ pub(super) struct NativeLink {
 
 impl Drop for NativeLink {
     fn drop(&mut self) {
-        self.scope.close();
         // The workspace's hold dials again once its link is let go.
         drop(self.held.take());
         self.pump.abort();
@@ -451,14 +452,34 @@ impl ActorState {
     /// Publish what the workspace `ws`'s owner holds for its other devices over
     /// the link it holds now.
     /// Retirement commits to disk, so it runs off this actor.
-    pub(super) fn drive_native_publication(&self, ws: u64) {
-        if let (Some(link), Some(identity)) = (self.native_links.get(&ws), &self.host_identity) {
-            if let Err(error) = link.scope.publish(&link.link, identity) {
+    /// Send this device's custody of the workspace on topic `ws` over its link up now, as far as
+    /// the link takes it, then retire what the workspace receipted or refused.
+    pub(super) fn drive_native_publication(&mut self, ws: u64) {
+        if let (Some(link), Some(route), Some(identity)) = (
+            self.native_links.get_mut(&ws),
+            self.native_routes.entries.get(&ws),
+            &self.host_identity,
+        ) {
+            let (owner, workspace) = (route.connect.owner().clone(), route.connect.workspace());
+            let sent = link.scope.current(identity).and_then(|()| {
+                link.sending.drive(
+                    &owner,
+                    workspace,
+                    |view| link.scope.authorize(view, identity),
+                    |write| {
+                        postcard::from_bytes(write.bytes)
+                            .map_err(|error| error.to_string())
+                            .and_then(|message| link.link.send(message))
+                            .inspect_err(|error| tracing::debug!(%error, "native publication remains in durable custody"))
+                            .is_ok()
+                    },
+                )
+            });
+            if let Err(error) = sent {
                 tracing::debug!(%error, "native publication remains in durable custody");
             }
-            let scope = Arc::clone(&link.scope);
             tokio::task::spawn_blocking(move || {
-                if let Err(error) = scope.retire() {
+                if let Err(error) = owner.retire_outgoing(workspace) {
                     tracing::warn!(%error, "native publication retirement not committed");
                 }
             });
@@ -611,13 +632,8 @@ impl ActorState {
         // workspace while its governor was away.
         self.native_links.remove(&ws);
         let link = Arc::new(linked.link.clone());
-        let pump = super::spawn_direct_pump(
-            ws,
-            linked,
-            Arc::clone(&link),
-            scope.clone(),
-            self.internal_tx.clone(),
-        );
+        let pump =
+            super::spawn_direct_pump(ws, linked, Arc::clone(&link), self.internal_tx.clone());
         // What this device said while the link was down: its channel
         // governance (its writer publishes it again), and the held state of
         // its workspace.
@@ -647,6 +663,7 @@ impl ActorState {
             NativeLink {
                 scope,
                 link,
+                sending: tilo_session_client::custody::Sending::default(),
                 held: Some(held),
                 pump,
             },

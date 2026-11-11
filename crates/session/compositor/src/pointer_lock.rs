@@ -111,7 +111,7 @@ impl State {
     /// The surface that may hold the pointer now: the one with keyboard focus that is also under
     /// the pointer, while the session is unlocked and no hosted surface is taking input.
     fn constraint_target(&self) -> Option<GrantTarget> {
-        if self.locked() || self.hosts.iter().any(|host| host.wants_keyboard()) {
+        if self.locked() {
             return None;
         }
         let (surface, origin) = self.pointer_surface_under(self.pointer)?;

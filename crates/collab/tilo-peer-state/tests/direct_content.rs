@@ -148,9 +148,6 @@ async fn a_hosts_ask_for_a_records_content_reaches_its_linked_member() {
     // Subscribed before the link runs, so no frame it brings is missed.
     let mut at_host = host_link.heard();
     let mut at_member = member_link.heard();
-    let generation = member
-        .with_current(workspace, |view| Ok(view.generation()))
-        .unwrap();
     let mut caught_up = member_link.caught_up();
     let linking = tokio::spawn({
         let (host_link, member_link) = (host_link.clone(), member_link.clone());
@@ -162,6 +159,13 @@ async fn a_hosts_ask_for_a_records_content_reaches_its_linked_member() {
         .await
         .expect("the link catches up")
         .expect("the link stays open");
+    // What the member's owner holds once the link is up: coming up is this
+    // device's own work, its records' snapshots signed by it and the history
+    // it takes in, and that commits. What follows rides the link as the
+    // members' traffic and writes none of it.
+    let generation = member
+        .with_current(workspace, |view| Ok(view.generation()))
+        .unwrap();
 
     // The host asks the workspace for a surface the changes it decides name.
     let ask = NeighbourMsg::RecordContentWant {

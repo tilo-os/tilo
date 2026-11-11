@@ -53,3 +53,5 @@ weather-saved-places = Gespeicherte Orte
 weather-places = Orte
 weather-places-hint = Mit den Pfeiltasten den Ort wechseln, mit Eingabe seine Vorhersage öffnen.
 weather-city-name = Ortsname
+weather-no-places = Noch keine Orte. Füge einen Ort hinzu, um seine Vorhersage zu sehen.
+weather-choose-place = Wähle einen gespeicherten Ort, um seine Vorhersage zu sehen.

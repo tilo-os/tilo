@@ -377,6 +377,12 @@ impl SessionSearch {
     /// The sources a search asks over `workspace`, and what this device's action host publishes
     /// there: one list, so a tool's search finds what the palette finds.
     fn sources(&self, workspace: &str, scope: &Scope) -> (Vec<Held>, Vec<PublishedActions>) {
+        // A window's search is about that window: what its app published into this session's
+        // index, and the actions the app publishes, and none of the desk's own rows (its other
+        // windows, the places it was, the apps it can start).
+        if let Scope::InApp(app) = scope {
+            return self.window_sources(workspace, app);
+        }
         let now = ui::time::unix_now();
         let (settings, catalogue) = self.for_workspace(workspace);
         let kept = self.kept.borrow();
@@ -439,6 +445,35 @@ impl SessionSearch {
             // one that reaches everywhere offers every workspace's.
             published.extend(apps.published(if scope.everywhere() { "" } else { workspace }));
         }
+        (sources, published)
+    }
+
+    /// What one window's search finds: what its app published into this session's index, as a
+    /// source over that app alone, and the actions the app publishes in `workspace`. An app that
+    /// runs in a process of its own hands this session no widget tree, so what its window holds is
+    /// read from the index it publishes instead.
+    fn window_sources(
+        &self,
+        workspace: &str,
+        app: &ui::search::AppScope,
+    ) -> (Vec<Held>, Vec<PublishedActions>) {
+        let mut sources = Vec::new();
+        if let Some(name) = app.app.as_deref()
+            && let Some(content) = self
+                .indexes
+                .as_ref()
+                .and_then(|index| index.content_for(name))
+        {
+            sources.push(content);
+        }
+        let published = self
+            .apps
+            .as_ref()
+            .map(|apps| apps.published(workspace))
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|published| app.app.as_deref() == Some(published.app.as_str()))
+            .collect();
         (sources, published)
     }
 
@@ -811,8 +846,9 @@ impl SearchHost for SessionSearch {
         let (mut sources, published) = self.sources(workspace, scope);
         // A question typed by the person is answered here, by the model their AI settings choose:
         // never by a tool that searches. A host that runs no gateway asks nothing, and its palette
-        // offers no question.
-        if self.models.is_some() {
+        // offers no question. A window's search is about the window: what it holds and what can be
+        // done in it, never a question of its own.
+        if self.models.is_some() && !matches!(scope, Scope::InApp(_)) {
             sources.push(Held::new(crate::search_ask::Ask::new(
                 Arc::clone(&self.ask),
                 workspace,
@@ -1640,6 +1676,90 @@ mod tests {
                 .expect("still the same reading")
                 .generation(),
             "a list that did not change is not read again"
+        );
+    }
+
+    /// A window's search reads what its app published into this session's index, and none of
+    /// another app's: one index, narrowed to the app the window shows. The same search over
+    /// everything finds it too.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_windows_search_reads_what_its_app_published_and_no_other() {
+        use std::sync::Arc;
+
+        let index = Arc::new(tilo_desktop_search::content_index::AppContentIndex::in_memory());
+        let mut publisher = ui::search::index_publication::Publisher::default();
+        for (app, key, title) in [
+            ("so.tilo.chat", "chat.workspace/channels/c_voice", "voice"),
+            ("so.tilo.mail", "mail.inbox", "Inbox"),
+        ] {
+            let entry = ui::search::index_publication::IndexEntry {
+                key: key.to_owned(),
+                resource: key.to_owned(),
+                title: title.to_owned(),
+                ..ui::search::index_publication::IndexEntry::default()
+            };
+            for delta in publisher.publish(
+                ui::search::index_publication::IndexState {
+                    generation: 1,
+                    secrets_unlocked: None,
+                },
+                vec![entry],
+            ) {
+                index
+                    .publish(
+                        "workspace",
+                        app,
+                        "tab:0001",
+                        &delta.encode().expect("a delta encodes"),
+                    )
+                    .expect("the index takes the delta");
+            }
+        }
+        let search = SessionSearch::new(
+            SearchOptions {
+                indexes: Some(Arc::new(crate::platform::indexes::SessionIndexes::new(
+                    Arc::clone(&index),
+                    None,
+                ))),
+                ..SearchOptions::default()
+            },
+            None,
+            "ada",
+            None,
+            None,
+            None,
+        );
+
+        let (in_window, desk_actions) = search.sources(
+            "workspace",
+            &Scope::InApp(ui::search::AppScope::of("so.tilo.chat")),
+        );
+        assert!(
+            desk_actions.is_empty(),
+            "the desk's own actions are not the window's"
+        );
+        let titles = |needle: &str| -> Vec<String> {
+            in_window
+                .iter()
+                .flat_map(|source| source.query(needle))
+                .map(|hit| hit.title)
+                .collect()
+        };
+        assert_eq!(titles("voice"), ["voice"], "the app's own entries");
+        assert!(
+            titles("inbox").is_empty(),
+            "another app's entry is not the window's: {:?}",
+            titles("inbox")
+        );
+
+        let (everywhere, _) = search.sources("workspace", &Scope::Workspace);
+        assert!(
+            everywhere
+                .iter()
+                .flat_map(|source| source.query("voice"))
+                .any(|hit| hit.title == "voice"),
+            "the one index also answers the search over everything"
         );
     }
 }

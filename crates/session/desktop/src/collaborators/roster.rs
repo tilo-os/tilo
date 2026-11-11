@@ -135,9 +135,17 @@ fn rows_of(
                     .map(display_role_id),
                 invited: participant.invited,
                 own_device: participant.own_device,
-                activity: participant
-                    .active_tab
-                    .and_then(|tab| tab_title_in(workspace, tab))
+                // A person's row says which record they are looking at. A piece of software's does
+                // not: the window it works in is named under its row, beside what it is doing
+                // there, and a "Viewing Launch notes" over "Working in Notes · Launch notes" says
+                // one record twice.
+                activity: (!is_agent)
+                    .then(|| {
+                        participant
+                            .active_tab
+                            .and_then(|tab| tab_title_in(workspace, tab))
+                    })
+                    .flatten()
                     .map(|title| {
                         crate::i18n::t_args("people-panel-viewing", &[("title", title.into())])
                     }),

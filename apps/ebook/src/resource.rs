@@ -943,6 +943,16 @@ pub(crate) fn note_text_dispatcher(
     })
 }
 
+/// How many books read: one is a book, never "1 books". The shelf's heading
+/// and the library's published name ([`Ebook::label`]) say it the same way.
+pub(crate) fn books_on_the_shelf(count: usize) -> String {
+    if count == 1 {
+        "1 book".to_owned()
+    } else {
+        format!("{count} books")
+    }
+}
+
 /// How an annotation is named: its note, else the passage it marks, on
 /// one line.
 pub(crate) fn mark_label(mark: &Annotation) -> String {
@@ -1047,9 +1057,9 @@ impl ResourceApp for EbookShell {
 
     fn label(state: &Ebook) -> String {
         if state.entries.is_empty() {
-            "Books".into()
+            <Ebook as ui::tilo_resource::Resource>::LABEL.to_owned()
         } else {
-            format!("{} books", state.entries.len())
+            books_on_the_shelf(state.entries.len())
         }
     }
 

@@ -197,6 +197,13 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
         &mut self.editor
     }
 
+    /// The text menu the editor has open on its words, as assistive
+    /// technology reads it, where it is drawn: a host that publishes nodes of
+    /// its own adds this beside the field's node, as it adds its own menus.
+    pub fn text_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        self.editor.text_menu_access_node()
+    }
+
     /// Where the text comes from.
     pub fn source(&self) -> &S {
         &self.source

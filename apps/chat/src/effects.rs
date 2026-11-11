@@ -371,9 +371,9 @@ impl ChatApp {
         }
         self.thread_follow = false;
         if expanded {
-            self.expanded_reasoning.insert(message);
+            self.expanded_agent.insert(message);
         } else {
-            self.expanded_reasoning.remove(&message);
+            self.expanded_agent.remove(&message);
         }
         Ok(())
     }
@@ -919,7 +919,7 @@ impl ChatApp {
         {
             row = row.effect(&ChatEffect::ShowAgentReasoning {
                 message: id.to_owned(),
-                expanded: !self.expanded_reasoning.contains(id),
+                expanded: !self.expanded_agent.contains(id),
             });
         }
         Some(row)

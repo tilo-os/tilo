@@ -11,6 +11,7 @@
 //   (`native()`), presses are the page's, and while the person holds such a
 //   selection the focus stays where it is, so the hidden text editor does not
 //   take the selection away; copying it is the browser's.
+// - a field the page shows as its own `<input>` takes its presses itself.
 // Every other pointer event is re-sent to the canvas as it came, without
 // bubbling, so the page's own window-level listeners see it once.
 
@@ -53,9 +54,13 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
     if (copy.defaultPrevented && event.type === 'contextmenu') event.preventDefault();
   }
 
+  // A field the page shows as its own input (`data-tilo-field`) is the
+  // browser's: a press there focuses it and places its caret natively.
+  const field = event => Boolean(event.target?.dataset?.tiloField);
+
   for (const type of FORWARDED) {
     on(layer, type, event => {
-      if (native()) return;
+      if (native() || field(event)) return;
       // Crossing from one of the layer's elements to another is no entry or
       // exit of the surface.
       if ((type === 'pointerover' || type === 'pointerout') && event.relatedTarget && layer.contains(event.relatedTarget)) return;
@@ -70,7 +75,10 @@ export function createDomInput({layer, canvas, scrollerAt, native = () => false,
   // A press the runtime takes moves no focus and starts no selection of its
   // own, as on the canvas (winit keeps the focus there): the press's default
   // would take the focus from the runtime's editor to the page.
-  on(layer, 'mousedown', event => { if (native()) selecting = event.button === 0; else event.preventDefault(); }, {capture: true});
+  on(layer, 'mousedown', event => {
+    if (field(event)) return;
+    if (native()) selecting = event.button === 0; else event.preventDefault();
+  }, {capture: true});
   on(view, 'mouseup', () => { selecting = false; }, {capture: true});
   // A wheel a scroll container can take moves it in this very event, so the
   // next frame shows the move (the browser's own wheel scroll would wait for

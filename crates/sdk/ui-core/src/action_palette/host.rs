@@ -1194,10 +1194,6 @@ impl ActionPalette {
         if !open {
             return node;
         }
-        let name = match &self.host_step {
-            Some(_) => self.field.prompt().unwrap_or_default().to_owned(),
-            None => self.query_placeholder.clone(),
-        };
         // The caret makes the field a text field for assistive technology
         // (AT-SPI Text and EditableText), not only a labelled value.
         let (anchor, caret) = self.field.selection_anchor_focus_or_caret();
@@ -1205,9 +1201,14 @@ impl ActionPalette {
             .host_step
             .as_ref()
             .is_some_and(|step| step.kind == ArgumentKind::Secret);
+        let (name, description) = super::widget::field_announcement(
+            &self.field,
+            self.host_step.as_ref().and(self.field.prompt()),
+        );
         let mut query_node = AccessNode::new(Role::TextInput)
             .with_action_target(QUERY_TARGET)
             .with_name(name)
+            .with_optional_description(description)
             .with_bounds(self.input_row_rect())
             .with_state(
                 AccessState::new()

@@ -114,7 +114,7 @@ impl ChatApp {
                 label.push('\n');
                 label.push_str(&stream.detail);
             }
-            if self.expanded_reasoning.contains(&message.id) && !stream.reasoning.is_empty() {
+            if self.expanded_agent.contains(&message.id) && !stream.reasoning.is_empty() {
                 label.push('\n');
                 label.push_str(&crate::i18n::t("chat-agent-provider-reasoning"));
                 label.push_str(": ");

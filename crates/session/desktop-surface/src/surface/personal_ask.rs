@@ -6,8 +6,9 @@
 //! whose source is [`HostActionSource::Identity`] is held here instead of
 //! posted as a notice. The bar shows it open, as a small popover beside the
 //! avatar, until the person answers it, puts it off, or clicks elsewhere;
-//! clicked away it stays as a dot on the avatar, which opens it again. It
-//! never covers a window, so it can never take a click meant for one.
+//! clicked away it stays as a dot on the avatar, and the person's own card,
+//! which the avatar opens, offers what it asks. It never covers a window, so
+//! it can never take a click meant for one.
 
 use super::DesktopHandle;
 use super::search::{HostAction, HostActionSource};

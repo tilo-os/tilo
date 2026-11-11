@@ -2681,6 +2681,8 @@ impl Workspaces {
         let accessing = crate::timing::start();
         let now = SystemTime::now();
         let access: GovernedAccess = workspace.peer().governance().governed_access(now)?;
+        crate::timing::event("room.settle.access_read", accessing, 0);
+        let members = access.member_devices.clone();
         // Who is in the workspace is what its governance just said: the person
         // listing of every one of them is answered from that, not by reading
         // every workspace this host governs.
@@ -2695,7 +2697,12 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         crate::timing::event("room.settle.access", accessing, 0);
         // A device the workspace no longer admits is sent to no one: what it
-        // retained to introduce itself goes.
+        // retained to introduce itself goes, unless it brings a revocation
+        // this workspace holds nowhere else. Every newcomer is sent the
+        // revocations the workspace holds beside its governance, and the
+        // hellos that bring any other: a hello can be the only record of a
+        // revocation, of a device no workspace row lists, and forgetting it
+        // would let that device in again.
         if !dropped.is_empty() {
             let hosted = host
                 .workspaces
@@ -2704,18 +2711,21 @@ impl Workspaces {
                 .get(&workspace.workspace_id())
                 .cloned();
             if let Some(hosted) = hosted {
+                let held = workspace.peer().revocations();
                 let forgotten = crate::compaction::owner_run(&hosted, move |store| {
-                    store.forget_hellos(&dropped)
+                    let payloads = std::sync::Arc::clone(store.payloads());
+                    store.forget_hellos(&dropped, &|body| {
+                        payloads.identity(body).is_some_and(|(_, brought)| {
+                            brought.iter().any(|entry| !held.contains(entry))
+                        })
+                    })
                 })
                 .await?;
                 tracing::debug!(workspace = %workspace.workspace(), forgotten, "forgot the hellos of devices the workspace no longer admits");
             }
         }
         let standing = crate::timing::start();
-        let standings = workspace
-            .peer()
-            .governance()
-            .governed_standings(SystemTime::now())?;
+        let standings = workspace.peer().governance().standings_of(&members, now)?;
         host.access
             .replace_standings(workspace.workspace_id(), true, standings)
             .await

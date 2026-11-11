@@ -8,7 +8,11 @@
 //! for, and says which run of the agent opened it. Every page of the
 //! workspace draws it from the synced desktop as it draws its own tabs,
 //! mounting the app over the record locally: nothing is streamed. A record
-//! already on the desk is left where the people put it. A workspace nobody
+//! already on the desk is left where the people put it. Records are named as
+//! every page notes its windows' (the record's wire spelling, the empty one
+//! for an app's primary record) and told apart by their app as well, so a
+//! person's own window of an app's primary record is the window that shows
+//! it, not a reason to open a second. A workspace nobody
 //! has opened a desk in yet gets one, as the first page in would make it,
 //! holding the agent's window.
 
@@ -24,10 +28,12 @@ use tilo_desktop_model::{
 pub(crate) struct View<'a> {
     pub app_id: &'a str,
     pub title: &'a str,
-    /// The record the view shows, as tabs bind it.
+    /// The record the view shows, in the wire spelling pages note their
+    /// windows' records in: empty for the app's primary record.
     pub record: &'a str,
-    /// The record whose view the agent works in already, to open beside.
-    pub beside: Option<&'a str>,
+    /// The app and record whose view the agent works in already, to open
+    /// beside.
+    pub beside: Option<(&'a str, &'a str)>,
 }
 
 /// Who opens a view: the person whose window it is, and the agent run that
@@ -49,11 +55,7 @@ pub(crate) fn place_view(
 ) -> Option<Vec<u8>> {
     let mut doc = desktop.clone();
     let mut desktop = shared_record::read(&doc, None).or_else(|| fresh(workspace, name?))?;
-    if desktop
-        .records
-        .iter()
-        .any(|(_, record)| record == view.record)
-    {
+    if shown_at(&desktop, view.app_id, view.record).is_some() {
         return None;
     }
     let author = opener.person;
@@ -71,6 +73,22 @@ pub(crate) fn place_view(
     shared_record::write(&mut doc, &desktop).ok()?;
     doc.commit();
     Some(doc.save_after(&before))
+}
+
+/// The tab of `desktop` that shows `app`'s `record`: the record and the app
+/// its window runs both, since the primary record of every app is spelled the
+/// same (empty).
+fn shown_at(desktop: &SharedDesktop, app: &str, record: &str) -> Option<u64> {
+    desktop
+        .records
+        .iter()
+        .find(|(tab, shown)| {
+            shown == record
+                && desktop.tree.tab(*tab).is_some_and(|tab| {
+                    matches!(&tab.tile, TileContent::LocalApp { app_id, .. } if app_id == app)
+                })
+        })
+        .map(|(tab, _)| *tab)
 }
 
 /// The desktop the first page in `workspace` makes: the workspace itself,
@@ -93,13 +111,9 @@ fn fresh(workspace: &str, name: &str) -> Option<SharedDesktop> {
 /// Add a tab for `view` to the desktop's first workspace, beside the group
 /// showing `view.beside`, in `author`'s id namespace. Returns the tab id.
 fn add_tab(desktop: &mut SharedDesktop, author: &str, view: &View<'_>) -> Option<u64> {
-    let beside_tab = view.beside.and_then(|beside| {
-        desktop
-            .records
-            .iter()
-            .find(|(_, record)| record == beside)
-            .map(|(tab, _)| *tab)
-    });
+    let beside_tab = view
+        .beside
+        .and_then(|(app, record)| shown_at(desktop, app, record));
     let workspace = desktop.tree.workspaces.first_mut()?;
     let beside_group = beside_tab.and_then(|tab| {
         workspace
@@ -261,7 +275,7 @@ mod tests {
             app_id: "so.tilo.files",
             title: "Files",
             record: "files-record",
-            beside: Some("notes-record"),
+            beside: Some(("so.tilo.notes", "notes-record")),
         };
         let change = place_view(&merged(&changes), (WORKSPACE, None), &opener(), &view)
             .expect("a tab is added");
@@ -292,6 +306,54 @@ mod tests {
             place_view(&merged(&changes), (WORKSPACE, None), &opener(), &view).is_none(),
             "a record already on the desk stays where it is"
         );
+    }
+
+    /// Notes keeps its notes in its primary record, which a person's own Notes window shows and
+    /// notes on the desk in the wire spelling (empty). A note the agent makes there is in that
+    /// window already: no second window opens on the same record. The empty spelling is every
+    /// app's primary record, so a primary of another app still gets its window.
+    #[test]
+    fn a_primary_record_a_persons_window_shows_opens_no_second_window() {
+        let mut workspace = Workspace::new(WorkspaceSlot(1), "Workspace");
+        workspace.strips = vec![Strip {
+            id: StripId(10),
+            name: "Main".into(),
+            window_groups: vec![group(20, tab(21, "so.tilo.notes"))],
+        }];
+        let desktop = SharedDesktop {
+            tree: tilo_desktop_model::DesktopTree {
+                workspaces: vec![workspace],
+                ..tilo_desktop_model::DesktopTree::default()
+            },
+            records: vec![(21, String::new())],
+            authors: std::collections::BTreeMap::new(),
+            opened_by: std::collections::BTreeMap::new(),
+        };
+        let mut doc = AutoCommit::new();
+        shared_record::write(&mut doc, &desktop).unwrap();
+        doc.commit();
+        let notes = View {
+            app_id: "so.tilo.notes",
+            title: "Notes",
+            record: "",
+            beside: None,
+        };
+        assert!(
+            place_view(&doc, (WORKSPACE, None), &opener(), &notes).is_none(),
+            "the person's Notes window shows the note"
+        );
+        let chat = View {
+            app_id: "so.tilo.chat",
+            title: "Chat",
+            record: "",
+            beside: Some(("so.tilo.notes", "")),
+        };
+        let change = place_view(&doc, (WORKSPACE, None), &opener(), &chat)
+            .expect("another app's primary record opens its own window");
+        let desktop = read(&[doc.save(), change]);
+        let groups = &desktop.tree.workspaces[0].strips[0].window_groups;
+        assert_eq!(groups.len(), 2, "beside the Notes window: {desktop:?}");
+        assert_eq!(groups[0].id, 20);
     }
 
     #[test]

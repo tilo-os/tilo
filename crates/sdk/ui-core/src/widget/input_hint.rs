@@ -72,6 +72,8 @@ pub struct InputHint {
     layout_theme: Theme,
     /// The chord changed since the last frame drew it.
     dirty: bool,
+    /// What it holds changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 /// Shared vector controller/Joy-Con silhouette used in device pickers and
@@ -225,6 +227,7 @@ impl InputHint {
             rect: Rect::ZERO,
             layout_theme: Theme::dark(),
             dirty: true,
+            layout_dirty: true,
         }
     }
 
@@ -236,6 +239,7 @@ impl InputHint {
         }
         self.binding = binding;
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     pub fn keyboard(binding: KeyboardBinding) -> Self {
@@ -590,7 +594,7 @@ impl Widget for InputHint {
         tree.set_style(node, style).is_ok()
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -612,11 +616,6 @@ impl Widget for InputHint {
     }
 
     crate::redraw_flag!();
-
-    /// Another chord takes other keycaps, and other room.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
-    }
 
     fn name(&self) -> &'static str {
         "InputHint"

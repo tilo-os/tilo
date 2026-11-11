@@ -115,7 +115,7 @@ pub(crate) fn url_bar(sink: &Sink) -> Element {
         TextInput::local()
             .with_kind(TextInputKind::Url)
             .with_id("api.url")
-            .with_placeholder("Enter a URL")
+            .with_placeholder(crate::locales::CATALOG.t("api-tester-url-placeholder"))
             .with_accessible_name("Request URL"),
         sink,
         &sink.url.borrow(),

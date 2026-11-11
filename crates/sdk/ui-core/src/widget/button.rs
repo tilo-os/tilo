@@ -918,8 +918,6 @@ impl Button {
         let size_changed = rect.width().to_bits() != self.rect.width().to_bits()
             || rect.height().to_bits() != self.rect.height().to_bits();
         self.rect = rect;
-        // The caller has just laid it out: whatever asked for a measure is
-        // answered by this geometry.
         self.layout_dirty = false;
         if size_changed {
             self.dirty = true;
@@ -2557,7 +2555,6 @@ impl Widget for Button {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        self.layout_dirty = false;
     }
 
     /// A missing rect keeps the first frame's `compute_layout` running so

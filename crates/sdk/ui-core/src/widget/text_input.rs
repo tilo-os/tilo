@@ -377,6 +377,10 @@ pub struct TextInput {
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
+    /// The host shows this single-line field's text, caret and selection
+    /// itself, as a page shows its own `<input>`, this frame
+    /// ([`crate::scene_parts::native_field`]).
+    host_shows_text: bool,
     /// The caret the last shaped multiline draw painted, or would have
     /// painted had it not been suppressed, with the clip it paints under:
     /// what [`Self::draw_caret_apart`] paints.
@@ -493,6 +497,11 @@ pub struct TextInput {
     secret: bool,
     disabled: bool,
     kind: TextInputKind,
+    /// What the field asks a browser or password manager to fill in, when
+    /// its owner said so (`autofill_said`) rather than leaving it to
+    /// [`Self::kind`].
+    autofill: Option<crate::a11y::Autofill>,
+    autofill_said: bool,
     /// The inline completion list beside the caret (`:emoji:`, `@mention`).
     completion: CompletionList,
     /// What the field offers inline. `None` follows the field's kind: prose
@@ -854,6 +863,7 @@ impl TextInput {
             change_before: None,
             is_focused: false,
             caret_paint_suppressed: false,
+            host_shows_text: false,
             ml_caret: None,
             text: String::new(),
             pending_paste: None,
@@ -901,6 +911,8 @@ impl TextInput {
             secret: false,
             disabled: false,
             kind: TextInputKind::Prose,
+            autofill: None,
+            autofill_said: false,
             completion: CompletionList::default(),
             completion_setting: None,
             mention_candidates: Vec::new(),
@@ -6428,6 +6440,14 @@ impl Widget for TextInput {
         let cursor_x_offset = self.single_line_cursor_x_offset(total_w);
         let content_w = f64::from(total_w).max(cursor_x_offset);
         self.update_single_line_scroll(cursor_x_offset, content_w, padding_x, theme.caret_width);
+        self.hand_line_to_host(
+            text_renderer,
+            transform,
+            theme,
+            text_size,
+            padding_x,
+            text_y,
+        );
 
         // Text never runs under the show/hide control.
         let text_clip = if self.has_reveal_control() {
@@ -6461,8 +6481,11 @@ impl Widget for TextInput {
             );
         }
 
-        self.draw_single_line_decorations(scene, transform, theme, true);
-        self.draw_single_line_selection(scene, transform, theme);
+        let own_text = !self.host_shows_text;
+        if own_text {
+            self.draw_single_line_decorations(scene, transform, theme, true);
+            self.draw_single_line_selection(scene, transform, theme);
+        }
 
         #[cfg(test)]
         let glyph_probe = crate::profiling::frame_probe::span("single_line_glyphs");
@@ -6474,8 +6497,10 @@ impl Widget for TextInput {
         #[cfg(test)]
         drop(glyph_probe);
 
-        self.draw_single_line_decorations(scene, transform, theme, false);
-        if self.is_focused && !self.effectively_disabled() {
+        if own_text {
+            self.draw_single_line_decorations(scene, transform, theme, false);
+        }
+        if own_text && self.is_focused && !self.effectively_disabled() {
             self.draw_single_line_caret(scene, transform, theme);
         }
 
@@ -6488,14 +6513,16 @@ impl Widget for TextInput {
             self.reveal
                 .draw_child(scene, transform, text_renderer, theme, presence);
         }
-        #[cfg(test)]
-        let spelling_probe = crate::profiling::frame_probe::span("single_line_spelling");
-        self.draw_spelling(scene, transform, theme);
-        #[cfg(test)]
-        drop(spelling_probe);
-        self.draw_pending_token(scene, transform, theme);
-        self.draw_autocorrection(scene, transform, theme);
-        self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
+        if own_text {
+            #[cfg(test)]
+            let spelling_probe = crate::profiling::frame_probe::span("single_line_spelling");
+            self.draw_spelling(scene, transform, theme);
+            #[cfg(test)]
+            drop(spelling_probe);
+            self.draw_pending_token(scene, transform, theme);
+            self.draw_autocorrection(scene, transform, theme);
+            self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
+        }
         self.draw_peers_and_gate(scene, transform, text_renderer, theme, presence);
     }
 
@@ -6935,6 +6962,7 @@ impl Widget for TextInput {
                 protected: secret,
                 multiline: self.multiline,
                 invalid: self.invalid,
+                autofill: self.autofill(),
                 ..Default::default()
             });
         if !self.id.is_empty() {

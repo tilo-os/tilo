@@ -7,7 +7,7 @@
 
 use ui::i18n::ArgValue;
 
-ui::embedded_catalog!(pub fn, ["en-US"]);
+ui::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
 
 /// One named variable for [`t_args`].
 pub fn arg<V: Into<ArgValue>>(name: &str, value: V) -> (&str, ArgValue) {
@@ -44,5 +44,27 @@ mod tests {
             }
             assert_ne!(t(key), key, "{key} resolves to copy");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(catalogue.t("tube-nav-settings"), "Einstellungen");
+        catalogue.set_locale("en-US");
+        assert_eq!(catalogue.t("tube-nav-settings"), "Settings");
     }
 }

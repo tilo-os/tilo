@@ -40,7 +40,7 @@ mod sidebar;
 mod vars;
 
 pub use app::ApiTesterApp;
-pub use resource::{ApiTesterShell, LOCALES, Workspace};
+pub use resource::{ApiTesterShell, Workspace};
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {

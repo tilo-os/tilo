@@ -722,6 +722,18 @@ impl AttachedView {
         self.records.ask_workspace_for_missing();
     }
 
+    /// The keys `mutation` writes in `record`, as the view holds that record
+    /// now: a fork of it, so the answer costs a head set rather than the
+    /// record. `None` for a record this view does not hold.
+    pub fn changed_keys(
+        &self,
+        record: &ui_core::record::RecordId,
+        mutation: &DocumentMutation,
+    ) -> Option<Result<Vec<Vec<String>>, String>> {
+        self.records
+            .with(record, |doc| changed_keys_of(doc, mutation))
+    }
+
     /// What the view's records ask the workspace's hosts for
     /// ([`RecordStore::wanted_records`]).
     #[must_use]
@@ -889,6 +901,44 @@ fn publish(
 /// The heads of the record `document` holds: what a participant joining it
 /// was given, past which anything its view writes while it opens is refused
 /// ([`refuse_written_on_open`]).
+/// The storage keys `mutation` writes, top down to what it put or deleted, in
+/// `doc`: forked, so the document itself is not touched.
+fn changed_keys_of(
+    doc: &mut ui_core::automerge::AutoCommit,
+    mutation: &DocumentMutation,
+) -> Result<Vec<Vec<String>>, String> {
+    use ui_core::automerge::PatchAction;
+    let key = |prop: &ui_core::automerge::Prop| match prop {
+        ui_core::automerge::Prop::Map(key) => key.clone(),
+        ui_core::automerge::Prop::Seq(index) => index.to_string(),
+    };
+    let mut probe = doc.fork();
+    let was = probe.get_heads();
+    let bytes = match mutation {
+        DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes) => bytes,
+    };
+    tilo_automerge::ApplyIncoming::load_incoming(&mut probe, bytes)
+        .map_err(|error| error.to_string())?;
+    let now = probe.get_heads();
+    Ok(probe
+        .diff(&was, &now)
+        .into_iter()
+        .map(|patch| {
+            let mut keys: Vec<String> = patch.path.iter().map(|(_, prop)| key(prop)).collect();
+            match &patch.action {
+                PatchAction::PutMap { key: put, .. } | PatchAction::DeleteMap { key: put } => {
+                    keys.push(put.clone());
+                }
+                PatchAction::Increment { prop, .. } | PatchAction::Conflict { prop } => {
+                    keys.push(key(prop));
+                }
+                _ => {}
+            }
+            keys
+        })
+        .collect())
+}
+
 fn heads_of(document: &[u8]) -> Result<Vec<ui_core::automerge::ChangeHash>, String> {
     ui_core::automerge::AutoCommit::load(document)
         .map(|mut doc| doc.get_heads())

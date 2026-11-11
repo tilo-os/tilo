@@ -1223,7 +1223,8 @@ pub trait Widget {
     }
 
     /// Called after this widget's scene lands in the composed frame, to
-    /// clear a `dirty` flag. Default forwards to children.
+    /// clear a `dirty` flag: paint only, never layout dirt
+    /// ([`Self::is_layout_dirty`]). Default forwards to children.
     fn mark_drawn(&mut self) {
         defaults::mark_drawn(self.children_mut());
     }
@@ -1246,6 +1247,10 @@ pub trait Widget {
     /// Default `true`; widgets with a fixed intrinsic size should override
     /// to `false` unless a size-affecting mutation landed. Containers MUST
     /// forward: layout-dirty iff any descendant is.
+    ///
+    /// Layout answers it, never a draw: the solver ([`Self::layout_measured`])
+    /// or a host's `apply_layout_external`; [`Self::mark_drawn`] clears only
+    /// paint, and a draw raises no layout dirt.
     fn is_layout_dirty(&self) -> bool {
         defaults::is_layout_dirty(&|visit| self.for_each_child(visit))
     }

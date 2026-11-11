@@ -3282,6 +3282,7 @@ pub(crate) fn observed_history_editor(
 #[cfg(test)]
 mod tests {
     include!("action_palette/deferred_tests.rs");
+    include!("action_palette/copy_tests.rs");
     include!("action_palette/confirmation_tests.rs");
     include!("action_palette/platform_search_tests.rs");
     include!("action_palette/search_tests.rs");

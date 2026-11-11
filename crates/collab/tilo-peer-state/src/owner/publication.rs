@@ -1102,6 +1102,15 @@ impl NativeWorkspaceOwner {
         if key.verifying_key().to_bytes() != candidate.device().device_public_key {
             return Err("native bootstrap signer differs from selected device".into());
         }
+        // A device that does not host the workspace and holds no record in the
+        // clear signs nothing for a catch-up and takes no number: there is
+        // nothing to make durable, and a link costs no write of its record.
+        if !candidate.record.hosted_here() {
+            let mut live = candidate.live();
+            if !live.holds_clear_records() {
+                return live.publication_mut().bootstrap_messages(key, now);
+            }
+        }
         let (messages, stored) = candidate.change(|live, stored| {
             let generation = stored
                 .generation

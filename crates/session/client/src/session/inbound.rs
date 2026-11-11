@@ -16,7 +16,6 @@ use super::*;
 pub(super) struct GovernanceBatch {
     workspace_id: u64,
     author: [u8; 32],
-    retained: bool,
     room: String,
     /// Each frame's changes, in the order they came.
     frames: Vec<Vec<Vec<u8>>>,
@@ -39,8 +38,6 @@ impl Task {
     /// The host no longer lets this device into `workspace_id`, for
     /// `reason`: its owner deleted it, or this device may not.
     fn not_authorised(&mut self, workspace_id: u64, reason: String) {
-        // A refused open is answered: what follows is live.
-        self.opens_refused(workspace_id);
         if reason == tilo_relay_protocol::refusal::WORKSPACE_DELETED {
             self.workspace_deleted(workspace_id);
         } else {
@@ -163,13 +160,13 @@ impl Task {
     /// A coedit delta: its body, when it carries one, is the workspace's
     /// content from `author`.
     ///
-    /// What a host's store kept is history: the author signed it when it was
-    /// fresh, and the host hands it over later, whether it replays a newcomer
-    /// or answers for a record a device opens after its replay
-    /// ([`Task::open_record`]). Its frames are decided as of their own
-    /// timestamps, never as of now: a chat written an hour ago and opened now
-    /// reads ([`Task::sends_history`]). A live write is decided as of now, and
-    /// one in the clear on a sealed record is refused.
+    /// Every write a host sends was signed by its author when it was made,
+    /// whether the host relays it as it arrives, replays a newcomer what its
+    /// store kept or answers for a record a device opens
+    /// ([`Task::open_record`]): it is decided as of its own timestamp, so a
+    /// chat written an hour ago and opened now reads. Whether a write in the
+    /// clear is a record's base or a downgrade is where it stands in the
+    /// record, before its seal or after, which the replica decides.
     fn delta(&mut self, workspace_id: u64, delta: &[u8], author: [u8; 32]) {
         match CoeditPayload::decode(delta) {
             Some(
@@ -240,20 +237,19 @@ impl Task {
     /// is admitted through the workspace's replica; channel governance and
     /// documents go on.
     pub(super) fn inbound_body(&mut self, workspace_id: u64, body: &[u8], author: [u8; 32]) {
-        let retained = self.sends_history(workspace_id);
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) {
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
-                self.gather_governance(workspace_id, author, retained, room, changes);
+                self.gather_governance(workspace_id, author, room, changes);
             }
             Ok(message @ neighbour_wire::NeighbourMsg::IdentityHello { .. }) => {
                 self.admit_governance();
                 // Governance is decided after the documents that came before it.
                 self.keep_arrived();
-                self.admit_governance_message(workspace_id, author, retained, message);
+                self.admit_governance_message(workspace_id, author, message);
             }
             Ok(message) => {
                 self.admit_governance();
-                self.inbound_message(body, message, author, retained);
+                self.inbound_message(body, message, author);
             }
             Err(_) => {}
         }
@@ -269,7 +265,6 @@ impl Task {
         &mut self,
         workspace_id: u64,
         author: [u8; 32],
-        retained: bool,
         room: String,
         changes: Vec<Vec<u8>>,
     ) {
@@ -277,7 +272,6 @@ impl Task {
         let joins = self.governance_batch.as_ref().is_some_and(|batch| {
             batch.workspace_id == workspace_id
                 && batch.author == author
-                && batch.retained == retained
                 && batch.room == room
                 && batch.bytes.saturating_add(bytes) <= GOVERNANCE_BATCH_BYTES
         });
@@ -289,7 +283,6 @@ impl Task {
             .get_or_insert_with(|| GovernanceBatch {
                 workspace_id,
                 author,
-                retained,
                 room,
                 frames: Vec::new(),
                 bytes: 0,
@@ -311,7 +304,6 @@ impl Task {
         let GovernanceBatch {
             workspace_id,
             author,
-            retained,
             room,
             frames,
             ..
@@ -321,7 +313,7 @@ impl Task {
                 changes: frames.iter().flatten().cloned().collect(),
                 room: room.clone(),
             };
-            if self.admit_governance_message(workspace_id, author, retained, message) {
+            if self.admit_governance_message(workspace_id, author, message) {
                 return;
             }
         }
@@ -330,7 +322,7 @@ impl Task {
                 changes,
                 room: room.clone(),
             };
-            self.admit_governance_message(workspace_id, author, retained, message);
+            self.admit_governance_message(workspace_id, author, message);
         }
     }
 
@@ -340,17 +332,13 @@ impl Task {
         &mut self,
         workspace_id: u64,
         author: [u8; 32],
-        retained: bool,
         message: neighbour_wire::NeighbourMsg,
     ) -> bool {
         // Governance the replica refuses is not the workspace's.
-        let Ok(report) = self.replicas.admit(
-            workspace_id,
-            author,
-            retained,
-            message,
-            web_time::SystemTime::now(),
-        ) else {
+        let Ok(report) =
+            self.replicas
+                .admit(workspace_id, author, message, web_time::SystemTime::now())
+        else {
             return false;
         };
         // Documents the replica held for this governance are decided now.
@@ -363,14 +351,12 @@ impl Task {
         true
     }
 
-    /// Channel governance or a document `author` wrote, `retained` while the
-    /// host replays the workspace.
+    /// Channel governance or a document `author` wrote.
     pub(super) fn inbound_message(
         &mut self,
         body: &[u8],
         message: neighbour_wire::NeighbourMsg,
         author: [u8; 32],
-        retained: bool,
     ) {
         match message {
             message @ neighbour_wire::NeighbourMsg::MlsGovernance { .. } => {
@@ -414,7 +400,6 @@ impl Task {
                 self.arrived.push(Arrived {
                     workspace_id,
                     author,
-                    retained,
                     message: message.clone(),
                     route,
                     entry,
@@ -445,7 +430,7 @@ impl Task {
             }
             let documents = run
                 .iter()
-                .map(|document| (document.author, document.retained, document.message.clone()))
+                .map(|document| (document.author, document.message.clone()))
                 .collect();
             match self
                 .replicas
@@ -472,7 +457,6 @@ impl Task {
     ) {
         let Arrived {
             author,
-            retained,
             route,
             entry,
             surface,
@@ -486,7 +470,7 @@ impl Task {
             }
         };
         let mut landed = BTreeMap::new();
-        if tilo_peer_state::owner::took_in(&report, retained) {
+        if tilo_peer_state::owner::took_in(&report, true) {
             if self.received.len() < MAX_DELIVERED_ENTRIES {
                 self.received.insert(entry);
             }

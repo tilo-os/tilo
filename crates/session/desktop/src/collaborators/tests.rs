@@ -616,6 +616,94 @@ fn agent_classification_uses_stable_identity_not_display_label() {
     );
 }
 
+/// Software's row names the window it works in once: what it is doing there, with the record
+/// beside it. A "Viewing Launch notes" above that says the same record twice, so software's row
+/// carries none, while a person's still says which record they are looking at.
+#[test]
+fn an_agents_row_names_the_record_it_works_in_once() {
+    use tilo_desktop_model::{
+        Status, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth, Workspace,
+        WorkspaceSlot,
+    };
+
+    let notes = Tab {
+        id: 7,
+        title: "Launch notes".into(),
+        tile: TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let mut main = Strip::new(StripId(1), "Main");
+    main.window_groups.push(WindowGroup {
+        id: 8,
+        active_tab: notes.id,
+        tabs: vec![notes],
+        width: WindowWidth::Normal,
+        maximized: false,
+        focus_history: Vec::new(),
+    });
+    let mut workspace = Workspace::new(WorkspaceSlot(1), "Design");
+    workspace.strips = vec![main];
+    workspace.collaborators = vec![
+        Collaborator {
+            id: "ada".into(),
+            name: "Ada".into(),
+            active_tab: Some(7),
+            status: Some(Status {
+                text: "Reviewing the plan".into(),
+                automatic: false,
+            }),
+            ..Collaborator::default()
+        },
+        Collaborator {
+            id: "claude".into(),
+            name: "Claude Code".into(),
+            role_id: Some(AGENT_ROLE_MARKER.to_owned()),
+            active_tab: Some(7),
+            status: Some(Status {
+                text: "Working in Notes".into(),
+                automatic: false,
+            }),
+            ..Collaborator::default()
+        },
+    ];
+    let desktop = DesktopTree {
+        active: workspace.slot,
+        workspaces: vec![workspace],
+        ..DesktopTree::default()
+    };
+
+    let rows = collaborator_roster_rows(&desktop, "local");
+    let agent = rows.iter().find(|row| row.is_agent).expect("the agent");
+    assert_eq!(
+        agent.activity, None,
+        "software's work line already names the window it works in"
+    );
+    assert_eq!(agent.working_in, Some((7, "Launch notes".to_owned())));
+    assert_eq!(
+        working_in_line(agent),
+        (
+            "Working in Notes".to_owned(),
+            Some("Launch notes".to_owned())
+        ),
+        "what it is doing, and the record it does it in: said once"
+    );
+
+    let ada = rows.iter().find(|row| row.id == "ada").expect("Ada");
+    let viewing = t_args("people-panel-viewing", &[("title", "Launch notes".into())]);
+    assert_eq!(
+        ada.activity.as_deref(),
+        Some(viewing.as_str()),
+        "a person's row says which record they are looking at"
+    );
+    assert_eq!(ada.working_in, None, "only software works in a window");
+}
+
 #[test]
 fn the_model_keeps_follow_direction_when_cursors_are_not_visible() {
     let rows = vec![row("ada", "Ada"), row("bob", "Bob")];

@@ -231,16 +231,9 @@ fn window_actions(core: &Core, front: NavPane) -> Vec<ToolbarAction> {
     ]
 }
 
-/// Which menu is open.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) enum MenuKind {
-    Feed(Id),
-}
-
 /// The open menu and what each of its rows does.
 pub(crate) struct OpenMenu {
     pub(crate) menu: ContextMenu,
-    pub(crate) kind: MenuKind,
     pub(crate) actions: Vec<MenuAction>,
 }
 
@@ -1054,13 +1047,7 @@ impl Core {
     }
 
     /// Open a menu of `actions` under `anchor`; `row` is the row it acts on.
-    fn open_menu(
-        &mut self,
-        kind: MenuKind,
-        anchor: Rect,
-        row: Option<Rect>,
-        items: Vec<(MenuItem, MenuAction)>,
-    ) {
+    fn open_menu(&mut self, anchor: Rect, row: Option<Rect>, items: Vec<(MenuItem, MenuAction)>) {
         let mut menu = ContextMenu::new();
         let mut actions = Vec::new();
         for (item, action) in items {
@@ -1071,11 +1058,7 @@ impl Core {
             menu.anchor_row(row);
         }
         menu.open_anchored(anchor, self.menu_bounds());
-        self.menu = Some(OpenMenu {
-            menu,
-            kind,
-            actions,
-        });
+        self.menu = Some(OpenMenu { menu, actions });
     }
 
     /// Where menus may open: the window; a menu keeps its own air from its
@@ -1102,7 +1085,6 @@ impl Core {
         }
         let unread = self.store.unread_for_feed(&feed_id) > 0;
         self.open_menu(
-            MenuKind::Feed(feed_id.clone()),
             anchor,
             Some(row),
             vec![
@@ -2531,9 +2513,7 @@ impl ui::widget::Decorator for FeedsApp {
                 .collect();
             children.push(
                 AccessNode::new(Role::Menu)
-                    .with_name(match open.kind {
-                        MenuKind::Feed(_) => "Feed actions",
-                    })
+                    .with_name(crate::i18n::t("feeds-feed-actions"))
                     .with_children(items),
             );
         }

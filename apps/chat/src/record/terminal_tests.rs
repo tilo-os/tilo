@@ -7,7 +7,7 @@ use crate::parts::ChatPart;
 #[test]
 fn provider_terminal_state_and_accessibility_report_output_not_applied_actions() {
     for (outcome, description) in [
-        (AgentFinish::Complete, "Complete"),
+        (AgentFinish::Complete, ""),
         (AgentFinish::Truncated, "Answer interrupted"),
         (AgentFinish::Refused, "Request refused"),
         (AgentFinish::Cancelled, "Stopped"),

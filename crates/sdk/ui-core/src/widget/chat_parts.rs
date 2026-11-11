@@ -347,6 +347,7 @@ impl Described for Quote {
             excerpt,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
             layout_theme: Theme::dark(),
         };
         let mut row = Row::row()
@@ -389,6 +390,8 @@ struct QuoteLines {
     excerpt: String,
     rect: Rect,
     dirty: bool,
+    /// What it says changed its size since the layout pass last placed it.
+    layout_dirty: bool,
     /// The theme the last layout was built with, for measuring.
     layout_theme: Theme,
 }
@@ -506,6 +509,7 @@ impl Widget for QuoteLines {
         if self.layout_theme != *theme {
             self.layout_theme = theme.clone();
             self.dirty = true;
+            self.layout_dirty = true;
         }
         let style = taffy::Style {
             size: taffy::Size::auto(),
@@ -539,14 +543,7 @@ impl Widget for QuoteLines {
         }
     }
 
-    fn apply_layout(
-        &mut self,
-        taffy: &taffy::TaffyTree<()>,
-        node: taffy::NodeId,
-        origin: vello::kurbo::Point,
-    ) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -624,14 +621,6 @@ impl Widget for QuoteLines {
     }
 
     crate::redraw_flag!();
-
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 
     fn name(&self) -> &'static str {
         "QuoteLines"

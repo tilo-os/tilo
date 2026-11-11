@@ -45,3 +45,4 @@ feeds-reading-settings = Reading settings
 feeds-refreshing = Refreshing feeds
 feeds-no-article = No article selected
 feeds-articles-with-tag = Show articles with this tag
+feeds-feed-actions = Feed actions

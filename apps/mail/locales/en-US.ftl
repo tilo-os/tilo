@@ -121,6 +121,13 @@ mail-a11y-outbox = Outbox
 mail-a11y-outbox-empty = Nothing is waiting to be sent
 mail-a11y-no-message = No message selected
 mail-a11y-message-actions = Message actions
+mail-a11y-bulk-select = Select messages
+mail-a11y-bulk-done = Done selecting messages
+mail-a11y-thread-messages = { $count ->
+    [one] { $count } message in this conversation
+   *[other] { $count } messages in this conversation
+}
+mail-a11y-preview-unread = Preview, still unread
 mail-a11y-download-first = Download this attachment before saving it
 mail-a11y-syncing = Syncing mail
 mail-compose-placeholder-body = Write your message

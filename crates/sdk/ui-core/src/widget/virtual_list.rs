@@ -627,6 +627,9 @@ pub struct VirtualList<M: ListModel> {
     /// a first level that folds nothing keeps no column for a chevron, and its rows line up
     /// with the words over them. `None` while no first-level row has been read.
     first_level_branch: Option<bool>,
+    /// The rows the tree's column was last settled over, by key: while any of them still
+    /// stands in the list, a column the rows keep is not given back ([`Self::shape_tree`]).
+    column_rows: HashSet<M::Key>,
     /// A row renamed in place: the field over its label, its title reported as it commits
     /// ([`Self::on_rename`]).
     rename: Option<Box<RenameField<M::Key>>>,
@@ -791,6 +794,7 @@ impl<M: ListModel> VirtualList<M> {
             tree_rows: HashMap::new(),
             tree_hidden: HashSet::new(),
             first_level_branch: None,
+            column_rows: HashSet::new(),
             rename: None,
             on_rename: None,
             rename_on_double_click: false,

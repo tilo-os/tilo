@@ -339,15 +339,20 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
 
     // The browser joins the workspace and opens the note, its key in custody:
     // every signature it asks for answers later, as a `WebCrypto` key's does.
-    let peer = support::start_page(
-        host.iroh(),
-        browser.cert.clone(),
-        host_device.cert.clone(),
-        browser.key.clone(),
-        std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default()),
-    );
-    peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    peer.send(Cmd::OpenRoute(route())).unwrap();
+    let store = std::sync::Arc::new(tilo_session_client::MemoryPeerStore::default());
+    let page = || {
+        let peer = support::start_page(
+            host.iroh(),
+            browser.cert.clone(),
+            host_device.cert.clone(),
+            browser.key.clone(),
+            store.clone(),
+        );
+        peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
+        peer.send(Cmd::OpenRoute(route())).unwrap();
+        peer
+    };
+    let peer = page();
     ready(&[&peer]).await;
     // Written before it holds the keys: held, then sealed once admitted.
     let edit = say(&mut AutoCommit::new(), "from the browser");
@@ -401,6 +406,24 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     // A write in the clear on the sealed channel is refused, never kept.
     laptop.write("in the clear", true);
     let refusal = wait_for("cleartext on the sealed channel to be refused", || {
+        let refusal = refused(&peer);
+        async move { refusal }
+    })
+    .await;
+    assert!(
+        refusal.contains("plaintext downgrade forbidden"),
+        "{refusal}"
+    );
+    assert!(!said(&peer, &route()).contains("in the clear"));
+
+    // The page reloads and opens the note again: the host answers with what
+    // it kept of it, that write among them, while the open is being
+    // answered. Written after the record sealed, it is still a downgrade.
+    peer.close();
+    let peer = page();
+    ready(&[&peer]).await;
+    hears(&peer, &route(), "under the new epoch").await;
+    let refusal = wait_for("the kept cleartext write to be refused", || {
         let refusal = refused(&peer);
         async move { refusal }
     })

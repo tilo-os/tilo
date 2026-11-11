@@ -244,6 +244,21 @@ impl Chat {
             .collect()
     }
 
+    /// The rows of `channel`, read from the parts' rows already read (`parts`,
+    /// oldest first) instead of from the chain: the open channel's messages,
+    /// with the feedback filed in it where it was filed and what is being sent
+    /// after them. A reload reads the parts that changed and no others, and
+    /// the rows of those stand here as they were read.
+    #[must_use]
+    pub fn rows_from_parts(
+        &self,
+        parts: &[(u64, std::rc::Rc<Vec<Message>>)],
+        messages: &crate::messages::Messages,
+        channel: &str,
+    ) -> Vec<Message> {
+        rows_from_parts(&self.feedback_rows(channel), parts, messages, channel)
+    }
+
     /// The messages of `channel` held in `messages`, oldest first, with the
     /// feedback filed in it among them where it was filed, and the messages
     /// being sent to it after them.
@@ -359,9 +374,57 @@ impl Chat {
     }
 }
 
-/// `message` as the timeline draws it.
+/// One message as the timeline's row for it.
 #[must_use]
-pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
+pub fn row_of(id: &Id, message: &crate::record::Message) -> Message {
+    message_row(id, message)
+}
+
+/// [`Chat::rows_from_parts`] over rows already read, with the `filed` feedback
+/// reports put where they were filed and what is being sent after them.
+fn rows_from_parts(
+    filed: &[Message],
+    parts: &[(u64, std::rc::Rc<Vec<Message>>)],
+    messages: &crate::messages::Messages,
+    channel: &str,
+) -> Vec<Message> {
+    let mut rows: Vec<Message> = Vec::new();
+    // What the record kept in itself comes before any part: the oldest of the
+    // timeline, and what a device that holds no part of it still shows.
+    for (id, message) in messages.kept() {
+        if message.channel.as_str() == channel && messages.part_of(id).is_none() {
+            rows.push(message_row(id, message));
+        }
+    }
+    for (_, part) in parts {
+        rows.extend(
+            part.iter()
+                .filter(|message| message.channel.as_str() == channel)
+                .cloned(),
+        );
+    }
+    for report in filed {
+        // Where it was filed: before the first message written after it, in
+        // the timeline's own order.
+        let at = rows
+            .iter()
+            .position(|row| row.ts > report.ts)
+            .unwrap_or(rows.len());
+        rows.insert(at, report.clone());
+    }
+    rows.extend(
+        messages
+            .sending()
+            .filter(|(_, message)| message.channel.as_str() == channel)
+            .map(|(id, message)| Message {
+                sending: true,
+                ..message_row(id, message)
+            }),
+    );
+    rows
+}
+
+pub(crate) fn message_row(id: &Id, message: &crate::record::Message) -> Message {
     let reactions = message.reactions.groups();
     Message {
         id: id.to_string(),
@@ -429,7 +492,6 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
                 |outcome| crate::model::AgentWorkState::ProviderFinished { outcome },
             ),
         since: transition.since,
-        reasoning: work.reasoning.clone(),
         trace,
     })
 }

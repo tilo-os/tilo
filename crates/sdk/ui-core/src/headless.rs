@@ -4029,12 +4029,13 @@ impl FrameHarness {
             crate::retained_present::PanFrame::Replayed
         };
         crate::retained_present::take_replayed();
-        // A frame that draws every window paints every caret tag again; one
-        // that shows windows' last drawings keeps the tags they painted.
-        if !matches!(
-            pan_frame,
-            crate::retained_present::PanFrame::Replayed | crate::retained_present::PanFrame::Moved
-        ) {
+        // A frame draws every window, or shows a window's last drawing moved
+        // with the pan, and notes where each peer's caret and name tag stands
+        // again as it draws — a replayed drawing notes its own moved with it
+        // ([`crate::widget::GroupRow`]). One that shows a strip drawn in canvas
+        // coordinates keeps the notes of the drawing it moves, which still
+        // describes where they are.
+        if pan_frame != crate::retained_present::PanFrame::Moved {
             self.presence.clear_caret_tags();
             self.presence.clear_presence_marks();
         }
@@ -13233,6 +13234,9 @@ mod quiet_frame_tests;
 #[cfg(test)]
 #[path = "headless/replaced_composition_tests.rs"]
 mod replaced_composition_tests;
+#[cfg(test)]
+#[path = "headless/undrawn_measure_tests.rs"]
+mod undrawn_measure_tests;
 
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/background_work.rs"]

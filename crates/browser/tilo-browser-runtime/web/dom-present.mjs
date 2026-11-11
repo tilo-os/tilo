@@ -58,6 +58,9 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
   let held = null;
   // Semantic elements living inside a widget's element, by widget key.
   const hosted = new Map();
+  // The single-line fields the last frame left to the page, by widget key:
+  // where their text shows and how it is set (`meta.fields`).
+  let fields = new Map();
   const stats = {frames: 0, lastMs: 0, elements: 0, writes: 0, created: 0};
 
   function registerFonts(list) {
@@ -77,7 +80,9 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
   // every element showing it draws from.
   const images = new Map();
   function registerImages(list) {
-    for (const [image, width, height, rgba] of list) {
+    for (const [image, width, height, rgba, replaces] of list) {
+      // A picture drawn again: its last image goes.
+      if (replaces !== null && replaces !== undefined) images.delete(replaces);
       const source = document.createElement('canvas');
       source.width = width; source.height = height;
       source.getContext('2d').putImageData(new ImageData(rgba, width, height), 0, 0);
@@ -412,6 +417,7 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
     previous = next;
     widgets = nextWidgets;
     scrollers = nextScrollers;
+    fields = new Map((meta.fields ?? []).map(field => [field.key, field]));
     rehost();
     set(layer, 'background', meta.background);
     stats.frames++;
@@ -462,7 +468,67 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
       if (entry.element.tiloState?.active === false) { hosted.delete(key); continue; }
       const home = widgets.get(key);
       if (!home) continue;
-      if (entry.element.parentNode !== home) home.prepend(entry.element);
+      if (entry.element.parentNode !== home) move(entry.element, home);
+      showField(entry.element, fields.get(key));
+    }
+  }
+
+  // Put `element` in `home`. A move takes the focus from an element and
+  // empties its selection, so a field the person is typing in keeps both:
+  // the mirror is told the blur and focus are the page's own
+  // (`reconcilingFocus`), not the person leaving the field.
+  function move(element, home) {
+    const focused = element.ownerDocument?.activeElement === element || globalThis.document?.activeElement === element;
+    if (!focused) { home.prepend(element); return; }
+    const state = element.tiloState ?? {};
+    const caret = [element.selectionStart, element.selectionEnd, element.selectionDirection];
+    state.reconcilingFocus = true;
+    try {
+      home.prepend(element);
+      element.focus({preventScroll: true});
+      if (caret[0] !== null && caret[0] !== undefined) element.setSelectionRange?.(...caret);
+    } finally { state.reconcilingFocus = false; }
+  }
+
+  // A single-line field the frame left to the page is its semantic
+  // `<input>`, shown where the field's text would have been drawn and set
+  // as it would have been: the browser's caret, selection, autofill and
+  // passkeys are then the field's. The mirror places the input over the
+  // field's rect; padding puts its line where the toolkit's would stand.
+  // Any other hosted element stays unseen.
+  function showField(element, field) {
+    const rect = element.tiloRect;
+    const shown = element.localName === 'input' && field && rect;
+    let look = 'hidden';
+    if (shown) {
+      const [ax, , aw] = field.area;
+      const [bx, by] = field.baseline;
+      const metrics = fonts.get(field.family) ?? {ascent: 0.8, descent: 0.2};
+      const top = by - field.size * ((1 - metrics.ascent - metrics.descent) / 2 + metrics.ascent) - rect[1];
+      look = [
+        `padding:${px(top)} ${px(rect[0] + rect[2] - (ax + aw))} ${px(rect[3] - top - field.size)} ${px(bx - rect[0])}`,
+        `font-family:"${field.family}"`, `font-size:${px(field.size)}`, `line-height:${px(field.size)}`,
+        `font-variation-settings:${field.variations || 'normal'}`, `color:${field.color}`, `caret-color:${field.color}`,
+      ].join(';');
+    }
+    if (element.tiloLook === look) return;
+    element.tiloLook = look;
+    const style = element.style;
+    if (shown) {
+      element.dataset.tiloField = '1';
+      for (const part of look.split(';')) { const at = part.indexOf(':'); style.setProperty(part.slice(0, at), part.slice(at + 1)); }
+      style.setProperty('opacity', '1');
+      // Over the field's painted placeholder, which it takes the pointer from.
+      style.setProperty('z-index', '1');
+      style.setProperty('pointer-events', 'auto');
+      style.setProperty('cursor', 'text');
+      style.setProperty('background', 'transparent');
+      style.setProperty('outline', 'none');
+      style.setProperty('user-select', 'text');
+    } else {
+      delete element.dataset.tiloField;
+      style.setProperty('opacity', '0');
+      style.setProperty('pointer-events', 'none');
     }
   }
 
@@ -489,6 +555,7 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
           if (element.localName !== 'textarea' && element.localName !== 'input') element.style.userSelect = 'none';
         }
         hosted.set(key, {element});
+        showField(element, fields.get(key));
       },
       release(key) { hosted.delete(key); },
     },

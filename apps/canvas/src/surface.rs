@@ -853,13 +853,7 @@ impl CanvasSurface {
             within,
             ..crate::author::ColourQuery::default()
         };
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let search = crate::author::ColourSearch::start(
-            &mut self.tools.renderer.borrow_mut(),
-            text,
-            &self.art,
-            query,
-        );
+        let search = crate::author::ColourSearch::start(&self.art, query);
         self.sampling = Some(Sampling::Area {
             search: Box::new(search),
             fill,

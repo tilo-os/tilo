@@ -39,6 +39,8 @@ pub struct Keyer {
     end: fn(&mut Scene),
     skip: fn(),
     painted: fn((usize, &'static str)) -> Option<u64>,
+    field: fn(&mut crate::text_render::TextRenderer, &FieldText<'_>),
+    picture: fn(),
 }
 
 /// The keying code: the one way to it.
@@ -52,6 +54,8 @@ pub fn keyer() -> Keyer {
         end: end_keys,
         skip: skip_keys,
         painted: painted_of,
+        field: field_keys,
+        picture: picture_keys,
     }
 }
 
@@ -124,6 +128,103 @@ thread_local! {
     /// The key each widget drew under, by address and type, kept the same
     /// way.
     static DRAWN: RefCell<HashMap<(usize, &'static str), u64>> = RefCell::new(HashMap::new());
+    /// The single-line fields keyed widgets left to the host, by key, kept
+    /// the same way.
+    static FIELDS: RefCell<HashMap<u64, DrawnField>> = RefCell::new(HashMap::new());
+    /// The keys of the widgets that drew themselves as pictures, kept the
+    /// same way.
+    static PICTURES: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+}
+
+/// Say that the widget being drawn is a picture: a chart, a drawing, a map,
+/// a video frame. A host that shows the scene as elements shows it as one
+/// image rather than an element per shape; its text stays text over it.
+pub fn picture() {
+    if let Some(keyer) = installed() {
+        (keyer.picture)();
+    }
+}
+
+fn picture_keys() {
+    if let Some(key) = OPEN.with_borrow(|open| open.last().map(|open| open.key)) {
+        PICTURES.with_borrow_mut(|pictures| pictures.insert(key));
+    }
+}
+
+/// The keys of the widgets the last frame showed that drew themselves as
+/// pictures ([`picture`], [`retain_shown`]).
+#[must_use]
+pub fn drawn_pictures() -> HashSet<u64> {
+    PICTURES.with_borrow(Clone::clone)
+}
+
+/// The line of a single-line text field, as the field would set it
+/// ([`native_field`]).
+pub struct FieldText<'a> {
+    pub style: &'a crate::text_render::TextStyle,
+    /// Where the field's line starts (its top left), scrolled to its start.
+    pub origin: Affine,
+    /// The part of the field its text may show in, in scene coordinates.
+    pub area: Rect,
+    pub color: vello::peniko::Color,
+}
+
+/// A single-line text field a keyed widget left to the host this frame: the
+/// host shows the field itself (a page's `<input>`) where the widget would
+/// have drawn its text, caret and selection.
+#[derive(Clone, Debug)]
+pub struct DrawnField {
+    /// The key of the field's widget.
+    pub key: u64,
+    /// Where its text shows, in scene coordinates.
+    pub area: Rect,
+    /// Where its line starts, on its baseline, in scene coordinates.
+    pub baseline: vello::kurbo::Point,
+    /// The face, its size in scene pixels and its variation coordinates.
+    pub font: vello::peniko::FontData,
+    pub size: f32,
+    pub coords: Vec<vello::NormalizedCoord>,
+    pub color: vello::peniko::Color,
+}
+
+/// Whether the host shows single-line text fields itself, as a page shows
+/// its own `<input>`: then the field the innermost keyed widget is draws its
+/// chrome and placeholder but not its text, caret or selection, and the
+/// host is told how the text would have been set. Only a host that keys
+/// widgets does.
+pub fn native_field(text: &mut crate::text_render::TextRenderer, field: &FieldText<'_>) -> bool {
+    let Some(keyer) = installed() else {
+        return false;
+    };
+    (keyer.field)(text, field);
+    true
+}
+
+fn field_keys(text: &mut crate::text_render::TextRenderer, field: &FieldText<'_>) {
+    let Some(key) = OPEN.with_borrow(|open| open.last().map(|open| open.key)) else {
+        return;
+    };
+    let Some(face) = text.line_face(field.style) else {
+        return;
+    };
+    let scale = field.origin.determinant().abs().sqrt();
+    let drawn = DrawnField {
+        key,
+        area: field.area,
+        baseline: field.origin * vello::kurbo::Point::new(0.0, f64::from(face.baseline)),
+        font: face.font,
+        size: (f64::from(face.size) * scale) as f32,
+        coords: face.coords,
+        color: field.color,
+    };
+    FIELDS.with_borrow_mut(|fields| fields.insert(key, drawn));
+}
+
+/// The fields the widgets the last frame showed left to the host
+/// ([`native_field`], [`retain_shown`]).
+#[must_use]
+pub fn drawn_fields() -> Vec<DrawnField> {
+    FIELDS.with_borrow(|fields| fields.values().cloned().collect())
 }
 
 /// Start keying a frame: root widgets count from the first again. A host
@@ -154,6 +255,8 @@ pub fn retain_shown(scene: &Scene) {
         .collect();
     SCROLLS.with_borrow_mut(|scrolls| scrolls.retain(|key, _| shown.contains(key)));
     DRAWN.with_borrow_mut(|drawn| drawn.retain(|_, key| shown.contains(key)));
+    FIELDS.with_borrow_mut(|fields| fields.retain(|key, _| shown.contains(key)));
+    PICTURES.with_borrow_mut(|pictures| pictures.retain(|key| shown.contains(key)));
 }
 
 /// The key `widget`'s draws carried in the frame keyed last, as the page
@@ -283,6 +386,9 @@ fn begin_described(
     DRAWN.with_borrow_mut(|drawn| {
         drawn.insert(widget.identity, key);
     });
+    // A field or picture drawn again says again what it is.
+    FIELDS.with_borrow_mut(|fields| fields.remove(&key));
+    PICTURES.with_borrow_mut(|pictures| pictures.remove(&key));
     let rect = widget.rect;
     let origin = transform * Affine::translate((rect.x0, rect.y0));
     if let Some(region) = &widget.region {

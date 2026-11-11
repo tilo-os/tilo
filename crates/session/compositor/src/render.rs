@@ -675,8 +675,10 @@ where
     }
     // The visual alert lights the inside of the display's edge, over everything else: it stays
     // obvious without covering what is on screen or washing the whole display with a luminance
-    // change, which is a photosensitivity risk.
-    let alert = visual.flash_alpha(Instant::now());
+    // change, which is a photosensitivity risk. Its strength is the one the frame was begun for,
+    // so a frame that takes a while to compose shows the alert in full rather than one the clock
+    // faded while the clients drew.
+    let alert = visual.flash_alpha(visual.frame_at.unwrap_or_else(Instant::now));
     if alert > 0.0 {
         let width = alert_edge_width(scale.x);
         let colour = Color32F::new(ALERT_EDGE[0], ALERT_EDGE[1], ALERT_EDGE[2], alert);

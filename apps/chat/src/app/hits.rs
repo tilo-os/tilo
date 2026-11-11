@@ -74,6 +74,8 @@ pub(crate) enum Hit {
     JumpToLatest,
     ThreadScroll(bool),
     AgentReasoning(String),
+    /// Open or fold the list of what an agent did for its reply.
+    AgentWork(String),
     /// Open the workspace file picker to share an attachment.
     Attach,
     /// One rung of an attachment's ladder: open it at full size, save a copy,
@@ -166,6 +168,7 @@ impl Hit {
             Self::JumpToLatest => "chat.jump-to-latest".into(),
             Self::ThreadScroll(end) => format!("chat.thread-scroll-{end}"),
             Self::AgentReasoning(id) => format!("chat.reasoning.{id}"),
+            Self::AgentWork(id) => format!("chat.work.{id}"),
             Self::Attach => "chat.attach".into(),
             Self::Attachment {
                 msg,
@@ -385,8 +388,17 @@ impl ChatApp {
                         Role::Button,
                         false,
                     ),
+                    Hit::AgentWork(id) => (
+                        copy(if self.expanded_agent.contains(id) {
+                            "chat-agent-work-hide-details"
+                        } else {
+                            "chat-agent-work-show-details"
+                        }),
+                        Role::Button,
+                        false,
+                    ),
                     Hit::AgentReasoning(id) => (
-                        copy(if self.expanded_reasoning.contains(id) {
+                        copy(if self.expanded_agent.contains(id) {
                             "chat-agent-hide-reasoning"
                         } else {
                             "chat-agent-show-reasoning"

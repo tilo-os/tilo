@@ -56,10 +56,20 @@ impl Mcp<'_> {
     }
 
     pub(super) async fn initialize(&mut self) -> (u16, Value) {
-        self.post(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+        let (status, reply) = self
+            .post(json!({"jsonrpc": "2.0", "id": 0, "method": "initialize",
                          "params": {"protocolVersion": "2025-06-18", "capabilities": {},
                                     "clientInfo": {"name": "visa-backend", "version": "1"}}}))
-            .await
+            .await;
+        // A 200 with no session is a refusal in JSON-RPC: say it, so the
+        // calls after it fail on why rather than on the missing session.
+        if self.session.is_none() {
+            eprintln!(
+                "initialize at {} opened no session: {status} {reply}",
+                self.path
+            );
+        }
+        (status, reply)
     }
 
     /// `tilo_do` with `arguments`, its typed answer: what the SDKs read.

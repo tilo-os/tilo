@@ -554,40 +554,45 @@ fn delivery_admission_review_strict_drain_keeps_retained_pending_history_held() 
 }
 
 #[test]
-fn delivery_admission_takes_in_retained_plaintext_history_of_a_sealed_record() {
+fn a_sealed_record_takes_its_cleartext_base_and_no_cleartext_after_the_seal() {
     let (receiver, _, key, _, now) = seeded();
     let mut author = receiver.clone();
-    let message = incremental(&mut author, &key, now, "before-the-seal");
     let source = key.verifying_key().to_bytes();
-    let mut sealed_here = receiver;
-    sealed_here.select_admission_v5().unwrap();
+    let mut here = receiver;
+    here.select_admission_v5().unwrap();
+    // The record's cleartext writes before it sealed are its base, however
+    // they arrive: replayed from what the host kept, or relayed as written.
+    for (name, origin) in [
+        ("kept", TransportOrigin::RetainedRelayDelta(source)),
+        ("relayed", TransportOrigin::RelayDelta(source)),
+    ] {
+        let base = incremental(&mut author, &key, now, name);
+        here.receive_from_report(origin, base, now).unwrap();
+    }
     assert!(
-        sealed_here.seal_record("test.app", "tab:1"),
+        here.seal_record("test.app", "tab:1"),
         "the record is held here and sealed"
     );
-    // The record's cleartext writes are the base its sealed writes are
-    // changes over, and the workspace's host replays them to a device that
-    // was away when the record sealed. Taking no refusal for them is what
-    // lets that device read the record at all.
-    sealed_here
-        .receive_from_report(TransportOrigin::RetainedRelayDelta(source), message, now)
-        .unwrap();
-    let doc = AutoCommit::load(&sealed_here.document("test.app", "tab:1").unwrap()).unwrap();
-    assert!(
-        doc.get(ROOT, "before-the-seal").unwrap().is_some(),
-        "the retained base is part of the record"
-    );
-    // A live plaintext write to the sealed record is still a downgrade.
-    let live = incremental(&mut author, &key, now, "after-the-seal");
-    assert!(
-        sealed_here
-            .receive_from_report(TransportOrigin::RelayDelta(source), live, now)
-            .is_err(),
-        "a live plaintext write to a sealed record is refused"
-    );
-    let doc = AutoCommit::load(&sealed_here.document("test.app", "tab:1").unwrap()).unwrap();
-    assert!(
-        doc.get(ROOT, "after-the-seal").unwrap().is_none(),
-        "the live write was not applied"
-    );
+    // After the seal a cleartext write is a downgrade, whether the host
+    // relays it as written or sends it as what its store kept.
+    for (name, origin) in [
+        ("relayed-after", TransportOrigin::RelayDelta(source)),
+        ("kept-after", TransportOrigin::RetainedRelayDelta(source)),
+    ] {
+        let after = incremental(&mut author, &key, now, name);
+        assert!(
+            here.receive_from_report(origin, after, now).is_err(),
+            "a cleartext write after the seal is refused: {name}"
+        );
+    }
+    let doc = AutoCommit::load(&here.document("test.app", "tab:1").unwrap()).unwrap();
+    for name in ["kept", "relayed"] {
+        assert!(
+            doc.get(ROOT, name).unwrap().is_some(),
+            "the base holds {name}"
+        );
+    }
+    for name in ["relayed-after", "kept-after"] {
+        assert!(doc.get(ROOT, name).unwrap().is_none(), "{name} was applied");
+    }
 }

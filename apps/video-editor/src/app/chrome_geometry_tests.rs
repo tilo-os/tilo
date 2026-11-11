@@ -492,7 +492,7 @@ fn dialogs_and_sheets_stay_on_their_card_at_every_text_scale() {
             1,
             "an 800px window at 2x lays out one column"
         );
-        let widest_description = SHORTCUTS
+        let widest_description = crate::app::shortcuts()
             .iter()
             .flat_map(|(_, rows)| rows.iter())
             .map(|(_, what)| f64::from(tr.measure_style(what, None, &ty.sm).0))

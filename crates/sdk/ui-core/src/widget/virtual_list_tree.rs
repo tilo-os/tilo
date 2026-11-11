@@ -489,8 +489,17 @@ impl<M: ListModel> VirtualList<M> {
             .fold(None, |found: Option<bool>, key| {
                 Some(found.unwrap_or(false) || branches.contains(key))
             });
+        // A first level that stops folding anything while rows it showed still stand keeps its
+        // column: a task ticked off taking its subtasks out of the list, say. Giving the column
+        // back would move every row the person is looking at sideways, the one under their
+        // finger too; the list lines its rows up with the words over them again when it next
+        // reads rows anew. A column that a first-level row now needs is taken at once.
+        // A range whose rows are still on their way says nothing of either.
         if let Some(branch) = first_level {
-            self.first_level_branch = Some(branch);
+            let kept = self.chevron_column > 0.5 || self.lead > self.bleed + 0.5;
+            let staying = rows.iter().any(|(_, key)| self.column_rows.contains(key));
+            self.column_rows = rows.iter().map(|(_, key)| key.clone()).collect();
+            self.first_level_branch = Some(branch || (kept && staying));
         }
         if let Some(marks) = &self.tree {
             marks.depth.borrow_mut().extend(depth);

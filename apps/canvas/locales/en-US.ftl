@@ -476,3 +476,8 @@ canvas-combine = Combined shapes
 # no GPU, or (in a browser page) a request answered at once, such as an
 # agent's diff, compare or measure, which the page cannot render in time.
 canvas-pictures-unavailable = This needs a picture of the artwork, which can’t be made here yet.
+
+# Said when an answer must show the artwork's pictures themselves and one is
+# still being decoded: a browser page cannot wait for the decoder, so the
+# same request answers once the pixels are here.
+canvas-pictures-decoding = This needs a picture that is still being decoded. Ask again in a moment.

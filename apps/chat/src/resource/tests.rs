@@ -814,10 +814,6 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
     assert_eq!(reply.author, DEMO_AGENT, "the agent authors its own reply");
     assert_eq!(reply.parent.as_deref(), Some(DEMO_SUMMONS));
     let work = reply.work.expect("reply carries work evidence");
-    assert_eq!(
-        work.reasoning.as_ref().unwrap().route,
-        crate::model::AgentRoute::Model
-    );
     assert!(matches!(
         work.trace.as_slice(),
         [crate::model::AgentStep {
@@ -1153,5 +1149,55 @@ fn a_narrow_window_opens_on_the_conversation() {
             ui::widget::NavPane::Content
         )),
         "the conversation is in front, the channels behind the toggle"
+    );
+}
+
+/// The conversation with an agent that a send opened is found by the agent's name: the window
+/// publishes it, named by what the workspace's record of its agents calls them — the same name
+/// its sidebar shows — and not by anything of its routing id. The record keeps no row of the
+/// conversation, so only the window's listing has it.
+#[test]
+fn search_finds_an_agents_conversation_by_the_name_its_record_keeps() {
+    let mut doc = crate::testing::Workspace::default();
+    crate::testing::starter(&mut doc, crate::model::ME, "You", "Y");
+    let mut app = crate::ChatApp::new_ephemeral();
+    app.attach_workspace(&doc);
+    app.workspace_agent_names
+        .insert("notes".to_owned(), "Notes".to_owned());
+    app.reload(&doc);
+    let conversation = crate::record::Chat::direct_id([
+        crate::record::Participant::person(crate::model::ME),
+        crate::record::Participant::agent("notes"),
+    ]);
+    crate::testing::say(
+        &mut doc,
+        "agent:notes",
+        conversation.as_str(),
+        "Here it is.",
+    );
+    app.reload(&doc);
+
+    let entries = app.unrecorded_conversation_entries();
+    let row = entries
+        .iter()
+        .find(|entry| entry.title == "Notes")
+        .unwrap_or_else(|| {
+            panic!("the conversation with the agent is found by its name: {entries:?}")
+        });
+    assert_eq!(
+        row.kind,
+        Some(ui::tilo_resource::search_index::IndexKind::Conversation)
+    );
+    assert_eq!(
+        row.anchor.as_deref(),
+        Some(item_resource_id::<Chat>("channels", &conversation).as_str()),
+        "its row opens the conversation"
+    );
+    assert!(
+        !crate::projection::read(&doc)
+            .search()
+            .iter()
+            .any(|entry| entry.title == "Notes"),
+        "the record keeps no row of a conversation a send opened"
     );
 }

@@ -971,7 +971,7 @@ impl Walker<'_> {
         if self.list.dom
             && self.bounds.is_none()
             && let Some(text) = run.text.clone()
-            && let (Some(first), Some(last)) = (run_glyphs.first(), run_glyphs.last())
+            && !run_glyphs.is_empty()
         {
             let Some((tag, offset)) = self.next_draw() else {
                 return;
@@ -980,27 +980,35 @@ impl Walker<'_> {
                 return;
             };
             let affine = to_affine(&run.transform);
-            let origin = affine * Point::new(f64::from(first.x), f64::from(first.y));
-            let end = affine * Point::new(f64::from(last.x), f64::from(last.y));
             let scale = affine.determinant().abs().sqrt();
             let font_size = run.font_size * scale as f32;
             let size = f64::from(font_size);
-            let bbox = Rect::new(
-                origin.x,
-                origin.y - size,
-                end.x + size,
-                origin.y + size * 0.3,
-            );
-            self.list.ops.push(Op::Text {
-                text,
-                origin,
-                advances_to_last: end.x - origin.x,
-                font_size,
-                font: run.font.clone(),
-                coords: coords.iter().copied().collect(),
-                brush,
-                bbox,
-            });
+            let coords: SmallVec<[i16; 8]> = coords.iter().copied().collect();
+            // A line set wider than its words (justified) is one run whose
+            // spaces were stretched: each word goes on its own, at its own
+            // place, since the page sets spaces at their natural width.
+            for (words, glyphs) in words_of(&text, run_glyphs, &run.font, run.font_size, &coords) {
+                let (Some(first), Some(last)) = (glyphs.first(), glyphs.last()) else {
+                    continue;
+                };
+                let origin = affine * Point::new(f64::from(first.x), f64::from(first.y));
+                let end = affine * Point::new(f64::from(last.x), f64::from(last.y));
+                self.list.ops.push(Op::Text {
+                    text: words,
+                    origin,
+                    advances_to_last: end.x - origin.x,
+                    font_size,
+                    font: run.font.clone(),
+                    coords: coords.clone(),
+                    brush: brush.clone(),
+                    bbox: Rect::new(
+                        origin.x,
+                        origin.y - size,
+                        end.x + size,
+                        origin.y + size * 0.3,
+                    ),
+                });
+            }
             return;
         }
         let mut hint = run.hint;
@@ -1099,6 +1107,72 @@ impl Walker<'_> {
             bbox,
         });
     }
+}
+
+/// `text`, set by `glyphs`, as the stretches the page can set as they are:
+/// the whole run, unless its spaces were set wider or narrower than the
+/// font's own (a justified line), then each word with the space after it,
+/// with its own glyphs. A run whose spaces cannot be matched to its glyphs
+/// one for one stays whole.
+fn words_of<'g>(
+    text: &Arc<str>,
+    glyphs: &'g [vello_encoding::Glyph],
+    font: &vello_cpu::peniko::FontData,
+    size: f32,
+    coords: &[i16],
+) -> Vec<(Arc<str>, &'g [vello_encoding::Glyph])> {
+    use skrifa::MetadataProvider as _;
+    let whole = || vec![(text.clone(), glyphs)];
+    if !text.contains(' ') {
+        return whole();
+    }
+    let Ok(face) = skrifa::FontRef::from_index(font.data.data(), font.index) else {
+        return whole();
+    };
+    let Some(space) = face.charmap().map(' ') else {
+        return whole();
+    };
+    let space = space.to_u32();
+    if text.matches(' ').count() != glyphs.iter().filter(|glyph| glyph.id == space).count() {
+        return whole();
+    }
+    let location: Vec<skrifa::instance::NormalizedCoord> = coords
+        .iter()
+        .map(|&c| skrifa::instance::NormalizedCoord::from_bits(c))
+        .collect();
+    let metrics = face.glyph_metrics(
+        skrifa::instance::Size::new(size),
+        skrifa::instance::LocationRef::new(&location),
+    );
+    let natural = metrics
+        .advance_width(skrifa::GlyphId::new(space))
+        .unwrap_or(0.0);
+    let stretched = glyphs
+        .windows(2)
+        .any(|pair| pair[0].id == space && (pair[1].x - pair[0].x - natural).abs() > 0.25);
+    if !stretched {
+        return whole();
+    }
+    let mut out = Vec::new();
+    let mut from_glyph = 0;
+    for words in text.split_inclusive(' ') {
+        let to_glyph = if words.ends_with(' ') {
+            let Some(offset) = glyphs[from_glyph..]
+                .iter()
+                .position(|glyph| glyph.id == space)
+            else {
+                return whole();
+            };
+            from_glyph + offset + 1
+        } else {
+            glyphs.len()
+        };
+        if from_glyph < to_glyph {
+            out.push((Arc::from(words), &glyphs[from_glyph..to_glyph]));
+        }
+        from_glyph = to_glyph;
+    }
+    out
 }
 
 #[cfg(test)]

@@ -621,6 +621,7 @@ participant-unknown-agent = Unbekannter Agent
 
 # Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
 palette-name = Befehlspalette
+palette-argument-name = Aktionsbestätigung
 palette-results = Ergebnisse
 palette-placeholder = Suchen…
 palette-empty = Nichts anzuzeigen
@@ -780,9 +781,13 @@ search-kind-playlists = Wiedergabelisten
 search-kind-tabs = Tabs
 search-kind-window-groups = Fenstergruppen
 window-root-name = Tilo-Anwendungsfenster
+# Was das leere Feld der Palette sagt, worüber die Suche geht, nicht wie es heißt.
 action-palette-query = Aktionen und Ergebnisse durchsuchen
 search-field-filter = Filtern
 search-field-placeholder = Suchen
+# Wie das Feld selbst heißt, abseits des Platzhalters darin.
+search-field-name = Suche
+search-field-filter-name = Filter
 presentation-window-title = Präsentationsfenster
 approved-check-reports-disabled = Phasenmeldungen nicht verfügbar
 

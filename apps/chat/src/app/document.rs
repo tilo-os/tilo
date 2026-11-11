@@ -18,6 +18,25 @@ fn read_record(doc: &AutoCommit) -> Option<crate::record::Chat> {
 }
 
 impl ChatApp {
+    /// The conversations this window lists that the record keeps no row for — a direct
+    /// conversation a send opened, an agent's among them — as search finds them, named as the
+    /// sidebar names them: by what the workspace's own record of its agents calls them
+    /// ([`ChatApp::follow_agents`]). A conversation the record keeps is the record's own to
+    /// publish, and is left out here.
+    pub(crate) fn unrecorded_conversation_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.channels
+            .iter()
+            .filter(|row| row.direct && !self.recorded_channels.contains(row.id.as_str()))
+            .map(|row| {
+                crate::resource::conversation_entry(
+                    &ui::tilo_resource::Id::from_raw(row.id.clone()),
+                    &row.name,
+                    &row.topic,
+                )
+            })
+            .collect()
+    }
+
     /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
     /// after every mutation so `draw` always reflects the latest document.
     /// Count each channel's unread mentions of this peer, the badge that
@@ -56,16 +75,85 @@ impl ChatApp {
             *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
         }
         let held = self.held_messages();
-        // A deletion the person confirmed has gone: offer its Undo.
-        if let Some((message, part, channel)) = self.asked_delete.take() {
-            if held.contains(&message) {
-                self.asked_delete = Some((message, part, channel));
-            } else if let Some(part) = part {
-                *self.deleted.get_mut() = Some((part, channel));
-            }
-        }
+        self.offer_the_confirmed_deletion(&held);
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
-        self.channels = chat.conversation_rows(&self.me.id, &held, &self.workspace_agent_names);
+        // The parts that changed are read first: their counts are what every
+        // channel's unread badge is summed from.
+        let parts = self.read_parts();
+        self.sync_conversations(&chat, &held);
+        let per_channel: Vec<(Id, Vec<Message>)> = self
+            .channels
+            .iter()
+            .map(|channel| {
+                (
+                    channel.id.clone(),
+                    chat.rows_from_parts(&parts, &held, &channel.id),
+                )
+            })
+            .collect();
+        self.note_mentions(&per_channel);
+        self.messages_revision += 1;
+        self.messages = per_channel
+            .iter()
+            .find(|(id, _)| *id == self.active_channel)
+            .map_or_else(
+                || chat.message_rows(&held, &self.active_channel),
+                |(_, messages)| messages.clone(),
+            );
+        self.search_messages = per_channel
+            .iter()
+            .flat_map(|(_, messages)| messages.iter().cloned())
+            .collect();
+        self.search_users = chat.user_rows();
+        // Which direct conversations hold something, so the sidebar lists
+        // those and not every person in the workspace.
+        self.direct_held = per_channel
+            .iter()
+            .filter(|(_, messages)| !messages.is_empty())
+            .map(|(id, _)| id.clone())
+            .filter(|id| {
+                self.channels
+                    .iter()
+                    .any(|channel| channel.direct && channel.id == *id)
+            })
+            .collect();
+        self.read_feedback(&chat);
+        self.read_scrollback(&chat, &held);
+        // Drop the body views of messages no longer loaded.
+        let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
+        self.body_views
+            .borrow_mut()
+            .retain(|(_, id), _| shown.contains(id.as_str()));
+        self.agent_authors = chat.agent_authors();
+        self.workspace_files = chat.files;
+        // Who is in a call is projected only from the authenticated local
+        // voice service's response.
+        self.refresh_native_streams();
+        self.users = self.workspace_people_from(&chat, &per_channel);
+        self.sync_reload_composers(doc);
+        // A share started, switched or ended reaches the workspace as soon as
+        // the record says so, not at the window's next settled frame,
+        // which an idle window may not have for a long while.
+        self.follow_share_grants();
+    }
+
+    /// A deletion the person confirmed has gone from the record: offer its
+    /// Undo. One still held was not confirmed after all, and keeps waiting.
+    fn offer_the_confirmed_deletion(&mut self, held: &crate::messages::Messages) {
+        let Some((message, part, channel)) = self.asked_delete.take() else {
+            return;
+        };
+        if held.contains(&message) {
+            self.asked_delete = Some((message, part, channel));
+        } else if let Some(part) = part {
+            *self.deleted.get_mut() = Some((part, channel));
+        }
+    }
+
+    /// The conversations and categories the record keeps, the one open, and
+    /// how much each of the others holds unread.
+    fn sync_conversations(&mut self, chat: &crate::record::Chat, held: &crate::messages::Messages) {
+        self.channels = chat.conversation_rows(&self.me.id, held, &self.workspace_agent_names);
         self.recorded_channels = chat.channels.iter().map(|(id, _)| id.to_string()).collect();
         self.categories = chat.category_rows();
         for category in &mut self.categories {
@@ -94,43 +182,20 @@ impl ChatApp {
             c.unread = if c.id == self.active_channel {
                 0
             } else {
-                chat.unread(&held, &c.id, &self.me.id)
+                let mark = chat.read_mark(&c.id, &self.me.id);
+                let unread = held.unread_counted(
+                    &ui::tilo_resource::Id::from_raw(c.id.clone()),
+                    mark,
+                    &self.counts_by_part,
+                );
+                u32::try_from(unread).unwrap_or(u32::MAX)
             };
         }
-        // Read every channel's messages once per reload: the open channel,
-        // search and the workspace's people directory all project from them
-        // (reading them three times dominated typing with a long history).
-        let per_channel: Vec<(Id, Vec<Message>)> = self
-            .channels
-            .iter()
-            .map(|channel| (channel.id.clone(), chat.message_rows(&held, &channel.id)))
-            .collect();
-        self.note_mentions(&per_channel);
-        self.messages_revision += 1;
-        self.messages = per_channel
-            .iter()
-            .find(|(id, _)| *id == self.active_channel)
-            .map_or_else(
-                || chat.message_rows(&held, &self.active_channel),
-                |(_, messages)| messages.clone(),
-            );
-        self.search_messages = per_channel
-            .iter()
-            .flat_map(|(_, messages)| messages.iter().cloned())
-            .collect();
-        self.search_users = chat.user_rows();
-        // Which direct conversations hold something, so the sidebar lists
-        // those and not every person in the workspace.
-        self.direct_held = per_channel
-            .iter()
-            .filter(|(_, messages)| !messages.is_empty())
-            .map(|(id, _)| id.clone())
-            .filter(|id| {
-                self.channels
-                    .iter()
-                    .any(|channel| channel.direct && channel.id == *id)
-            })
-            .collect();
+    }
+
+    /// What people sent this workspace as feedback: each message's words, and
+    /// the recording the report carries beside it.
+    fn read_feedback(&mut self, chat: &crate::record::Chat) {
         self.reports = chat
             .feedback
             .iter()
@@ -149,43 +214,61 @@ impl ChatApp {
                 Some((crate::feedback::message_id(id.as_str()), recording))
             })
             .collect();
-        self.read_scrollback(&chat, &held);
-        // Drop the body views of messages no longer loaded.
-        let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
-        self.body_views
-            .borrow_mut()
-            .retain(|(_, id), _| shown.contains(id.as_str()));
-        self.agent_authors = chat.agent_authors();
-        self.workspace_files = chat.files;
-        // Who is in a call is projected only from the authenticated local
-        // voice service's response.
-        self.refresh_native_streams();
-        self.users = self.workspace_people_from(&chat, &per_channel);
-        self.sync_reload_composers(doc);
-        // A share started, switched or ended reaches the workspace as soon as
-        // the record says so, not at the window's next settled frame,
-        // which an idle window may not have for a long while.
-        self.follow_share_grants();
+    }
+
+    /// Each held part of the messages chain as its rows, oldest first,
+    /// re-reading the parts whose state changed since they were last read and
+    /// no others. A part's rows and its channels' counts are what the open
+    /// channel, search, the unread badges and the mention scan project from.
+    fn read_parts(&mut self) -> Vec<(u64, std::rc::Rc<Vec<Message>>)> {
+        let held: Vec<(u64, std::rc::Rc<crate::parts::ChatPart>)> = self
+            .chain
+            .as_ref()
+            .map(ui::framework::Chain::parts)
+            .unwrap_or_default();
+        self.rows_by_part
+            .retain(|index, _| held.iter().any(|(held, _)| held == index));
+        self.counts_by_part
+            .retain(|index, _| held.iter().any(|(held, _)| held == index));
+        let mut parts = Vec::with_capacity(held.len());
+        for (index, state) in held {
+            if let Some((rows, seen)) = self.rows_by_part.get(&index)
+                && std::rc::Rc::ptr_eq(seen, &state)
+            {
+                parts.push((index, std::rc::Rc::clone(rows)));
+                continue;
+            }
+            let rows: Vec<Message> = state
+                .messages
+                .iter()
+                .map(|(id, message)| crate::projection::row_of(id, message))
+                .collect();
+            let counts = state
+                .counts()
+                .into_iter()
+                .filter_map(|(channel, count)| {
+                    Some((channel, usize::try_from(count).ok().filter(|one| *one > 0)?))
+                })
+                .collect();
+            let rows = std::rc::Rc::new(rows);
+            self.rows_by_part
+                .insert(index, (std::rc::Rc::clone(&rows), state));
+            self.counts_by_part.insert(index, counts);
+            parts.push((index, rows));
+        }
+        parts
     }
 
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
-        // Point each composer at its surface's draft; the editors read it on
-        // their next sync (`sync_composers`), keeping the caret while typing.
+        // Point each composer at its surface's draft; the editors read it in
+        // [`Self::sync_composers`], keeping the caret while typing.
         self.composer_main.set_key(&self.active_channel);
-        self.composer_main.sync(doc);
-        self.draft_main = self.composer_main.value();
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&self.active_channel));
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
         self.composer_thread.set_key(&thread_key);
-        self.composer_thread.sync(doc);
-        self.draft_thread = if thread_key.is_empty() {
-            String::new()
-        } else {
-            self.composer_thread.value()
-        };
         self.composer_thread
             .set_placeholder(&crate::i18n::t("chat-thread-reply-placeholder"));
         self.composer_thread
@@ -193,6 +276,10 @@ impl ChatApp {
         self.composer_main
             .set_read_only(!self.main_composer_can_edit());
         self.composer_thread.set_read_only(!self.can_participate());
+        self.sync_composers(doc);
+        if thread_key.is_empty() {
+            self.draft_thread = String::new();
+        }
         self.set_composer_focus();
     }
 

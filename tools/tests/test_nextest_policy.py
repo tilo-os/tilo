@@ -12,6 +12,7 @@ REPO = Path(__file__).parents[2]
 NEXTEST = REPO / ".config" / "nextest.toml"
 FILTERS = REPO / ".config" / "nextest-filters.toml"
 T_NEXTEST = REPO / "tools" / "ci" / "nextest.sh"
+COST_TABLE = REPO / "apps" / "tilolang" / "tests" / "hosted" / "cost.rs"
 
 
 def effective_overrides(config: dict, profile_name: str) -> list[dict]:
@@ -41,6 +42,25 @@ class NextestPolicyTests(unittest.TestCase):
         self.assertIn(ci["status-level"], ("slow", "leak", "pass", "skip", "all"))
         # ... while the kill stays a hang bound far above the longest test.
         self.assertGreaterEqual(period * timeout["terminate-after"], 480)
+
+    def test_the_cost_table_prints_for_the_run_ci_makes(self) -> None:
+        # A `test(=…)` names the whole test, its module included: a filter that
+        # leaves the module out matches nothing, and the table the interaction
+        # test prints on a pass never reaches a log. The run the CI makes is
+        # the profile's own overrides on top of the default ones.
+        test = re.search(
+            r"(?m)^fn (what_the_interactions_a_person_feels_cost)\s*\(",
+            COST_TABLE.read_text(encoding="utf-8"),
+        )
+        self.assertIsNotNone(test)
+        config = tomllib.loads(NEXTEST.read_text(encoding="utf-8"))
+        printing = [
+            override["filter"]
+            for override in effective_overrides(config, "ci")
+            if override.get("success-output") == "final" and "cost::" in override["filter"]
+        ]
+        self.assertEqual(len(printing), 1, printing)
+        self.assertIn(f"test(=cost::{test.group(1)})", printing[0])
 
     def test_every_golden_selection_names_the_same_tests(self) -> None:
         # PR shards exclude the goldens, nightly verifies them on an idle

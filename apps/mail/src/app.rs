@@ -3849,6 +3849,17 @@ impl MailApp {
         false
     }
 
+    /// How many messages a conversation holds, for a screen reader.
+    fn thread_messages(count: usize) -> String {
+        crate::i18n::t_args(
+            "mail-a11y-thread-messages",
+            &[(
+                "count",
+                ui::i18n::ArgValue::Number(f64::from(u32::try_from(count).unwrap_or(u32::MAX))),
+            )],
+        )
+    }
+
     fn overview_accessibility_node(state: &MailState) -> ui::a11y::AccessNode {
         use ui::a11y::{AccessNode, AccessState, Role};
 
@@ -3881,8 +3892,7 @@ impl MailApp {
                         },
                     ));
                 if *thread_len > 1 {
-                    node = node
-                        .with_description(format!("{thread_len} messages in this conversation"));
+                    node = node.with_description(Self::thread_messages(*thread_len));
                 }
                 Some(node)
             })
@@ -3891,9 +3901,9 @@ impl MailApp {
         let mut children = vec![
             AccessNode::new(Role::Button)
                 .with_name(if state.bulk_selecting {
-                    "Done selecting messages"
+                    crate::i18n::t("mail-a11y-bulk-done")
                 } else {
-                    "Select messages for bulk actions"
+                    crate::i18n::t("mail-a11y-bulk-select")
                 })
                 .with_action_target("mail.bulk:toggle")
                 .with_state(AccessState::new().focusable(true)),
@@ -4017,7 +4027,18 @@ impl MailApp {
                 .with_name(ui::i18n::I18nManager::lookup_plain("mail-a11y-no-message"));
         };
         let message_count = thread.len();
-        let mut children = vec![
+        // The banner above the conversation, as the reader paints it: the
+        // newest message is being looked at without being marked read.
+        let preview = thread
+            .last()
+            .filter(|head| state.inspection == Some(head.id) && !head.read)
+            .map(|_| {
+                AccessNode::new(Role::StaticText)
+                    .with_name(crate::i18n::t("mail-a11y-preview-unread"))
+                    .with_hashed_key("mail.preview")
+            });
+        let mut children: Vec<AccessNode> = preview.into_iter().collect();
+        children.push(
             AccessNode::new(Role::Toolbar)
                 .with_name(ui::i18n::I18nManager::lookup_plain(
                     "mail-a11y-message-actions",
@@ -4039,7 +4060,7 @@ impl MailApp {
                     })
                     .collect(),
                 ),
-        ];
+        );
         children.extend(thread.iter().map(|message| {
             AccessNode::new(Role::Paragraph)
                 .with_name(format!("From {}", message.from.display()))
@@ -4073,16 +4094,7 @@ impl MailApp {
         );
         AccessNode::new(Role::Document)
             .with_name(format!("Reading: {}", current.subject))
-            .with_description(format!(
-                "Current message from {}; {message_count} message{} in this conversation{}",
-                current.from.display(),
-                if message_count == 1 { "" } else { "s" },
-                if state.inspection == Some(current.id) {
-                    "; previewing without changing its read state"
-                } else {
-                    ""
-                },
-            ))
+            .with_description(Self::thread_messages(message_count))
             .with_children(children)
     }
 }

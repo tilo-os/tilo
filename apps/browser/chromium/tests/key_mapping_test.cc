@@ -57,9 +57,6 @@ int main() {
     // A character is its own name whatever its case: it is a key either way.
     assert(tilo::NamedKeyName("a").empty() && tilo::MapKey("A").windows == 'A');
     assert(tilo::MapKey("A").character == 'A' && tilo::MapKey("a").character == 'a');
-    // An upper-case letter is a key a keyboard writes with Shift.
-    assert(tilo::UpperCaseLetter("A") && tilo::UpperCaseLetter("Z"));
-    assert(!tilo::UpperCaseLetter("a") && !tilo::UpperCaseLetter("1") && !tilo::UpperCaseLetter("End") && !tilo::UpperCaseLetter(""));
     // A word no key spells is no key, and is not read as one of its letters.
     for (const char* unknown : {"ENDD", "Homee", "Pagedownn", "Tabbb"}) {
       assert(!tilo::NamedKeyMapping(unknown) && tilo::NamedKeyName(unknown).empty());

@@ -205,6 +205,8 @@ unsafe impl Send for Xkb {}
 
 pub(crate) struct KbdInternal<D: SeatHandler> {
     pub(crate) focus: Option<(<D as SeatHandler>::KeyboardFocus, Serial)>,
+    /// The focus the keyboard last left for none, and the serial of that leave.
+    pub(crate) left: Option<(<D as SeatHandler>::KeyboardFocus, Serial)>,
     pending_focus: Option<<D as SeatHandler>::KeyboardFocus>,
     pub(crate) pressed_keys: HashSet<Keycode>,
     pub(crate) forwarded_pressed_keys: HashSet<Keycode>,
@@ -252,6 +254,7 @@ impl<D: SeatHandler + 'static> KbdInternal<D> {
         let led_state = LedState::from_state(&state, &led_mapping);
         Ok(KbdInternal {
             focus: None,
+            left: None,
             pending_focus: None,
             pressed_keys: HashSet::new(),
             forwarded_pressed_keys: HashSet::new(),
@@ -1325,6 +1328,7 @@ impl<D: SeatHandler + 'static> KeyboardInnerHandle<'_, D> {
         serial: Serial,
     ) {
         if let Some(focus) = focus {
+            self.inner.left = None;
             let old_focus = self.inner.focus.replace((focus.clone(), serial));
             match (focus, old_focus) {
                 (focus, Some((old_focus, _))) if focus == old_focus => {
@@ -1364,6 +1368,7 @@ impl<D: SeatHandler + 'static> KeyboardInnerHandle<'_, D> {
         } else if let Some((old_focus, _)) = self.inner.focus.take() {
             trace!("Focus unset");
             old_focus.leave(self.seat, data, serial);
+            self.inner.left = Some((old_focus, serial));
         }
     }
 }

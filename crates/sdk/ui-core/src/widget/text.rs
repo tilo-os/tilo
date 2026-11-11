@@ -860,6 +860,7 @@ impl Text {
     pub fn apply_layout_external(&mut self, rect: vello::kurbo::Rect) {
         let size_changed = self.face.resized(rect);
         self.rect = rect;
+        self.layout_dirty = false;
         if size_changed {
             self.dirty = true;
         }
@@ -1116,10 +1117,15 @@ impl Widget for Text {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        // What a draw observes repaints the text; its size is the layout's to answer, where it
+        // measures (a draw that sees another renderer than the one it was measured with must not
+        // ask for a measure the next layout's renderer then reverses).
+        let layout_dirty = self.layout_dirty;
         self.observe_theme(theme);
         self.observe_i18n_revision();
         self.observe_engine_revision();
         self.observe_renderer_text_scale(text_renderer);
+        self.layout_dirty = layout_dirty;
         let color = self.color.unwrap_or({
             let colors = &theme.tokens.colors;
             if let Some(tone) = self.tone {
@@ -1242,7 +1248,6 @@ impl Widget for Text {
     /// Clears the cache-stale flag after the App consumes the scene.
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        self.layout_dirty = false;
     }
 
     /// Text's intrinsic size is fixed at construction, so once
@@ -1825,7 +1830,6 @@ mod tests {
             let (role_measure, role_scene) =
                 build_measure_draw(&mut role, &scaled, &mut role_renderer);
             assert!(Widget::needs_redraw(&role));
-            assert!(Widget::is_layout_dirty(&role));
             assert_close(role.text_style().size, 28.0, "public effective style");
             assert_close(role_measure.height, 28.0 * 1.45, "role remeasure");
             assert_scene_font_size(&role_scene, 28.0, "role cache redraw");

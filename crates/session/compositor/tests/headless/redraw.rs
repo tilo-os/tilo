@@ -47,19 +47,41 @@ impl WindowPolicy for Movable {
     }
 }
 
-/// A window the policy moves back onto an output is drawn there: the output
-/// owes the frame that shows it, with nothing else having damaged the screen.
+/// Draw the frames a change to the desk is shown by, and rest it.
+///
+/// A frame asks the policy for its places, so the one that finds a move is the one that owes the
+/// frame showing it. When the display is due, that frame draws the move in the same pass; when it
+/// is not, the output keeps owing it until the next blank the display builds, which is the frame
+/// after. So both are drawn here: a desk rests after them whatever pace the machine ran at.
+fn settle(compositor: &mut Compositor) {
+    compositor
+        .draw_frame()
+        .expect("the frame that asks the policy for its places");
+    compositor
+        .draw_frame()
+        .expect("the frame the display paces the change to");
+    assert!(!compositor.owes_frame(), "the desk draws what it owes");
+}
+
+/// A window the policy moves is drawn where it moved to: the output draws it
+/// there, with nothing else having damaged the screen.
 #[test]
 fn a_window_the_policy_moves_is_drawn_where_it_moved_to() {
     let policy = Movable::default();
     let at = Rc::clone(&policy.at);
     let mut compositor = headless(Box::new(policy));
     let _client = mapped_client(&mut compositor, "moved", (200, 100), [255, 0, 0, 255]);
-    compositor.draw_frame().expect("a frame");
+    settle(&mut compositor);
+    let frame = compositor.screenshot("HEADLESS-1").unwrap();
+    assert_eq!(
+        frame.pixel(320, 240),
+        Some([255, 0, 0, 255]),
+        "the window is drawn where it mapped"
+    );
 
     // Off every output, as a window whose well stands off the strip is left.
     *at.borrow_mut() = Some(Point::from((-4000, 0)));
-    compositor.draw_frame().expect("a frame");
+    settle(&mut compositor);
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_ne!(
         frame.pixel(320, 240),
@@ -67,21 +89,10 @@ fn a_window_the_policy_moves_is_drawn_where_it_moved_to() {
         "a window off the output is on no frame"
     );
 
-    // Back on it: what the output shows changed, so it owes that frame. The move is applied by
-    // the frame that asks the policy for its places again.
+    // Back on it: what the output shows changed, so it owes the frame that shows the move, though
+    // no client drew anything.
     *at.borrow_mut() = Some(Point::from((20, 20)));
-    compositor.draw_frame().expect("a frame");
-    assert!(
-        compositor.owes_frame(),
-        "the output owes the frame that shows the moved window"
-    );
-    for _ in 0..8 {
-        if !compositor.owes_frame() {
-            break;
-        }
-        compositor.draw_frame().expect("a frame");
-    }
-    assert!(!compositor.owes_frame(), "and draws it");
+    settle(&mut compositor);
     let frame = compositor.screenshot("HEADLESS-1").unwrap();
     assert_eq!(
         frame.pixel(100, 60),
@@ -97,13 +108,7 @@ fn a_window_the_policy_moves_is_drawn_where_it_moved_to() {
 fn a_key_for_a_client_owes_no_frame_of_its_own() {
     let mut compositor = headless(Box::new(StackPolicy));
     let mut client = mapped_client(&mut compositor, "typed", (200, 100), [0, 0, 255, 255]);
-    for _ in 0..8 {
-        if !compositor.owes_frame() {
-            break;
-        }
-        compositor.draw_frame().expect("a frame");
-    }
-    assert!(!compositor.owes_frame(), "the desk rests");
+    settle(&mut compositor);
     for pressed in [true, false] {
         compositor
             .input(InputEvent::Key {

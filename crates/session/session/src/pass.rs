@@ -112,18 +112,24 @@ impl Session {
             self.kept_at = Instant::now();
             self.shared.observe();
         }
-        // What a tool handed the desk's input since the last pass is taken here, where a device's
-        // own input reaches the desk: the frame below carries it, as it carries a key the person
-        // pressed.
-        self.serve_tool_input();
+        // What a tool handed the desk's input is taken where a device's own input reaches the desk:
+        // here, and each time the wait for the frame below is woken, so the frame carries it as it
+        // carries a key the person pressed.
+        let mut tool_input = serve_tool_input(&self.control, &self.shared, &mut self.compositor);
         // A frame that is owed is shown at the display's next blank: what arrives before that blank
         // joins the frame it is shown in, so the desk below is laid out once per refresh however
         // fast events come.
-        self.compositor.await_frame_arrivals(|| {
+        self.compositor.await_frame_arrivals(|compositor| {
             if let Some(launch) = &launch {
                 launch.start_waiting();
             }
+            tool_input = tool_input.saturating_add(serve_tool_input(
+                &self.control,
+                &self.shared,
+                compositor,
+            ));
         })?;
+        self.tool_input = tool_input;
         self.follow_logout_request();
         // What the session itself does before the frame: the desk, the apps and the overlays this
         // pass lays out.
@@ -153,7 +159,6 @@ impl Session {
         // What the services published this pass is what every surface of the machine shows.
         self.shared.follow_status();
         self.follow_readout();
-        self.follow_pending_paste();
         self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what their devices did, so a
         // panel is sent the reading of this pass.
@@ -180,20 +185,7 @@ impl Session {
             .step(&self.shared.handle, &self.shared.desktop, now);
         // The desk this pass laid out is published before it is drawn: whoever reads the session's
         // state reads the desk the frame about to be presented shows, not the one before it.
-        crate::test_control::publish(
-            &self.control,
-            crate::test_control::Desk {
-                doors: &self.shared.doors,
-                handle: &self.shared.handle,
-                overlays: &self.shared.overlays,
-                overview: self.shared.overview.open_cell(),
-                engine: self.shared.engine.as_deref(),
-                seats: &self.shared.seats,
-                locked: self.compositor.locked(),
-                lock_screen_drawn: self.compositor.lock_drawn(),
-                lock: &self.shared.lock,
-            },
-        );
+        self.control.publish(&desk(&self.shared, &self.compositor));
         self.compositor.mark_pump(pass.elapsed());
         // The desk's windows are drawn as far as they have come; an animated switch owns its frames
         // until they rest.
@@ -271,51 +263,13 @@ impl Session {
         }
     }
 
-    /// The desk's input a tool handed the loop since the last pass, served where a device's input
-    /// is: before the pass lays its frame out, so the frame carries it.
-    fn serve_tool_input(&mut self) {
-        let answering = Instant::now();
-        let (locked, lock_screen_drawn) = (self.compositor.locked(), self.compositor.lock_drawn());
-        crate::test_control::serve_input(
-            &self.control,
-            &mut self.compositor,
-            crate::test_control::Desk {
-                doors: &self.shared.doors,
-                handle: &self.shared.handle,
-                overlays: &self.shared.overlays,
-                overview: self.shared.overview.open_cell(),
-                engine: self.shared.engine.as_deref(),
-                seats: &self.shared.seats,
-                locked,
-                lock_screen_drawn,
-                lock: &self.shared.lock,
-            },
-        );
-        self.tool_input = answering.elapsed();
-    }
-
     /// What the frame just drawn asked of the session: the control socket's answer, what assistive
     /// technology reads of it, a live projection and a call it is shared to.
     fn serve_drawn_frame(&mut self) {
         let answering = Instant::now();
         // What `tilo-control` asks of the frame just drawn.
-        let locked = self.compositor.locked();
-        let lock_screen_drawn = self.compositor.lock_drawn();
-        crate::test_control::serve(
-            &self.control,
-            &mut self.compositor,
-            crate::test_control::Desk {
-                doors: &self.shared.doors,
-                handle: &self.shared.handle,
-                overlays: &self.shared.overlays,
-                overview: self.shared.overview.open_cell(),
-                engine: self.shared.engine.as_deref(),
-                seats: &self.shared.seats,
-                locked,
-                lock_screen_drawn,
-                lock: &self.shared.lock,
-            },
-        );
+        let desk = desk(&self.shared, &self.compositor);
+        self.control.serve(&mut self.compositor, &desk);
         self.compositor
             .mark_testctl(answering.elapsed().saturating_add(self.tool_input));
         // What assistive technology reads of the frame just drawn, and what it asked of it.
@@ -420,7 +374,13 @@ impl Session {
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
             crate::platform::keys::next_readout_deadline(&self.shared.waiting.borrow()),
-            self.shared.pending_paste.get(),
+            // The caret the clipboard panel waits for stops being waited for on the compositor's
+            // clock.
+            self.shared
+                .pending_paste
+                .get()
+                .then(|| self.compositor.caret_deadline())
+                .flatten(),
             self.compositor.layer_settle_deadline(),
             Some(self.update_finish.next_deadline()),
         ];
@@ -582,8 +542,6 @@ impl Session {
         // The engine of the active source, after the on-screen keyboard gave up the seat: one input
         // method owns it.
         self.follow_input_method();
-        // Quick settings runs while the stack has its slot up, where the stack placed it.
-        self.follow_quick_settings();
         if let Some(captures) = &mut self.captures {
             captures.serve(
                 &mut self.compositor,
@@ -633,6 +591,13 @@ impl Session {
         );
         self.place_sheets();
         self.settle_asks()?;
+        // What the asks opened or closed of the chrome's own surfaces stands in the stack now, and
+        // the clipboard panel a key asked for goes up beside the caret: the desk this pass lays out
+        // and publishes names them, not the one after.
+        self.with_chrome_mut(tilo_desktop::desktop_host::DesktopChrome::publish_overlays);
+        self.follow_pending_paste();
+        // Quick settings runs while the stack has its slot up, where the stack placed it.
+        self.follow_quick_settings();
         // Which apps stopped answering reaches the desk, and the person's Wait or Force quit
         // reaches the compositor.
         self.follow_app_liveness();
@@ -696,5 +661,33 @@ impl Session {
             }
         }
         Ok(())
+    }
+}
+
+/// The desk's input a tool handed the loop since it last looked, served where a device's input is:
+/// before the pass lays its frame out, so the frame carries it. How long answering it took.
+fn serve_tool_input(
+    control: &crate::test_control::Control,
+    shared: &crate::Shared,
+    compositor: &mut Compositor,
+) -> std::time::Duration {
+    let answering = Instant::now();
+    let desk = desk(shared, compositor);
+    control.serve_input(compositor, &desk);
+    answering.elapsed()
+}
+
+/// The session as the control socket's answers read it now.
+fn desk<'a>(shared: &'a crate::Shared, compositor: &Compositor) -> crate::test_control::Desk<'a> {
+    crate::test_control::Desk {
+        doors: &shared.doors,
+        handle: &shared.handle,
+        overlays: &shared.overlays,
+        overview: shared.overview.open_cell(),
+        engine: shared.engine.as_deref(),
+        seats: &shared.seats,
+        locked: compositor.locked(),
+        lock_screen_drawn: compositor.lock_drawn(),
+        lock: &shared.lock,
     }
 }

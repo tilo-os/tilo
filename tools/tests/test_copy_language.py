@@ -242,6 +242,34 @@ class CopyLanguageTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 copy.load_glossary(path)
 
+    def test_a_label_a_closure_picks_is_caught_and_a_call_it_feeds_is_not(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn dialog(step: Option<&Step>, open: bool) -> Node {",
+                "    Node::new(Role::Dialog)",
+                "        .with_name(step.map_or_else(",
+                '            || if open { "Action confirmation" } else { "Search" },',
+                "            |step| step.question.as_str(),",
+                "        ))",
+                '        .with_label(if open { "Shown" } else { "Hidden" })',
+                '        .with_title("Plain")',
+                '        .with_hint(pick(|word| say(word, "Grid")))',
+                '        .with_description(crate::i18n::t("demo-name"))',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["Action confirmation", "Search", "Hidden", "Shown", "Plain"],
+                "the label a step names itself is painted as much through a closure "
+                "as in the argument itself; a word only fed to a call is not")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,

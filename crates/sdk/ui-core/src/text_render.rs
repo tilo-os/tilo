@@ -1665,6 +1665,16 @@ const MEASURE_CACHE_LIMIT: usize = 4096;
 const MEASURE_CACHE_BYTES: usize = 2 * 1024 * 1024;
 const SHAPE_CACHE_BYTES: usize = 16 * 1024 * 1024;
 
+/// The face a line of one style is set in ([`TextRenderer::line_face`]).
+pub struct LineFace {
+    pub font: Font,
+    /// The size the line is set at, in the renderer's pixels.
+    pub size: f32,
+    pub coords: Vec<vello::NormalizedCoord>,
+    /// How far below the line's origin its baseline lies.
+    pub baseline: f32,
+}
+
 /// One contiguous span of glyphs sharing a single font face, already
 /// positioned in the text block's local coordinate space. Painting is then
 /// just `scene.draw_glyphs` with the caller's colour + transform.
@@ -2900,6 +2910,26 @@ impl TextRenderer {
         runs.first()
             .and_then(|run| run.glyphs.first())
             .map_or(style.size * 0.8, |glyph| glyph.y)
+    }
+
+    /// The face [`Self::draw_style`] sets a line of `style` in, at the size
+    /// it sets it, with its variation coordinates, and how far below the
+    /// origin it puts the baseline: what a host needs to set the same line
+    /// itself (a page's own text field). `None` when no face is loaded.
+    pub fn line_face(&mut self, style: &TextStyle) -> Option<LineFace> {
+        let logical_style = style;
+        let scaled_style = self.scaled_style(style);
+        let style = &scaled_style;
+        let input = CacheQuery::new("x", logical_style);
+        let runs = self.shaped_query(&input, None, style);
+        let run = runs.first()?;
+        let font = self.vello_font(run.face_id, run.font_weight)?;
+        Some(LineFace {
+            font,
+            size: run.size,
+            coords: run.normalized_coords.clone(),
+            baseline: run.glyphs.first().map_or(style.size * 0.8, |glyph| glyph.y),
+        })
     }
 
     /// Draw retained immutable input; colour and transform do not affect geometry identity.

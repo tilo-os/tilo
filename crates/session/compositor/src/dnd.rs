@@ -1001,7 +1001,7 @@ impl State {
         let xwm_of = |surface: &WlSurface| {
             self.space
                 .elements()
-                .find(|window| crate::xwayland::x11_wl_surface(window).as_ref() == Some(surface))
+                .find(|window| crate::state::surface_of(window).as_ref() == Some(surface))
                 .and_then(|window| window.x11_surface())
                 .and_then(X11Surface::xwm_id)
         };

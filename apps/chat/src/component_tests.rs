@@ -1826,3 +1826,87 @@ fn a_chat_with_no_window_publishes_what_a_window_of_it_does() {
         "a window of it publishes the same"
     );
 }
+
+/// A secondary click in the composer is the field's own: its text menu opens
+/// on the words there, read where the menu stands, and not the surface's menu
+/// for the place.
+#[test]
+fn a_secondary_click_in_the_composer_offers_the_text_menu_where_it_is_drawn() {
+    use ui::winit::dpi::PhysicalPosition;
+    use ui::winit::event::{DeviceId, ElementState, MouseButton, WindowEvent};
+
+    let (mut frame, _records, _checkout) = semantic_component_harness("chat-composer-text-menu");
+    let inspection = frame.inspection();
+    let composer = semantic_target_rect(&inspection.root, "chat.composer")
+        .expect("the composer is drawn")
+        .center();
+    frame.click_at(composer.x, composer.y);
+    frame.type_text("copy these words");
+    // The pointer rests where the person right-clicks, then the press and its
+    // release: what a browser sends for a secondary click.
+    for event in [
+        WindowEvent::CursorMoved {
+            device_id: DeviceId::dummy(),
+            position: PhysicalPosition::new(composer.x, composer.y),
+        },
+        ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+        ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+    ] {
+        frame.send(&event);
+    }
+    frame.relayout();
+    let nodes: Vec<(ui::accesskit::Role, String, ui::accesskit::Rect)> = frame
+        .a11y_nodes()
+        .into_iter()
+        .filter_map(|(_, node)| Some((node.role(), node.label()?.to_owned(), node.bounds()?)))
+        .collect();
+    let rows: Vec<&(ui::accesskit::Role, String, ui::accesskit::Rect)> = nodes
+        .iter()
+        .filter(|(role, ..)| *role == ui::accesskit::Role::MenuItem)
+        .collect();
+    let (_, row, bounds) = *rows
+        .iter()
+        .find(|(_, label, _)| matches!(label.as_str(), "Cut" | "Copy" | "Paste" | "Select all"))
+        .unwrap_or_else(|| {
+            panic!("a secondary click in the field offers the text menu's rows: {rows:?}")
+        });
+    assert!(
+        bounds.width() > 0.0 && bounds.height() > 0.0,
+        "the row {row} is drawn where it is read: {bounds:?}"
+    );
+    // The menu stands beside the pointer on the page: its rows stack from
+    // where the press landed, never in the page's corner.
+    let top = rows
+        .iter()
+        .map(|(_, _, box_)| box_.y0)
+        .fold(f64::INFINITY, f64::min);
+    let bottom = rows
+        .iter()
+        .map(|(_, _, box_)| box_.y1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let left = rows
+        .iter()
+        .map(|(_, _, box_)| box_.x0)
+        .fold(f64::INFINITY, f64::min);
+    let right = rows
+        .iter()
+        .map(|(_, _, box_)| box_.x1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    assert!(
+        left >= 0.0 && top >= 0.0 && right <= 1280.0 && bottom <= 720.0,
+        "the text menu stands on the page: {top}..{bottom} by {left}..{right}"
+    );
+    assert!(
+        composer.x >= left - 40.0
+            && composer.x <= right + 40.0
+            && ((composer.y - bottom).abs() < 60.0 || (composer.y - top).abs() < 60.0),
+        "the text menu opens at the words the press landed on ({composer:?}), \
+         not the corner: {top}..{bottom} by {left}..{right}"
+    );
+    assert!(
+        rows.iter()
+            .all(|(_, label, _)| label != "New category" && label != "New channel"),
+        "the press was the field's, not the surface's: {rows:?}"
+    );
+    frame.close_components();
+}

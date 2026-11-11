@@ -1160,9 +1160,17 @@ fn a_hello_the_workspace_forgets_is_replayed_no_more() {
         stamps
     };
     assert_eq!(stamps(&store), vec![50, 51]);
-    assert_eq!(store.forget_hellos(&[[0xf1; 32], [0xf3; 32]]).unwrap(), 1);
+    assert_eq!(
+        store
+            .forget_hellos(&[[0xf1; 32], [0xf3; 32]], &|_| false)
+            .unwrap(),
+        1
+    );
     assert_eq!(stamps(&store), vec![51]);
     let reopened = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
     assert_eq!(stamps(&reopened), vec![51], "forgotten for good");
-    assert_eq!(reopened.forget_hellos(&[[0xf1; 32]]).unwrap(), 0);
+    assert_eq!(
+        reopened.forget_hellos(&[[0xf1; 32]], &|_| false).unwrap(),
+        0
+    );
 }

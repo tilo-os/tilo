@@ -209,24 +209,6 @@ pub(crate) struct Desk<'a> {
     pub(crate) lock: &'a crate::lock_service::Lock,
 }
 
-/// Answer what `control` , when there is one, was asked since the last pass, and publish the state
-/// its watchers read.
-pub(crate) fn serve(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
-    control.serve(compositor, &desk);
-}
-
-/// What a tool handed the desk's input since the last pass, taken where a device's input reaches
-/// the desk, and publish the desk this pass laid out before it is drawn.
-pub(crate) fn serve_input(control: &Control, compositor: &mut Compositor, desk: Desk<'_>) {
-    control.serve_input(compositor, &desk);
-}
-
-/// Tell the watchers the desk this pass laid out, before it is drawn: the state a reader gets is
-/// the one the frame carries.
-pub(crate) fn publish(control: &Control, desk: Desk<'_>) {
-    control.publish(&desk);
-}
-
 /// One request a connection sent the loop, and where its answer goes.
 struct Asked {
     /// The op it asks, which the socket it came in on serves.
@@ -615,7 +597,7 @@ impl Control {
     /// reaches the desk: a key or a press a tool injects takes effect in the frame this pass draws,
     /// as the same input from a device does. Everything else asked waits for the frame
     /// ([`Self::serve`]), where it reads the desk the frame shows.
-    fn serve_input(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
+    pub(crate) fn serve_input(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
@@ -655,7 +637,7 @@ impl Control {
 
     /// Take the connections waiting, publish the desk its watchers read, and answer what was asked
     /// of the loop since the last pass.
-    fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
+    pub(crate) fn serve(&self, compositor: &mut Compositor, desk: &Desk<'_>) {
         self.door.actions.set_workspace(desk.handle.read(|tree| {
             tree.active_workspace()
                 .map(|workspace| workspace.id().to_string())
@@ -693,7 +675,7 @@ impl Control {
 
     /// Tell the watchers where the desk stands, when it moved since the last pass: the state dump
     /// is only built when someone reads it.
-    fn publish(&self, desk: &Desk<'_>) {
+    pub(crate) fn publish(&self, desk: &Desk<'_>) {
         use std::hash::{Hash as _, Hasher as _};
         let mut hasher = std::hash::DefaultHasher::new();
         desk.handle.navigation_revision().hash(&mut hasher);

@@ -798,6 +798,8 @@ impl Widget for Map {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        // A page shown as HTML shows it as one image.
+        crate::scene_parts::picture();
         // A canvas clips what it holds: a place outside the viewport is neither drawn nor hit.
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;

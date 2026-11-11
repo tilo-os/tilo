@@ -131,6 +131,15 @@ impl Presence {
         self.follow_asked.get()
     }
 
+    /// A gesture about the following itself (a press on the banner that names whose view this
+    /// is, opening their card) is not the person working either: it leaves the view it follows as
+    /// it is, as an ask to follow does ([`Self::follow_asked`]).
+    pub fn keep_following_through_gesture(&self) {
+        if self.own().following.is_some() {
+            self.follow_asked.set(true);
+        }
+    }
+
     /// The gesture that asked to follow has ended: the next ask is a new one.
     pub fn forget_follow_asked(&self) {
         self.follow_asked.set(false);

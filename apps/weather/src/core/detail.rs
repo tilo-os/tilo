@@ -54,9 +54,9 @@ impl Core {
             .with_bounds(rect);
         let Some(location) = self.model.selected_location() else {
             return node.with_description(if self.model.locations.is_empty() {
-                "No places yet. Add a place to see its forecast."
+                crate::i18n::t("weather-no-places")
             } else {
-                "Choose a saved place to see its forecast."
+                crate::i18n::t("weather-choose-place")
             });
         };
         let snapshot = self.model.snapshot_for(location.id);

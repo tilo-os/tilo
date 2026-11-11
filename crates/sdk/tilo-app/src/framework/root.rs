@@ -63,7 +63,7 @@ pub(crate) struct ResourceRoot {
     icon: IconDescriptor,
     /// The name the app gives the state it holds: [`ResourceApp::label`](super::ResourceApp::label),
     /// published with every state the root publishes, so a library of one
-    /// book is named "1 books" the moment the book is on its shelf.
+    /// book is named "1 book" the moment the book is on its shelf.
     label_of: fn(&dyn std::any::Any) -> String,
     /// The resource type the root shows, and what it says of itself.
     resource: ResourceType,

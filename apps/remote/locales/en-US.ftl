@@ -28,3 +28,8 @@ remote-remote-connections = { $op ->
 remote-add-connection = Added { $name }
 remote-delete-connection = Deleted { $item }
 remote-mark-used = Connected to { $item }
+
+## What this app does beside editing saved connections, told to whoever invokes it
+remote-describe-put-file = Send one local file to this SSH machine: name the local path and where to write it remotely.
+remote-describe-fetch-file = Fetch one file from this SSH machine: name the remote path and where to write it here.
+remote-describe-forget-host-key = Remove this device's stale SSH host-key pin; reconnect to inspect a replacement key.

@@ -55,6 +55,10 @@ mod tests {
                 "mail-compose-prompt-add",
                 "mail-compose-prompt-cancel",
                 "mail-contact-write",
+                "mail-a11y-bulk-select",
+                "mail-a11y-bulk-done",
+                "mail-a11y-preview-unread",
+                "mail-a11y-thread-messages",
             ] {
                 let s = t(key);
                 assert_ne!(s, key, "{key} has no entry in the catalogue");
@@ -79,6 +83,10 @@ mod german_window {
         );
         catalog.set_locale("de-DE");
         assert_eq!(catalog.t("mail-compose-label-subject"), "Betreff");
+        assert_eq!(
+            catalog.t("mail-a11y-preview-unread"),
+            "Vorschau, weiterhin ungelesen"
+        );
         catalog.set_locale("en-US");
         assert_eq!(catalog.t("mail-compose-label-subject"), "Subject");
     }

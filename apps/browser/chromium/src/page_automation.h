@@ -405,8 +405,12 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   static constexpr size_t kMaxRefused=256;
   // A scroll answers inside the time an action is waited for, however much
   // page a lazy list keeps giving: what the wheel reached by then is its
-  // answer, and a caller that wants more scrolls again.
-  static constexpr double kScrollBudgetMs=4000;
+  // answer, and a caller that wants more scrolls again. A wheel moves a box
+  // one visible page of it a turn and each turn is waited for until the box
+  // has shown it, so a distance of many pages takes a while on a busy
+  // machine: the turns it may take are what bounds the work, and this is
+  // the time they are given, well inside the wait for an action's answer.
+  static constexpr double kScrollBudgetMs=15000;
   static constexpr double kMaxScrollTurn=2000;
   // A started navigation is awaited this long; a slower one is reported as
   // still loading and the caller waits for it.

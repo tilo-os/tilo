@@ -1373,7 +1373,9 @@ impl VideoEditorApp {
                 ui::widget::SplitOrientation::Vertical,
                 ui::widget::SplitRatio::new(PREVIEW_SHARE).with_bounds(0.3, 0.8),
             )
-            .with_label("Resize the preview and the timeline"),
+            .with_label(ui::i18n::I18nManager::lookup_plain(
+                "video-editor-a11y-resize",
+            )),
             selection: Selection::default(),
             selected_media: None,
             export: ExportSettings::default(),
@@ -5910,7 +5912,7 @@ struct HelpLayout {
     type_sizes: DialogType,
     /// Top of the "Esc or ? to close" line.
     hint_top: f64,
-    /// One entry per group, in `SHORTCUTS` order.
+    /// One entry per group, in [`shortcuts`] order.
     groups: Vec<HelpGroupLayout>,
     /// Where a row's description starts, measured from its column's left
     /// edge: the widest key combination in the table plus one spacing step,
@@ -7129,7 +7131,7 @@ impl Widget for VideoEditorApp {
         }
         Some(
             AccessNode::new(Role::Canvas)
-                .with_name("Video editor")
+                .with_name(crate::resource::CATALOG.t("video-editor-a11y-window"))
                 .with_value(format!(
                     "{}, {} in {} pane",
                     // The same line the project button's dot and tooltip
@@ -7366,67 +7368,77 @@ impl VideoEditorApp {
 /// them. Fifteen shortcuts existed and none of them were written down anywhere
 /// in the product; a sheet is also how a reader user learns they exist at all,
 /// which is why it is an accessibility affordance and not just a convenience.
-const SHORTCUTS: [(&str, &[(&str, &str)]); 5] = [
-    (
-        "Project",
-        &[
-            ("{cmd:O}", "Open a project file"),
-            ("{cmd+shift:S}", "Export a project file"),
-            ("{cmd+shift:O}", "Import media"),
-            ("{cmd:E}", "Export video"),
-        ],
-    ),
-    (
-        "Playback",
-        &[
-            ("Space", "Play / pause"),
-            ("J / K / L", "Shuttle back / stop / fwd"),
-            ("Home / End", "Jump to start / end"),
-            (", / .", "Previous / next marker"),
-            ("C", "Go to where the mix clipped"),
-            ("G", "Go to timecode"),
-        ],
-    ),
-    (
-        "Editing",
-        &[
-            ("I / O", "Trim clip in / out at playhead"),
-            ("Shift+I / O", "Mark render range in / out"),
-            ("Shift+X", "Clear the render range"),
-            ("S", "Split at playhead"),
-            ("M", "Add marker"),
-            ("T", "Add title"),
-            ("Delete", "Delete clip"),
-            ("Shift+Delete", "Ripple delete"),
-            ("Arrows", "Nudge, or step playhead"),
-        ],
-    ),
-    (
-        "Clipboard",
-        &[
-            ("{cmd:X} / {cmd:C} / {cmd:V}", "Cut, copy, paste"),
-            ("{cmd:D}", "Duplicate selection"),
-            ("{cmd:A}", "Select all clips"),
-            ("{cmd:Z}", "Undo"),
-            // Both spellings work and neither was written down, so the sheet
-            // claimed the editor had undo and no redo.
-            ("{cmd+shift:Z}", "Redo"),
-            ("{cmd:Y}", "Redo"),
-        ],
-    ),
-    (
-        "View",
-        &[
-            ("Tab / Shift+Tab", "Next / previous pane"),
-            ("Page Up / Down", "Scroll the timeline"),
-            ("Z", "Zoom to fit"),
-            ("+ / -", "Zoom in / out"),
-            ("B", "Toggle media bin"),
-            ("{cmd:I}", "Toggle inspector"),
-            ("?", "This sheet"),
-        ],
-    ),
-];
+#[allow(
+    clippy::literal_string_with_formatting_args,
+    reason = "the braces spell a key as the keyboard prints it, not format arguments"
+)]
+pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+    let t = |key: &str| crate::resource::CATALOG.t(key);
+    vec![
+        (
+            "video-editor-shortcut-project",
+            vec![
+                ("{cmd:O}", t("video-editor-shortcut-open-project")),
+                ("{cmd+shift:S}", t("video-editor-shortcut-export-project")),
+                ("{cmd+shift:O}", t("video-editor-shortcut-import-media")),
+                ("{cmd:E}", t("video-editor-shortcut-export-video")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-playback",
+            vec![
+                ("Space", t("video-editor-shortcut-play-pause")),
+                ("J / K / L", t("video-editor-shortcut-shuttle")),
+                ("Home / End", t("video-editor-shortcut-jump-start-end")),
+                (", / .", t("video-editor-shortcut-marker-step")),
+                ("C", t("video-editor-shortcut-clipped")),
+                ("G", t("video-editor-shortcut-timecode")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-editing",
+            vec![
+                ("I / O", t("video-editor-shortcut-trim")),
+                ("Shift+I / O", t("video-editor-shortcut-mark-range")),
+                ("Shift+X", t("video-editor-shortcut-clear-range")),
+                ("S", t("video-editor-shortcut-split")),
+                ("M", t("video-editor-shortcut-add-marker")),
+                ("T", t("video-editor-shortcut-add-title")),
+                ("Delete", t("video-editor-shortcut-delete-clip")),
+                ("Shift+Delete", t("video-editor-shortcut-ripple-delete")),
+                ("Arrows", t("video-editor-shortcut-nudge")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-clipboard",
+            vec![
+                (
+                    "{cmd:X} / {cmd:C} / {cmd:V}",
+                    t("video-editor-shortcut-cut-copy-paste"),
+                ),
+                ("{cmd:D}", t("video-editor-shortcut-duplicate")),
+                ("{cmd:A}", t("video-editor-shortcut-select-all")),
+                ("{cmd:Z}", t("video-editor-shortcut-undo")),
+                // Both spellings work and neither was written down, so the sheet
+                // claimed the editor had undo and no redo.
+                ("{cmd+shift:Z}", t("video-editor-shortcut-redo")),
+                ("{cmd:Y}", t("video-editor-shortcut-redo")),
+            ],
+        ),
+        (
+            "video-editor-shortcut-view",
+            vec![
+                ("Tab / Shift+Tab", t("video-editor-shortcut-pane")),
+                ("Page Up / Down", t("video-editor-shortcut-scroll-timeline")),
+                ("Z", t("video-editor-shortcut-zoom-fit")),
+                ("+ / -", t("video-editor-shortcut-zoom")),
+                ("B", t("video-editor-shortcut-bin")),
+                ("{cmd:I}", t("video-editor-shortcut-inspector")),
+                ("?", t("video-editor-shortcut-sheet")),
+            ],
+        ),
+    ]
+}
 
 /// How tall each shortcut group draws.
 fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
@@ -7444,13 +7456,14 @@ fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
     reason = "the shortcut label prefix is split only at the ASCII command separator emitted by this module"
 )]
 fn help_columns(two_col: bool, m: HelpMetrics) -> (usize, f64) {
-    let heights: Vec<f64> = SHORTCUTS
+    let shortcuts = shortcuts();
+    let heights: Vec<f64> = shortcuts
         .iter()
         .map(|(_, rows)| help_group_h(rows.len(), m))
         .collect();
     let total: f64 = heights.iter().sum();
     if !two_col {
-        return (SHORTCUTS.len(), total);
+        return (shortcuts.len(), total);
     }
     // Fill the first column until taking one more group would put it further
     // past half than stopping leaves it short.
@@ -8098,14 +8111,15 @@ impl VideoEditorApp {
                 scene,
                 tr,
                 tf,
-                "Esc or ? to close",
+                &crate::resource::CATALOG.t("video-editor-shortcut-close"),
                 &ty.sm,
                 dim,
                 body.x0,
                 l.hint_top,
             );
         }
-        for ((group, rows), g) in SHORTCUTS.iter().zip(&l.groups) {
+        let shortcuts = shortcuts();
+        for ((group, rows), g) in shortcuts.iter().zip(&l.groups) {
             if whole(g.heading.y0, g.heading.height()) {
                 text(
                     scene,
@@ -8471,7 +8485,8 @@ impl VideoEditorApp {
         } else {
             body.width()
         };
-        let what_dx = SHORTCUTS
+        let shortcuts = shortcuts();
+        let what_dx = shortcuts
             .iter()
             .flat_map(|(_, rows)| rows.iter())
             .map(|(combo, _)| {
@@ -8486,10 +8501,10 @@ impl VideoEditorApp {
             })
             .fold(0.0, f64::max)
             + s3;
-        let mut groups = Vec::with_capacity(SHORTCUTS.len());
+        let mut groups = Vec::with_capacity(shortcuts.len());
         let mut x = body.x0;
         let mut y = groups_top;
-        for (gi, (_, rows)) in SHORTCUTS.iter().enumerate() {
+        for (gi, (_, rows)) in shortcuts.iter().enumerate() {
             if two_col && gi == split {
                 x = body.x0 + col_w + s4;
                 y = groups_top;

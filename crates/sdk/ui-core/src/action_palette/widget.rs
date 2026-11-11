@@ -4,6 +4,24 @@ use super::{
     ActionPalette, Affine, ConfirmState, HashMap, ModelPath, NodeId, Point, PresenceCtx, Rect,
     Scene, Size, Style, TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
 };
+use crate::widget::SearchField;
+
+/// What names the palette's field and what its description adds, whichever
+/// rows the palette is over: a step collecting an action's argument is asked
+/// in the action's own words, which a description would only repeat; a query
+/// is the search field it is, and what the query covers is its description.
+pub(crate) fn field_announcement(
+    field: &SearchField,
+    question: Option<&str>,
+) -> (String, Option<String>) {
+    match question
+        .map(|question| crate::i18n!(question))
+        .filter(|question| !question.is_empty())
+    {
+        Some(question) => (question, None),
+        None => field.query_name_and_description(),
+    }
+}
 
 impl Widget for ActionPalette {
     fn needs_redraw(&self) -> bool {
@@ -203,17 +221,17 @@ impl Widget for ActionPalette {
             && let Some(field) = self.field.accessibility()
         {
             let target = self.target("field");
-            // A step collecting an action's argument is named by what it asks
-            // for, as the host-fed palette names it; the query says what it
-            // searches.
-            let name = if self.in_argument_mode() {
-                crate::i18n!(self.field.placeholder())
-            } else {
-                crate::i18n::widget_format("action-palette-query", &[])
-            };
+            // A step collecting an action's argument is asked in the action's
+            // own words; the query is the search field it is, the empty
+            // field's words saying what it covers.
+            let (name, description) = field_announcement(
+                &self.field,
+                self.in_argument_mode().then(|| self.field.placeholder()),
+            );
             children.push(
                 field
                     .with_name(name)
+                    .with_optional_description(description)
                     .with_hashed_key(&target)
                     .with_action_target(target)
                     .with_bounds(self.field.get_rect()),
@@ -264,18 +282,19 @@ impl Widget for ActionPalette {
         }
         let confirm = self.confirm.as_ref();
         let description = confirm.map_or("", |confirm| confirm.detail.as_str());
+        // The palette names the step it is on: the question it asks, or — while
+        // it collects the arguments of an action — that action, and itself
+        // otherwise.
+        let name = match confirm {
+            Some(confirm) => confirm.question.clone(),
+            None if self.in_argument_mode() => {
+                crate::i18n::widget_format("palette-argument-name", &[])
+            }
+            None => crate::i18n::widget_format("palette-name", &[]),
+        };
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
-                .with_name(confirm.map_or_else(
-                    || {
-                        if self.in_argument_mode() {
-                            "Action confirmation"
-                        } else {
-                            "Search"
-                        }
-                    },
-                    |confirm| confirm.question.as_str(),
-                ))
+                .with_name(name)
                 .with_description(description)
                 .with_state(
                     crate::a11y::AccessState::new()

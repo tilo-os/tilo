@@ -466,7 +466,7 @@ fn record_has_task(session: &Session, title: &str) -> bool {
 /// The workspace a person who has used Tasks for years keeps: `n` tasks over the chunks the
 /// store keeps them in (a run of 2048 tasks a chunk), as the actions that add them one at a
 /// time write them, in the record the installed Tasks package runs over.
-fn seeded_tasks(n: usize) -> tilolang_tilo::chunk::Chunks {
+pub(super) fn seeded_tasks(n: usize) -> tilolang_tilo::chunk::Chunks {
     let tasks = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(package_of(TASKS));
     let packages = tilolang_tilo::bench::compile(&tasks).expect("the tasks package compiles");
     tilolang_tilo::bench::seeded_chunks(&packages, n).expect("the workspace seeds")
@@ -1095,7 +1095,7 @@ fn a_window_reads_only_the_chunks_it_shows() {
 }
 
 /// The task number the title `title` ("Item 42") names.
-fn number_of(title: &str) -> Option<usize> {
+pub(super) fn number_of(title: &str) -> Option<usize> {
     title.strip_prefix("Item ")?.parse().ok()
 }
 

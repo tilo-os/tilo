@@ -81,6 +81,13 @@ struct HeadlessOutput {
     colour: tilo_color_pipeline::hdr_display::DisplayCapabilities,
 }
 
+/// When the display's pacing reads the clock: the process's monotonic clock, which a test holds
+/// still, so a frame is due at the instant its grid says rather than at the instant the machine
+/// got round to drawing it.
+fn pacing_now() -> Instant {
+    tilo_clock::now()
+}
+
 /// The vertical blank after `blank` that is still ahead of `drawn` : one refresh on, or the first
 /// one after a frame that took longer than a refresh missed its blanks instead of bursting to catch
 /// up on them.
@@ -121,7 +128,7 @@ impl HeadlessOutput {
     /// being how long building one takes.
     fn showed(&mut self, started: Instant) {
         let interval = self.interval();
-        let built = Instant::now();
+        let built = pacing_now();
         self.pacing.queued(started, built, interval);
         // This display has no blank to report: the image holds the frame as soon as it is built,
         // and `next_blank` is the grid that keeps frames to one per refresh.
@@ -133,7 +140,7 @@ impl HeadlessOutput {
 
     /// What changed shows at once: the next blank is now, and the frame for it is built now.
     fn restart_grid(&mut self) {
-        self.next_blank = Instant::now();
+        self.next_blank = pacing_now();
         self.due = self.next_blank;
         self.pacing = Pacing::default();
     }
@@ -404,14 +411,15 @@ impl Backend for HeadlessBackend {
             .map_err(|error| failed("output image", error))?;
         state.gamma.set_size(&config.name, Some(GAMMA_SIZE));
         let damage = OutputDamageTracker::from_output(&output);
+        let started = pacing_now();
         self.outputs.push(HeadlessOutput {
             output,
             place: config.position,
             damage,
             target,
             drawn: false,
-            next_blank: Instant::now(),
-            due: Instant::now(),
+            next_blank: started,
+            due: started,
             pacing: Pacing::default(),
             dark: false,
             gamma: None,
@@ -487,7 +495,7 @@ impl Backend for HeadlessBackend {
             // The display shows one frame per refresh: what changed is built one lead before the
             // blank that shows it, so a frame it is not yet time to build leaves what it owes still
             // owed.
-            let started = Instant::now();
+            let started = pacing_now();
             if started < output.due {
                 continue;
             }

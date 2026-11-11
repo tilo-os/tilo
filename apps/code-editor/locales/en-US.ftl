@@ -30,3 +30,7 @@ code-editor-code-help-failed = { $server } couldn't start. Suggestions, problems
 code-editor-code-help-try-again = Try again
 code-editor-code-help-copy-details = Copy details
 code-editor-code-help-close = Close
+
+## Accessibility
+code-editor-a11y-document = Code editor
+code-editor-a11y-document-description = Code editor. Use the file tree, file header, editor document, and bottom panel to navigate the project.

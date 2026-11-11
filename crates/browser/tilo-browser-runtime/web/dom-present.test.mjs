@@ -153,6 +153,42 @@ test('a semantic element lives in the element of the widget it describes', () =>
   assert.ok(mirror.children.includes(button));
 });
 
+test('a single-line field left to the page is its own input, set where the toolkit would set it', () => {
+  const layer = new Node('div'), mirror = new Node('div');
+  const presenter = createDomPresenter(layer);
+  const bridge = semanticBridge(mirror, () => true, () => {}, undefined, undefined, presenter.host);
+  const field = {key: 'ff', area: [10, 20, 180, 32], baseline: [22, 40], size: 14, family: 'face', variations: '', color: 'rgba(0,0,0,1)'};
+  frame(presenter, [['k', 'ff', 10, 20, 1], box(10, 20), ['ke']], {fields: [field]});
+  bridge.update({root: {path: 'app', paint_key: 'ff', rect: [10, 20, 200, 32],
+    semantics: {role: 'TextInput', state: {focusable: true, autofill: 'Username'}, value: 'ada'}}});
+  const input = layer.children[0].children.find(n => n.dataset.tiloSemantic);
+  assert.equal(input.localName, 'input');
+  assert.equal(input.getAttribute('autocomplete'), 'username webauthn');
+  assert.equal(input.value, 'ada');
+  assert.equal(input.dataset.tiloField, '1', 'the pointer is the field\'s own');
+  assert.equal(input.style.props.get('opacity'), '1');
+  assert.equal(input.style.props.get('font-size'), '14px');
+  // Its line starts at the toolkit's: 12 px in, and its baseline 20 px down.
+  const [top, right, , left] = input.style.props.get('padding').split(' ');
+  assert.equal(left, '12px');
+  assert.equal(right, '20px', 'it stops where the field\'s text stops');
+  assert.equal(Number.parseFloat(top) + 14 * 0.8, 20);
+  // A password field is a password input, and the tree, which never holds a
+  // secret, does not empty what the person typed.
+  bridge.update({root: {path: 'app', paint_key: 'ff', rect: [10, 20, 200, 32],
+    semantics: {role: 'TextInput', state: {focusable: true, protected: true, autofill: 'CurrentPassword'}}}});
+  input.value = 'hunter2';
+  bridge.update({root: {path: 'app', paint_key: 'ff', rect: [10, 20, 200, 32],
+    semantics: {role: 'TextInput', state: {focusable: true, protected: true, autofill: 'CurrentPassword', disabled: false}}}});
+  assert.equal(input.type, 'password');
+  assert.equal(input.getAttribute('autocomplete'), 'current-password');
+  assert.equal(input.value, 'hunter2');
+  // A frame that no longer leaves the field to the page hides the input.
+  frame(presenter, [['k', 'ff', 10, 20, 1], box(10, 20), ['ke']]);
+  assert.equal(input.style.props.get('opacity'), '0');
+  assert.equal(input.dataset.tiloField, undefined);
+});
+
 test('a reordered frame moves the fewest elements, so a selection in the rest stays', () => {
   const layer = new Node('div');
   const presenter = createDomPresenter(layer);

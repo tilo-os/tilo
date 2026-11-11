@@ -14,6 +14,7 @@
 //! ([`ActionCx::author`]), never an argument; when is the action's time
 //! ([`ActionCx::now_ms`]).
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
@@ -212,7 +213,7 @@ pub struct NewMessage {
     search = ChatPart::search,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 4,
+    version = 5,
     migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {
@@ -650,12 +651,12 @@ impl ChatPart {
         &mut self,
         cx: &mut ActionCx,
         message: &Id,
-        #[param("Where the work is, what was done and why")] work: WorkUpdate,
+        #[param("Where the work is and what was done")] work: WorkUpdate,
         #[param("The reply's words, when it has none yet")] say: Option<String>,
     ) -> Result<(), Refusal> {
         let me = author(cx)?;
         let since = seconds(cx);
-        let (state, reasoning, trace) = crate::model::AgentWork::from_update(&work)
+        let (state, trace) = crate::model::AgentWork::from_update(&work)
             .map_err(Refusal::new)?
             .into_parts();
         let summons = self
@@ -694,8 +695,6 @@ impl ChatPart {
         if !unchanged {
             record.state = Some(Transition { state, since });
         }
-        // Each update says why, or that no reason is on record now.
-        record.reasoning = reasoning;
         for step in trace {
             let id = Id::from_raw(step.id.clone());
             let row = Step {
@@ -1072,6 +1071,12 @@ impl Messages {
             .chain(self.parts.iter().flat_map(|(_, part)| part.messages.iter()))
     }
 
+    /// The messages the chat record kept in itself, which no part holds.
+    #[must_use]
+    pub fn kept(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
+        self.kept.iter()
+    }
+
     /// Every message held, oldest first, with the part holding it.
     pub fn located(&self) -> impl Iterator<Item = (u64, &Id, &Message)> + '_ {
         self.parts
@@ -1216,6 +1221,41 @@ impl Messages {
                         .values()
                         .filter(|message| message.channel == *channel && message.parent.is_none())
                         .count(),
+                    None => newest
+                        .earlier
+                        .get(&index.to_string())
+                        .and_then(|counts| counts.get(channel.as_str()))
+                        .and_then(|count| usize::try_from(*count).ok())
+                        .unwrap_or_default(),
+                };
+                if index == from {
+                    count.saturating_sub(seen)
+                } else {
+                    count
+                }
+            })
+            .sum()
+    }
+
+    /// [`Self::unread`], counted from `counts`, the top-level messages each
+    /// channel has in each part held: what a reload read when it read that
+    /// part, so a count costs the parts and not their messages.
+    #[must_use]
+    pub fn unread_counted(
+        &self,
+        channel: &Id,
+        mark: parts::ReadMark,
+        counts: &BTreeMap<u64, BTreeMap<String, usize>>,
+    ) -> usize {
+        let Some((head, newest)) = self.parts.last() else {
+            return 0;
+        };
+        let from = u64::try_from(mark.part.max(0)).unwrap_or_default();
+        let seen = usize::try_from(mark.seen.max(0)).unwrap_or(usize::MAX);
+        (from..=*head)
+            .map(|index| {
+                let count = match counts.get(&index) {
+                    Some(counted) => counted.get(channel.as_str()).copied().unwrap_or_default(),
                     None => newest
                         .earlier
                         .get(&index.to_string())

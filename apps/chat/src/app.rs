@@ -128,7 +128,7 @@ pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) 
 )]
 pub struct ChatApp {
     pub(crate) host_model: crate::host_model::HostModel,
-    pub(crate) expanded_reasoning: std::collections::HashSet<String>,
+    pub(crate) expanded_agent: std::collections::HashSet<String>,
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
@@ -136,6 +136,23 @@ pub struct ChatApp {
     /// reactors, mentioned people, and voice participants in its channels.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
+    /// The rows each held part of the messages chain was read as, with the
+    /// part state they were read from: a part whose state is the same
+    /// [`Rc`](std::rc::Rc) as here changed nothing since, and its rows are
+    /// the ones already read. A chat that grows holds thousands of messages in
+    /// one part, and a reload reads the parts that changed and no others.
+    pub(crate) rows_by_part: std::collections::BTreeMap<
+        u64,
+        (
+            std::rc::Rc<Vec<Message>>,
+            std::rc::Rc<crate::parts::ChatPart>,
+        ),
+    >,
+    /// Top-level messages each channel has in each part held, as that part's
+    /// rows were read: what an unread count sums, instead of reading every
+    /// part of the chain.
+    pub(crate) counts_by_part:
+        std::collections::BTreeMap<u64, std::collections::BTreeMap<String, usize>>,
     /// Whole-document snapshots used by global search. The visible `messages`
     /// are the open channel's.
     pub(crate) search_messages: Vec<Message>,
@@ -678,6 +695,8 @@ impl ChatApp {
             categories: Vec::new(),
             users: Vec::new(),
             messages: Vec::new(),
+            rows_by_part: std::collections::BTreeMap::new(),
+            counts_by_part: std::collections::BTreeMap::new(),
             search_messages: Vec::new(),
             search_users: Vec::new(),
             reports: Vec::new(),
@@ -790,7 +809,7 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             perms: ChatPermissions::permissive(),
             host_model: crate::host_model::HostModel::default(),
-            expanded_reasoning: std::collections::HashSet::new(),
+            expanded_agent: std::collections::HashSet::new(),
             dispatch: None,
             read_asked: None,
             read_refused: None,
@@ -2259,6 +2278,16 @@ impl Widget for ChatApp {
         {
             children.push(menu_node);
         }
+        // The text menu a composer opened on its words stands over the
+        // timeline: read where it is drawn, as the surface's own menu is.
+        for composer in [&self.composer_main, &self.composer_thread] {
+            if !composer.is_focused() {
+                continue;
+            }
+            if let Some(menu) = composer.text_menu_accessibility() {
+                children.push(menu);
+            }
+        }
         // Existing Chat controls are exported by their typed domain resources,
         // which carry device and destructive-operation metadata. Keep their
         // synthetic accessibility subtrees outside generic action projection.
@@ -2335,6 +2364,20 @@ impl Widget for ChatApp {
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
             return self.perform_menu_semantic_action(target, action, state, path);
+        }
+        // A row of the text menu a composer opened runs as the click that row
+        // makes: the editor takes the row, and what it wrote is read back.
+        if target.starts_with("editor.text-menu:") {
+            let composer = if self.focus == Focus::Thread {
+                &mut self.composer_thread
+            } else {
+                &mut self.composer_main
+            };
+            if !composer.perform_semantic_action(target, action, state, path) {
+                return false;
+            }
+            self.reload(state);
+            return true;
         }
         let hit = self
             .semantic_hits()

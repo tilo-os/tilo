@@ -3,6 +3,9 @@ const keyboardActivatable=new Set(['Tab','TreeItem','MenuItem','ToggleButton','C
 const segments=new Intl.Segmenter(undefined,{granularity:'grapheme'});
 const utf8=new TextEncoder();
 let bridgeSequence=0;
+// What a field asks a browser to fill in (`AccessState::autofill`), as
+// HTML's autocomplete tokens. A page offers passkeys on the username field.
+const AUTOFILL={Username:'username webauthn',Email:'email',CurrentPassword:'current-password',NewPassword:'new-password',OneTimeCode:'one-time-code',Name:'name',Tel:'tel'};
 const MIRROR_STYLE='position:absolute;box-sizing:border-box;margin:0;padding:0;border:0;pointer-events:none;';
 const graphemeIndex=(value,offset)=>[...segments.segment(value.slice(0,offset))].length;
 function graphemeIndexFromByteOffset(value,offset){
@@ -264,7 +267,9 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     recovery.text+=text;recovery.retained.value=recovery.text;syncRecovery(recovery);
   }
   function createElement(editable,key,role){
-    const element=document.createElement(editable?'textarea':role==='Button'?'button':'div');
+    // A page shown as HTML (`host`) shows a single-line field as its own
+    // `<input>`, which the browser can fill in and offer passkeys on.
+    const element=document.createElement(editable?(host&&role==='TextInput'?'input':'textarea'):role==='Button'?'button':'div');
     element.id=`tilo-semantic-${bridgeId}-${++elementSequence}`;
     element.dataset.tiloSemantic=key;
     element.tiloEditable=editable;
@@ -296,7 +301,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
         shortcuts?.keydown?.(element,event,state.composing,undefined,()=>inputScope&&!inputScope.capture()?.legacy?authorized(element):act(element,'focus'));
       });
       element.addEventListener('keyup',event=>{if(authorized(element))shortcuts?.keyup?.(element,event);});
-      element.addEventListener('blur',()=>{if(authorized(element))shortcuts?.blur?.(element);});
+      element.addEventListener('blur',()=>{if(!element.tiloState.reconcilingFocus&&authorized(element))shortcuts?.blur?.(element);});
       element.addEventListener('input',event=>{
         const state=element.tiloState;
         if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return;}
@@ -470,9 +475,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       }
       element.disabled=Boolean(node.state?.disabled);
       element.readOnly=Boolean(node.state?.read_only);
+      if(element.localName==='input'){
+        const type=node.state?.protected?'password':'text';
+        if(element.type!==type)element.type=type;
+        const autocomplete=AUTOFILL[node.state?.autofill]??'off';
+        if(element.getAttribute('autocomplete')!==autocomplete)element.setAttribute('autocomplete',autocomplete);
+      }
       if(node.live)element.setAttribute('aria-live',node.live.toLowerCase());else element.removeAttribute('aria-live');
       }
-      const value=node.state?.protected?'':node.value??'';
+      // A secret is never in the tree; a page's own password field holds
+      // what the person typed, which the tree must not wipe.
+      const value=node.state?.protected?(element.localName==='input'?element.value:''):node.value??'';
       // A node a patch left alone over a field that still shows it (its
       // value, and the selection last set) needs nothing done: recounting
       // the selection and setting it again on every field each status

@@ -1009,7 +1009,10 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     assert_eq!(question.workspace, WORKSPACE);
     // The action as the reader offers it, not the agent's own words.
     assert_eq!(question.action_label, "Remove from library");
-    assert_eq!(question.resource_label, "Books");
+    // The record by the name its app gives the state it holds: the book the
+    // agent shelved is on the shelf when it asks to remove it, and one of them
+    // is a book.
+    assert_eq!(question.resource_label, "1 book");
     assert_eq!(question.risk, "destructive");
     assert!(
         question.question().starts_with("Careful wants to ")

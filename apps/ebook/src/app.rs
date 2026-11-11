@@ -6852,10 +6852,7 @@ impl BooksApp {
             ctx.transform,
             &body,
         );
-        let count = match lib.len() {
-            1 => "1 book".to_string(),
-            n => format!("{n} books"),
-        };
+        let count = crate::resource::books_on_the_shelf(lib.len());
         let title_y = body.y0 + gutter - self.shelf_scroll;
         let title_bottom = Self::draw_page_title(
             ctx,

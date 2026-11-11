@@ -58,6 +58,9 @@ record = [
     "dep:collab-types",
 ]
 [dev-dependencies]
+# The tests drive the instance's commit path (`instance::record`) whatever else the build has
+# turned on.
+tilolang-tilo = { path = ".", features = ["record"] }
 # The system's mention notices, read from a workspace holding tilolang rich text.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", default-features = false }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types" }

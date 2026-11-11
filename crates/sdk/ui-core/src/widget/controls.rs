@@ -227,20 +227,27 @@ pub(crate) fn default_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBi
     // decorator's place. A surface whose root widget is one of those — a
     // terminal, whose prompt line is bound to the session's `run` — binds its
     // controls there, and asking only its children would never reach them.
-    bindings.extend(decorated_bindings(widget));
+    // That widget keeps its own inventory, which answers for its whole subtree
+    // ([`ActionControls`] stops the walk the same way wherever it is met), and
+    // the children below a decorator are that subtree's: they are already in
+    // the answer, so walking them again would count every control twice.
+    if let Some(decorated) = decorated_bindings(widget) {
+        bindings.extend(decorated);
+        return bindings;
+    }
     widget.for_each_child(&mut |child| bindings.extend(control_action_bindings(child)));
     bindings
 }
 
-/// What the widget `widget` decorates binds on its own, if it decorates one:
-/// a decorator's inner widget is no child of it, and a decorator that keeps
-/// its inner widget out of the tree answers no
-/// [`Decorated`](crate::widget::decorator::Decorated).
-fn decorated_bindings(widget: &(impl Widget + ?Sized)) -> Vec<ControlBindingMetadata> {
+/// What the widget a decorator wraps binds, for a decorator that stands for
+/// one: a decorator's inner widget is no child of it, and a decorator that
+/// keeps its inner widget out of the tree answers no
+/// [`Decorated`](crate::widget::decorator::Decorated). `None` when the widget
+/// stands for none, or the one it stands for keeps no inventory of its own.
+fn decorated_bindings(widget: &(impl Widget + ?Sized)) -> Option<Vec<ControlBindingMetadata>> {
     capability::<dyn crate::widget::decorator::Decorated>(widget)
         .and_then(|decorated| capability::<dyn ActionControls>(decorated.decorated()))
         .map(ActionControls::control_action_bindings)
-        .unwrap_or_default()
 }
 
 fn result_to_children(
@@ -435,12 +442,17 @@ pub fn action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadat
 /// widget a decorator wraps — no child of it, but met in its place. A wrapper's
 /// own bindings are semantic and never consume action availability, so this is
 /// a wrapper's whole action inventory without materializing accessibility.
+///
+/// A widget that keeps its own inventory answers for its whole subtree, and the
+/// children below a decorator are that subtree's: its answer is this one, and
+/// they are not walked again, which would count every control twice.
 pub fn children_action_control_bindings(widget: &dyn Widget) -> Vec<ControlBindingMetadata> {
     let mut bindings = Vec::new();
     if let Some(inner) = capability::<dyn crate::widget::decorator::Decorated>(widget)
         && let Some(controls) = capability::<dyn ActionControls>(inner.decorated())
     {
         bindings.extend(controls.action_control_bindings());
+        return bindings;
     }
     widget.for_each_child(&mut |child| bindings.extend(action_control_bindings(child)));
     bindings

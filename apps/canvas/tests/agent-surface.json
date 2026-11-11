@@ -3780,6 +3780,32 @@
   },
   {
     "resource": "canvas.artwork",
+    "action": "share-link",
+    "resource_kind": "canvas.artwork",
+    "label": "Copy link",
+    "description": "A link to this, as a URL that opens it in a browser or an installed Tilo. Anyone opening it still needs access to the workspace.",
+    "operation": "Effect",
+    "params": [
+      {
+        "name": "view",
+        "ty": "text",
+        "description": "Which declared view the link opens (default: the primary view)",
+        "nullable": true
+      },
+      {
+        "name": "mode",
+        "ty": "text",
+        "description": "app opens it alone in a full browser tab, desktop on the workspace's desktop (default: app)",
+        "choices": [
+          "app",
+          "desktop"
+        ],
+        "nullable": true
+      }
+    ]
+  },
+  {
+    "resource": "canvas.artwork",
     "action": "undo",
     "resource_kind": "canvas.artwork",
     "label": "Undo",

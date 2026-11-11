@@ -25,3 +25,15 @@ typst-fit-width = Fit width
 typst-save = Save
 typst-open = Open
 typst-export-pdf = Export PDF
+
+## Accessibility and file types
+typst-a11y-resize = Resize the source and the preview
+typst-a11y-source = Typst source
+typst-a11y-preview = Document preview
+typst-a11y-window = Typst editor
+typst-a11y-window-description = Editable Typst source with a live document preview
+typst-filter-source = Typst source
+typst-filter-pdf = PDF document
+
+typst-a11y-compact-layout = Compact layout; switch between source and preview with the Edit and Preview control
+typst-a11y-live-preview = Live rendered preview

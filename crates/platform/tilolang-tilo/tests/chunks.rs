@@ -2,7 +2,9 @@
 //! writes every resource in the chunk the record's manifest places it in, and derives each index
 //! row from the chunk that holds it.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 use automerge::AutoCommit;
 use serde_json::Value as Json;
@@ -15,9 +17,10 @@ use tilolang_runtime::Value;
 use tilolang_runtime::meta::Meta;
 use tilolang_runtime::place::{Place, Placement as Placed};
 use tilolang_runtime::store::NewRecord;
+use tilolang_runtime::value::ResourceRef;
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
 use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
-use tilolang_tilo::host::Host;
+use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::items::{self, Items};
 use tilolang_tilo::publish::PlanRequest;
 use tilolang_tilo::reads;
@@ -788,6 +791,164 @@ fn fill_bulk(docs: &mut Docs, meta: &Meta, root: &str, n: usize) -> Vec<String> 
     ids
 }
 
+/// The chunk a collection's first run is in, and of the cards the store reads before the chunk
+/// above it arrives: the record's own.
+fn first_run() -> usize {
+    usize::try_from(chunk::ITEMS).unwrap()
+}
+
+/// The cards of the board `root` as the store lists them, read whole.
+fn cards_in(host: &Host, meta: &Meta, root: &str) -> Vec<String> {
+    left(host, root, &field_id(meta, "Board", "left"))
+}
+
+/// A chunk that holds cards of the board and that the source cannot give: it is not on this
+/// device yet, or the peer holding it is away. The store asks for it once and waits for the sync
+/// that brings it, a window reads the cards it has meanwhile and says its count is not the
+/// board's, and the frame the chunk arrives in reads it, so the index is whole.
+#[allow(clippy::too_many_lines, reason = "one scenario, read top to bottom")]
+#[test]
+fn a_chunk_the_source_cannot_give_is_asked_for_once_and_read_when_it_arrives() {
+    let (earlier, mut docs, meta, root, ids) = board();
+    drop(earlier);
+    let cards = fill_bulk(&mut docs, &meta, &root, 3_000);
+    let per_run = first_run();
+    assert!(
+        cards.len() > per_run,
+        "the cards fill the record's own run and one above it"
+    );
+
+    // This replica's source holds the record alone: the chunk the rest of the cards are in has
+    // not reached this device, and asking for it answers nothing.
+    let record = docs.doc(chunk::FIRST).clone();
+    let replica: Rc<RefCell<Chunks>> = Rc::new(RefCell::new(Chunks::of(record.clone())));
+    let host = Host::open(
+        Opening {
+            record: Some(&record),
+            chunks: None,
+            index_dir: None,
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.sync_chunks(&replica.borrow());
+    let asked: Rc<RefCell<Vec<ChunkNo>>> = Rc::default();
+    {
+        let (source, asked) = (Rc::clone(&replica), Rc::clone(&asked));
+        host.set_chunk_loader(Box::new(move |number| {
+            asked.borrow_mut().push(number);
+            source.borrow().mirror(number).cloned()
+        }));
+    }
+    host.load_builtin(BOARD, &ids).unwrap();
+    host.wait_index();
+
+    // The window reads the cards the store has, and its count is not the board's yet.
+    assert_eq!(cards_in(&host, &meta, &root), cards[..per_run]);
+    assert!(host.index_answers(), "the store answers rows");
+    assert!(
+        !host.store().index_whole(),
+        "the chunk above holds cards the store has not read"
+    );
+    // It was asked for once, and nothing is owed: a frame rests while the chunk is away.
+    assert_eq!(*asked.borrow(), [1], "the chunk is asked for once");
+    assert!(
+        !host.index_pending(),
+        "the store waits for the chunk rather than reading it again"
+    );
+    for _ in 0..3 {
+        host.sync_chunks(&replica.borrow());
+        host.poll_index();
+    }
+    assert_eq!(
+        *asked.borrow(),
+        [1],
+        "frames that bring no chunk ask for it no more"
+    );
+    assert_eq!(held(&host).len(), 1, "the store starts no chunk empty");
+
+    // A card a person renames while the chunk is away keeps the name: it is written where the
+    // card is, and read back there.
+    let type_id = |name: &str| {
+        meta.types
+            .iter()
+            .find(|declared| declared.name == name)
+            .unwrap()
+            .id
+            .clone()
+    };
+    let at = ResourceRef::root(&root, type_id("Board")).item(&cards[7], type_id("Card"));
+    let card = at.id_string();
+    let rename = act(
+        &host,
+        &meta,
+        ("Card", &card),
+        "retitle",
+        json!({ "text": "renamed" }),
+    );
+    docs.apply(&rename);
+    let record = docs.doc(chunk::FIRST).clone();
+    host.sync_from(&record);
+    let text_field = field_id(&meta, "Card", "text");
+    let text = |host: &Host| match host.store().record_at(&at).unwrap().get(&text_field) {
+        Some(DynValue::Text(text)) => text.clone(),
+        other => panic!("no text: {other:?}"),
+    };
+    assert_eq!(text(&host), "renamed");
+    assert!(
+        !host.index_pending(),
+        "the card's change is taken in while the chunk is still away"
+    );
+
+    // An edit that belongs in the chunk that is away is refused, never written where the store
+    // holds nothing of it: a card made there would be lost when the chunk reached this device.
+    let add = meta
+        .actions
+        .iter()
+        .find(|action| action.name == "add")
+        .unwrap()
+        .id
+        .clone();
+    let board = host.root_of(BOARD_APP).unwrap();
+    let refused = host.runtime().invoke_action(
+        &Principal::new("ada"),
+        (
+            add.as_str(),
+            vec![Value::resource(&board), Value::text("away")],
+        ),
+    );
+    assert!(
+        refused.is_err(),
+        "the store refuses an edit it would write into a chunk it does not hold"
+    );
+    assert_eq!(held(&host).len(), 1, "and starts no chunk empty");
+    assert_eq!(
+        cards_in(&host, &meta, &root),
+        cards[..per_run],
+        "the refused edit left the board as it was"
+    );
+
+    // The chunk arrives through the sync: it is read once, and the board is whole.
+    let second = docs.doc(1).clone();
+    replica.borrow_mut().insert(1, second);
+    host.sync_chunks(&replica.borrow());
+    assert_eq!(
+        *asked.borrow(),
+        [1, 1],
+        "one ask while it was away, and one the source answers"
+    );
+    assert!(host.store().index_whole(), "the index covers the board");
+    assert!(host.index_ready(), "and is read from, not built");
+    assert_eq!(cards_in(&host, &meta, &root), cards, "every card in order");
+    assert_eq!(
+        text(&host),
+        "renamed",
+        "the card keeps the name it was given while the chunk was away"
+    );
+}
+
 /// What one card added to a board of `cards` costs, counted per insert over `samples` inserts:
 /// what the store did, what it read, and the work automerge did taking the change into the
 /// mirror. Counts, so neither the machine nor its load decides them.
@@ -928,4 +1089,62 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
         }
     }
     assert!(misses.is_empty(), "{}", misses.join("\n"));
+}
+
+/// A window whose record the framework keeps as one document — no chunk above the record's own is
+/// held apart — keeps a card added past a full run: the door writes it into that document, and the
+/// board reads it there, in its place after the others, in the window and once opened again.
+#[test]
+fn a_card_added_past_a_full_run_of_a_record_kept_as_one_document_is_kept() {
+    let (earlier, mut docs, meta, root, ids) = board();
+    drop(earlier);
+    let mut cards = fill_bulk(&mut docs, &meta, &root, first_run());
+    let mut record = docs.doc(chunk::FIRST).clone();
+    let open = |record: &AutoCommit| {
+        let host = Host::open(
+            Opening {
+                record: Some(record),
+                chunks: None,
+                index_dir: None,
+                device: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap();
+        host.load_builtin(BOARD, &ids).unwrap();
+        host.wait_index();
+        host
+    };
+    let host = open(&record);
+    assert_eq!(cards_in(&host, &meta, &root), cards);
+
+    let add = act(
+        &host,
+        &meta,
+        ("Board", &root),
+        "add",
+        json!({ "text": "one more" }),
+    );
+    assert!(
+        add.edits
+            .iter()
+            .any(|edit| edit.chunk() == Some(chunk::FIRST + 1)),
+        "the card goes past the full run"
+    );
+    cards.push(made(&add));
+    apply_recorded(&mut record, &add);
+    host.sync_from(&record);
+    host.wait_index();
+    assert_eq!(
+        cards_in(&host, &meta, &root),
+        cards,
+        "the window reads the card"
+    );
+    drop(host);
+    assert_eq!(
+        cards_in(&open(&record), &meta, &root),
+        cards,
+        "and so does a window opened on the record again"
+    );
 }

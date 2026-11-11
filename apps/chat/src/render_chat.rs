@@ -302,7 +302,7 @@ impl ChatApp {
             {
                 lines.push(crate::i18n::t("chat-agent-recovery"));
             }
-            if self.expanded_reasoning.contains(&m.id) && !stream.reasoning.is_empty() {
+            if self.expanded_agent.contains(&m.id) && !stream.reasoning.is_empty() {
                 lines.push(crate::i18n::t("chat-agent-provider-reasoning"));
                 lines.push(stream.reasoning.clone());
             }
@@ -847,11 +847,9 @@ fn composer_slot(slots: &[Rect], index: usize) -> Rect {
 
 #[cfg(test)]
 mod tests {
-    use super::agent_work::{AgentWorkLineStyle, AgentWorkPresentation};
+    use super::agent_work::AgentWorkPresentation;
     use super::{RowM, TimelineItem, media_face, media_meta};
-    use crate::model::{
-        AgentReasoning, AgentRoute, AgentStep, AgentStepOutcome, AgentWork, AgentWorkState,
-    };
+    use crate::model::{AgentStep, AgentStepOutcome, AgentWork, AgentWorkState};
     use ui::theme::Theme;
     use ui::widget::{MediaArt, MediaSize};
 
@@ -962,49 +960,33 @@ mod tests {
     }
 
     #[test]
-    fn agent_work_projection_names_only_recorded_state_rationale_and_dispatches() {
-        let cases = [
-            (AgentWorkState::Taken, "Request accepted"),
-            (
-                AgentWorkState::Waiting {
-                    app: "Calculator".into(),
-                },
-                "Last reported: waiting for app state: Calculator",
-            ),
-            (
-                AgentWorkState::Doing {
-                    did: "Add function".into(),
-                    about: "the revenue curve".into(),
-                },
-                "Latest intent: Add function: the revenue curve",
-            ),
-            (
-                AgentWorkState::Done {
-                    did: "Add function".into(),
-                },
-                "Completed: Add function",
-            ),
-            (AgentWorkState::Refused, "Could not complete this request"),
-        ];
-        for (state, expected) in cases {
-            assert_eq!(
-                AgentWorkPresentation::from(&AgentWork::new(state, 42)).summary,
-                expected
-            );
+    fn agent_work_says_it_is_working_then_folds_what_it_did_under_the_answer() {
+        let working = |state| AgentWorkPresentation::of(&AgentWork::new(state, 42), false);
+        let doing = AgentWorkState::Doing {
+            did: "Add function".into(),
+            about: "the revenue curve".into(),
+        };
+        for state in [AgentWorkState::Taken, doing] {
+            assert_eq!(working(state).unwrap().summary.as_deref(), Some("Working"));
         }
+        let waiting = AgentWorkState::Waiting {
+            app: "Calculator".into(),
+        };
+        assert_eq!(
+            working(waiting).unwrap().summary.as_deref(),
+            Some("Waiting for Calculator")
+        );
+        assert_eq!(
+            working(AgentWorkState::Refused).unwrap().summary.as_deref(),
+            Some("Could not complete this request")
+        );
+        // An answer with nothing done is the reply's words alone.
+        let complete = AgentWorkState::ProviderFinished {
+            outcome: crate::agent_stream::AgentFinish::Complete,
+        };
+        assert_eq!(working(complete.clone()), None);
 
-        let work = AgentWork::new(
-            AgentWorkState::Doing {
-                did: "Add function".into(),
-                about: String::new(),
-            },
-            42,
-        )
-        .because(AgentReasoning {
-            route: AgentRoute::Floor,
-            why: "The request matched the app's exported action.".into(),
-        })
-        .with_trace(vec![
+        let steps = vec![
             AgentStep::authored(
                 "calculator.workspace",
                 "Add function",
@@ -1025,26 +1007,24 @@ mod tests {
                 },
                 2,
             ),
-        ]);
-        let presentation = AgentWorkPresentation::from(&work);
-        assert_eq!(presentation.summary, "Latest intent: Add function");
-        assert_eq!(
-            presentation.details[0].text,
-            "Rule match: The request matched the app's exported action."
-        );
-        assert_eq!(presentation.details[0].style, AgentWorkLineStyle::Rationale);
-        assert_eq!(presentation.details[1].text, "Requested: Add function");
-        assert_eq!(presentation.details[2].text, "No change: Add function");
-        assert_eq!(
-            presentation.details[3].text,
-            "Refused: Set bounds: Outside the granted range"
-        );
-        assert!(
-            presentation
-                .details
-                .iter()
-                .all(|line| !line.text.to_ascii_lowercase().contains("chain of thought"))
-        );
+        ];
+        let lines = [
+            "Requested: Add function",
+            "No change: Add function",
+            "Refused: Set bounds: Outside the granted range",
+        ];
+        // While it works, every dispatched operation shows as it happens.
+        let running = AgentWork::new(AgentWorkState::Taken, 42).with_trace(steps.clone());
+        let shown = AgentWorkPresentation::of(&running, false).unwrap();
+        assert_eq!(shown.did, None);
+        assert_eq!(shown.steps, lines);
+        // Done, it is one line that opens the list.
+        let done = AgentWork::new(complete, 42).with_trace(steps);
+        let folded = AgentWorkPresentation::of(&done, false).unwrap();
+        assert_eq!(folded.summary, None);
+        assert_eq!(folded.did.as_deref(), Some("Did 3 things"));
+        assert!(folded.steps.is_empty());
+        assert_eq!(AgentWorkPresentation::of(&done, true).unwrap().steps, lines);
     }
 
     #[test]
@@ -1066,11 +1046,10 @@ mod tests {
             42,
         )
         .with_trace(steps);
-        let presentation = AgentWorkPresentation::from(&work);
-        assert_eq!(presentation.details.len(), 7);
-        for (index, line) in presentation.details.iter().enumerate() {
-            assert_eq!(line.text, format!("Applied: Action {index}"));
-            assert_eq!(line.style, AgentWorkLineStyle::Step);
+        let presentation = AgentWorkPresentation::of(&work, true).unwrap();
+        assert_eq!(presentation.steps.len(), 7);
+        for (index, line) in presentation.steps.iter().enumerate() {
+            assert_eq!(*line, format!("Applied: Action {index}"));
         }
 
         let row = RowM {

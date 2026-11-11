@@ -794,8 +794,9 @@ impl TopBarChrome {
     /// The ask about the person, beside the bar's right side as [`Self::draw_session_clusters`]
     /// left it, and the dot the avatar wears for it. It stands left of everything else there: the
     /// faces, the people button and the notices keep their places, and the ask takes the room left
-    /// of them, or opens under the band where that room cannot hold its words. Drawn after the
-    /// clock, whose lane it may take.
+    /// of them — the band's own, or, where that room cannot hold its words, the band itself — and
+    /// waits as the avatar's dot where even the band cannot. Drawn after the clock, whose lane it
+    /// may take.
     fn draw_ask_beside(
         &mut self,
         scene: &mut Scene,

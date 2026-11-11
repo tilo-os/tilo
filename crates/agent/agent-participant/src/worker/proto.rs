@@ -89,6 +89,14 @@ pub(crate) enum Request {
     },
     /// Every operation the held record publishes now.
     Survey,
+    /// The keys `mutation` writes in `record`, as the worker holds that record
+    /// now: what a host checks a caller's change against without reading the
+    /// record whole for every action.
+    ChangedKeys {
+        record: String,
+        snapshot: bool,
+        bytes: Vec<u8>,
+    },
     /// The one operation `address` names, or none: an answer to a host that
     /// already knows what it runs, without listing the record's resources.
     Resolve {
@@ -199,6 +207,9 @@ pub(crate) enum Reply {
     Opened { record: String },
     /// JSON `Vec<ActionDescriptor>`.
     Descriptors(String),
+    /// JSON `Option<Vec<Vec<String>>>`: the keys a change writes, or none for
+    /// a record the worker holds nothing of.
+    Keys(String),
     /// JSON `ActionOutput`.
     Output(String),
     /// The resource's door refused or the action failed.

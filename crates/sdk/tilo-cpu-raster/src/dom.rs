@@ -63,6 +63,51 @@ pub struct NewImage {
     pub width: u16,
     pub height: u16,
     pub rgba: Vec<u8>,
+    /// An image the page holds that this one replaces: a picture drawn again
+    /// ([`Islands`]). The page forgets it.
+    pub replaces: Option<u32>,
+}
+
+/// What a frame's widgets said about how the page should show them, for
+/// [`DomEncoder::encode_with`].
+#[derive(Default)]
+pub struct Islands<'a> {
+    /// Widgets that drew themselves as pictures: each is shown as one image
+    /// of everything it drew, with its text as text over it.
+    pub pictures: Option<&'a std::collections::HashSet<u64>>,
+    /// Widgets that must stay elements (a native scroll container, a field
+    /// the page shows): no subtree holding one becomes an image unasked.
+    pub keep: Option<&'a std::collections::HashSet<u64>>,
+    /// The part of the scene the page shows, which an image is cut to.
+    pub viewport: Rect,
+}
+
+/// How many draws a widget makes itself (not through the widgets inside
+/// it) before the page is shown it as one image rather than an element per
+/// draw: a chart, a drawing or a map without a picture's say-so.
+pub const ISLAND_DRAWS: usize = 400;
+
+/// A widget the page shows as an image, as last rasterized.
+struct Island {
+    /// What it drew, hashed: drawn the same again, the page's image stands.
+    hash: u64,
+    id: u32,
+    last: u64,
+}
+
+/// An island of this frame: the index of its widget's end mark, its image
+/// and where the image stands.
+struct PlannedIsland {
+    end: usize,
+    id: u32,
+    rect: Rect,
+}
+
+/// The CPU rasterizer that draws islands, made the first time one is shown.
+struct IslandRaster {
+    ctx: vello_cpu::RenderContext,
+    resources: vello_cpu::Resources,
+    scratch: crate::record::Scratch,
 }
 
 /// An image the page holds ([`DomEncoder::image_id`]).
@@ -109,6 +154,11 @@ pub struct DomEncoder {
     shown: HashMap<usize, Shown>,
     next_image: u32,
     frame: u64,
+    /// Fonts [`Self::text_face`] named that the page was not given yet.
+    pending_fonts: Vec<NewFont>,
+    /// The widgets shown as images, by key.
+    islands: HashMap<u64, Island>,
+    raster: Option<Box<IslandRaster>>,
 }
 
 impl DomEncoder {
@@ -145,43 +195,378 @@ impl DomEncoder {
                 last: frame,
             },
         );
-        // A page's image data is straight alpha; the pixmap's premultiplied.
         let mut rgba = pixmap.data_as_u8_slice().to_vec();
-        for pixel in rgba.chunks_exact_mut(4) {
-            if let [r, g, b, a] = pixel
-                && *a != 0
-                && *a != 255
-            {
-                let alpha = u16::from(*a);
-                for channel in [r, g, b] {
-                    *channel = u8::try_from((u16::from(*channel) * 255 + alpha / 2) / alpha)
-                        .unwrap_or(u8::MAX);
-                }
-            }
-        }
+        unpremultiply(&mut rgba);
         images.push(NewImage {
             id,
             width: pixmap.width(),
             height: pixmap.height(),
             rgba,
+            replaces: None,
         });
         id
     }
 
+    /// The page's family name for `font` set at the variation coordinates
+    /// `coords`, and its `font-variation-settings`; a font the page was not
+    /// given yet goes into `fonts`.
+    fn face(
+        known: &mut HashMap<(u64, u32), FontInfo>,
+        fonts: &mut Vec<NewFont>,
+        font: &FontData,
+        coords: &[i16],
+    ) -> (String, String) {
+        let info = known
+            .entry((font.data.id(), font.index))
+            .or_insert_with(|| {
+                let info = font_info(font);
+                fonts.push(NewFont {
+                    family: info.family.clone(),
+                    bytes: font.data.clone(),
+                    index: font.index,
+                    ascent: info.ascent,
+                    descent: info.descent,
+                });
+                info
+            });
+        let mut variations = String::new();
+        for (i, (tag, min, default, max)) in info.axes.iter().enumerate() {
+            let c = coords.get(i).map_or(0.0, |&c| f32::from(c) / 16384.0);
+            let value = if c >= 0.0 {
+                default + c * (max - default)
+            } else {
+                default + c * (default - min)
+            };
+            if !variations.is_empty() {
+                variations.push(',');
+            }
+            let _ = write!(variations, "'{tag}' {value:.0}");
+        }
+        (info.family.clone(), variations)
+    }
+
+    /// The page's family name and `font-variation-settings` for `font` at
+    /// `coords`, for text the page sets itself (a field it shows): a font it
+    /// was not given yet is handed over with the next frame
+    /// ([`DomFrame::fonts`]).
+    pub fn text_face(&mut self, font: &FontData, coords: &[i16]) -> (String, String) {
+        Self::face(&mut self.fonts, &mut self.pending_fonts, font, coords)
+    }
+
+    /// Write mark `at` of the frame (`kind`), or, for an island's begin, the
+    /// widget's mark and its image, until its end.
+    fn island_mark(
+        out: &mut String,
+        sep: &mut impl FnMut(&mut String),
+        plan: &HashMap<usize, PlannedIsland>,
+        at: usize,
+        kind: &MarkKind,
+        in_island: &mut Option<usize>,
+    ) {
+        if let Some(end) = *in_island {
+            if at == end {
+                *in_island = None;
+                sep(out);
+                mark(out, *kind);
+            }
+            return;
+        }
+        sep(out);
+        mark(out, *kind);
+        if let Some(island) = plan.get(&at) {
+            *in_island = Some(island.end);
+            sep(out);
+            let rect = island.rect;
+            image_op(
+                out,
+                rect,
+                Some(island.id),
+                Affine::translate((rect.x0, rect.y0)),
+                1.0,
+            );
+        }
+    }
+
+    /// Which widgets of the decoded frame the page shows as images, by the
+    /// index of their begin mark, rasterizing those that drew something new
+    /// into `images`.
+    fn plan_islands(
+        &mut self,
+        islands: &Islands<'_>,
+        images: &mut Vec<NewImage>,
+    ) -> HashMap<usize, PlannedIsland> {
+        let marks = &self.list.marks;
+        let mut planned = HashMap::new();
+        if marks.is_empty() {
+            return planned;
+        }
+        // Each begin's end, and the draws each key makes itself.
+        let mut ends = vec![usize::MAX; marks.len()];
+        let mut own = vec![0_usize; marks.len()];
+        let mut open: Vec<usize> = Vec::new();
+        let mut next = 0;
+        let mut pair = |next: usize, kind: &MarkKind, open: &mut Vec<usize>| match kind {
+            MarkKind::Begin { .. } => open.push(next),
+            MarkKind::End => {
+                if let Some(begin) = open.pop() {
+                    ends[begin] = next;
+                }
+            }
+        };
+        for (index, op) in self.list.ops.iter().enumerate() {
+            while let Some((at, kind)) = marks.get(next)
+                && *at <= index
+            {
+                pair(next, kind, &mut open);
+                next += 1;
+            }
+            if matches!(op, Op::Draw { .. } | Op::Glyphs { .. } | Op::Blur { .. })
+                && let Some(&key) = open.last()
+            {
+                own[key] += 1;
+            }
+        }
+        // Marks after the last draw.
+        while let Some((_, kind)) = marks.get(next) {
+            pair(next, kind, &mut open);
+            next += 1;
+        }
+        let mut chosen = Vec::new();
+        let mut at = 0;
+        while at < marks.len() {
+            let (MarkKind::Begin { key, .. }, end) = (marks[at].1, ends[at]) else {
+                at += 1;
+                continue;
+            };
+            if end == usize::MAX {
+                at += 1;
+                continue;
+            }
+            let picture = islands
+                .pictures
+                .is_some_and(|pictures| pictures.contains(&key));
+            let heavy = own[at] >= ISLAND_DRAWS
+                && !marks[at..end].iter().any(|(_, kind)| {
+                    matches!(kind, MarkKind::Begin { key, .. }
+                        if islands.keep.is_some_and(|keep| keep.contains(key)))
+                });
+            if picture || heavy {
+                chosen.push((key, end, at, marks[at].0..marks[end].0));
+                // What it holds is part of its image.
+                at = end + 1;
+            } else {
+                at += 1;
+            }
+        }
+        for (key, end, begin, ops) in chosen {
+            if let Some(island) = self.island(key, ops, islands.viewport, images) {
+                planned.insert(begin, PlannedIsland { end, ..island });
+            }
+        }
+        let frame = self.frame;
+        self.islands
+            .retain(|_, island| frame.saturating_sub(island.last) < IMAGE_FRAMES);
+        planned
+    }
+
+    /// The image of the draws `ops` of the widget keyed `key`, cut to
+    /// `viewport`: the page's image when they drew the same as last time,
+    /// otherwise rasterized again into `images`. `None` when nothing shows.
+    fn island(
+        &mut self,
+        key: u64,
+        ops: std::ops::Range<usize>,
+        viewport: Rect,
+        images: &mut Vec<NewImage>,
+    ) -> Option<PlannedIsland> {
+        use std::hash::{Hash, Hasher};
+        let mut bounds: Option<Rect> = None;
+        let mut drawn = Vec::new();
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        // What each draw paints, hashed: geometry, transform and paint (an
+        // image by identity, never its pixels).
+        let brush =
+            |brush: &Brush, hasher: &mut std::collections::hash_map::DefaultHasher| match brush {
+                Brush::Image(image, placed) => {
+                    match &image.image {
+                        vello_cpu::ImageSource::Pixmap(pixmap) => {
+                            (std::sync::Arc::as_ptr(pixmap) as usize).hash(hasher);
+                        }
+                        other => format!("{other:?}").hash(hasher),
+                    }
+                    image.sampler.alpha.to_bits().hash(hasher);
+                    placed.as_coeffs().map(f64::to_bits).hash(hasher);
+                }
+                other => format!("{other:?}").hash(hasher),
+            };
+        for index in ops {
+            let op = &self.list.ops[index];
+            match op {
+                Op::Text { .. } => continue,
+                Op::Draw {
+                    bbox,
+                    path,
+                    transform,
+                    style,
+                    brush: paint,
+                } => {
+                    bounds = Some(bounds.map_or(*bbox, |b| b.union(*bbox)));
+                    self.list.path(*path).to_svg().hash(&mut hasher);
+                    transform.as_coeffs().map(f64::to_bits).hash(&mut hasher);
+                    format!("{style:?}").hash(&mut hasher);
+                    brush(paint, &mut hasher);
+                }
+                Op::Blur { bbox, path, .. } => {
+                    bounds = Some(bounds.map_or(*bbox, |b| b.union(*bbox)));
+                    self.list.path(*path).to_svg().hash(&mut hasher);
+                    format!("{op:?}").hash(&mut hasher);
+                }
+                Op::Glyphs {
+                    bbox,
+                    glyphs,
+                    style,
+                    brush: paint,
+                } => {
+                    bounds = Some(bounds.map_or(*bbox, |b| b.union(*bbox)));
+                    for glyph in &self.list.glyphs[glyphs.clone()] {
+                        (std::sync::Arc::as_ptr(&glyph.outline) as usize).hash(&mut hasher);
+                        glyph
+                            .transform
+                            .as_coeffs()
+                            .map(f64::to_bits)
+                            .hash(&mut hasher);
+                    }
+                    format!("{style:?}").hash(&mut hasher);
+                    brush(paint, &mut hasher);
+                }
+                Op::Begin { path, .. } => {
+                    if let Some(path) = path {
+                        self.list.path(*path).to_svg().hash(&mut hasher);
+                    }
+                    format!("{op:?}").hash(&mut hasher);
+                }
+                Op::End => 1_u8.hash(&mut hasher),
+            }
+            drawn.push(u32::try_from(index).ok()?);
+        }
+        let shown = if viewport.area() > 0.0 {
+            bounds?.intersect(viewport)
+        } else {
+            bounds?
+        };
+        let rect = Rect::new(
+            shown.x0.floor(),
+            shown.y0.floor(),
+            shown.x1.ceil(),
+            shown.y1.ceil(),
+        );
+        let (width, height) = (
+            u16::try_from(rect.width() as i64).ok()?,
+            u16::try_from(rect.height() as i64).ok()?,
+        );
+        if width == 0 || height == 0 {
+            return None;
+        }
+        [rect.x0, rect.y0, rect.x1, rect.y1]
+            .map(f64::to_bits)
+            .hash(&mut hasher);
+        let hash = hasher.finish();
+        let frame = self.frame;
+        if let Some(held) = self.islands.get_mut(&key)
+            && held.hash == hash
+        {
+            held.last = frame;
+            return Some(PlannedIsland {
+                end: 0,
+                id: held.id,
+                rect,
+            });
+        }
+        let raster = self.raster.get_or_insert_with(|| {
+            Box::new(IslandRaster {
+                ctx: vello_cpu::RenderContext::new(width, height),
+                resources: vello_cpu::Resources::new(),
+                scratch: crate::record::Scratch::new(true),
+            })
+        });
+        if raster.ctx.width() == width && raster.ctx.height() == height {
+            raster.ctx.reset();
+        } else {
+            raster.ctx.reset_and_resize(width, height);
+        }
+        let mut stats = Stats::default();
+        raster.scratch.blurs.begin_frame();
+        crate::record::record(
+            &mut raster.ctx,
+            &self.list,
+            &drawn,
+            rect,
+            vello_cpu::color::AlphaColor::TRANSPARENT,
+            &mut raster.scratch,
+            &mut stats,
+        );
+        raster.scratch.blurs.end_frame();
+        raster.ctx.flush();
+        let mut rgba = vec![0_u8; usize::from(width) * usize::from(height) * 4];
+        if let Some(pixmap) = vello_cpu::PixmapMut::new(width, height, &mut rgba) {
+            raster.ctx.render_with(
+                pixmap,
+                &mut raster.resources,
+                vello_cpu::RasterizerSettings {
+                    render_mode: vello_cpu::RenderMode::OptimizeSpeed,
+                    ..vello_cpu::RasterizerSettings::default()
+                },
+            );
+        }
+        unpremultiply(&mut rgba);
+        let id = self.next_image;
+        self.next_image = self.next_image.wrapping_add(1);
+        let replaces = self
+            .islands
+            .insert(
+                key,
+                Island {
+                    hash,
+                    id,
+                    last: frame,
+                },
+            )
+            .map(|old| old.id);
+        images.push(NewImage {
+            id,
+            width,
+            height,
+            rgba,
+            replaces,
+        });
+        Some(PlannedIsland { end: 0, id, rect })
+    }
+
     pub fn encode(&mut self, encoding: &Encoding) -> DomFrame {
+        self.encode_with(encoding, &Islands::default())
+    }
+
+    /// [`Self::encode`], showing as one image each widget `islands` names a
+    /// picture and each that makes [`ISLAND_DRAWS`] draws itself.
+    pub fn encode_with(&mut self, encoding: &Encoding, islands: &Islands<'_>) -> DomFrame {
         let mut stats = Stats::default();
         self.list.dom = true;
         self.list
             .decode(encoding, &mut self.glyphs, &mut self.images, &mut stats);
-        let mut marks = self.list.marks.iter().peekable();
         let mut out = String::with_capacity(self.list.ops.len() * 64);
-        let mut fonts = Vec::new();
+        let mut fonts = std::mem::take(&mut self.pending_fonts);
         let mut images = Vec::new();
         self.frame = self.frame.wrapping_add(1);
         let frame = self.frame;
         self.shown.retain(|_, held| {
             held.pixmap.strong_count() > 0 && frame.saturating_sub(held.last) < IMAGE_FRAMES
         });
+        let plan = self.plan_islands(islands, &mut images);
+        let marks = &self.list.marks;
+        let mut next_mark = 0;
+        // The end mark of the island being shown, while its draws are
+        // skipped.
+        let mut in_island: Option<usize> = None;
         let mut texts = 0;
         out.push('[');
         let mut first = true;
@@ -191,9 +576,15 @@ impl DomEncoder {
             }
         };
         for (index, op) in self.list.ops.iter().enumerate() {
-            while let Some((_, kind)) = marks.next_if(|(at, _)| *at <= index) {
-                sep(&mut out);
-                mark(&mut out, *kind);
+            while let Some((at, kind)) = marks.get(next_mark)
+                && *at <= index
+            {
+                Self::island_mark(&mut out, &mut sep, &plan, next_mark, kind, &mut in_island);
+                next_mark += 1;
+            }
+            // An island's draws are its image; its text stays text.
+            if in_island.is_some() && !matches!(op, Op::Text { .. }) {
+                continue;
             }
             match op {
                 Op::Draw {
@@ -248,40 +639,15 @@ impl DomEncoder {
                     ..
                 } => {
                     texts += 1;
-                    let info = self
-                        .fonts
-                        .entry((font.data.id(), font.index))
-                        .or_insert_with(|| {
-                            let info = font_info(font);
-                            fonts.push(NewFont {
-                                family: info.family.clone(),
-                                bytes: font.data.clone(),
-                                index: font.index,
-                                ascent: info.ascent,
-                                descent: info.descent,
-                            });
-                            info
-                        });
-                    let mut variations = String::new();
-                    for (i, (tag, min, default, max)) in info.axes.iter().enumerate() {
-                        let c = coords.get(i).map_or(0.0, |&c| f32::from(c) / 16384.0);
-                        let value = if c >= 0.0 {
-                            default + c * (max - default)
-                        } else {
-                            default + c * (default - min)
-                        };
-                        if !variations.is_empty() {
-                            variations.push(',');
-                        }
-                        let _ = write!(variations, "'{tag}' {value:.0}");
-                    }
+                    let (family, variations) =
+                        Self::face(&mut self.fonts, &mut fonts, font, coords);
                     sep(&mut out);
                     out.push_str("[\"t\",");
                     json_str(&mut out, text);
                     let _ = write!(
                         out,
                         ",{:.2},{:.2},{:.2},\"{}\",",
-                        origin.x, origin.y, font_size, info.family
+                        origin.x, origin.y, font_size, family
                     );
                     json_str(&mut out, &variations);
                     let _ = write!(out, ",\"{}\",{:.2}]", css_brush(brush), advances_to_last);
@@ -361,9 +727,9 @@ impl DomEncoder {
                 }
             }
         }
-        for (_, kind) in marks {
-            sep(&mut out);
-            mark(&mut out, *kind);
+        while let Some((_, kind)) = marks.get(next_mark) {
+            Self::island_mark(&mut out, &mut sep, &plan, next_mark, kind, &mut in_island);
+            next_mark += 1;
         }
         out.push(']');
         DomFrame {
@@ -372,6 +738,22 @@ impl DomEncoder {
             images,
             texts,
             draws: self.list.ops.len(),
+        }
+    }
+}
+
+/// Premultiplied RGBA to straight, as a page's image data is.
+fn unpremultiply(rgba: &mut [u8]) {
+    for pixel in rgba.chunks_exact_mut(4) {
+        if let [r, g, b, a] = pixel
+            && *a != 0
+            && *a != 255
+        {
+            let alpha = u16::from(*a);
+            for channel in [r, g, b] {
+                *channel = u8::try_from((u16::from(*channel) * 255 + alpha / 2) / alpha)
+                    .unwrap_or(u8::MAX);
+            }
         }
     }
 }

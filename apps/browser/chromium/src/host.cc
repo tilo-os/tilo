@@ -464,17 +464,19 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
   bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
-#if defined(OS_MAC)
     Event("file_dialog");
-#endif
-    // An agent's page action cannot drive a native panel on any platform,
-    // so while it is driving the chooser is held for fill-page-files
-    // instead. A person's own click keeps the platform panel.
+    // An agent's page action cannot drive a native panel, so while it is
+    // driving the chooser is held for fill-page-files instead. A person's
+    // own click keeps the platform panel where the host has one.
     if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
 #if defined(OS_MAC)
     return ShowHostFileDialog(mode,title,extensions,callback);
 #else
-    return false;
+    // Every page is offscreen here and no panel exists to show: the chooser is
+    // answered with nothing rather than left waiting for a person who is shown
+    // no way to answer it.
+    callback->Cancel();
+    return true;
 #endif
   }
   void PublishZoom() {
@@ -1515,13 +1517,24 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!browser_) return;
     if(read.purpose==tilo::ClipboardReads::Purpose::Read) {ClipboardText(browser_->GetFrameByIdentifier(read.frame),read.renderer,std::move(text));return;}
     if(read.renderer!=paste_prime_) return;
-    // The system clipboard's text, kept in the focused frame for the paste
-    // the key makes; without it the key pastes Chromium's own.
-    auto frame=browser_->GetFocusedFrame();if(!frame) frame=browser_->GetMainFrame();
-    if(!text || !frame) {ReleaseKeys();return;}
+    // The system clipboard's text goes to every document of the tab, so the
+    // paste keeps it wherever the caret is: a click can put the caret in a
+    // frame within the page, and the browser process does not always learn
+    // which document holds it, so the text is kept by all of them rather than
+    // by the one frame it believes has the focus. Without it the key pastes
+    // Chromium's own.
+    if(!text || !browser_) {ReleaseKeys();return;}
     auto message=CefProcessMessage::Create("tilo.clipboard_prime");
     message->GetArgumentList()->SetInt(0,paste_prime_);message->GetArgumentList()->SetString(1,*text);
-    frame->SendProcessMessage(PID_RENDERER,message);
+    std::vector<CefString> identifiers;browser_->GetFrameIdentifiers(identifiers);
+    int documents=0;
+    for(const auto& identifier:identifiers) {
+      auto frame=browser_->GetFrameByIdentifier(identifier);
+      if(!frame) continue;
+      frame->SendProcessMessage(PID_RENDERER,message);
+      ++documents;
+    }
+    if(!documents) ReleaseKeys();
     CefPostDelayedTask(TID_UI,base::BindOnce([](int tab,int prime){auto found=clients.find(tab);if(found!=clients.end())found->second->PrimeLate(prime);},id_,paste_prime_),tilo::kClipboardPrimeMs);
   }
   void PrimeLate(int prime) {if(prime==paste_prime_)ReleaseKeys();}
@@ -1582,6 +1595,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
 #endif
+    // A capital letter is the shifted key of the letter below it, so a caller
+    // that writes `A` gets the key it wrote: Chromium reads a letter's case
+    // off the modifiers, and a press of `A` without shift would reach the page
+    // as `a`, a key nobody asked for. A chord is not a letter and is left as
+    // written: the extension's own shortcuts matched above, and Control+A
+    // stays Control+A.
+    if(latin && std::isupper(static_cast<unsigned char>(key[0])) && !d->GetBool("ctrl") && !d->GetBool("alt") && !d->GetBool("meta")) {
+      e.modifiers|=EVENTFLAG_SHIFT_DOWN;
+      key_modifiers_=e.modifiers;
+    }
     const auto mapping=tilo::MapKey(key,code);
     e.windows_key_code=mapping.windows;
     e.character=mapping.character;
@@ -1592,13 +1615,6 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     e.unmodified_character=mapping.mac_character;
 #elif defined(OS_LINUX)
     e.native_key_code=mapping.x11;
-    // On Linux the engine reads a key from its key code and Shift alone, so
-    // an upper-case letter is that letter only with Shift held: one that
-    // arrives without it (Caps Lock, or a press that names `A`) would reach
-    // the page as the key `a` while writing the letter `A`. Such a key
-    // carries Shift for its own events; a shortcut is left as it was named.
-    if(tilo::UpperCaseLetter(key) && !(e.modifiers&(EVENTFLAG_SHIFT_DOWN|EVENTFLAG_CONTROL_DOWN|EVENTFLAG_ALT_DOWN|EVENTFLAG_COMMAND_DOWN)))
-      e.modifiers|=EVENTFLAG_SHIFT_DOWN;
 #endif
     CefString text(key);auto utf16=text.ToString16();
     if(utf16.size()==1) e.character=e.unmodified_character=utf16[0];

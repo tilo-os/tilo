@@ -23,6 +23,9 @@ retries = 0
 # passing test records do not identify leaks, and ordinary passes stay quiet.
 status-level = "leak"
 final-status-level = "flaky"
+# The overrides above are the run's: this profile adds none of its own, and
+# tools/tests/test_nextest_policy.py holds it that way, so the suite runs one
+# list of overrides under both profiles.
 
 [profile.ci.junit]
 path = "junit.xml"
@@ -171,15 +174,16 @@ test-group = "gpu-golden"
 # reading against the targets it is held to, so a drift toward them shows in
 # every run's log before a run crosses one. The test's name carries the module
 # it is written in (`cost`), which the filter has to name: a `test(=…)` names
-# the whole test, so the table was never printed. A profile's overrides are its
-# own, so the run the CI makes reads it under `ci` below.
+# the whole test, so the table was never printed. One override serves both
+# profiles: a profile that names no overrides of its own inherits these, so the
+# run the CI makes prints the table too. Seeding ten thousand tasks and driving
+# a window over them takes minutes on a machine busy with other work, so its
+# hang bound is eight minutes: a slow run reports the table rather than a
+# termination.
 [[profile.default.overrides]]
 filter = 'package(tilolang-app) and binary(hosted) and test(=cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
-
-[[profile.ci.overrides]]
-filter = 'package(tilolang-app) and binary(hosted) and test(=cost::what_the_interactions_a_person_feels_cost)'
-success-output = "final"
+slow-timeout = { period = "60s", terminate-after = 8 }
 
 [[profile.default.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'

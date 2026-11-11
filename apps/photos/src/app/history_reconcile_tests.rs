@@ -10,11 +10,21 @@ use vello::kurbo::Affine;
 use automerge::{AutoCommit, ROOT};
 
 /// Present `doc`'s library to `app` as the framework does after a change,
-/// then sync it.
+/// then sync it, waiting for any pixels the window asked the decoder for.
 fn sync(app: &mut PhotosApp, doc: &mut AutoCommit) {
     present(app, doc);
     Widget::sync(app, doc, &ROOT);
     settle(app, doc);
+    let deadline = tilo_test_env::hang_deadline();
+    while app.state().decoding.is_some() {
+        assert!(
+            ui::time::now() < deadline,
+            "the pictured photograph did not decode off the frame in time"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        present(app, doc);
+        Widget::sync(app, doc, &ROOT);
+    }
 }
 
 /// Apply what `app` submitted to `doc`, as the host does after a pass,

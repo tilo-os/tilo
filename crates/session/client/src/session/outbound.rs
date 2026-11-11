@@ -9,7 +9,7 @@
 
 use super::{
     Answered, Arc, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute,
-    Envelope, FailureSubject, RelayClient, Task, route_of,
+    Envelope, FailureSubject, RelayClient, Task,
 };
 
 impl Task {
@@ -181,34 +181,39 @@ impl Task {
         let Some(workspace) = self.replicas.workspace(workspace_id) else {
             return true;
         };
-        let sent: BTreeSet<[u8; 32]> = self.sent.values().map(|(_, id, _)| *id).collect();
-        let mut delivered = true;
-        for (id, body, channel, retention) in self.custody(workspace) {
-            if sent.contains(&id) {
-                continue;
-            }
-            let payload = match retention {
-                neighbour_wire::Retention::Checkpoint => {
-                    CoeditPayload::Checkpoint { channel, body }
-                }
-                neighbour_wire::Retention::Delta => CoeditPayload::RetainedDelta { channel, body },
-            };
-            let route = route_of(&payload);
-            let mut op = [0_u8; 16];
-            op.copy_from_slice(&id[..16]);
-            let commit = Envelope::Commit {
-                workspace_id,
-                op,
-                author_device_public_key: self.config.cert.device_public_key,
-                authored_at_ns: tilo_clock::unix_now_ns(),
-                delta: payload.encode().unwrap_or_default(),
-            };
-            if client.send(commit).is_err() {
-                delivered = false;
-                break;
-            }
-            self.sent.insert(op, (workspace, id, route));
-        }
+        let author_device_public_key = self.config.cert.device_public_key;
+        let delivered = self
+            .sending
+            .entry(workspace)
+            .or_default()
+            .drive(
+                &self.replicas.owner(),
+                workspace,
+                |_| Ok(()),
+                |write| {
+                    let (channel, body) = (write.channel, write.bytes.to_vec());
+                    let payload = match write.retention {
+                        neighbour_wire::Retention::Checkpoint => {
+                            CoeditPayload::Checkpoint { channel, body }
+                        }
+                        neighbour_wire::Retention::Delta => {
+                            CoeditPayload::RetainedDelta { channel, body }
+                        }
+                    };
+                    let mut op = [0_u8; 16];
+                    op.copy_from_slice(&write.id[..16]);
+                    client
+                        .send(Envelope::Commit {
+                            workspace_id,
+                            op,
+                            author_device_public_key,
+                            authored_at_ns: tilo_clock::unix_now_ns(),
+                            delta: payload.encode().unwrap_or_default(),
+                        })
+                        .is_ok()
+                },
+            )
+            .unwrap_or(true);
         self.count_custody();
         delivered
     }
@@ -258,22 +263,28 @@ impl Task {
     /// host's `refusal` (it can never become durable). Answers retire from custody together
     /// ([`Self::retire_answered`]).
     pub(super) fn acknowledge(&mut self, op: [u8; 16], outcome: Result<u64, String>) {
-        let Some((workspace, id, route)) = self.sent.remove(&op) else {
+        let Some((workspace, id)) = self
+            .sending
+            .iter_mut()
+            .find_map(|(workspace, sending)| Some((*workspace, sending.answered(&op)?)))
+        else {
             return;
         };
         // What the refused write would have brought, as its envelope claims it: read before the
         // entry leaves custody, so whoever holds the record withdraws exactly those changes.
-        let withdrawn = match (&outcome, &route) {
-            (Err(reason), Some(route)) => self
+        let withdrawn = match &outcome {
+            Err(reason) => self
                 .custody(workspace)
                 .into_iter()
                 .find(|entry| entry.0 == id)
-                .map(|entry| crate::Event::Refused {
-                    route: route.clone(),
-                    changes: tilo_peer_state::document_frame::claimed_changes(&entry.1),
-                    reason: reason.clone(),
+                .and_then(|entry| {
+                    Some(crate::Event::Refused {
+                        route: DocumentRoute::of_message(&postcard::from_bytes(&entry.1).ok()?)?,
+                        changes: tilo_peer_state::document_frame::claimed_changes(&entry.1),
+                        reason: reason.clone(),
+                    })
                 }),
-            _ => None,
+            Ok(_) => None,
         };
         self.answered.push(Answered {
             workspace,

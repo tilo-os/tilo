@@ -95,6 +95,11 @@ impl Widget for RebuildHarness {
             }
         }
     }
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        for child in self.children.iter_mut().rev() {
+            child.handle_event(event, ctx);
+        }
+    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(Box::as_ref).collect()
     }
@@ -314,5 +319,52 @@ fn a_rebuild_that_replaces_the_focused_control_keeps_the_keyboard_on_its_answer(
         app.inspect_node(focused, |widget| widget.is_focused())
             .unwrap(),
         "the control drawn as focused is the one with the keyboard"
+    );
+}
+
+/// A window with nothing laid out yet, as a surface host shows it before its
+/// first frame.
+struct UnlaidWindow;
+
+impl AppSurface for UnlaidWindow {
+    fn scale_factor(&self) -> f64 {
+        1.0
+    }
+    fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
+        winit::dpi::PhysicalSize::new(400, 400)
+    }
+    fn request_redraw(&self) {}
+    fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
+}
+
+/// Input that arrives before the app's first frame is typed into the field
+/// the app puts the keyboard in, not dropped: a sheet can be opened and typed
+/// into before the host draws a frame of it.
+#[test]
+fn input_before_the_first_frame_reaches_the_focused_field() {
+    let mut app = App::new_with_controlled_inputs(State::new(), Box::new(RebuildHarness::new()));
+    app.autofocus_first = true;
+    assert!(app.layout.root_node.is_none(), "the app has drawn no frame");
+
+    let handled = app.surface_input(&UnlaidWindow, crate::synthetic_input::char_key("s"), false);
+
+    assert!(
+        app.layout.root_node.is_some(),
+        "the tree is laid out for the key"
+    );
+    assert!(
+        handled,
+        "the field took the key typed before the first frame"
+    );
+    let focused = app.focused_node.expect("the field has the keyboard");
+    assert!(
+        app.inspect_node(focused, |widget| widget.is_focused())
+            .unwrap_or(false),
+        "the field that took the key is the one drawn as focused"
+    );
+    assert_eq!(
+        caret(&app).as_deref(),
+        Some("6"),
+        "the letter followed the field's text"
     );
 }

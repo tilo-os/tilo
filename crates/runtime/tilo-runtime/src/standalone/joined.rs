@@ -460,6 +460,7 @@ impl Joined {
         let mut caught_up = link.caught_up();
         let mut live = false;
         let mut running = Box::pin(linked.run());
+        let mut sending = tilo_session_client::custody::Sending::default();
         let ended = loop {
             tokio::select! {
                 ended = &mut running => break ended,
@@ -469,12 +470,12 @@ impl Joined {
                     }
                     live = true;
                     self.set_live(workspace, Some((Arc::clone(&link), host)));
-                    self.publish(&scope, &link);
+                    self.publish(&scope, &link, &mut sending);
                 }
                 frame = heard.recv() => match frame {
                     Ok(heard) => {
                         self.take(&scope, heard);
-                        self.publish(&scope, &link);
+                        self.publish(&scope, &link, &mut sending);
                     }
                     Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                         break Err("the session fell behind the workspace's frames".into());
@@ -483,13 +484,12 @@ impl Joined {
                         break Err("the link closed".into());
                     }
                 },
-                () = wake.notified() => self.publish(&scope, &link),
+                () = wake.notified() => self.publish(&scope, &link, &mut sending),
             }
         };
         if let Err(reason) = ended {
             tracing::debug!(%workspace, %reason, "a joined workspace's link ended");
         }
-        scope.close();
         self.set_live(workspace, None);
     }
 
@@ -641,39 +641,70 @@ impl Joined {
 
     /// Send `workspace`'s own writes, and what its sealed records lack, to its
     /// host: the link carries them to every member.
-    fn publish(&self, scope: &Scope, link: &DirectSync) {
+    fn publish(
+        &self,
+        scope: &Scope,
+        link: &DirectSync,
+        sending: &mut tilo_session_client::custody::Sending,
+    ) {
+        let workspace = scope.workspace();
         // What the workspace answered for leaves custody before what it still
         // holds is renewed and sent.
-        if let Err(error) = scope.retire() {
+        if let Err(error) = self.owner.retire_outgoing(workspace) {
             tracing::warn!(%error, "joined workspace publication retirement not committed");
         }
-        let Some(keys) = self.keys.get() else {
-            if let Err(error) = scope.publish(link, &self.custody) {
-                tracing::debug!(%error, "joined workspace publication remains in durable custody");
+        let sent = scope.current(&self.custody).and_then(|()| {
+            if let Some(keys) = self.keys.get() {
+                self.fold_and_renew(workspace, &keys)?;
             }
-            return;
-        };
-        // A sealed record's history this device can read is this device's to
-        // fold: it writes its own checkpoint where the workspace's host used to.
-        let compacted = scope.compact(
-            &self.custody,
-            &mut |write| keys.open_history_write(scope.workspace(), write),
-            &mut |app, record, snapshot| {
-                keys.seal_checkpoint(scope.workspace(), app, record, snapshot)
-            },
-        );
-        match compacted {
+            sending.drive(
+                &self.owner,
+                workspace,
+                |view| scope.authorize(view, &self.custody),
+                |write| {
+                    postcard::from_bytes(write.bytes)
+                        .map_err(|error| error.to_string())
+                        .and_then(|message| link.send(message))
+                        .is_ok()
+                },
+            )
+        });
+        if let Err(error) = sent {
+            tracing::debug!(%error, "joined workspace publication remains in durable custody");
+        }
+    }
+
+    /// A sealed record's history this device can read is this device's to
+    /// fold: it writes its own checkpoint where the workspace's host used to.
+    /// Then its sealed writes that expired in custody are sealed again.
+    fn fold_and_renew(
+        &self,
+        workspace: WorkspaceId,
+        keys: &tilo_action_broker::channel_encryption::ChannelKeyAccess,
+    ) -> Result<(), String> {
+        let key = self.custody.signing_key()?;
+        match self.owner.compact_outgoing(
+            workspace,
+            &key,
+            &mut |write| keys.open_history_write(workspace, write),
+            &mut |app, record, snapshot| keys.seal_checkpoint(workspace, app, record, snapshot),
+            SystemTime::now(),
+        ) {
             Ok(0) => {}
             Ok(count) => tracing::debug!(count, "joined workspace sealed histories compacted"),
             Err(error) => {
                 tracing::debug!(%error, "joined workspace sealed history stays uncompacted");
             }
         }
-        if let Err(error) = scope.publish_renewing(link, &self.custody, &mut |sealed| {
-            keys.renew_sealed(scope.workspace(), sealed)
-        }) {
-            tracing::debug!(%error, "joined workspace publication remains in durable custody");
+        if let Err(error) = self.owner.renew_outgoing(
+            workspace,
+            &key,
+            &mut |sealed| keys.renew_sealed(workspace, sealed),
+            SystemTime::now(),
+        ) {
+            tracing::warn!(%workspace, %error, "native sealed write renewal blocked");
         }
+        Ok(())
     }
 
     /// `workspace`'s connected link, while there is one.

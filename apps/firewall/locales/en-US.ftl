@@ -37,3 +37,7 @@ firewall-enter-panic-mode = Dropped all traffic (panic mode)
 firewall-exit-panic-mode = Left panic mode
 firewall-delete-rule = Deleted a rule from the “{ $zone }” zone
 firewall-import = Took in the firewall configuration of a device
+
+## Accessibility
+firewall-a11y-window = Firewall
+firewall-source-anywhere = Anywhere

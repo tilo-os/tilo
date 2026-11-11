@@ -36,6 +36,7 @@ impl TiloStore {
     /// applies, and its write leaves the store with it. The chunks above the record go first:
     /// what they hold is already theirs when the record's own change derives over it.
     pub fn sync(&self, record: &Chunks) -> bool {
+        self.stop_waiting(record);
         let mut moved = false;
         for (chunk, doc) in record.docs() {
             if chunk != chunk::FIRST {
@@ -52,6 +53,7 @@ impl TiloStore {
     /// sent is left out, and is read from the chunk loader when a read or a write reaches it
     /// ([`TiloStore::set_chunk_loader`]). Returns whether any chunk had moved.
     pub fn sync_held(&self, record: &Chunks) -> bool {
+        self.stop_waiting(record);
         let held: Vec<ChunkNo> = self.held().chunks.numbers().collect();
         let mut moved = false;
         for chunk in held.into_iter().filter(|chunk| *chunk != chunk::FIRST) {
@@ -73,6 +75,24 @@ impl TiloStore {
     /// of them stays pending here until its chunk is had. Returns whether it had moved.
     pub fn sync_from(&self, record: &Doc) -> bool {
         self.sync_document(chunk::FIRST, record)
+    }
+
+    /// A chunk the store asked its source for and the source could not give is waited on
+    /// ([`Inner::waited`]): one the record now holds arrived through the sync, and whatever reads
+    /// the record reads it from here on. Nothing else about the chunk is done here: what reads it
+    /// reads it as any chunk the store was not sent ([`TiloStore::load_short`]).
+    fn stop_waiting(&self, record: &Chunks) {
+        if self
+            .held()
+            .waited
+            .iter()
+            .all(|chunk| record.mirror(*chunk).is_none())
+        {
+            return;
+        }
+        self.changing()
+            .waited
+            .retain(|chunk| record.mirror(*chunk).is_none());
     }
 
     fn sync_document(&self, chunk: ChunkNo, doc: &Doc) -> bool {

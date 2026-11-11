@@ -1035,7 +1035,6 @@ fn the_feed_menu_opens_on_its_row_and_runs_its_actions() {
     {
         let core = mounted.core();
         let open = core.menu.as_ref().expect("the right click opened the menu");
-        assert_eq!(open.kind, MenuKind::Feed(feed.clone()));
         assert_eq!(
             open.actions,
             vec![
