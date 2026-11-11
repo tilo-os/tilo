@@ -78,7 +78,7 @@ test('the person’s own desktop needs no peer', async () => {
 
 test('the own desktop of a stranger under a home taking people by invitation is that home’s door', async () => {
   // Going to /me directly: the home's door answers, as at the bare entry,
-  // and its refusal is what the page shows.
+  // and its refusal (the wait list) is what the page shows.
   const turnedAway = Object.assign(new Error('Commons needs an invitation'), {code: 'invitation-only'});
   const asked = [];
   const {calls, deps} = doors({

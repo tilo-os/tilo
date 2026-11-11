@@ -511,8 +511,9 @@ impl Workspaces {
         let user = person(&join.user_public_key).map_err(refused)?;
         let now = tilo_clock::unix_now_ns();
         // An invitation-only door refuses a stranger who holds no
-        // invitation of their own, and says so, rather than letting them in
-        // as a guest.
+        // invitation of their own, and says so: the person's page offers
+        // them the way to be invited (the site's wait list) instead of a
+        // link in as a guest.
         if self.inner.listings.invites_only(workspace) && !self.invited(workspace, user, now).await
         {
             return Err(DoorRefusal::InvitationOnly);

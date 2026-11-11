@@ -972,13 +972,17 @@ async function connect({
   /** One workspace request, in the shape the page draws (`rooms.rs`). */
   const rooms = async (op, args) => JSON.parse(await peer.rooms(op, JSON.stringify(args ?? {})));
   const membership = {
-    createInvitation: ({role = 'editor', expiresIn = 7 * 86_400} = {}) =>
-      rooms('invite', {workspace, role, expiresInSeconds: Math.floor(expiresIn), inviterName: displayName}),
+    createInvitation: ({role = 'editor', expiresIn = 7 * 86_400, waitListEntry = null} = {}) =>
+      rooms('invite', {workspace, role, expiresInSeconds: Math.floor(expiresIn), inviterName: displayName,
+        ...(waitListEntry ? {waitListEntry} : {})}),
     preAdmit: options => {
       if (!identity) throw new Error('pre-admitting needs the owner\'s unlocked identity');
       return peer.preAdmit(identity, JSON.stringify(options));
     },
     list: () => rooms('list', {workspace}),
+    waitList: () => rooms('waitList', {workspace}),
+    unlist: requestId => rooms('unlist', {workspace, requestId}),
+    mailInvite: (requestId, link) => rooms('mailInvite', {workspace, requestId, link: String(link)}),
     setRole: (userPublicKey, role) => rooms('setRole', {workspace, userPublicKey, role}),
     remove: userPublicKey => rooms('remove', {workspace, userPublicKey}),
     ban: userPublicKey => rooms('ban', {workspace, userPublicKey}),

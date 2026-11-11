@@ -87,6 +87,7 @@ mod unbuildable_windows;
 mod views;
 mod voice;
 pub(crate) use voice::carried_call_room;
+mod wait_list;
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
@@ -110,6 +111,8 @@ pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{CollaborationError, GovernanceCompletion};
 pub use listing::DoorRefusal;
 pub use pages::PreAdmitRequest;
+pub use wait_list::{Mailbox, Secrets as WaitListSecrets, WaitListMail, WaitListed};
+
 // The administration vocabulary (the actions' names and answers), under the
 // daemon's historic paths.
 pub use tilo_relay_session::workspaces::{
@@ -176,6 +179,8 @@ struct GovernedWorkspace {
     device: Option<DeviceKeys>,
     /// The owner's pre-admissions and notices.
     admissions: admissions::Admissions,
+    /// The addresses people left at its door without an invitation.
+    wait_list: wait_list::WaitList,
     /// Whom moderation removed, and when: the public door keeps them out for
     /// the day.
     door: door::Door,
@@ -321,6 +326,7 @@ impl GovernedWorkspace {
         };
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
+            wait_list: wait_list::WaitList::open(&path)?,
             door: door::Door::open(&path)?,
             parts,
             path,
@@ -408,6 +414,7 @@ impl GovernedWorkspace {
         parts.collect(&record.peer);
         Ok(Self {
             admissions: admissions::Admissions::open(&path)?,
+            wait_list: wait_list::WaitList::open(&path)?,
             door: door::Door::open(&path)?,
             record,
             peer: Replica::new(peer),
@@ -831,6 +838,9 @@ struct WorkspacesInner {
     /// The workspaces this host serves for the device of its person that governs
     /// them ([`crate::hosted`]).
     hosting: crate::hosted::Hosting,
+    /// Where invitations to mail to wait-list addresses go, once whoever
+    /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
+    wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -1029,6 +1039,7 @@ impl Workspaces {
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
+                wait_list_mail: std::sync::OnceLock::new(),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 agent_door: agent_door::AgentDoor::default(),

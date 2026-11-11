@@ -1191,6 +1191,9 @@ impl Workspaces {
             let settling = crate::timing::start();
             self.settle(workspace).await?;
             crate::timing::event("join.admit.settle", settling, joins.len() as u64);
+            // Someone invited from the wait list is in now: their entry
+            // leaves it.
+            workspace.forget_joined_wait_list();
             // The person whose own workspace this is administers it from
             // their first device on.
             let owner = self

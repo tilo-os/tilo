@@ -47,7 +47,7 @@ fail() {
 # arrangement is its shared desktop record, so the host has no layout flag, and
 # a deployment that still names one (eu1 does) starts unchanged.
 known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION TILO_ROOMS_ADMISSION
-TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
+TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
 TILO_ROOMS_INACTIVE_AFTER_DAYS TILO_ROOMS_ROOT_FILE TILO_ROOMS_ROLES_FILE
@@ -147,6 +147,13 @@ fi
 # anyone as the default role or only to people invited.
 if [ "$admission" = invite ]; then
   set -- "$@" --invitation-only
+fi
+wait_list=${TILO_ROOMS_WAIT_LIST_MAX:-}
+if [ -n "$wait_list" ]; then
+  case $wait_list in
+    ''|*[!0-9]*) fail "TILO_ROOMS_WAIT_LIST_MAX is a count, not $wait_list" ;;
+  esac
+  set -- "$@" --wait-list-max "$wait_list"
 fi
 person_storage=${TILO_ROOMS_PERSON_STORAGE_GB:-}
 if [ -n "$person_storage" ]; then

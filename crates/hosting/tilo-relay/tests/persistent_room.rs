@@ -1414,6 +1414,7 @@ fn the_room_serves_without_an_operator_and_answers_its_deployment_routes() {
     answers_its_avatars(&runtime, management, &published);
     answers_its_sign_in(&runtime, management);
     assert_eq!(get(&runtime, management, "/join").status, 404);
+    assert_eq!(get(&runtime, management, "/wait-list").status, 404);
     answers_the_door(&runtime, plain, &workspace);
 
     room.stop();

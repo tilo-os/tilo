@@ -11,16 +11,17 @@ use ed25519_dalek::Signer as _;
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::AuthenticatedPeer;
+use tilo_relay_protocol::operator::WaitListStanding;
 use tilo_relay_protocol::voice::{CallOperation, CallState};
 use tilo_relay_protocol::workspaces::{
-    JoinReply, JoinStep, WorkspacesReply, WorkspacesRequest, join_proof_digest,
+    JoinReply, JoinStep, WorkspaceRole, WorkspacesReply, WorkspacesRequest, join_proof_digest,
 };
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 
 use crate::workspaces::tests::{governor, guest_device, signed_pre_admission, test_host};
 use crate::workspaces::{
     CancelInvitationRequest, IssueInvitationRequest, PreAdmitRequest, RemoveMemberRequest,
-    SetMemberRoleRequest, Workspaces,
+    SetMemberRoleRequest, WaitListMail, WaitListSecrets, WaitListed, Workspaces,
 };
 
 /// A new person admitted to `workspace` as an Editor, through the owner's
@@ -128,6 +129,553 @@ fn invitation(request_id: u8, role: MemberRole) -> IssueInvitationRequest {
 }
 
 #[tokio::test]
+async fn an_address_left_at_the_door_is_on_the_wait_list_and_never_a_person_to_admit() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let ada = admit(workspaces, &workspace, &owner, 1).await;
+    assert_eq!(
+        workspaces
+            .wait(
+                &workspace,
+                " Bo@Example.org ",
+                listed_at_once(0x0b),
+                "en",
+                10
+            )
+            .await
+            .unwrap(),
+        WaitListed::Added { mail: false }
+    );
+    let ask = |request| workspaces.page_rooms(&ada, request);
+    let list = || WorkspacesRequest::WaitList {
+        workspace: workspace.clone(),
+    };
+
+    // Someone the workspace does not let invite reads no wait list.
+    assert!(matches!(ask(list()).await, WorkspacesReply::Refused(_)));
+    grant(workspaces, &workspace, &owner, &ada, governance::INVITE).await;
+    let WorkspacesReply::WaitList(listed) = ask(list()).await else {
+        panic!("someone who may invite reads the wait list");
+    };
+    let [entry] = listed.as_slice() else {
+        panic!("{listed:?}");
+    };
+    // As typed, but for the spaces around it.
+    assert_eq!(entry.contact, "Bo@Example.org");
+    let request_id = entry.request_id;
+
+    // Taken off the list once, then there is nothing to take off.
+    let unlist = || WorkspacesRequest::Unlist {
+        workspace: workspace.clone(),
+        request_id,
+    };
+    assert!(matches!(
+        ask(unlist()).await,
+        WorkspacesReply::WaitList(left) if left.is_empty()
+    ));
+    assert!(matches!(ask(unlist()).await, WorkspacesReply::Refused(_)));
+    relay.shutdown().await;
+}
+
+/// Bo left an address where the door mails a confirmation link, and Cy one
+/// where it sends none; Bo is listed once confirmed. Bo's request id.
+async fn bo_confirmed_beside_cy(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+) -> [u8; 32] {
+    let mailed = WaitListSecrets {
+        removal: [0x0b; 32],
+        confirm: Some([0x1b; 32]),
+    };
+    assert_eq!(
+        workspaces
+            .wait(workspace, "bo@example.org", mailed, "de-DE", 10)
+            .await,
+        Ok(WaitListed::Added { mail: true })
+    );
+    workspaces
+        .wait(workspace, "cy@example.org", listed_at_once(0x0c), "en", 10)
+        .await
+        .unwrap();
+    let listed = || read_wait_list(workspaces, owner, workspace);
+    let contacts = || async {
+        listed()
+            .await
+            .into_iter()
+            .map(|entry| entry.contact)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        contacts().await,
+        ["cy@example.org"],
+        "unconfirmed is hidden"
+    );
+    assert_eq!(
+        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
+        Ok(WaitListStanding::Pending)
+    );
+    assert_eq!(
+        workspaces.confirm_wait_list(workspace, [0xee; 32]).await,
+        Ok(false)
+    );
+    assert_eq!(
+        workspaces.confirm_wait_list(workspace, [0x1b; 32]).await,
+        Ok(true)
+    );
+    assert_eq!(contacts().await, ["bo@example.org", "cy@example.org"]);
+    listed().await[0].request_id
+}
+
+#[tokio::test]
+async fn a_mailed_address_is_listed_once_confirmed_mailed_its_invitation_and_leaves_on_joining() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let bo = bo_confirmed_beside_cy(workspaces, &owner, &workspace).await;
+    let invitation = the_address_is_invited_and_mailed(workspaces, &owner, &workspace, bo).await;
+    joining_takes_it_off_the_list(workspaces, &owner, &workspace, invitation).await;
+    relay.shutdown().await;
+}
+
+/// The entry `workspace` holds for the address `entry` names.
+fn list_entry(workspace: &str, entry: [u8; 32]) -> WorkspacesRequest {
+    WorkspacesRequest::Invite {
+        workspace: workspace.to_owned(),
+        request_id: [41; 32],
+        role: WorkspaceRole::Editor,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+        inviter_name: None,
+        wait_list_entry: Some(entry),
+        recipient: None,
+    }
+}
+
+/// The address `entry` names, mailed the invitation `link` carries.
+fn mailed_invitation(workspace: &str, entry: [u8; 32], link: &str) -> WorkspacesRequest {
+    WorkspacesRequest::MailInvite {
+        workspace: workspace.to_owned(),
+        wait_list_entry: entry,
+        link: link.to_owned(),
+    }
+}
+
+/// The owner invites the mailed address, which lists it with the day it was
+/// invited, mails it once on the operator's own door and is asked in. Returns
+/// the invitation the person joins with.
+async fn the_address_is_invited_and_mailed(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+    entry: [u8; 32],
+) -> Vec<u8> {
+    use sha2::Digest as _;
+    let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
+    let ask = |request| workspaces.page_rooms(owner, request);
+    let listed = || read_wait_list(workspaces, owner, workspace);
+
+    // Invited: the entry says when, and is still on the list until someone
+    // joins with the invitation.
+    let WorkspacesReply::Invitation {
+        signed_invitation, ..
+    } = ask(list_entry(workspace, entry)).await
+    else {
+        panic!("the owner invites the address");
+    };
+    let now = listed().await;
+    assert!(
+        now[0]
+            .invited_at_ns
+            .is_some_and(|at| at >= now[0].added_at_ns)
+            && now[1].invited_at_ns.is_none()
+    );
+    assert_eq!(
+        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
+        Ok(WaitListStanding::Invited)
+    );
+
+    // A relay whose operator sends no mail mails nothing.
+    assert!(matches!(
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://door.example/?invite=AAEC"
+        ))
+        .await,
+        WorkspacesReply::Refused(reason) if reason.contains("no mail")
+    ));
+    let mut mail = workspaces.mail_wait_list("https://door.example/").unwrap();
+    // Only an invitation on the operator's door is mailed.
+    assert!(matches!(
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://elsewhere.example/?invite=AAEC"
+        ))
+        .await,
+        WorkspacesReply::Refused(_)
+    ));
+    let (answer, (to, link, removal)) = tokio::join!(
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://door.example/?invite=AAEC"
+        )),
+        async {
+            let WaitListMail {
+                queued,
+                to,
+                link,
+                removal,
+            } = mail.recv().await.unwrap();
+            queued.send(true).unwrap();
+            (to, link, removal)
+        }
+    );
+    assert!(matches!(answer, WorkspacesReply::WaitList(_)));
+    assert_eq!(
+        (to.contact.as_str(), to.language.as_str()),
+        ("bo@example.org", "de")
+    );
+    assert_eq!(link, "https://door.example/?invite=AAEC");
+    assert_eq!(
+        workspaces
+            .wait_list_standing(workspace, digest(&removal))
+            .await,
+        Ok(WaitListStanding::Invited),
+        "the mail's removal link names the entry"
+    );
+    // Not twice within minutes.
+    assert!(matches!(
+        ask(mailed_invitation(
+            workspace,
+            entry,
+            "https://door.example/?invite=AAEC"
+        ))
+        .await,
+        WorkspacesReply::Refused(_)
+    ));
+    assert!(mail.try_recv().is_err());
+    signed_invitation
+}
+
+/// Someone joins with the mailed invitation — asks and proves — which admits
+/// them by the invitation's own grant and takes the address off the list.
+async fn joining_takes_it_off_the_list(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+    invitation: Vec<u8>,
+) {
+    let listed = || read_wait_list(workspaces, owner, workspace);
+    assert!(
+        matches!(
+            ask_to_join(workspaces, invitation).await,
+            JoinReply::Admitted { .. }
+        ),
+        "the mailed invitation admits the person who holds it"
+    );
+    assert_eq!(
+        listed()
+            .await
+            .iter()
+            .map(|entry| entry.contact.clone())
+            .collect::<Vec<_>>(),
+        ["cy@example.org"]
+    );
+    assert_eq!(
+        workspaces.wait_list_standing(workspace, [0x0b; 32]).await,
+        Ok(WaitListStanding::Gone)
+    );
+}
+
+#[tokio::test]
+async fn an_address_mailed_its_invitation_takes_itself_off_with_the_mail_s_removal_link() {
+    use sha2::Digest as _;
+    let digest = |secret: &[u8; 32]| -> [u8; 32] { sha2::Sha256::digest(secret).into() };
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces();
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let mut mail = workspaces.mail_wait_list("https://door.example/").unwrap();
+    assert!(
+        workspaces.mail_wait_list("https://door.example/").is_none(),
+        "one operator hears the mail"
+    );
+    workspaces
+        .wait(&workspace, "cy@example.org", listed_at_once(0x0c), "en", 10)
+        .await
+        .unwrap();
+    let ask = |request| workspaces.page_rooms(&owner, request);
+    let listed = || read_wait_list(workspaces, &owner, &workspace);
+    let cy = listed().await[0].request_id;
+    let mail_invite = || WorkspacesRequest::MailInvite {
+        workspace: workspace.clone(),
+        wait_list_entry: cy,
+        link: "https://door.example/?invite=AAEC".into(),
+    };
+    let invite = |wait_list_entry| WorkspacesRequest::Invite {
+        workspace: workspace.clone(),
+        request_id: rand::random(),
+        role: WorkspaceRole::Editor,
+        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+        inviter_name: None,
+        wait_list_entry: Some(wait_list_entry),
+        recipient: None,
+    };
+    // Not invited yet: nothing to mail. An invitation for an entry not on
+    // the list is refused.
+    assert!(matches!(
+        ask(mail_invite()).await,
+        WorkspacesReply::Refused(_)
+    ));
+    assert!(matches!(
+        ask(invite([0xee; 32])).await,
+        WorkspacesReply::Refused(_)
+    ));
+
+    // Invited by mail, Cy takes the address off with the mail's removal
+    // link: the workspace says where to tell them it did. A wrong secret is
+    // answered the same, and takes nothing off.
+    assert!(matches!(
+        ask(invite(cy)).await,
+        WorkspacesReply::Invitation { .. }
+    ));
+    // A queue rejection is reported to the inviter and releases the
+    // reservation, rather than claiming that a channel send mailed it.
+    let (answer, ()) = tokio::join!(ask(mail_invite()), async {
+        mail.recv().await.unwrap().queued.send(false).unwrap();
+    });
+    assert!(matches!(answer, WorkspacesReply::Refused(_)));
+    let (answer, removal) = tokio::join!(ask(mail_invite()), async {
+        let WaitListMail {
+            queued, removal, ..
+        } = mail.recv().await.unwrap();
+        queued.send(true).unwrap();
+        removal
+    });
+    assert!(matches!(answer, WorkspacesReply::WaitList(_)));
+    assert_eq!(
+        workspaces.leave_wait_list(&workspace, [0x99; 32]).await,
+        Ok(None)
+    );
+    assert_eq!(listed().await.len(), 1);
+    let told = workspaces
+        .leave_wait_list(&workspace, digest(&removal))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(told.contact, "cy@example.org");
+    assert!(listed().await.is_empty());
+    assert_eq!(
+        workspaces.leave_wait_list(&workspace, [0x0c; 32]).await,
+        Ok(None)
+    );
+    relay.shutdown().await;
+}
+
+#[tokio::test]
+async fn a_lost_invitation_acknowledgement_keeps_the_reservation() {
+    uncertain_invitation_mail(false).await;
+}
+
+#[tokio::test]
+async fn a_timed_out_invitation_acknowledgement_keeps_the_reservation() {
+    uncertain_invitation_mail(true).await;
+}
+
+async fn uncertain_invitation_mail(timeout: bool) {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let shutdown = {
+        let relay = test_host(dir.path(), &key, &owner).await;
+        assert_uncertain_invitation_mail(relay.workspaces(), &owner, timeout).await;
+        relay.shutdown()
+    };
+    shutdown.await;
+}
+
+async fn assert_uncertain_invitation_mail(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    timeout: bool,
+) {
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    let mut mail = workspaces.mail_wait_list("https://door.example/").unwrap();
+    workspaces
+        .wait(&workspace, "cy@example.org", listed_at_once(0x0c), "en", 10)
+        .await
+        .unwrap();
+    let cy = read_wait_list(workspaces, owner, &workspace).await[0].request_id;
+    assert!(matches!(
+        workspaces
+            .page_rooms(
+                owner,
+                WorkspacesRequest::Invite {
+                    workspace: workspace.clone(),
+                    request_id: rand::random(),
+                    role: WorkspaceRole::Editor,
+                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(600_000_000_000),
+                    inviter_name: None,
+                    wait_list_entry: Some(cy),
+                    recipient: None,
+                }
+            )
+            .await,
+        WorkspacesReply::Invitation { .. }
+    ));
+    let request = || WorkspacesRequest::MailInvite {
+        workspace: workspace.clone(),
+        wait_list_entry: cy,
+        link: "https://door.example/?invite=AAEC".into(),
+    };
+    if timeout {
+        tokio::time::pause();
+    }
+    let (answer, held) = tokio::join!(workspaces.page_rooms(owner, request()), async {
+        let queued = mail.recv().await.unwrap().queued;
+        if timeout {
+            Some(queued)
+        } else {
+            drop(queued);
+            None
+        }
+    });
+    if timeout {
+        tokio::time::resume();
+    }
+    let WorkspacesReply::Refused(reason) = answer else {
+        panic!("missing acknowledgement must report uncertainty");
+    };
+    assert!(reason.contains("uncertain"));
+    assert!(reason.contains("may already be queued"));
+    let WorkspacesReply::Refused(reason) = workspaces.page_rooms(owner, request()).await else {
+        panic!("uncertain acceptance must retain the throttle");
+    };
+    assert!(reason.contains("minutes ago"));
+    assert!(matches!(
+        mail.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+    drop(held);
+}
+
+#[tokio::test]
+async fn pending_removal_returns_only_a_private_stable_contact_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let shutdown = {
+        let relay = test_host(dir.path(), &key, &owner).await;
+        assert_pending_removal_contact_digest(relay.workspaces()).await;
+        relay.shutdown()
+    };
+    shutdown.await;
+}
+
+async fn assert_pending_removal_contact_digest(workspaces: &Workspaces) {
+    use sha2::Digest as _;
+    let workspace = workspaces.create("Team").await.unwrap().workspace;
+    for removal in [[1; 32], [2; 32]] {
+        workspaces
+            .wait(
+                &workspace,
+                "ÄDA@example.org",
+                WaitListSecrets {
+                    removal,
+                    confirm: Some([3; 32]),
+                },
+                "de",
+                10,
+            )
+            .await
+            .unwrap();
+    }
+    let expected: [u8; 32] = sha2::Sha256::digest(tilo_relay_protocol::workspaces::contact_key(
+        "äda@EXAMPLE.org",
+    ))
+    .into();
+    assert_eq!(
+        workspaces
+            .leave_wait_list_for_operator(&workspace, [2; 32])
+            .await
+            .unwrap(),
+        (None, Some(expected))
+    );
+    assert_eq!(
+        workspaces
+            .leave_wait_list_for_operator(&workspace, [1; 32])
+            .await
+            .unwrap(),
+        (None, None)
+    );
+    assert_eq!(
+        workspaces
+            .wait_list_standing(&workspace, [1; 32])
+            .await
+            .unwrap(),
+        tilo_relay_protocol::operator::WaitListStanding::Gone
+    );
+}
+
+/// `workspace`'s wait list as `owner` reads it.
+async fn read_wait_list(
+    workspaces: &Workspaces,
+    owner: &DeviceCert,
+    workspace: &str,
+) -> Vec<tilo_relay_protocol::workspaces::WaitListEntry> {
+    let WorkspacesReply::WaitList(listed) = workspaces
+        .page_rooms(
+            owner,
+            WorkspacesRequest::WaitList {
+                workspace: workspace.to_owned(),
+            },
+        )
+        .await
+    else {
+        panic!("the owner reads the wait list");
+    };
+    listed
+}
+
+/// A new device asks to join with `invitation` and proves it holds its key.
+async fn ask_to_join(workspaces: &Workspaces, invitation: Vec<u8>) -> JoinReply {
+    let (guest_key, guest) = guest_device();
+    let request_id = rand::random();
+    let JoinReply::Challenge { challenge } = workspaces
+        .page_join(JoinStep::Ask {
+            invitation,
+            device_cert: guest,
+            request_id,
+        })
+        .await
+    else {
+        panic!("no challenge");
+    };
+    let signature = guest_key.sign(&join_proof_digest(&challenge)).to_bytes();
+    workspaces
+        .page_join(JoinStep::Prove {
+            challenge,
+            signature,
+            name: "Bo".into(),
+        })
+        .await
+}
+
+/// Secrets for a door that sends no mail, which lists an address at once.
+const fn listed_at_once(removal: u8) -> WaitListSecrets {
+    WaitListSecrets {
+        removal: [removal; 32],
+        confirm: None,
+    }
+}
+
+#[tokio::test]
 async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -148,7 +696,7 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
         workspaces
             .page_rooms(
                 &ada,
-                WorkspacesRequest::Pending {
+                WorkspacesRequest::WaitList {
                     workspace: workspace.clone()
                 }
             )
@@ -179,12 +727,12 @@ async fn a_member_granted_invite_runs_invitations_and_an_editor_does_not() {
         workspaces
             .page_rooms(
                 &ada,
-                WorkspacesRequest::Pending {
+                WorkspacesRequest::WaitList {
                     workspace: workspace.clone()
                 }
             )
             .await,
-        WorkspacesReply::Pending(_)
+        WorkspacesReply::WaitList(_)
     ));
     assert!(matches!(
         workspaces
@@ -369,12 +917,12 @@ async fn an_administrator_invites_within_their_role(
         workspaces
             .page_rooms(
                 ada,
-                WorkspacesRequest::Pending {
+                WorkspacesRequest::WaitList {
                     workspace: workspace.to_owned()
                 }
             )
             .await,
-        WorkspacesReply::Pending(_)
+        WorkspacesReply::WaitList(_)
     ));
 }
 

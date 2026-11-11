@@ -338,7 +338,12 @@ mod tests {
             String::from_utf8(body.to_vec()).unwrap(),
             format!("{{\"relay\":\"up\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
         );
-        for path in ["/", "/avatars/not-a-name", "/discord/callback"] {
+        for path in [
+            "/",
+            "/wait-list",
+            "/avatars/not-a-name",
+            "/discord/callback",
+        ] {
             let request = Request::builder()
                 .uri(path)
                 .body(Full::new(Bytes::new()))
