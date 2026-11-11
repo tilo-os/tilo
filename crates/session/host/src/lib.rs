@@ -61,7 +61,7 @@ pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use session::{
     CallFrame, CallPicture, CallShown, Completion, Entry, EntryCompletion, Failure, FailureSubject,
     LocalState, PAGE_FAILURE_CODES, PageShown, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
-    PeerStatus, RoomsCompletion, TransportPhase,
+    PeerStatus, RoomsCompletion, SessionMemberHost, TransportPhase,
 };
 /// The record a session's [`PeerHandle::open_route`] takes part in.
 pub use tilo_peer_state::document_frame::DocumentRoute;

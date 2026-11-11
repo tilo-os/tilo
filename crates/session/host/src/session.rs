@@ -49,6 +49,7 @@ mod voice;
 
 pub use agent_run::AgentRunCompletion;
 use connect::Dial;
+pub use connect::SessionMemberHost;
 #[cfg(test)]
 use connect::{connect, iroh_link_error};
 pub use entry::Entry;

@@ -998,7 +998,7 @@ pub struct PairingHost(PairingReach);
 /// Where a page's pairing commands reach the host.
 enum PairingReach {
     /// Over the session the page already holds with the host.
-    Session(PeerHandle),
+    Session(tilo_session_host::SessionMemberHost),
     /// From an endpoint bound for pairing alone: the page holds no session
     /// with this host yet.
     Own(tilo_relay_client::MemberApprover),
@@ -1912,7 +1912,7 @@ impl WasmPeer {
     /// person's root custody the page holds: over this session, with no
     /// connection of its own.
     pub fn pairing(&self) -> PairingHost {
-        PairingHost(PairingReach::Session(self.handle.clone()))
+        PairingHost(PairingReach::Session(self.handle.member_host()))
     }
 
     /// Answer what this person's agents on this session's host ask them,

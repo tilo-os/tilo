@@ -217,14 +217,28 @@ pub(super) fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkErr
     }
 }
 
-impl tilo_relay_client::MemberHost for PeerHandle {
+/// Where member commands reach the host over a session ([`PeerHandle::member_host`]): only the
+/// session's command queue, so it is shared across tasks wherever the queue is.
+#[derive(Clone)]
+pub struct SessionMemberHost(tokio::sync::mpsc::UnboundedSender<super::Command>);
+
+impl PeerHandle {
+    /// Ask the host member commands (pairing, agents' questions) over this session.
+    #[must_use]
+    pub fn member_host(&self) -> SessionMemberHost {
+        SessionMemberHost(self.commands.clone())
+    }
+}
+
+impl tilo_relay_client::MemberHost for SessionMemberHost {
     async fn ask(
         &self,
         approval: &tilo_relay_protocol::certify::MemberApproval,
     ) -> Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError> {
         let (done, answer) = tokio::sync::oneshot::channel();
-        self.send(super::Command::AskMember(Box::new(approval.clone()), done))
-            .map_err(LinkError::Unavailable)?;
+        self.0
+            .send(super::Command::AskMember(Box::new(approval.clone()), done))
+            .map_err(|_| LinkError::Unavailable("peer session is closed".into()))?;
         answer
             .await
             .map_err(|_| LinkError::Unavailable("the session ended".into()))?

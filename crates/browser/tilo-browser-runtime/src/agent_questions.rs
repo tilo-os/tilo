@@ -66,8 +66,9 @@ pub(crate) fn answer_for_root(peer: u32, root: &JsValue) -> Result<(), JsError> 
         while let Some(session) = crate::peer_sync::handle_of(peer) {
             let began = web_time::Instant::now();
             let (answered, mut answers) = mpsc::unbounded_channel();
+            let member_host = session.member_host();
             let mut host = MemberQuestions {
-                host: &session,
+                host: &member_host,
                 root: &root,
             };
             let error =
@@ -75,6 +76,7 @@ pub(crate) fn answer_for_root(peer: u32, root: &JsValue) -> Result<(), JsError> 
                     sleep_ms(POLL_MS)
                 })
                 .await;
+            drop(member_host);
             drop(session);
             tracing::debug!(%error, retry_in_ms = retry, "agent questions: the host was not reached");
             // A session that ran a while starts its backoff afresh.

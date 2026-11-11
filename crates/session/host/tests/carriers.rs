@@ -220,14 +220,22 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     // Until the session first reaches the host it has no endpoint to ask
     // from, and says so.
     let waiting = wait_for("the phone to wait for the root", || async {
-        pending_pairings(&session, &ada.root).await.ok()?.pop()
+        pending_pairings(&session.member_host(), &ada.root)
+            .await
+            .ok()?
+            .pop()
     })
     .await;
     assert_eq!(waiting.pairing_code, shown, "the person compares codes");
-    let issued = answer_pairing(&session, &ada.root, waiting.request_digest, true)
-        .await
-        .unwrap()
-        .expect("an approval issues a certificate");
+    let issued = answer_pairing(
+        &session.member_host(),
+        &ada.root,
+        waiting.request_digest,
+        true,
+    )
+    .await
+    .unwrap()
+    .expect("an approval issues a certificate");
     let (cert, host_cert) = asking.await.unwrap().unwrap();
     assert_eq!(cert, issued);
     assert_eq!(cert.device_public_key, key.verifying_key().to_bytes());
@@ -236,7 +244,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
         ada.host_device.cert.device_public_key
     );
     assert!(
-        pending_pairings(&session, &ada.root)
+        pending_pairings(&session.member_host(), &ada.root)
             .await
             .unwrap()
             .is_empty()
