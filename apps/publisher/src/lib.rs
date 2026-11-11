@@ -599,7 +599,7 @@ fn status_timeline(pane: &Pane) -> Element {
             continue;
         };
         let fact = ui::fact::Measured::known(
-            ui::fact::Measure::new("Application status"),
+            ui::fact::Measure::new(say("publisher-status")),
             summary.clone(),
             "registry",
             instant,
