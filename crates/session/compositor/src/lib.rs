@@ -474,13 +474,9 @@ impl Compositor {
         !self.data.state.redraw.is_empty()
     }
 
-    /// Take in what arrived while the caller worked out this frame — a
-    /// commit with the frame a surface just laid out, a configure it
-    /// acknowledged, a door message — and tell the clients what the caller
-    /// queued for them, without waiting for any of it.
-    ///
-    /// Whether an output then owes a frame: what arrived is drawn now and
-    /// answers its client in this turn rather than the next.
+    /// Take in what arrived while the caller worked out this frame (a commit, an acked configure,
+    /// a door message) and send the clients what is queued, without waiting for any of it.
+    /// Whether an output then owes a frame: what arrived is answered in this turn, not the next.
     ///
     /// # Errors
     /// The display is gone.
@@ -489,7 +485,7 @@ impl Compositor {
         self.event_loop
             .dispatch(Some(Duration::ZERO), &mut self.data)
             .map_err(io)?;
-        self.display.flush_clients()?;
+        self.take_in()?;
         Ok(self.owes_frame())
     }
 
@@ -842,6 +838,12 @@ impl Compositor {
         dispatched?;
         self.recorder
             .mark_input(started.elapsed().saturating_sub(parked));
+        self.take_in()
+    }
+
+    /// Handle what the loop's wait brought: the keys due, the clients' requests (a commit, an
+    /// acked configure) and what they change, then flush the answers.
+    fn take_in(&mut self) -> Result<(), Error> {
         self.data.state.repeat_keys();
         let ticked = Instant::now();
         let due = self.keys.tick(ticked);
