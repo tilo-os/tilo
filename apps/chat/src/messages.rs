@@ -1071,6 +1071,12 @@ impl Messages {
             .chain(self.parts.iter().flat_map(|(_, part)| part.messages.iter()))
     }
 
+    /// The messages the chat record kept in itself, which no part holds.
+    #[must_use]
+    pub fn kept(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
+        self.kept.iter()
+    }
+
     /// Every message held, oldest first, with the part holding it.
     pub fn located(&self) -> impl Iterator<Item = (u64, &Id, &Message)> + '_ {
         self.parts

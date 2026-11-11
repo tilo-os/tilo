@@ -77,11 +77,10 @@ impl ChatApp {
         let held = self.held_messages();
         self.offer_the_confirmed_deletion(&held);
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
-        self.sync_conversations(&chat, &held);
-        // The parts that changed are read, and the parts that did not keep the
-        // rows they were read as: a chat of ten thousand messages costs a
-        // reload what the one part it posted to holds, not all of it.
+        // The parts that changed are read first: their counts are what every
+        // channel's unread badge is summed from.
         let parts = self.read_parts();
+        self.sync_conversations(&chat, &held);
         let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
             .iter()

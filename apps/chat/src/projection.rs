@@ -389,6 +389,13 @@ fn rows_from_parts(
     channel: &str,
 ) -> Vec<Message> {
     let mut rows: Vec<Message> = Vec::new();
+    // What the record kept in itself comes before any part: the oldest of the
+    // timeline, and what a device that holds no part of it still shows.
+    for (id, message) in messages.kept() {
+        if message.channel.as_str() == channel && messages.part_of(id).is_none() {
+            rows.push(message_row(id, message));
+        }
+    }
     for (_, part) in parts {
         rows.extend(
             part.iter()
