@@ -339,10 +339,7 @@ fn a_bridged_author_reads_via_their_service_and_the_bot_after_it() {
         is_agent: false,
     });
     let label = app.model_message_label(&message);
-    assert!(
-        label.starts_with("Dana · Discord, from Discord: "),
-        "{label}"
-    );
+    assert!(label.starts_with("Dana, via Discord: "), "{label}");
     if let Some(persona) = message
         .appearance
         .as_mut()

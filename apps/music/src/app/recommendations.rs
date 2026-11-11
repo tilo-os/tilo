@@ -182,8 +182,8 @@ fn pick_controls(pick: &Pick, asked: &Controls<'_>, details: bool) -> Element {
     Box::new(controls)
 }
 
-fn pick_card(pick: Pick, asked: &Controls<'_>, details: bool) -> Element {
-    let controls = pick_controls(&pick, asked, details);
+fn pick_card(pick: &Pick, asked: &Controls<'_>, details: bool) -> Element {
+    let controls = pick_controls(pick, asked, details);
     Box::new(
         Column::new()
             .with_no_padding()
@@ -278,7 +278,7 @@ fn page(
                 Action::Nav(View::Songs),
             ));
     }
-    for pick in std::mem::take(&mut presentation.picks) {
+    for pick in &presentation.picks {
         content = content.push(pick_card(pick, asked, details));
     }
     if details {

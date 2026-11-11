@@ -70,7 +70,7 @@ workspaces-unreadable-body = Die Liste deiner eigenen Arbeitsbereiche, die diese
 ## eigene Schreibtisch liegt weiterhin auf der Platte, und diese Sitzung startet
 ## leer, damit nichts darüber geschrieben wird.
 desk-not-opened-app-name = Desktop
-desk-not-opened-nothing-written = Er wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann ihn also nicht überschreiben.
+desk-not-opened-nothing-written = Er ist unverändert. Diese Sitzung beginnt mit einem leeren Schreibtisch und speichert nicht darüber.
 desk-not-opened-newer-title = Dein Schreibtisch wurde nicht geöffnet
 desk-not-opened-newer-detail = { $path } wurde von einer neueren Tilo-Version gespeichert (Layout { $found }; diese Version versteht { $understood }). Die Datei wurde nicht verändert: diese Sitzung startet mit einem leeren Schreibtisch und speichert nichts, kann sie also nicht überschreiben.
 desk-not-opened-unreadable-title = Dein Schreibtisch konnte nicht gelesen werden

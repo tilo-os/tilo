@@ -1070,10 +1070,7 @@ fn unreachable_sources_settle_pages_without_claiming_offline() {
             tube.model.data_source
         );
         assert_eq!(tube.model.sources_unreached, Some(Unreached::NoRelay));
-        assert!(
-            t("tube-sources-no-relay").contains("web page"),
-            "the reason says where playback cannot happen"
-        );
+        assert!(t("tube-sources-no-relay").contains("web page"));
         assert_eq!(
             tube.model.search_error.as_deref(),
             Some(t("tube-unreached-title").as_str())
