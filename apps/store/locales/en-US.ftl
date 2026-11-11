@@ -71,7 +71,7 @@ store-package-file-type = Tilo package
 store-package-review-busy = Too many package reviews are waiting. Finish the current reviews first.
 
 store-package-local-trust = Verified by an existing trusted attestor
-store-installed-unanswered = Verified when installed. { $repositories } hasn't answered, so this app's description and updates appear here once it does.
+store-installed-unanswered = Verified when installed. { $repositories } hasn't answered yet, so its description and updates are missing.
 store-installed-unlisted = Verified when installed. No enabled repository lists this app, so it gets no updates here.
 store-package-local-description = Signed local application. Installation requires its payload and exact runtime to be available.
 store-package-local-source = Local package
@@ -113,7 +113,7 @@ store-bot-kind = Bot
 store-bot-what-it-does = What it does
 store-bot-appearance = May post under other names and avatars. Always tagged as a bot.
 store-bot-add-to-workspace = Add to this workspace…
-store-bot-add-elsewhere = A workspace adds a bot with its Add a bot action
+store-bot-add-elsewhere = Add a bot from inside the workspace
 store-bot-trigger-connector = When its connector reports an event
 store-bot-trigger-record-changed = When a record changes
 store-bot-trigger-schedule = On a schedule
@@ -189,10 +189,10 @@ store-progress-installing = Installing { $name }…
 # Said while a package operation runs: the Store offers no Stop, because the
 # package manager finishes it from another process. So the page says what
 # stopping would mean and what the person can do instead.
-store-progress-continues = The package manager finishes this in its own process, so it cannot be stopped here. Leave it running, or close this window: it ends either way.
+store-progress-continues = This can't be stopped here. Leave it running, or close this window: it finishes either way.
 # The same, in the job's row, for a person looking at the Jobs surface rather
 # than the page that started the operation.
-store-job-continues = The package manager runs this; it cannot be stopped here, and it ends even if you close the window.
+store-job-continues = This can't be stopped here. It finishes even if you close the window.
 store-progress-updating = Updating { $name }…
 store-progress-removing = Removing { $name }…
 store-progress-keeping = Keeping { $name } on this device…
