@@ -1,0 +1,38 @@
+# App files whose copy still goes through the `i18n!` macro, which
+# resolves on the thread's manager without loading the app's catalogue
+# (tools/policy/check_app_copy_resolution.py). Each file converts to
+# the crate's CATALOG.t / CATALOG.t_args; counts only shrink.
+1 apps/browser/src/browser_widget/engine_runtime.rs
+1 apps/camera/src/app/hud.rs
+2 apps/camera/src/app/scanner_view.rs
+3 apps/feeds/src/app.rs
+2 apps/git-client/src/app.rs
+1 apps/git-client/src/app/diff.rs
+3 apps/git-client/src/app/remote.rs
+15 apps/notes/src/app.rs
+25 apps/notes/src/app/effects.rs
+2 apps/notes/src/app/window_bar.rs
+12 apps/notes/src/main_panel.rs
+1 apps/notes/src/note_header.rs
+3 apps/notes/src/notebook.rs
+7 apps/notes/src/notion.rs
+4 apps/notes/src/outline.rs
+1 apps/notes/src/resource.rs
+2 apps/notes/src/search.rs
+2 apps/notes/src/shortcuts_overlay.rs
+8 apps/notes/src/sidebar.rs
+3 apps/notes/src/status_bar.rs
+2 apps/sheets/src/app.rs
+10 apps/sheets/src/notion.rs
+47 apps/shortcuts/src/view.rs
+6 apps/store/src/actions.rs
+37 apps/store/src/app.rs
+145 apps/store/src/app/view.rs
+10 apps/store/src/app/window_bar.rs
+3 apps/store/src/catalogue/mod.rs
+7 apps/store/src/model.rs
+11 apps/store/src/package_import.rs
+3 apps/store/src/search.rs
+2 apps/store/src/widgets/card.rs
+13 apps/store/src/worker.rs
+5 apps/store/src/worker/refresh.rs
