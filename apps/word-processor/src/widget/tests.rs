@@ -5622,6 +5622,18 @@ pub(super) fn left_click(wp: &mut Editor, state: &mut ui::State, pt: Point) {
         .send(&mut Lent(wp), &ui::synthetic_input::mouse_press());
 }
 
+/// Drive a whole left-click at `pt` through the production `handle_event`: the
+/// press, then the button coming up on it. A menu row runs when the button
+/// comes up on it — a press alone only lights it — so a click a test means
+/// sends both, as the person's hand does.
+pub(super) fn click(wp: &mut Editor, state: &mut ui::State, pt: Point) {
+    left_click(wp, state, pt);
+    Dispatch::new()
+        .doc(&mut state.doc)
+        .path(&state.root)
+        .send(&mut Lent(wp), &ui::synthetic_input::mouse_release());
+}
+
 #[test]
 fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
     let mut framed = doc_with_headings(1000, 700);
@@ -6167,7 +6179,7 @@ fn templates_replace_the_document_only_when_chosen() {
             .file_menu
             .cancel_center()
             .expect("the question offers Keep");
-        left_click(wp, state, keep);
+        click(wp, state, keep);
         assert!(!wp.file_menu.is_open());
         assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
 
