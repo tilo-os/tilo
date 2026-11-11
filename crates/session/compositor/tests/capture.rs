@@ -195,18 +195,25 @@ fn pump(compositor: &mut Compositor, tool: &mut Tool, done: impl FnMut(&Seen) ->
 }
 
 /// A hosted surface: one square of one colour.
+/// A hosted square in one colour. Like any surface host it keeps the frame it drew and hands that
+/// same frame on every pass: a host that handed a fresh one each time would be saying it drew
+/// everything again, and every pass would damage the output.
 struct Square {
     rect: (i32, i32, i32, i32),
-    pixels: Vec<u8>,
+    frame: HostFrame,
 }
 
 impl Square {
     fn new(rect: (i32, i32, i32, i32), bgr: [u8; 3]) -> Self {
         let pixel = [bgr[2], bgr[1], bgr[0], 255];
-        Self {
-            rect,
-            pixels: pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap()),
-        }
+        let frame = HostFrame::from_pixels(
+            (
+                u32::try_from(rect.2).expect("a whole number of pixels"),
+                u32::try_from(rect.3).expect("a whole number of pixels"),
+            ),
+            pixel.repeat(usize::try_from(rect.2 * rect.3).unwrap()),
+        );
+        Self { rect, frame }
     }
 }
 
@@ -215,13 +222,7 @@ impl SurfaceHost for Square {
         vec![HostLayer {
             location: (self.rect.0, self.rect.1),
             size: (self.rect.2, self.rect.3),
-            frame: HostFrame::from_pixels(
-                (
-                    u32::try_from(self.rect.2).expect("a whole number of pixels"),
-                    u32::try_from(self.rect.3).expect("a whole number of pixels"),
-                ),
-                self.pixels.clone(),
-            ),
+            frame: self.frame.clone(),
         }]
     }
 

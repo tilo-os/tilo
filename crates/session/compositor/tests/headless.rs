@@ -712,8 +712,8 @@ fn a_hosted_apps_drag_carries_its_icon_under_the_pointer() {
     };
     assert_eq!(shown(&mut compositor, 10, 10), Some([0, 255, 0, 255]));
 
-    // A 20x20 icon, its hotspot two pixels in from its top left.
-    let icon = HostFrame::from_pixels((20, 20), [0, 255, 255, 255].repeat(20 * 20));
+    // A 20x20 yellow icon (a frame's pixels are RGBA), its hotspot two pixels in from its top left.
+    let icon = HostFrame::from_pixels((20, 20), [255, 255, 0, 255].repeat(20 * 20));
     compositor
         .input(InputEvent::PointerMotion { x: 5.0, y: 5.0 })
         .unwrap();
