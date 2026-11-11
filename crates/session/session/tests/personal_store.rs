@@ -95,23 +95,7 @@ fn a_contact_added_here_is_kept_in_the_persons_own_store() {
     tilo_action_broker::register_package_surface(CONTACTS, SURFACE);
     let socket = machine.socket().to_path_buf();
     let state = tempfile::tempdir().expect("a state for this session");
-    personal::hold_workspace(
-        state.path(),
-        &machine.device,
-        &machine.cert,
-        &cluster,
-        CONTACTS,
-        KIND,
-    );
-    let mut session = personal::session(
-        &socket,
-        &machine,
-        "Ada",
-        &cluster,
-        state.path(),
-        CONTACTS,
-        false,
-    );
+    let mut session = personal::session(&socket, "Ada", &cluster, state.path(), CONTACTS, false);
 
     add_contact(&socket, &machine, &cluster);
 
