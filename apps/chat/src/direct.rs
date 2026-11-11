@@ -120,12 +120,12 @@ impl ChatApp {
             .ok_or_else(|| crate::i18n::t("chat-direct-unavailable"))
     }
 
-    /// Send what a window's box held: the words and everything they carry go
-    /// to the conversation with whom it names — a person, an agent, several of
-    /// them, or a conversation that is already there — and the conversation
-    /// opens as a window of the desk, floated where the box stood
-    /// ([`ui::shell_tabs::open_floated`]). The window that sent it goes on
-    /// showing what it showed, its box ready for the next message.
+    /// Send what a box held: the words and everything they carry go to the
+    /// conversation with whom it names — a person, an agent, several of
+    /// them, or a conversation that is already there. When it `opens`, the
+    /// conversation opens as a window of the desk, floated where the box
+    /// stood ([`ui::shell_tabs::open_floated`]). The window that sent it goes
+    /// on showing what it showed, its box ready for the next message.
     ///
     /// # Errors
     /// The box names nobody this chat knows, a conversation beside other
@@ -135,6 +135,7 @@ impl ChatApp {
         to: &[ui::floating_surface::Recipient],
         attached: Vec<tilo_reference::Attached>,
         text: &str,
+        opens: bool,
         chat: &Chat,
     ) -> Result<Effected, String> {
         if text.trim().is_empty() && attached.is_empty() {
@@ -146,7 +147,9 @@ impl ChatApp {
         // floated over it, that the workspace's record keeps for every
         // member.
         let anchor = item_row_id("channels", id.as_str());
-        ui::shell_tabs::open_floated(anchor.clone());
+        if opens {
+            ui::shell_tabs::open_floated(anchor.clone());
+        }
         Ok(Effected::value(serde_json::json!({
             "conversation": id.to_string(),
             "anchor": anchor,

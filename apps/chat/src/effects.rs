@@ -111,8 +111,9 @@ pub enum ChatEffect {
     /// Sends the words and everything they carry to the conversation with
     /// whom it names — people, agents, or a conversation that is already
     /// there — and answers the conversation it landed in, as the item that
-    /// names it: the window that sent it opens there, wherever the desk
-    /// stands it.
+    /// names it. Sent from a person's box, the conversation opens as a
+    /// window of the desk where the box stood; sent by anyone else, nothing
+    /// opens.
     #[effect(returns, kind = "undoable")]
     Send {
         #[param("Who the message goes to")]
@@ -121,6 +122,8 @@ pub enum ChatEffect {
         attached: Vec<tilo_reference::Attached>,
         #[param("The message")]
         text: String,
+        #[param("Open the conversation as a window where the box that sent it stood")]
+        opens: Option<bool>,
     },
     /// Export conversation
     ///

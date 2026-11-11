@@ -291,10 +291,18 @@ impl Shared {
         if text.is_empty() && attached.is_empty() {
             return Err("a message needs words or something to carry".into());
         }
+        // A window's box sends as the person at it; an agent or a script as itself.
+        let agent = by.filter(|by| {
+            !matches!(
+                by.kind,
+                tilo_actions::ActorKind::App | tilo_actions::ActorKind::Person
+            )
+        });
         let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
                 let resolved = self.recipients_of(&workspace, &to, &agent_name(text, attached))?;
-                let target = send_target(&workspace, &resolved, attached, text)?;
+                // Only a person's box opens the conversation where it stood.
+                let target = send_target(&workspace, &resolved, attached, text, agent.is_none())?;
                 (workspace, target)
             }
             // A report is read where it lands, not floated over the window it was written over: it
@@ -311,13 +319,7 @@ impl Shared {
         self.search
             .perform(&workspace, target, &mut |own| {
                 let look = &mut tilo_session_core::door::Look::none();
-                // A window's box sends as the person at it; an agent or a script as itself.
-                match by.filter(|by| {
-                    !matches!(
-                        by.kind,
-                        tilo_actions::ActorKind::App | tilo_actions::ActorKind::Person
-                    )
-                }) {
+                match agent {
                     Some(by) => self
                         .doors
                         .invoke_as(&by.actor, &own.address, &own.arguments, look),
@@ -510,6 +512,7 @@ fn send_target(
     to: &[Recipient],
     attached: &[tilo_reference::Attached],
     text: &str,
+    opens: bool,
 ) -> Result<Target, String> {
     let to = serde_json::to_value(to).map_err(|error| error.to_string())?;
     let attached = serde_json::to_value(attached).map_err(|error| error.to_string())?;
@@ -517,7 +520,8 @@ fn send_target(
         InvokeTarget::action(CHAT, workspace, CHAT_WORKSPACE, SEND)
             .with_argument("to", to)
             .with_argument("attached", attached)
-            .with_argument("text", text),
+            .with_argument("text", text)
+            .with_argument("opens", opens),
     )))
 }
 
@@ -542,6 +546,7 @@ mod tests {
             std::slice::from_ref(&ada),
             std::slice::from_ref(&carried),
             "look",
+            true,
         )
         .expect("a send builds") else {
             panic!("a send invokes the chat");
@@ -560,6 +565,10 @@ mod tests {
         let attached: Vec<Attached> =
             serde_json::from_value(target.arguments["attached"].clone()).expect("what it carries");
         assert_eq!(attached, [carried]);
+        assert_eq!(
+            target.arguments.get("opens"),
+            Some(&serde_json::Value::Bool(true))
+        );
         assert_eq!(
             target.arguments.get("bounds"),
             None,

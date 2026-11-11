@@ -737,11 +737,20 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             }
             return Ok(ui::framework::Effected::Pending);
         }
-        ChatEffect::Send { to, attached, text } => {
+        ChatEffect::Send {
+            to,
+            attached,
+            text,
+            opens,
+        } => {
             let state = cx.live().get();
-            return chat
-                .borrow()
-                .send_from_box(to, attached.clone(), text, &state);
+            return chat.borrow().send_from_box(
+                to,
+                attached.clone(),
+                text,
+                opens.unwrap_or_default(),
+                &state,
+            );
         }
         _ => {}
     }
