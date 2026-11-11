@@ -1495,16 +1495,39 @@ baseline_min_runs = 1
 source = "frames an idle desktop of the demo windows presents per second (headless, SwiftShader)"
 
 # A fast typist's keys into a note (--typing-keys), each timed from the page's
-# key event to the first presented frame after it. The ceiling is the
-# runtime's goal: a key on screen within three frames at 60 Hz. The nightly
-# run types on SwiftShader, where a frame is the software rasterizer's, so
-# what its records hold for comparison is the runtime's own CPU per frame
-# beside it, against the display's 16.7 ms frame.
+# key event to the first presented frame after it. The nightly run types on
+# SwiftShader, which cannot hold a key to a fixed number of milliseconds: a
+# trace of its GPU process (2026-11-11, 960x540) spends 235-363 ms on every
+# frame the note presents, against 0.1 ms of WebGPU commands to decode and
+# 1-3 ms of the runtime's own CPU, and while the renderer's deferred
+# pipelines compile in the background one flush held the GPU process 1.4 s.
+# Sixteen keys then reach the screen in two or three frames, so a key's wait
+# is SwiftShader's frame time, whatever the runtime does. Its records are
+# compared with their own baseline; what the runtime is held to is the plain
+# page below and its CPU per frame.
 [kpi."browser.typing.key_to_frame"]
 unit = "ms"
-p95 = 50.0
 baseline_min_runs = 3
 source = "page key event to the first presented frame after it, a fast typist's keys into a note (headless, SwiftShader)"
+
+# The same keys at the same rate into a plain page's editable text in the same
+# browser, each to the frame that presented it as Chrome traces it
+# (EventLatency): the browser's own floor for a key, on any machine.
+[kpi."browser.typing.plain_page_key_to_frame"]
+unit = "ms"
+baseline_min_runs = 3
+source = "key event to the frame that presented it (EventLatency), the same keys into a plain page's editable text, same browser (headless, SwiftShader)"
+
+# The note's key-to-frame p95 past the plain page's, one per round: the goal is
+# one 60 Hz frame, typing as quick to the eye as the browser's own text. A GPU
+# came within 19 ms of it (AMD 780M, busy host, 2026-11-11); on SwiftShader the
+# software rasterizer's frame time above is in it, so the nightly reports the
+# gap and its regressions while a hardware qualification judges the goal.
+[kpi."browser.typing.past_plain_page"]
+unit = "ms"
+max = 16.7
+baseline_min_runs = 3
+source = "the note's key-to-frame p95 minus a plain page's for the same keys, one per round, same browser (headless, SwiftShader)"
 
 [kpi."browser.typing.frame_work"]
 unit = "ms"

@@ -30,6 +30,8 @@ def report(**workload: float) -> dict:
     if options["typingKeys"]:
         samples["typing_ms"] = [30.0]
         samples["typing_work_ms"] = [4.0]
+        samples["typing_dom_ms"] = [6.0]
+        samples["typing_over_dom"] = [24.0]
     if options["scrollSteps"]:
         samples["scroll_ms"] = [24.0]
         samples["scroll_vs_dom"] = [150.0]
@@ -60,6 +62,8 @@ class BrowserQualification(unittest.TestCase):
         typed = {item.kpi: item for item in records if item.kpi.startswith("browser.typing.")}
         self.assertEqual(typed["browser.typing.key_to_frame"].p50, 30.0)
         self.assertEqual(typed["browser.typing.frame_work"].p50, 4.0)
+        self.assertEqual(typed["browser.typing.plain_page_key_to_frame"].p50, 6.0)
+        self.assertEqual(typed["browser.typing.past_plain_page"].p50, 24.0)
 
     def test_records_the_scroll_beside_the_plain_page(self):
         records = adapters.browser_qualification(report(typingKeys=16, scrollSteps=24), ENV)

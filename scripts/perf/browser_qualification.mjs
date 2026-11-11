@@ -32,10 +32,14 @@
 //   typing   keys typed into a note at a fast typist's rate (--typing-keys,
 //             off by default): each key's time in the page to the first
 //             presented frame after it, the runtime's CPU time per typing
-//             frame and what each of those frames repainted
+//             frame and what each of those frames repainted; and the same
+//             keys into a plain page's editable text in the same browser,
+//             each from the event to the frame that presented it as Chrome
+//             traces it (EventLatency), whose p95 the note's is held within a
+//             frame of
 //   scroll   the typed note filled with SCROLL_LINES paragraphs and wheeled
-//             up and back down (--scroll-steps, off by default, and only
-//             after typing): each wheel's time from the event to the frame
+//             up and back down over the part of it on screen (--scroll-steps,
+//             off by default, and only after typing): each wheel's time from the event to the frame
 //             that presented it, as Chrome traces it (EventLatency); and the
 //             same wheels over the same paragraphs in a plain page that
 //             scrolls them from its own script, in the same browser, on the
@@ -72,8 +76,9 @@
 //   load           p99 <= 2.5 s (the web's "good" Largest Contentful Paint)
 //   idle           <= 2 presented frames per second
 //   typing         key to presented frame p95 <= 50 ms (a key that reaches the
-//                  screen within three frames at 60 Hz), judged when the
-//                  typing workload ran
+//                  screen within three frames at 60 Hz), and at most one 60 Hz
+//                  frame past a plain page's p95, judged when the typing
+//                  workload ran
 //   scroll         a note's wheel to presented frame p95 at most 200 % of a
 //                  plain page's, judged when the scroll workload ran
 // Beside load's time, the report records what the first load transferred and
@@ -106,6 +111,7 @@ export const GOALS = {
   loadMs: 2500,
   idlePerS: 2,
   typingMs: 50,
+  typingOverDomMs: 1000 / 60,
   scrollVsDomPercent: 200,
 };
 // Desktop windows of the demo: the apps of the launch demo that open without
@@ -324,6 +330,8 @@ export function judgeGoals(summary) {
     goal('load (p99, ms)', summary.load_ms.p99, GOALS.loadMs),
     goal('idle (presented frames per second, max)', summary.idle_per_s.max, GOALS.idlePerS),
     goal('typing, key to presented frame (p95, ms)', summary.typing_ms.p95, GOALS.typingMs),
+    goal("typing, key to presented frame past a plain page's (p95, ms, max)", summary.typing_over_dom.max,
+      GOALS.typingOverDomMs),
     goal("scroll, a note's wheel to presented frame as a share of a plain page's (p95, %, max)",
       summary.scroll_vs_dom.max, GOALS.scrollVsDomPercent),
   ].filter(entry => Number.isFinite(entry.measured));
@@ -332,7 +340,8 @@ export function judgeGoals(summary) {
 // A round without the demo (`--demo-seconds 0`).
 const NO_DEMO = {intervals: [], work: [], stages: {}, frames: 0, wheels: 0, seconds: 0, fps: NaN};
 // A round without typing (`--typing-keys 0`).
-const NO_TYPING = {keys: 0, latencies: [], work: [], stages: {}, damage: {}, requesters: {}, text: null};
+const NO_TYPING = {keys: 0, latencies: [], work: [], stages: {}, damage: {}, requesters: {}, text: null, domLatencies: [],
+  overDom: NaN};
 // A round without the scroll workload (`--scroll-steps 0`).
 const NO_SCROLL = {wheels: 0, latencies: [], domLatencies: [], ratio: NaN};
 
@@ -704,10 +713,10 @@ for (let i = 0; i < ${SCROLL_LINES}; i++) {
 note.addEventListener('wheel', event => { event.preventDefault(); note.scrollTop += event.deltaY; }, {passive: false});
 </script>`;
 
-/** Run `wheel` with Chrome tracing its input, and hand back each wheel's time
+/** Run `input` with Chrome tracing it, and hand back each `type` event's time
  * from the event to the frame that presented it (Chrome's EventLatency): the
- * same clock for the desktop's canvas and for a page Chrome scrolls itself. */
-async function wheelLatencies(page, wheel) {
+ * same clock for the desktop's canvas and for a page Chrome draws itself. */
+async function eventLatencies(page, input, type) {
   const events = [];
   let done;
   const complete = new Promise(resolve => { done = resolve; });
@@ -717,7 +726,7 @@ async function wheelLatencies(page, wheel) {
   });
   try {
     await page.send('Tracing.start', {transferMode: 'ReportEvents', traceConfig: {includedCategories: ['input', 'latencyInfo', 'benchmark']}});
-    await wheel();
+    await input();
     await sleep(500);
     await page.send('Tracing.end', {});
     await within(complete, 30_000, 'the trace');
@@ -732,8 +741,8 @@ async function wheelLatencies(page, wheel) {
     else if (event.ph === 'e' && begun.has(id)) {
       const start = begun.get(id);
       begun.delete(id);
-      const type = start.args?.event_latency?.event_type ?? start.args?.data?.event_type;
-      if (type === 'MOUSE_WHEEL') latencies.push((event.ts - start.ts) / 1000);
+      const eventType = start.args?.event_latency?.event_type ?? start.args?.data?.event_type;
+      if (eventType === type) latencies.push((event.ts - start.ts) / 1000);
     }
   }
   return latencies;
@@ -760,9 +769,12 @@ async function measureScroll(browser, page, options, index) {
   }
   await sleep(2000);
   const editor = await page.evaluate(noteTargetExpression('editor'));
-  if (!editor) throw new Invalid(`round ${index}: the filled note shows no editor to scroll`);
-  const x = Math.round((editor.x0 + editor.x1) / 2), y = Math.round((editor.y0 + editor.y1) / 2);
-  const latencies = await wheelLatencies(page, () => wheelSteps(page, x, y, options.scrollSteps));
+  const canvas = await page.evaluate(`(() => { const r = tiloMount.canvas.getBoundingClientRect();
+    return {x0: r.left, y0: r.top, x1: r.right, y1: r.bottom}; })()`);
+  const shown = editor && visibleCenter(editor, canvas);
+  if (!shown) throw new Invalid(`round ${index}: the filled note shows no editor to scroll`);
+  const {x, y} = shown;
+  const latencies = await eventLatencies(page, () => wheelSteps(page, x, y, options.scrollSteps), 'MOUSE_WHEEL');
   const plain = await freshPage(browser, options);
   let domLatencies;
   try {
@@ -772,8 +784,8 @@ async function measureScroll(browser, page, options, index) {
     await plain.evaluate("document.getElementById('note').scrollTop = document.getElementById('note').scrollHeight");
     await sleep(300);
     const {width, height} = options.viewport;
-    domLatencies = await wheelLatencies(plain, () => wheelSteps(plain, Math.round(width / 2), Math.round(height / 2),
-      options.scrollSteps));
+    domLatencies = await eventLatencies(plain, () => wheelSteps(plain, Math.round(width / 2), Math.round(height / 2),
+      options.scrollSteps), 'MOUSE_WHEEL');
   } finally {
     await plain.close().catch(() => {});
   }
@@ -786,6 +798,17 @@ async function measureScroll(browser, page, options, index) {
   }
   const p95 = values => percentile([...values].sort((a, b) => a - b), 95);
   return {wheels: latencies.length, latencies, domLatencies, ratio: 100 * p95(latencies) / p95(domLatencies)};
+}
+
+/** The middle of what `target` shows inside `viewport` (both page rects), or
+ * null when none of it is on screen. A filled note's editor reaches far above
+ * and below its window: the middle of its whole extent is off the page, where
+ * a wheel scrolls nothing. */
+export function visibleCenter(target, viewport) {
+  const x0 = Math.max(target.x0, viewport.x0), x1 = Math.min(target.x1, viewport.x1);
+  const y0 = Math.max(target.y0, viewport.y0), y1 = Math.min(target.y1, viewport.y1);
+  if (!(x1 - x0 >= 1 && y1 - y0 >= 1)) return null;
+  return {x: Math.round((x0 + x1) / 2), y: Math.round((y0 + y1) / 2)};
 }
 
 // A key event as Chrome sends it for a printable character.
@@ -858,7 +881,7 @@ const TYPING_TEXT = 'the quick brown fox jumps over the lazy dog';
 // A note typed into at TYPING_INTERVAL_MS, each key timed from the page's own
 // key event to the first presented frame after it. The editor is reached the
 // way a person reaches it: New note, then a press in the note's body.
-async function measureTyping(page, windows, options, index) {
+async function measureTyping(browser, page, windows, options, index) {
   const notes = windows.find(entry => entry.app === 'so.tilo.notes') ?? windows[0];
   await page.evaluate(`tiloMount.navigation.dispatch(${JSON.stringify(verb.focus(notes.route))})`);
   await sleep(1000);
@@ -893,12 +916,7 @@ async function measureTyping(page, windows, options, index) {
   await page.evaluate(`(async () => { const runtime = ${RUNTIME}; runtime.configure_frame_metrics(true); runtime.take_frame_metrics(); return true; })()`);
   await page.evaluate(typingRecorder);
   const typed = TYPING_TEXT.repeat(Math.ceil(options.typingKeys / TYPING_TEXT.length)).slice(0, options.typingKeys);
-  for (const character of typed) {
-    const event = keyEvent(character);
-    await page.send('Input.dispatchKeyEvent', {type: 'keyDown', text: character, unmodifiedText: character, ...event});
-    await page.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
-    await sleep(TYPING_INTERVAL_MS);
-  }
+  await typeKeys(page, typed);
   const typing = await page.evaluate(typingFinish(options.frameTimeout * 1000, typed));
   if (typing.keys !== typed.length) {
     throw new Invalid(`round ${index}: the page saw ${typing.keys} of the ${typed.length} keys typed`);
@@ -909,9 +927,48 @@ async function measureTyping(page, windows, options, index) {
   if (!text.includes(typed.replace(/\s+/g, ' ').trim())) {
     throw new Invalid(`round ${index}: the note holds "${text}", not what was typed ("${typed}")`);
   }
+  // The same keys at the same rate into a plain page's editable text, in a
+  // page of its own in the same browser.
+  const plain = await freshPage(browser, options);
+  let domLatencies;
+  try {
+    const {result: {frameTree}} = await plain.send('Page.getFrameTree');
+    await plain.send('Page.setDocumentContent', {frameId: frameTree.frame.id, html: plainTypingPage});
+    await sleep(500);
+    domLatencies = await eventLatencies(plain, () => typeKeys(plain, typed), 'KEY_PRESSED');
+  } finally {
+    await plain.close().catch(() => {});
+  }
+  if (domLatencies.length < typed.length / 2) {
+    throw new Invalid(`round ${index}: ${domLatencies.length} of the ${typed.length} keys into the plain page reached the screen`);
+  }
+  const p95 = values => percentile([...values].sort((a, b) => a - b), 95);
   return {keys: typing.keys, latencies: typing.latency, work: typing.work, stages: typing.stages, damage: typing.damages,
-    requesters: typing.requesters, text};
+    requesters: typing.requesters, text, domLatencies, overDom: p95(typing.latency) - p95(domLatencies)};
 }
+
+/** `typed`, a key at a time at TYPING_INTERVAL_MS, as Chrome's input sends a person's keys. */
+async function typeKeys(page, typed) {
+  for (const character of typed) {
+    const event = keyEvent(character);
+    await page.send('Input.dispatchKeyEvent', {type: 'keyDown', text: character, unmodifiedText: character, ...event});
+    await page.send('Input.dispatchKeyEvent', {type: 'keyUp', ...event});
+    await sleep(TYPING_INTERVAL_MS);
+  }
+}
+
+// The plain page the typing is held against: an editable paragraph the
+// browser inserts each key into and draws itself, focused with its caret
+// where typing goes, as the note's is.
+const plainTypingPage = `<!doctype html><meta charset="utf-8"><style>
+html,body{margin:0;height:100%;font:15px/1.5 system-ui,sans-serif}
+#note{position:absolute;inset:0;padding:24px 48px;outline:none}</style>
+<div id="note" contenteditable><p>Untitled</p><p id="line"><br></p></div><script>
+const line = document.getElementById('line'), caret = document.createRange();
+caret.setStart(line, 0);
+getSelection().removeAllRanges(); getSelection().addRange(caret);
+document.getElementById('note').focus();
+</script>`;
 
 async function round(browser, url, options, index) {
   const page = await freshPage(browser, options);
@@ -977,7 +1034,7 @@ async function round(browser, url, options, index) {
     // Typing comes last: a field left focused blinks its caret, which is a
     // frame a desktop no one is touching is right to present, and the idle
     // workload is about the frames nothing asks for.
-    const typing = options.typingKeys > 0 ? await measureTyping(page, windows, options, index) : NO_TYPING;
+    const typing = options.typingKeys > 0 ? await measureTyping(browser, page, windows, options, index) : NO_TYPING;
     const scroll = options.scrollSteps > 0 ? await measureScroll(browser, page, options, index) : NO_SCROLL;
     const resources = await page.evaluate(RESOURCES);
     if (page.errors.length) throw new Invalid(`round ${index}: page exceptions: ${page.errors.slice(0, 3).join(' | ')}`);
@@ -1004,6 +1061,8 @@ export function summarize(rounds, load = {}) {
     idle_per_s: stats(rounds.map(r => r.idle.perS)),
     typing_ms: stats(rounds.flatMap(r => r.typing.latencies)),
     typing_work_ms: stats(rounds.flatMap(r => r.typing.work)),
+    typing_dom_ms: stats(rounds.flatMap(r => r.typing.domLatencies ?? [])),
+    typing_over_dom: stats(rounds.map(r => r.typing.overDom ?? NaN)),
     scroll_ms: stats(rounds.flatMap(r => r.scroll?.latencies ?? [])),
     scroll_dom_ms: stats(rounds.flatMap(r => r.scroll?.domLatencies ?? [])),
     scroll_vs_dom: stats(rounds.map(r => r.scroll?.ratio ?? NaN)),
@@ -1071,7 +1130,8 @@ export function formatSummary(report) {
     row('demo interval (ms)', s.demo_interval_ms), row('demo work (ms)', s.demo_work_ms), row('demo fps', s.demo_fps),
     row('idle (frames/s)', s.idle_per_s),
     ...(report.workload.typingKeys > 0
-      ? [row('typing (ms)', s.typing_ms), row('typing work (ms)', s.typing_work_ms)]
+      ? [row('typing (ms)', s.typing_ms), row('typing work (ms)', s.typing_work_ms),
+        row('typing, plain page (ms)', s.typing_dom_ms), row("typing past the plain page's (p95, ms)", s.typing_over_dom)]
       : []),
     ...(report.workload.scrollSteps > 0
       ? [row('scroll (ms)', s.scroll_ms), row('scroll, plain page (ms)', s.scroll_dom_ms),
@@ -1166,6 +1226,8 @@ async function main() {
         activate_ms: rounds.flatMap(r => r.activations), demo_interval_ms: rounds.flatMap(r => r.demo.intervals),
         demo_work_ms: rounds.flatMap(r => r.demo.work), idle_per_s: rounds.map(r => r.idle.perS),
         typing_ms: rounds.flatMap(r => r.typing.latencies), typing_work_ms: rounds.flatMap(r => r.typing.work),
+        typing_dom_ms: rounds.flatMap(r => r.typing.domLatencies), typing_over_dom: rounds.map(r => r.typing.overDom)
+          .filter(Number.isFinite),
         scroll_ms: rounds.flatMap(r => r.scroll.latencies),
         scroll_vs_dom: rounds.map(r => r.scroll.ratio).filter(Number.isFinite),
         transfer_bytes: loadBytes.map(t => t.bytes), request_count: loadBytes.map(t => t.requests),

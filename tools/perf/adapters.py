@@ -482,6 +482,8 @@ BROWSER_KPIS = {
     "demo_work_ms": ("browser.demo.frame_work", "ms"),
     "typing_ms": ("browser.typing.key_to_frame", "ms"),
     "typing_work_ms": ("browser.typing.frame_work", "ms"),
+    "typing_dom_ms": ("browser.typing.plain_page_key_to_frame", "ms"),
+    "typing_over_dom": ("browser.typing.past_plain_page", "ms"),
     "scroll_ms": ("browser.scroll.wheel_to_frame", "ms"),
     "scroll_vs_dom": ("browser.scroll.share_of_plain_page", "percent"),
     "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
@@ -489,7 +491,7 @@ BROWSER_KPIS = {
 # Reported only by a run with the demo workload (`--demo-seconds` above 0).
 BROWSER_DEMO_FIELDS = frozenset({"demo_interval_ms", "demo_work_ms"})
 # Reported only by a run with the typing workload (`--typing-keys` above 0).
-BROWSER_TYPING_FIELDS = frozenset({"typing_ms", "typing_work_ms"})
+BROWSER_TYPING_FIELDS = frozenset({"typing_ms", "typing_work_ms", "typing_dom_ms", "typing_over_dom"})
 # Reported only by a run with the scroll workload (`--scroll-steps` above 0).
 BROWSER_SCROLL_FIELDS = frozenset({"scroll_ms", "scroll_vs_dom"})
 
