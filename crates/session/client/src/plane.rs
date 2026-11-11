@@ -87,8 +87,21 @@ pub enum Event {
         device: EndpointId,
         active: bool,
     },
-    /// A host of `ws` finished subscribing to this workspace.
-    HostReady { ws: Topic, peer: EndpointId },
+    /// A host of `ws` finished subscribing to this workspace. `records_when_opened`: it sends a
+    /// device only the workspace's governance, its shared desktop and the heads of its chained
+    /// records, and every other record once the device opens it.
+    HostReady {
+        ws: Topic,
+        peer: EndpointId,
+        records_when_opened: bool,
+    },
+    /// A host of `ws` sent everything it retains of a record this device opened on `channel`,
+    /// `frames` of them — none when the workspace has none of it.
+    RecordOpened {
+        ws: Topic,
+        channel: [u8; 32],
+        frames: u32,
+    },
     /// One of the person's devices proved itself, or proved itself anew.
     Sibling {
         peer: EndpointId,
@@ -151,6 +164,9 @@ pub enum Cmd {
     ConnectDevice(EndpointAddr),
     /// Ask the host of the joined workspace on `ws` to replay what it retains.
     Replay(Topic),
+    /// Ask the hosts of the joined workspace on `ws` for the record on `channel`: what they hold of
+    /// it, and their changes to it from then on.
+    OpenRecord { ws: Topic, channel: [u8; 32] },
     /// Send this device's owner's outgoing custody of the workspace on `ws` to its peers.
     PublishCustody(Topic),
     /// Say which devices workspace `ws` admits, and until when each of their certificates holds.

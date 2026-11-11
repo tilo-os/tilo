@@ -66,6 +66,11 @@ pub struct RelayCoeditSession {
     /// The on-demand records this session opened, by retained channel:
     /// opened again with every resubscription.
     opened: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>,
+    /// Whether the host said this workspace sends a device only its
+    /// governance, its shared desktop and the heads of its chains, and every
+    /// other record once the device opens it (its `Ready`): what a device
+    /// reads as `records_when_opened`.
+    when_opened: std::sync::atomic::AtomicBool,
     /// The records whose replay the host owes this session: asked for, and
     /// not yet answered with what the host retains of them
     /// ([`Inbound::RecordOpened`]). Every frame of the record until that
@@ -98,25 +103,35 @@ impl RelayCoeditSession {
             author,
             last_heard_ns: std::sync::atomic::AtomicU64::new(tilo_clock::unix_now_ns()),
             opened: std::sync::Mutex::default(),
+            when_opened: std::sync::atomic::AtomicBool::new(false),
             awaiting: std::sync::Mutex::default(),
         })
     }
 
-    /// Open an on-demand record of this workspace
-    /// (`neighbour_wire::record_sync`), one a subscription does not
-    /// replay, by its retained channel
-    /// (`neighbour_wire::app_document_channel`). The host sends what it
-    /// retains of it as [`Inbound::Delta`]s, then [`Inbound::RecordOpened`],
-    /// and its changes from then on.
+    /// Open a record of this workspace by its retained channel
+    /// (`neighbour_wire::app_document_channel`): an on-demand one
+    /// (`neighbour_wire::record_sync`), which a subscription does not
+    /// replay, or any record of a workspace that sends them all only when
+    /// they are opened ([`Self::records_when_opened`]). The host sends what
+    /// it retains of it as [`Inbound::Delta`]s, then [`Inbound::RecordOpened`]
+    /// saying how many frames that was, and its changes from then on.
+    ///
+    /// A record this session opened already is not asked for again; a
+    /// resubscription asks for every opened record again
+    /// ([`Self::resubscribe`]).
     ///
     /// # Errors
     ///
     /// Returns [`CoeditError::Disconnected`] if the connection is gone.
     pub fn open_record(&self, channel: [u8; 32]) -> Result<(), CoeditError> {
-        self.opened
+        if !self
+            .opened
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(channel);
+            .insert(channel)
+        {
+            return Ok(());
+        }
         self.awaiting
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -127,6 +142,16 @@ impl RelayCoeditSession {
                 channel,
             })
             .map_err(|_| CoeditError::Disconnected)
+    }
+
+    /// Whether the host said this workspace sends a device only its
+    /// governance, its shared desktop and the heads of its chained records,
+    /// and every other record once the device opens it
+    /// ([`Self::open_record`]) — the `records_when_opened` of its `Ready`.
+    /// `false` until the host says otherwise.
+    #[must_use]
+    pub fn records_when_opened(&self) -> bool {
+        self.when_opened.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Whether the host still owes this session `channel`'s replay: the
@@ -519,9 +544,16 @@ impl RelayCoeditSession {
                         return Some(inbound);
                     }
                 }
-                Envelope::Ready { pending_deltas, .. } => {
+                Envelope::Ready {
+                    pending_deltas,
+                    records_when_opened,
+                    ..
+                } => {
+                    self.when_opened
+                        .store(records_when_opened, std::sync::atomic::Ordering::Release);
                     return Some(Inbound::Ready {
                         pending: pending_deltas,
+                        records_when_opened,
                     });
                 }
                 envelope @ (Envelope::RetiredLiveMember { .. }

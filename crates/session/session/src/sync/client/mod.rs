@@ -336,9 +336,20 @@ impl Seat {
     /// What this desktop's plane does with one message of the client's own.
     fn heard(&self, event: &Event, client: &SessionClient) -> bool {
         // What a workspace says of its channels' governance is the session's channels' to take in,
-        // wherever the message came from.
-        if let (Some(link), Event::Msg { msg, .. }) = (&self.link, event) {
-            link.heard(msg);
+        // wherever the message came from; a record a host answered for decides what a reading of it
+        // waits on.
+        if let Some(link) = &self.link {
+            match event {
+                Event::Msg { msg, .. } => link.heard(msg),
+                Event::RecordOpened {
+                    ws,
+                    channel,
+                    frames,
+                } => {
+                    link.record_opened(*ws, *channel, *frames);
+                }
+                _ => {}
+            }
         }
         if let Some(fabric) = &self.fabric {
             match event {
@@ -424,7 +435,7 @@ impl Seat {
                 *ws,
                 self.content_devices(*ws, |devices| devices.heard(*peer)),
             ),
-            Event::HostReady { ws, peer } => (
+            Event::HostReady { ws, peer, .. } => (
                 *ws,
                 self.content_devices(*ws, |devices| devices.host(*peer)),
             ),

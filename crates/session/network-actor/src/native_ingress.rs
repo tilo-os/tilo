@@ -410,8 +410,18 @@ impl ActorState {
             return;
         };
         let peer = payload.endpoint_addr.id;
-        self.publish_to_subscriber(ws, super::NetEvent::HostReady { ws, peer })
-            .await;
+        self.publish_to_subscriber(
+            ws,
+            super::NetEvent::HostReady {
+                ws,
+                peer,
+                // This host keeps the workspace's records on its link's own session, which
+                // replays them all to this device as its history starts: nothing of a record
+                // waits for the record to be opened here.
+                records_when_opened: false,
+            },
+        )
+        .await;
     }
 
     /// The workspace on topic `ws`'s link ended: its host said its owner

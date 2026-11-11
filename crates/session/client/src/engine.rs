@@ -448,7 +448,9 @@ impl Engine {
     }
 
     /// Whether `workspace`'s host finished replaying to this device what it retains: every record
-    /// comes with it, so one that is not here then is one the workspace has none of.
+    /// comes with it, so one that is not here then is one the workspace has none of — unless the
+    /// host sends records only when they are opened
+    /// ([`Self::records_when_opened`]).
     #[must_use]
     pub fn host_replayed(&self, workspace: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -458,6 +460,54 @@ impl Engine {
             .lock_recover()
             .as_ref()
             .is_some_and(|link| link.has_replayed(workspace))
+    }
+
+    /// Whether `workspace`'s host sends this device only the workspace's governance, its shared
+    /// desktop and the heads of its chained records, and every other record once this device opens
+    /// it ([`Self::open_record`]): a record that is not here is not new until the host answered it
+    /// holds none of it ([`Self::record_answer`]).
+    #[must_use]
+    pub fn records_when_opened(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        self.link
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|link| link.records_when_opened(workspace))
+    }
+
+    /// Ask `workspace`'s hosts for `app`'s `record`
+    /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
+    /// then on. Asked once per record while the plane runs; `false` when there is no plane to ask
+    /// on, so nothing was asked.
+    pub fn open_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let Some(link) = self.link.lock_recover().clone() else {
+            return false;
+        };
+        link.open_record(workspace, neighbour_wire::app_document_channel(app, record))
+    }
+
+    /// What `workspace`'s host answered about `app`'s `record`: `None` while the answer to
+    /// [`Self::open_record`] is owed, and the frames it sent once it came — none when the workspace
+    /// has none of the record, which is then new here.
+    #[must_use]
+    pub fn record_answer(&self, workspace: &str, app: &str, record: &str) -> Option<u32> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        let channel = neighbour_wire::app_document_channel(app, record);
+        self.link
+            .lock_recover()
+            .as_ref()?
+            .record_answer(workspace, &channel)
+    }
+
+    /// What ticks whenever a host answered for a record this device opened; `None` with no plane.
+    #[must_use]
+    pub fn record_answers(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.link.lock_recover().as_ref().map(|link| link.answers())
     }
 
     /// What ticks whenever a host finished its replay; `None` with no plane.

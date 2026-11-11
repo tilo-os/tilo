@@ -322,6 +322,14 @@ pub enum NetCmd {
     NativeReplay {
         ws: WorkspaceId,
     },
+    /// Ask the hosts of `ws` for the record on `channel` (a retained route's
+    /// channel, `neighbour_wire::app_document_channel`): what they hold of it,
+    /// and their changes to it from then on. A workspace that sends records
+    /// when they are opened sends nothing of a record before this.
+    OpenRecord {
+        ws: WorkspaceId,
+        channel: [u8; 32],
+    },
     /// Hold an enrolled workspace's relay session over the iroh endpoint its
     /// hint names.
     NativeConnect(native_ingress::Connect),
@@ -503,9 +511,24 @@ pub enum NetEvent {
     /// An authenticated durable host finished subscribing to this workspace.
     /// Distinct from a direct peer arrival: the shell uses this edge to seed
     /// transport-level checkpoints for future first-time/offline devices.
+    /// `records_when_opened`: this host sends a device only the workspace's
+    /// governance, its shared desktop and the heads of its chained records,
+    /// and every other record once the device opens it
+    /// ([`NetCmd::OpenRecord`]), so a record that is not here is not new
+    /// until the host answered it holds none of it
+    /// ([`Self::HostRecordOpened`]).
     HostReady {
         ws: WorkspaceId,
         peer: PeerId,
+        records_when_opened: bool,
+    },
+    /// A host sent everything it retains of a record this device opened, as
+    /// that record's frames before this event: `frames` of them, none when
+    /// the workspace has none of the record.
+    HostRecordOpened {
+        ws: WorkspaceId,
+        channel: [u8; 32],
+        frames: u32,
     },
     Msg {
         ws: WorkspaceId,
@@ -552,6 +575,7 @@ impl NetEvent {
             Self::PeerLeft { .. } => "PeerLeft",
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
+            Self::HostRecordOpened { .. } => "HostRecordOpened",
             Self::Msg { msg, .. } | Self::OwnReplay { msg, .. } | Self::SiblingMsg { msg, .. } => {
                 msg.kind()
             }
@@ -763,6 +787,13 @@ struct HeldSurfaceUnits {
 
 enum HostEvent {
     Ready,
+    /// The host sent everything it retains of a record this device opened
+    /// ([`RelayCoeditSession::open_record`]), as that record's frames before
+    /// this event: `frames` of them.
+    RecordOpened {
+        channel: [u8; 32],
+        frames: u32,
+    },
     /// A member joined or left the host's live plane.
     Member {
         device: [u8; 32],
@@ -1411,6 +1442,28 @@ impl ActorState {
                         ws,
                         "no link of the workspace is up; the next one replays as it starts"
                     );
+                }
+            }
+            // Every host of the workspace that retains records opens this one
+            // for this device: what it holds of it, then its changes. Asking
+            // a session that already opened it asks nothing again.
+            Some(NetCmd::OpenRecord { ws, channel }) => {
+                let sessions: Vec<_> = self
+                    .host_sessions
+                    .iter()
+                    .filter(|((session_ws, _), _)| *session_ws == ws)
+                    .map(|(_, runtime)| Arc::clone(&runtime.session))
+                    .collect();
+                if sessions.is_empty() {
+                    tracing::debug!(
+                        ws,
+                        "no host session of the workspace is up; the record is asked for again when one is"
+                    );
+                }
+                for session in sessions {
+                    if let Err(error) = session.open_record(channel) {
+                        tracing::debug!(ws, %error, "could not ask a host for a record");
+                    }
                 }
             }
             Some(NetCmd::Publish { ws, msg }) => {
@@ -2126,14 +2179,18 @@ impl ActorState {
     /// native session holds. Only a workspace host's is news to the
     /// shell: this device's own host and the person's devices are no
     /// durable hosts it seeds.
-    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId) -> NetEvent {
+    fn host_ready(&self, ws: WorkspaceId, peer: EndpointId, records_when_opened: bool) -> NetEvent {
         // The workspace's own host caught this device up: the workspace holds what it
         // holds. Another host on the topic (a personal relay, a peer) says
         // nothing about the workspace's host, whose link has its own word.
         if !self.native_routes.contains(ws) {
             crate::workspace_sync::synced(ws);
         }
-        NetEvent::HostReady { ws, peer }
+        NetEvent::HostReady {
+            ws,
+            peer,
+            records_when_opened,
+        }
     }
 
     fn publish_record_content(&mut self, delivery: RecordContentDelivery) {
@@ -2732,7 +2789,18 @@ impl ActorState {
         event: HostEvent,
     ) -> Option<NetEvent> {
         match event {
-            HostEvent::Ready => Some(self.host_ready(ws, peer)),
+            HostEvent::Ready => {
+                let when_opened = self
+                    .host_sessions
+                    .get(&(ws, peer))
+                    .is_some_and(|runtime| runtime.session.records_when_opened());
+                Some(self.host_ready(ws, peer, when_opened))
+            }
+            HostEvent::RecordOpened { channel, frames } => Some(NetEvent::HostRecordOpened {
+                ws,
+                channel,
+                frames,
+            }),
             HostEvent::Member { device, active } => self.host_member(ws, peer, device, active),
             HostEvent::Message {
                 author,
@@ -3093,9 +3161,15 @@ impl ActorState {
     /// Re-announce every live workspace-host session so a late-joining
     /// subscriber still sees `HostReady`.
     async fn run_host_checkpoint_tick(&self) {
-        for &(ws, peer) in self.host_sessions.keys() {
+        for (&(ws, peer), runtime) in &self.host_sessions {
             if let Some(tx) = self.subscribers.get(&ws) {
-                let _ = tx.send(NetEvent::HostReady { ws, peer }).await;
+                let _ = tx
+                    .send(NetEvent::HostReady {
+                        ws,
+                        peer,
+                        records_when_opened: runtime.session.records_when_opened(),
+                    })
+                    .await;
             }
         }
     }
@@ -3693,6 +3767,7 @@ fn host_event_kind(event: &HostEvent) -> &'static str {
     match event {
         HostEvent::Message { msg, .. } => msg.kind(),
         HostEvent::Ready => "HostReady",
+        HostEvent::RecordOpened { .. } => "HostRecordOpened",
         HostEvent::Member { .. } => "HostMember",
         HostEvent::Closed => "HostClosed",
     }
@@ -4071,12 +4146,17 @@ fn host_event(
             HostEvent::Ready
         }
         HostInbound::Member { device, active } => HostEvent::Member { device, active },
+        // A record this device opened: the host sent what it holds of it, and
+        // how much. The records are the workspace's state, applied as they
+        // come; the count is what says a record the workspace has none of is
+        // new here.
+        HostInbound::RecordOpened { channel, frames } => {
+            HostEvent::RecordOpened { channel, frames }
+        }
         // Nothing here holds these: a call's audio is the session's, carried
-        // by the relay session the call itself holds, a host keeps what a
-        // link's store kept, and every record comes with the link's history.
-        HostInbound::Voice(_)
-        | HostInbound::Committed { .. }
-        | HostInbound::RecordOpened { .. } => return None,
+        // by the relay session the call itself holds, and a host keeps what a
+        // link's store kept.
+        HostInbound::Voice(_) | HostInbound::Committed { .. } => return None,
         HostInbound::CommitRefused { reason, .. } => {
             tracing::warn!(ws, host = %host, %reason, "the host did not keep a sealed write");
             return None;

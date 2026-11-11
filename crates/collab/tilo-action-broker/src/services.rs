@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 
 pub use crate::collab_app_broker::{
-    AudioOutputFuture, AudioOutputServices, AwaitingHistory, CertifiedPersonContext, DocumentBytes,
+    AudioOutputFuture, AudioOutputServices, AwaitingRecord, CertifiedPersonContext, DocumentBytes,
     HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, RecordRead,
 };

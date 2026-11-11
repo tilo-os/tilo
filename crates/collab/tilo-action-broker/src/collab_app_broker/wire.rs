@@ -230,9 +230,9 @@ impl JoinedChannel {
 impl JoinedChannel {
     /// Answer a committed-document request. An `Await` is held until the
     /// read may have changed, and an Open whose record is still being
-    /// decided (the workspace's host's replay) or created on another device is
-    /// awaited, all on this `LocalSet`, so every channel's calls keep
-    /// flowing meanwhile.
+    /// decided (the workspace's host's replay, or the host it was asked of)
+    /// or created on another device is awaited, all on this `LocalSet`, so
+    /// every channel's calls keep flowing meanwhile.
     pub(super) async fn committed_document_answer(
         self: Rc<Self>,
         request: runtime_collab::committed_document::Request,
@@ -240,7 +240,7 @@ impl JoinedChannel {
         if let runtime_collab::committed_document::Request::Await { known_revision } = request {
             return self.await_committed_change(known_revision).await;
         }
-        if let Some(waiting) = self.committed_history_wait(&request) {
+        if let Some(waiting) = self.committed_arrival_wait(&request) {
             waiting.await;
         }
         self.committed_document_dispatch(&request)

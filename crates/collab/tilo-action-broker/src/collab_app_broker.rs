@@ -86,7 +86,7 @@ mod workspace_checkpoints;
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    AwaitingHistory, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
+    AwaitingRecord, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
     NativeDocumentReads, RecordRead,
 };
 use durable_local_invocation::DurableContext;

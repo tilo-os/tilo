@@ -27,7 +27,24 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             msg: Box::new(msg),
         },
         NetEvent::PeerLeft { ws, peer, .. } => Event::PeerLeft { ws, peer },
-        NetEvent::HostReady { ws, peer } => Event::HostReady { ws, peer },
+        NetEvent::HostReady {
+            ws,
+            peer,
+            records_when_opened,
+        } => Event::HostReady {
+            ws,
+            peer,
+            records_when_opened,
+        },
+        NetEvent::HostRecordOpened {
+            ws,
+            channel,
+            frames,
+        } => Event::RecordOpened {
+            ws,
+            channel,
+            frames,
+        },
         NetEvent::HostMember {
             ws,
             host,
@@ -566,12 +583,26 @@ fn heard(
                     let _ = say.send(Taken::Input(input.clone()));
                 }
                 // Its replay ended, behind the replay's writes: told after they are taken in.
-                (NetEvent::HostReady { ws, .. }, Some(say)) => {
-                    let _ = say.send(Taken::Ready(*ws));
+                (
+                    NetEvent::HostReady {
+                        ws,
+                        records_when_opened,
+                        ..
+                    },
+                    Some(say),
+                ) => {
+                    let _ = say.send(Taken::Ready(*ws, *records_when_opened));
                 }
-                (NetEvent::HostReady { ws, .. }, None) => {
+                (
+                    NetEvent::HostReady {
+                        ws,
+                        records_when_opened,
+                        ..
+                    },
+                    None,
+                ) => {
                     if let Some(link) = &replayed {
-                        link.host_ready(*ws);
+                        link.host_ready(*ws, *records_when_opened);
                     }
                 }
                 _ => {}
@@ -599,8 +630,9 @@ fn heard(
 enum Taken {
     /// A write it replays or carries into a workspace this device holds.
     Input(Box<tilo_network_actor::native_ingress::Input>),
-    /// It finished replaying what it retains of the workspace on this topic.
-    Ready(u64),
+    /// It finished replaying what it retains of the workspace on this topic, and whether it sends
+    /// records only once a device opens them.
+    Ready(u64, bool),
 }
 
 /// Take what hosts replay into the workspaces this device holds, as it arrives: each run of one
@@ -620,7 +652,7 @@ async fn take_in(
         for taken in waiting {
             let input = match taken {
                 Taken::Input(input) => *input,
-                Taken::Ready(ws) => {
+                Taken::Ready(ws, records_when_opened) => {
                     admit(
                         std::mem::take(&mut run),
                         link.as_deref(),
@@ -628,7 +660,7 @@ async fn take_in(
                     )
                     .await;
                     if let Some(link) = &link {
-                        link.host_ready(ws);
+                        link.host_ready(ws, records_when_opened);
                     }
                     continue;
                 }
@@ -760,6 +792,9 @@ async fn carry_out(
             .is_ok(),
         Cmd::ConnectDevice(addr) => plane.send(NetCmd::Connect { addr }).await.is_ok(),
         Cmd::Replay(ws) => plane.send(NetCmd::NativeReplay { ws }).await.is_ok(),
+        Cmd::OpenRecord { ws, channel } => {
+            plane.send(NetCmd::OpenRecord { ws, channel }).await.is_ok()
+        }
         Cmd::PublishCustody(ws) => plane.send(NetCmd::NativePublish { ws }).await.is_ok(),
         Cmd::Roster { ws, devices } => plane
             .send(NetCmd::SetWorkspaceRoster { ws, devices })

@@ -72,7 +72,7 @@ async fn relay_daemon_bootstraps_remembers_and_fans_out() {
         let a_session = RelayCoeditSession::join(a_client, 19, a_key).unwrap();
         assert!(matches!(
             tilo_test_env::within("a message on a_session", a_session.recv()).await,
-            Some(tilo_relay::Inbound::Ready { pending: 0 })
+            Some(tilo_relay::Inbound::Ready { pending: 0, .. })
         ));
         let metrics = relay.handle().metrics;
         a_session

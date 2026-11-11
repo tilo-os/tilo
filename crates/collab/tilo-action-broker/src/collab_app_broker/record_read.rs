@@ -322,10 +322,11 @@ fn read_record(
             .revalidate()
             .map_err(|reason| ActionHostError::Refused { reason })?;
         if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {
-            // A record a sealed workspace holds nothing of may still arrive in its host's replay;
-            // once that landed, one this device holds nothing of is one the workspace has none of.
-            // This read runs on a thread of its own, which the wait holds.
-            if let Some(history) = owner.await_sealed_history(&context) {
+            // A record this device holds nothing of may still arrive: with its host's replay, or
+            // from a host that sends records when they are opened. Once all of it came, one this
+            // device holds nothing of is one the workspace has none of. This read runs on a thread
+            // of its own, which the wait holds.
+            if let Some(history) = owner.await_arriving_record(&context) {
                 futures::executor::block_on(history);
             }
             if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {

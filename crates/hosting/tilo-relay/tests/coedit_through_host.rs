@@ -143,7 +143,7 @@ async fn coedits_converge_through_the_host_live_and_offline() {
             .await
             .expect("B closed")
         {
-            Inbound::Ready { pending } => assert_eq!(pending, 0),
+            Inbound::Ready { pending, .. } => assert_eq!(pending, 0),
             other => panic!("expected Ready, got {other:?}"),
         }
 
@@ -266,7 +266,7 @@ async fn publish_offline_coedit(
         .await
         .expect("A closed")
     {
-        Inbound::Ready { pending } => assert_eq!(pending, 0),
+        Inbound::Ready { pending, .. } => assert_eq!(pending, 0),
         other => panic!("expected Ready, got {other:?}"),
     }
 
@@ -334,7 +334,7 @@ async fn catch_up_first_connection(
                     .expect("B applies queued co-edit");
                 got_delta = true;
             }
-            Inbound::Ready { pending } => {
+            Inbound::Ready { pending, .. } => {
                 assert_eq!(pending, 1, "host reports the one queued co-edit");
                 got_ready = true;
             }

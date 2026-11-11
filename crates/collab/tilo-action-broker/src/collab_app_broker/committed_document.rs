@@ -6,9 +6,9 @@ pub(super) use capture::Budget;
 pub use capture::DocumentBytes;
 use runtime_collab::committed_document::{MAX_DOCUMENT_BYTES, Reply, Request};
 
-/// What [`NativeDocumentReads::await_sealed_history`] waits on, awaited on
+/// What [`NativeDocumentReads::await_arriving_record`] waits on, awaited on
 /// the broker's local set.
-pub type AwaitingHistory = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+pub type AwaitingRecord = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
 
 /// No public constructor. The route and original caller are retained from the
 /// admitted channel, together with live launcher/host-worker custody.
@@ -154,21 +154,23 @@ pub trait NativeDocumentReads: Send + Sync {
         }
     }
     /// Whether this device holds anything of `app`'s `record` in `workspace`: what its owner commits
-    /// or holds, or sealed writes of it. A sealed workspace's record it holds nothing of is new to
-    /// this device: the workspace has none yet, once its host's replay landed
-    /// ([`Self::await_sealed_history`]).
+    /// or holds, or sealed writes of it. A record it holds nothing of is new to this device: the
+    /// workspace has none yet, once the host said all it sends of it has come
+    /// ([`Self::await_arriving_record`]).
     fn holds_record(&self, workspace: &str, app: &str, record: &str) -> bool {
         self.record_read(workspace, app, record) != RecordRead::Own
     }
     /// Before an Open this owner would answer [`RecordRead::Own`], as a
     /// record that is new: the wait for what decides it, when the record may
-    /// exist where this device has not seen it yet. In a workspace whose records
-    /// are sealed channels, a record this device holds nothing of may have
-    /// been made on another device or before this session, and reaches this
-    /// device only in the workspace's host's replay; deciding before it landed
-    /// would have the app make a second one. The broker awaits it without
-    /// blocking the channel, then decides. `None` when nothing is awaited.
-    fn await_sealed_history(&self, context: &NativeDocumentReadContext) -> Option<AwaitingHistory> {
+    /// exist where this device has not seen it yet. A record this device
+    /// holds nothing of may have been made on another device or before this
+    /// session, and reaches this device only in the workspace's host's
+    /// replay, or — in a workspace whose host sends each record once a device
+    /// opens it — once this device asked for it. Deciding before then would
+    /// have the app make a second copy of the workspace's record. The broker
+    /// awaits it without blocking the channel, then decides. `None` when
+    /// nothing is awaited.
+    fn await_arriving_record(&self, context: &NativeDocumentReadContext) -> Option<AwaitingRecord> {
         let _ = context;
         None
     }
@@ -604,15 +606,15 @@ impl JoinedChannel {
 
     /// For an Open this channel's record would answer as new
     /// ([`RecordRead::Own`]): the wait before deciding, see
-    /// [`NativeDocumentReads::await_sealed_history`]. `None` for every other
+    /// [`NativeDocumentReads::await_arriving_record`]. `None` for every other
     /// request, and when nothing is awaited.
-    pub(super) fn committed_history_wait(&self, request: &Request) -> Option<AwaitingHistory> {
+    pub(super) fn committed_arrival_wait(&self, request: &Request) -> Option<AwaitingRecord> {
         if !matches!(request, Request::Open { .. }) || self.record_read() != RecordRead::Own {
             return None;
         }
         let service = self.state.services.committed_documents.clone()?;
         let context = self.document_read_context().ok()?;
-        service.await_sealed_history(&context)
+        service.await_arriving_record(&context)
     }
 
     /// Answer a committed-document request.
