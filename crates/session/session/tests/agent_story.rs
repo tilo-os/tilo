@@ -1,7 +1,8 @@
 //! An agent working beside the person takes a short story across apps and the shell by published
 //! actions alone, as its catalogue lists them: it opens a notebook in a window, puts the person's
-//! banners on hold and warms the screen. Nothing is pressed and no pixel is read; every step is
-//! one action of the resource a person's own control invokes, attributed to the agent.
+//! banners on hold, warms the screen and shares the notebook with a person. Nothing is pressed and
+//! no pixel is read; every step is one action of the resource a person's own control invokes,
+//! attributed to the agent.
 
 #![cfg(target_os = "linux")]
 #![allow(
@@ -84,5 +85,38 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
         "session:night-light",
         "toggle",
         &json!({ "on": true }),
+    );
+
+    // Share the notebook with a person, as a person's send-to box does: the one send action, the
+    // notebook by the id the catalogue lists, the person by name — no conversation named.
+    act(
+        &mut session,
+        "session:send-to",
+        "send",
+        &json!({
+            "item": notebook,
+            "to": [{ "kind": "person", "name": "Ada" }],
+            "text": "the plan for Friday",
+        }),
+    );
+    let sent = common::wait_for(&mut session, "the send to be carried out", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.last().cloned())
+    });
+    assert_eq!(sent["text"], "the plan for Friday", "{sent}");
+    assert_eq!(sent["to"][0]["kind"], "person", "{sent}");
+    let carried = &sent["attached"][0];
+    assert_eq!(
+        carried["kind"], "resource",
+        "the notebook goes as the record it is, never a picture of it: {sent}"
+    );
+    assert_eq!(carried["at"]["id"], notebook.as_str(), "{sent}");
+    assert!(
+        carried["at"]["app"]
+            .as_str()
+            .is_some_and(|app| !app.is_empty()),
+        "and names the app that keeps it: {sent}"
     );
 }

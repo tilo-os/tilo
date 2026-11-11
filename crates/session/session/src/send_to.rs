@@ -11,11 +11,161 @@
 //! is filed there as the channel's report ([`crate::feedback`]), one action of the person's own,
 //! and nothing opens over the window it is about.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use serde_json::{Map, Value};
+use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
 use tilo_desktop_search::Target;
 use tilo_desktop_search::model::InvokeTarget;
+use tilo_resource::Effect;
+use tilo_service::{Service, Started, decode, offer, reading};
 use ui::floating_surface::{Recipient, RecipientKind};
 
 use crate::Shared;
+
+/// The resource a send is published under: one action every sender runs — a person's box, an
+/// agent, a script.
+pub(crate) const RESOURCE: &str = "session:send-to";
+
+/// What kind of resource [`RESOURCE`] is.
+const KIND: &str = "session.send-to";
+
+/// The sends the last passes carried out, newest last, that its reading keeps.
+const KEPT: usize = 16;
+
+/// What the resource offers: a send.
+#[derive(Clone, Debug, PartialEq, Effect)]
+#[effect(operation = "so.tilo.session.send-to")]
+pub(crate) enum SendToAction {
+    /// Send to
+    ///
+    /// Sends the words and what they carry to whom it names, as a person's send-to box does: the
+    /// conversation with them opens or continues in Chat, carrying the items. A recipient is a new
+    /// agent, an agent, a person or a conversation, by its id, or by its name alone to be found.
+    #[effect(job)]
+    Send {
+        #[param("Who it goes to: kind new_agent, agent, person or conversation, by id or name")]
+        to: Vec<Recipient>,
+        #[param("What it carries besides its words")]
+        attached: Option<Vec<tilo_reference::Attached>>,
+        #[param("A resource it carries, by its id as the catalogue lists it")]
+        item: Option<String>,
+        #[param("The message")]
+        text: String,
+        #[param("The workspace it is sent in; the one in front without")]
+        workspace: Option<String>,
+    },
+}
+
+/// One send taken, waiting for the pass that carries it out: who asked, and what.
+struct Sending {
+    /// Who sent it: the app whose window's box it was, an agent, a script; the person sitting
+    /// here without.
+    by: Option<tilo_actions::ActionInvoker>,
+    to: Vec<Recipient>,
+    attached: Vec<tilo_reference::Attached>,
+    item: Option<String>,
+    text: String,
+    workspace: Option<String>,
+}
+
+/// A send as carried out: what it carried, whom it reached, and whether it landed.
+#[derive(Clone, Debug, serde::Serialize)]
+struct Sent {
+    to: Vec<Recipient>,
+    attached: Vec<tilo_reference::Attached>,
+    text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    refused: Option<String>,
+}
+
+/// The sends taken and carried out, shared by the service and the pass.
+#[derive(Clone, Default)]
+pub(crate) struct Sends {
+    waiting: Rc<RefCell<Vec<Sending>>>,
+    sent: Rc<RefCell<Vec<Sent>>>,
+}
+
+/// The send action as a service: it takes each send, and the session's pass carries it out
+/// ([`Shared::deliver_sends`]), since a send makes agents and reaches Chat through the doors.
+pub(crate) struct SendToService {
+    sends: Sends,
+}
+
+impl SendToService {
+    pub(crate) fn new(sends: Sends) -> Self {
+        Self { sends }
+    }
+
+    fn take(
+        &self,
+        by: Option<tilo_actions::ActionInvoker>,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let SendToAction::Send {
+            to,
+            attached,
+            item,
+            text,
+            workspace,
+        } = decode::<SendToAction>(&self.resources(), RESOURCE, "send", arguments)?;
+        let attached = attached.unwrap_or_default();
+        if text.trim().is_empty() && attached.is_empty() && item.is_none() {
+            return Err(DoorError::InvalidArguments(
+                "a message needs words or something to carry".into(),
+            ));
+        }
+        self.sends.waiting.borrow_mut().push(Sending {
+            by,
+            to,
+            attached,
+            item,
+            text,
+            workspace,
+        });
+        Ok(Started::Accepted)
+    }
+}
+
+impl Service for SendToService {
+    fn resources(&self) -> Vec<ResourceSpec> {
+        vec![offer::<SendToAction>(ResourceSpec::new(
+            RESOURCE,
+            KIND,
+            crate::i18n::t("send-to-resource"),
+        ))]
+    }
+
+    fn read(&self, resource: &str) -> Option<Value> {
+        (resource == RESOURCE).then(|| reading(&*self.sends.sent.borrow()))
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        if resource != RESOURCE {
+            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+        }
+        self.take(None, arguments)
+    }
+
+    fn invoke_as(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        if resource != RESOURCE {
+            return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
+        }
+        self.take(Some(invoker.clone()), arguments)
+    }
+}
 
 /// The app that keeps a workspace's conversations.
 pub(crate) const CHAT: &str = "so.tilo.chat";
@@ -27,6 +177,99 @@ const CHAT_WORKSPACE: &str = "chat.workspace";
 pub(crate) const SEND: &str = "send";
 
 impl Shared {
+    /// Carry out the sends taken since the last pass ([`SendToService`]): each item named by its
+    /// id is carried as the record it is, each recipient named only by name is found by the one
+    /// search, and the send goes as one action of the sender's own.
+    pub(crate) fn deliver_sends(&self) {
+        let waiting = std::mem::take(&mut *self.sends.waiting.borrow_mut());
+        for sending in waiting {
+            let workspace = sending
+                .workspace
+                .clone()
+                .unwrap_or_else(|| self.active_workspace_id());
+            let mut attached = sending.attached;
+            let found = sending.item.as_deref().map(|item| self.carried(item));
+            let refused = match found {
+                Some(Err(missing)) => Some(missing),
+                Some(Ok(item)) => {
+                    attached.push(item);
+                    None
+                }
+                None => None,
+            };
+            let to: Vec<Recipient> = sending
+                .to
+                .into_iter()
+                .map(|recipient| self.found_recipient(recipient))
+                .collect();
+            let refused = refused.or_else(|| {
+                self.send_to(
+                    sending.by.as_ref(),
+                    &workspace,
+                    &to,
+                    &attached,
+                    &sending.text,
+                )
+                .err()
+            });
+            if let Some(reason) = &refused {
+                tracing::warn!(%reason, %workspace, "a send did not land");
+            }
+            let mut sent = self.sends.sent.borrow_mut();
+            sent.push(Sent {
+                to,
+                attached,
+                text: sending.text,
+                refused,
+            });
+            let over = sent.len().saturating_sub(KEPT);
+            sent.drain(..over);
+        }
+    }
+
+    /// The resource `item` names, as a message carries it: the record of the app that publishes
+    /// it, found in the catalogue every caller surveys.
+    fn carried(&self, item: &str) -> Result<tilo_reference::Attached, String> {
+        fn find<'a>(resources: &'a [ResourceSpec], item: &str) -> Option<&'a ResourceSpec> {
+            resources.iter().find_map(|resource| {
+                (resource.id.as_str() == item)
+                    .then_some(resource)
+                    .or_else(|| find(&resource.children, item))
+            })
+        }
+        let resources = self.doors.resources();
+        let resource =
+            find(&resources, item).ok_or_else(|| format!("nothing is published as {item}"))?;
+        let app = resource
+            .app()
+            .ok_or_else(|| format!("{item} is no app's resource"))?;
+        Ok(tilo_reference::Attached::resource(
+            tilo_reference::ResourceAt {
+                app: app.to_owned(),
+                record: None,
+                reference: tilo_reference::ResourceRef::whole(
+                    resource.kind.clone(),
+                    item,
+                    resource.label.clone(),
+                ),
+            },
+            None,
+            resource.label.clone(),
+        ))
+    }
+
+    /// `recipient` as a send names it: one named only by its name is the first of its kind the
+    /// one search finds by that name, and one with an id or a new agent is itself.
+    fn found_recipient(&self, recipient: Recipient) -> Recipient {
+        if !recipient.id.is_empty() || recipient.kind == RecipientKind::NewAgent {
+            return recipient;
+        }
+        self.recipients(&recipient.name)
+            .into_iter()
+            .find(|found| found.kind == recipient.kind)
+            .unwrap_or(recipient)
+    }
+
     /// Send what a window's box holds: an agent named as a new one is made in
     /// the workspace and kept by this person, and the message reaches Chat as
     /// one action — `chat.workspace#send` — so one change carries every
@@ -36,9 +279,9 @@ impl Shared {
     /// # Errors
     /// The workspace is not open here, an agent could not be made or admitted,
     /// or Chat refused the send.
-    pub(crate) fn send_to(
+    fn send_to(
         &self,
-        app: &str,
+        by: Option<&tilo_actions::ActionInvoker>,
         workspace: &str,
         to: &[Recipient],
         attached: &[tilo_reference::Attached],
@@ -57,7 +300,8 @@ impl Shared {
             // A report is read where it lands, not floated over the window it was written over: it
             // is filed in the channel and nothing opens.
             Addressed::Report(destination) => {
-                let report = destination.report(app, attached, text)?;
+                let from = by.map_or(CHAT, |by| by.actor.as_str());
+                let report = destination.report(from, attached, text)?;
                 (
                     destination.workspace.clone(),
                     report_target(&destination, &report)?,
@@ -66,13 +310,20 @@ impl Shared {
         };
         self.search
             .perform(&workspace, target, &mut |own| {
-                self.doors
-                    .invoke(
-                        &own.address,
-                        &own.arguments,
-                        &mut tilo_session_core::door::Look::none(),
+                let look = &mut tilo_session_core::door::Look::none();
+                // A window's box sends as the person at it; an agent or a script as itself.
+                match by.filter(|by| {
+                    !matches!(
+                        by.kind,
+                        tilo_actions::ActorKind::App | tilo_actions::ActorKind::Person
                     )
-                    .map(drop)
+                }) {
+                    Some(by) => self
+                        .doors
+                        .invoke_as(&by.actor, &own.address, &own.arguments, look),
+                    None => self.doors.invoke(&own.address, &own.arguments, look),
+                }
+                .map(drop)
             })
             .map_err(|error| error.to_string())
     }
@@ -163,10 +414,17 @@ fn agent_name(text: &str, attached: &[tilo_reference::Attached]) -> String {
         .unwrap_or_default();
     let mut name = String::new();
     for word in source.split_whitespace() {
-        let wanted = name.chars().count() + usize::from(!name.is_empty()) + word.chars().count();
+        let wanted = name
+            .chars()
+            .count()
+            .saturating_add(usize::from(!name.is_empty()))
+            .saturating_add(word.chars().count());
         if wanted > AGENT_NAME_CHARS {
             if name.is_empty() {
-                name = word.chars().take(AGENT_NAME_CHARS - 1).collect();
+                name = word
+                    .chars()
+                    .take(AGENT_NAME_CHARS.saturating_sub(1))
+                    .collect();
             }
             name.push('…');
             break;
@@ -317,7 +575,10 @@ mod tests {
             from: None,
         };
         assert_eq!(
-            agent_name("split this into subtasks\nand label them", &[task.clone()]),
+            agent_name(
+                "split this into subtasks\nand label them",
+                std::slice::from_ref(&task)
+            ),
             "Split this into subtasks"
         );
         assert_eq!(

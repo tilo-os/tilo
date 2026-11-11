@@ -93,6 +93,7 @@ desk-window-did-not-open = { $app } started but did not open a window
 ## which could not be read: each agent whose answer it was is asked again.
 agent-bindings-app-name = Agents
 send-to-agent-unnamed = Agent
+send-to-resource = Send to
 agent-bindings-lost-title = { $agent } is asked again
 agent-bindings-lost-body = This computer could not read that you let { $agent } work here, so it asks you again the next time { $agent } connects. Nothing else was removed.
 agent-bindings-unreadable-title = Your answers about agents could not be read

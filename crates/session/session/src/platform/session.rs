@@ -1201,6 +1201,11 @@ impl Session {
             .add(Box::new(crate::conversations::ChatViewService::new(
                 Rc::clone(&conversations),
             )));
+        // The one send every sender runs: a person's box, an agent, a script.
+        let sends = crate::send_to::Sends::default();
+        services
+            .borrow_mut()
+            .add(Box::new(crate::send_to::SendToService::new(sends.clone())));
         // The shell's own records reach the door as any app's do the moment its package runs.
         if let Some(shell) = &shell {
             shell.share_records(&services, &session_doors);
@@ -1354,6 +1359,7 @@ impl Session {
             waiting: RefCell::default(),
             readings,
             services,
+            sends,
             table,
             window_shares,
             pages: crate::page_track::PageTracks::new(),

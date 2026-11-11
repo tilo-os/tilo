@@ -402,21 +402,23 @@ impl AppTabs {
         self.held.retain(|_, due| !due.is_empty());
     }
 
-    /// Send what the windows' boxes sent, each as one action the person's own grants decide, and
-    /// tell a window whose message this session could not deliver why.
+    /// Send what the windows' boxes sent, each through the session's one send action as the app
+    /// whose window it was, for the person at it: the action every agent and script runs too.
     fn deliver_sends(&mut self, shared: &crate::Shared) {
         for sent in std::mem::take(&mut self.sent) {
-            let delivered = shared.send_to(
-                &sent.app,
-                &sent.workspace,
-                &sent.to,
-                &sent.attached,
-                &sent.text,
+            let mut by = tilo_actions::ActionInvoker::actor(sent.app.clone());
+            by.kind = tilo_actions::ActorKind::App;
+            let taken = shared.services.borrow_mut().invoke_as(
+                &by,
+                crate::send_to::RESOURCE,
+                "send",
+                &sent.arguments,
             );
-            if let Err(reason) = delivered {
-                refuse(&sent.reply, &sent.app, "send_to", &reason);
+            if let Err(error) = taken {
+                tracing::warn!(%error, app = %sent.app, "a window's send was not taken");
             }
         }
+        shared.deliver_sends();
     }
 
     /// Answer what the windows' boxes asked of the search: who a message could go to, for what they
@@ -702,15 +704,11 @@ struct Answers<'a> {
     pages: &'a Rc<RefCell<PageTracks>>,
 }
 
-/// A message a window's box sent: who it goes to, what it carries, and where it came from, so a
-/// refusal reaches the window that asked.
+/// A message a window's box sent: the app whose window it was, and the arguments of the session's
+/// one send action ([`crate::send_to::RESOURCE`]) it runs.
 struct Sent {
     app: String,
-    workspace: String,
-    reply: Arc<Mutex<UnixStream>>,
-    to: Vec<ui::floating_surface::Recipient>,
-    attached: Vec<tilo_reference::Attached>,
-    text: String,
+    arguments: serde_json::Map<String, serde_json::Value>,
 }
 
 /// A window's box asking the search whom it could send to.
@@ -981,14 +979,15 @@ impl Answers<'_> {
             // The message its box sent, and whom its box could send to: both reach the session's
             // records and the one search, so they are carried out after this pass has every ask.
             FloatingSurfaceClientMessage::SendTo { to, attached, text } => {
-                self.sent.push(Sent {
-                    app,
-                    workspace,
-                    reply,
-                    to,
-                    attached,
-                    text,
+                let arguments = serde_json::json!({
+                    "to": to,
+                    "attached": attached,
+                    "text": text,
+                    "workspace": workspace,
                 });
+                if let serde_json::Value::Object(arguments) = arguments {
+                    self.sent.push(Sent { app, arguments });
+                }
             }
             // The app's send landed on `anchor`: a window of the desk showing it, beside the
             // window that sent.

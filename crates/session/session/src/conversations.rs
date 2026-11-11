@@ -1645,7 +1645,7 @@ mod tests {
         let mut handed = message(ME, "", 10);
         handed.attachments = vec![
             tilo_reference::Attached::resource(
-                issue.clone(),
+                issue,
                 Some(tilo_reference::Anchor::item("42")),
                 "Launch checklist",
             ),

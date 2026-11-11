@@ -119,6 +119,9 @@ pub(crate) struct Shared {
     pub(crate) readings: crate::status::Shared,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
+    /// The sends the session's send action took, which the pass carries out.
+    #[cfg(target_os = "linux")]
+    pub(crate) sends: crate::send_to::Sends,
     /// The services the session serves its apps itself.
     #[cfg(target_os = "linux")]
     pub(crate) table: crate::doors::Doors,

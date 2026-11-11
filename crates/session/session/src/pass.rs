@@ -553,6 +553,8 @@ impl Session {
         self.follow_collaboration();
         self.follow_automation();
         self.shared.follow_records();
+        // What was sent since the last look, by a box, an agent or a script.
+        self.shared.deliver_sends();
         // The community this computer is configured for is joined on its own,
         // once, as the session starts.
         self.shared.follow_community();
