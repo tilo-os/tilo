@@ -213,6 +213,7 @@ mod tests {
             address,
             argument: Some(argument),
             task_run,
+            run: None,
         }
     }
 

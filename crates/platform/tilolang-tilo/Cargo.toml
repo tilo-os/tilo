@@ -38,25 +38,24 @@ tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 tilo-document = { path = "../../doc/tilo-document" }
 tilolang = { path = "../../lang/tilolang" }
 tilolang-runtime = { path = "../../lang/tilolang-runtime" }
-# The collab client an instance commits to its workspace through, without the toolkit.
-collaboration = { version = "0.1.0", path = "../../collab/collaboration", optional = true }
+# The collab client an instance commits to its workspace through, without the toolkit, and the
+# history verbs every record answers (`history`).
+collaboration = { version = "0.1.0", path = "../../collab/collaboration" }
 # The workspace record's on-disk copy and its writer, and who wrote a step (`instance::record`).
 tilo-app-state = { version = "0.1.0", path = "../../system/app-state", optional = true }
 durable-store = { version = "0.1.0", path = "../../system/durable-store", optional = true }
 collab-types = { version = "0.1.0", path = "../../collab/collab-types", optional = true }
 # The platform's history sentences, which the host's history verbs speak in.
-tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history", optional = true }
+tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 
 [features]
 # The instance's commit path to its workspace record through the collab client
 # (`instance::record`), without the toolkit.
 record = [
-    "dep:collaboration",
     "collaboration/native",
     "dep:tilo-app-state",
     "dep:durable-store",
     "dep:collab-types",
-    "dep:tilo-history",
 ]
 [dev-dependencies]
 # The system's mention notices, read from a workspace holding tilolang rich text.

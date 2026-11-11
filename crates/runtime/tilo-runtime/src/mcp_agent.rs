@@ -253,7 +253,27 @@ enum Done {
         app: String,
         /// Where it ran: the record whose link a change answers.
         provider: String,
+        /// The nearest resource holding the one it ran on (or that one) that offers the history
+        /// `undo` of its record, where what it changed is taken back.
+        history: Option<String>,
     },
+}
+
+impl Done {
+    /// The action `descriptor` ran on what `at` names, at `path`, answering `value`.
+    fn invoked(value: Value, path: String, descriptor: ActionDescriptor, at: &Resolved) -> Self {
+        let (app, provider) = (at.app_id.clone(), at.provider.clone());
+        let descriptor = Box::new(descriptor);
+        let history = at.history();
+        Self::Invoked {
+            value,
+            path,
+            descriptor,
+            app,
+            provider,
+            history,
+        }
+    }
 }
 
 pub(super) struct Reply {
@@ -1146,6 +1166,20 @@ struct Resolved {
     levels: Levels,
     /// The directory revision the target was found at.
     revision: String,
+}
+
+impl Resolved {
+    /// Where a change of the target is taken back: its record's own history, on the nearest
+    /// resource that holds the target (or the target itself) and offers `undo`.
+    fn history(&self) -> Option<String> {
+        let offers = |node: &&Node| {
+            node.actions
+                .iter()
+                .any(|action| action.address.action == "undo")
+        };
+        let nearest = self.node.iter().chain(self.chain.iter().rev()).find(offers);
+        nearest.map(|node| node.id.clone())
+    }
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -2477,6 +2511,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 descriptor,
                 app,
                 provider,
+                history,
             } => {
                 let mut reply = outcome(&value);
                 if reply.failed && reply.text.contains("invalid_arguments") {
@@ -2529,7 +2564,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 {
                     self.programs
                         .lock_recover()
-                        .note_run(gesture, &label, &app, 1);
+                        .note_run(gesture, &label, &app, history);
                 }
                 Ok(reply)
             }
@@ -2676,13 +2711,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             wait_ms,
         }))
         .await?;
-        Ok(Done::Invoked {
-            value,
-            path: named_at,
-            descriptor: Box::new(descriptor),
-            app: resolved.app_id.clone(),
-            provider: resolved.provider.clone(),
-        })
+        Ok(Done::invoked(value, named_at, descriptor, &resolved))
     }
 
     /// The action `name` means in what `resolved` names, with the path to

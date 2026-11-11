@@ -14,16 +14,22 @@
 //!
 //! An invocation is the published action's own: the door builds it through the action's spec,
 //! which plans it in the runtime, and it is committed to the record as a step of the person
-//! seated here.
+//! seated here, or of the agent acting for them, in the run it is a step of.
+//!
+//! Each record's root carries the history verbs every app's record answers ([`crate::history`]):
+//! its steps are listed, and taken back by step or by run, here as in an app's instance, so a
+//! record no app's process holds still offers its History and its undo.
 
 use std::sync::Arc;
 
+use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit, VIEW_TYPE};
 use serde_json::{Map, Value as Json};
 use tilo_actions::{ActionAddress, ActionContext, ActionOutput, DoorError, ResourceSpec};
 use tilo_service::{Service, Started};
 use tilolang_runtime::value::ResourceRef;
 
 use crate::action::{ACTION_TYPE, DynAction, EDIT_FLAG_ACTION, EDIT_TEXT_ACTION};
+use crate::history::{HostHistoryEdit, HostWords};
 use crate::host::Host;
 use crate::publish::{Planner, Publications, edit_action, publish_package, resource_id};
 
@@ -38,6 +44,8 @@ pub struct RecordService {
     watch: crate::store::Watch,
     /// Who the changes made here are steps of.
     person: String,
+    /// The words the record's history verbs speak in.
+    words: HostWords,
     /// What `now` reads: the system time, or what a test fixes.
     clock: Box<dyn Fn() -> String>,
     /// The resources whose readings moved since [`Service::moved`] was last asked, by their
@@ -86,6 +94,7 @@ impl RecordService {
             notices: crate::notices::Notices::new(person.clone()),
             tell: None,
             person,
+            words: HostWords::new("en-US"),
             clock: Box::new(crate::host::system_time),
             moved: std::collections::BTreeSet::new(),
             moved_unsaid: false,
@@ -435,6 +444,16 @@ impl RecordService {
         action: &DynAction,
         invoker: &tilo_actions::ActionInvoker,
     ) -> Result<(), String> {
+        self.commit_in(action, invoker, None)
+    }
+
+    /// [`Self::commit`] as a step of the run `run`, when it is one of a run's.
+    fn commit_in(
+        &mut self,
+        action: &DynAction,
+        invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
+    ) -> Result<(), String> {
         let encoded = action.encode().map_err(|error| error.to_string())?;
         let context = ActionContext::for_resource(
             // The workspace root's path, as a grant's tree path names it (`room/app:todo/**`),
@@ -442,9 +461,22 @@ impl RecordService {
             action.resources().first().copied().unwrap_or("room"),
             &action.kind,
             &action.kind,
-        )
-        .with_invoker(invoker.clone());
-        let actor = invoker.actor.as_bytes();
+        );
+        self.apply(action, encoded, in_run(context, invoker, run))
+    }
+
+    /// Apply `action` (`encoded`) to the record as the step `context` describes, and hand the
+    /// change to the parts that share the record.
+    fn apply(
+        &mut self,
+        action: &dyn tilo_actions::Action,
+        encoded: tilo_actions::EncodedAction,
+        context: ActionContext,
+    ) -> Result<(), String> {
+        let actor = context
+            .invoker
+            .as_ref()
+            .map(|invoker| invoker.actor.clone().into_bytes());
         let record = &mut self.record;
         self.host
             .with_schemas(|| {
@@ -452,7 +484,7 @@ impl RecordService {
                     record,
                     action,
                     encoded,
-                    Some(actor),
+                    actor.as_deref(),
                     context,
                 )
             })
@@ -471,14 +503,15 @@ impl RecordService {
     }
 
     /// Run the published `action` of `resource` with `arguments`, planned on the record as it
-    /// is and committed as `invoker`'s step: the one path [`Service::invoke`] and
-    /// [`Service::invoke_as`] share.
+    /// is and committed as `invoker`'s step, of the run `run` when it is one of a run's: the one
+    /// path [`Service::invoke`], [`Service::invoke_as`] and [`Service::invoke_in_run`] share.
     fn run(
         &mut self,
         action: &str,
         resource: &str,
         arguments: &Map<String, Json>,
         invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
     ) -> Result<Started, DoorError> {
         let address = ActionAddress::new(resource, action);
         let planned = if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
@@ -487,13 +520,32 @@ impl RecordService {
                 .map_err(DoorError::InvalidArguments)?
         } else {
             let encoded = tilo_actions::door::encode_json(&self.resources(), &address, arguments)?;
+            if encoded.type_id == EDIT_TYPE {
+                let edit: HistoryEdit = serde_json::from_slice(&encoded.payload)
+                    .map_err(|error| DoorError::InvalidArguments(error.to_string()))?;
+                return self
+                    .history(&edit, resource, invoker, run)
+                    .map(|value| {
+                        Started::Done(ActionOutput {
+                            value,
+                            resources: Vec::new(),
+                        })
+                    })
+                    .map_err(DoorError::Failed);
+            }
+            if encoded.type_id == VIEW_TYPE {
+                return verbs::answer(&self.record, &encoded.payload, &self.words)
+                    .map(Started::Done)
+                    .map_err(DoorError::Failed);
+            }
             if encoded.type_id != ACTION_TYPE {
                 return Err(DoorError::Unknown(address));
             }
             serde_json::from_slice(&encoded.payload)
                 .map_err(|error| DoorError::InvalidArguments(error.to_string()))?
         };
-        self.commit(&planned, invoker).map_err(DoorError::Failed)?;
+        self.commit_in(&planned, invoker, run)
+            .map_err(DoorError::Failed)?;
         // What it made is published before it is answered, so the caller's next invocation
         // reaches it: a record changed as a whole is built now, not off the frame.
         self.publications.settle(&self.host, &self.planner);
@@ -506,6 +558,55 @@ impl RecordService {
             value: None,
             resources: made.into_iter().collect(),
         }))
+    }
+}
+
+impl RecordService {
+    /// Apply the history verb `edit`, invoked on the record root `resource` by `invoker` (in the
+    /// run `run`), to the record as one step of its own, as an app's instance applies it
+    /// ([`HostHistoryEdit`]): what the verb did, as its caller is answered ([`verbs::result`]).
+    fn history(
+        &mut self,
+        edit: &HistoryEdit,
+        resource: &str,
+        invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
+    ) -> Result<Option<Json>, String> {
+        let kind = self
+            .publications
+            .trees()
+            .values()
+            .find(|tree| tree.id.as_str() == resource)
+            .map(|tree| tree.kind.clone())
+            .ok_or_else(|| format!("{resource} keeps no history here"))?;
+        let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
+        let encoded = action.encoded()?;
+        let before = self.record.get_heads();
+        let context = ActionContext::for_resource(resource, &kind, &kind);
+        self.apply(&action, encoded, in_run(context, invoker, run))?;
+        self.publications.settle(&self.host, &self.planner);
+        self.told();
+        let after = self.record.get_heads();
+        let patches = self.record.diff(&before, &after);
+        Ok(verbs::result(
+            edit.verb(),
+            &self.record,
+            &patches,
+            &self.words,
+        ))
+    }
+}
+
+/// `context` as a step of `invoker`, of the run `run` when it is one of a run's.
+fn in_run(
+    context: ActionContext,
+    invoker: &tilo_actions::ActionInvoker,
+    run: Option<&tilo_actions::WorkGroup>,
+) -> ActionContext {
+    let context = context.with_invoker(invoker.clone());
+    match run {
+        Some(run) => context.with_group(run.id.clone(), run.label.clone(), run.kind.clone()),
+        None => context,
     }
 }
 
@@ -677,7 +778,9 @@ impl Service for RecordService {
             .map(|tree| {
                 let mut tree = (**tree).clone();
                 kept_by_its_app(&mut tree);
-                tree
+                // The record's root offers the record's history, as an app's own resource does
+                // in its instance.
+                crate::history::with_verbs(tree)
             })
             .collect();
         let words = self.host.runtime().words();
@@ -733,7 +836,7 @@ impl Service for RecordService {
         arguments: &Map<String, Json>,
     ) -> Result<Started, DoorError> {
         let invoker = tilo_actions::ActionInvoker::actor(self.person.clone());
-        self.run(action, resource, arguments, &invoker)
+        self.run(action, resource, arguments, &invoker, None)
     }
 
     /// [`Service::invoke`] as `invoker` (an agent acting for its person): the change is
@@ -746,7 +849,20 @@ impl Service for RecordService {
         action: &str,
         arguments: &Map<String, Json>,
     ) -> Result<Started, DoorError> {
-        self.run(action, resource, arguments, invoker)
+        self.run(action, resource, arguments, invoker, None)
+    }
+
+    /// [`Service::invoke_as`] as a step of the run `run`: History groups it under the run, and
+    /// an undo of the run takes it back with the run's other steps.
+    fn invoke_in_run(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        run: &tilo_actions::WorkGroup,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Json>,
+    ) -> Result<Started, DoorError> {
+        self.run(action, resource, arguments, invoker, Some(run))
     }
 
     fn poll(&mut self) -> bool {

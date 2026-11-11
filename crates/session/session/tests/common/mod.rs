@@ -417,8 +417,14 @@ pub fn show_preset(session: &mut Session, preset: &str) {
 /// and a note in it for each of `titles`, made through the app's own actions: their ids, in
 /// order.
 pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
+    notebook_of(PERSON, titles)
+}
+
+/// [`notebook`] as kept by `person`, whom the notes are theirs and every step of it is theirs:
+/// the id a session acts as on a device that has an identity of its own.
+pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>) {
     let mut record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
+    let host = Host::new(&record, Principal::new(person), || None).unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -435,13 +441,13 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
         let action = &committed.action;
         let context =
             ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
-                .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
+                .with_invoker(ui::tilo_actions::ActionInvoker::actor(person));
         host.with_schemas(|| {
             ui::tilo_actions::apply_local_with_context(
                 &mut record,
                 action,
                 action.encode().unwrap(),
-                Some(PERSON.as_bytes()),
+                Some(person.as_bytes()),
                 context,
             )
         })
@@ -459,7 +465,7 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
             .id
             .clone()
     };
-    let mut service = RecordService::new(record, host, PERSON);
+    let mut service = RecordService::new(record, host, person);
     let book = service
         .resources()
         .into_iter()

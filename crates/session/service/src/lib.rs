@@ -87,6 +87,24 @@ pub trait Service {
         self.invoke(resource, action, arguments)
     }
 
+    /// [`Self::invoke_as`] as a step of the run `run` (an agent's run, a task's): what the change
+    /// makes is that run's, which History groups and an undo of the run takes back whole. The
+    /// default runs it as [`Self::invoke_as`], for a service that keeps no history of its own.
+    ///
+    /// # Errors
+    /// The door's refusal.
+    fn invoke_in_run(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        run: &tilo_actions::WorkGroup,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let _ = run;
+        self.invoke_as(invoker, resource, action, arguments)
+    }
+
     /// Take in what landed from the device since the last call. Whether a
     /// reading changed.
     fn poll(&mut self) -> bool {
@@ -424,13 +442,15 @@ impl Services {
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script): what the change it makes is
-    /// attributed to. The service's own door decides whether the caller may.
+    /// attributed to, as a step of the run `run` when it is one of a run's
+    /// ([`Service::invoke_in_run`]). The service's own door decides whether the caller may.
     ///
     /// # Errors
     /// The service's refusal.
     pub fn invoke_as(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
@@ -446,8 +466,11 @@ impl Services {
         let started = self
             .started
             .get_mut(index)
-            .ok_or_else(|| DoorError::Unknown(address.clone()))?
-            .invoke_as(invoker, resource, action, arguments);
+            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        let started = match run {
+            Some(run) => started.invoke_in_run(invoker, run, resource, action, arguments),
+            None => started.invoke_as(invoker, resource, action, arguments),
+        };
         if let Some(stirred) = self.stirred.get_mut(index) {
             *stirred = true;
         }

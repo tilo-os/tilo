@@ -24,6 +24,10 @@ pub struct HostStepRequest<'a> {
     /// The task run the step is taken in, when it is one of a run's steps (a task's program):
     /// what the step does in turn goes through it, so it is admitted by the run too.
     pub task_run: Option<&'a dyn TaskRun>,
+    /// The run the invocation names itself a step of (its context's group, as an agent's
+    /// connection stamps every call): what a step that changes a record makes is that run's,
+    /// which History groups and an undo of the run takes back, as an app's action is.
+    pub run: Option<&'a tilo_actions::WorkGroup>,
 }
 
 /// How a host step ended.

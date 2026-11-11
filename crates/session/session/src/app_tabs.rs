@@ -410,6 +410,7 @@ impl AppTabs {
             by.kind = tilo_actions::ActorKind::App;
             let taken = shared.services.borrow_mut().invoke_as(
                 &by,
+                None,
                 crate::send_to::RESOURCE,
                 "send",
                 &sent.arguments,

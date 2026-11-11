@@ -117,6 +117,7 @@ impl HostStepServices for SessionActions {
             request.actor.id().to_owned(),
             request.address.clone(),
             argument,
+            request.run.cloned(),
             done,
         );
         Ok(asked.map(|ran| {

@@ -1562,6 +1562,7 @@ impl crate::Session {
         crate::agent_door::invoke_service_step(
             &self.shared.services,
             actor,
+            None,
             &tilo_actions::ActionAddress::new(resource, action),
             arguments,
         )

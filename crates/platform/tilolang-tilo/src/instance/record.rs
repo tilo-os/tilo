@@ -15,12 +15,8 @@ use std::rc::Rc;
 use app_state::{DocStore, DocWriter};
 use automerge::ChangeHash;
 use collaboration::document_routes::{decode_routed_mutation, validated_route_payload_with};
-use collaboration::history_source::authors::{
-    HistoryAuthor, ResolveAuthor, UNKNOWN_AUTHOR_NAME, actor_handle, short_id, stable_hue,
-};
 use collaboration::history_source::steps::{self, Scope};
-use collaboration::history_source::verbs::{self, EDIT_TYPE, HistoryEdit};
-use collaboration::history_source::words::HistoryWords;
+use collaboration::history_source::verbs::{self, HistoryEdit};
 use collaboration::record::save::{open_stored, record_document};
 use collaboration::record::{RecordId, RecordSaveStatus};
 use collaboration::{
@@ -29,13 +25,14 @@ use collaboration::{
 use durable_store::DurableStore;
 
 use serde_json::Value as Json;
-use tilo_actions::{ActionContext, ActionInvoker, ActionRegistry, EncodedAction, InvocationId};
+use tilo_actions::{ActionContext, ActionInvoker, EncodedAction, InvocationId};
 use tilo_automerge::ApplyIncoming as _;
 use tilo_resource::Doc;
 
 use super::Instance;
-use crate::action::{ACTION_TYPE, DynAction, DynEdit};
+use crate::action::{DynAction, DynEdit};
 use crate::chunk::{self, ChunkNo, Chunks, FIRST, Stamps};
+pub use crate::history::{HostHistoryEdit, HostWords, register};
 use crate::publish::{COMMIT, HOST_RESOURCE};
 
 /// Why a change did not reach the workspace.
@@ -869,15 +866,8 @@ impl InstanceRecord {
         invoker: ActionInvoker,
         ambient: Option<&ActionContext>,
     ) -> Result<Option<Json>, RecordError> {
-        let action = HostHistoryEdit {
-            edit: edit.clone(),
-            words: self.words.clone(),
-        };
-        let encoded = EncodedAction {
-            type_id: EDIT_TYPE.to_owned(),
-            payload: serde_json::to_vec(edit)
-                .map_err(|error| RecordError::Refused(error.to_string()))?,
-        };
+        let action = HostHistoryEdit::new(edit.clone(), self.words.clone());
+        let encoded = action.encoded().map_err(RecordError::Refused)?;
         let before = self.open_chunk(chunk).get_heads();
         // The verb's change is a step of its own, or a part of the one action an undo or redo
         // across chunks is (`ambient`'s invocation).
@@ -1608,37 +1598,6 @@ fn heads_equal(a: &[ChangeHash], b: &[ChangeHash]) -> bool {
     a.len() == b.len() && a.iter().all(|head| b.contains(head))
 }
 
-/// What a tilolang host's history verbs say, without the toolkit: a step as the platform's
-/// history sentence in `locale`, a person by the handle their changes carry. The UI half renders
-/// History in the reader's own words.
-#[derive(Clone, Debug)]
-pub struct HostWords {
-    locale: String,
-}
-
-impl HostWords {
-    /// The words of `locale` (`en-US`, `de-DE`).
-    #[must_use]
-    pub fn new(locale: impl Into<String>) -> Self {
-        Self {
-            locale: locale.into(),
-        }
-    }
-}
-
-impl ResolveAuthor for HostWords {
-    fn resolve(&self, actor_hex: &str) -> HistoryAuthor {
-        let name = actor_handle(actor_hex).unwrap_or_else(|| UNKNOWN_AUTHOR_NAME.to_owned());
-        HistoryAuthor::new(name, stable_hue(actor_hex), short_id(actor_hex))
-    }
-}
-
-impl HistoryWords for HostWords {
-    fn sentence(&self, entry: &ActionContext) -> String {
-        tilo_history::Reader::new(&self.locale).sentence(entry)
-    }
-}
-
 impl crate::instance::HistoryAsk {
     /// The history verb that carries it out on the record.
     #[must_use]
@@ -1657,44 +1616,4 @@ impl crate::instance::HistoryAsk {
             Self::UndoRun(run) => undo(Some(run), None),
         }
     }
-}
-
-/// A history verb applied to a workspace record: the edit [`verbs`] applies, decoding the record's
-/// recorded actions with the workspace's registry ([`register`]) and speaking the record's words.
-#[derive(Debug)]
-pub struct HostHistoryEdit {
-    edit: HistoryEdit,
-    words: HostWords,
-}
-
-impl<'de> serde::Deserialize<'de> for HostHistoryEdit {
-    /// A history verb a peer recorded, replayed here: what it says is never shown, so it speaks
-    /// the platform's source language.
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self {
-            edit: HistoryEdit::deserialize(deserializer)?,
-            words: HostWords::new("en-US"),
-        })
-    }
-}
-
-impl tilo_actions::Action for HostHistoryEdit {
-    fn change_kind(&self) -> tilo_actions::ChangeKind {
-        self.edit.change_kind()
-    }
-
-    fn describe(&self, doc: &tilo_actions::Doc) -> Option<tilo_actions::Described> {
-        Some(self.edit.described(doc))
-    }
-
-    fn apply(&self, doc: &mut tilo_actions::Doc) -> Result<(), tilo_actions::ActionError> {
-        self.edit.apply_registered(doc, register, &self.words)
-    }
-}
-
-/// Register what a workspace record's changes record: the runtime's planned actions and the history
-/// verbs.
-pub fn register(registry: &mut ActionRegistry) {
-    registry.register::<DynAction>(ACTION_TYPE);
-    registry.register::<HostHistoryEdit>(EDIT_TYPE);
 }

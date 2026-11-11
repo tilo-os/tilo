@@ -286,14 +286,9 @@ impl Publication for Held {
 
 /// `resource` with what every app publishes, those it does not offer itself: the history verbs
 /// of its record, `read` and "Show this window".
-fn with_app_actions(
-    mut resource: ResourceSpec,
-    activate: &tilo_actions::ActionSpec,
-) -> ResourceSpec {
-    let every = verbs::specs()
-        .into_iter()
-        .chain([tilo_resource::read::spec(None), activate.clone()]);
-    for spec in every {
+fn with_app_actions(resource: ResourceSpec, activate: &tilo_actions::ActionSpec) -> ResourceSpec {
+    let mut resource = tilolang_tilo::history::with_verbs(resource);
+    for spec in [tilo_resource::read::spec(None), activate.clone()] {
         if !resource
             .actions
             .iter()
@@ -672,7 +667,7 @@ impl Hosted {
         // The device that governs the workspace is its records' origin: the package's migrations
         // run there, once.
         instance.set_origin(record.governs());
-        let registry = ActionRegistry::with(tilolang_tilo::instance::record::register);
+        let registry = ActionRegistry::with(tilolang_tilo::history::register);
         Self {
             spec,
             bundle,
