@@ -3,13 +3,21 @@
 //! alone in the meantime: the Welcome to the workspace's channel group that
 //! the request in their entry asked for. Their subscription's replay writes
 //! these first, so the keys are the first thing a newcomer downloads.
+//!
+//! The door answers the entry without waiting for the Welcome: the
+//! participants commit it while the answer travels and the device subscribes.
+//! A device that subscribes before its Welcome is committed has its replay
+//! hold the first batch until the Welcome arrives ([`KEYS_WAIT`] at most), and
+//! the Welcome goes to that replay as it is committed.
 
 use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use tilo_relay_protocol::entering::{ENTERING_DEADLINE, MAX_ENTERING};
+use tokio::time::Instant;
 
+use super::replay::ReplayCatchup;
 use crate::transport::Envelope;
 
 /// Frames kept for one arriving device: a Welcome, and a few commits more
@@ -20,6 +28,12 @@ const MAX_FRAMES: usize = 8;
 /// its entry may take, which its subscription follows at once.
 const WAITS: Duration = ENTERING_DEADLINE;
 
+/// How long after its admission a device's first replay batch waits for the
+/// Welcome its entry asked for: the participants commit it within tens of
+/// milliseconds, and a device whose Welcome is later asks again as a member,
+/// as every member does.
+pub(crate) const KEYS_WAIT: Duration = Duration::from_secs(2);
+
 /// The devices of one workspace that arrive through its door.
 #[derive(Default)]
 pub(crate) struct Arriving {
@@ -29,15 +43,17 @@ pub(crate) struct Arriving {
 struct Arrival {
     since: Instant,
     frames: Vec<Arc<Envelope>>,
-    keyed: Arc<tokio::sync::Notify>,
+    /// The replay of the device's subscription, once it subscribed before
+    /// anything was committed for it: what is committed for it from then on
+    /// goes there.
+    replay: Option<Arc<ReplayCatchup>>,
 }
 
 impl Arriving {
-    /// Keep what is committed for `device` alone until it subscribes. The
-    /// answer is woken once the first such frame is durable. Bounded as entries
-    /// are: an arrival older than an entry may take is let go, and past
-    /// [`MAX_ENTERING`] the oldest.
-    pub(crate) fn expect(&mut self, device: [u8; 32]) -> Arc<tokio::sync::Notify> {
+    /// Keep what is committed for `device` alone until it subscribes. Bounded
+    /// as entries are: an arrival older than an entry may take is let go, and
+    /// past [`MAX_ENTERING`] the oldest.
+    pub(crate) fn expect(&mut self, device: [u8; 32]) {
         let now = Instant::now();
         self.devices
             .retain(|_, arrival| now.duration_since(arrival.since) < WAITS);
@@ -50,37 +66,53 @@ impl Arriving {
         {
             self.devices.remove(&oldest);
         }
-        let keyed = Arc::new(tokio::sync::Notify::new());
         self.devices.insert(
             device,
             Arrival {
                 since: now,
                 frames: Vec::new(),
-                keyed: Arc::clone(&keyed),
+                replay: None,
             },
         );
-        keyed
     }
 
     /// Keep `frame`, durable and addressed to `audience` alone, for each
-    /// arriving device among it.
+    /// arriving device among it, or hand it to the replay of one that
+    /// subscribed already.
     pub(crate) fn address(&mut self, audience: &BTreeSet<[u8; 32]>, frame: &Arc<Envelope>) {
         for device in audience {
-            if let Some(arrival) = self.devices.get_mut(device)
-                && arrival.frames.len() < MAX_FRAMES
-            {
+            let Some(arrival) = self.devices.get_mut(device) else {
+                continue;
+            };
+            if let Some(replay) = &arrival.replay {
+                replay.address(Arc::clone(frame));
+                self.devices.remove(device);
+            } else if arrival.frames.len() < MAX_FRAMES {
                 arrival.frames.push(Arc::clone(frame));
-                arrival.keyed.notify_one();
             }
         }
     }
 
-    /// What was kept for `device`, which subscribes now, oldest first.
-    pub(crate) fn arrived(&mut self, device: &[u8; 32]) -> Vec<Arc<Envelope>> {
-        self.devices
-            .remove(device)
-            .map(|arrival| arrival.frames)
-            .unwrap_or_default()
+    /// `device` subscribes now with `replay`: what was kept for it goes to the
+    /// replay, oldest first. When nothing was yet, the replay's first batch
+    /// waits for the device's Welcome until [`KEYS_WAIT`] after its admission,
+    /// and the Welcome goes to it as it is committed.
+    pub(super) fn arrived(&mut self, device: &[u8; 32], replay: &Arc<ReplayCatchup>) {
+        let Some(arrival) = self.devices.get_mut(device) else {
+            return;
+        };
+        if arrival.frames.is_empty()
+            && let Some(due) = arrival.since.checked_add(KEYS_WAIT)
+            && Instant::now() < due
+        {
+            replay.expect_keys(due);
+            arrival.replay = Some(Arc::clone(replay));
+            return;
+        }
+        for frame in std::mem::take(&mut arrival.frames) {
+            replay.address(frame);
+        }
+        self.devices.remove(device);
     }
 }
 
@@ -96,18 +128,61 @@ mod tests {
         })
     }
 
+    fn replay() -> Arc<ReplayCatchup> {
+        Arc::new(ReplayCatchup::new(std::path::Path::new("unused")))
+    }
+
     #[tokio::test]
     async fn a_frame_for_an_arriving_device_waits_for_its_subscription() {
         let mut arriving = Arriving::default();
-        let keyed = arriving.expect([1; 32]);
+        arriving.expect([1; 32]);
         arriving.address(&BTreeSet::from([[2; 32]]), &frame(1));
         arriving.address(&BTreeSet::from([[1; 32], [2; 32]]), &frame(2));
-        tokio::time::timeout(Duration::from_secs(1), keyed.notified())
+        let first = replay();
+        arriving.arrived(&[1; 32], &first);
+        assert_eq!(first.take_addressed(), vec![frame(2)]);
+        // Its keys are here: the replay has nothing to wait for.
+        tokio::time::timeout(Duration::from_millis(100), first.keys())
             .await
-            .expect("the arriving device's frame wakes its entry");
-        assert_eq!(arriving.arrived(&[1; 32]), vec![frame(2)]);
-        assert!(arriving.arrived(&[1; 32]).is_empty());
-        assert!(arriving.arrived(&[2; 32]).is_empty());
+            .expect("a replay whose keys came first does not wait");
+        let again = replay();
+        arriving.arrived(&[1; 32], &again);
+        assert!(again.take_addressed().is_empty());
+        let stranger = replay();
+        arriving.arrived(&[2; 32], &stranger);
+        assert!(stranger.take_addressed().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_device_that_subscribes_before_its_welcome_has_its_replay_wait_for_it() {
+        let mut arriving = Arriving::default();
+        arriving.expect([1; 32]);
+        let subscribed = replay();
+        arriving.arrived(&[1; 32], &subscribed);
+        let waiting = tokio::spawn({
+            let subscribed = Arc::clone(&subscribed);
+            async move { subscribed.keys().await }
+        });
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!waiting.is_finished(), "the replay waits for the Welcome");
+        arriving.address(&BTreeSet::from([[1; 32]]), &frame(3));
+        tokio::time::timeout(Duration::from_secs(1), waiting)
+            .await
+            .expect("the Welcome ends the replay's wait")
+            .unwrap();
+        assert_eq!(subscribed.take_addressed(), vec![frame(3)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_welcome_that_never_comes_holds_the_replay_no_longer_than_the_wait() {
+        let mut arriving = Arriving::default();
+        arriving.expect([1; 32]);
+        let subscribed = replay();
+        arriving.arrived(&[1; 32], &subscribed);
+        let started = Instant::now();
+        subscribed.keys().await;
+        assert!(started.elapsed() >= KEYS_WAIT);
+        assert!(started.elapsed() < KEYS_WAIT + Duration::from_millis(100));
     }
 
     #[test]
@@ -125,6 +200,8 @@ mod tests {
         for n in 0..20 {
             arriving.address(&BTreeSet::from([device]), &frame(n));
         }
-        assert_eq!(arriving.arrived(&device).len(), MAX_FRAMES);
+        let subscribed = replay();
+        arriving.arrived(&device, &subscribed);
+        assert_eq!(subscribed.take_addressed().len(), MAX_FRAMES);
     }
 }

@@ -472,11 +472,10 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     // sequence, sends the whole workspace before the desktop, asks the host
     // again or makes either side slower fails here.
     assert!(
-        quick.shown <= COMPUTE + KEY_RECHECK,
+        quick.shown <= COMPUTE,
         "a fresh guest's desktop showed after {:?} on a network that costs nothing, more than \
-         {:?}",
-        quick.shown,
-        COMPUTE + KEY_RECHECK
+         {COMPUTE:?}",
+        quick.shown
     );
     let allowed = COMPUTE + ROUND_TRIP.mul_f64(MAX_ROUND_TRIPS);
     assert!(
@@ -595,19 +594,16 @@ fn chat_part(workspace: &str) -> DocumentRoute {
 const ROUND_TRIP: Duration = Duration::from_millis(400);
 
 /// What the host and the page may spend on a fresh guest's entry, from its
-/// first request until its desktop shows: the door and the workspace
-/// admitting the guest (about 0.35 s for 300 members), the replay written,
-/// the page taking it in (0.35 to 0.5 s), the desktop's keys. The quick
-/// entry shows in 0.7 to 0.9 s on the builder.
+/// first request until its desktop shows: the session and the door (about
+/// 0.1 s), the workspace admitting the guest (about 0.1 s for 300 members),
+/// the replay written, the page taking it in (0.25 to 0.45 s), the desktop's
+/// keys, which the host's participants commit while the admission's answer
+/// travels. The quick entry shows in 0.5 to 0.8 s on the builder.
+///
+/// Nothing here waits on a clock: a guest whose certificate was issued a
+/// moment before its entry is in the workspace's channel group at once, so
+/// the quick entry is held to this allowance alone.
 const COMPUTE: Duration = Duration::from_millis(1_300);
-
-/// What the quick entry may take beside [`COMPUTE`]: the host's channel
-/// service sometimes takes the guest's request for the workspace's keys, which
-/// its entry carries, on its once-a-second re-check rather than when the
-/// request arrives, and the host's answer to the entry waits for the Welcome
-/// (up to 1 s later). The slow entry's request meets a service that settled
-/// long before and is answered at once.
-const KEY_RECHECK: Duration = Duration::from_secs(1);
 
 /// How many round trips a fresh guest may wait, one after another, beside
 /// [`COMPUTE`]: the slow entry's desktop shows within this many of

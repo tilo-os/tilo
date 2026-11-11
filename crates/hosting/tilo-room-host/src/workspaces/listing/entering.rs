@@ -78,9 +78,14 @@ impl Doorway for Workspaces {
                 return entered;
             }
             if let Some(access) = access {
+                let keying = crate::timing::start();
                 self.key_arrival(&entering.workspace, cert, access).await;
+                crate::timing::event("entry.keys", keying, 0);
             }
-            self.with_desktop_scope(&entering.workspace, entered).await
+            let scoping = crate::timing::start();
+            let entered = self.with_desktop_scope(&entering.workspace, entered).await;
+            crate::timing::event("entry.desktop_scope", scoping, 0);
+            entered
         })
     }
 }
@@ -115,18 +120,15 @@ impl Workspaces {
     }
 }
 
-/// How long an admitted device's answer waits for the Welcome its request
-/// asked for: the participants commit it within tens of milliseconds, and a
-/// device whose Welcome is later asks again as a member, as every member does.
-const KEYS_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
-
 impl Workspaces {
     /// Hand `workspace`'s channel participants the request `cert`'s device
-    /// made in its entry, as they take every member's, and wait (at most
-    /// [`KEYS_WAIT`]) for the Welcome it asks for to be durable, kept for the
-    /// device's subscription to write first. A request for another group than
-    /// the workspace's own, by another device, or not signed by it is not
-    /// handed on.
+    /// made in its entry, as they take every member's. The Welcome it asks
+    /// for is kept for the device's subscription, whose replay writes it
+    /// first ([`crate::peer::Arriving`]); the entry's answer waits neither
+    /// for it nor for the request to be retained, so the participants commit
+    /// it while the answer travels and the device subscribes. A request for
+    /// another group than the workspace's own, by another device, or not
+    /// signed by it is not handed on.
     async fn key_arrival(
         &self,
         workspace: &str,
@@ -144,27 +146,35 @@ impl Workspaces {
         let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
             return;
         };
-        let keyed = self
+        if !self
             .inner
             .host
             .records
             .expect_arrival(workspace_id, device)
-            .await;
+            .await
+        {
+            return;
+        }
         let request = neighbour_wire::NeighbourMsg::MlsAccessRequest {
             workspace: workspace.to_owned(),
             request: Box::new(access),
             delivery: 0,
         };
-        if let Err(error) = self
-            .take_channel_governance(workspace, device, request)
-            .await
-        {
-            tracing::warn!(%workspace, %error, "an entry's channel request was not taken");
-            return;
-        }
-        if let Some(keyed) = keyed {
-            let _ = tokio::time::timeout(KEYS_WAIT, keyed.notified()).await;
-        }
+        // Retaining the request is the participants' business, not the
+        // answer's: the device is expected, so its replay waits for the
+        // Welcome however late the request is taken.
+        let workspaces = self.clone();
+        let workspace = workspace.to_owned();
+        tokio::spawn(async move {
+            let taking = crate::timing::start();
+            if let Err(error) = workspaces
+                .take_channel_governance(&workspace, device, request)
+                .await
+            {
+                tracing::warn!(%workspace, %error, "an entry's channel request was not taken");
+            }
+            crate::timing::event("entry.keys.taken", taking, 0);
+        });
     }
 
     /// `entered`, with the group that seals `workspace`'s shared desktop as

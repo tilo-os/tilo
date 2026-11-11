@@ -117,7 +117,7 @@ async fn a_replay_carries_only_the_channel_governance_its_device_uses() {
 async fn a_newcomers_welcome_is_written_once() {
     let fixture = Fixture::new();
     let device = fixture.recipient.device_public_key;
-    let _keyed = fixture.workspace.lock().await.arriving.expect(device);
+    fixture.workspace.lock().await.arriving.expect(device);
     // Committed as the device's entry asked: kept for it until it subscribes.
     let own = welcome(&fixture, 1, device);
     fixture.publish_checkpoint_frame(own.clone(), true).await;

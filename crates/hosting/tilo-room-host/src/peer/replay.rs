@@ -360,15 +360,26 @@ async fn drive_replay<W: tokio::io::AsyncWrite + Unpin>(
     let mut phase = crate::timing::start();
     // Of the phase, the time spent writing batches to the connection.
     let mut writing = std::time::Duration::ZERO;
+    // The first batch is prepared while the keys the device's entry asked
+    // for are on their way; they are written ahead of it.
+    let mut first = true;
     loop {
-        write_addressed(run.catchup, peer, session, write).await?;
         let authority = run.authority.clone();
         let source = StateSource::new(peer, session);
         let preparing = async {
             authorize_replay(run.workspace, &source, &authority).await?;
             handle.advance(&authority, written.take()).await
         };
-        match preparing.await? {
+        let prepared = if std::mem::take(&mut first) {
+            let keying = crate::timing::start();
+            let (prepared, ()) = tokio::join!(preparing, run.catchup.keys());
+            crate::timing::event("join.keys_first", keying, 0);
+            prepared
+        } else {
+            preparing.await
+        };
+        write_addressed(run.catchup, peer, session, write).await?;
+        match prepared? {
             ReplayAdvance::Preparing => {}
             ReplayAdvance::Batch(frames) => {
                 let batch_at = crate::timing::start();
@@ -778,6 +789,12 @@ pub(super) struct ReplayCatchup {
     addressed: std::sync::Mutex<Vec<Arc<Envelope>>>,
     /// The addressed frames written so far.
     written: std::sync::Mutex<Vec<Arc<Envelope>>>,
+    /// Woken as a frame is addressed to this device.
+    addressed_wake: tokio::sync::Notify,
+    /// Until when the replay's first batch waits for this device's keys: a
+    /// device the door just admitted asked for them in its entry, and its
+    /// Welcome may still be on its way ([`crate::peer::Arriving`]).
+    keys_due: std::sync::Mutex<Option<tokio::time::Instant>>,
 }
 impl ReplayCatchup {
     pub(super) const ACTIVE: u8 = 0;
@@ -793,6 +810,33 @@ impl ReplayCatchup {
             held: work.join(crate::store::replay::held_work_name(rand::random())),
             addressed: std::sync::Mutex::new(Vec::new()),
             written: std::sync::Mutex::new(Vec::new()),
+            addressed_wake: tokio::sync::Notify::new(),
+            keys_due: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// Hold the replay's first batch until a frame is addressed to this
+    /// device, or until `due`: the keys its entry asked for come first.
+    pub(super) fn expect_keys(&self, due: tokio::time::Instant) {
+        *self.keys_due.lock_recover() = Some(due);
+    }
+
+    /// Wait, at most until the instant [`Self::expect_keys`] named, for the
+    /// first frame addressed to this device. At once when none is expected.
+    pub(super) async fn keys(&self) {
+        let Some(due) = self.keys_due.lock_recover().take() else {
+            return;
+        };
+        loop {
+            let woken = self.addressed_wake.notified();
+            tokio::pin!(woken);
+            woken.as_mut().enable();
+            if !self.addressed.lock_recover().is_empty() {
+                return;
+            }
+            if tokio::time::timeout_at(due, woken).await.is_err() {
+                return;
+            }
         }
     }
 
@@ -804,10 +848,12 @@ impl ReplayCatchup {
         if addressed.len() < MAX_ADDRESSED {
             addressed.push(frame);
         }
+        drop(addressed);
+        self.addressed_wake.notify_waiters();
     }
 
     /// The frames addressed to this device since the last call, oldest first.
-    fn take_addressed(&self) -> Vec<Arc<Envelope>> {
+    pub(super) fn take_addressed(&self) -> Vec<Arc<Envelope>> {
         std::mem::take(&mut *self.addressed.lock_recover())
     }
 

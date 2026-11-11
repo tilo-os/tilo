@@ -203,12 +203,12 @@ pub(super) async fn subscribe(
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new(&work));
-    // What was committed for a device the door just admitted (its channel
+    // What is committed for a device the door just admitted (its channel
     // Welcome) goes ahead of everything its replay carries.
-    let arrived = ws.lock().await.arriving.arrived(&peer.device_public_key);
-    for frame in arrived {
-        catchup.address(frame);
-    }
+    ws.lock()
+        .await
+        .arriving
+        .arrived(&peer.device_public_key, &catchup);
     let registration = SubscriberRegistration {
         workspace: completion_workspace,
         source,
