@@ -1439,7 +1439,7 @@ impl Widget for AuthenticatorApp {
                 } else {
                     crate::i18n::t_args(
                         "totp-a11y-accounts-hint",
-                        &[("total", ui::i18n::ArgValue::Number(total as f64))],
+                        &[("total", ui::i18n::ArgValue::Text(total.to_string()))],
                     )
                 })
                 .with_bounds(self.rect)

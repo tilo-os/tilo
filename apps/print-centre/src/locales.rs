@@ -6,7 +6,7 @@
 ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
 /// German is one of the languages the app ships, and it reads in German: the
-/// copy comes from `locales/de-'Druckzentrale wird geladen'.ftl`, never from the English source
+/// copy comes from `locales/de-DE.ftl`, never from the English source
 /// catalogue beside it.
 #[cfg(test)]
 mod german_window {

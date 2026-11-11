@@ -220,18 +220,18 @@ fn offset_from_here(seconds: i32) -> String {
     let amount = match (hours, minutes) {
         (0, minutes) => ui::i18n::I18nManager::format(
             "clocks-minutes",
-            &[("minutes", ui::i18n::ArgValue::Number(minutes as f64))],
+            &[("minutes", ui::i18n::ArgValue::Number(f64::from(minutes)))],
         ),
         (1, 0) => ui::i18n::I18nManager::lookup_plain("clocks-one-hour"),
         (hours, 0) => ui::i18n::I18nManager::format(
             "clocks-hours",
-            &[("hours", ui::i18n::ArgValue::Number(hours as f64))],
+            &[("hours", ui::i18n::ArgValue::Number(f64::from(hours)))],
         ),
         (hours, minutes) => ui::i18n::I18nManager::format(
             "clocks-hours-minutes",
             &[
-                ("hours", ui::i18n::ArgValue::Number(hours as f64)),
-                ("minutes", ui::i18n::ArgValue::Number(minutes as f64)),
+                ("hours", ui::i18n::ArgValue::Number(f64::from(hours))),
+                ("minutes", ui::i18n::ArgValue::Number(f64::from(minutes))),
             ],
         ),
     };
@@ -1144,7 +1144,7 @@ fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Eleme
                                 .button(
                                     Button::new(
                                         "clocks.stopwatch.lap",
-                                        &ui::i18n::I18nManager::lookup_plain("clocks-lap"),
+                                        &ui::i18n::I18nManager::lookup_plain("clocks-lap-button"),
                                     )
                                     .control_size(ui::widget::ControlSize::Large),
                                     Clocks::LAP.invoke(),

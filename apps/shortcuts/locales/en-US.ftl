@@ -96,7 +96,7 @@ shortcuts-schedule-enabled = Enable a daily local-time schedule
 shortcuts-schedule-hour = Local hour
 shortcuts-schedule-minute = Local minute
 shortcuts-schedule-description = Once you save the shortcut, it runs every day at this time. If this computer is off then, it runs once when it's back.
-shortcuts-schedule-review = { $time } · this device’s local time
+shortcuts-schedule-review = { $time }, this device’s local time
 shortcuts-schedule-missed-once = Missed runs execute once.
 shortcuts-schedule-missed-skip = Missed runs are skipped.
 
