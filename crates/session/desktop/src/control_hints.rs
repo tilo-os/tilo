@@ -114,6 +114,9 @@ pub struct HintFrame {
     /// ([`ui::PointerPrecision::Coarse`]), as it does after a touch on the screen. Hints then name
     /// what a finger does.
     pub touch: bool,
+    /// The cards standing over the desk (a conversation, a call, the music), as one rect each: a
+    /// hint points at a control they do not cover, and never stands over their content.
+    pub over: Vec<Rect>,
 }
 
 /// What a host lends the desktop's control hints: the person's record as their settings hold it,
@@ -351,7 +354,8 @@ impl ControlHints {
     }
 }
 
-/// How hint `spec` shows over `frame` , if its anchor is on screen.
+/// How hint `spec` shows over `frame` , if its anchor is on screen and no card standing over the
+/// desk covers it.
 fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
     if frame.area.is_zero_area() {
         return None;
@@ -419,6 +423,15 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
             )
         }
     };
+    // A card standing over the desk hides the control a hint points at: nothing is taught where
+    // there is nothing to take, and the hint's card would stand over the card's content.
+    let covered = |rect: Rect| frame.over.iter().any(|card| card.overlaps(rect));
+    if spec.gesture != Gesture::OpenFromSearch
+        && (covered(anchor)
+            || edge.is_some_and(|line| covered(Rect::from_points(line.p0, line.p1))))
+    {
+        return None;
+    }
     Some(HintPlace {
         anchor,
         side,
@@ -427,6 +440,7 @@ fn place(spec: &HintSpec<Signal>, frame: &HintFrame) -> Option<HintPlace> {
         keys,
         points: spec.gesture != Gesture::OpenFromSearch,
         touch: frame.touch,
+        clear: frame.over.clone(),
     })
 }
 
@@ -448,6 +462,7 @@ mod tests {
                     WindowEdge::Trailing,
                 )),
                 asking: false,
+                over: Vec::new(),
             },
             area: Rect::new(0.0, 40.0, 1440.0, 900.0),
             search_keys: vec!["Ctrl".into(), "K".into()],
@@ -536,6 +551,37 @@ mod tests {
             let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
             assert!(place(spec, &frame).is_none(), "{gesture:?}");
         }
+    }
+
+    // A card standing over the desk is another surface: a hint points at a control the card does
+    // not cover, and its own card keeps clear of the card's content.
+    #[test]
+    fn a_card_over_the_handle_keeps_the_hint_away() {
+        let mut frame = frame();
+        // A conversation card over the strip's edge and the focused window's bar: the handle is
+        // not there to take.
+        frame.over = vec![Rect::new(640.0, 40.0, 900.0, 620.0)];
+        for gesture in [Gesture::ResizeEdge, Gesture::MoveWindow] {
+            let spec = HINTS.iter().find(|s| s.gesture == gesture).unwrap();
+            assert!(place(spec, &frame).is_none(), "{gesture:?} under the card");
+        }
+        // The hint pointing at nothing on the desk still shows: the card keeps it, not the search.
+        let open = HINTS
+            .iter()
+            .find(|s| s.gesture == Gesture::OpenFromSearch)
+            .unwrap();
+        assert!(place(open, &frame).is_some());
+        // Clear of the handle: the hint says which cards it keeps off.
+        let clear = HintFrame {
+            over: vec![Rect::new(40.0, 600.0, 400.0, 880.0)],
+            ..frame
+        };
+        let resize = HINTS
+            .iter()
+            .find(|s| s.gesture == Gesture::ResizeEdge)
+            .unwrap();
+        let hint = place(resize, &clear).expect("its handle is on screen");
+        assert_eq!(hint.clear, clear.over, "the cards it keeps clear of");
     }
 
     // A window asking the person a question has no place for the hints anchored to it: the one that

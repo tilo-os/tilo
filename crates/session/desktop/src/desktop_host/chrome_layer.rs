@@ -364,8 +364,11 @@ impl DesktopChrome {
             .map(HintsFeed::search_keys)
             .unwrap_or_default();
         let avatar = self.bar.own_avatar_rect();
+        let row = self.handle.hint_places();
+        let over = row.over.clone();
         HintFrame {
-            row: self.handle.hint_places(),
+            row,
+            over,
             area,
             search_keys,
             avatar: (!avatar.is_zero_area()).then_some(avatar),
