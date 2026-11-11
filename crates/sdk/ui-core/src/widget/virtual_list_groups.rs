@@ -394,10 +394,11 @@ impl<M: ListModel> VirtualList<M> {
     /// on the same grid as the rows under it.
     pub(super) fn header_rect(&self, top: f64) -> Rect {
         let band = self.band_rect(top);
+        let x0 = band.x0 + self.lead + self.chevron_column;
         Rect::new(
-            band.x0 + self.lead,
+            x0,
             band.y0,
-            (self.rect.x1 - self.trailing_inset()).max(band.x0 + self.lead),
+            (self.rect.x1 - self.trailing_inset()).max(x0),
             band.y1,
         )
     }

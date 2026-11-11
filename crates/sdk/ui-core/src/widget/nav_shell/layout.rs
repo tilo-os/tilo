@@ -264,14 +264,12 @@ impl NavGeometry {
     }
 
     /// Where the title (or, without one, the leading fill) of `column`'s header starts: after the
-    /// shell's leading buttons in it, else at the content gutter.
+    /// shell's leading buttons in it, else at the content gutter — the same edge the column's
+    /// rows and any tree's chevron column stand on, so a title lines up with what it names in a
+    /// sidebar as in a page.
     pub(super) fn lead_end(&self, column: Column, m: &Metrics) -> f64 {
         let header = self.header(column);
-        let mut x = if column == Column::Sidebar {
-            header.x0 + m.inset
-        } else {
-            header.x0 + m.row.gutter
-        };
+        let mut x = header.x0 + m.row.gutter;
         for (button, home) in [
             (self.toggle, self.toggle_column),
             (self.back, self.back_column),

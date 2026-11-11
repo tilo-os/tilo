@@ -294,6 +294,9 @@ pub struct ListRowFace<'a> {
     /// How many rows over it the row stands: its content indents one
     /// disclosure gutter per depth, while its lift fills the row.
     depth: u32,
+    /// The column the row keeps in front of its content, inside its own box: where a tree's
+    /// chevron stands ([`ListRowFace::chevron_column`]).
+    chevron_column: f64,
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
@@ -400,6 +403,7 @@ impl<'a> ListRowFace<'a> {
             leading_column: None,
             nested: false,
             depth: 0,
+            chevron_column: 0.0,
             status: None,
             change: None,
             struck: false,
@@ -671,6 +675,15 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn nested(mut self, nested: bool) -> Self {
         self.nested = nested;
+        self
+    }
+
+    /// The column the row keeps in front of its content, inside its own box: a tree's chevron
+    /// stands there and the row's content starts past it, while the row's lift still fills from
+    /// the box's own edge.
+    #[must_use]
+    pub fn chevron_column(mut self, px: f64) -> Self {
+        self.chevron_column = px.max(0.0);
         self
     }
 
@@ -1149,6 +1162,9 @@ pub struct ListRow {
     /// How many rows over it the row stands, indenting its content one
     /// disclosure gutter each ([`ListRowFace::depth`]).
     depth: u32,
+    /// The column the row keeps in front of its content, inside its own box: where the tree's
+    /// chevron stands ([`ListRowFace::chevron_column`]).
+    chevron_column: f64,
     /// Every badge of the row's list, measured into `leading_column` at
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
@@ -1273,6 +1289,7 @@ impl ListRow {
             leading_column: None,
             nested: false,
             depth: 0,
+            chevron_column: 0.0,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -1670,6 +1687,13 @@ impl ListRow {
     #[must_use]
     pub fn nested(mut self) -> Self {
         self.nested = true;
+        self
+    }
+
+    /// See [`ListRowFace::chevron_column`].
+    #[must_use]
+    pub fn chevron_column(mut self, px: f64) -> Self {
+        self.chevron_column = px.max(0.0);
         self
     }
 
@@ -2266,6 +2290,7 @@ impl ListRow {
         }
         face = face.nested(self.nested);
         face = face.depth(self.depth);
+        face = face.chevron_column(self.chevron_column);
         if let Some(avatar) = &self.avatar {
             face = face.avatar(avatar.face());
         }

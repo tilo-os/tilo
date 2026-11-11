@@ -34,6 +34,12 @@ pub struct RowBuild {
     /// The gutter one depth of the list's tree indents a row's content by, as the theme draws
     /// it: a row that is a view of the app's own stands in by the same step its list rows do.
     pub nest: f32,
+    /// The column the list keeps for the chevrons that fold its tree, in front of its rows'
+    /// content and inside its own box (where it stands as a column's body): a row's content
+    /// starts after it, and the list draws the chevrons there. Zero for a list whose rows have
+    /// nothing to fold, and for one standing inside a page, where the step in front of the rows
+    /// is already the page's.
+    pub chevron_column: f32,
 }
 
 /// A row that paints the selection the list holds for it, asked for through

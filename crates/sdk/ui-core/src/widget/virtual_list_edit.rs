@@ -157,7 +157,7 @@ impl<M: ListModel> VirtualList<M> {
         let row = self.row_box(index)?;
         // The field stands where the row's content does: past the step its chevron takes.
         let depth = f64::from(self.tree.as_ref().map_or(0, |marks| marks.depth(key))) + 1.0;
-        let x0 = row.x0 + self.lead + depth * self.disclosure;
+        let x0 = row.x0 + self.lead + self.chevron_column + depth * self.disclosure;
         Some((
             Rect::new(
                 x0,

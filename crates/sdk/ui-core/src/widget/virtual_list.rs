@@ -374,7 +374,7 @@ pub trait RowActionRects {
 
 /// Where a list's rows stand between its edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RowStance {
+pub(super) enum RowStance {
     /// One lift's bleed in, so their lift fills the list.
     Bleed,
     /// Edge to edge: rows that bring their own insets ([`VirtualList::flush`]).
@@ -503,6 +503,11 @@ pub struct VirtualList<M: ListModel> {
     bleed: f64,
     /// Where the rows' content starts in from the list's edge: its bleed, or a disclosure gutter.
     lead: f64,
+    /// The column the list keeps for its tree's chevrons, in front of the rows' content and
+    /// inside its own box: one disclosure step where the list is a column's body and its rows
+    /// have something to fold, nothing otherwise (settled by `settle_lead` with the rows'
+    /// column).
+    chevron_column: f64,
     /// The gutter a disclosure chevron hangs in, one step of nesting.
     disclosure: f64,
     /// How far a row's lift bleeds past its text ([`crate::chrome::row_bleed`]).
@@ -733,6 +738,7 @@ impl<M: ListModel> VirtualList<M> {
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             lead: f64::from(crate::tokens::Spacing::BASE.s2),
+            chevron_column: 0.0,
             disclosure: f64::from(
                 crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
             ),

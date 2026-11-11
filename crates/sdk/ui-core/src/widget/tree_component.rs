@@ -1321,6 +1321,7 @@ fn row_of(
     feel: crate::motion::Feel,
     marks: &TreeMarks<String>,
     matching: Option<&HashSet<String>>,
+    chevron_column: f64,
 ) -> Element {
     let Some(node) = rows.node(key) else {
         return Box::new(ListRow::new(key.to_owned(), ""));
@@ -1331,6 +1332,7 @@ fn row_of(
     let key_owned = key.to_owned();
     let mut row = ListRow::new(key_owned.clone(), node.label.clone())
         .depth(marks.depth(&key_owned))
+        .chevron_column(chevron_column)
         .row_height(TREE_ROW_HEIGHT)
         .with_feel(feel);
     if context {
@@ -1486,7 +1488,16 @@ impl DescribedTreeView {
         let mut list = VirtualList::with_selection_delegate(
             rows.clone(),
             TREE_ROW_HEIGHT,
-            move |rows, _, key, _| row_of(rows, key, feel, &row_marks, found.as_deref()),
+            move |rows, _, key, build| {
+                row_of(
+                    rows,
+                    key,
+                    feel,
+                    &row_marks,
+                    found.as_deref(),
+                    f64::from(build.chevron_column),
+                )
+            },
         )
         .with_tree(Rc::clone(&marks))
         .with_id(key)
@@ -2204,51 +2215,103 @@ mod tests {
 
     /// A tree that fills its pane is the pane's list: its rows stand on the pane's content edge,
     /// their lift bleeding past it, as every list in a column does — so a tree standing as a
-    /// phone window's screen keeps the page gutter at the glass rather than running to it.
+    /// phone window's screen keeps the page gutter at the glass rather than running to it. A tree
+    /// whose first level folds keeps the chevron column on that edge, as the first thing standing
+    /// there, and its rows' content one step past it.
     #[test]
     fn a_tree_that_fills_its_pane_stands_its_rows_on_the_panes_content_edge() {
         use crate::headless::{FrameHarness, InspectionNode};
         use crate::theme::Theme;
         use crate::widget::{LayoutInfo, RowLayout};
 
-        // Where the top-level row starts its content, for a tree in a 320 px window.
-        fn column(fill: bool) -> f64 {
-            let queue = crate::Intents::default();
+        // Where the top-level row's box and its content start, and where its chevron column
+        // stands, for a tree of `nodes` in a 320 px window.
+        fn column(fill: bool, nodes: Vec<TreeViewNodeProps>) -> (f64, f64, Option<f64>) {
+            let folding = nodes.iter().any(|node| node.branch);
+            let keys: Vec<String> = nodes.iter().map(|node| node.label.clone()).collect();
             let tree = DescribedTreeView::from_props(
                 "tree",
                 TreeViewProps {
                     hide_root: true,
                     fill,
-                    nodes: vec![node("A note", None, false, &queue)].into(),
+                    nodes: nodes.into(),
                     ..TreeViewProps::default()
                 },
             );
             let harness =
                 FrameHarness::for_root(crate::State::new(), tree, (320, 568), Theme::dark());
-            fn grid(node: &InspectionNode) -> Option<RowLayout> {
-                match node.layout {
-                    Some(LayoutInfo::Row(row)) => Some(row),
-                    _ => node.children.iter().find_map(grid),
+            fn row(node: &InspectionNode) -> Option<(f64, RowLayout)> {
+                match &node.layout {
+                    Some(LayoutInfo::Row(grid)) => Some((node.rect[0], *grid)),
+                    _ => node.children.iter().find_map(row),
                 }
             }
-            let laid = grid(&harness.inspection().root).expect("the row lays its content out");
-            f64::from(laid.content_left)
+            let (box_x0, grid) = row(&harness.inspection().root).expect("the row is laid out");
+            let content = f64::from(grid.content_left);
+            let chevron = folding.then(|| {
+                harness
+                    .root::<DescribedTreeView>()
+                    .list
+                    .disclosure_rect(&keys[0])
+                    .expect("the branch shows its disclosure")
+                    .x0
+            });
+            (box_x0, content, chevron)
         }
+        let queue = crate::Intents::default();
         let theme = Theme::dark();
         let gutter = crate::chrome::column_gutter(&theme);
+        let step = f64::from(crate::widget::TREE_INDENT);
+
+        let (flat_box, flat, chevron) = column(true, vec![node("A note", None, false, &queue)]);
         assert!(
-            (column(true) - gutter).abs() < 0.5,
-            "a tree filling its pane starts its rows on the pane's content edge, {} px in: {}",
-            gutter,
-            column(true)
+            (flat_box - gutter).abs() < 0.5 && (flat - gutter).abs() < 0.5,
+            "a tree filling its pane starts its rows' boxes and their content on the pane's \
+             content edge, {gutter} px in: {flat_box} and {flat}"
         );
-        let bleed = crate::chrome::row_bleed(&theme);
+        assert_eq!(
+            chevron, None,
+            "a tree whose first level folds nothing keeps no column"
+        );
+
+        // The branch and the leaf beside it stand on one column, and the chevron column stands
+        // on the pane's content edge rather than in the margin outside it.
+        let (folded_box, folded, chevron) = column(
+            true,
+            vec![
+                node("A branch", None, true, &queue),
+                node("A leaf", None, false, &queue),
+                node("Under the branch", Some("A branch"), false, &queue),
+            ],
+        );
         assert!(
-            (column(false) - bleed).abs() < 0.5,
-            "a tree inside another scroll starts its rows one lift's bleed in, the page it stands \
-             in keeping the gutter itself: {} against {}",
-            column(false),
-            bleed
+            (folded_box - gutter).abs() < 0.5,
+            "its rows' boxes still stand on the {gutter} px edge, so their lift keeps the pane's \
+             gutter: {folded_box}"
+        );
+        assert!(
+            (folded - (gutter + step)).abs() < 0.5,
+            "and their content keeps room for the chevron column: {folded} px in, one {step} px \
+             step past the {gutter} px edge"
+        );
+        let chevron = chevron.expect("the branch shows its disclosure");
+        assert!(
+            (chevron - gutter).abs() < 0.5,
+            "the chevron column is the first thing on the pane's content edge: {chevron} against \
+             {gutter}"
+        );
+
+        let bleed = crate::chrome::row_bleed(&theme);
+        let (_, inside, chevron) = column(false, vec![node("A branch", None, true, &queue)]);
+        assert!(
+            (inside - (bleed.max(step))).abs() < 0.5,
+            "a tree inside another scroll keeps its own edge as the gutter, the page it stands in \
+             holding the window's: {inside} against {bleed} and {step}"
+        );
+        assert_eq!(
+            chevron,
+            Some(0.0),
+            "so its chevron column stands on that edge, inside the page"
         );
     }
 
@@ -2343,6 +2406,7 @@ mod tests {
             crate::motion::Feel::Standard,
             &tree.marks,
             None,
+            0.0,
         );
         let row = element
             .as_any()
