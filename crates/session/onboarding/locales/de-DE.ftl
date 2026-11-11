@@ -1,7 +1,7 @@
 ## Einrichtung
 
 onboarding-intro-title = Deine Tilo-Identität einrichten
-onboarding-intro-body = Du bekommst eine kryptografische Identität, die dir gehört, und dieses Gerät bekommt einen eigenen Schlüssel. Zusammenarbeit und Einladungen beruhen darauf. Noch sind nicht alle Bearbeitungen in Apps signiert.
+onboarding-intro-body = Du bekommst eine Identität, die dir gehört, und dieses Gerät bekommt einen eigenen Schlüssel. Zusammenarbeit und Einladungen beruhen darauf. Noch sind nicht alle Bearbeitungen in Apps signiert.
 onboarding-intro-point-collaboration = Wer mit dir zusammenarbeitet, sieht eine beständige Identität, und sie bürgt für jedes deiner Geräte.
 onboarding-intro-point-local = Sie wird auf diesem Rechner erstellt. Nichts wird hochgeladen, und kein Server bewahrt eine Kopie auf.
 onboarding-intro-point-not-account = Sie ist kein Konto und hat kein Passwort. Es gibt nichts, bei dem du dich anmelden müsstest.
@@ -10,7 +10,7 @@ onboarding-choice-create-detail = Auf diesem Rechner neu beginnen
 onboarding-choice-existing = Meine vorhandene Tilo-Identität verwenden
 onboarding-choice-existing-detail = Von einem anderen Gerät oder einer Sicherung übernehmen
 onboarding-host-intro-title = Deine Tilo-Identität einrichten
-onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevor sich der Tilo Desktop öffnet, braucht er eine lokale kryptografische Identität für die Zusammenarbeit und für Einladungen an andere Geräte. Sie ersetzt weder deine Linux-Anmeldung, noch erstellt sie ein Online-Konto. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
+onboarding-host-intro-body = Du bist bereits an diesem Computer angemeldet. Bevor sich der Tilo Desktop öffnet, braucht er eine lokale Identität für die Zusammenarbeit und für Einladungen an andere Geräte. Sie ersetzt weder deine Linux-Anmeldung, noch erstellt sie ein Online-Konto. Noch sind nicht alle Bearbeitungen in Apps kryptografisch signiert.
 onboarding-no-recovery-title = Verlierst du dieses Gerät ohne Sicherung, ist diese Identität verloren
 onboarding-no-recovery-point-no-service = Es gibt keinen Wiederherstellungsdienst. Niemand, auch nicht Tilo, kann diese Identität für dich zurücksetzen oder neu erstellen.
 onboarding-no-recovery-point-backup = Schreib als Nächstes einen Wiederherstellungsschlüssel auf oder speichere eine verschlüsselte Sicherung. Beides holt diese Identität zurück. Ohne eines davon braucht ein verlorenes oder zurückgesetztes Gerät eine neue Identität; die Daten der Arbeitsbereiche bleiben erhalten, aber die alte Identität gehört dann nicht mehr dir.
@@ -110,7 +110,7 @@ onboarding-backup-verified-earlier = Die geprüfte Sicherung wurde vor dem Neust
 onboarding-picker-backup-title = Verschlüsselte Identitätssicherung speichern
 onboarding-picker-backup-filter = Verschlüsselte Tilo-Identität
 onboarding-done-title = Deine Identität ist bereit
-onboarding-done-body = Dieser Fingerabdruck kennzeichnet deinen lokalen kryptografischen Stamm. Tilo kann ihn in Abläufen der Zusammenarbeit anzeigen, die eine Überprüfung unterstützen; du musst ihn nicht eintippen.
+onboarding-done-body = Dieser Fingerabdruck kennzeichnet die Kopie deiner Identität auf diesem Computer. Andere können damit prüfen, dass sie dir gehört; eintippen musst du ihn nie.
 onboarding-done-ready = Identität auf diesem Gerät gespeichert
 onboarding-host-done-title = Deine Tilo-Identität ist bereit
 onboarding-host-done-body = Du verwendest diese lokale Identität, wenn du zusammenarbeitest oder andere einlädst. Sie ist von deiner Linux-Anmeldung getrennt und kein Online-Konto.
@@ -237,9 +237,6 @@ onboarding-migration-cleanup-running = Deine Sachen sind in Tilo bereit. Tempor�
 
 ## Actions setup offers
 
-onboarding-backup-save-action = Verschlüsselte Sicherung speichern
-onboarding-tour-take = Kurze Tour starten
-onboarding-existing-files-use = Meine vorhandenen Dateien verwenden
 
 # Koppeln mit einem Gerät in der Nähe: was fehlschlug und was als Nächstes zu tun ist
 onboarding-nearby-failed-title = Die Kopplung wurde nicht abgeschlossen
@@ -288,7 +285,6 @@ onboarding-portable-home-unavailable = Deine Übertragung ist auf diesem Compute
 onboarding-migration-resume-unavailable = Für deine aktuelle Identität gibt es keine aufgeschobene Dateiübernahme.
 onboarding-portable-applications-unavailable = Deine Apps konnten nicht wiederhergestellt werden. Du kannst es erneut versuchen, ohne deine vorhandenen Dateien zu ersetzen.
 onboarding-browser-unavailable = Deine Browserdaten warten noch. Versuche es erneut oder mach vorerst weiter.
-onboarding-backup-unavailable = Auf diesem Gerät kann keine Sicherung deiner persönlichen Identität erstellt werden.
 
 ## A sample recovery key shown by a review render
 onboarding-sample-recovery-words = abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual

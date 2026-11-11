@@ -1,7 +1,6 @@
 # Why sending to a nearby device failed
 nearby-error-destination-not-folder = Nearby Send destination is not a directory
 nearby-error-too-large = nearby transfer exceeds the size limit
-nearby-error-destination-name = Nearby Send destination name is unavailable
 nearby-error-outside-grant = Nearby Send source is outside this Files grant
 nearby-error-one-item = Nearby Send requires one regular file or folder
 nearby-error-queue-full = nearby transfer queue is full
