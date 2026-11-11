@@ -289,7 +289,9 @@ impl TopBarChrome {
         } else if self.ws_pill_rect.contains(p) {
             ChromeIntent::ToggleWorkspaceMenu { at: None }
         } else if self.own_avatar_rect.contains(p) {
-            self.avatar_intent()
+            // The person's own card, whatever waits on their avatar: the card offers what a folded
+            // ask asks, so a press on their face never lands on anything but the card.
+            ChromeIntent::ToggleProfile
         } else if self.bell_hit_rect.contains(p) {
             ChromeIntent::ToggleNotifications
         } else if self.tray_hit_rect.contains(p) {
@@ -394,7 +396,7 @@ impl TopBarChrome {
             Self::CONTROL_TILO_MARK if self.tilo_mark.is_some() => ChromeIntent::ToggleTiloMenu,
             Self::CONTROL_WORKSPACE_SETTINGS => ChromeIntent::ToggleWorkspaceMenu { at: None },
             Self::CONTROL_STRIP_NAME => ChromeIntent::ShowStrips,
-            Self::CONTROL_PROFILE => self.avatar_intent(),
+            Self::CONTROL_PROFILE => ChromeIntent::ToggleProfile,
             Self::CONTROL_NOTIFICATIONS => ChromeIntent::ToggleNotifications,
             Self::CONTROL_QUICK_SETTINGS | Self::CONTROL_MEDIA => ChromeIntent::ToggleQuickSettings,
             Self::CONTROL_COLLABORATORS => ChromeIntent::ToggleCollaborators,

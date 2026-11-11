@@ -642,6 +642,47 @@ impl DesktopChrome {
             })
     }
 
+    /// Whether `event` is the pointer's, over the shown bar: it moves there, or presses there.
+    fn pointer_on_bar(&self, event: &WindowEvent) -> bool {
+        matches!(
+            event,
+            WindowEvent::CursorMoved { .. } | WindowEvent::MouseInput { .. }
+        ) && self.bar.presence() != TopBarPresence::Hidden
+            && self
+                .cursor
+                .is_some_and(|point| self.bar.get_rect().contains(point))
+    }
+
+    /// The search palette stands over everything, a window in front included: while it is up,
+    /// every key and press is its, and its own chord or a press off the card leaves search. While
+    /// it is down its chord opens it, before a menu or the bar takes that key. The bar stands clear
+    /// of its scrim and stays live: the pointer over it is the bar's, and a press there leaves
+    /// search and does what it was pressed for, the workspace's menu or the person's own card.
+    /// Whether search took `event`.
+    fn search_takes(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
+        search: NodeId,
+    ) -> bool {
+        if self.search.is_open() && self.pointer_on_bar(event) {
+            if matches!(
+                event,
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    button: MouseButton::Left,
+                    ..
+                }
+            ) {
+                self.search.close();
+            }
+            return false;
+        }
+        self.search
+            .handle_event(event, &mut ctx.reborrow(ctx.path, search));
+        *ctx.handled
+    }
+
     /// While Alt+Tab's panel is up it is what a press reaches: the pointer chooses a card on sight,
     /// a press on one goes to it, and a press off the panel ends the walk instead of reaching the
     /// window behind it.
@@ -2401,12 +2442,7 @@ impl Widget for DesktopChrome {
             return self.walk_the_pointer(event, ctx);
         }
         self.hints.heard(event, ui::time::now());
-        // The search palette stands over everything, a window in front included: while it is up,
-        // every key and press is its, and its own chord or a press off the card leaves search.
-        // While it is down its chord opens it, before a menu or the bar takes that key.
-        self.search
-            .handle_event(event, &mut ctx.reborrow(ctx.path, *search));
-        if *ctx.handled {
+        if self.search_takes(event, ctx, *search) {
             self.publish_overlays();
             return;
         }

@@ -17,8 +17,9 @@
 //! avatar's dot until the band can hold it again.
 //!
 //! A press anywhere else folds it into a dot on the avatar and still reaches
-//! what it was pressed on. Escape folds it too. A click on the avatar while it
-//! waits as the dot opens it again.
+//! what it was pressed on. Escape folds it too. A click on the avatar opens
+//! the person's own card, the ask open or folded: the card offers what the ask
+//! asks, so a press on their own face always shows them who they are here.
 use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Point, Rect, Scene, TextRenderer, TextRole, Theme,
     TopBarChrome, t,
@@ -267,16 +268,6 @@ impl TopBarChrome {
                 }
             }
             _ => false,
-        }
-    }
-
-    /// What a click on the avatar asks for: the ask waiting as its dot,
-    /// else the profile card.
-    pub(super) fn avatar_intent(&self) -> ChromeIntent {
-        if self.chrome_avatar_ask().is_some_and(|ask| !ask.open) {
-            ChromeIntent::OpenAvatarAsk
-        } else {
-            ChromeIntent::ToggleProfile
         }
     }
 
@@ -944,11 +935,18 @@ mod tests {
         assert!(host.ask.borrow().is_none(), "answered, the ask goes");
     }
 
-    /// Folded on a narrow bar, the ask waits as the avatar's dot and opens from it again, in the
-    /// band.
+    /// On a narrow bar the ask opens in the band; folded, it waits as the avatar's dot; a press on the avatar then asks
+    /// for the person's own card, which offers what the ask asks, and leaves the ask folded.
     #[test]
-    fn a_narrow_bars_dot_opens_the_ask_again() {
+    fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
         let (mut frame, host) = asking_desktop((420, 800));
+        settle(&mut frame);
+        let bar = bar_rect(&frame);
+        let ask = ask_rect(&frame);
+        assert!(
+            !ask.is_zero_area() && ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
+            "the ask opens in the band {ask:?}, not under it {bar:?}"
+        );
         Framed::harness_mut(&mut frame).key("Escape");
         assert!(
             host.ask.borrow().as_ref().is_some_and(|ask| !ask.open),
@@ -961,17 +959,16 @@ mod tests {
         );
         let avatar = frame.bar().own_avatar_rect();
         assert!(!avatar.is_zero_area(), "the own avatar is painted");
+        host.intents.borrow_mut().clear();
         Framed::harness_mut(&mut frame).click_at(avatar.center().x, avatar.center().y);
-        assert!(
-            host.ask.borrow().as_ref().is_some_and(|ask| ask.open),
-            "the avatar's dot opens the ask again"
+        assert_eq!(
+            *host.intents.borrow(),
+            [ChromeIntent::ToggleProfile],
+            "the avatar opens the person's own card"
         );
-        settle(&mut frame);
-        let bar = bar_rect(&frame);
-        let ask = ask_rect(&frame);
         assert!(
-            !ask.is_zero_area() && ask.y0 >= bar.y0 && ask.y1 <= bar.y1,
-            "the ask opens in the band {ask:?}, not under it {bar:?}"
+            host.ask.borrow().as_ref().is_some_and(|ask| !ask.open),
+            "the ask stays folded"
         );
     }
 }
