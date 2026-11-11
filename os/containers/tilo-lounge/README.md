@@ -57,6 +57,8 @@ Optional, with these defaults:
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_ROOMS_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
 | `TILO_ROOMS_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin pages dial the packet relay at |
+| `TILO_ROOMS_TLS_CERT` | none | a publicly trusted certificate chain (PEM) the host's HTTPS listener presents instead of its own development one; read again when it changes |
+| `TILO_ROOMS_TLS_KEY` | none | its private key (PEM); set with `TILO_ROOMS_TLS_CERT` |
 | `TILO_ROOMS_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_ROOMS_FETCH_PROXY` | on | `0` turns the fetch proxy off |
 | `TILO_ROOMS_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |

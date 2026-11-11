@@ -28,6 +28,13 @@
 # ingress binds TILO_ROOMS_WEB; an address ending in `:0` takes a port the
 # kernel picks, which the host announces in its started event.
 #
+# The host's own HTTPS listener presents a development certificate it makes
+# and keeps under the state root, unless the operator mounts a publicly
+# trusted one: a PEM chain and its key, set together. The host reads them
+# again when the files change, so a renewal reaches it without a restart.
+#   TILO_ROOMS_TLS_CERT       the certificate chain (PEM, leaf first)
+#   TILO_ROOMS_TLS_KEY        its private key (PEM)
+#
 # Every workspace this host keeps gives each person who asks workspaces of
 # their own, governed here beside the Lounge, keeping between them as many
 # gigabytes per person as the operator says:
@@ -57,6 +64,7 @@ TILO_ROOMS_PERSON_STORAGE_GB TILO_ROOMS_IROH_LISTEN
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
 TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN TILO_ROOMS_WEB
+TILO_ROOMS_TLS_CERT TILO_ROOMS_TLS_KEY
 TILO_ROOMS_HTTP TILO_ROOMS_FETCH_PROXY
 TILO_ROOMS_MODERATION_KEY_FILE TILO_ROOMS_MODERATION_MODEL
 TILO_ROOMS_DISCORD_CLIENT_ID TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE
@@ -99,6 +107,16 @@ origin=${origin%/}
 # rides the plain listener as the HTTPS stream fallback, so neither changes
 # what the host serves; both are read so eu1's environment starts as it is.
 dir=${TILO_ROOMS_STATE:-/run/tilo-rooms}/$name
+tls=dev
+if [ -n "${TILO_ROOMS_TLS_CERT:-}" ] || [ -n "${TILO_ROOMS_TLS_KEY:-}" ]; then
+  [ -n "${TILO_ROOMS_TLS_CERT:-}" ] && [ -n "${TILO_ROOMS_TLS_KEY:-}" ] \
+    || fail "TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY are set together, or neither"
+  # The host's flag holds both paths, split at the comma.
+  case "$TILO_ROOMS_TLS_CERT$TILO_ROOMS_TLS_KEY" in
+    *,*) fail "TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY are paths without a comma" ;;
+  esac
+  tls="files:$TILO_ROOMS_TLS_CERT,$TILO_ROOMS_TLS_KEY"
+fi
 
 # comma_flags VALUE FLAG: FLAG and one comma-separated, trimmed entry of VALUE
 # per entry. The settings it splits (origins, app ids, channel names) hold no
@@ -129,7 +147,7 @@ set -- room \
   --inactive-after-days "${TILO_ROOMS_INACTIVE_AFTER_DAYS:-30}" \
   --web "${TILO_ROOMS_WEB:-127.0.0.1:9781}" \
   --packet-relay "${TILO_ROOMS_LIVE:-0.0.0.0:9782}" \
-  --tls dev \
+  --tls "$tls" \
   --web-plain "${TILO_ROOMS_RELAY_PLAIN:-0.0.0.0:9780}" \
   --public-origin "$origin" \
   --http "${TILO_ROOMS_HTTP:-0.0.0.0:8790}" \
