@@ -2051,7 +2051,7 @@ impl Widget for ContainersApp {
     fn accessibility(&self) -> Option<AccessNode> {
         Some(
             AccessNode::new(Role::Window)
-                .with_name("Containers")
+                .with_name(crate::resource::CATALOG.t("containers-a11y-window"))
                 .with_description(&self.state.borrow().engine.connection)
                 .with_bounds(self.rect),
         )

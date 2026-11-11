@@ -359,9 +359,11 @@ impl VideoEditorApp {
         if rows.is_empty() {
             return VideoEditorApp::a11y_pane(
                 Pane::Bin,
-                vec![AccessNode::new(Role::StaticText)
-                    .with_name("No media yet. Press Ctrl+Shift+O to import, or drop files anywhere in the window.")
-                    .with_key(0)],
+                vec![
+                    AccessNode::new(Role::StaticText)
+                        .with_name(crate::resource::CATALOG.t("video-editor-a11y-bin-empty"))
+                        .with_key(0),
+                ],
             );
         }
         VideoEditorApp::a11y_pane(Pane::Bin, rows)
@@ -500,11 +502,7 @@ impl VideoEditorApp {
             );
         }
         if tracks.is_empty() {
-            tracks.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name("Timeline is empty. Add media from the bin to start editing.")
-                    .with_key(0),
-            );
+            tracks.push(timeline_empty_node());
         }
         tracks.extend(self.a11y_timeline_empty(&self.regions()));
         // The master strip, as the first thing in the pane. A reader meets
@@ -521,9 +519,9 @@ impl VideoEditorApp {
                     Role::StaticText
                 })
                 .with_name(if clipped {
-                    "Go to the next place the mix clipped"
+                    crate::resource::CATALOG.t("video-editor-a11y-mix-clipped")
                 } else {
-                    "Mix level"
+                    crate::resource::CATALOG.t("video-editor-a11y-mix-level")
                 })
                 .with_value(words)
                 .with_key(ui::a11y::hash_key(&MIX_METER_KEY))
@@ -689,7 +687,7 @@ impl VideoEditorApp {
             // earlier on the timeline and pushing this one down the list.
             .with_hashed_key(m.id)
             .with_position(pos + 1, n)
-            .with_description("Activate to move the playhead here")
+            .with_description(crate::resource::CATALOG.t("video-editor-a11y-move-playhead"))
             .with_state(AccessState::new().focusable(true).focused(focused))
             .with_children(verbs)
     }
@@ -1060,7 +1058,7 @@ impl VideoEditorApp {
             ExportStatus::Idle => None,
             ExportStatus::Rendering { progress } => Some(
                 AccessNode::new(Role::ProgressBar)
-                    .with_name("Export progress")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-progress"))
                     .with_value(format!("{}%", (progress * 100.0).round() as i32))
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Polite)
@@ -1070,7 +1068,7 @@ impl VideoEditorApp {
             // holds the whole path and the settings that produced it.
             ExportStatus::Done { path } => Some(
                 AccessNode::new(Role::Button)
-                    .with_name("Export finished")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-finished"))
                     .with_value(path.clone())
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Polite)
@@ -1080,7 +1078,7 @@ impl VideoEditorApp {
             // likely to act on the next thing believing a file exists.
             ExportStatus::Failed { reason } => Some(
                 AccessNode::new(Role::Button)
-                    .with_name("Export failed")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-failed"))
                     .with_value(reason.clone())
                     .with_key(key)
                     .with_live(ui::a11y::Politeness::Assertive)
@@ -1096,7 +1094,7 @@ impl VideoEditorApp {
             // figure rather than stating a confident wrong number — and a
             // reader must get that caveat too, not a tidier fiction.
             AccessNode::new(Role::StaticText)
-                .with_name("Output")
+                .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-output"))
                 .with_value(format!(
                     "{}, {}, {}",
                     self.export.resolution.label(),
@@ -1110,14 +1108,14 @@ impl VideoEditorApp {
         if self.export_running() {
             kids.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Cancel export")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-cancel-export"))
                     .with_key(2)
                     .with_state(AccessState::new().focusable(true)),
             );
         } else {
             kids.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Start export")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-start-export"))
                     .with_key(1)
                     .with_state(
                         AccessState::new()
@@ -1127,7 +1125,7 @@ impl VideoEditorApp {
             );
             kids.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Close export")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-close-export"))
                     .with_key(2)
                     .with_state(AccessState::new().focusable(true)),
             );
@@ -1135,7 +1133,7 @@ impl VideoEditorApp {
         if let ExportStatus::Rendering { progress } = self.export_status {
             kids.push(
                 AccessNode::new(Role::ProgressBar)
-                    .with_name("Export progress")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-progress"))
                     .with_value(format!("{}%", (progress * 100.0).round() as i32))
                     .with_key(3)
                     // A render's progress changes with no focus movement, so it
@@ -1151,7 +1149,7 @@ impl VideoEditorApp {
             // reader.
             kids.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Export failure details")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-details"))
                     .with_value(reason.clone())
                     .with_key(ui::a11y::hash_key(&"export.failure-details"))
                     .with_live(ui::a11y::Politeness::Assertive),
@@ -1162,14 +1160,14 @@ impl VideoEditorApp {
             // reason is a wall.
             kids.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Why export cannot run")
+                    .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-blocked"))
                     .with_value(reason)
                     .with_key(ui::a11y::hash_key(&"export.blocked"))
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
         AccessNode::new(Role::Dialog)
-            .with_name("Export video")
+            .with_name(crate::resource::CATALOG.t("video-editor-a11y-export-dialog"))
             .with_key(ui::a11y::hash_key(&"export"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)
@@ -1182,7 +1180,7 @@ impl VideoEditorApp {
     pub(super) fn a11y_help_sheet() -> AccessNode {
         let mut kids: Vec<AccessNode> = Vec::new();
         let mut key = 0u64;
-        for (group, rows) in SHORTCUTS {
+        for (group, rows) in crate::app::shortcuts() {
             kids.push(
                 AccessNode::new(Role::Heading { level: 2 })
                     .with_name(group)
@@ -1192,7 +1190,7 @@ impl VideoEditorApp {
             for (combo, what) in rows {
                 kids.push(
                     AccessNode::new(Role::StaticText)
-                        .with_name(*what)
+                        .with_name(what)
                         // Spelled for this platform, as the sheet paints it.
                         .with_value(ui::spell_shortcut(combo))
                         .with_key(key),
@@ -1202,12 +1200,12 @@ impl VideoEditorApp {
         }
         kids.push(
             AccessNode::new(Role::Button)
-                .with_name("Close shortcuts")
+                .with_name(crate::resource::CATALOG.t("video-editor-a11y-close-shortcuts"))
                 .with_key(key)
                 .with_state(AccessState::new().focusable(true)),
         );
         AccessNode::new(Role::Dialog)
-            .with_name("Keyboard shortcuts")
+            .with_name(crate::resource::CATALOG.t("video-editor-a11y-shortcuts"))
             .with_key(ui::a11y::hash_key(&"help"))
             .with_state(AccessState::new().modal(true))
             .with_children(kids)
@@ -1974,4 +1972,12 @@ fn step_index(i: usize, n: usize, up: bool) -> usize {
     } else {
         (i + 1).min(n - 1)
     }
+}
+
+/// What an empty timeline says, as the one node the pane carries.
+fn timeline_empty_node() -> AccessNode {
+    use ui::a11y::Role;
+    AccessNode::new(Role::StaticText)
+        .with_name(crate::resource::CATALOG.t("video-editor-a11y-timeline-empty"))
+        .with_key(0)
 }

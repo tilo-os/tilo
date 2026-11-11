@@ -36,3 +36,16 @@ video-open-video = Open video
 video-jump-to-note = Jump to timestamp annotation
 video-delete-note = Delete timestamp annotation
 video-delete-shared-playlist = Delete shared playlist
+
+## The library drawer
+video-library-clear = Clear
+video-queue-empty = Your queue is empty
+video-recent-empty = No recent videos
+video-watch-later = Watch later
+video-bookmark-time = Bookmark time
+video-shared-empty = No shared playlists or bookmarks yet
+video-shared-empty-detail = Everyone in this workspace sees the playlists and bookmarks added here.
+video-playlists = Playlists
+video-bookmarks = Bookmarks
+video-local-video = Local video
+video-play = Play { $title }

@@ -7,3 +7,6 @@ containers-create-draft-env = Changed the environment of the new container
 containers-create-draft-volumes = Changed the volumes of the new container
 containers-create-draft-command = Changed the command of the new container
 containers-clear-create = Cleared the new container
+
+## Accessibility
+containers-a11y-window = Containers

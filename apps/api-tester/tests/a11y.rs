@@ -816,3 +816,26 @@ fn native_app_contract_is_certified() {
         assert!(audit.is_certified(), "{scenario}: {audit:#?}");
     }
 }
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[test]
+fn a_german_window_reads_the_api_tester_catalogue() {
+    let catalogue = &api_tester::locales::CATALOG;
+    assert!(
+        catalogue.languages().contains(&"de-DE"),
+        "the app ships German among {:?}",
+        catalogue.languages()
+    );
+    catalogue.set_locale("de-DE");
+    assert_eq!(
+        catalogue.t("api-tester-new-request"),
+        "Eine neue Anfrage gestartet"
+    );
+    catalogue.set_locale("en-US");
+    assert_eq!(
+        catalogue.t("api-tester-new-request"),
+        "Started a new request"
+    );
+}

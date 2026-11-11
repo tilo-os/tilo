@@ -13,7 +13,7 @@ use crate::app::{Confirm, ConfirmTarget, ContainersApp, ContainersState, Prompt,
 use crate::draft::{CreateDraft, CreateField};
 use crate::model::{DetailTab, Engine, Section};
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// What the record holds: the new-container draft.
 #[derive(Model, Clone, Debug, Default, PartialEq, Eq)]
@@ -568,5 +568,33 @@ mod agent_disclosure_tests {
         assert_eq!(read["id"], id, "{read:#}");
         assert_eq!(read["name"], name, "{read:#}");
         assert!(read["status"].is_string(), "{read:#}");
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(
+            catalogue.t("containers-create-draft-name"),
+            "Den neuen Container benannt"
+        );
+        catalogue.set_locale("en-US");
+        assert_eq!(
+            catalogue.t("containers-create-draft-name"),
+            "Named the new container"
+        );
     }
 }

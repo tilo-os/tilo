@@ -21,9 +21,6 @@ use crate::record::{Environment, HISTORY_LIMIT, RequestRecord, SavedCollection, 
 
 pub use crate::record::Workspace;
 
-/// API Tester's Fluent catalogs, source locale first.
-pub const LOCALES: &[(&str, &str)] = &[("en-US", include_str!("../locales/en-US.ftl"))];
-
 #[resource(
     kind = "api-tester.workspace",
     label = "API workspace",

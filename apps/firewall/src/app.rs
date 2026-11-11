@@ -1182,7 +1182,7 @@ impl ui::widget::Decorator for FirewallWindow {
 
     fn accessibility(&self) -> Option<AccessNode> {
         let mut root = AccessNode::new(Role::Window)
-            .with_name("Firewall")
+            .with_name(crate::locales::CATALOG.t("firewall-a11y-window"))
             .with_bounds(self.shell.get_rect());
         if let Some(notice) = &self.store.borrow().notice {
             root.children.push(

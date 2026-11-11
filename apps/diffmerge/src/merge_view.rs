@@ -473,7 +473,7 @@ impl MergeView {
             controls.extend(SourcePane::ALL.into_iter().map(|source| {
                 AccessNode::new(Role::ToggleButton)
                     .with_name(format!("Show {} source", source.label()))
-                    .with_description("Switch the visible merge source")
+                    .with_description(t("diff-a11y-switch-merge-source"))
                     .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
                     .with_state(
                         AccessState::new()
@@ -495,7 +495,7 @@ impl MergeView {
             };
             AccessNode::new(Role::Button)
                 .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
-                .with_description("Resolve this shared merge hunk")
+                .with_description(t("diff-a11y-resolve-hunk"))
                 .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
                 .with_bounds(hit.rect)
                 .with_state(
@@ -1307,13 +1307,13 @@ impl Widget for MergeView {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
-        let mut node = AccessNode::new(Role::Group).with_name("Three-way merge");
+        let mut node = AccessNode::new(Role::Group).with_name(t("diff-a11y-merge-group"));
         let mut children = Vec::new();
         if self.is_compact() {
             children.extend(SourcePane::ALL.into_iter().map(|source| {
                 AccessNode::new(Role::ToggleButton)
                     .with_name(format!("Show {} source", source.label()))
-                    .with_description("Switch the visible merge source")
+                    .with_description(t("diff-a11y-switch-merge-source"))
                     .with_action_target(format!("{SOURCE_TARGET}{}", source.tag()))
                     .with_state(
                         AccessState::new()
@@ -1322,11 +1322,9 @@ impl Widget for MergeView {
                     )
                     .with_hashed_key(source.a11y_id())
             }));
-            node = node.with_description(
-                "One source is visible at a time. Use Left and Right Arrow to switch source.",
-            );
+            node = node.with_description(t("diff-a11y-one-source"));
         } else {
-            node = node.with_description("Base, ours, and theirs are shown side by side.");
+            node = node.with_description(t("diff-a11y-side-by-side"));
         }
         children.extend(self.action_hits.iter().map(|hit| {
             let choice = match hit.choice {
@@ -1341,7 +1339,7 @@ impl Widget for MergeView {
             };
             AccessNode::new(Role::Button)
                 .with_name(format!("{label} for change {}", hit.hunk.saturating_add(1)))
-                .with_description("Resolve this shared merge hunk")
+                .with_description(t("diff-a11y-resolve-hunk"))
                 .with_action_target(format!("diffmerge.merge.resolve:{}:{choice}", hit.hunk))
                 .with_bounds(hit.rect)
                 .with_state(

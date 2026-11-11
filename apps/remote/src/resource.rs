@@ -20,7 +20,7 @@ use crate::model::{AuthMethod, ConnectionDraft, ConnectionId, ConnectionKind};
 /// The app's id, which its settings are kept under.
 pub const REMOTE_APP_ID: &str = "so.tilo.remote";
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// The published id of a saved connection.
 pub fn connection_resource_id(id: ConnectionId) -> String {
@@ -538,5 +538,33 @@ mod window_bar_tests {
             ui::framework::testing::TestApp::<super::RemoteShell>::new,
         )
         .unwrap_or_else(|error| panic!("{error}"));
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source beside
+/// it, so a device set to German reads a German window.
+#[cfg(test)]
+mod german_catalogue_tests {
+    use super::CATALOG;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalogue = &CATALOG;
+        assert!(
+            catalogue.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalogue.languages()
+        );
+        catalogue.set_locale("de-DE");
+        assert_eq!(
+            catalogue.t_args("remote-add-connection", &[("name", "server".into())]),
+            "server hinzugefügt"
+        );
+        catalogue.set_locale("en-US");
+        assert_eq!(
+            catalogue.t_args("remote-add-connection", &[("name", "server".into())]),
+            "Added server"
+        );
     }
 }

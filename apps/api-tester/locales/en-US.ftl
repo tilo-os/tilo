@@ -75,3 +75,7 @@ api-tester-use-environment = Switched to the environment { $item }
 api-tester-add-variable = Added the variable { $key } to { $item }
 api-tester-open-sent = Opened { $item } again
 api-tester-record-sent = Sent a request that returned status { $status }
+
+## Accessibility
+api-tester-row-actions = Row actions
+api-tester-url-placeholder = Enter a URL

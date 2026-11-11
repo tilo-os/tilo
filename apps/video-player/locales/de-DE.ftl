@@ -36,3 +36,16 @@ video-open-video = Video öffnen
 video-jump-to-note = Zur Zeitmarke springen
 video-delete-note = Zeitmarke löschen
 video-delete-shared-playlist = Geteilte Wiedergabeliste löschen
+
+## Die Bibliothek
+video-library-clear = Leeren
+video-queue-empty = Deine Warteschlange ist leer
+video-recent-empty = Keine zuletzt gesehenen Videos
+video-watch-later = Später ansehen
+video-bookmark-time = Zeitmarke merken
+video-shared-empty = Noch keine geteilten Wiedergabelisten oder Lesezeichen
+video-shared-empty-detail = Alle in diesem Arbeitsbereich sehen die Wiedergabelisten und Lesezeichen, die hier hinzukommen.
+video-playlists = Wiedergabelisten
+video-bookmarks = Lesezeichen
+video-local-video = Lokales Video
+video-play = { $title } abspielen

@@ -399,3 +399,21 @@ fn removing_a_morning_source_asks_the_session_through_the_published_effect() {
     assert_eq!(request.key, "weather");
     assert_eq!(request.command, wire::SourceCommand::Remove);
 }
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// name of the app and its copy come from `locales/de-DE.ftl`, never from the
+/// English source catalogue beside it.
+#[test]
+fn a_german_window_reads_the_activity_catalogue() {
+    let catalogue = &activity::locales::CATALOG;
+    assert!(
+        catalogue.languages().contains(&"de-DE"),
+        "the app ships German among {:?}",
+        catalogue.languages()
+    );
+    catalogue.set_locale("de-DE");
+    assert_eq!(catalogue.t("activity-title"), "Aktivität");
+    assert_eq!(catalogue.t("activity-place-history"), "Verlauf");
+    catalogue.set_locale("en-US");
+    assert_eq!(catalogue.t("activity-title"), "Activity");
+}

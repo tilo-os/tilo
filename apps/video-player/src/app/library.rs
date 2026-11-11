@@ -286,7 +286,8 @@ impl PlayerState {
         let mut list_top = inner.y0 + tab_h + sibling;
         if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
             let control = ButtonFace::height(ControlSize::Regular, theme);
-            let width = ButtonFace::new(Rect::ZERO, "Clear")
+            let clear = crate::i18n::t("video-library-clear");
+            let width = ButtonFace::new(Rect::ZERO, &clear)
                 .role(ButtonRole::Plain)
                 .intrinsic_width(text, theme);
             self.library_clear_rect =
@@ -296,7 +297,7 @@ impl PlayerState {
                 transform,
                 text,
                 theme,
-                &ButtonFace::new(self.library_clear_rect, "Clear")
+                &ButtonFace::new(self.library_clear_rect, &clear)
                     .role(ButtonRole::Plain)
                     .hovered(self.library_clear_rect.contains(cursor))
                     .focused(self.library_focus_id.as_deref() == Some("library-clear")),
@@ -335,13 +336,14 @@ impl PlayerState {
         let cursor = self.last_cursor;
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         if entries.is_empty() {
+            let empty = if tab == LibraryTab::Queue {
+                crate::i18n::t("video-queue-empty")
+            } else {
+                crate::i18n::t("video-recent-empty")
+            };
             let content = EmptyStateContent {
                 icon: Some(Icon::ListVideo),
-                ..EmptyStateContent::new(if tab == LibraryTab::Queue {
-                    "Your queue is empty"
-                } else {
-                    "No recent videos"
-                })
+                ..EmptyStateContent::new(&empty)
             };
             let _ = EmptyState::paint(&mut ctx, list, &content, cursor);
             return;
@@ -422,12 +424,12 @@ impl PlayerState {
         for (rect, label, focus) in [
             (
                 self.shared_watch_later_rect,
-                "Watch later",
+                crate::i18n::t("video-watch-later"),
                 "shared-watch-later",
             ),
             (
                 self.shared_bookmark_rect,
-                "Bookmark time",
+                crate::i18n::t("video-bookmark-time"),
                 "shared-bookmark",
             ),
         ] {
@@ -436,7 +438,7 @@ impl PlayerState {
                 transform,
                 text,
                 theme,
-                &ButtonFace::new(rect, label)
+                &ButtonFace::new(rect, &label)
                     .disabled(!has_media)
                     .hovered(rect.contains(cursor))
                     .focused(self.library_focus_id.as_deref() == Some(focus)),
@@ -451,12 +453,12 @@ impl PlayerState {
         let mut ctx = PaintCtx::new(scene, transform, text, theme);
         let library = &self.shared_library;
         if library.playlists.is_empty() && library.annotations.is_empty() {
+            let title = crate::i18n::t("video-shared-empty");
+            let detail = crate::i18n::t("video-shared-empty-detail");
             let content = EmptyStateContent {
                 icon: Some(Icon::ListVideo),
-                message: Some(
-                    "Everyone in this workspace sees the playlists and bookmarks added here.",
-                ),
-                ..EmptyStateContent::new("No shared playlists or bookmarks yet")
+                message: Some(&detail),
+                ..EmptyStateContent::new(&title)
             };
             let _ = EmptyState::paint(&mut ctx, region, &content, cursor);
             return;
@@ -529,7 +531,7 @@ impl PlayerState {
             *y += line + s2;
         };
         if !playlists.is_empty() {
-            heading(&mut ctx, "Playlists", &mut y);
+            heading(&mut ctx, &crate::i18n::t("video-playlists"), &mut y);
             let placed = paint_rows(
                 &mut ctx,
                 &playlist_specs,
@@ -551,7 +553,7 @@ impl PlayerState {
             y += s4;
         }
         if !annotations.is_empty() {
-            heading(&mut ctx, "Bookmarks", &mut y);
+            heading(&mut ctx, &crate::i18n::t("video-bookmarks"), &mut y);
             let placed = paint_rows(
                 &mut ctx,
                 &annotation_specs,
@@ -666,9 +668,15 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
                 .iter()
                 .chain(app.recent.iter())
                 .find(|entry| entry.id == *id)
-                .map_or("Local video", |entry| entry.title.as_str());
+                .map_or_else(
+                    || crate::i18n::t("video-local-video"),
+                    |entry| entry.title.clone(),
+                );
             AccessNode::new(Role::Button)
-                .with_name(format!("Play {title}"))
+                .with_name(crate::i18n::t_args(
+                    "video-play",
+                    &[("title", ui::i18n::ArgValue::Text(title))],
+                ))
                 .with_description(crate::i18n::t("video-local-only-detail"))
                 .with_action_target(format!("video-player.library.play.{id}"))
                 .with_bounds(row.play)

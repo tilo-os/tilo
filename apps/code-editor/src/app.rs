@@ -2749,7 +2749,7 @@ impl Widget for CodeApp {
             AccessNode::new(Role::Document)
                 .with_name(format!("Code: {}", self.session.project.name))
                 .with_description(
-                    "Code editor. Use the file tree, file header, editor document, and bottom panel to navigate the project.",
+                    crate::resource::CATALOG.t("code-editor-a11y-document-description"),
                 )
                 .with_value(active)
                 .with_state(AccessState::new().focusable(true))
