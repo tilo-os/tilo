@@ -26,11 +26,20 @@ impl Checker<'_> {
         args: &[ast::Arg],
         span: Span,
     ) -> Ex {
+        // `Map<Text>()`: a map the code fills while it runs, as against one a record keeps.
+        if let ExprKind::Ident(name) = &callee.kind
+            && name == "Map"
+            && self.lookup(name).is_none()
+            && self.own_callable(name).is_none()
+            && self.env.own_type(name).is_none()
+        {
+            return self.builtin_map(types, args, span);
+        }
         if !types.is_empty() && !names_json(callee) {
             self.err(
                 "E022",
                 span,
-                "only `json.decode<T>(text)` takes a type between `<` and `>`",
+                "only `json.decode<T>(text)` and `Map<T>()` take a type between `<` and `>`",
             );
         }
         match &callee.kind {
@@ -1577,6 +1586,72 @@ impl Checker<'_> {
         false
     }
 
+    /// The arguments `wanted` of a call that names them, each once: the form a method takes when
+    /// what it is given needs a word of its own (`r.markdown(links: pages, from: folder)`).
+    fn named_args<'a>(
+        &mut self,
+        args: &'a [ast::Arg],
+        wanted: &[&str],
+        form: &str,
+        span: Span,
+    ) -> Option<Vec<&'a ast::Arg>> {
+        let mut held: Vec<Option<&ast::Arg>> = vec![None; wanted.len()];
+        let mut whole = args.len() == wanted.len();
+        for a in args {
+            match a
+                .name
+                .as_ref()
+                .and_then(|n| wanted.iter().position(|w| *w == n.name))
+            {
+                Some(at) if held[at].is_none() => held[at] = Some(a),
+                _ => whole = false,
+            }
+        }
+        if whole && held.iter().all(Option::is_some) {
+            return held.into_iter().collect();
+        }
+        self.err("E022", span, format!("`{form}`"));
+        for a in args {
+            let _ = self.expr(&a.value, None);
+        }
+        None
+    }
+
+    /// `Map<Text>()`: a map the code fills while it runs, as against one a record keeps as a
+    /// field. What it is handed to reads what was put in it, and a function that fills one the
+    /// caller declared leaves it filled: a notebook's export names its notes once, in a map it
+    /// then gives the walk that writes them.
+    fn builtin_map(&mut self, types: &[ast::TypeExpr], args: &[ast::Arg], span: Span) -> Ex {
+        if !args.is_empty() {
+            self.err(
+                "E022",
+                span,
+                "`Map<T>()` starts empty and takes nothing: `Map<Text>()`",
+            );
+            for a in args {
+                let _ = self.expr(&a.value, None);
+            }
+            return Ex::error();
+        }
+        let Some(written) = types.first() else {
+            self.err(
+                "E022",
+                span,
+                "`Map()` says what its keys lead to: `Map<Text>()`, a text by each key",
+            );
+            return Ex::error();
+        };
+        let mut diags = Vec::new();
+        let held = crate::resolve::resolve_type_expr(self.env, written, &mut diags);
+        for diagnostic in diags {
+            self.err(&diagnostic.code, diagnostic.span, diagnostic.message);
+        }
+        if held.is_error() {
+            return Ex::error();
+        }
+        Ex::host(Imp::MapNew, Vec::new(), Ty::Map(Box::new(held)))
+    }
+
     fn container_method(
         &mut self,
         b: Ex,
@@ -1915,6 +1990,41 @@ impl Checker<'_> {
                 return Ex::error();
             }
             return Ex::host(Imp::MapKeysValue, vec![m], Ty::List(Box::new(Ty::Text)));
+        }
+        // `m.put(key, value)` and `m.remove(key)`: what the code fills the map with, which the
+        // code it hands the map to reads. A view draws what a map holds, it never fills one.
+        if matches!(name.name.as_str(), "put" | "remove") {
+            if !matches!(self.st.ctx, Ctx::Action | Ctx::Fn) {
+                let who = self.st.ctx.word();
+                self.err(
+                    "E040",
+                    span,
+                    format!(
+                        "{who} cannot change the entries of a map; only an action or a fn fills one"
+                    ),
+                );
+                for a in args {
+                    let _ = self.expr(&a.value, None);
+                }
+                return Ex::error();
+            }
+            let puts = name.name == "put";
+            if !self.arity(name, args, if puts { 2 } else { 1 }, span) {
+                return Ex::error();
+            }
+            let Some(k) = args.first() else {
+                return Ex::error();
+            };
+            let key = self.expr_as(&k.value, &Ty::Text);
+            if !puts {
+                return Ex::host(Imp::MapRemoveValue, vec![m, key], Ty::Unit);
+            }
+            let Some(v) = args.get(1) else {
+                return Ex::error();
+            };
+            let held = self.expr_as(&v.value, value);
+            let held = Self::handle_of(held);
+            return Ex::host(Imp::MapPutValue, vec![m, key, held], Ty::Unit);
         }
         if !self.arity(name, args, 1, span) {
             return Ex::error();
@@ -2379,28 +2489,58 @@ impl Checker<'_> {
             }
             return Ex::error();
         }
-        let [text] = args else {
+        // The text it reads, then — for the pages of a bundle that link to each other — the
+        // address each page stands at, by the note it is, and the folder this one is written in:
+        // a link to a page reads as the reference to it, which every reader reads as it reads now
+        // and what links to it lists.
+        let mut text: Option<Ex> = None;
+        let mut links: Option<Ex> = None;
+        let mut from: Option<Ex> = None;
+        for a in args {
+            match a.name.as_ref().map(|n| n.name.as_str()) {
+                None => {
+                    if text.replace(self.expr_as(&a.value, &Ty::Text)).is_some() {
+                        self.err(
+                            "E022",
+                            span,
+                            "`.from_markdown` reads one text, the first it takes: \
+                             `RichText.from_markdown(text)`",
+                        );
+                    }
+                }
+                Some("links") => {
+                    let held = self.expr_as(&a.value, &Ty::Map(Box::new(Ty::Text)));
+                    links = Some(held);
+                }
+                Some("from") => from = Some(self.expr_as(&a.value, &Ty::Text)),
+                Some(other) => self.err(
+                    "E022",
+                    a.value.span,
+                    format!(
+                        "`.from_markdown` takes the text, `links: pages` and `from: folder`; not \
+                         `{other}:`"
+                    ),
+                ),
+            }
+        }
+        let Some(text) = text else {
             self.err(
                 "E022",
                 span,
-                "`.from_markdown` takes the one text it reads: `RichText.from_markdown(text)`",
+                "`.from_markdown` takes the text it reads: `RichText.from_markdown(text)`",
             );
-            for a in args {
-                let _ = self.expr(&a.value, None);
-            }
             return Ex::error();
         };
-        if text.name.is_some() {
-            self.err(
-                "E022",
-                text.value.span,
-                "`.from_markdown` takes the text by position: `RichText.from_markdown(text)`",
-            );
-        }
-        let text = self.expr_as(&text.value, &Ty::Text);
-        Ex::host(Imp::RichFromMarkdown, vec![text], Ty::RichText)
+        let links =
+            links.unwrap_or_else(|| Ex::host(Imp::MapNew, Vec::new(), Ty::Map(Box::new(Ty::Text))));
+        let from = from.unwrap_or_else(|| Ex::str(""));
+        let app = Ex::str(&self.env.app);
+        Ex::host(
+            Imp::RichFromMarkdown,
+            vec![text, links, from, app],
+            Ty::RichText,
+        )
     }
-
     /// `File`'s methods, which make a file of what an action holds:
     /// `File.of_text(name, text)` the file `name` holding `text`, `File.of_bytes(name, bytes)`
     /// the file holding `bytes`, `File.at(name, address)` the file whose content the device
@@ -2500,6 +2640,21 @@ impl Checker<'_> {
             (Ty::RichText, "is_empty") if args.is_empty() => {
                 Ex::host(Imp::RichEmpty, vec![r], Ty::Bool)
             }
+            // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
+            // to a page of `links` — the notes of a bundle, by the address each stands at — a
+            // link to that page, at the path from the folder the page is written in. Two notes
+            // of one title are two files, and the link is the one its note stands at.
+            (Ty::RichText, "markdown") => {
+                let form = "markdown(links: pages, from: folder)`: the document as Markdown, a \
+                            reference to a page of `links` (an address by each resource) written \
+                            as the link to it from the folder `from";
+                let Some(named) = self.named_args(args, &["links", "from"], form, span) else {
+                    return Ex::error();
+                };
+                let links = self.expr_as(&named[0].value, &Ty::Map(Box::new(Ty::Text)));
+                let from = self.expr_as(&named[1].value, &Ty::Text);
+                Ex::host(Imp::RichMarkdown, vec![r, links, from], Ty::Text)
+            }
             // The body of a response, and bytes, read as the text they decode as; bytes counted.
             (Ty::Response | Ty::Bytes, "text") if args.is_empty() => {
                 Ex::host(Imp::WebText, vec![r], Ty::Text)
@@ -2531,9 +2686,10 @@ impl Checker<'_> {
                 vec![r],
                 Ty::Result(Box::new(Ty::List(Box::new(Ty::File))), Box::new(Ty::Text)),
             ),
-            // A map read as a value (a `json.Value`'s object, or one `json.decode` read): its
-            // keys, and the value one key holds.
-            (Ty::Map(t), "get" | "keys") => {
+            // A map read as a value (a `json.Value`'s object, one `json.decode` read, or the
+            // `Map<T>()` a function fills): its keys, the value one key holds, and — in the code
+            // that runs — the entry put there or taken out.
+            (Ty::Map(t), "get" | "keys" | "put" | "remove") => {
                 let value = t.clone();
                 self.map_value_method(r, &value, name, args, span)
             }

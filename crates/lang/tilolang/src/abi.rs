@@ -132,6 +132,10 @@ imports! {
     CollEmpty = "coll_empty" ([H] -> [I32]);
     SetAdd = "set_add" ([H, H, H] -> []);
     SetRemove = "set_remove" ([H, H, H] -> []);
+    // A map held as a value (`let names: Map<Text> = Map<Text>()`), filled while the code runs.
+    MapNew = "map_new" ([] -> [H]);
+    MapPutValue = "map_put_value" ([H, H, H] -> []);
+    MapRemoveValue = "map_remove_value" ([H, H] -> []);
     MapPut = "map_put" ([H, H, H, H] -> []);
     MapRemove = "map_remove" ([H, H, H] -> []);
     MapSetAdd = "map_set_add" ([H, H, H, H] -> []);
@@ -267,7 +271,14 @@ imports! {
     RichPart = "rich_part" ([H, I32] -> [H]);
     RichEmpty = "rich_empty" ([H] -> [I32]);
     RichTime = "rich_time" ([H] -> [H]);
-    RichFromMarkdown = "rich_from_markdown" ([H] -> [H]);
+    // `RichText.from_markdown(text, links:, from:)`: the document a Markdown text says, a link
+    // to a page of the bundle read as the reference to it. The arguments are the text, the
+    // pages by the address each stands at, the folder the page is written in, and the app the
+    // references name.
+    RichFromMarkdown = "rich_from_markdown" ([H, H, H, H] -> [H]);
+    // `r.markdown(links:, from:)`: the document as Markdown, each reference to one of `links`
+    // written as the link to the page it stands at, from the folder the page is written in.
+    RichMarkdown = "rich_markdown" ([H, H, H] -> [H]);
     RichEmbed = "rich_embed" ([H] -> [H]);
     Phrase = "phrase" ([H, H] -> [H]);
     Word = "word" ([H, H, H] -> [H]);

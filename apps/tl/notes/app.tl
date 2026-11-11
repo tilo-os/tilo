@@ -162,7 +162,7 @@ action insert_image(n: Note, image: File) (icon: .image, did: "added an image") 
 /// `<note>/images/<name>`, a path another reader of the file follows and this app reads again
 /// as the address of the picture's bytes.
 action export_markdown(n: Note) -> Text (icon: .download) {
-    note_markdown(n, file_name(n))
+    note_markdown(n, file_name(n), "", Map<Text>())
 }
 
 /// A note as a file: its Markdown, and the pictures it shows beside it. A note that shows a
@@ -172,7 +172,7 @@ action export_note(n: Note) -> File (icon: .download) {
     if n.images.keys().is_empty() {
         File.of_text("{file_name(n)}.md", export_markdown(n))
     } else {
-        File.zip("{file_name(n)}.zip", note_files(n, file_name(n), ""))
+        File.zip("{file_name(n)}.zip", note_files(n, file_name(n), "", Map<Text>()))
     }
 }
 
@@ -181,54 +181,76 @@ action export_note(n: Note) -> File (icon: .download) {
 /// shape the import reads, so the notebook comes back as the tree it is, titles, bodies and
 /// pictures alike.
 action export_notebook(nb: Notebook) -> File (icon: .download) {
-    File.zip("Notes.zip", files_under(nb, .none, ""))
+    // Every note is named before any file is written: two notes of one title are two files, a
+    // note's folder follows the name its note took, and a link reaches the file of the note it
+    // names rather than the first note of that title.
+    let pages: Map<Text> = Map<Text>()
+    let at: Map<Text> = Map<Text>()
+    pages_under(nb, .none, "", pages, at)
+    File.zip("Notes.zip", files_under(nb, .none, "", pages))
 }
 
-/// The files of the notes under `parent`, each at `folder`: a note's own, then — at the folder
-/// its own name adds — the files of the notes under it. The tree is walked once from the notes
-/// that stand at the top, so a notebook of ten thousand notes costs its notes, and not a walk of
-/// the whole notebook for each of them.
-fn files_under(nb: Notebook, parent: Option<Note>, folder: Text) -> List<File> {
-    // The notes under it, in the order the notebook keeps them, and the name each takes there.
-    let kids = kids_of(nb, parent)
-    let names = kids.map(x -> file_name(x))
-    kids.flat_map(kid -> files_of(nb, kids, names, folder, kid))
+/// Names the notes under `parent`, and the notes under them, in the order the notebook keeps
+/// them: `pages` takes the address each note is written at, by the note's id, and `at` the note
+/// each address is written for, which is what a link asks for.
+fn pages_under(
+    nb: Notebook,
+    parent: Option<Note>,
+    folder: Text,
+    pages: Map<Text>,
+    at: Map<Text>,
+) -> Map<Text> {
+    for kid in kids_of(nb, parent) {
+        let name = free_name(folder, file_name(kid), at)
+        pages.put(kid.id, "{folder}{name}.md")
+        at.put("{folder}{name}.md", kid.id)
+        pages_under(nb, .some(kid), "{folder}{name}/", pages, at)
+    }
+    pages
 }
 
 /// The notes that stand under `parent`, in the order the notebook keeps them: asked of the
-/// store's index of the parent each note names, never by walking the notes beside them.
+/// store's index of the parent each note names, never by walking the notes beside it.
 fn kids_of(nb: Notebook, parent: Option<Note>) -> List<Note> {
     if let p = parent {
         nb.notes.descendants(p, .parent).filter(x -> x.parent == parent)
     } else { nb.notes.filter(x -> x.parent == parent) }
 }
 
-/// The files one note of the notebook's export holds at `folder`: its own Markdown and pictures,
-/// then the notes under it, at the folder the name it takes among `kids` adds.
-fn files_of(
-    nb: Notebook,
-    kids: List<Note>,
-    names: List<Text>,
-    folder: Text,
-    n: Note,
-) -> List<File> {
-    let name = name_among(kids, names, n)
-    let under = "{folder}{name}"
-    [note_files(n, name, folder), files_under(nb, .some(n), "{under}/")].flat_map(files -> files)
+/// The name a note whose title gives `base` is written under in `folder`: `base` itself, and —
+/// where a note of the folder took it already — the first of `base (2)`, `base (3)`, … that none
+/// of them took. Two `Ideas` under one note are `Ideas.md` and `Ideas (2).md`, and a note titled
+/// `Ideas (2)` beside them keeps a file of its own too: no note's file stands over another's.
+fn free_name(folder: Text, base: Text, at: Map<Text>) -> Text {
+    free_from(folder, base, 1, at)
 }
 
-/// The name a note's file takes among the notes of `kids` it stands with: its title's file name,
-/// and — while a note of that name stands before it under the same note — its place among them
-/// (`Monday`, `Monday (2)`), so two notes of one title are two files.
-fn name_among(kids: List<Note>, names: List<Text>, n: Note) -> Text {
-    let name = file_name(n)
-    // The note of a name no other takes beside it keeps it, as every note of a usual notebook
-    // does: what it costs is one walk of the names, never a place among them.
-    if (kids.at(names.index_of(name) ?? 0) ?? n) == n {
-        return name
-    }
-    let at = kids.index_of(n) ?? 0
-    "{name} ({names.take(at).filter(x -> x == name).len() + 1})"
+/// The first of the names a note whose title gives `base` may take, from the `place`th one on.
+fn free_from(folder: Text, base: Text, place: Int, at: Map<Text>) -> Text {
+    let name = if place == 1 { base } else { "{base} ({place})" }
+    if at.get("{folder}{name}.md") == .none { name } else { free_from(folder, base, place + 1, at) }
+}
+
+/// The files of the notes under `parent`, each at `folder`: a note's own, then — at the folder
+/// its own name adds — the files of the notes under it. The tree is walked once from the notes
+/// that stand at the top, so a notebook of ten thousand notes costs its notes, and not a walk of
+/// the whole notebook for each of them.
+fn files_under(nb: Notebook, parent: Option<Note>, folder: Text, pages: Map<Text>) -> List<File> {
+    kids_of(nb, parent).flat_map(kid -> files_of(nb, pages, folder, kid))
+}
+
+/// The files one note of the notebook's export holds at `folder`: its own Markdown and pictures,
+/// then the notes under it, at the folder the name it is written under adds.
+fn files_of(nb: Notebook, pages: Map<Text>, folder: Text, n: Note) -> List<File> {
+    let name = stem_of(base_name(page_path(n, pages)))
+    [note_files(n, name, folder, pages), files_under(nb, .some(n), "{folder}{name}/", pages)]
+        .flat_map(files -> files)
+}
+
+/// The address an export writes `n` at: the one the notebook's export gave it, and the one its
+/// title gives it where it is written alone (`export_note`, `export_markdown`).
+fn page_path(n: Note, pages: Map<Text>) -> Text {
+    pages.get(n.id) ?? "{file_name(n)}.md"
 }
 
 /// Imports a Markdown file as a note at the top of the tree, or opens the note that file already
@@ -268,8 +290,9 @@ action import_markdown(nb: Notebook, file: File) -> Note (
 /// Imports a zip of Markdown (a notebook this app exported, or a Notion export) as notes under
 /// the notebook, a page under the page that held it, in one change: undo takes the whole import
 /// back. Each page's title is its first heading, or its file's name; the pictures a page shows
-/// are the files it stands beside, a reference read from the page's own folder. A page that is
-/// imported already keeps the note it made.
+/// are the files it stands beside, a reference read from the page's own folder, and a link to a
+/// page of the archive is the reference to the note that page made. A page that is imported
+/// already keeps the note it made.
 action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "imported a notebook") {
     match file.files() {
         .ok(files) => {
@@ -278,11 +301,38 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
             let pages = files
                 .filter(f -> f.media == "text/markdown")
                 .sort_by(p -> p.name.split("/").len())
+            let fresh = pages.filter(p -> nb.notes.find(n -> n.source == p.url) == .none)
+            // Every page makes its note before any page is read: a link reaches the note a page
+            // written after it made, whichever of the two stands first in the archive.
+            let at: Map<Text> = Map<Text>()
             for page in pages {
-                let named = title_words(page.name)
-                if nb.notes.find(n -> n.source == page.url) == .none {
+                if let existing = nb.notes.find(n -> n.source == page.url) {
+                    at.put(page.name, existing.id)
+                } else {
                     let parent = nb.notes.find(n -> n.origin == "{folder_of(page.name)}.md")
-                    let at = match page.text() {
+                    let made = nb.notes.insert(
+                        Note(
+                            title: title_words(page.name),
+                            body: RichText(""),
+                            parent: parent,
+                            source: page.url,
+                            origin: page.name,
+                        ),
+                    )
+                    at.put(page.name, made.id)
+                    if let p = parent {
+                        if let last = nb.notes.filter(x -> x.parent == p and x != made).last() {
+                            nb.notes.move(made, after: last)
+                        } else { nb.notes.move(made, after: p) }
+                    }
+                }
+            }
+            // Then what each page says, and the pictures it shows: the files it stands beside,
+            // by the name each stood under, which an export of it writes beside it again.
+            for page in fresh {
+                let named = title_words(page.name)
+                if let made = nb.notes.find(n -> n.source == page.url) {
+                    match page.text() {
                         .ok(text) => {
                             let title = first_heading(text) ?? named
                             let shown = pictures_shown(
@@ -290,37 +340,22 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
                                 page.name,
                                 pictures,
                             )
-                            Note(
-                                title: title,
-                                body: RichText.from_markdown(shown),
-                                parent: parent,
-                                source: page.url,
-                                origin: page.name,
+                            made.title = title
+                            made.body = RichText.from_markdown(
+                                shown,
+                                links: at,
+                                from: folder_at(page.name),
                             )
                         }
                         .err(why) => {
-                            Note(
-                                title: named,
-                                body: RichText(why),
-                                parent: parent,
-                                source: page.url,
-                                origin: page.name,
-                            )
+                            made.body = RichText(why)
                         }
                     }
-                    let made = nb.notes.insert(at)
-                    // The pictures the page shows are the note's own, by the name each stood
-                    // under: what an export of it writes beside it again.
                     let shown = made.body.markdown
                     for picture in pictures {
                         if shown.contains(picture.url) {
                             made.images.put(picture.url, base_name(picture.name))
                         }
-                    }
-                    if let p = parent {
-                        if let last = nb.notes.filter(x -> x.parent == p and x != made).last() {
-                            nb.notes.move(made, after: last)
-                        } else { nb.notes.move(made, after: p) }
                     }
                 }
             }
@@ -339,6 +374,13 @@ action import_archive(nb: Notebook, file: File) (icon: .file_plus, did: "importe
             }
         }
     }
+}
+
+/// The folder the page at `path` stands in, as a page's own folder names it: nothing at the top
+/// of the archive, and `Home/` for `Home/Ideas.md`.
+fn folder_at(path: Text) -> Text {
+    let folder = folder_of(path)
+    if folder == "" { "" } else { "{folder}/" }
 }
 
 /// The notebook's window: the notes as a tree in the sidebar, the one chosen beside it.
@@ -549,8 +591,8 @@ fn export_name(n: Note) -> Text {
 
 /// The files one note's export holds: its Markdown at `folder`/`name`, and each picture it shows
 /// under that note's own `images` folder, beside the note as a reader of it finds them.
-fn note_files(n: Note, name: Text, folder: Text) -> List<File> {
-    let page = File.of_text("{folder}{name}.md", note_markdown(n, name))
+fn note_files(n: Note, name: Text, folder: Text, pages: Map<Text>) -> List<File> {
+    let page = File.of_text("{folder}{name}.md", note_markdown(n, name, folder, pages))
     let pictures: List<File> = n.images
         .keys()
         .map(
@@ -562,9 +604,10 @@ fn note_files(n: Note, name: Text, folder: Text) -> List<File> {
 }
 
 /// A note as Markdown: its title, then its body, each picture it shows standing under `name`'s own
-/// `images` folder — a path relative to the note, as a reader of the file follows it.
-fn note_markdown(n: Note, name: Text) -> Text {
-    let body = n.body.markdown.trim()
+/// `images` folder — a path relative to the note, as a reader of the file follows it — and each
+/// note it links to a link to that note's page, at the path from the folder it is written in.
+fn note_markdown(n: Note, name: Text, folder: Text, pages: Map<Text>) -> Text {
+    let body = n.body.markdown(links: pages_linked(n, pages), from: folder).trim()
     for address in n.images.keys() {
         body = body.replace("]({address})", "]({name}/images/{picture_name(n, address)})")
     }
@@ -607,8 +650,9 @@ fn copied(n: Note, parent: Option<Note>) -> Note {
     Note(title: n.title, body: n.body, parent: parent, pinned: n.pinned)
 }
 
-/// The name a note is saved as: its title, a dash for each character a file name cannot keep, and
-/// "Note" while its title is nothing a file can be called.
+/// The name a note is saved as: its title, a dash for each character a file name cannot keep — a
+/// path's own, a heading's, and the brackets a Markdown link writes its path in — and "Note"
+/// while its title is nothing a file can be called.
 fn file_name(n: Note) -> Text {
     let safe = n.title
         .trim()
@@ -616,7 +660,20 @@ fn file_name(n: Note) -> Text {
         .replace("\\", "-")
         .replace(":", "-")
         .replace("\n", "-")
+        .replace("<", "-")
+        .replace(">", "-")
     if safe == "" or safe == "." or safe == ".." { "Note" } else { safe }
+}
+
+/// The page each note `n` links to is written at, by the note's id: what its links name, so a
+/// reader of the file follows one to the file of the note it spoke of — the one its title gave
+/// it, or the place it took among the notes of that title.
+fn pages_linked(n: Note, pages: Map<Text>) -> Map<Text> {
+    let links: Map<Text> = Map<Text>()
+    for referred in n.body.references {
+        if let path = pages.get(referred.id) { links.put(referred.id, path) }
+    }
+    links
 }
 
 /// A file's name without its extension: `fox.png` is `fox`.

@@ -86,6 +86,44 @@ pub struct RichValue {
     pub blocks: Vec<BlockView>,
 }
 
+/// `path` as a page standing in `from` reaches it: the folders it shares with `from` left out,
+/// and one `..` for each folder of `from` above them — `../Plan.md` for a page in `Home` naming
+/// one in `Work`, `Monday.md` for a page in `Home/Standups` naming the one beside it.
+#[must_use]
+pub fn relative_path(from: &str, path: &str) -> String {
+    let from_parts: Vec<&str> = from.split('/').filter(|part| !part.is_empty()).collect();
+    let parts: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
+    let shared = from_parts
+        .iter()
+        .zip(&parts)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let up = "../".repeat(from_parts.len().saturating_sub(shared));
+    format!("{up}{}", parts.get(shared..).unwrap_or_default().join("/"))
+}
+
+/// The page `href` names, as the page standing in `from` reaches it: its own path a page of the
+/// same bundle holds, or none for a link to anywhere else (one with a scheme, or one that
+/// climbs above the bundle's own folder).
+#[must_use]
+pub fn bundle_path(from: &str, href: &str) -> Option<String> {
+    let href = href.trim();
+    if href.is_empty() || href.contains("://") || href.starts_with('/') {
+        return None;
+    }
+    let mut parts: Vec<&str> = from.split('/').filter(|part| !part.is_empty()).collect();
+    for part in href.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            name => parts.push(name),
+        }
+    }
+    (!parts.is_empty()).then(|| parts.join("/"))
+}
+
 fn paragraph(text: &str) -> BlockView {
     BlockView {
         id: String::new(),
@@ -621,6 +659,47 @@ fn marked_block(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_page_names_one_beside_it_by_the_path_from_where_it_stands() {
+        assert_eq!(relative_path("", "Plan.md"), "Plan.md");
+        assert_eq!(relative_path("Home/", "Home/Groceries.md"), "Groceries.md");
+        assert_eq!(
+            relative_path("Home/Standups/", "Home/Standups/Monday.md"),
+            "Monday.md"
+        );
+        assert_eq!(relative_path("Home/", "Work/Plan.md"), "../Work/Plan.md");
+        assert_eq!(
+            relative_path("A/B/C/", "A/X.md"),
+            "../../X.md",
+            "one step up for each folder of its own above the one they meet at"
+        );
+        assert_eq!(
+            relative_path("Home/", "Home/Ideas (2).md"),
+            "Ideas (2).md",
+            "a name a file name may keep, spaces and brackets alike"
+        );
+    }
+
+    #[test]
+    fn a_link_reads_as_the_page_it_names_and_nothing_else() {
+        assert_eq!(
+            bundle_path("Home/", "Groceries.md").as_deref(),
+            Some("Home/Groceries.md")
+        );
+        assert_eq!(
+            bundle_path("A/B/C/", "../../X.md").as_deref(),
+            Some("A/X.md")
+        );
+        assert_eq!(
+            bundle_path("", "Work/Plan.md").as_deref(),
+            Some("Work/Plan.md")
+        );
+        assert_eq!(bundle_path("Home/", "https://example.test/a.md"), None);
+        assert_eq!(bundle_path("Home/", "/etc/passwd"), None);
+        assert_eq!(bundle_path("Home/", "../../escape.md"), None);
+        assert_eq!(bundle_path("Home/", ""), None);
+    }
 
     #[test]
     fn anchors_number_paragraphs_and_the_items_of_a_list_under_it() {

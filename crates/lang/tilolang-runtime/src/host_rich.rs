@@ -8,6 +8,7 @@
 //! is the document as Markdown, each picture written where its bytes are
 //! (`![](tilo-blob://…)`).
 
+use std::collections::BTreeMap;
 use std::rc::Rc;
 
 use crate::abi::Imp;
@@ -70,15 +71,35 @@ impl Core {
                 self.ret_h(part)
             }
             Imp::RichEmpty => ret_i32(i32::from(self.rich_arg(a.h(0)?)?.is_empty())),
-            // `RichText.from_markdown(text)`: the document a Markdown text says, read the one
-            // way every app reads one (`tilo_doc_codecs::rich`), a picture kept as the Markdown
-            // it is written as.
+            // `RichText.from_markdown(text, links: pages, from: folder)`: the document a
+            // Markdown text says, read the one way every app reads one (`tilo_doc_codecs::rich`),
+            // a picture kept as the Markdown it is written as, and a link to a page of the
+            // bundle the reference to that page — a note whose file the export wrote, which a
+            // reader opens by the reference and what links to it lists.
             Imp::RichFromMarkdown => {
                 let markdown = self.text(a.h(0)?)?;
+                let pages = self.text_map(a.h(1)?)?;
+                let from = self.text(a.h(2)?)?;
+                let app = self.text(a.h(3)?)?;
                 match tilo_doc_codecs::rich::blocks_of_markdown(&markdown) {
-                    Ok(blocks) => self.ret_h(Value::Rich(RichValue { blocks })),
+                    Ok(blocks) => {
+                        let blocks = pages_read(blocks, &pages, &from, &app);
+                        self.ret_h(Value::Rich(RichValue { blocks }))
+                    }
                     Err(why) => trap(format!("this text is not a document: {why}")),
                 }
+            }
+            // `r.markdown(links: pages, from: folder)`: the document as Markdown, each reference
+            // to a page of the bundle written as the link to that page — the path from the
+            // folder this one is written in, so a reader of the file follows it to the note.
+            Imp::RichMarkdown => {
+                let r = self.rich_arg(a.h(0)?)?;
+                let pages = self.text_map(a.h(1)?)?;
+                let from = self.text(a.h(2)?)?;
+                let linked = pages_written(&r.blocks, &pages, &from);
+                self.ret_h(Value::Text(tilo_doc_codecs::rich::markdown_of_blocks(
+                    &linked,
+                )))
             }
             // `RichText.embed(r)`: the text whose one paragraph projects `r`, which is what a
             // card of it shows where the text is drawn.
@@ -246,4 +267,121 @@ impl Core {
         }
         Ok(out)
     }
+
+    /// A map the code holds (`Map<Text>()`, or one a view was handed), as its entries: the text
+    /// each key leads to.
+    fn text_map(&self, h: i32) -> HResult<BTreeMap<String, String>> {
+        let Value::Map(entries) = self.val(h)? else {
+            return trap("expected a map of text");
+        };
+        Ok(entries
+            .into_iter()
+            .filter_map(|(key, value)| {
+                Some((key.as_text()?.to_owned(), value.as_text()?.to_owned()))
+            })
+            .collect())
+    }
+}
+
+/// `blocks` as Markdown writes a bundle of pages: each reference to a page of `pages` — the
+/// address the page stands at, by the resource it is — a link to it, the path from `from`, the
+/// folder the page this text is in stands at. Every other reference stays what it was: text
+/// naming a resource no file of the bundle holds.
+fn pages_written(
+    blocks: &[tilo_doc::snapshot::BlockView],
+    pages: &BTreeMap<String, String>,
+    from: &str,
+) -> Vec<tilo_doc::snapshot::BlockView> {
+    blocks
+        .iter()
+        .map(|block| {
+            let mut out = block.clone();
+            for mark in &mut out.marks {
+                if mark.name != crate::rich::MENTION && mark.name != crate::rich::PROJECTION {
+                    continue;
+                }
+                let Some(reference) = mark.value.as_str().and_then(Reference::of_mark) else {
+                    continue;
+                };
+                let Some(path) = crate::rich::resource_id(&reference).and_then(|id| pages.get(id))
+                else {
+                    continue;
+                };
+                tilo_doc::schema::MARK_LINK.clone_into(&mut mark.name);
+                mark.value = tilo_doc::document::MarkValue::Str(format!(
+                    "<{}>",
+                    crate::rich::relative_path(from, path)
+                ));
+            }
+            out
+        })
+        .collect()
+}
+
+/// `blocks` as a bundle of pages reads: each link to a page of `pages` — the path it stands at,
+/// by the resource it is, read from `from`, the folder this page stands at — the reference to
+/// that resource, of the app `app`. A paragraph that is one such link and nothing else is the
+/// card of the page it names, which is how an embed of it is written.
+fn pages_read(
+    blocks: Vec<tilo_doc::snapshot::BlockView>,
+    pages: &BTreeMap<String, String>,
+    from: &str,
+    app: &str,
+) -> Vec<tilo_doc::snapshot::BlockView> {
+    blocks
+        .into_iter()
+        .map(|mut block| {
+            let mut found: Vec<(usize, usize, String)> = Vec::new();
+            for mark in &block.marks {
+                if mark.name != tilo_doc::schema::MARK_LINK {
+                    continue;
+                }
+                let Some(id) = mark
+                    .value
+                    .as_str()
+                    .and_then(|href| crate::rich::bundle_path(from, href))
+                    .and_then(|path| pages.get(&path))
+                else {
+                    continue;
+                };
+                found.push((mark.start, mark.end, id.clone()));
+            }
+            if found.is_empty() {
+                return block;
+            }
+            let len = block.text.chars().count();
+            let alone = block.kind == "paragraph"
+                && found.len() == 1
+                && found
+                    .first()
+                    .is_some_and(|(start, end, _)| *start == 0 && *end == len);
+            block.marks.retain(|mark| {
+                !(mark.name == tilo_doc::schema::MARK_LINK
+                    && found
+                        .iter()
+                        .any(|(start, end, _)| *start == mark.start && *end == mark.end))
+            });
+            for (start, end, id) in found {
+                block.marks.push(tilo_doc::document::MarkSpan {
+                    name: if alone {
+                        crate::rich::PROJECTION
+                    } else {
+                        crate::rich::MENTION
+                    }
+                    .to_owned(),
+                    start,
+                    end,
+                    value: tilo_doc::document::MarkValue::Str(
+                        Reference::resource(
+                            app,
+                            String::new(),
+                            crate::rich::published_id(app, &id),
+                        )
+                        .mark_value(),
+                    ),
+                });
+            }
+            block
+        })
+        .collect()
 }
