@@ -429,7 +429,7 @@ pub(crate) fn effect_statuses(model: &TubeModel, view: &SyncView) -> Vec<EffectS
     }
     if matches!(view.status, SyncStatus::Unavailable) {
         let reason = if view.summary.trim().is_empty() {
-            crate::sync::capability().summary.to_string()
+            crate::i18n::t(crate::sync::capability().summary_key)
         } else {
             view.summary.clone()
         };

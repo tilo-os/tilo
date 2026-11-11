@@ -426,14 +426,14 @@ impl Tube {
             TubeEffect::OpenVideo { video } => {
                 self.adopt_suggested(&video);
                 if self.model.video(&video).is_none() {
-                    return Err("That video is no longer available".into());
+                    return Err(t("tube-notice-video-gone"));
                 }
                 self.open_video(video);
                 self.shell_asks.push(ShellAsk::DismissOverlayRail);
             }
             TubeEffect::OpenCreator { creator } => {
                 if self.model.channel(&creator).is_none() {
-                    return Err("That creator is no longer available".into());
+                    return Err(t("tube-notice-creator-gone"));
                 }
                 self.navigate_to(Route::Channel(creator.clone()));
                 self.shell_asks.push(ShellAsk::DismissOverlayRail);
@@ -441,7 +441,7 @@ impl Tube {
             }
             TubeEffect::OpenPlaylist { playlist } => {
                 if self.model.playlist(&playlist).is_none() {
-                    return Err("That playlist is no longer available".into());
+                    return Err(t("tube-notice-playlist-gone"));
                 }
                 self.navigate_to(Route::Playlist(playlist.clone()));
                 self.shell_asks.push(ShellAsk::DismissOverlayRail);
@@ -494,13 +494,13 @@ impl Tube {
             }
             TubeEffect::ClearHistory => {
                 if self.edit_history(&WatchHistory::CLEAR.invoke()) {
-                    self.model.push_notice("Watch history cleared");
+                    self.model.push_notice(t("tube-notice-history-cleared"));
                 }
             }
             TubeEffect::PairDevice { invite } => {
                 #[cfg(feature = "grayjay-sync")]
                 if !self.device_sync.pair(invite) {
-                    return Err("Device pairing is busy or unavailable".into());
+                    return Err(t("tube-notice-pairing-busy"));
                 }
                 #[cfg(not(feature = "grayjay-sync"))]
                 let _ = invite;
@@ -511,7 +511,7 @@ impl Tube {
                     .device_sync
                     .sync_now(crate::sync::lifecycle_state(&self.model))
                 {
-                    return Err("Device sync is busy or unavailable".into());
+                    return Err(t("tube-notice-sync-busy"));
                 }
             }
             TubeEffect::ApproveDevice { device } => {
