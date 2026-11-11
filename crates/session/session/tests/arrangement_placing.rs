@@ -733,11 +733,17 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
             ["conversation", "tasks", "mail", "notes"]
                 .into_iter()
                 .map(|id| {
-                    ResourceSpec::new(format!("tl:test.anchor:{id}"), "test.thing", id)
-                        .with_action(view_action("open-thing"))
-                        .with_view(
-                            ResourceViewSpec::new("page", "Page", "open-thing").with_primary(true),
-                        )
+                    let mut resource =
+                        ResourceSpec::new(format!("tl:test.anchor:{id}"), "test.thing", id)
+                            .with_action(view_action("open-thing"))
+                            .with_view(
+                                ResourceViewSpec::new("page", "Page", "open-thing")
+                                    .with_primary(true),
+                            );
+                    // An app's resource: the arrangement places what an app publishes, the way
+                    // every app's own resources are.
+                    resource.app_id = Some("test.anchor".to_owned());
+                    resource
                 })
                 .collect()
         }
