@@ -338,6 +338,13 @@ impl SearchField {
         self.input.set_placeholder(hint);
     }
 
+    /// The words the field shows while it holds nothing, which a step that
+    /// repurposes it reads out as what it asks for.
+    #[must_use]
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
+    }
+
     /// Give the input the placeholder elided to the room it has, so a long
     /// one ends in an ellipsis instead of running under the trailing slot.
     fn fit_placeholder(&mut self, text_renderer: &mut TextRenderer, theme: &Theme) {

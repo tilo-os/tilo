@@ -4176,13 +4176,15 @@ pub(crate) mod ordinary_confirmation_tests {
     #[test]
     fn ordinary_confirmation_native_immediate_and_text_use_original_representation() {
         use tilo_actions::*;
+        // The step that collects the argument is named by the prompt it shows.
+        const PROMPT: &str = "Enter original text";
         for text in [false, true] {
             let (root, ledger, resources) = fixture(ConfirmationPolicy::Confirm);
             let mut spec = if text {
                 ActionSpec::prompted_operation(
                     "run",
                     "Run fixture",
-                    "Enter original text",
+                    PROMPT,
                     "Original",
                     OperationKind::Effect,
                     "fixture.control",
@@ -4215,7 +4217,7 @@ pub(crate) mod ordinary_confirmation_tests {
             );
             layout(&mut app);
             if text {
-                let named_action_target = named(&mut app, "Search");
+                let named_action_target = named(&mut app, PROMPT);
                 app.dispatch_a11y_action(
                     named_action_target,
                     &crate::a11y::Action::SetValue("not-a-value-field".into()),
