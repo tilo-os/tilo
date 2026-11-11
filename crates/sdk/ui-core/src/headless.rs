@@ -1100,8 +1100,8 @@ impl FrameHarness {
     /// Capture/close embedded components while the host still owns their trees.
     /// Recovery reports stay owned by this host until explicitly transferred.
     pub fn close_components(&mut self) {
-        let _running = self.running();
         self.invalidate_local();
+        let _running = self.running();
         self.pending_app_activation = None;
         self.bound_publication.clear();
         self.control_domain.close();
@@ -1661,10 +1661,10 @@ impl FrameHarness {
         event: &WindowEvent,
         modifiers: &winit::event::Modifiers,
     ) -> RootDispatch {
+        self.invalidate_local();
         // What the app answers the person with — a slot declared, a notice shown — is this
         // window's.
         let _running = self.running();
-        self.invalidate_local();
         let _wake = self.enter_wake();
         crate::motion::note_input(event);
         self.settle_replayed_draws();
@@ -1719,8 +1719,8 @@ impl FrameHarness {
 
     /// Deliver an authenticated transport answer through the native widget tree.
     pub fn handle_collaboration_event(&mut self, event: &crate::collaboration::CollabEvent) {
-        let _running = self.running();
         self.invalidate_local();
+        let _running = self.running();
         crate::widget::handle_collab_event(self.root.as_mut(), event);
         self.relayout();
     }
