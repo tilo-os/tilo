@@ -10024,19 +10024,23 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        // The app's own route learns its keys and settles; from then on an
-        // idle endpoint asks only when told its channel changed.
-        tilo_test_env::wait_until("the app route's endpoint to ask for its keys", || {
-            asked.load(std::sync::atomic::Ordering::Acquire) > 0
+        // The app's own route learns its keys and settles, which disarms the
+        // key timer; from then on an idle endpoint asks only when told its
+        // channel changed.
+        tilo_test_env::wait_until("the app route's endpoint to settle on its keys", || {
+            let seen = key_schedule(&manager);
+            !seen.armed && seen.timer_rounds == 0
         });
+        let settled = asked.load(std::sync::atomic::Ordering::Acquire);
         manager.join_route(
             RouteSpec::cluster(Uuid::new_v4()),
             crate::record::RecordKind::new(""),
         );
         // The join's key round, were there one, has run before this probe is
         // answered (the shovel serves its commands in order, and the probe
-        // applies any round still out). Nothing waits for keys and nothing
-        // asks: the timer is not armed and no route was asked.
+        // applies any round still out). A cluster route asks nothing and
+        // waits for nothing, so the timer stays disarmed and no route was
+        // asked for keys.
         let seen = key_schedule(&manager);
         assert!(
             !seen.armed && seen.timer_rounds == 0,
@@ -10044,9 +10048,8 @@ mod tests {
         );
         assert_eq!(
             asked.load(std::sync::atomic::Ordering::Acquire),
-            1,
-            "only the app's own route asked the identity service; the cluster route asked for \
-             keys it cannot be granted"
+            settled,
+            "a cluster route asked the identity service for channel keys it cannot be granted"
         );
         drop(manager);
         thread.join().unwrap();
