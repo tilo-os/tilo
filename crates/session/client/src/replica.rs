@@ -160,8 +160,8 @@ impl Replicas {
         Ok(installed)
     }
 
-    /// Admit `message`, governance `author` sent to `workspace_id`;
-    /// `retained` while the host replays the workspace. The report says whether it changed
+    /// Admit `message`, governance `author` sent to `workspace_id`, as of when
+    /// it was signed ([`relayed`]). The report says whether it changed
     /// what the workspace's governance says, and the documents it let the replica decide.
     ///
     /// # Errors
@@ -171,7 +171,6 @@ impl Replicas {
         &self,
         workspace_id: u64,
         author: [u8; 32],
-        retained: bool,
         message: NeighbourMsg,
         now: SystemTime,
     ) -> Result<tilo_peer_state::AdmissionReport, String> {
@@ -179,11 +178,11 @@ impl Replicas {
             return Err("the workspace has no governance".into());
         };
         self.owner
-            .receive(*workspace, origin(author, retained), message, None, now)
+            .receive(*workspace, relayed(author), message, None, now)
     }
 
-    /// Keep `documents`, each a document its author wrote to `workspace_id` (`retained` while
-    /// the host replays the workspace), in its replica as the workspace's governance decides
+    /// Keep `documents`, each a document its author wrote to `workspace_id` ([`relayed`]), in
+    /// its replica as the workspace's governance decides
     /// them, in order and in one owner turn: one report per document. What it cannot decide yet
     /// the replica holds, and decides once it can.
     ///
@@ -192,7 +191,7 @@ impl Replicas {
     pub(crate) fn keep(
         &self,
         workspace_id: u64,
-        documents: Vec<([u8; 32], bool, NeighbourMsg)>,
+        documents: Vec<([u8; 32], NeighbourMsg)>,
         now: SystemTime,
     ) -> Result<Vec<Result<tilo_peer_state::AdmissionReport, String>>, String> {
         let workspace = self
@@ -200,7 +199,7 @@ impl Replicas {
             .ok_or("the workspace has no governance")?;
         let inputs = documents
             .into_iter()
-            .map(|(author, retained, message)| (origin(author, retained), message))
+            .map(|(author, message)| (relayed(author), message))
             .collect();
         self.owner.receive_batch(workspace, inputs, None, now)
     }
@@ -316,10 +315,9 @@ impl Replicas {
     }
 }
 
-fn origin(author: [u8; 32], retained: bool) -> TransportOrigin {
-    if retained {
-        TransportOrigin::RetainedRelayDelta(author)
-    } else {
-        TransportOrigin::RelayDelta(author)
-    }
+/// A write `author` signed when it made it, which the workspace's host sent
+/// this session, relayed as it arrived or from what its store kept: decided
+/// as of its own timestamp, and in the clear only before its record sealed.
+fn relayed(author: [u8; 32]) -> TransportOrigin {
+    TransportOrigin::RetainedRelayDelta(author)
 }

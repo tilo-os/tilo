@@ -268,7 +268,6 @@ pub fn start_session(
         held_live: crate::held_live::HeldLive::new(),
         positions: BTreeMap::new(),
         opened_records: BTreeMap::new(),
-        answering: BTreeSet::new(),
         opened_routes: BTreeSet::new(),
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
@@ -339,8 +338,6 @@ struct Answered {
 struct Arrived {
     workspace_id: u64,
     author: [u8; 32],
-    /// Whether it came with the host's replay of the workspace.
-    retained: bool,
     message: neighbour_wire::NeighbourMsg,
     route: DocumentRoute,
     /// Its entry id, as the host names it.
@@ -420,9 +417,6 @@ struct Task {
     /// The on-demand records this page opened, by retained channel: opened
     /// again after every resubscription.
     opened_records: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
-    /// The opened records whose host has not answered yet, by workspace: until
-    /// it does, what it sends of the workspace may be what its store kept.
-    answering: BTreeSet<(u64, [u8; 32])>,
     /// The routes this session was asked to open ([`Cmd::OpenRoute`]):
     /// in a workspace that sends records when opened, each is opened as a
     /// record too, so it arrives.

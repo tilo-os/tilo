@@ -2293,8 +2293,13 @@ impl StatePeer {
             return Err("a document compaction is only ever sealed".into());
         }
         let mutation = match payload {
+            // A record's cleartext writes before it sealed are the base its
+            // sealed writes are changes over, and arrive before them in the
+            // order its host keeps it: a device that joins or returns takes
+            // that base in first. Whether a write is history is where it
+            // stands in the record, never how it travelled.
             collab_types::WholeDocumentPayload::Cleartext(mutation)
-                if !candidate.encryption_required || retained_replay =>
+                if !candidate.encryption_required =>
             {
                 // The record's own document holds it (see `covered`), so
                 // it covers this writer up to it.
@@ -2344,12 +2349,9 @@ impl StatePeer {
                 return self.admit_sealed(route, candidate, validated_channel, *envelope);
             }
             collab_types::WholeDocumentPayload::Cleartext(_) => {
-                // A live plaintext write to a record this device seals is a
-                // downgrade, and refused. Retained history of the record
-                // from before the seal is taken in above instead: it is the
-                // cleartext base the sealed writes are changes over, so a
-                // device returning to the record, or joining it later, reads
-                // it by taking that base in first.
+                // A plaintext write to a record after it sealed is a
+                // downgrade, and refused, however its host sent it: live, or
+                // replayed from what its store kept.
                 return Err(
                     "incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden"
                         .into(),
