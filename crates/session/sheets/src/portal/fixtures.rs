@@ -353,7 +353,7 @@ fn visa_question(run: &str, handle: &str) -> Dialog {
         arguments: vec![
             argument("Name", "Jane Doe"),
             argument("Passport", "X1234567"),
-            argument("Travel dates", "12 – 19 March 2027"),
+            argument("Travel dates", "12 March to 19 March 2027"),
             argument("Consulate login", "•••"),
         ],
         risk: "destructive".to_owned(),
