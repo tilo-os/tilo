@@ -63,7 +63,7 @@
 // passes `--bundle $CARGO_TARGET_DIR/agent-shell/bundle` and shoots again in a
 // minute, with no bundle build.
 import {spawn, spawnSync} from 'node:child_process';
-import {randomBytes} from 'node:crypto';
+import {X509Certificate, createHash, randomBytes} from 'node:crypto';
 import {appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync} from 'node:fs';
 import {createServer, request as httpsRequest} from 'node:https';
 import {createServer as netServer} from 'node:net';
@@ -296,6 +296,10 @@ const hostPort = await freePort();
 // so it reaches the workspace's live plane only through one.
 const relayPort = await freePort();
 const plainPort = await freePort();
+// Where pages reach the host: WebTransport over UDP. The site in front of the host carries only
+// TCP, as a deployment's ingress does, so the host takes its sessions at a port of its own and
+// names that origin to the pages, as a deployment's TILO_ROOMS_LINK does.
+const linkPort = await freePort();
 const siteLog = line => {
   try { appendFileSync(join(browserDir, 'site.log'), `${new Date().toISOString()} ${line}\n`); } catch {}
 };
@@ -357,6 +361,7 @@ const host = detached('host', relayBin, ['room', '--state', join(work, 'room-sta
   '--web', `127.0.0.1:${hostPort}`, '--tls', `files:${certPath},${keyPath}`,
   '--web-plain', `127.0.0.1:${plainPort}`, '--public-origin', siteOrigin,
   '--packet-relay', `127.0.0.1:${relayPort}`,
+  '--link-listen', `127.0.0.1:${linkPort}`, '--link-origin', `https://127.0.0.1:${linkPort}`,
   '--allowed-origin', siteOrigin, '--listing-description', 'A workspace for a person and their agent',
   '--default-role', 'editor', '--room-records',
   // The apps the workspace opens with: the ones the agent drives, which the
@@ -1411,7 +1416,13 @@ function watchMemory(tab) {
   };
 }
 
+// The test certificate's key, which the browser takes on the host's WebTransport link too: QUIC
+// verifies its certificate apart from the HTTPS stack `--ignore-certificate-errors` relaxes.
+const testKeySpki = createHash('sha256')
+  .update(new X509Certificate(readFileSync(certPath)).publicKey.export({type: 'spki', format: 'der'}))
+  .digest('base64');
 const browser = await launch({args: ['--ignore-certificate-errors',
+  `--ignore-certificate-errors-spki-list=${testKeySpki}`,
   // A build container runs as root, where Chromium refuses its own sandbox.
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
   // The host's packet relay is plain http (the browser's own WebTransport
