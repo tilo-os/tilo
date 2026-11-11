@@ -34,6 +34,7 @@ what was stored inside the guest.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -617,12 +618,34 @@ def configure_passwords(facts: dict, run: Run) -> None:
     box = run.vm(SOURCE)
     open_passwords(box)
     before = password_items(box)
+    password = "e2e-" + os.urandom(12).hex()
     app_action(box, "", "save-login", {"name": PASSWORD_TITLE, "origin": "https://branch.example",
                                        "username": "ada@branch.example",
-                                       "password": "e2e-" + os.urandom(12).hex()}, PASSWORDS)
+                                       "password": password}, PASSWORDS)
     new = wait_until(lambda: password_items(box) - before, 30, interval=1.0)
     expect(new, "Passwords lists no new item after save-login")
     facts["password_items"] = sorted(new)
+    expect(password not in json.dumps(listed_actions(box)),
+           "the saved password is in the desktop's action listing")
+    leaks = secret_leaks(box, password)
+    expect(not leaks, f"the saved password is in plain text in {leaks}")
+
+
+# Where a secret a person saved must never be in plain text: the system journal (every unit's
+# and the session's own log) and the files under /var/log and the person's home, where the
+# vault keeps it only sealed.
+SECRET_PLACES = """p=$(printf %s {pattern} | base64 -d)
+journalctl -m --no-pager -o cat 2>/dev/null | grep -qaF -- "$p" && echo journal
+grep -rlaF --exclude-dir=proc -- "$p" /var/log /home 2>/dev/null | head -n 20
+true"""
+
+
+def secret_leaks(vm: TiloVm, secret: str) -> list[str]:
+    """The places on `vm` that hold `secret` in plain text. The secret travels base64-encoded,
+    so no command line or log of this harness carries it either."""
+    pattern = shlex.quote(base64.b64encode(secret.encode()).decode())
+    text = vm.root_exec(SECRET_PLACES.format(pattern=pattern), timeout=300)
+    return [line for line in text.splitlines() if line.strip()]
 
 
 def open_passwords(vm: TiloVm) -> None:
