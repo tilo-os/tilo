@@ -145,13 +145,12 @@ fn agreement_needs_the_bar_the_shell_and_the_frame() {
     assert_eq!(state(false, false, true).agreed(), None);
 }
 
-/// A narrow window the desktop's bar hosts, showing a page beside its places: the places' own
-/// screen holds the way back to the page, and the page holds the sidebar button in the row that
-/// is the window's bar, so the places are never a dead end — as where the app puts the button
-/// among its bar's slots. The same shell out of a desktop window drills from its places to the
-/// page and back, its places the first screen.
+/// A narrow window whose sidebar is its places — a page beside the sections it has: the places are
+/// the window's first screen, and the page a row of them opens keeps the way back, the desktop's
+/// bar over the row or not. A window whose content is a list of its own opens on that list instead
+/// (`a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places`).
 #[test]
-fn a_hosted_narrow_windows_places_lead_back_to_the_page() {
+fn the_page_a_row_of_the_places_opens_keeps_back_to_them() {
     let shell = || {
         NavShell::new()
             .content_kind(ContentKind::Page)
@@ -160,37 +159,45 @@ fn a_hosted_narrow_windows_places_lead_back_to_the_page() {
     };
     let mut h = harness(shell(), 400, 800, Theme::dark());
     h.present_in_window_bar();
-    h.root_mut::<NavShell>().show(NavPane::Sidebar);
     settle(&mut h, 400, 800);
     assert!(h.row_holds_bar(), "the row is the window's bar");
     assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    assert_eq!(
+        h.root::<NavShell>().front_pane(),
+        NavPane::Sidebar,
+        "the places are the window's first screen"
+    );
+    assert_eq!(
+        geometry(&h).back,
+        Rect::ZERO,
+        "a window on its first screen has no way back to nothing"
+    );
+    h.root_mut::<NavShell>().show(NavPane::Content);
+    settle(&mut h, 400, 800);
     let back = geometry(&h).back;
-    assert!(back.width() > 0.0, "the places' screen holds the way back");
+    assert!(
+        back.width() > 0.0,
+        "the page a row of the places opened holds the way back to them"
+    );
     h.click_at(back.center().x, back.center().y);
     settle(&mut h, 400, 800);
     assert_eq!(
         h.root::<NavShell>().front_pane(),
-        NavPane::Content,
-        "Back goes forward to the page the places covered"
+        NavPane::Sidebar,
+        "Back returns to the places"
     );
-    let toggle = geometry(&h).toggle;
-    assert!(
-        toggle.width() > 0.0,
-        "the page's row holds the sidebar button"
+    assert_eq!(
+        geometry(&h).back,
+        Rect::ZERO,
+        "and the places, in front again, keep no second Back"
     );
-    assert_eq!(geometry(&h).back, Rect::ZERO, "and no Back to nothing");
-    h.click_at(toggle.center().x, toggle.center().y);
-    settle(&mut h, 400, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
 
     let mut own = harness(shell(), 400, 800, Theme::dark());
-    own.root_mut::<NavShell>().show(NavPane::Sidebar);
     settle(&mut own, 400, 800);
     assert_eq!(own.root::<NavShell>().front_pane(), NavPane::Sidebar);
     assert_eq!(
         geometry(&own).back,
         Rect::ZERO,
-        "out of a desktop window the places are the first screen"
+        "out of a desktop window the places are the first screen too"
     );
 }

@@ -621,14 +621,6 @@ impl Default for Inputs {
 }
 
 impl Inputs {
-    /// Whether the sidebar's toggle stands in the window's bar: among the app's slots there, or
-    /// in the shell's own header row while the row holds the bar. The places it reaches are then
-    /// no screen a narrow window drills through: the window opens past them, and their own screen
-    /// goes forward again.
-    fn toggle_reaches_places(&self) -> bool {
-        self.toggle_in_bar || self.window_controls.is_some()
-    }
-
     fn sidebar_width(&self) -> f64 {
         let m = &self.metrics;
         if self.mode == NavMode::Docked {
