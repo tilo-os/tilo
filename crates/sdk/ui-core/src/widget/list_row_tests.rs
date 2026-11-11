@@ -2025,3 +2025,38 @@ fn a_face_leads_a_row_in_the_icon_slot_a_glyph_leads_in() {
         "a face is a mark of icon size, not an avatar's column"
     );
 }
+
+/// A control that wraps under its text fills the row, and stops filling only where it would stand
+/// beside the text again: its own width with the gap before it and the marks after it (here a
+/// disclosure chevron), as the row's wrap counts them. Reckoned without the marks, a width that
+/// wraps the control at its own size reads as one it would fit beside the text at, and the row
+/// fills and stops filling on every pass of the solve, never settling.
+#[test]
+fn a_wrapping_control_settles_at_every_width_beside_marks_after_it() {
+    let row = || -> Element {
+        let row = ListRow::new("previous-tab", "Previous tab")
+            .disclosure()
+            .trailing(Box::new(crate::widget::Button::new(
+                "previous-tab-keys",
+                "Ctrl Shift Tab",
+            )));
+        Box::new(Column::new().with_no_padding().push(Box::new(row)))
+    };
+    let mut harness = FrameHarness::new(crate::State::new(), row(), (520, 300));
+    let narrowing = (160..=520).rev();
+    let widening = 160..=520;
+    for width in narrowing.chain(widening) {
+        harness
+            .resize((width, 300))
+            .unwrap_or_else(|error| panic!("at {width} px the row settles: {error:?}"));
+        let root = harness.inspection().root;
+        let row = find(&root, "ListRow").unwrap();
+        let control = rect_of(find(row, "Button").unwrap());
+        let row = rect_of(row);
+        let under = control.y0 > row.y0 + row.height() / 3.0;
+        assert!(
+            !under || control.width() > row.width() / 2.0,
+            "at {width} px a control under its text fills the row: {control:?} in {row:?}"
+        );
+    }
+}
