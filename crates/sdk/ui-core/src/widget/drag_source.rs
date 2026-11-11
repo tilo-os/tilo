@@ -130,13 +130,26 @@ impl DragSource {
         }
     }
 
-    /// The press took the widget at `point`: a drag may follow.
-    fn press(&mut self, point: Point) {
+    /// The press took the widget at `point`, when it is one of this source's to take: a drag
+    /// may follow. Whether it did.
+    fn press(&mut self, point: Point) -> bool {
+        if !self.takes(point) {
+            return false;
+        }
         self.lift = Some(Lift {
             start: point,
             active: false,
         });
         self.dirty = true;
+        true
+    }
+
+    /// Whether a press at `point` is this source's: over the view it wraps. A press anywhere
+    /// else — on a bar laid over the windows the source stands in — is not the source's to
+    /// take: taking it lifted a view the pointer was nowhere near and held the pointer, so the
+    /// release that would have clicked what was pressed went to the source instead.
+    fn takes(&self, point: Point) -> bool {
+        self.column.get_rect().contains(point)
     }
 
     /// The pointer moved: past the threshold the drag is live on the bus, and stays live until
@@ -255,8 +268,11 @@ impl Decorator for DragSource {
                 // and it is the source's too: a press that travels lifts the whole view, and one
                 // that does not is the child's click, taken on the release below.
                 self.column.handle_event(event, ctx);
-                self.press(self.cursor);
-                *ctx.focus_target = Some(ctx.node_id);
+                // The source is the view it wraps, and only that view: a press elsewhere is not
+                // its to lift, nor to hold the pointer for.
+                if self.press(self.cursor) {
+                    *ctx.focus_target = Some(ctx.node_id);
+                }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,

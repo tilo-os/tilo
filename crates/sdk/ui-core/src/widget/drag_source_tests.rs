@@ -51,6 +51,33 @@ impl Laid {
             .send(self.widget.as_mut(), event);
     }
 
+    /// The centre of the source inside the laid-out tree: a press lands on the view a person
+    /// sees, not on where a page's gutter leaves it.
+    fn source_centre(&self) -> Point {
+        self.centre_of::<DragSource>()
+    }
+
+    /// The centre of the laid-out widget of type `T`.
+    fn centre_of<T: 'static>(&self) -> Point {
+        fn find<T: 'static>(widget: &dyn Widget) -> Option<Rect> {
+            if let Some(any) = widget.as_any()
+                && any.is::<T>()
+            {
+                return Some(widget.get_rect());
+            }
+            let mut found = None;
+            widget.for_each_child(&mut |child| {
+                if found.is_none() {
+                    found = find::<T>(child);
+                }
+            });
+            found
+        }
+        find::<T>(self.widget.as_ref())
+            .unwrap_or_else(|| panic!("the tree holds no {}", std::any::type_name::<T>()))
+            .center()
+    }
+
     /// Press at `from` and carry the pointer to `to` in the steps a hand's does, without letting
     /// go: what the drag is while it travels.
     fn press_and_travel(&mut self, from: (f64, f64), to: (f64, f64)) {
@@ -112,7 +139,8 @@ fn a_press_on_a_source_outside_a_scroll_lifts_it_past_the_threshold() {
     // The class's reference case: a source that stands on its own page lifts as soon as a
     // press travels past the threshold.
     let mut laid = Laid::of(source("notes.page:one", 40.0), 300.0, 400.0);
-    laid.press_and_travel((100.0, 20.0), (100.0, 120.0));
+    let from = laid.source_centre();
+    laid.press_and_travel((from.x, from.y), (from.x, from.y + 100.0));
     let in_flight = drag_bus::current();
     drag_bus::end(None);
     let in_flight = in_flight.expect("the source published what it lifted");
@@ -141,7 +169,8 @@ fn a_press_on_a_source_inside_a_scroll_lifts_it_and_keeps_it_past_the_viewport()
         200.0,
     );
     // From the source, out past the viewport's foot.
-    laid.press_and_travel((100.0, 20.0), (100.0, 320.0));
+    let from = laid.source_centre();
+    laid.press_and_travel((from.x, from.y), (from.x, 320.0));
     let in_flight = drag_bus::current();
     drag_bus::end(None);
     let in_flight = in_flight.expect("a source inside a scroll view lifts what it holds");
@@ -175,7 +204,8 @@ fn a_drag_out_of_a_scroll_is_let_go_where_the_person_let_go() {
         300.0,
         200.0,
     );
-    laid.drag((100.0, 20.0), (100.0, 320.0));
+    let from = laid.source_centre();
+    laid.drag((from.x, from.y), (from.x, 320.0));
     let landed = drag_bus::take("elsewhere", everywhere());
     drag_bus::end(None);
     let landed = landed.expect("the drag that ended outside the region reports a drop");
@@ -219,6 +249,56 @@ fn a_press_on_a_scrolls_own_bar_still_drags_the_bar() {
     drag_bus::end(None);
 }
 
+/// A press that is not over the source is not the source's. The desk lays the windows, with
+/// their handles, under a bar of its own, and a press on the bar reaches the window's handle
+/// first: the handle took every such press, lifted a row the pointer was nowhere near, and held
+/// the pointer, so the release that would have clicked the bar's button went to it instead and
+/// the button never saw the end of its press.
+#[test]
+fn a_press_outside_a_source_is_not_the_sources_and_leaves_the_release_to_what_was_pressed() {
+    let clicks = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+    let counted = std::rc::Rc::clone(&clicks);
+    let button = crate::widget::Button::new("bar", "Bar").on_click(move || {
+        counted.set(counted.get().saturating_add(1));
+    });
+    // The button stands in the column's top slot, the source under it: the stack asks its
+    // children from the last, so the source hears the press first and the button hears it
+    // after, as the desk's window handles and its bar do.
+    let mut laid = Laid::of(
+        crate::widget::arrange::Stack::stack()
+            .gap(crate::tokens::Rhythm::None)
+            .push_slot(crate::widget::arrange::Slot::new(Box::new(button)))
+            .push_slot(crate::widget::arrange::Slot::new(Box::new(source(
+                "notes.page:one",
+                40.0,
+            )))),
+        300.0,
+        300.0,
+    );
+    // The press lands on the button, under the source.
+    let button_at = laid.centre_of::<crate::widget::Button>();
+    laid.send(&crate::synthetic_input::cursor_moved(
+        button_at.x,
+        button_at.y,
+    ));
+    laid.send(&crate::synthetic_input::mouse_press());
+    assert!(
+        drag_bus::current().is_none(),
+        "a press outside the source lifts nothing"
+    );
+    laid.release();
+    assert!(
+        drag_bus::current().is_none(),
+        "letting go outside the source ends nothing on the bus"
+    );
+    assert_eq!(
+        clicks.get(),
+        1,
+        "the release stays with the button the press was on"
+    );
+    drag_bus::end(None);
+}
+
 /// A source at the top of a column, a target under it: a press on the source carried down onto
 /// the target and let go there reports the drop the source carried, by the resource's address.
 /// The two are the pair a view composes — a place's handle over a composer, a chip over a
@@ -249,7 +329,8 @@ fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
         300.0,
     );
     // The source stands in the column's top 40px; the target from 40 to 160.
-    laid.drag((100.0, 20.0), (100.0, 120.0));
+    let from = laid.source_centre();
+    laid.drag((from.x, from.y), (from.x, 120.0));
     // The target takes a drop in its `update`, run by the frame after the release: the drop it
     // was let go with is fired then, carrying the resource the source carried.
     let doc = automerge::AutoCommit::new();
