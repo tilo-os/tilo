@@ -976,3 +976,87 @@ fn terminals_editor_client_edits_the_line_at_a_ush_prompt() {
     let (runs, printed) = p.exit();
     assert_eq!(runs, ["echo hello wörld!"], "{printed}");
 }
+
+/// A command line long enough to span several reads, with every character
+/// a shell gives meaning to, unlike any other `n`.
+fn busy_line(n: usize) -> String {
+    let mut line = format!(": {n} 'a >> b' \"c\\nd\" 'e | f; g && h || i' '$HOME' \\> \\>\\> x");
+    while line.len() < 1500 {
+        let at = line.len();
+        let _ = std::fmt::Write::write_fmt(
+            &mut line,
+            format_args!(" '{n}-{at}>>' \"\\n\\t*?[]{{}}~#%^\" \\;\\&"),
+        );
+    }
+    line
+}
+
+/// Burn every core until `stop`: the busy box a long line is typed on.
+fn load(stop: &Arc<std::sync::atomic::AtomicBool>) -> Vec<std::thread::JoinHandle<()>> {
+    let cores = std::thread::available_parallelism().map_or(4, usize::from);
+    (0..cores)
+        .map(|_| {
+            let stop = Arc::clone(stop);
+            std::thread::spawn(move || {
+                let mut x = 0_u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    x = std::hint::black_box(
+                        x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1),
+                    );
+                }
+            })
+        })
+        .collect()
+}
+
+impl Prompt {
+    /// Wait until the shell marked its `n`th prompt (from 1) on its output.
+    fn wait_prompt(&self, n: usize) {
+        let mark = format!("\x1b]133;A;k={KEY}");
+        let asked = std::time::Instant::now();
+        while String::from_utf8_lossy(&self.out.lock().unwrap())
+            .matches(&mark)
+            .count()
+            < n
+        {
+            assert!(
+                asked.elapsed() < std::time::Duration::from_secs(60),
+                "the shell never marked prompt {n}"
+            );
+            std::thread::yield_now();
+        }
+    }
+}
+
+/// What Terminal's `run` types reaches the shell byte for byte, however
+/// busy the machine: each line is sent the moment the prompt is marked, as
+/// Terminal sends it, while every core is taken; the shell's own marks say
+/// it ran exactly the lines that were sent, in order.
+#[test]
+fn a_run_reaches_the_shell_byte_exact_on_a_busy_machine() {
+    const LINES: usize = 16;
+    let p = prompt(&[]);
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let burners = load(&stop);
+    let sent: Vec<String> = (0..LINES).map(busy_line).collect();
+    for (n, line) in sent.iter().enumerate() {
+        p.wait_prompt(n + 1);
+        // Terminal's mark when the shell reads them, its typing when not.
+        let typed = if n % 4 != 3 {
+            format!("\x1b]133;R;k={KEY};cmd={};agent=1\x07", b64(line))
+        } else {
+            format!("\x15{line}\r")
+        };
+        p.type_keys(&typed);
+    }
+    p.wait_prompt(LINES + 1);
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    for burner in burners {
+        burner.join().unwrap();
+    }
+    let (runs, printed) = p.exit();
+    assert_eq!(runs.len(), LINES, "{printed}");
+    for (n, (ran, line)) in runs.iter().zip(&sent).enumerate() {
+        assert_eq!(ran, line, "line {n} reached the shell changed");
+    }
+}
