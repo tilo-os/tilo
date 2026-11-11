@@ -326,7 +326,9 @@ export function createIdentityActions({
       offer({...KEEP, title: 'Keep with passkey'}, question,
         `A passkey on this device brings you back as yourself, on any browser. Any time later: ${searchChord}, “${KEEP.title}”.`);
     } else {
-      offer({...RECOVERY, title: 'Save key'}, question,
+      // The button answers the question in the person's words: what it does
+      // for them, not the key it makes to do it (the body says that).
+      offer({...RECOVERY, title: 'Remember me'}, question,
         `A recovery key, saved to your password manager or as a file, brings you back as yourself. Any time later: ${searchChord}, “${RECOVERY.title}”.`,
         KEEP.id);
     }
@@ -404,7 +406,7 @@ export function createIdentityActions({
           // Kept with a passkey: the stand-in approves nothing from now on.
           await retireStandIn().catch(onError);
           // The next step, asked as the passkey sheet closes.
-          offer({...RECOVERY, title: 'Save key'}, 'Also save a recovery key?',
+          offer({...RECOVERY, title: 'Save it'}, 'Also save a recovery key?',
             'In case this passkey is ever lost: to your password manager, or as a file.');
         } else if (id === RECOVERY.id) {
           const recoveryKey = await identity.createRecoveryKey();

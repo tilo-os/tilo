@@ -48,7 +48,7 @@ test('without passkeys the ask offers a recovery key, never a passkey it cannot 
   assert.deepEqual(mount.offers, [RECOVERY.id]);
   const [ask] = mount.said;
   assert.equal(ask.title, 'Come back as “Ada” next time?');
-  assert.equal(ask.action.title, 'Save key');
+  assert.equal(ask.action.title, 'Remember me', 'the button says what it does for the person');
   assert.doesNotMatch(ask.body, /passkey/);
 });
 
