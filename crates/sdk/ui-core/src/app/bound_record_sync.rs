@@ -244,7 +244,7 @@ impl App {
         let (changed, observed) = sync
             .binding
             .records
-            .merge_remote_document(&sync.binding.checkout, mutation)?;
+            .merge_replica(&sync.binding.checkout, mutation)?;
         sync.frontier.observe(observed);
         Ok(changed)
     }

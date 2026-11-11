@@ -56,10 +56,12 @@ impl RecordStore {
             .is_ok_and(|set| set.answered.borrow().contains(id))
     }
 
-    /// Something of `id` arrived: more of it may follow.
-    pub(super) fn arrived(&self, id: &RecordId) {
+    /// A peer's change to `id` was merged: more may follow, and every window
+    /// reading the store is woken, as its own merge of it finds nothing new.
+    pub(crate) fn peer_change_merged(&self, id: &RecordId) {
         if let Ok(set) = self.0.try_borrow() {
             set.answered.borrow_mut().remove(id);
         }
+        self.wake_readers();
     }
 }
