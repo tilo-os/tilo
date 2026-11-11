@@ -1902,6 +1902,14 @@ name = "web-desktop-wasm"
 run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop/wasm"
 # The apps it builds embed image fixtures whose build script fetches them: a
 # node has no network, so the seeded cache is the only source (`test-assets`).
+#
+# What it writes is mostly the compiler cache storing the units it compiles, at
+# 10-30 MB each (an app's rlib is the framework instantiated for that app; the
+# UI framework alone is 268 MB of rlib and metadata). A run that finds every unit
+# cached writes about 630 MB; a run that catches up with the wasm crates other
+# commits moved compiles about a hundred units and writes 1.5-2.1 GB. The same
+# commit writes both, so a run past this check's disk envelope says what was
+# stale, not what changed in the bundle: that is the same 126 MB either way.
 needs = ["test-assets"]
 env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
