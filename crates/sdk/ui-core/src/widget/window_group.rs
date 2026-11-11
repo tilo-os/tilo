@@ -860,6 +860,12 @@ impl WindowGroup {
         }
     }
 
+    /// How far the window is to stand moved down under what overlays its top edge.
+    #[cfg(test)]
+    pub(crate) fn top_overlay_inset(&self) -> f64 {
+        self.top_overlay_inset
+    }
+
     /// How far a maximized window stands moved down now: on its way to
     /// [`Self::top_overlay_inset`] on the panel slide.
     fn top_slide_now(&self) -> f64 {

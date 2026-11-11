@@ -1407,9 +1407,14 @@ impl GroupRow {
     /// How much of this strip's top edge something overlays now (the desktop's top bar while it
     /// shows over the windows under an auto-hiding one): every window in the strip moves down by
     /// it, whole, so its own bar stands below the overlay instead of under it.
+    ///
+    /// The window covering its display is the exception: it keeps the whole display, the bar's
+    /// band included, and the bar paints over it while it shows. Moved down, it would hang off the
+    /// display's bottom edge and jump each time the bar came and went.
     pub fn set_top_overlay_inset(&mut self, inset: f64) {
-        for group in &mut self.groups {
-            group.set_top_overlay_inset(inset);
+        let covering = self.fullscreen_idx();
+        for (index, group) in self.groups.iter_mut().enumerate() {
+            group.set_top_overlay_inset(if covering == Some(index) { 0.0 } else { inset });
         }
     }
 
@@ -10899,6 +10904,34 @@ mod tests {
         fullscreen_group_collapses_siblings_and_absorbs_row();
         exiting_fullscreen_restores_prior_layout_exactly();
         hidden_row_collapses_and_restores();
+    }
+
+    /// The desktop's bar shown over the desk moves every window down by its height, but the window
+    /// covering its display keeps the whole display: the bar paints over it.
+    #[test]
+    fn the_bar_shown_over_the_desk_leaves_the_covering_window_where_it_stands() {
+        let (mut row, _t, _r) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+        row.set_fullscreen(Some(200), false);
+        row.set_top_overlay_inset(32.0);
+        let insets: Vec<f64> = row
+            .groups
+            .iter()
+            .map(WindowGroup::top_overlay_inset)
+            .collect();
+        assert_eq!(
+            insets,
+            [32.0, 0.0, 32.0],
+            "only the windows that do not cover the display move down"
+        );
+        // Given the display back, the window moves down under the bar like the rest.
+        row.set_fullscreen(None, false);
+        row.set_top_overlay_inset(32.0);
+        assert!(
+            row.groups
+                .iter()
+                .all(|group| (group.top_overlay_inset() - 32.0).abs() < f64::EPSILON),
+            "every window moves down once none covers the display"
+        );
     }
 
     #[test]
