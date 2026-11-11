@@ -1506,13 +1506,24 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!browser_) return;
     if(read.purpose==tilo::ClipboardReads::Purpose::Read) {ClipboardText(browser_->GetFrameByIdentifier(read.frame),read.renderer,std::move(text));return;}
     if(read.renderer!=paste_prime_) return;
-    // The system clipboard's text, kept in the focused frame for the paste
-    // the key makes; without it the key pastes Chromium's own.
-    auto frame=browser_->GetFocusedFrame();if(!frame) frame=browser_->GetMainFrame();
-    if(!text || !frame) {ReleaseKeys();return;}
+    // The system clipboard's text goes to every document of the tab, so the
+    // paste keeps it wherever the caret is: a click can put the caret in a
+    // frame within the page, and the browser process does not always learn
+    // which document holds it, so the text is kept by all of them rather than
+    // by the one frame it believes has the focus. Without it the key pastes
+    // Chromium's own.
+    if(!text || !browser_) {ReleaseKeys();return;}
     auto message=CefProcessMessage::Create("tilo.clipboard_prime");
     message->GetArgumentList()->SetInt(0,paste_prime_);message->GetArgumentList()->SetString(1,*text);
-    frame->SendProcessMessage(PID_RENDERER,message);
+    std::vector<CefString> identifiers;browser_->GetFrameIdentifiers(identifiers);
+    int documents=0;
+    for(const auto& identifier:identifiers) {
+      auto frame=browser_->GetFrameByIdentifier(identifier);
+      if(!frame) continue;
+      frame->SendProcessMessage(PID_RENDERER,message);
+      ++documents;
+    }
+    if(!documents) ReleaseKeys();
     CefPostDelayedTask(TID_UI,base::BindOnce([](int tab,int prime){auto found=clients.find(tab);if(found!=clients.end())found->second->PrimeLate(prime);},id_,paste_prime_),tilo::kClipboardPrimeMs);
   }
   void PrimeLate(int prime) {if(prime==paste_prime_)ReleaseKeys();}
