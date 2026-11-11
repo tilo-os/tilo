@@ -4932,6 +4932,18 @@ outputs = ["/target/page-two-people/**"]
 timeout_secs = 1200
 default = false
 
+# The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's
+# member device, and tilo-approve answers for the person the startup page made. Built here, once,
+# and handed to the checks that use them, so the micro-VM that runs the stack only runs it: the
+# compiler's units do not fit in the guest beside the stack and a workspace's own VM.
+[[check]]
+name = "tilo-sh-tools"
+run = "cargo build --locked -p tilo-relay --bin tilo-enroll --bin tilo-approve\nrm -rf /target/tilo-sh-tools && mkdir -p /target/tilo-sh-tools\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" \"$CARGO_TARGET_DIR/debug/tilo-approve\" /target/tilo-sh-tools/\n"
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+requires = ["arch=x86_64"]
+outputs = ["/target/tilo-sh-tools/**"]
+default = false
+
 # tilo.sh, whole, on one machine, and used end to end (os/containers/tilo-sh/check.sh): the
 # Lounge, front door and web entry images of this commit run under podman with the environment
 # production's manifests give them, a fresh startup identity approves a server key on the local
@@ -4970,13 +4982,10 @@ default = false
 # TILO_SH_HOSTED_VM_SIZE and says why.
 [[check]]
 name = "tilo-sh-local-vm"
-# tilo-enroll makes the VM host's member device, which the relay's root certifies, and tilo-approve
-# answers for the person the startup page made: the stack has no other copy of either outside a
-# release.
-run = "cargo build --locked -p tilo-relay --bin tilo-enroll\ncargo build --locked -p tilo-relay --bin tilo-approve\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" \"$CARGO_TARGET_DIR/debug/tilo-approve\" /target/\nbash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
+run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs xfsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
-needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest"]
-env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_HOSTED_VM_SIZE = "small", TILO_SH_TILO_ENROLL = "/target/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-approve" }
+needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_HOSTED_VM_SIZE = "small", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/tilo-sh-local-vm/**"]
@@ -5134,10 +5143,9 @@ on = ["dispatch", "stable"]
 # with its member device installed, and a clean `down`.
 [[check]]
 name = "tilo-sh-vm-host"
-run = "cargo build --locked -p tilo-relay --bin tilo-enroll\nbash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image \"$CARGO_TARGET_DIR/debug/tilo-enroll\"\n"
+run = "bash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image /target/tilo-sh-tools/tilo-enroll"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all" }
-env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
-needs = ["image-vm-host", "image-hosted-guest"]
+needs = ["image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 timeout_secs = 3600

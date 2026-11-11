@@ -146,6 +146,8 @@ impl QuestionSheet for SessionSheet {
                 kind: question.kind.clone(),
                 undoable: question.undoable,
                 workspace: question.workspace.clone(),
+                page: question.page_origin(),
+                picture: question.page.as_ref().and_then(|page| page.picture.clone()),
             })
             .unwrap_or_default(),
         });

@@ -208,6 +208,10 @@ pub struct Dialog {
     /// A code to read out or compare, shown large above the detail: a
     /// pairing's passkey or PIN.
     pub code: Option<String>,
+    /// A picture of what the person is allowing, by its content address: the
+    /// filled page a departure leaves from, so they see it and not only its
+    /// name.
+    pub picture: Option<String>,
     pub body: Body,
     pub confirm_label: String,
     pub cancel_label: String,
@@ -883,7 +887,12 @@ impl ResourceApp for PortalApp {
     }
 
     fn fixture(fixture: &mut ui::framework::Fixture<PortalSheet>) {
-        let dialog = fixtures::dialog(fixture.scenario());
+        let mut dialog = fixtures::dialog(fixture.scenario());
+        // A picture is a content address, and the fixture's own bytes are kept
+        // in this process's store: the sheet draws one as it draws a host's.
+        if dialog.picture.is_some() {
+            dialog.picture = fixtures::lend_filled_form();
+        }
         fixture.provide(dialog);
     }
 }

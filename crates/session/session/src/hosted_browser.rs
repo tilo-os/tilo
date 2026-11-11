@@ -111,6 +111,11 @@ struct Held {
     id: u32,
     /// What leaves, as the window words it.
     describing: String,
+    /// The page it leaves from, what it does there, the method it leaves with
+    /// and where it goes, by the names the window states them under: what the
+    /// person's question carries, so they see what leaves and not only a name
+    /// for it.
+    facts: Vec<(String, String)>,
 }
 
 /// How far the join has come.
@@ -396,7 +401,7 @@ impl HostedBrowser {
             if !self.held.insert(held.id) {
                 continue;
             }
-            let request = answer(held.id, window, &held.describing, SEND_HELD);
+            let request = answer(held.id, window, &held.describing, &held.facts, SEND_HELD);
             let arrived = self.sender.clone();
             let waking = self.waking.clone();
             host.confirm(&caller, &request).then(move |answer| {
@@ -586,15 +591,28 @@ fn published_holds(page: &CataloguePage) -> Vec<Held> {
                 && action.address.action == SEND_HELD
         })
         .filter_map(|action| {
-            let named = action
-                .params
-                .iter()
-                .find(|param| param.name == "id")?
-                .choices
-                .first()?;
+            let stated = |name: &str| {
+                action
+                    .params
+                    .iter()
+                    .find(|param| param.name == name)
+                    .and_then(|param| param.choices.first())
+                    .map(|choice| choice.to_string())
+            };
             Some(Held {
-                id: named.parse().ok()?,
+                id: stated("id")?.parse().ok()?,
                 describing: action.action_label.clone(),
+                // Every departure fact the window states, in the names it
+                // states them under: what the person's question carries.
+                facts: action
+                    .params
+                    .iter()
+                    .filter(|param| param.name != "id")
+                    .filter_map(|param| {
+                        let value = param.choices.first()?.to_string();
+                        (!value.is_empty()).then(|| (param.name.to_string(), value))
+                    })
+                    .collect(),
             })
         })
         .collect()
@@ -602,8 +620,16 @@ fn published_holds(page: &CataloguePage) -> Vec<Held> {
 
 /// The invocation of page action `action` on the window `provider` naming the
 /// held request `id`, worded for the person as `describing`: what the host
-/// puts to them, and what their answer is good for running.
-fn answer(id: u32, provider: u64, describing: &str, action: &str) -> InvokeRequest {
+/// puts to them, and what their answer is good for running. The departure's
+/// `facts` travel in its context, so the question names the page it leaves
+/// from and what it sends there.
+fn answer(
+    id: u32,
+    provider: u64,
+    describing: &str,
+    facts: &[(String, String)],
+    action: &str,
+) -> InvokeRequest {
     InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
         target: RemoteActionTarget {
@@ -616,6 +642,12 @@ fn answer(id: u32, provider: u64, describing: &str, action: &str) -> InvokeReque
         )])),
         context: Some(tilo_actions::ActionContext {
             purpose: Some(describing.to_owned()),
+            facets: facts
+                .iter()
+                .map(|(key, value)| {
+                    tilo_actions::remote::browser::departure_facet(key, value.clone())
+                })
+                .collect(),
             ..tilo_actions::ActionContext::default()
         }),
         confirmation: None,
@@ -888,7 +920,7 @@ mod tests {
     /// and needs nobody's word.
     #[test]
     fn a_reported_hold_names_the_one_request_it_answers() {
-        let request = answer(7, 42, "POST https://orders.example", SEND_HELD);
+        let request = answer(7, 42, "POST https://orders.example", &[], SEND_HELD);
         assert_eq!(request.target.provider, "42");
         assert_eq!(request.target.address.resource, PAGE_RESOURCE);
         assert_eq!(request.target.address.action, SEND_HELD);

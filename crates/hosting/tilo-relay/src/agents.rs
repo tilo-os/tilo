@@ -648,6 +648,7 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
             undoable: question.undoable,
             workspace: question.workspace,
             expires_at_ns: tilo_clock::unix_now_ns().saturating_add(CONFIRMATION_WAIT_NS),
+            page: None,
         };
         let (completer, answer) = tilo_actions::remote::pending();
         let certification = self.certification.clone();

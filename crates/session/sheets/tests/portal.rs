@@ -765,6 +765,8 @@ fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
         kind: "outside".into(),
         undoable: false,
         workspace: "Applicant: Jane Doe".into(),
+        page: None,
+        picture: None,
     };
     let dialog = asked.dialog("request-1");
     assert_eq!(
@@ -912,6 +914,8 @@ fn a_review_lists_six_arguments_and_counts_the_rest() {
         kind: "outside".into(),
         undoable: false,
         workspace: "Applicant: Jane Doe".into(),
+        page: None,
+        picture: None,
     };
     let dialog = asked.dialog("request-1");
     assert_eq!(dialog.facts.len(), 8, "every argument is on the question");

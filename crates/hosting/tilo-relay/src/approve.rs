@@ -242,7 +242,9 @@ async fn wait(
 }
 
 /// One question as this program says it: the action it runs, what it acts
-/// on, who asks, where, and what it risks.
+/// on, who asks, where, and what it risks — and, for a page about to send
+/// something, the page it leaves from, what it sends there and the picture of
+/// the filled page the person is shown.
 fn described(question: &PendingConfirmation) -> serde_json::Value {
     serde_json::json!({
         "question": {
@@ -254,6 +256,13 @@ fn described(question: &PendingConfirmation) -> serde_json::Value {
             "risk": question.risk,
             "kind": question.kind,
             "arguments": question.arguments,
+            "page": question.page.as_ref().map(|page| serde_json::json!({
+                "page": page.page,
+                "kind": page.kind,
+                "method": page.method,
+                "destination": page.destination,
+                "picture": page.picture,
+            })),
         },
     })
 }

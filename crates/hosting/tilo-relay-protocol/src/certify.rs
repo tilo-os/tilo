@@ -243,6 +243,59 @@ pub enum ApproverRequest {
     },
 }
 
+/// A page departure the person is asked to allow: what a page they are not
+/// standing at is about to send, where it goes, and the filled page it leaves
+/// from. A submission in a hosted Browser is exactly this, and the person's
+/// allow is what lets that one request leave.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PageDeparture {
+    /// The page it leaves from, by its origin (`https://visa.example`); empty
+    /// when the window cannot say.
+    #[serde(default)]
+    pub page: String,
+    /// What the page does, as `ui::webview::HeldKind` names it (`submit`,
+    /// `navigate`, `request`, `download`, `payment`).
+    #[serde(default)]
+    pub kind: String,
+    /// The method it leaves with (`POST`); empty when the engine named none.
+    #[serde(default)]
+    pub method: String,
+    /// Where it goes, by its origin (`https://visa.example`); empty when it
+    /// names none.
+    #[serde(default)]
+    pub destination: String,
+    /// The filled page as the person allows it: a content address of a PNG in
+    /// the workspace's store, which their device reads to see what leaves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub picture: Option<String>,
+}
+
+impl PageDeparture {
+    /// What the page is about to do, in the person's words: `send the form to
+    /// https://visa.example (POST)`. A kind this build does not know, or a
+    /// departure that names no destination, reads as what it is.
+    #[must_use]
+    pub fn doing(&self) -> String {
+        let doing = match self.kind.as_str() {
+            "submit" => "send the form",
+            "navigate" => "leave for",
+            "request" => "send a request",
+            "download" => "download from",
+            "payment" => "take a payment to",
+            _ => "send a request",
+        };
+        let mut text = if self.destination.is_empty() {
+            doing.to_owned()
+        } else {
+            format!("{doing} to {}", self.destination)
+        };
+        if !self.method.is_empty() {
+            text.push_str(&format!(" ({})", self.method));
+        }
+        text
+    }
+}
+
 /// A question an agent on the host puts to its person: one invocation of
 /// an action the person's grants leave to them.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -278,6 +331,10 @@ pub struct PendingConfirmation {
     pub workspace: String,
     /// Unanswered by then, the question is a refusal; ns since the epoch.
     pub expires_at_ns: u64,
+    /// The page departure it asks about, when it asks about one: what leaves a
+    /// page nobody stands at, and the filled page it leaves from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<PageDeparture>,
 }
 
 impl PendingConfirmation {
@@ -288,6 +345,20 @@ impl PendingConfirmation {
             "{} wants to {}: {}, for you",
             self.agent_label, self.action_label, self.resource_label
         )
+    }
+
+    /// The page the question is about, by its origin, when it asks about one:
+    /// where what leaves goes from, and where to when the window named no
+    /// page of its own.
+    #[must_use]
+    pub fn page_origin(&self) -> Option<String> {
+        let page = self.page.as_ref()?;
+        let origin = if page.page.is_empty() {
+            &page.destination
+        } else {
+            &page.page
+        };
+        (!origin.is_empty()).then(|| origin.clone())
     }
 }
 

@@ -42,6 +42,12 @@ pub(crate) const NEEDS_PERSON: &str = ui::tilo_actions::remote::CONFIRMATION_REQ
 #[derive(Clone)]
 pub(crate) struct Held {
     pub(crate) request: HeldRequest,
+    /// The page it leaves from, by its origin: what the person is told they
+    /// are on, where the page itself is not the destination.
+    page: String,
+    /// The filled page as a picture, by its content address, when this window
+    /// kept one: what the person is shown before they allow it.
+    picture: Option<String>,
     /// The file a download would save, when the engine named it: the person
     /// is told which one they allow.
     file: Option<String>,
@@ -65,6 +71,23 @@ impl Held {
         }
     }
 
+    /// The departure as the person's question carries it, by the names a
+    /// reader reads it by: the page it leaves from, what it does, the method
+    /// and where it goes.
+    pub(crate) fn facts(&self) -> [(&'static str, String); 4] {
+        [
+            ("page", self.page.clone()),
+            ("kind", self.request.kind.as_str().to_owned()),
+            ("method", self.request.method.clone()),
+            ("destination", self.request.origin.clone()),
+        ]
+    }
+
+    /// The filled page, by the content address this window kept it under.
+    pub(crate) fn picture(&self) -> Option<&str> {
+        self.picture.as_deref()
+    }
+
     /// Whether the person answered, rather than it waiting.
     pub(crate) const fn answered(&self) -> bool {
         self.allowed || self.releasing.is_some()
@@ -79,8 +102,15 @@ pub(crate) struct Holds {
 
 impl Holds {
     /// Hold `request`, or say it is already held: the engine reports one
-    /// request once.
-    pub(crate) fn hold(&mut self, request: HeldRequest, file: Option<String>) -> Option<u32> {
+    /// request once. `page` is the origin the page it leaves from is on, and
+    /// `picture` the filled page kept as content, when the window kept one.
+    pub(crate) fn hold(
+        &mut self,
+        request: HeldRequest,
+        page: String,
+        picture: Option<String>,
+        file: Option<String>,
+    ) -> Option<u32> {
         if !request.valid() || self.held.iter().any(|held| held.request.id == request.id) {
             return None;
         }
@@ -90,6 +120,8 @@ impl Holds {
         let id = request.id;
         self.held.push(Held {
             request,
+            page,
+            picture,
             file,
             asked: None,
             releasing: None,
@@ -182,7 +214,13 @@ impl BrowserWidget {
     /// What the person is asked about `request`, whose run reached it: the
     /// action answers that it needs them, and their allow releases it.
     pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
-        if self.holds.hold(request.clone(), None).is_none() {
+        let picture = self.kept_hold_picture(request);
+        let page = self.held_page();
+        if self
+            .holds
+            .hold(request.clone(), page.clone(), picture, None)
+            .is_none()
+        {
             return;
         }
         self.structure_dirty = true;
@@ -203,9 +241,25 @@ impl BrowserWidget {
                 "kind": request.kind.as_str(),
                 "method": request.method,
                 "origin": request.origin,
+                "page": page,
             })),
         ));
         self.structure_dirty = true;
+    }
+
+    /// The page this window shows, by its origin: what a hold's question
+    /// names as the page it leaves from.
+    pub(crate) fn held_page(&self) -> String {
+        origin_of(&self.current_uri)
+    }
+
+    /// `id`'s held request, as the person's question carries its departure:
+    /// the page it leaves from, what it does, its method and destination.
+    pub(crate) fn held_facts(&self, id: u32) -> Option<[(&'static str, String); 4]> {
+        self.holds
+            .waiting()
+            .find(|held| held.request.id == id)
+            .map(Held::facts)
     }
 
     /// Send one held request on its way (`allow`) or drop it, and answer the
@@ -286,6 +340,14 @@ impl BrowserWidget {
         }
     }
 
+    /// The picture `request` carries of the filled page, kept as this
+    /// window's content so the person's question can name it: `None` when the
+    /// engine painted none, or this window has nowhere to keep one.
+    fn kept_hold_picture(&self, request: &HeldRequest) -> Option<String> {
+        let picture = request.capture.as_deref()?;
+        Self::kept_picture(picture, self.content.as_ref()?).ok()
+    }
+
     /// A download the page started in a window an agent operates waits for the
     /// person like every other departure: the engine holds it, and its answer
     /// is the download's own.
@@ -293,7 +355,11 @@ impl BrowserWidget {
         let mut request = HeldRequest::new(id, ui::webview::HeldKind::Download);
         request.method = "GET".into();
         request.origin = origin_of(url);
-        if self.holds.hold(request, shown_file(name)).is_none() {
+        if self
+            .holds
+            .hold(request, self.held_page(), None, shown_file(name))
+            .is_none()
+        {
             return false;
         }
         self.structure_dirty = true;

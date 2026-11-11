@@ -5459,12 +5459,31 @@ impl BrowserWidget {
         // may ask the page answers it here, by the id it holds, and nothing
         // leaves until they do. The id is stated on the action, so a caller
         // that is not the person at this window — the host holding a window
-        // in a VM of theirs — answers that one departure among several.
+        // in a VM of theirs — answers that one departure among several. The
+        // departure itself is stated beside it — the page it leaves from,
+        // what it does, the method and where it goes, and the picture of the
+        // filled page — so the person the host asks sees what leaves and not
+        // only a name for it.
         for held in self.holds.waiting() {
             let id = held.request.id.to_string();
+            let mut bound: Vec<(String, serde_json::Value)> = held
+                .facts()
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value.into()))
+                .collect();
+            bound.push(("id".to_owned(), id.clone().into()));
+            if let Some(picture) = held.picture() {
+                bound.push(("picture".to_owned(), picture.into()));
+            }
             let mut send = E::SendHeldRequest { id: id.clone() }
                 .bound()
-                .stating_bound("id", "The held request's id");
+                .with_bound(bound)
+                .stating_bound("id", "The held request's id")
+                .stating_bound("page", "The page it leaves from")
+                .stating_bound("kind", "What the page does")
+                .stating_bound("method", "The method it leaves with")
+                .stating_bound("destination", "Where it goes")
+                .stating_bound("picture", "The filled page, as content");
             send.type_mut().label = format!("Let it leave: {}", held.describing());
             page.actions.push(send);
             let mut keep = E::KeepHeldRequest { id }
