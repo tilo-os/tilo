@@ -3205,8 +3205,8 @@ impl AppBrokerState {
         })
     }
 
-    /// Commit a document write of this device through the owner: the write as
-    /// the record took it. A write the owner refuses is its writer's alone: it
+    /// Commit a document write of this device through the owner: the signed
+    /// write as the record took it. A write the owner refuses is its writer's alone: it
     /// is answered the refusal and takes the write back out, and nothing else
     /// waits on it. An answer that does not prove the write leaves the owner
     /// unknown, as a dropped wait does.
@@ -3214,7 +3214,7 @@ impl AppBrokerState {
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
         record_kind: Option<String>,
-    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, BrokerError> {
+    ) -> Result<SignedOp, BrokerError> {
         self.owner_health().map_err(BrokerError::failed)?;
         let waiting = OwnerWait::on(&self.owner_commit_failure);
         let answered = self
@@ -3229,7 +3229,14 @@ impl AppBrokerState {
                 self.retain_owner_failure(&reason);
                 BrokerError::failed(reason)
             })?;
-        Ok(committed)
+        match committed.operation {
+            tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } => {
+                Ok(*envelope)
+            }
+            _ => Err(BrokerError::failed(
+                "the owner committed no document".into(),
+            )),
+        }
     }
 
     fn retain_owner_failure(&self, reason: &str) {
@@ -13934,7 +13941,11 @@ pub mod tests {
     }
 
     #[cfg(test)]
-    fn catalogue_surface(peer_id: u64, cluster: &str, resource: &str) -> PublishedSurface {
+    pub(super) fn catalogue_surface(
+        peer_id: u64,
+        cluster: &str,
+        resource: &str,
+    ) -> PublishedSurface {
         PublishedSurface {
             peer_id,
             app_id: "so.tilo.files".into(),

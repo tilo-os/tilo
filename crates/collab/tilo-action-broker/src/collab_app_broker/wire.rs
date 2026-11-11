@@ -384,7 +384,7 @@ impl JoinedChannel {
         // writer's later write passed its sequence.
         let envelope = if owner_required {
             state.revalidate_admission(&route, &self.verified_identity)?;
-            let committed = state
+            state
                 .commit_owner_document(
                     tilo_peer_state::owner_commit::OwnerCommitRequest {
                         workspace: route.cluster_id.clone(),
@@ -396,15 +396,7 @@ impl JoinedChannel {
                     },
                     self.record_kind.clone(),
                 )
-                .await?;
-            let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
-                committed.operation
-            else {
-                return Err(BrokerError::failed(
-                    "the owner committed another write than the one asked".into(),
-                ));
-            };
-            *envelope
+                .await?
         } else {
             envelope
         };
@@ -1566,9 +1558,9 @@ impl JoinedChannel {
             .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
-        // Its catalogue, even an empty one, is what an `open` of it waits
-        // for: a directory alone is offered before the app is ready.
-        self.state.launch_published(peer_id);
+        // A catalogue offering something is what an `open` of it waits for: a
+        // directory alone is offered before the app is ready.
+        self.state.launch_published(&surface);
         Ok(())
     }
 

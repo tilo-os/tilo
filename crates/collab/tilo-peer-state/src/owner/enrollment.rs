@@ -486,7 +486,7 @@ impl NativeWorkspaceOwner {
     ///
     /// # Errors
     ///
-    /// As [`Self::commit_document`], and when `key` is not the write's author.
+    /// As [`Self::commit_document`].
     pub fn commit_local_document(
         &self,
         request: crate::owner_commit::OwnerCommitRequest,

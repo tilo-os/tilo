@@ -1,7 +1,6 @@
 use super::*;
 use crate::admission_tests::seeded;
 use crate::{InputDisposition, TransportOrigin, peer_handle};
-use collab_types::CommitNamed as _;
 
 const APP: &str = "test.app";
 const RECORD: &str = "tab:1";

@@ -10,7 +10,6 @@
 //! workspace's file, and one file per workspace ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
-mod application_record;
 mod certified;
 mod checkpoint;
 mod create;
@@ -22,6 +21,9 @@ pub mod enroll;
 mod enrollment;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_store;
+#[cfg(test)]
+#[path = "owner/fixture_tests.rs"]
+pub(crate) mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 mod history_content;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,7 +42,6 @@ mod tests;
 mod vouched;
 mod workspace_membership;
 
-pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use checkpoint::{
     CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,

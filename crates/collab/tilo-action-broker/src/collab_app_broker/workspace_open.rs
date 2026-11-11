@@ -4,10 +4,11 @@
 //! ([`Launched::Started`]), and keeps it in its own launch record; the
 //! instance's collaboration connection presents it when the broker
 //! authenticates that connection. The `open` stays accepted until then and
-//! completes once the instance has published its action catalogue (or fails
-//! when it exits first), naming it by peer id: what the caller runs next in
-//! the app is there, two opens of one app racing each other each get their
-//! own instance, and a slow start never answers with another one.
+//! completes once the instance has published a catalogue offering its
+//! resources (or fails when it exits first), naming it by peer id: what the
+//! caller reads and runs next in the app is there, two opens of one app racing
+//! each other each get their own instance, and a slow start never answers with
+//! another one.
 use super::AppBrokerState;
 use super::host_action_admission::AdmittedHostAction;
 use crate::services::Launched;
@@ -161,10 +162,15 @@ impl AppBrokerState {
         }
     }
 
-    /// `peer` published its action catalogue, even an empty one; the `open`
-    /// that started its connection is done, opened at the route that
-    /// published.
-    pub(super) fn launch_published(&self, peer: u64) {
+    /// `surface` was published. Once it offers something, the `open` that
+    /// started its connection is done, opened at the route that published: an
+    /// app publishes while it starts too, before its view holds its document,
+    /// and that catalogue offers nothing a caller could read or run yet.
+    pub(super) fn launch_published(&self, surface: &super::PublishedSurface) {
+        if surface.actions.is_empty() {
+            return;
+        }
+        let peer = surface.peer_id;
         if let Some(opening) = self.workspace_opens.take_peer(self.connection_of(peer)) {
             self.complete_open(opening.opened(Some(peer)));
         }
@@ -490,7 +496,7 @@ mod tests {
             match step {
                 0 => {
                     state.launch_connected(80, &connected(1, &workspace_id));
-                    state.launch_published(80);
+                    state.launch_published(&offering(80));
                 }
                 1 => {
                     state.launch_connected(81, &connected(2, &workspace_id));
@@ -570,7 +576,7 @@ mod tests {
             })
         );
         state.launch_connected(77, &connected(1, &workspace));
-        state.launch_published(77);
+        state.launch_published(&offering(77));
         let terminal = state.invocation_status(job).unwrap();
         assert_eq!(terminal.invocation(), request.invocation);
         assert_eq!(answered(&state, job), Some(naming(77)));
@@ -597,7 +603,7 @@ mod tests {
         assert!(state.completed_invocations.lock().unwrap().is_empty());
         let job = open(&state, &workspace);
         state.launch_connected(78, &connected(1, &workspace));
-        state.launch_published(78);
+        state.launch_published(&offering(78));
         assert_eq!(answered(&state, job), Some(naming(78)));
     }
 
@@ -618,7 +624,7 @@ mod tests {
         *state.journal.lock().unwrap() = Ok(None);
         let job = open(&state, &workspace);
         state.launch_connected(79, &connected(1, &workspace));
-        state.launch_published(79);
+        state.launch_published(&offering(79));
         assert_eq!(answered(&state, job), Some(naming(79)));
     }
 
@@ -632,9 +638,9 @@ mod tests {
         // The second launch's instance comes up first, as peer 5; another
         // app of the workspace, not started by either, publishes too.
         state.launch_connected(5, &connected(2, &workspace));
-        state.launch_published(4);
+        state.launch_published(&offering(4));
         assert!(accepted(&state, first) && accepted(&state, second));
-        state.launch_published(5);
+        state.launch_published(&offering(5));
         assert_eq!(answered(&state, second), Some(naming(5)));
         assert!(accepted(&state, first), "peer 5 is not the first's");
 
@@ -648,11 +654,16 @@ mod tests {
             },
         );
         state.launch_connected(6, &connected(1, "another-workspace"));
-        state.launch_published(6);
+        state.launch_published(&offering(6));
         assert!(accepted(&state, first));
         state.launch_connected(7, &connected(1, &workspace));
-        state.launch_published(7);
+        state.launch_published(&offering(7));
         assert_eq!(answered(&state, first), Some(naming(7)));
+    }
+
+    /// What `peer` publishes once it offers something.
+    fn offering(peer: u64) -> super::super::PublishedSurface {
+        super::super::tests::catalogue_surface(peer, "workspace", "entry")
     }
 
     #[test]
@@ -670,7 +681,7 @@ mod tests {
                 && error.message.contains("exited before it published its actions")
         ));
         // Peer 10 of the same app connects with no ticket: not the open's.
-        state.launch_published(10);
+        state.launch_published(&offering(10));
 
         let now = Instant::now();
         state.expire_workspace_opens(now);
@@ -682,10 +693,14 @@ mod tests {
                 if error.code == "application_connection_timeout"
         ));
         // A connected instance is waited for however slowly it starts: its
-        // open ends with its catalogue, never on a clock.
+        // open ends with a catalogue offering something, never on a clock.
         assert!(accepted(&state, quiet));
         assert!(state.workspace_opens.next_deadline().is_none());
-        state.launch_published(8);
+        let mut starting = offering(8);
+        starting.actions.clear();
+        state.launch_published(&starting);
+        assert!(accepted(&state, quiet), "nothing offered yet");
+        state.launch_published(&offering(8));
         assert_eq!(answered(&state, quiet), Some(naming(8)));
     }
 }

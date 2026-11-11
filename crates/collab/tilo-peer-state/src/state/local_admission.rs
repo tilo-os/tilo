@@ -30,11 +30,12 @@ impl StatePeer {
     /// write another writer signed later took a greater sequence, and the
     /// record would refuse it as a replay. Such a write is signed again by
     /// `key`, the device, under a sequence past the record's floor. A write
-    /// the record holds already, or one still past the floor, stays as it is.
+    /// the record holds already, one still past the floor, and one another
+    /// author signed stay as they are.
     ///
     /// # Errors
     ///
-    /// `key` is not the write's author, or the write does not sign.
+    /// The write does not sign.
     pub fn sequenced_local_document(
         &self,
         app: &str,
@@ -43,9 +44,6 @@ impl StatePeer {
         key: &ed25519_dalek::SigningKey,
         now: SystemTime,
     ) -> Result<SignedOp, String> {
-        if envelope.author.as_bytes() != &key.verifying_key().to_bytes() {
-            return Err("a local write is sequenced by its own device".into());
-        }
         let route = Route {
             app: app.into(),
             record: record.into(),
@@ -56,7 +54,10 @@ impl StatePeer {
             .get(&route)
             .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
             .copied()
-            .filter(|floor| envelope.seq <= *floor)
+            .filter(|floor| {
+                envelope.seq <= *floor
+                    && envelope.author.as_bytes() == &key.verifying_key().to_bytes()
+            })
         else {
             return Ok(envelope);
         };

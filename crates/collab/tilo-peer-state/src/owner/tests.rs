@@ -25,8 +25,6 @@ mod busy_workspace;
 mod changes_read;
 #[path = "create_tests.rs"]
 mod create;
-#[path = "member_initialization_tests.rs"]
-mod member_initialization;
 #[path = "vouched_tests.rs"]
 mod vouched;
 
@@ -458,9 +456,9 @@ fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
         .owner
         .commit_local_document(earlier.clone(), &key, joined.now)
         .unwrap();
-    assert!(earlier.committed_as(&taken) && envelope(&taken) != envelope(&earlier));
+    receipt.validate_local_document(&earlier, &taken).unwrap();
+    assert_ne!(envelope(&taken), envelope(&earlier));
     assert!(envelope(&taken).seq > envelope(&later).seq);
-    receipt.validate_for(&taken).unwrap();
     let (again, _) = joined
         .owner
         .commit_local_document(taken.clone(), &key, joined.now)
