@@ -111,6 +111,9 @@ const snapshot = async tab => {
     state: (() => { const s = globalThis.tiloMount?.state() ?? null;
       return s && {arrival: s.arrival ?? null, entry: s.entry ?? null, door: s.door ?? null,
         phase: s.phase ?? null, frames: s.frames ?? 0, searchOpen: !!s.searchOpen,
+        // Frames the GPU left unreported since it last reported one: what a
+        // page that stopped drawing while it stayed alive says.
+        gpuStalls: s.gpuStalls ?? 0,
         title: document.title}; })(),
     windows: safe(() => globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.map(entry => entry.label) ?? []),
     people: safe(() => globalThis.tiloMount?.people?.() ?? null),

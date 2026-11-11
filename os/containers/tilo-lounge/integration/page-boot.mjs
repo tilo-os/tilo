@@ -103,6 +103,12 @@ const until = async (expression, what, timeout = 180_000) => {
         door: document.documentElement.dataset.door ?? null,
         entry: document.documentElement.dataset.entry ?? null,
         status: document.getElementById('status')?.textContent?.trim().slice(0, 300) ?? null,
+        // The mount's own account: which frame it last presented, and how
+        // many frames its GPU left unreported — a page that stopped drawing
+        // while it stayed alive says so here.
+        frames: globalThis.tiloMount?.state()?.frames ?? null,
+        gpuStalls: globalThis.tiloMount?.state()?.gpuStalls ?? null,
+        phase: globalThis.tiloMount?.state()?.phase ?? null,
       })`).catch(() => 'unreadable');
       await fail(`${what} never happened: ${shown}`);
     }

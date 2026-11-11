@@ -909,11 +909,6 @@ impl Mount {
     }
 }
 
-/// Glyphs one frame may encode. A full 4K screen of small text is far below
-/// this; only unculled off-screen content reaches it.
-const MAX_SCENE_GLYPHS: usize = 400_000;
-/// Encoded scene bytes one frame may hand to the renderer.
-const MAX_SCENE_BYTES: usize = 128 << 20;
 /// vello's adaptive scratch buffers, in total, above the viewport floors. A
 /// 60-window desktop at the capped canvas holds about 92 MiB of them, floors
 /// included. Safari kills its GPU process past 600 MB; with every buffer
@@ -950,26 +945,6 @@ fn describe_repaint(repaint: &ui::retained_raster::Repaint, window: u64) -> Stri
                 shown.join("; ")
             )
         }
-    }
-}
-
-fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
-    let encoding = scene.encoding();
-    let glyphs = encoding.resources.glyphs.len();
-    let bytes = encoding
-        .path_tags
-        .len()
-        .saturating_add(encoding.path_data.len().saturating_mul(4))
-        .saturating_add(encoding.draw_tags.len().saturating_mul(4))
-        .saturating_add(encoding.draw_data.len().saturating_mul(4))
-        .saturating_add(encoding.transforms.len().saturating_mul(24))
-        .saturating_add(encoding.styles.len().saturating_mul(8));
-    if glyphs > MAX_SCENE_GLYPHS || bytes > MAX_SCENE_BYTES {
-        Err(format!(
-            "Browser runtime: frame not rendered, scene too large ({glyphs} glyphs, {bytes} encoded bytes)"
-        ))
-    } else {
-        Ok(())
     }
 }
 
@@ -2239,11 +2214,12 @@ impl Mount {
             }
             return Ok(());
         }
-        if !gpu.pacing.may_draw() {
-            // The GPU still draws earlier frames: what changed waits for
-            // the frame after it caught up, rather than queue behind them.
-            self.held = "the GPU drawing earlier frames";
-            self.window.request_redraw();
+        // The GPU's own answer, bounded: a completion the browser never
+        // reports stops holding the page back after
+        // [`crate::frame_pacing::LOST_AFTER`], and a GPU that leaves several
+        // frames out in a row is a lost device, said in the words the page
+        // recovers from.
+        if let pacing::Gate::Hold = pacing::gate(&mut gpu.pacing, &mut self.held, &self.window)? {
             return Ok(());
         }
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
@@ -2652,7 +2628,9 @@ impl Mount {
         );
         let target = &gpu.surface.target_texture;
         crate::feedback_crops::service(&handle.device, &handle.queue, target, viewport.dpr);
-        let done = gpu.pacing.submitted();
+        // The frame is handed over at the moment the GPU may start it, so the
+        // wait the pacing bounds is the wait for this frame's completion.
+        let done = gpu.pacing.submitted(ui::time::now());
         handle.queue.on_submitted_work_done(move || done.finished());
         // The first frame is out: the pipelines it did not need compile once
         // the page has stayed a while (`compile_deferred_pipelines_later`).
@@ -2910,6 +2888,9 @@ impl Mount {
             "tab": format!("{id:x}"),
             "error": self.error,
             "frames": self.frames,
+            // Frames the GPU never reported drawn since it last reported one:
+            // a page that freezes without an error says so here.
+            "gpuStalls": self.gpu.as_ref().map_or(0, |gpu| gpu.pacing.stalls()),
             "captureProtected": self.presented_capture_protected,
             "presentation": self.presentation.get(),
             "componentInstance": self.frame.component_instance_id(),
@@ -2988,14 +2969,17 @@ mod here_exports;
 mod live_layout;
 mod live_signals;
 mod mention_notices;
+mod pacing;
 pub(crate) mod presence;
 mod publication;
+mod scene;
 mod session_asks;
 use crate::first_frame::{self, GpuStep};
 pub(crate) use frame_loop::sleep_ms;
 use frame_loop::watch_first_frame;
 use prepare::{desktop_inputs, host_offers, serve_history, serve_session};
 use publication::{FrameChange, SemanticPresentationTarget, emit_text};
+use scene::scene_within_limits;
 mod retained;
 use retained::Retained;
 #[cfg(debug_assertions)]
