@@ -784,10 +784,10 @@ impl MailApp {
             nav,
             nav_node: None,
             bar: ui::framework::BarCommands::new(),
-            first_run: EmptyState::new("No email account yet")
+            first_run: EmptyState::new("mail-first-run-title")
                 .with_icon(Icon::Mail)
-                .with_message(CATALOG.t("mail-first-run-message"))
-                .with_action("Open External Accounts")
+                .with_message(CATALOG.t("mail-first-run-hint"))
+                .with_action(CATALOG.t("mail-first-run-action"))
                 .with_action_id("mail.add-account"),
             first_run_node: None,
             compose: Box::new(ComposeWindow::new(ComposeFormat::default())),

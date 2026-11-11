@@ -224,7 +224,6 @@ mail-folder-archive = Archiv
 mail-folder-trash = Papierkorb
 mail-folder-junk = Spam
 mail-refresh-offline = { $folder } für { $account } lässt sich nicht aktualisieren, solange IMAP offline ist
-mail-first-run-message = E-Mail-Konten werden in den Einstellungen unter Externe Konten hinzugefügt.
 
 ## Die Plätze der Fensterleiste
 mail-bulk-done = Fertig

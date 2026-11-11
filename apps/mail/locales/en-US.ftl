@@ -3,6 +3,11 @@
 # Keys are added as surfaces are migrated off literals; a string that is still
 # a literal in the source is not translated yet, not intentionally excluded.
 
+## First run
+mail-first-run-title = No email account yet
+mail-first-run-hint = Add an email account in Settings, under External accounts.
+mail-first-run-action = Open External accounts
+
 ## Compose window
 mail-compose-label-to = To
 mail-compose-label-cc = Cc
@@ -227,7 +232,6 @@ mail-folder-archive = Archive
 mail-folder-trash = Trash
 mail-folder-junk = Junk
 mail-refresh-offline = Cannot refresh { $folder } for { $account } while IMAP is offline
-mail-first-run-message = Email accounts are added in Settings, under External Accounts.
 
 ## The window bar's slots
 mail-bulk-done = Done
