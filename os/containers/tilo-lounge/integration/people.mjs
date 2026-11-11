@@ -1133,7 +1133,7 @@ try {
     // fast one: it is no reading, and the gate says so instead of counting a
     // missing number as zero frames.
     if (!marks.ok) {
-      failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`);
+      failed(`${application.label} opened, but Enter to its window was not measured (${JSON.stringify(marks)}); an unmeasured open is not a fast one`, a.tab);
     }
     timings.push({app: application.id, ...marks});
     const shot = await a.tab.screenshot();
@@ -1181,7 +1181,7 @@ try {
   const moved = panAfter.offset - panBefore.offset;
   report.sideways = {forward, before: panBefore, after: panAfter, at: overNotes, under: await namesAt(a.tab, overNotes.x, overNotes.y)};
   if (Math.abs(moved) < 1) {
-    failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`);
+    failed(`two fingers sideways do not pan the strip over Notes: ${JSON.stringify(report.sideways)}`, a.tab);
   }
   if (Math.sign(moved) !== (forward ? 1 : -1)) {
     failed(`two fingers sideways panned the strip against the fingers: ${JSON.stringify(report.sideways)}`);
@@ -1204,13 +1204,16 @@ try {
   const cell = await sheetCell(a.tab);
   if (!cell) failed('Sheets shows no cell B2 to swipe over');
   const sheetBefore = await picture(a.tab);
-  await sidewaysSwipe(a.tab, cell.x, cell.y, forward);
+  // Toward the later columns: a sheet opens on its first one, so that is where
+  // its room is. Which way the strip has room says nothing about the grid —
+  // a swipe the columns cannot follow is the strip's, and would pan it.
+  await sidewaysSwipe(a.tab, cell.x, cell.y, true);
   const sheetPan = await panOf(a.tab);
   report.sheets = {before: keptPan, after: sheetPan, cell, underCentre: await namesAt(a.tab, centre.x, centre.y)};
   if ((sheetPan?.offset ?? 0) !== (keptPan?.offset ?? 0)) {
-    failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`);
+    failed(`the strip panned under a sideways wheel Sheets scrolled with: ${JSON.stringify(report.sheets)}`, a.tab);
   }
-  if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers');
+  if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
   console.log('ok: the same gesture scrolls Sheets and leaves the strip');
 
   let invited = null;

@@ -504,3 +504,31 @@ fn a_revealed_match_stands_clear_of_the_window_searchs_options() {
         "with nothing covering it, the match stands at the body's top: {cell:?}"
     );
 }
+
+/// A sideways wheel the columns cannot follow is nobody's here: it is left
+/// to whatever encloses the window — on a desktop, the strip of windows,
+/// which pans it — so a swipe over a sheet already at its first column still
+/// moves something. One the columns can follow is the sheet's.
+#[test]
+fn a_sideways_wheel_the_columns_cannot_follow_is_left_to_the_desk() {
+    let (mut app, mut doc, _tr, _theme) = painted();
+    let wheel = |dx: f64| {
+        ui::winit::event::WindowEvent::MouseWheel {
+            device_id: ui::winit::event::DeviceId::dummy(),
+            // A wheel's sideways travel is the negated delta on the page's
+            // wire, as winit hands it to every host.
+            delta: MouseScrollDelta::PixelDelta(ui::winit::dpi::PhysicalPosition::new(-dx, 0.0)),
+            phase: ui::winit::event::TouchPhase::Moved,
+        }
+    };
+    assert!(
+        !feed(&mut app, &mut doc, &wheel(-24.0), Modifiers::default()),
+        "the sheet shows its first column: a swipe before it is the desk's"
+    );
+    app.pending.redraw = false;
+    assert!(
+        feed(&mut app, &mut doc, &wheel(24.0), Modifiers::default()),
+        "the later columns are the sheet's"
+    );
+    assert!(app.pending.redraw, "the sheet repaints where it scrolled");
+}

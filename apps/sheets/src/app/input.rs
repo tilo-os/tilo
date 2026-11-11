@@ -455,7 +455,16 @@ impl SheetsApp {
             MouseScrollDelta::LineDelta(x, y) => (-f64::from(*x) * 48.0, -f64::from(*y) * 48.0),
             MouseScrollDelta::PixelDelta(pos) => (-pos.x / scale_factor, -pos.y / scale_factor),
         };
-        self.grid.on_scroll(dx, dy);
+        // A sideways wheel travels the columns, which end: a sheet already at
+        // its first (or last) column has nowhere to go, and the wheel is left
+        // to whatever encloses the window — on a desktop, the strip of
+        // windows, which pans it — instead of being swallowed by a grid that
+        // does not move. A wheel that does move the columns is the sheet's.
+        let sideways = dx.abs() > dy.abs();
+        let moved = self.grid.on_scroll(dx, dy);
+        if sideways && !moved {
+            return;
+        }
         self.pending.redraw = true;
         *handled = true;
     }

@@ -50,7 +50,9 @@ impl SheetsApp {
             Some("commandpalette") => self.staged = Some(Staged::CommandPalette),
             // Both scrollbar thumbs offset, proving the two-dimensional
             // viewport rather than idle rails.
-            Some("scrollbars") => self.grid.on_scroll(540.0, 260.0),
+            Some("scrollbars") => {
+                self.grid.on_scroll(540.0, 260.0);
+            }
             Some("fillseries") => self.staged = Some(Staged::FillSeries),
             Some("pasteformula") => self.staged = Some(Staged::PasteFormula),
             Some("error") => {

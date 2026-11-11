@@ -1652,11 +1652,20 @@ impl Grid {
         self.dirty = true;
     }
 
-    pub fn on_scroll(&mut self, dx: f64, dy: f64) {
+    /// Scroll by a wheel's travel, and say whether the view moved. A wheel
+    /// the sheet has no room for moves nothing, and the app leaves it to
+    /// whatever encloses the window rather than swallowing it.
+    pub fn on_scroll(&mut self, dx: f64, dy: f64) -> bool {
+        let before = (self.scroll_x, self.scroll_y);
         self.scroll_x += dx;
         self.scroll_y += dy;
         self.clamp_scroll();
-        self.dirty = true;
+        let moved = (self.scroll_x - before.0).abs() > f64::EPSILON
+            || (self.scroll_y - before.1).abs() > f64::EPSILON;
+        if moved {
+            self.dirty = true;
+        }
+        moved
     }
 
     /// Handle a left-press. `shift` extends the live range from its anchor;

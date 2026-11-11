@@ -708,3 +708,25 @@ fn highlights_and_accessibility_windows_track_the_selection() {
         assert_eq!(rows.last().copied(), Some(g.n_rows - 1));
     }
 }
+
+/// A wheel says whether the sheet followed it: the columns end, so a wheel
+/// toward the columns already passed moves nothing, and the app leaves that
+/// wheel to whatever encloses the window.
+#[test]
+fn a_wheel_reports_whether_the_sheet_followed_it() {
+    let mut grid = grid_with(&[]);
+    grid.rect = Rect::new(0.0, 0.0, 260.0, 180.0);
+    assert_eq!(grid.scroll_x, 0.0, "a new sheet shows its first column");
+    assert!(
+        !grid.on_scroll(-24.0, 0.0),
+        "there is nothing before the first column"
+    );
+    assert_eq!(grid.scroll_x, 0.0);
+    assert!(grid.on_scroll(24.0, 0.0), "the later columns are there");
+    assert!(grid.scroll_x > 0.0);
+    grid.on_scroll(grid.max_scroll_x(), 0.0);
+    assert!(
+        !grid.on_scroll(24.0, 0.0),
+        "at the last column a sideways wheel moves nothing"
+    );
+}
