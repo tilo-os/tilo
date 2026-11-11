@@ -761,7 +761,10 @@ impl StateTurn {
         let Envelope::Delta { delta, .. } = &envelope else {
             return Err(crate::persistence::error("expected admitted delta"));
         };
-        let publish = !self.sync || state.would_materialize(delta);
+        // A write in the clear to a record already sealed in this order is a
+        // downgrade: neither kept nor forwarded.
+        let publish =
+            (!self.sync || state.would_materialize(delta)) && state.store.keeps_in_order(delta)?;
         if !publish {
             return Ok(Step::Done(admitted_commit(envelope, captured, publish)));
         }

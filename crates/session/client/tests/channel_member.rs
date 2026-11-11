@@ -35,8 +35,8 @@ use tilo_session_client::PeerStore as _;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
-    Device, TestHost, WORKSPACE, enrol, hears, ready, refused, route, said, say, start_host,
-    start_peer, start_peer_with_store, wait_for, workspace,
+    Device, TestHost, WORKSPACE, enrol, hears, ready, route, said, say, start_host, start_peer,
+    start_peer_with_store, wait_for, workspace,
 };
 
 /// A native participant's side of the workspace, driven by hand: publish a
@@ -403,35 +403,22 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
     laptop.govern();
     hears(&peer, &route(), "under the new epoch").await;
 
-    // A write in the clear on the sealed channel is refused, never kept.
+    // A write in the clear on the sealed channel is a downgrade: the host
+    // neither keeps nor forwards it, so the page never meets it. The
+    // laptop's next sealed write, sent after it, says the host decided it.
+    let unsent = laptop.note.clone();
     laptop.write("in the clear", true);
-    let refusal = wait_for("cleartext on the sealed channel to be refused", || {
-        let refusal = refused(&peer);
-        async move { refusal }
-    })
-    .await;
-    assert!(
-        refusal.contains("plaintext downgrade forbidden"),
-        "{refusal}"
-    );
+    laptop.note = unsent;
+    laptop.write("sealed after it", false);
+    hears(&peer, &route(), "sealed after it").await;
     assert!(!said(&peer, &route()).contains("in the clear"));
 
-    // The page reloads and opens the note again: the host answers with what
-    // it kept of it, that write among them, while the open is being
-    // answered. Written after the record sealed, it is still a downgrade.
+    // The page reloads and opens the note again: what the host kept of it
+    // holds no write in the clear after the seal.
     peer.close();
     let peer = page();
     ready(&[&peer]).await;
-    hears(&peer, &route(), "under the new epoch").await;
-    let refusal = wait_for("the kept cleartext write to be refused", || {
-        let refusal = refused(&peer);
-        async move { refusal }
-    })
-    .await;
-    assert!(
-        refusal.contains("plaintext downgrade forbidden"),
-        "{refusal}"
-    );
+    hears(&peer, &route(), "sealed after it").await;
     assert!(!said(&peer, &route()).contains("in the clear"));
     phone_session.close().await;
     peer.close();
