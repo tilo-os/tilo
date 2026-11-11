@@ -813,7 +813,10 @@ impl Personal {
                 })
             })
             .collect();
-        tilo_relay_session::workspaces::PersonalList { workspaces }
+        tilo_relay_session::workspaces::PersonalList {
+            workspaces,
+            devices: Vec::new(),
+        }
     }
 
     pub(crate) fn snapshot(&mut self) -> Option<DirectoryUpdate> {
@@ -1391,7 +1394,7 @@ impl crate::Shared {
             .as_ref()
             .map(|engine| engine.host_hints().into_iter().collect())
             .unwrap_or_default();
-        let list = personal.readable(|workspace| {
+        let mut list = personal.readable(|workspace| {
             hints.get(workspace).cloned().or_else(|| {
                 self.sync
                     .as_ref()?
@@ -1399,6 +1402,19 @@ impl crate::Shared {
                     .and_then(|hint| postcard::to_stdvec(&hint).ok())
             })
         });
+        // The keys the person's root certified on this device go with the
+        // list, so the record every device of theirs reads holds them.
+        if let Some(engine) = &self.engine {
+            list.devices = crate::identity_admin::root_certificates(
+                &engine.identity().device_cert.user_public_key,
+            )
+            .into_iter()
+            .map(|cert| tilo_relay_session::workspaces::PersonalDevice {
+                cert,
+                revoked: false,
+            })
+            .collect();
+        }
         if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
             return;
         }

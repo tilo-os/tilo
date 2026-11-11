@@ -391,6 +391,24 @@ fn protect(store: &Store, id: &str) -> Answer {
     Ok(serde_json::json!({ "id": id, "protection": protection }))
 }
 
+/// The keys `person`'s root certified that this device's identity store
+/// keeps: the fleet of that root, when this device holds it; none otherwise.
+pub(crate) fn root_certificates(person: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {
+    let Ok(store) = Store::from_env() else {
+        return Vec::new();
+    };
+    let Ok(identities) = runtime_identity::list_identities(&store.dir) else {
+        return Vec::new();
+    };
+    let fleets = store.fleets();
+    identities
+        .iter()
+        .filter(|identity| identity.public_key == *person)
+        .filter_map(|identity| fleets.load_cached(&identity.id).ok())
+        .flat_map(|fleet| fleet.certificates.clone())
+        .collect()
+}
+
 /// The devices trusted under `identity` , this one marked current.
 pub(crate) fn devices(store: &Store, identity: &IdentityProfile) -> Answer {
     let devices = tilo_identity_host::device_admin::trusted_devices(

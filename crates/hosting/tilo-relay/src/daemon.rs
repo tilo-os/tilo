@@ -625,6 +625,9 @@ impl Relay {
             live.clone(),
             Some(workspaces.clone()),
         );
+        if let Some(governed) = &governed {
+            certification.keep_issued_in(governed.clone());
+        }
         let web = Box::new(WebContext {
             relay: handler.clone(),
             #[cfg(feature = "web")]

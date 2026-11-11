@@ -8,6 +8,15 @@
 //! the person's agents) reads it back: how a key that runs on no device of
 //! theirs finds the workspaces it may enter, and at which host.
 //!
+//! The same record keeps the person's devices: every key their root
+//! certified, as its certificate says. Each device that signs a certificate
+//! adds it: a desktop holding the root sends its fleet with its list, and
+//! this host adds what it carried when the root on a page answered a pairing
+//! ([`Workspaces::keep_issued_device`]), and a device of theirs that reads
+//! or keeps the record is in it too, since a browser's root certifies the
+//! browser in its own tab. A device is never taken out; its
+//! root's revocation, which this host keeps with every other, marks it.
+//!
 //! The copy is the last one a device of the person kept, one file per person
 //! (`personal-lists/<root>.json`). Reading it fills in the workspaces this
 //! host keeps for them, as this host lists them and with its own signed
@@ -19,8 +28,10 @@
 
 use std::path::{Path, PathBuf};
 
-use tilo_relay_session::workspaces::{PersonalList, PersonalWorkspace, WorkspaceHostAddress};
-use tilo_user_identity::DeviceCert;
+use tilo_relay_session::workspaces::{
+    MAX_PERSONAL_DEVICES, PersonalDevice, PersonalList, PersonalWorkspace, WorkspaceHostAddress,
+};
+use tilo_user_identity::{DeviceCert, verify_device_cert};
 
 use super::Workspaces;
 
@@ -34,7 +45,12 @@ struct Kept {
     by: String,
     /// When, nanoseconds since the epoch.
     at_ns: u64,
+    /// Its workspaces; the devices are kept beside it.
     list: PersonalList,
+    /// Every key the person's root certified that a device added, one per
+    /// key, the newest certificate of each.
+    #[serde(default)]
+    devices: Vec<DeviceCert>,
 }
 
 /// The lists people's devices kept on this host.
@@ -56,39 +72,105 @@ impl PersonalLists {
         self.dir.join(format!("{}.json", hex::encode(person)))
     }
 
-    /// Keep `list` as `device`'s person's, replacing what was kept.
-    fn keep(&self, device: &DeviceCert, list: PersonalList, now: u64) -> Result<(), String> {
+    /// Keep `list` as `device`'s person's, replacing the workspaces kept and
+    /// adding the devices it carries.
+    fn keep(&self, device: &DeviceCert, mut list: PersonalList, now: u64) -> Result<(), String> {
         list.check()?;
-        let kept = Kept {
-            by: hex::encode(device.device_public_key),
-            at_ns: now,
-            list,
-        };
-        let bytes = serde_json::to_vec(&kept).map_err(|error| error.to_string())?;
-        let _writing = self
-            .writing
+        let person = device.user_public_key;
+        let carried: Vec<DeviceCert> = list.devices.drain(..).map(|one| one.cert).collect();
+        let _writing = self.lock();
+        let mut kept = self.read(&person).unwrap_or_else(|| Kept {
+            by: String::new(),
+            at_ns: 0,
+            list: PersonalList::default(),
+            devices: Vec::new(),
+        });
+        kept.by = hex::encode(device.device_public_key);
+        kept.at_ns = now;
+        kept.list = list;
+        add(&mut kept.devices, &person, carried);
+        self.write(&person, &kept)
+    }
+
+    /// Add `certs`, keys `person`'s root certified, to their record, keeping
+    /// whatever else it holds.
+    fn add_devices(&self, person: &[u8; 32], certs: Vec<DeviceCert>) -> Result<(), String> {
+        let _writing = self.lock();
+        let mut kept = self.read(person).unwrap_or_else(|| Kept {
+            by: String::new(),
+            at_ns: 0,
+            list: PersonalList::default(),
+            devices: Vec::new(),
+        });
+        if !add(&mut kept.devices, person, certs) {
+            return Ok(());
+        }
+        self.write(person, &kept)
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, ()> {
+        self.writing
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write(&self, person: &[u8; 32], kept: &Kept) -> Result<(), String> {
+        let bytes = serde_json::to_vec(kept).map_err(|error| error.to_string())?;
         std::fs::create_dir_all(&self.dir).map_err(|error| error.to_string())?;
-        let path = self.path(&device.user_public_key);
+        let path = self.path(person);
         let staged = path.with_extension("json.new");
         std::fs::write(&staged, bytes).map_err(|error| error.to_string())?;
         std::fs::rename(&staged, &path).map_err(|error| error.to_string())
     }
 
-    /// The list `person`'s devices kept here last; empty when none did.
-    fn of(&self, person: &[u8; 32]) -> PersonalList {
+    /// What `person`'s devices kept here; `None` when none did.
+    fn read(&self, person: &[u8; 32]) -> Option<Kept> {
         let Ok(bytes) = std::fs::read(self.path(person)) else {
-            return PersonalList::default();
+            return None;
         };
-        serde_json::from_slice::<Kept>(&bytes).map_or_else(
-            |error| {
+        match serde_json::from_slice::<Kept>(&bytes) {
+            Ok(kept) => Some(kept),
+            Err(error) => {
                 tracing::warn!(%error, "a kept workspace list does not read; answering none");
-                PersonalList::default()
-            },
-            |kept| kept.list,
-        )
+                None
+            }
+        }
     }
+
+    /// The list `person`'s devices kept here last, and their devices; empty
+    /// when none did.
+    fn of(&self, person: &[u8; 32]) -> (PersonalList, Vec<DeviceCert>) {
+        self.read(person)
+            .map(|kept| (kept.list, kept.devices))
+            .unwrap_or_default()
+    }
+}
+
+/// Add each of `certs` that `person`'s root signed to `devices`: a key not
+/// there yet, or a newer certificate of one that is. Whether any was.
+fn add(devices: &mut Vec<DeviceCert>, person: &[u8; 32], certs: Vec<DeviceCert>) -> bool {
+    let mut added = false;
+    for cert in certs {
+        if cert.user_public_key != *person || verify_device_cert(&cert).is_err() {
+            continue;
+        }
+        let full = devices.len() >= MAX_PERSONAL_DEVICES;
+        match devices
+            .iter_mut()
+            .find(|known| known.device_public_key == cert.device_public_key)
+        {
+            Some(known) if known.issued_at_ns < cert.issued_at_ns => {
+                *known = cert;
+                added = true;
+            }
+            None if !full => {
+                devices.push(cert);
+                added = true;
+            }
+            Some(_) | None => {}
+        }
+    }
+    added
 }
 
 impl Workspaces {
@@ -139,8 +221,9 @@ impl Workspaces {
                 .agent
                 .is_none_or(|scope| scope.reaches(workspace))
         };
+        let (list, certs) = self.inner.personal.of(&device.user_public_key);
         let mut workspaces: Vec<PersonalWorkspace> = Vec::new();
-        for kept in self.inner.personal.of(&device.user_public_key).workspaces {
+        for kept in list.workspaces {
             if !reaches(&kept.workspace)
                 || workspaces
                     .iter()
@@ -154,7 +237,49 @@ impl Workspaces {
             }
         }
         workspaces.extend(local);
-        PersonalList { workspaces }
+        // The person's own keys read their devices; an agent's grant reads
+        // the workspaces it may enter, and nothing of the person's devices.
+        let devices = if device.capabilities.agent.is_some() {
+            Vec::new()
+        } else {
+            let revocations = self.revocations();
+            certs
+                .into_iter()
+                .map(|cert| PersonalDevice {
+                    revoked: revocations.refuses(&cert),
+                    cert,
+                })
+                .collect()
+        };
+        PersonalList {
+            workspaces,
+            devices,
+        }
+    }
+
+    /// Add `device`, one of its person's own devices that asked for their
+    /// record, to it: a browser's root certifies the browser itself, in the
+    /// tab, so its certificate reaches no host but on the browser's own
+    /// session. An agent's grant and a stand-in are no device of theirs.
+    pub(super) fn note_own_device(&self, device: &DeviceCert) {
+        if device.capabilities.agent.is_some() || device.capabilities.stand_in {
+            return;
+        }
+        self.keep_issued_device(device);
+    }
+
+    /// Add `cert`, a key its person's root just certified through this host
+    /// (a pairing the root answered here, an agent's grant), to their
+    /// record: the root that signed it is on a page, which keeps no record
+    /// of its own.
+    pub fn keep_issued_device(&self, cert: &DeviceCert) {
+        if let Err(error) = self
+            .inner
+            .personal
+            .add_devices(&cert.user_public_key, vec![cert.clone()])
+        {
+            tracing::warn!(%error, "a key the person's root certified here is not in their record");
+        }
     }
 
     /// This host as people know it: the name it offers workspaces of their
