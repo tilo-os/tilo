@@ -119,7 +119,9 @@ impl FramePacing {
     }
 
     /// Whether the GPU has left so many frames out that it is treated as
-    /// lost.
+    /// lost: what [`Pacing::Late`]'s `stalls` says to the page, read here by
+    /// the tests.
+    #[cfg(test)]
     #[must_use]
     pub fn lost(&self) -> bool {
         self.stalls >= LOST_AFTER_STALLS

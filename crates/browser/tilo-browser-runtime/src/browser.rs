@@ -2219,7 +2219,10 @@ impl Mount {
         // [`crate::frame_pacing::LOST_AFTER`], and a GPU that leaves several
         // frames out in a row is a lost device, said in the words the page
         // recovers from.
-        if let pacing::Gate::Hold = pacing::gate(&mut gpu.pacing, &mut self.held, &self.window)? {
+        if matches!(
+            pacing::gate(&mut gpu.pacing, &mut self.held, &self.window)?,
+            pacing::Gate::Hold
+        ) {
             return Ok(());
         }
         let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
