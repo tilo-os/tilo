@@ -53,7 +53,7 @@ pub(super) fn content(config: &Config) -> tilo_content::ContentStore {
     config
         .peer
         .and_then(crate::replication::content)
-        .unwrap_or_else(crate::page_content::store)
+        .unwrap_or_else(tilo_content::ContentStore::page_files)
 }
 
 /// What the page offers its desktop beyond the workspace: inviting, its host and build, the About

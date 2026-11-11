@@ -17,25 +17,10 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
-use tilo_content::{ContentLimits, ContentStore, MemoryBackend};
+use tilo_content::ContentStore;
 
 /// How an app names an image by its content address.
 const BLOB_SCHEME: &str = "tilo-blob://";
-
-/// Most the page keeps in memory when its app files are not loaded.
-const MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
-
-/// A store the page lends windows: the profile's app files, which outlive the
-/// page ([`ContentStore::page_files`]), or memory when the host loaded none.
-pub(crate) fn store() -> ContentStore {
-    if tilo_files::web::is_mirrored(&tilo_paths::default_profile()) {
-        return ContentStore::page_files();
-    }
-    ContentStore::new(MemoryBackend::new(ContentLimits {
-        max_total_bytes: MAX_MEMORY_BYTES,
-        ..ContentLimits::default()
-    }))
-}
 
 /// The window each image loader of a mount draws for, by the loader's place
 /// in the mount's list: its content store is the one the window reads its

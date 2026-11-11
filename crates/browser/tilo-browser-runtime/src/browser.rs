@@ -268,10 +268,7 @@ impl Config {
     /// Lend Model Providers the administration; any other application
     /// gets none.
     fn lend_provider_admin(&self, context: &mut HostContext) -> Result<(), JsValue> {
-        if crate::host_services::provider_admin_app(context.app_id()) {
-            crate::host_services::provide_provider_admin(context, self.provider_admin()?)
-                .map_err(error)?;
-        }
+        crate::host_services::provide_provider_admin(context, self.provider_admin()?);
         Ok(())
     }
 

@@ -394,24 +394,17 @@ impl ProviderAdmin for LazyAdministration {
     }
 }
 
-/// Only the exact registered control panel may borrow administration: the
-/// page runs Model Providers, never Settings (a Tilo OS app).
-pub(crate) fn provider_admin_app(app_id: &str) -> bool {
-    app_id == "so.tilo.model-providers"
-}
-
-/// Match trusted application metadata, not an arbitrary tab's label or requested alias.
+/// Lend administration to the window only when it is the exact registered
+/// control panel, matched by trusted application metadata, never a tab's
+/// label or requested alias: the page runs Model Providers, never Settings (a
+/// Tilo OS app).
 pub(crate) fn provide_provider_admin(
     context: &mut ui::application::HostContext,
     handle: ui::models::ProviderAdministration,
-) -> Result<(), String> {
-    if handle.is_available() && !provider_admin_app(context.app_id()) {
-        return Err(
-            "provider administration is only available to Settings or Model Providers".into(),
-        );
+) {
+    if context.app_id() == "so.tilo.model-providers" {
+        context.provide_provider_admin(handle);
     }
-    context.provide_provider_admin(handle);
-    Ok(())
 }
 
 use tilo_desktop_surface::{AppInbox, AppNotifier};

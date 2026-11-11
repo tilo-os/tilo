@@ -952,13 +952,10 @@ impl Tiles {
             self.shared.record_actions.peer.is_some(),
         ));
         crate::person_records::provide(&mut context, &self.inputs.store)?;
-        // Only registered control panels receive the administration capability.
-        if crate::host_services::provider_admin_app(definition.app_id()) {
-            crate::host_services::provide_provider_admin(
-                &mut context,
-                self.inputs.provider_admin.clone(),
-            )?;
-        }
+        crate::host_services::provide_provider_admin(
+            &mut context,
+            self.inputs.provider_admin.clone(),
+        );
         crate::page_content::serve_window(
             &context.wake_handle(),
             &self.shared.images,

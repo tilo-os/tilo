@@ -206,7 +206,7 @@ pub(crate) fn open(
         workspace: workspace_id,
         store,
         kept,
-        content_store: crate::page_content::store(),
+        content_store: tilo_content::ContentStore::page_files(),
         ready: false,
         when_opened: false,
         asked: HashSet::new(),

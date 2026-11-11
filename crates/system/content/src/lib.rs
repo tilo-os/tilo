@@ -350,7 +350,8 @@ impl ContentStore {
     /// which outlive the page, so an upload a page stored is still here after a reload. Every
     /// app of the profile shares the one store, as native apps share `tilo/content`. The page
     /// holds those files in memory, so the store is bounded: an item or store past the bound is
-    /// refused, never dropped, and nothing collects what the page stored on its own.
+    /// refused, never dropped, and nothing collects what the page stored on its own. A page whose
+    /// host loaded no app files keeps content in memory, under the same bounds, as a tab alone can.
     ///
     /// This is the store a page host lends each window it opens, as the framework's native
     /// process host lends `tilo_content_device::for_app`'s: a window keeps content in the store
@@ -358,20 +359,24 @@ impl ContentStore {
     #[cfg(feature = "dir")]
     #[must_use]
     pub fn page_files() -> Self {
-        let Ok(content) = tilo_files::VPath::new("content") else {
-            return Self::memory();
+        let limits = ContentLimits {
+            max_item_bytes: PAGE_MAX_ITEM_BYTES,
+            max_total_bytes: PAGE_MAX_TOTAL_BYTES,
+            ..ContentLimits::default()
         };
-        let location = tilo_paths::AppPaths::for_app(PAGE_STORE_OWNER)
-            .data()
-            .join(&content);
-        Self::new(FilesBackend::new(
-            location,
-            ContentLimits {
-                max_item_bytes: PAGE_MAX_ITEM_BYTES,
-                max_total_bytes: PAGE_MAX_TOTAL_BYTES,
-                ..ContentLimits::default()
-            },
-        ))
+        #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+        let mirrored = tilo_files::web::is_mirrored(&tilo_paths::default_profile());
+        #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+        let mirrored = true;
+        match tilo_files::VPath::new("content") {
+            Ok(content) if mirrored => Self::new(FilesBackend::new(
+                tilo_paths::AppPaths::for_app(PAGE_STORE_OWNER)
+                    .data()
+                    .join(&content),
+                limits,
+            )),
+            _ => Self::new(MemoryBackend::new(limits)),
+        }
     }
 
     /// Store `bytes`, returning their address. The media type is sniffed from the content.
