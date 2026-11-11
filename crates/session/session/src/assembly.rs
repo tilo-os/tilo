@@ -671,7 +671,7 @@ pub struct Session {
     #[cfg(target_os = "linux")]
     pub(crate) controllers: Option<crate::controllers::Controllers>,
     #[cfg(target_os = "linux")]
-    pub(crate) connectors: crate::connectors::ConnectorHost,
+    pub(crate) connectors: Rc<crate::connectors::ConnectorHost>,
     /// The controllers' descriptors, polled by the loop so their input ends
     /// its wait, by the key the controller source gave each.
     #[cfg(target_os = "linux")]

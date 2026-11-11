@@ -16,6 +16,9 @@ app gets on a real system:
              but lavapipe
   actions    each app publishes its actions; a "New ..." action changes the
              app's record (its history gains the change)
+  hosts      each app's window holds none of its data (TILO_TILOLANG_HOSTED): its
+             instance runs in a tilolang host, and the apps of one publisher in one
+             workspace share one host process, handed every window's instance
   hosted-here the session's own workspace is hosted by this device: no app waits
              on a host, each shows its own state as first opened (first-*.png)
   snapshot   a PNG of the nested session per app, in OUT
@@ -63,8 +66,14 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 # The session this checks and the tools that act in it: one harness for every
 # check of a desktop with the tree's apps (scripts/headless-examples/real_apps.py).
-from real_apps import (BUILD, Failed, Session, app_id, prepare, run,  # noqa: E402
+from real_apps import (BUILD, Failed, Session, prepare, run,  # noqa: E402
                        start_session, stop_session, until)
+
+
+def app_id(name: str) -> str:
+    """The application id of the tilolang package `name` (its directory under apps/tl)."""
+    return f"so.tilo.lang.{name}"
+
 
 BIN = BUILD / "bin"
 APPS = ["notes", "chat", "tasks", "today"]
@@ -241,6 +250,23 @@ def check_processes(session: Session, session_pid: int) -> dict:
         if drivers and any(d != "libvulkan_lvp.so" for d in drivers):
             raise Failed(f"pid {who['pid']} loaded a GPU's Vulkan driver: {drivers}")
     return out
+
+
+def check_hosts(session: Session, processes: dict, session_pid: int) -> dict:
+    """Every app's window is its window alone, and one host of the workspace and the apps'
+    publisher runs every window's instance."""
+    hosts = until("the workspace's tilolang host", lambda: host_pids(session_pid) or None, 30)
+    if len(hosts) != 1:
+        raise Failed(f"the apps of one publisher in one workspace run in {len(hosts)} hosts")
+    for app, seen in processes["apps"].items():
+        if environ(seen["pid"]).get("TILO_TILOLANG_HOSTED") != "1":
+            raise Failed(f"{app}'s window holds its own data: it was not launched as a hosted window")
+    def handed():
+        lines = log_lines(session, "tilolang instance handed over")
+        apps = {line.get("package_id") for line in lines}
+        return lines if all(app in apps for app in processes["apps"]) else None
+    lines = until("every window's instance handed to the host", handed, 30)
+    return {"host": hosts[0], "handed": len(lines)}
 
 
 def own_action(session: Session, name: str, title: str, kind: str):
@@ -528,6 +554,7 @@ def apps_phases(summary: dict, state: Path, out: Path, running: dict) -> bool:
         ("registry", lambda: check_registry(session)),
         ("launch", lambda: launch_all(session)),
         ("processes", lambda: check_processes(session, pid)),
+        ("hosts", lambda: check_hosts(session, summary["checks"]["processes"], pid)),
         # Before anything is in them: the session's own workspace is this device's to
         # host, so no app waits on a host and each shows its own state.
         ("hosted-here", lambda: check_hosted_here(session, summary["checks"]["launch"], out)),

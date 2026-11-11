@@ -569,12 +569,11 @@ fn a_windows_app_describes_the_controls_of_its_content_and_hears_the_press() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::WindowTargets {
@@ -673,7 +672,7 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let interaction = tilo_actions::SemanticInteraction {
         version: tilo_actions::INTERACTION_VERSION,
@@ -701,7 +700,6 @@ fn a_windows_action_markers_are_read_without_the_host_refusing_them() {
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::ActionMarkers {
@@ -737,13 +735,12 @@ fn a_message_the_session_cannot_answer_is_said_so() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     // An app's card is the app's own window: the session mirrors no region of a floating surface.
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::UpdateRegion {
@@ -955,15 +952,12 @@ fn probe_showing(session: &mut Session, apps: &Apps, started: &Path) -> (u32, St
 fn ask(
     launches: &Arc<Launches>,
     app: &str,
-    workspace: &str,
     pid: u32,
     tab: u64,
     message: &FloatingSurfaceClientMessage,
 ) -> UnixStream {
-    let connections =
-        ServiceLinks::new(Arc::clone(launches)).window(app, workspace, tab, Some(pid));
-    let mut stream: UnixStream = connections
-        .shell_ui
+    let mut stream: UnixStream = ServiceLinks::new(Arc::clone(launches))
+        .shell_ui(app, tab, Some(pid))
         .expect("the app's shell-ui connection")
         .into();
     let frames = [
@@ -987,12 +981,11 @@ fn a_window_the_app_asks_for_opens_beside_its_own_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::OpenTabBeside {
@@ -1043,14 +1036,13 @@ fn a_sideways_wheel_the_app_leaves_pans_the_strip_its_window_stands_in() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     // The window in front describes a control of its content, so where it stands on the desk is
     // something this test reads.
     let mut connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::WindowTargets {
@@ -1145,12 +1137,11 @@ fn an_address_the_app_does_not_claim_opens_no_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::OpenTabBeside {
@@ -1235,7 +1226,7 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
     let toolbar = WindowToolbar {
         location: Some(ToolbarLocation {
             label: "Home".to_owned(),
@@ -1248,7 +1239,6 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::Toolbar {
@@ -1273,7 +1263,6 @@ fn an_apps_own_slots_stand_in_its_windows_bar_in_a_running_session() {
     let mut asking = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::AllowHostShell,
@@ -1310,7 +1299,7 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     let bus = tilo_test_env::PrivateBus::start();
     let (mut session, apps, launches, _launcher) =
         probe_session_with_services(&mut home, &started, &bus);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
 
     // The runtime's supervisor stands where the session dials it, and records the allow it is
     // handed.
@@ -1341,7 +1330,6 @@ fn the_answer_to_the_device_shell_question_reaches_the_app() {
     let mut asking = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::AllowHostShell,
@@ -1468,7 +1456,7 @@ fn an_app_closes_only_its_own_tab() {
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("starts");
     let (mut session, apps, launches, _launcher) = probe_session(&mut home, &started);
-    let (pid, workspace, tab) = probe_showing(&mut session, &apps, &started);
+    let (pid, _, tab) = probe_showing(&mut session, &apps, &started);
     session
         .desktop()
         .with_policy(|policy| policy.map(window(12, "org.example.Other")).unwrap());
@@ -1479,7 +1467,6 @@ fn an_app_closes_only_its_own_tab() {
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::CloseTab { instance: None },
@@ -1500,7 +1487,6 @@ fn an_app_closes_only_its_own_tab() {
     let _connection = ask(
         &launches,
         PROBE,
-        &workspace,
         pid,
         tab,
         &FloatingSurfaceClientMessage::ReopenClosedTab,

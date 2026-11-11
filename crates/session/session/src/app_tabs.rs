@@ -24,7 +24,7 @@ use crate::platform::surfaces::DesktopHost;
 use launcher::services::{SHELL_UI_LAUNCH_PROTOCOL, SHELL_UI_SERVICE};
 use serde::Deserialize;
 use tilo_app_launch::routing;
-use tilo_app_launch::{Connects, Launch, Open, WindowConnections};
+use tilo_app_launch::{Connects, Launch, Open};
 use tilo_compositor::{Compositor, ReadableWatch};
 
 use tilo_desktop::launchpad::LaunchpadAction;
@@ -68,7 +68,7 @@ impl ServiceLinks {
 
     /// The window's collaboration connection, attested as that window: the record is the session's
     /// own, spent by the connection that names the window's instance.
-    fn collaboration(
+    fn window_collaboration(
         &self,
         app: &str,
         workspace: &str,
@@ -94,7 +94,7 @@ impl ServiceLinks {
     /// The window's shell-ui connection, attributed to the launch whose process `launcher` is: the
     /// app and the workspace it runs in, without which what it asks reaches no desk. `instance` is
     /// the tab the window takes, which is how its asks find it.
-    fn shell_ui(&self, app: &str, launcher: Option<u32>, instance: u64) -> Option<OwnedFd> {
+    fn window_shell_ui(&self, app: &str, launcher: Option<u32>, instance: u64) -> Option<OwnedFd> {
         let launcher = launcher?;
         self.launches.window_shell_ui(app, launcher, instance);
         let connected = (|| {
@@ -126,17 +126,18 @@ impl ServiceLinks {
 }
 
 impl Connects for ServiceLinks {
-    fn window(
+    fn collaboration(
         &self,
         app: &str,
         workspace: &str,
         instance: u64,
         launcher_pid: Option<u32>,
-    ) -> WindowConnections {
-        WindowConnections {
-            collaboration: self.collaboration(app, workspace, instance, launcher_pid),
-            shell_ui: self.shell_ui(app, launcher_pid, instance),
-        }
+    ) -> Option<OwnedFd> {
+        self.window_collaboration(app, workspace, instance, launcher_pid)
+    }
+
+    fn shell_ui(&self, app: &str, instance: u64, launcher_pid: Option<u32>) -> Option<OwnedFd> {
+        self.window_shell_ui(app, launcher_pid, instance)
     }
 }
 

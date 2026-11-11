@@ -91,13 +91,11 @@ fn a_capture_of_the_lock_screen_withholds_the_password_field() {
 fn shell_ui_connection(
     launches: &Arc<tilo_session::Launches>,
     app: &str,
-    workspace: &str,
     pid: u32,
     messages: &[ui::floating_surface::FloatingSurfaceClientMessage],
 ) -> UnixStream {
     let mut stream: UnixStream = tilo_session::app_tabs::ServiceLinks::new(Arc::clone(launches))
-        .window(app, workspace, 7, Some(pid))
-        .shell_ui
+        .shell_ui(app, 7, Some(pid))
         .expect("the app's shell-ui connection")
         .into();
     stream
@@ -186,7 +184,6 @@ fn an_app_that_shows_a_secret_has_its_window_withheld_in_copies() {
     let connection = shell_ui_connection(
         &launches,
         app,
-        "private",
         app_process.id(),
         &[
             FloatingSurfaceClientMessage::Hello {
