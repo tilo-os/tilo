@@ -353,6 +353,21 @@ impl Arrangement {
         self.floats.get(&group).copied()
     }
 
+    /// Stand `group` at `(x, y)` on the canvas, keeping its size and every other place where it
+    /// is: what a drag that let a place go on the canvas commits, one arranging action for the
+    /// whole gesture. Nothing placed moves. Whether the place stood somewhere else.
+    pub fn set_position(&mut self, group: GroupId, x: i32, y: i32) -> bool {
+        let Some(place) = self.places.get_mut(&group) else {
+            return false;
+        };
+        if place.x == x && place.y == y {
+            return false;
+        }
+        place.x = x;
+        place.y = y;
+        true
+    }
+
     /// Float `group` where `float` says (`None` snaps it back into the grid).
     /// Returns whether it changed.
     pub fn set_float(&mut self, group: GroupId, float: Option<FloatPlace>) -> bool {
@@ -447,6 +462,80 @@ impl Arrangement {
         let gap = i64::from(CANVAS_GAP);
         let x = i32::try_from(subject.right().saturating_add(gap)).unwrap_or(i32::MAX);
         self.free_place_near((x, subject.y), width, height, except)
+    }
+
+    /// The free place next to `subject` for a window of `width` × `height`:
+    /// to its trailing side at its own line, then below it, then below its
+    /// trailing side, and onward in that order down the two columns the anchor
+    /// starts — never above it or to its leading side, so a place opened beside
+    /// what a person is in stands where they look rather than off the top or
+    /// the left of the canvas. Nothing placed moves, and every candidate is
+    /// [`CANVAS_GAP`] clear of everything but `except`.
+    ///
+    /// Deterministic: the same arrangement and anchor give the same place on
+    /// every device. A canvas crowded below both columns continues down the
+    /// trailing column, where the canvas pans.
+    #[must_use]
+    pub fn free_place_next_to(
+        &self,
+        subject: CanvasPlace,
+        width: u32,
+        height: u32,
+        except: Option<GroupId>,
+    ) -> CanvasPlace {
+        let others: Vec<CanvasPlace> = self
+            .places
+            .iter()
+            .filter(|(id, _)| Some(**id) != except)
+            .map(|(_, place)| *place)
+            .collect();
+        let free = |place: &CanvasPlace| !others.iter().any(|o| place.crowds(o, CANVAS_GAP));
+        let gap = i64::from(CANVAS_GAP);
+        let step_y = i64::from(height).saturating_add(gap);
+        let right = subject.right().saturating_add(gap);
+        let below = subject.bottom().saturating_add(gap);
+        let clamp = |v: i64| i32::try_from(v).unwrap_or(if v < 0 { i32::MIN } else { i32::MAX });
+        // Past every obstacle's foot both columns are free: the walk stops there.
+        let foot = others
+            .iter()
+            .map(CanvasPlace::bottom)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(gap);
+        let rows = foot.saturating_sub(below).saturating_div(step_y.max(1));
+        // The trailing side at the anchor's own line first: what a person opening something
+        // beside where they are expects to see.
+        for (x, y) in [
+            (right, i64::from(subject.y)),
+            (i64::from(subject.x), below),
+            (right, below),
+        ] {
+            let place = CanvasPlace::new(clamp(x), clamp(y), width, height);
+            if free(&place) {
+                return place;
+            }
+        }
+        for row in 1..=rows.try_into().unwrap_or(u32::MAX) {
+            let drop = i64::from(row).saturating_mul(step_y);
+            for (x, y) in [
+                (right, i64::from(subject.y).saturating_add(drop)),
+                (i64::from(subject.x), below.saturating_add(drop)),
+            ] {
+                let place = CanvasPlace::new(clamp(x), clamp(y), width, height);
+                if free(&place) {
+                    return place;
+                }
+            }
+        }
+        // Every row the obstacles reach is taken: continue down the trailing column.
+        let mut y = below;
+        loop {
+            let place = CanvasPlace::new(clamp(right), clamp(y), width, height);
+            if free(&place) || y == i64::MAX {
+                return place;
+            }
+            y = y.saturating_add(step_y);
+        }
     }
 
     /// The groups standing within `radius` canvas pixels of `point`,
@@ -624,6 +713,55 @@ mod tests {
     }
 
     #[test]
+    fn next_to_a_window_walks_right_then_down_and_never_above_it() {
+        // The conversation at the origin: the first place opened beside it stands at its right on
+        // its own line, the second below it, the third below its right — and none above it or to
+        // its left, where a person would not look for what they asked for.
+        let conversation = CanvasPlace::new(0, 0, 720, 520);
+        let mut arrangement = canvas(&[(1, conversation)]);
+        let opened: Vec<CanvasPlace> = (2..=7)
+            .map(|id| {
+                let place = arrangement.free_place_next_to(conversation, 720, 520, None);
+                assert!(!place.crowds(&conversation, CANVAS_GAP), "{place:?}");
+                assert!(
+                    place.y >= conversation.y,
+                    "never above the anchor: {place:?}"
+                );
+                assert!(
+                    place.x >= conversation.x,
+                    "never to the anchor's leading side: {place:?}"
+                );
+                for other in &opened_places(&arrangement) {
+                    assert!(
+                        !place.crowds(other, CANVAS_GAP),
+                        "{place:?} crowds {other:?}"
+                    );
+                }
+                arrangement.places.insert(id, place);
+                place
+            })
+            .collect();
+        assert_eq!(
+            (opened[0].x, opened[0].y),
+            (744, 0),
+            "the first stands beside the conversation, at its line"
+        );
+        assert_eq!((opened[1].x, opened[1].y), (0, 544), "the second below it");
+        assert_eq!(
+            (opened[2].x, opened[2].y),
+            (744, 544),
+            "the third under its right"
+        );
+        let places: Vec<CanvasPlace> = opened_places(&arrangement);
+        assert_eq!(places.len(), 7, "every place stands clear of the rest");
+    }
+
+    /// The places standing in `arrangement`, for saying one crowds none.
+    fn opened_places(arrangement: &Arrangement) -> Vec<CanvasPlace> {
+        arrangement.places.values().copied().collect()
+    }
+
+    #[test]
     fn a_window_being_placed_again_ignores_its_own_old_place() {
         let card = CanvasPlace::new(0, 0, 400, 300);
         let arrangement = canvas(&[(1, card)]);
@@ -656,6 +794,31 @@ mod tests {
         let mut arrangement = canvas(&[(1, CanvasPlace::new(0, 0, 10, 10))]);
         assert!(arrangement.retain_groups(|id| id != 1));
         assert!(arrangement.places.is_empty());
+    }
+
+    #[test]
+    fn a_place_let_go_elsewhere_on_the_canvas_keeps_its_size_and_moves_nothing_else() {
+        // A drag that ended on the canvas: the place stands where it was let go, at the size it
+        // had, and every other place stays exactly where it was.
+        let mut arrangement = canvas(&[
+            (1, CanvasPlace::new(0, 0, 400, 300)),
+            (2, CanvasPlace::new(500, 0, 400, 300)),
+        ]);
+        assert!(arrangement.set_position(2, 900, 640));
+        assert_eq!(
+            arrangement.place_of(2),
+            Some(CanvasPlace::new(900, 640, 400, 300)),
+            "the place stands where it was let go, at its own size"
+        );
+        assert_eq!(
+            arrangement.place_of(1),
+            Some(CanvasPlace::new(0, 0, 400, 300)),
+            "nothing else moved"
+        );
+        assert!(
+            !arrangement.set_position(2, 900, 640),
+            "a place already there is not a change"
+        );
     }
 
     #[test]

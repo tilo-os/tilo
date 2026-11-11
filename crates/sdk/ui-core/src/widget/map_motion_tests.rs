@@ -180,3 +180,65 @@ fn a_map_is_known_by_the_key_its_view_gave_it_not_by_where_it_stands() {
         left.drop_key()
     );
 }
+
+#[test]
+fn a_place_that_arrives_off_screen_is_panned_into_view() {
+    // The conversation stands at the origin and the viewport shows it; a place opened beside it
+    // far down the canvas — a third answer below two others — arrives wholly outside what the
+    // map shows. The map pans to it once, without changing its zoom, so the person sees what
+    // was just placed.
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut map = map_of(&[("conversation", 0.0)], viewport);
+    let before = map.camera();
+    map.pins.push((
+        "answer".to_owned(),
+        PinPlace {
+            x: 0.0,
+            y: 1900.0,
+            width: 200.0,
+            height: Some(120.0),
+        },
+        Box::new(crate::widget::Spacer::new()),
+    ));
+    lay_out_again(&mut map, viewport);
+    let after = map.camera();
+    assert!(
+        (after.zoom - before.zoom).abs() <= f64::EPSILON,
+        "the zoom is the person's: {} against {}",
+        after.zoom,
+        before.zoom
+    );
+    assert!(
+        after.origin.y > before.origin.y,
+        "the camera moved down to show the place that arrived: {after:?} against {before:?}"
+    );
+    // The place now stands inside the viewport.
+    let shown = after.to_screen(viewport.origin(), Point::new(0.0, 1900.0));
+    assert!(
+        shown.y >= viewport.y0 && shown.y < viewport.y1,
+        "the place stands in view: {shown:?} in {viewport:?}"
+    );
+}
+
+#[test]
+fn a_place_already_in_view_moves_no_camera() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut map = map_of(&[("conversation", 0.0)], viewport);
+    let before = map.camera();
+    map.pins.push((
+        "answer".to_owned(),
+        PinPlace {
+            x: 300.0,
+            y: 100.0,
+            width: 200.0,
+            height: Some(120.0),
+        },
+        Box::new(crate::widget::Spacer::new()),
+    ));
+    lay_out_again(&mut map, viewport);
+    assert!(
+        map.camera().same(before),
+        "a place in sight moves nothing: {:?} against {before:?}",
+        map.camera()
+    );
+}

@@ -715,3 +715,125 @@ fn the_system_open_stands_a_new_place() {
     assert_eq!(who, ADA);
     assert_eq!(verb, "place", "opening is one arranging step");
 }
+
+/// The live run's failure (shell.md §3, "a place next to where it came from"): an agent that
+/// opened tasks, mail and notes beside its conversation saw every place stand over the
+/// conversation or below it, and some off the screen. Three places opened beside one anchor stand
+/// clear of it and of each other, each to its right or below it: the place beside the conversation
+/// first, then down.
+#[test]
+fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    // The app: a conversation and three things opened beside it, each a published resource.
+    struct Things;
+    impl Published for Things {
+        fn resources(&mut self) -> Vec<ResourceSpec> {
+            ["conversation", "tasks", "mail", "notes"]
+                .into_iter()
+                .map(|id| {
+                    ResourceSpec::new(format!("tl:test.anchor:{id}"), "test.thing", id)
+                        .with_action(view_action("open-thing"))
+                        .with_view(
+                            ResourceViewSpec::new("page", "Page", "open-thing").with_primary(true),
+                        )
+                })
+                .collect()
+        }
+
+        fn invoke(
+            &mut self,
+            _: &ActionAddress,
+            _: &serde_json::Map<String, serde_json::Value>,
+            _: &mut tilo_surface_host::Look<'_>,
+        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+            Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ))
+        }
+
+        fn accessible_labels(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+    session.publish(Rc::new(std::cell::RefCell::new(Things)));
+    step(&mut session);
+    step(&mut session);
+    let open = |session: &mut Session, resource: &str, beside: &str| {
+        session
+            .invoke(
+                "shell:arrangement",
+                "open",
+                serde_json::json!({ "resource": resource, "beside": beside })
+                    .as_object()
+                    .expect("arguments"),
+            )
+            .expect("the open runs");
+    };
+    open(&mut session, "tl:test.anchor:conversation", "");
+    settle(&mut session, |session| {
+        arrangement(session)
+            .places
+            .iter()
+            .any(|held| held.record == "tl:test.anchor:conversation")
+    });
+    for opened in [
+        "tl:test.anchor:tasks",
+        "tl:test.anchor:mail",
+        "tl:test.anchor:notes",
+    ] {
+        open(&mut session, opened, "tl:test.anchor:conversation");
+        settle(&mut session, |session| {
+            arrangement(session)
+                .places
+                .iter()
+                .any(|held| held.record == opened)
+        });
+    }
+    // Every place's canvas rectangle, as the desk holds it.
+    let boxes: Vec<(String, i64, i64, i64, i64)> = arrangement(&session)
+        .places
+        .iter()
+        .filter_map(|held| {
+            let strip = strip_of(&session, number(&held.strip))?;
+            Some((
+                held.record.clone(),
+                strip.canvas_x,
+                strip.canvas_y,
+                strip.canvas_width,
+                strip.canvas_height,
+            ))
+        })
+        .collect();
+    assert_eq!(
+        boxes.len(),
+        4,
+        "the conversation and three opened beside it: {boxes:?}"
+    );
+    let conversation = boxes
+        .iter()
+        .find(|(record, ..)| record == "tl:test.anchor:conversation")
+        .expect("the conversation stands")
+        .clone();
+    for (index, (a, ax, ay, aw, ah)) in boxes.iter().enumerate() {
+        for (b, bx, by, bw, bh) in boxes.iter().skip(index + 1) {
+            let overlaps = ax < &(bx + bw) && bx < &(ax + aw) && ay < &(by + bh) && by < &(ay + ah);
+            assert!(!overlaps, "{a} and {b} stand over each other: {boxes:?}");
+        }
+    }
+    for (record, x, y, ..) in &boxes {
+        if *record == conversation.0 {
+            continue;
+        }
+        assert!(
+            *x >= conversation.1 && *y >= conversation.2,
+            "{record} stands to the conversation's right or below it, never above or to its left: \
+             ({x},{y}) against {conversation:?}"
+        );
+        assert!(
+            (*x, *y) != (conversation.1, conversation.2),
+            "{record} stands over the conversation: {boxes:?}"
+        );
+    }
+}

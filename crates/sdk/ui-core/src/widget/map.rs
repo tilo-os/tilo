@@ -225,6 +225,9 @@ pub struct Map {
     /// drag that started in one of its pins never lands back on the map it came from, and two
     /// maps never answer each other's drops.
     key: String,
+    /// The pins this map has already brought into view: a place that arrived off screen comes
+    /// into view once, and a place the person panned away from is left where their look left it.
+    arrived: std::collections::HashSet<String>,
 }
 
 impl Default for Map {
@@ -254,6 +257,7 @@ impl Map {
             laid: Rc::default(),
             drop: Event::None,
             key: String::new(),
+            arrived: std::collections::HashSet::new(),
         }
     }
 
@@ -299,6 +303,46 @@ impl Map {
         let origin =
             bounds.center() - Vec2::new(self.rect.width(), self.rect.height()) / (2.0 * zoom);
         self.set_camera(MapCamera { origin, zoom });
+    }
+
+    /// Bring `area` (canvas pixels) into the viewport by panning the camera the least it can,
+    /// keeping its zoom: what a canvas does when a place arrives off screen, so what an agent
+    /// or a person just placed stands where the person can see it without losing the view they
+    /// had. An area already inside the viewport, or one with no pin on a map not yet laid out,
+    /// moves nothing.
+    pub fn reveal(&mut self, area: Rect, margin: f64) {
+        let (width, height) = (self.rect.width(), self.rect.height());
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let area = area.inflate(margin, margin);
+        let zoom = self.camera.zoom;
+        // Where the area stands against the viewport, in canvas pixels: the least pan that
+        // brings it inside.
+        let left = self.camera.origin.x;
+        let top = self.camera.origin.y;
+        let right = left + width / zoom.max(f64::EPSILON);
+        let bottom = top + height / zoom.max(f64::EPSILON);
+        let dx = if area.x0 < left {
+            area.x0 - left
+        } else if area.x1 > right {
+            area.x1 - right
+        } else {
+            0.0
+        };
+        let dy = if area.y0 < top {
+            area.y0 - top
+        } else if area.y1 > bottom {
+            area.y1 - bottom
+        } else {
+            0.0
+        };
+        if dx == 0.0 && dy == 0.0 {
+            return;
+        }
+        let mut camera = self.camera;
+        camera.origin += Vec2::new(dx, dy);
+        self.set_camera(camera);
     }
 
     /// The smallest canvas rect holding every pin: what [`Self::show`] fits the camera to.
@@ -804,6 +848,30 @@ impl Widget for Map {
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);
         self.rect = crate::widget::layout_rect(tree, node, origin);
+        // A place that arrived off screen comes into view: the canvas pans to it once the map
+        // built around it is laid out (`shell.md` §3, "a place next to where it came from"; the
+        // session's `open` brings the canvas to what it stood). Only the last pin — the place
+        // just put on the canvas — and only when it stands wholly outside the viewport, so a
+        // place already in sight moves nothing.
+        let arriving = self
+            .pins
+            .last()
+            .map(|(key, place, _)| (key.clone(), *place));
+        if let Some((key, place)) = arriving
+            && !self.arrived.contains(&key)
+            && self.rect.width() > 0.0
+            && self.rect.height() > 0.0
+        {
+            self.arrived.insert(key);
+            let area = Rect::from_origin_size(
+                Point::new(place.x, place.y),
+                (place.width.max(1.0), place.height.unwrap_or(0.0)),
+            );
+            self.reveal(
+                area,
+                f64::from(crate::tokens::RhythmScale::BASE.get(crate::tokens::Rhythm::Group)),
+            );
+        }
     }
 
     fn layout_needs_measure(&self) -> bool {

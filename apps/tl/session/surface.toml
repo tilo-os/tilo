@@ -30,6 +30,7 @@ type = "bool"
 [[resources.verbs.params]]
 name = "float"
 required = false
+type = "bool"
 
 [[resources.verbs]]
 id = "show-app"
@@ -641,6 +642,27 @@ required = false
 type = "int"
 
 [[resources.verbs]]
+id = "open"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "resource"
+required = true
+
+[resources.verbs.params.type]
+resource = ""
+
+[[resources.verbs.params]]
+name = "view"
+required = false
+type = "text"
+
+[[resources.verbs.params]]
+name = "beside"
+required = false
+type = "text"
+
+[[resources.verbs]]
 id = "undo"
 kind = "undoable"
 params = []
@@ -737,6 +759,20 @@ kind = "undoable"
 name = "pinned"
 required = false
 type = "bool"
+
+[[resources.verbs]]
+id = "position"
+kind = "undoable"
+
+[[resources.verbs.params]]
+name = "x"
+required = true
+type = "int"
+
+[[resources.verbs.params]]
+name = "y"
+required = true
+type = "int"
 
 [[resources.verbs]]
 id = "close"
