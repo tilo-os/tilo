@@ -2487,6 +2487,15 @@ impl DisplayModel {
                         &[
                             ("device", display.device_label.clone().into()),
                             ("screen", display.label.clone().into()),
+                            (
+                                "status",
+                                t(if display.online {
+                                    "display-device-online"
+                                } else {
+                                    "display-device-offline"
+                                })
+                                .into(),
+                            ),
                         ],
                     ),
                     number: resolved.map_or_else(

@@ -2049,7 +2049,7 @@ impl UpdatesModel {
                 ));
                 self.operation_failed(
                     UpdatesEffect::REFRESH_FIRMWARE.id,
-                    format!("Firmware metadata could not be refreshed: {error}"),
+                    format!("Firmware updates could not be checked: {error}"),
                 );
                 self.changed = true;
                 return;
@@ -2076,7 +2076,7 @@ impl UpdatesModel {
                 ));
                 self.operation_failed(
                     UpdatesEffect::REFRESH_FIRMWARE.id,
-                    format!("Firmware metadata could not be refreshed: {error}"),
+                    format!("Firmware updates could not be checked: {error}"),
                 );
             }
         }

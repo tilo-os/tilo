@@ -1973,7 +1973,7 @@ fn supported_network_wake_is_named_and_routes_through_the_worker() {
             .unwrap()
             .preview
             .unwrap()
-            .contains("must be tested separately")
+            .contains("wake this computer from sleep")
     );
     let mut model = area.model().borrow_mut();
     run(

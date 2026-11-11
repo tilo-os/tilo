@@ -266,8 +266,7 @@ impl DisplayModel {
             let toggle = crate::on_row::bind(
                 dispatcher,
                 &row,
-                Toggle::from_state(&LocalState::new(display.enabled))
-                    .with_accessible_name(&t("display-shared-include")),
+                Toggle::from_state(&LocalState::new(display.enabled)),
                 effect(DisplayEffect::INCLUDE_SHARED_DISPLAY)
                     .map(move |on: bool| (device.clone(), output.clone(), revision, on)),
             );
@@ -276,16 +275,24 @@ impl DisplayModel {
                 &[
                     ("device", display.device_label.clone().into()),
                     ("screen", display.name.clone().into()),
+                    (
+                        "status",
+                        t(if !display.online {
+                            "display-device-offline"
+                        } else if active {
+                            "display-device-online"
+                        } else {
+                            "display-device-switched-off"
+                        })
+                        .into(),
+                    ),
                 ],
             );
-            let status = t(if !display.online {
-                "display-device-offline"
-            } else if active {
-                "display-device-online"
-            } else {
-                "display-device-switched-off"
-            });
-            content.push(setting_row_described(&label, &status, Box::new(toggle)));
+            content.push(setting_row_described(
+                &label,
+                &t("display-shared-include"),
+                Box::new(toggle),
+            ));
             if active {
                 let options = (1..=layout.displays.len())
                     .map(|index| index.to_string())
