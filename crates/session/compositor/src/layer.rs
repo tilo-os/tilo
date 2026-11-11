@@ -59,10 +59,18 @@ pub(crate) struct Layers {
     /// take, in the layout's logical coordinates, whatever its anchors and margins say. It is as
     /// big as it asks for inside that room, so a panel that fits its content resizes there, and
     /// moving it costs its app nothing.
-    places: std::collections::BTreeMap<String, Rectangle<i32, Logical>>,
+    places: std::collections::BTreeMap<String, Place>,
     /// The layer surface the session handed the keyboard to, by name, and where the keyboard was
     /// before: it goes back there when that surface is hidden while it still holds it.
     lent: Option<(String, Option<WlSurface>)>,
+}
+
+/// Where the session stands a layer surface it places: the room it may take in the layout's
+/// logical coordinates, and the edge of that room its content rests against as it fits inside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Place {
+    pub(crate) room: Rectangle<i32, Logical>,
+    pub(crate) rests_at_bottom: bool,
 }
 
 /// One layer surface and where it is on its output.
@@ -259,7 +267,7 @@ impl State {
         // on the display the person types on — and on the first output otherwise.
         let output = place
             .and_then(|place| {
-                let place = place.to_f64();
+                let place = place.room.to_f64();
                 self.output_under(Point::from((
                     place.loc.x + place.size.w / 2.0,
                     place.loc.y + place.size.h / 2.0,
@@ -429,11 +437,7 @@ impl State {
     /// Stand the session's layer surface `namespace` in `room` (logical layout coordinates), as big
     /// as it asks for inside it, whatever its own anchors and margins say; `None` gives it back to
     /// them. Moving it, or giving it less room, is a configure, not a new surface.
-    pub(crate) fn place_layer_in(
-        &mut self,
-        namespace: &str,
-        room: Option<Rectangle<i32, Logical>>,
-    ) {
+    pub(crate) fn place_layer_in(&mut self, namespace: &str, room: Option<Place>) {
         let changed = match room {
             Some(room) => self.layers.places.insert(namespace.to_owned(), room) != Some(room),
             None => self.layers.places.remove(namespace).is_some(),
@@ -756,20 +760,23 @@ impl State {
     }
 }
 
-/// Where a surface asking `request` stands in the `room` the session gave it: at its corner, as big
-/// as it asks for inside it, and the whole of it on an axis it names no size for.
-fn within(
-    request: &LayerSurfaceCachedState,
-    room: Rectangle<i32, Logical>,
-) -> Rectangle<i32, Logical> {
+/// Where a surface asking `request` stands in the `room` the session gave it: against the edge of
+/// that room it rests on, as big as it asks for inside it, and the whole of it on an axis it names
+/// no size for.
+fn within(request: &LayerSurfaceCachedState, room: Place) -> Rectangle<i32, Logical> {
     let side = |asked: i32, room: i32| if asked > 0 { asked.min(room) } else { room };
-    Rectangle::new(
-        room.loc,
-        Size::from((
-            side(request.size.w, room.size.w),
-            side(request.size.h, room.size.h),
-        )),
-    )
+    let extent = Size::from((
+        side(request.size.w, room.room.size.w),
+        side(request.size.h, room.room.size.h),
+    ));
+    // A surface that hangs by the room's bottom edge keeps its own height clear of what it was
+    // opened against: a page shorter than the room stands near that edge, not at the far one.
+    let y = if room.rests_at_bottom {
+        room.room.loc.y + room.room.size.h - extent.h
+    } else {
+        room.room.loc.y
+    };
+    Rectangle::new((room.room.loc.x, y).into(), extent)
 }
 
 /// Where a surface asking `request` of `output` is put: the edges it is anchored to keep it at the
@@ -922,7 +929,10 @@ mod tests {
     /// as the page it asks for and never past the room.
     #[test]
     fn a_surface_the_session_places_is_as_big_as_it_asks_inside_its_room() {
-        let room = Rectangle::new(Point::from((892, 32)), Size::from((380, 640)));
+        let room = Place {
+            room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
+            rests_at_bottom: false,
+        };
         let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
         assert_eq!(
             within(&asked, room),
@@ -931,7 +941,24 @@ mod tests {
         let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
         assert_eq!(within(&tall, room).size, Size::from((380, 640)));
         let open = request(Anchor::TOP | Anchor::LEFT, (0, 0), (0, 0, 0, 0));
-        assert_eq!(within(&open, room), room);
+        assert_eq!(within(&open, room), room.room);
+    }
+
+    /// A surface that rests against its room's bottom edge keeps its own bottom there: a page
+    /// shorter than the room stands clear of what it was opened against, not at the room's far end.
+    #[test]
+    fn a_surface_resting_on_its_rooms_bottom_edge_clears_the_top_of_the_room() {
+        let room = Place {
+            room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
+            rests_at_bottom: true,
+        };
+        let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
+        assert_eq!(
+            within(&asked, room),
+            Rectangle::new(Point::from((892, 32 + 640 - 412)), Size::from((380, 412)))
+        );
+        let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
+        assert_eq!(within(&tall, room), room.room);
     }
 
     #[test]

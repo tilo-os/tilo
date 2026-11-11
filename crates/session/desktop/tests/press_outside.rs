@@ -289,7 +289,10 @@ fn the_centre_stands_on_the_stack_where_quick_settings_hangs() {
     assert!(overlays.is_open(Slot::Centre), "the centre is on the stack");
     assert!(notifications.centre_open(), "and the chrome shows it");
     assert_eq!(overlays.target(), Target::Surface(Slot::Centre));
-    let place = overlays.place(Slot::Centre).expect("the stack places it");
+    let place = overlays
+        .place(Slot::Centre)
+        .expect("the stack places it")
+        .room;
     let x1 = DISPLAY.x1 - POPOVER_MARGIN;
     let top = f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX).ceil();
     assert_eq!(

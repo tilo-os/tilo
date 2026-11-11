@@ -535,8 +535,13 @@ impl DesktopChrome {
     /// settings stands. Whether it opened or closed.
     fn follow_notices(&mut self) -> bool {
         let fallback =
-            crate::overlays::place_on(self.rect, Slot::Centre.anchor(), Slot::Centre.size());
-        let place = self.overlays.place(Slot::Centre).or(fallback);
+            crate::overlays::place_on(self.rect, Slot::Centre.anchor(), Slot::Centre.size())
+                .map(|standing| standing.room);
+        let place = self
+            .overlays
+            .place(Slot::Centre)
+            .map(|standing| standing.room)
+            .or(fallback);
         let Some(notices) = self.notices.as_mut() else {
             return false;
         };

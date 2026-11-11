@@ -145,37 +145,50 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     answer_effects(cx, &host, &readings);
     let parts = Parts::new(&readings);
     let showing = cx.value(QuickSettings::showing);
+    // Opened to paste, the panel is the clipboard and nothing else: no footer to reach past the
+    // copies the person is choosing from. The card is built again as that changes, because a
+    // footer is part of the card, not of the page it shows.
+    let pasting = cx.value(|panel: &QuickSettings| panel.showing().pasting);
     let told = Rc::clone(&host);
-    let page = cx.switch(&showing, move |cx, showing| {
-        told.showing(showing);
-        // The page stands one deep when it is not the controls, and the
-        // page it replaces leaves as it arrives: Back runs it the other
-        // way.
-        Box::new(PageSlide::new(
-            usize::from(showing.is_deeper()),
-            with_refusal(cx, showing, &parts),
+    cx.switch(&pasting, move |cx, &pasting| {
+        let told = Rc::clone(&told);
+        let parts = parts.clone();
+        let showing = showing.clone();
+        let page = cx.switch(&showing, move |cx, showing| {
+            told.showing(showing);
+            // The page stands one deep when it is not the controls, and the
+            // page it replaces leaves as it arrives: Back runs it the other
+            // way.
+            Box::new(PageSlide::new(
+                usize::from(showing.is_deeper()),
+                with_refusal(cx, showing, &parts),
+            ))
+        });
+        // One inset for the whole page, so the tiles, the sliders and the rows
+        // share one left and right edge inside the card.
+        let body = Container::new()
+            .with_no_padding()
+            .with_inset(Rhythm::Related)
+            .with_child(page);
+        // The panel is the floating card every surface of its kind stands on,
+        // and the whole of its surface: as tall as the page it shows, growing
+        // and shrinking with it as a section opens and closes, up to the room
+        // the desk gives a popover — a page with more than that scrolls in the
+        // body.
+        let card = FloatingPanel::new(Box::new(
+            Scrollable::new_vertical()
+                .fill_parent_height()
+                .with_label(crate::i18n::t("qs-title"))
+                .with_child(Box::new(body)),
         ))
-    });
-    // One inset for the whole page, so the tiles, the sliders and the rows
-    // share one left and right edge inside the card.
-    let body = Container::new()
-        .with_no_padding()
-        .with_inset(Rhythm::Related)
-        .with_child(page);
-    // The panel is the floating card every surface of its kind stands on, and
-    // the whole of its surface: as tall as the page it shows, growing and
-    // shrinking with it as a section opens and closes, up to the room the
-    // desk gives a popover — a page with more than that scrolls in the body.
-    let card = FloatingPanel::new(Box::new(
-        Scrollable::new_vertical()
-            .fill_parent_height()
-            .with_label(crate::i18n::t("qs-title"))
-            .with_child(Box::new(body)),
-    ))
-    .footer(root::footer(cx))
-    .fill_width()
-    .fit_height();
-    Box::new(card) as Element
+        .fill_width()
+        .fit_height();
+        if pasting {
+            Box::new(card) as Element
+        } else {
+            Box::new(card.footer(root::footer(cx))) as Element
+        }
+    })
 }
 
 /// `page`, told why the last press did not reach the device when it did not:

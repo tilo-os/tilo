@@ -187,17 +187,19 @@ impl crate::Session {
         self.follow_panel_back();
         let open = self.shared.overlays.is_open(Slot::QuickSettings);
         let place = self.shared.overlays.place(Slot::QuickSettings);
-        if let Some(place) = place {
-            // Where the stack places it, and the most room it has there. Down, it keeps the last
-            // place, so it leaves from where it stood.
+        if let Some(standing) = place {
+            // Where the stack places it, and the most room it has there, resting against the edge
+            // of that room the stack chose: below the caret's line, or above it. Down, it keeps
+            // the last place, so it leaves from where it stood.
             self.compositor.place_layer_in(
                 SURFACE_NAMESPACE,
                 Some((
-                    offset(place.x0),
-                    offset(place.y0),
-                    offset(place.width()).max(1),
-                    offset(place.height()).max(1),
+                    offset(standing.room.x0),
+                    offset(standing.room.y0),
+                    offset(standing.room.width()).max(1),
+                    offset(standing.room.height()).max(1),
                 )),
+                standing.rests_at_bottom,
             );
         }
         // Where it stands is as tall as its page: what a press outside it is judged by.
@@ -216,8 +218,11 @@ impl crate::Session {
             .overlays
             .stands(Slot::QuickSettings, stands.filter(|_| open));
         let drawn = self.compositor.layer_drawn(SURFACE_NAMESPACE);
-        self.quick_settings_panel
-            .follow(open, drawn, stands.or(place));
+        self.quick_settings_panel.follow(
+            open,
+            drawn,
+            stands.or_else(|| place.map(|standing| standing.room)),
+        );
         if !open || place.is_none() {
             // Down, or up where the stack cannot say: nothing shows, and its app runs on hidden, so
             // the next opening only shows it.

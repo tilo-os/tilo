@@ -254,9 +254,8 @@ pub enum Anchor {
     TopTrailing(f64),
     /// Hanging from the display's top bar, against its leading edge.
     TopLeading(f64),
-    /// Bottom centre, unless that would cover `caret` .
-    BottomCenter(Option<Rect>),
-    /// Beside `at` : `gap` clear of it, on the side with room.
+    /// At the caret `at` : `gap` clear of the line it sits on, below that line while the room
+    /// there holds the surface and above it otherwise.
     Beside { at: Rect, gap: f64 },
     /// Over the thing it acts on. The surface's own view places itself.
     At(Point),
@@ -272,17 +271,13 @@ impl Anchor {
         match *self {
             Self::Beside { at, .. } => Some(at),
             Self::At(point) => Some(Rect::new(point.x, point.y, point.x, point.y)),
-            Self::Center
-            | Self::TopTrailing(_)
-            | Self::TopLeading(_)
-            | Self::BottomCenter(_)
-            | Self::Fill => None,
+            Self::Center | Self::TopTrailing(_) | Self::TopLeading(_) | Self::Fill => None,
         }
     }
 
     /// The anchor as a verb spells it, and as a reading gives it back:
     /// `center`, `fill`, `top-trailing:8`, `top-leading:0`,
-    /// `bottom-center:x0,y0,x1,y1`, `beside:x0,y0,x1,y1,gap`, `at:x,y`.
+    /// `beside:x0,y0,x1,y1,gap`, `at:x,y`.
     #[must_use]
     pub fn as_str(&self) -> String {
         fn numbers(values: &[f64]) -> String {
@@ -297,10 +292,6 @@ impl Anchor {
             Self::Fill => "fill".into(),
             Self::TopTrailing(gap) => format!("top-trailing:{gap}"),
             Self::TopLeading(gap) => format!("top-leading:{gap}"),
-            Self::BottomCenter(None) => "bottom-center".into(),
-            Self::BottomCenter(Some(at)) => {
-                format!("bottom-center:{}", numbers(&[at.x0, at.y0, at.x1, at.y1]))
-            }
             Self::Beside { at, gap } => {
                 format!("beside:{}", numbers(&[at.x0, at.y0, at.x1, at.y1, gap]))
             }
@@ -327,11 +318,6 @@ impl Anchor {
             "fill" => Some(Self::Fill),
             "top-trailing" => Some(Self::TopTrailing(rest.trim().parse().ok()?)),
             "top-leading" => Some(Self::TopLeading(rest.trim().parse().ok()?)),
-            "bottom-center" => match numbers(rest)?.as_slice() {
-                [] => Some(Self::BottomCenter(None)),
-                &[x0, y0, x1, y1] => Some(Self::BottomCenter(Some(Rect::new(x0, y0, x1, y1)))),
-                _ => None,
-            },
             "beside" => match numbers(rest)?.as_slice() {
                 &[x0, y0, x1, y1, gap] => Some(Self::Beside {
                     at: Rect::new(x0, y0, x1, y1),
@@ -476,9 +462,9 @@ pub struct Entry {
     pub modality: Modality,
     pub owner: Owner,
     pub lifecycle: Lifecycle,
-    /// The rect the host places it at, when the anchor and its size settle one. A surface its own
+    /// The room the host places it in, when the anchor and its size settle one. A surface its own
     /// view places has none.
-    pub place: Option<Rect>,
+    pub place: Option<Standing>,
 }
 
 /// One slot's state in the stack.
@@ -526,9 +512,22 @@ impl Displays {
     }
 }
 
+/// Where the stack stands a surface it places: the room the surface may take on its display, and
+/// the edge of that room its content rests against as it fits inside.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Standing {
+    /// The room the surface may take: it fills it along the edges its anchor pins, and is as big as
+    /// its own content inside it.
+    pub room: Rect,
+    /// Whether its content rests against the room's bottom edge: a surface opened above the caret
+    /// it edits hangs by its bottom there, so a page shorter than the room stands clear of the
+    /// caret's line instead of at the top of the room.
+    pub rests_at_bottom: bool,
+}
+
 /// Where a surface stands on `display` , from its anchor and the room its size leaves; `None` for a
 /// surface its own view places, or one whose size and anchor do not settle a rect.
-pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
+pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Standing> {
     // The bar hangs above a surface anchored to the top edge.
     let top = display.y0 + f64::from(TOPBAR_HEIGHT_PX).ceil();
     let margin = POPOVER_MARGIN;
@@ -536,6 +535,9 @@ pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect
         .width
         .unwrap_or_else(|| (display.width() - 2.0 * margin).max(1.0));
     let height = size.height;
+    // Only a surface opened at a caret may hang by the room's bottom edge: every other one is
+    // placed by its anchor and rests at the room's top, or fills it.
+    let mut rests_at_bottom = false;
     let rect = match anchor {
         Anchor::TopTrailing(gap) => {
             let x1 = display.x1 - gap;
@@ -565,31 +567,38 @@ pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect
             )
         }
         Anchor::Fill => display,
-        Anchor::BottomCenter(caret) => {
-            let height = height?;
-            let center = caret.map_or_else(|| display.center().x, |caret| caret.x1);
-            let y1 = display.y1 - margin;
-            Rect::new(center - width / 2.0, y1 - height, center + width / 2.0, y1)
-        }
-        // Beside the rect it was opened on: the side with room wins, and the surface never overlaps
-        // it.
+        // Beside the rect it was opened on, clear of the line the person edits: the surface takes
+        // the room below that line while that holds as much as it may be, and while it is the
+        // roomier side; above the line only when it is the roomier side and the room below cannot
+        // hold the surface whole. Either way it never covers the line.
         Anchor::Beside { at, gap } => {
             let x0 = if at.x1 + gap + width <= display.x1 - margin {
                 at.x1 + gap
             } else {
                 (at.x0 - gap - width).max(display.x0 + margin)
             };
-            let height = height.unwrap_or_else(|| (display.y1 - margin - at.y0).max(1.0));
-            let y0 = at
-                .y0
-                .min(display.y1 - margin - height)
-                .max(display.y0 + margin);
-            Rect::new(x0, y0, x0 + width, y0 + height)
+            let (top, bottom) = (display.y0 + margin, display.y1 - margin);
+            let below = (at.y1 + gap).max(top);
+            let above = (at.y0 - gap).min(bottom);
+            let wanted = height.unwrap_or_else(|| (bottom - top).max(1.0));
+            let room_below = (bottom - below).max(0.0);
+            let room_above = (above - top).max(0.0);
+            if room_below >= wanted || room_below >= room_above {
+                Rect::new(x0, below, x0 + width, below + room_below.min(wanted))
+            } else {
+                // It hangs by its bottom edge from the room's, so a page shorter than the room
+                // stands just clear of the caret's line.
+                rests_at_bottom = true;
+                Rect::new(x0, above - room_above.min(wanted), x0 + width, above)
+            }
         }
         // Over the thing it acts on: the view decides its own card.
         Anchor::At(_) => return None,
     };
-    Some(rect)
+    Some(Standing {
+        room: rect,
+        rests_at_bottom,
+    })
 }
 
 /// The overlays over the windows, shared between the session's loop, the keys it answers and the
@@ -774,9 +783,9 @@ impl Overlays {
             .map_or(Target::Window, Target::Surface)
     }
 
-    /// Where `slot` stands now, if its anchor and size settle a rect the host can place it at.
+    /// Where `slot` stands now, if its anchor and size settle a room the host can place it in.
     #[must_use]
-    pub fn place(&self, slot: Slot) -> Option<Rect> {
+    pub fn place(&self, slot: Slot) -> Option<Standing> {
         self.0.borrow().entry(slot).and_then(|entry| entry.place)
     }
 
@@ -816,7 +825,10 @@ impl Overlays {
             };
             let place = match state.stands {
                 Some(place) => Some(place),
-                None if slot.session_closes() => stack.entry(*slot).and_then(|entry| entry.place),
+                None if slot.session_closes() => stack
+                    .entry(*slot)
+                    .and_then(|entry| entry.place)
+                    .map(|standing| standing.room),
                 None => None,
             };
             place.is_some_and(|place| !place.contains(Point::new(x, y)))
@@ -951,7 +963,7 @@ mod tests {
     fn a_popover_under_the_bars_right_end_leaves_the_margin_and_the_bar() {
         let overlays = overlays();
         overlays.open(Slot::QuickSettings, None);
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
         let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
         assert_eq!(place.x1, DISPLAY.x1 - POPOVER_MARGIN);
         assert_eq!(place.x0, DISPLAY.x1 - POPOVER_MARGIN - POPOVER_WIDTH);
@@ -979,19 +991,21 @@ mod tests {
                 gap: 4.0,
             }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(place.x0, caret.x1 + 4.0, "clear of the caret");
-        assert!(place.x0 >= caret.x1, "and never over it");
-        assert_eq!(place.width(), POPOVER_WIDTH);
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.x0, caret.x1 + 4.0, "clear of the caret");
+        assert!(standing.room.x0 >= caret.x1, "and never over it");
+        assert_eq!(standing.room.width(), POPOVER_WIDTH);
         assert_eq!(
-            place.y1,
+            standing.room.y0,
+            caret.y1 + 4.0,
+            "under the line the person types on"
+        );
+        assert_eq!(
+            standing.room.y1,
             DISPLAY.y1 - POPOVER_MARGIN,
-            "its footprint reaches the display's margin"
+            "taking the room below it, down to the display's margin"
         );
-        assert!(
-            place.y0 <= caret.y0,
-            "raised only as far as its footprint needs to stay on the display"
-        );
+        assert!(!standing.rests_at_bottom, "hanging from its top edge");
 
         // With no room on the right of the caret, it opens on the left.
         let edge = Rect::new(1200.0, 300.0, 1202.0, 320.0);
@@ -999,9 +1013,53 @@ mod tests {
             Slot::QuickSettings,
             Some(Anchor::Beside { at: edge, gap: 4.0 }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(place.x1, edge.x0 - 4.0);
-        assert!(place.x1 <= edge.x0, "still clear of the caret");
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.x1, edge.x0 - 4.0);
+        assert!(standing.room.x1 <= edge.x0, "still clear of the caret");
+    }
+
+    #[test]
+    fn a_pane_at_the_caret_never_covers_the_line_the_person_edits() {
+        let overlays = overlays();
+        // Halfway down: the room below the line holds the whole pane, so it goes there.
+        let middle = Rect::new(600.0, 200.0, 602.0, 220.0);
+        overlays.open(
+            Slot::QuickSettings,
+            Some(Anchor::Beside {
+                at: middle,
+                gap: 6.0,
+            }),
+        );
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.y0, middle.y1 + 6.0, "just under the line");
+        assert_eq!(
+            standing.room.y1,
+            DISPLAY.y1 - POPOVER_MARGIN,
+            "as far down as the display's margin"
+        );
+        assert!(!standing.rests_at_bottom, "hanging from its top edge");
+        assert!(
+            standing.room.y0 >= middle.y1,
+            "the pane stands clear of the line: {:?} against {middle:?}",
+            standing.room
+        );
+
+        // Near the bottom: no room below the line holds it, so it hangs above, by its bottom edge,
+        // and still covers nothing of the line.
+        let low = Rect::new(600.0, 700.0, 602.0, 720.0);
+        overlays.open(
+            Slot::QuickSettings,
+            Some(Anchor::Beside { at: low, gap: 6.0 }),
+        );
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.y1, low.y0 - 6.0, "just over the line");
+        assert!(standing.rests_at_bottom, "hanging by its bottom edge");
+        assert_eq!(standing.room.height(), POPOVER_HEIGHT);
+        assert!(
+            standing.room.y1 <= low.y0,
+            "the pane stands clear of the line: {:?} against {low:?}",
+            standing.room
+        );
     }
 
     #[test]
@@ -1017,16 +1075,16 @@ mod tests {
             Slot::QuickSettings,
             overlays.caret().map(|at| Anchor::Beside { at, gap: 6.0 }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(place.x0, caret.x1 + 6.0, "clear of the caret");
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.x0, caret.x1 + 6.0, "clear of the caret");
         assert!(
-            place.y0 <= caret.y0,
-            "level with it, or raised only as far as its footprint needs"
+            standing.room.y0 >= caret.y1,
+            "under the line it types on, never over it"
         );
         assert_eq!(
-            place.height(),
-            POPOVER_HEIGHT,
-            "at the height the surface asks for"
+            standing.room.height(),
+            700.0 - POPOVER_MARGIN - caret.y1 - 6.0,
+            "the room below the line, which is less than the surface may be"
         );
     }
 
@@ -1038,7 +1096,7 @@ mod tests {
         overlays.set_displays(&[left, right], Some(left));
         // On the right display's trailing edge, though the person works on the left one.
         overlays.open(Slot::QuickSettings, Some(Anchor::TopTrailing(8.0)));
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
         assert_eq!(place.x1, left.x1 - 8.0, "the display the person works on");
 
         let caret = Rect::new(2000.0, 100.0, 2002.0, 120.0);
@@ -1049,7 +1107,7 @@ mod tests {
                 gap: 0.0,
             }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
         assert!(
             place.x0 >= right.x0,
             "the display holding the caret it was opened from"
@@ -1084,7 +1142,7 @@ mod tests {
     fn escape_and_a_press_outside_close_the_top_menu_that_stands_where_it_is_not() {
         let overlays = overlays();
         overlays.open(Slot::QuickSettings, None);
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
 
         assert_eq!(overlays.escape(), Some(Slot::QuickSettings));
         assert_eq!(
@@ -1220,8 +1278,6 @@ mod tests {
             Anchor::Fill,
             Anchor::TopTrailing(8.0),
             Anchor::TopLeading(0.0),
-            Anchor::BottomCenter(None),
-            Anchor::BottomCenter(Some(Rect::new(1.0, 2.0, 3.0, 4.0))),
             Anchor::Beside {
                 at: Rect::new(600.0, 300.0, 602.0, 320.0),
                 gap: 4.0,

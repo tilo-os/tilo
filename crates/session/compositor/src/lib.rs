@@ -2224,10 +2224,20 @@ impl Compositor {
 
     /// Stand the session's layer surface `namespace` in `room` (`x, y, w, h` , logical layout
     /// coordinates), as big as its app asks for inside it, whatever its own anchors and margins
-    /// say; `None` gives it back to them. A popover the session places moves and gets less room
-    /// with a configure, not a new start of its app.
-    pub fn place_layer_in(&mut self, namespace: &str, room: Option<(i32, i32, i32, i32)>) {
-        let room = room.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
+    /// say; `None` gives it back to them. A surface whose content fits itself rests against the
+    /// room's bottom edge with `rests_at_bottom` — a panel opened above the caret it edits hangs by
+    /// its bottom there, clear of the caret's line — else against its top. A popover the session
+    /// places moves and gets less room with a configure, not a new start of its app.
+    pub fn place_layer_in(
+        &mut self,
+        namespace: &str,
+        room: Option<(i32, i32, i32, i32)>,
+        rests_at_bottom: bool,
+    ) {
+        let room = room.map(|(x, y, w, h)| layer::Place {
+            room: Rectangle::new((x, y).into(), (w, h).into()),
+            rests_at_bottom,
+        });
         self.data.state.place_layer_in(namespace, room);
     }
 

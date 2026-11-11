@@ -147,7 +147,7 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
             "places": Slot::ALL
                 .into_iter()
                 .filter_map(|slot| {
-                    let at = desk.overlays.place(slot)?;
+                    let at = desk.overlays.place(slot)?.room;
                     Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
                 })
                 .collect::<serde_json::Map<_, _>>(),

@@ -637,6 +637,19 @@ fn typing_the_password_and_pressing_connect_joins_with_it() {
 fn opened_to_paste_the_panel_is_the_clipboard_alone_and_typing_searches_it() {
     let (mut app, host) = hosted("paste");
     assert!(!has(&mut app, "qs-volume"), "no controls while pasting");
+    for footer in [
+        "qs-account",
+        "qs-edit",
+        "qs-settings",
+        "qs-lock",
+        "qs-power",
+    ] {
+        assert!(
+            !has(&mut app, footer),
+            "the clipboard has no footer to reach past it: {footer}"
+        );
+    }
+    assert!(has(&mut app, "qs-clipboard-search"));
     assert!(has(&mut app, "qs-copy-a1") && has(&mut app, "qs-copy-c3"));
     app.harness().click_named("qs-clipboard-search").unwrap();
     app.harness().type_text("grocery");
@@ -1181,6 +1194,10 @@ fn every_page_stands_in_the_panels_footprint_or_scrolls_inside_it() {
             (window.height() - 760.0).abs() < 1.0 && (window.width() - 380.0).abs() < 1.0,
             "{scenario} fills the panel's window: {window:?}"
         );
+        // Opened to paste, the panel is the clipboard alone: it has no footer to keep.
+        if *scenario == "paste" {
+            continue;
+        }
         let footer = target(&mut app, "qs-power");
         assert!(
             footer.y1 <= window.y1 + 0.5 && footer.y1 > window.y1 - 40.0,
