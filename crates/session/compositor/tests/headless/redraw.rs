@@ -89,3 +89,32 @@ fn a_window_the_policy_moves_is_drawn_where_it_moved_to() {
         "the window is drawn where the policy moved it to"
     );
 }
+
+/// A key the focused client takes changes nothing the compositor draws: the client answers it with
+/// a commit, and only that owes a frame. A key that owed a frame of its own drew an empty frame
+/// first, which then held the client's answer back to the display's next refresh.
+#[test]
+fn a_key_for_a_client_owes_no_frame_of_its_own() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let _client = mapped_client(&mut compositor, "typed", (200, 100), [0, 0, 255, 255]);
+    for _ in 0..8 {
+        if !compositor.owes_frame() {
+            break;
+        }
+        compositor.draw_frame().expect("a frame");
+    }
+    assert!(!compositor.owes_frame(), "the desk rests");
+    for pressed in [true, false] {
+        compositor
+            .input(InputEvent::Key {
+                keycode: 30,
+                pressed,
+            })
+            .unwrap();
+    }
+    assert!(!compositor.owes_frame(), "a key alone owes no frame");
+    compositor
+        .input(InputEvent::PointerMotion { x: 50.0, y: 50.0 })
+        .unwrap();
+    assert!(compositor.owes_frame(), "the pointer moving does");
+}

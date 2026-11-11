@@ -555,16 +555,17 @@ impl Backend for HeadlessBackend {
                     )
                     .map_err(|error| failed("render output", error))?
             };
+            let damage = rendered.damage.map(Vec::as_slice).unwrap_or_default();
             if tracing::enabled!(tracing::Level::DEBUG) {
-                trace_passes(
-                    &elements,
-                    rendered.damage.map(Vec::as_slice).unwrap_or_default(),
-                    &output.output,
-                );
+                trace_passes(&elements, damage, &output.output);
             }
             output.drawn = true;
             state.frame_shown(&output.output);
-            output.showed(started);
+            // A frame that changed no pixel is not put on the display, as a display's backend
+            // queues no flip for it: the next change is drawn at once rather than a refresh later.
+            if !damage.is_empty() {
+                output.showed(started);
+            }
         }
         Ok(())
     }

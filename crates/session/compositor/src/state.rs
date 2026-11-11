@@ -861,8 +861,13 @@ impl State {
         {
             return;
         }
-        // Input changes what shows: hover, a press, the pointer itself.
-        self.mark_redraw_all();
+        // Pointing changes what shows: hover, a press, the pointer itself. A key does not: what
+        // takes it shows the answer (a client's commit, a hosted surface's frame, the focus or
+        // the windows it moves), and a frame drawn for the key itself would hold that answer back
+        // to the display's next refresh.
+        if !matches!(event, InputEvent::Key { .. } | InputEvent::Switch { .. }) {
+            self.mark_redraw_all();
+        }
         let time = self.now_ms();
         let serial = SERIAL_COUNTER.next_serial();
         match event {
