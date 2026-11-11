@@ -2540,14 +2540,10 @@ mod search_tests;
 /// words, with the reason the record was refused (a path and a missing
 /// value) behind the state's "Details".
 fn unreadable_state(reason: &str) -> ui_core::widget::EmptyState {
-    ui_core::widget::EmptyState::new(ui_core::i18n::I18nManager::lookup_plain(
-        "framework-unreadable",
-    ))
-    .with_icon(ui_core::icons::Icon::CircleAlert)
-    .with_message(ui_core::i18n::I18nManager::lookup_plain(
-        "framework-unreadable-hint",
-    ))
-    .with_details(reason)
+    ui_core::widget::EmptyState::new(ui_core::i18n::widget_text("framework-unreadable"))
+        .with_icon(ui_core::icons::Icon::CircleAlert)
+        .with_message(ui_core::i18n::widget_text("framework-unreadable-hint"))
+        .with_details(reason)
 }
 
 /// The window of a record that did not read as the resource when it was

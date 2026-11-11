@@ -204,13 +204,13 @@ fn a_seeded_packages_words_do_not_make_the_session_speak_its_language() {
         .iter()
         .find(|window| window.name == "the session's menus and notices")
         .expect("the session is one of the windows");
-    let show_all = || I18nManager::format("search-show-all", &[("count", ArgValue::from(13))]);
+    let show_all = || INDEX.t_args("search-show-all", &[("count", ArgValue::from(13))]);
 
     I18nManager::install("en-US", "de-DE", &shipped_source(session)).expect("the session installs");
     I18nManager::add_shared_resource(&seed[0].0, seed[0].1.clone());
     assert_eq!(show_all(), "Show all 13");
     assert_eq!(
-        I18nManager::lookup_plain("block-editor-empty"),
+        I18nManager::lookup("block-editor-empty", None),
         "Write something…"
     );
 
@@ -223,7 +223,7 @@ fn a_seeded_packages_words_do_not_make_the_session_speak_its_language() {
 /// The two strings a person read in German inside an English session, read where they were drawn.
 #[test]
 fn toolkit_words_read_in_the_windows_language() {
-    let show_all = || I18nManager::format("search-show-all", &[("count", ArgValue::from(13))]);
+    let show_all = || INDEX.t_args("search-show-all", &[("count", ArgValue::from(13))]);
     let window = WINDOWS
         .iter()
         .find(|window| window.name == "search")
@@ -232,7 +232,7 @@ fn toolkit_words_read_in_the_windows_language() {
     I18nManager::install("en-US", "de-DE", &shipped_source(window)).expect("search installs");
     assert_eq!(show_all(), "Show all 13");
     assert_eq!(
-        I18nManager::lookup_plain("block-editor-empty"),
+        I18nManager::lookup("block-editor-empty", None),
         "Write something…"
     );
 
@@ -240,7 +240,7 @@ fn toolkit_words_read_in_the_windows_language() {
     I18nManager::install("en-US", "de-DE", &with_pack(window)).expect("search installs in both");
     assert_eq!(show_all(), "Alle 13 zeigen");
     assert_eq!(
-        I18nManager::lookup_plain("block-editor-empty"),
+        I18nManager::lookup("block-editor-empty", None),
         "Etwas schreiben…"
     );
 }

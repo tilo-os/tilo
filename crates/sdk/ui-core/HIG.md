@@ -318,7 +318,12 @@ If an app hand-rolls text editing, it will get these wrong — use the shared co
   catalogue, values included: a sentence built around a name, a count or a
   date is a message with variables and, where it counts, plural branches, not
   a `format!` handed to a label. A count reads in the reader's grammar
-  ("1 message", "2 Nachrichten").
+  ("1 message", "2 Nachrichten"). The catalogue is the crate's own:
+  `CATALOG.t(key)` and `CATALOG.t_args(key, args)` from the
+  `ui::embedded_catalog!` it declares, which load it onto the thread first. A
+  lookup through `I18nManager` reads only what that thread had already loaded,
+  so it shows a raw key (`disks-select-whole-disk`) on any path that paints
+  before something loaded the words; those lookups are the toolkit's own.
 - `tools/policy/check_copy_language.py` checks every `locales/*.ftl` for
   these classes (old copy is listed per catalogue in
   `copy_language_baseline/`, which only shrinks), and rejects an English

@@ -211,8 +211,8 @@ pub(crate) fn with_native_presentations(
 
 fn activate_spec() -> tilo_actions::ActionSpec {
     tilo_actions::remote::activate_spec(
-        ui_core::I18nManager::lookup_plain("app-activate-window"),
-        ui_core::I18nManager::lookup_plain("app-activate-window-description"),
+        ui_core::i18n::widget_text("app-activate-window"),
+        ui_core::i18n::widget_text("app-activate-window-description"),
     )
 }
 
