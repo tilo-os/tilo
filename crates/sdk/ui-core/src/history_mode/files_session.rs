@@ -1021,7 +1021,7 @@ mod tests {
         controller.drain();
         assert_eq!(
             controller.message,
-            "Invalid backend result; the exact request remains unresolved"
+            "Couldn't tell whether the restore ran. Check the file's history"
         );
         controller
             .tx
@@ -1033,7 +1033,7 @@ mod tests {
         controller.drain();
         assert_eq!(
             controller.message,
-            "Invalid backend result; the exact request remains unresolved"
+            "Couldn't tell whether the restore ran. Check the file's history"
         );
     }
 

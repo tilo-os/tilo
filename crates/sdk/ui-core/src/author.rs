@@ -546,12 +546,12 @@ mod tests {
         let cyrillic = Appearance::new("\u{430}lice", None, alice.persona.clone()).unwrap();
         assert_eq!(
             bridge(Some(&cyrillic)).label(&["alice"]),
-            "\u{430}lice · Discord"
+            "\u{430}lice, via Discord"
         );
         let bare = Appearance::new("alice", None, None).unwrap();
         assert_eq!(
             bridge(Some(&bare)).label(&["Alice"]),
-            "alice · Discord Bridge"
+            "alice, via Discord Bridge"
         );
         // Linked to the member it looks like, it is that member.
         let linked = |person| Author::Bot {

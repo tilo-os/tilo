@@ -210,7 +210,7 @@ mod algorithm_regressions {
             assert!(
                 admit(BTreeMap::from([(sha, bytes.clone()), (blake, bytes)]))
                     .unwrap_err()
-                    .contains("128 MiB")
+                    .contains("too large to show")
             );
         }
     }
