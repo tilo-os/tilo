@@ -1577,14 +1577,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(provider) => tilo_actions::remote::provider_workspace(provider).is_some(),
         };
         tokio::time::timeout(
-            HOST_ANSWER_WAIT,
+            QUERY_ANSWER_WAIT,
             self.at_host(eager, move |host, caller| host.query(caller, query)),
         )
         .await
         .map_err(|_| {
             BridgeError::from(format!(
                 "the desktop's actions did not answer within {} s",
-                HOST_ANSWER_WAIT.as_secs()
+                QUERY_ANSWER_WAIT.as_secs()
             ))
         })?
         .ok_or_else(|| BridgeError::from("the desktop's actions stopped answering"))?
@@ -3082,10 +3082,17 @@ fn unanswered_admission(id: tilo_actions::InvocationId, patience: std::time::Dur
         ),
     })
 }
-/// How long the host may take at least to answer a catalogue query or to
-/// admit an invocation. A query not answered by then fails; an admission is
-/// answered as pending with its invocation id, to be invoked again.
+/// How long the host may take at least to admit an invocation: one not
+/// admitted by then is answered as pending with its invocation id, to be
+/// invoked again.
 const HOST_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a catalogue query waits for its answer. A workspace's host
+/// reading a record whose keys are still on their way waits up to ten seconds
+/// for them, then refuses it rather than answer from half of it: the first
+/// listing of an app just opened on a busy host takes that long, and a query
+/// given up sooner told the agent the desktop did not answer while the host
+/// was still getting the answer.
+const QUERY_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long a workspace `open` waits at least for the host to answer with
 /// the instance it started, which it does once that instance has connected
 /// and published what it offers.
