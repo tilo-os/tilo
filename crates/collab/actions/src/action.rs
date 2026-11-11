@@ -64,9 +64,14 @@ impl OperationKind {
 pub struct ActionId(pub Uuid);
 
 impl ActionId {
-    /// Mint a fresh random id.
+    /// Mint a fresh id, ordered after every id this device minted before it.
+    ///
+    /// Its bytes are the actor of the action's change, and a document keeps its actors sorted:
+    /// an actor that sorts before others renumbers the actor of every op the document holds.
+    /// A time-ordered id (`UUIDv7`: milliseconds, then random bits) sorts after the actors a
+    /// document already has, so taking an action's change in costs what the change holds.
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        Self(Uuid::now_v7())
     }
 
     /// The 16 raw bytes, used verbatim as the Automerge actor id.

@@ -993,6 +993,12 @@ opt-level = 3
 # crates.io automerge, the reference tilo-automerge's tests compare the fork to.
 [profile.test.package.automerge]
 opt-level = 3
+# The record's indexes: unoptimised, a commit zero-fills each page it writes a byte at a time,
+# and a store pays one commit per change it takes in.
+[profile.dev.package.redb]
+opt-level = 3
+[profile.test.package.redb]
+opt-level = 3
 
 # The wet-media simulations re-run on every edit of a painted layer; unoptimised
 # they take seconds per stroke, and the canvas app is unusable in a dev build.

@@ -861,13 +861,17 @@ fn insert_costs(
             "visited changes",
             delta(work.visited_changes, work_now.visited_changes),
         ),
+        (
+            "renumbered objects",
+            delta(work.renumbered_objects, work_now.renumbered_objects),
+        ),
     ]
 }
 
 /// A card added to a board that already holds four thousand costs what one added to a board of a
 /// thousand costs: the store derives the card and writes the one index the change reached, reads
 /// nothing that grows with the board, and automerge applies the change without walking the chunk
-/// it lands in.
+/// it lands in or renumbering the objects it holds.
 #[test]
 fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
     let samples = 25;
@@ -896,8 +900,7 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
         costs
             .iter()
             .find(|(held, _)| *held == name)
-            .map(|(_, count)| *count)
-            .unwrap_or_else(|| panic!("no count named {name}"))
+            .map_or_else(|| panic!("no count named {name}"), |(_, count)| *count)
     };
     assert_eq!(count(&small, "syncs"), 1, "one document at 1000 cards");
     assert_eq!(
@@ -910,9 +913,15 @@ fn a_card_added_to_a_big_board_costs_what_one_added_to_a_small_board_costs() {
     // here, and one per package a workspace holds.
     assert_eq!(count(&small, "index writes"), 1, "one index per card");
     assert_eq!(count(&large, "index writes"), 1, "one index per card");
+    // A change by an actor that sorts before others renumbers the objects those others made in
+    // each document it reaches: a handful the record's own writer made, never one per card.
+    assert!(
+        count(&large, "renumbered objects") <= 2 * count(&small, "renumbered objects").max(8),
+        "an insert renumbers objects that grow with the board: {small:?} against {large:?}"
+    );
     let mut misses: Vec<String> = Vec::new();
     for ((name, at_small), (_, at_large)) in small.iter().zip(&large) {
-        if *name != "syncs" && at_small != at_large {
+        if !matches!(*name, "syncs" | "renumbered objects") && at_small != at_large {
             misses.push(format!(
                 "{name}: {at_small} per insert at 1000, {at_large} at 4000"
             ));

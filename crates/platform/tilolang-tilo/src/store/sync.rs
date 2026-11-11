@@ -106,10 +106,15 @@ impl TiloStore {
         // they do not hold stays — a change that came from elsewhere leaves the edits a person
         // has here — and is written onto the record's new copy again below, as the rollback took
         // the whole open transaction out.
-        let committed = committed_edits(doc, inner.chunks.seen(chunk));
+        // The record's new changes, read once: what the store's writes are the record's by, and
+        // what the mirror takes in.
+        let arrived = doc
+            .committed_document()
+            .get_changes(inner.chunks.seen(chunk));
+        let committed = committed_edits(&arrived);
         let mut items = inner.drop_committed_local(chunk, &committed);
         inner.rollback(chunk);
-        let (changed, ends, placed) = inner.apply_new_changes(chunk, doc, &before);
+        let (changed, ends, placed) = inner.apply_new_changes(chunk, &arrived, &before);
         inner.chunks.set_seen(chunk, heads);
         let Some(changed) = changed else {
             // The mirror held a change of its own, which only a copy of the record removes.
@@ -201,14 +206,14 @@ impl TiloStore {
 }
 
 impl Inner {
-    /// Apply the changes of `source` since the mirror's heads to the mirror of `chunk`, when it
-    /// holds no change of its own: what they changed, the versions they made of each resource
-    /// they changed ([`idx::reflect::ends_of`]), and where they placed the items they did.
-    /// `None` when the mirror must be copied anew.
+    /// Apply `changes`, the record's changes since the mirror's heads, to the mirror of `chunk`,
+    /// when it holds no change of its own: what they changed, the versions they made of each
+    /// resource they changed ([`idx::reflect::ends_of`]), and where they placed the items they
+    /// did. `None` when the mirror must be copied anew.
     fn apply_new_changes(
         &mut self,
         chunk: ChunkNo,
-        source: &Doc,
+        changes: &[automerge::Change],
         before: &BTreeMap<DocId, (AppId, TypeId)>,
     ) -> (Option<Changed>, Ends, idx::reflect::Placed) {
         let seen = self.chunks.seen(chunk);
@@ -219,7 +224,6 @@ impl Inner {
         if !caught_up {
             return (None, Ends::new(), idx::reflect::Placed::new());
         }
-        let changes = source.committed_document().get_changes(seen);
         let applied = self.chunks.mirror_mut(chunk).map(|mirror| {
             let applied = mirror.apply_incoming(changes.iter().cloned());
             write_as_a_known_actor(mirror);
@@ -231,17 +235,17 @@ impl Inner {
         if let (Some(versions), Some(mirror)) =
             (self.versions.get_mut(&chunk), self.chunks.mirror(chunk))
         {
-            note_versions(versions, &changes, mirror, before);
+            note_versions(versions, changes, mirror, before);
         }
         let what = match (applied, self.chunks.mirror(chunk)) {
-            (Some(Ok(())), Some(mirror)) => Some(changed_by(&changes, mirror, before)),
+            (Some(Ok(())), Some(mirror)) => Some(changed_by(changes, mirror, before)),
             _ => None,
         };
         let ends = match self.chunks.mirror(chunk) {
-            Some(mirror) => idx::reflect::ends_of(&changes, mirror, before),
+            Some(mirror) => idx::reflect::ends_of(changes, mirror, before),
             None => Ends::new(),
         };
-        (what, ends, idx::reflect::placed_by(&changes))
+        (what, ends, idx::reflect::placed_by(changes))
     }
     /// The steps each listed collection took from the indexes `before` (with the overlay
     /// `overlay` over them) to the indexes now, for the items `items`; per document.
@@ -272,17 +276,12 @@ impl Inner {
     }
 }
 
-/// The edits the changes of `source` since `seen` carry, in order, each with the change carrying
-/// it: what the store's own writes are the record's by ([`Inner::drop_committed_local`]). Every
-/// change of a tilolang action records the action it made, and so the edits it wrote; a change
-/// that records none — the record's own genesis, a merge — took none of the store's writes.
-fn committed_edits(
-    source: &Doc,
-    seen: &[automerge::ChangeHash],
-) -> Vec<(automerge::ChangeHash, DynEdit)> {
-    source
-        .committed_document()
-        .get_changes(seen)
+/// The edits `changes` carry, in order, each with the change carrying it: what the store's own
+/// writes are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang
+/// action records the action it made, and so the edits it wrote; a change that records none —
+/// the record's own genesis, a merge — took none of the store's writes.
+fn committed_edits(changes: &[automerge::Change]) -> Vec<(automerge::ChangeHash, DynEdit)> {
+    changes
         .iter()
         .flat_map(|change| {
             let hash = change.hash();
