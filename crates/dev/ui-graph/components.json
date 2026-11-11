@@ -5272,7 +5272,7 @@
         },
         {
           "name": "fill",
-          "doc": "The tree takes the height it is given and scrolls inside itself, rather than sizing to the rows inside another scroll.",
+          "doc": "The tree takes the height it is given and scrolls inside itself, rather than sizing to the rows inside another scroll. Such a tree is the pane's list, so its rows stand on the pane's content edge (where the pane's header starts its title) with their lift bleeding past it, as every list in a column does — including a phone's window, where the pane is the whole screen and the rows keep the page gutter at its glass.",
           "type": "bool"
         },
         {
