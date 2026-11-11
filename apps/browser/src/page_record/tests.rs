@@ -1408,3 +1408,157 @@ fn nobody_at_the_door_adds_to_the_record() {
         .collect();
     assert_eq!(authors, ["agent:ada", "agent:ben"]);
 }
+
+/// The form the page at [`PAGE`] asks, as the engine reads it.
+const ORDER: &str = "0bde4001";
+
+fn order_form() -> Value {
+    json!({
+        "form": "form1", "label": "Order", "method": "POST", "action": "/order",
+        "signature": ORDER, "submit": ["Send order"],
+        "fields": [{"name": "Email", "kind": "text", "required": true, "value": "",
+            "element": "d1e2"}],
+    })
+}
+
+/// The address of the page's published action `action`, as the host takes it
+/// from what the window publishes.
+fn page_action(app: &mut App, action: &str) -> ActionAddress {
+    fn find<'a>(
+        resources: &'a [ui::tilo_actions::ResourceSpec],
+        id: &str,
+    ) -> Option<&'a ui::tilo_actions::ResourceSpec> {
+        resources.iter().find_map(|resource| {
+            if resource.id.as_str() == id {
+                Some(resource)
+            } else {
+                find(&resource.children, id)
+            }
+        })
+    }
+    let published = app.harness().resources();
+    find(&published, "browser.page")
+        .and_then(|page| page.action_address(action))
+        .unwrap_or_else(|| panic!("the page publishes no {action}"))
+}
+
+/// A form's own action is its invoker's, as a page action is. A named agent
+/// answers the page's form through the form's action and then sends it:
+/// what the engine sets down under the agent's name, the answers and the
+/// submission the window held, is the agent's change in the record, authored
+/// by the invoker the action door admitted it as, and a reviewer reads both
+/// under that agent.
+#[test]
+fn a_forms_own_action_is_set_down_as_the_agent_that_ran_it() {
+    let engine = TestEngine::new();
+    engine.set_page_data("forms", json!({ "forms": [order_form()] }));
+    let mut app = open(&engine);
+    engine.push_event(ui::webview::WebViewEvent::LoadFinished);
+    for _ in 0..3 {
+        app.settle();
+    }
+    let intake = agent_for_ada("agent:intake");
+
+    // The agent answers the form through the form's own action.
+    let answered = json!({"seq": 1, "time_ms": 1_700_000_000_001_u64, "actor": "agent:intake",
+        "action": "fill_form", "ok": true, "message": "Answered 1 question", "url": PAGE,
+        "answers": [{"name": "Email", "value": "ada@example.org"}]});
+    engine.set_page_data(
+        "ledger",
+        json!({"entries": [answered], "next": 1, "more": false, "dropped": 0, "waiting": 0}),
+    );
+    engine.push_page_reply(Ok(PageReply {
+        record: PageRecordNote {
+            seq: Some(1),
+            ..PageRecordNote::default()
+        },
+        data: Some(json!({
+            "form": "form1", "signature": ORDER,
+            "results": [{"name": "Email", "ok": true}],
+            "set": [{"name": "Email", "value": "ada@example.org"}],
+            "submitted": false, "now_asks": [], "unanswered": [],
+        })),
+        ..answer("Answered 1 question")
+    }));
+    let address = page_action(&mut app, &format!("form-{ORDER}"));
+    let arguments = json!({"email": "ada@example.org"});
+    invoke(
+        &mut app,
+        Some(&intake),
+        address,
+        arguments.as_object().expect("arguments"),
+    )
+    .expect("the form's action answers");
+    app.settle();
+
+    // It sends the form, and the window holds the submission for the person.
+    let mut submission = ui::webview::HeldRequest::new(1, ui::webview::HeldKind::Submit);
+    submission.method = "POST".into();
+    submission.origin = "https://shop.test".into();
+    engine.hold(submission);
+    let address = page_action(&mut app, &format!("send-form-{ORDER}"));
+    let needs = invoke(&mut app, Some(&intake), address, &serde_json::Map::new())
+        .expect_err("the submission waits for the person");
+    assert!(
+        needs.contains(ui::tilo_actions::remote::CONFIRMATION_REQUIRED_CODE),
+        "{needs}"
+    );
+    // The engine sets the hold down under the actor whose action reached it.
+    engine.emit_page_record(
+        2,
+        json!({"seq": 2, "time_ms": 1_700_000_000_002_u64, "actor": "agent:intake",
+            "how": "hold", "action": "submit", "ok": true, "message": "POST https://shop.test",
+            "url": PAGE, "to_url": "https://shop.test"}),
+    );
+    for _ in 0..3 {
+        app.settle();
+    }
+
+    let record = record(&mut app);
+    let tab = only_tab(&record);
+    assert_eq!(
+        held(&record, &tab),
+        [
+            (1, "agent:intake".to_owned(), "fill_form".to_owned()),
+            (2, "agent:intake".to_owned(), "submit".to_owned()),
+        ],
+        "the form's answers and its held submission stand under the agent"
+    );
+    let authored_for: Vec<(ActorKind, Option<String>)> = record
+        .record()
+        .read(|doc| {
+            let mut doc = doc.clone();
+            history::versions(&mut doc)
+                .into_iter()
+                .filter_map(|version| version.context.as_ref()?.invoker.clone())
+                .filter(|invoker| invoker.actor == "agent:intake")
+                .map(|invoker| (invoker.kind, invoker.on_behalf_of))
+                .collect()
+        })
+        .expect("the record is open");
+    assert_eq!(
+        authored_for,
+        [
+            (ActorKind::Agent, Some(ada())),
+            (ActorKind::Agent, Some(ada()))
+        ],
+        "each is the agent's change, authored by the invoker the action door admitted"
+    );
+    // A reviewer reads both under that agent.
+    let read = review(&mut app, None);
+    let entries = read["data"]["entries"].as_array().expect("entries");
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| (
+                entry["actor"].as_str().unwrap_or_default(),
+                entry["how"].as_str().unwrap_or_default(),
+                entry["action"].as_str().unwrap_or_default(),
+            ))
+            .collect::<Vec<_>>(),
+        [
+            ("agent:intake", "", "fill_form"),
+            ("agent:intake", "hold", "submit")
+        ]
+    );
+}

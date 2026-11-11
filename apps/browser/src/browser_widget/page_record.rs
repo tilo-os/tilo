@@ -52,6 +52,26 @@ impl BrowserWidget {
         }
     }
 
+    /// `operation` was admitted for `invoker`, who acts in the tab as
+    /// `actor`: what the engine sets down under that name is theirs. A form's
+    /// own action is its invoker's as a page action is, so the answers it
+    /// places and the submission the window holds from it are kept under the
+    /// name of whoever ran it, authored by them.
+    pub(super) fn admitted_to_page(
+        &mut self,
+        actor: Option<&ui::webview::PageActor>,
+        invoker: Option<&ui::tilo_actions::ActionInvoker>,
+        operation: &crate::effects::BrowserOperation,
+    ) {
+        match operation {
+            crate::effects::BrowserOperation::Page(request) => {
+                self.page_record.admitted(actor, invoker, request);
+            }
+            crate::effects::BrowserOperation::Form(_) => self.page_record.acts_as(actor, invoker),
+            _ => {}
+        }
+    }
+
     /// The engine the page runs in now, told apart by where it lives.
     fn page_engine(&self) -> usize {
         std::sync::Arc::as_ptr(&self.engine).cast::<()>().addr()
