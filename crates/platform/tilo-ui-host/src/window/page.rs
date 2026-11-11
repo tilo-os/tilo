@@ -76,7 +76,7 @@ impl AppWindow {
 
 /// The nodes a window shell's content slot holds, the page beside its sidebar: the children of
 /// the first slot named `content` under `tree`.
-pub(super) fn content_nodes<'a>(tree: &'a UiNode) -> Vec<&'a UiNode> {
+pub(super) fn content_nodes(tree: &UiNode) -> Vec<&UiNode> {
     fn walk<'a>(node: &'a UiNode, out: &mut Vec<&'a UiNode>) -> bool {
         if node.kind == crate::adapter::SLOT
             && matches!(node.props.get("name"), Some(Value::Text(name)) if name == "content")

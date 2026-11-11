@@ -1993,14 +1993,9 @@ impl Instance {
             && let Some(item) = wire::runtime_resource(target)
         {
             let view = place.view();
-            let showed = view.borrow().show(&item);
-            match showed {
-                Ok(true) => {}
-                Ok(false) => {}
-                Err(error) => {
-                    tracing::warn!(%error, "the item an edit was made in did not show");
-                    return Err(Words::phrase("tilolang-open-failed"));
-                }
+            if let Err(error) = view.borrow().show(&item) {
+                tracing::warn!(%error, "the item an edit was made in did not show");
+                return Err(Words::phrase("tilolang-open-failed"));
             }
             // Drawn, so the fields are the item's own: what the edit names is in its page.
             if let Err(error) = view.borrow_mut().poll_patches() {

@@ -174,17 +174,6 @@ impl Instance {
         }
     }
 
-    /// The item the view of `lane` draws its own page for, when it lists the items it shows: the
-    /// row its tree says it selected.
-    pub(super) fn track_in_place(&mut self, lane: Lane) {
-        if let Some(view) = self.lane(lane) {
-            let item = in_place_of(view.view.borrow().tree());
-            if let Some(view) = self.lane_mut(lane) {
-                view.in_place = item;
-            }
-        }
-    }
-
     /// Send the window the view of `lane` as it is now: its tree, and the first rows of its
     /// virtual lists.
     pub(super) fn send_open(&mut self, lane: Lane, front: Option<ui::Front>) {

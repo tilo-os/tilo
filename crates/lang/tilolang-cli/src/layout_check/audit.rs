@@ -678,9 +678,7 @@ impl Walk<'_> {
         if node.widget == "Page" {
             self.page = Some(own);
         }
-        let was_beyond = self.beyond;
-        let was_across = self.across;
-        let was_off_pixel = self.off_pixel;
+        let (was_beyond, was_across, was_off_pixel) = (self.beyond, self.across, self.off_pixel);
         if geometric {
             self.own_box(node, keys, own, above, under_page);
         }

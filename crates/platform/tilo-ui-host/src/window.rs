@@ -557,30 +557,8 @@ impl AppWindow {
                     tree,
                     front: brought,
                 } => {
-                    if lane == Lane::Root {
-                        self.failed = None;
-                    }
-                    self.forget_lane(lane);
-                    let view = View { target, tree };
-                    match lane {
-                        Lane::Root => {
-                            self.root = Some(view);
-                            // What the window's own view showed in place is no part of a view
-                            // that opened again.
-                            self.shown_in_place = None;
-                            self.page_focus = None;
-                            self.page_focus_tries = 0;
-                        }
-                        Lane::Detail => self.detail = Some(view),
-                    }
-                    self.track_rows();
+                    opened_for_input |= self.opened(lane, target, tree, brought);
                     content = true;
-                    if lane == Lane::Detail && brought == Some(wire::Front::Input) {
-                        opened_for_input = true;
-                        // Its Took may come in a later batch: what is typed until then follows
-                        // the press into it.
-                        self.opened = Some(self.fired);
-                    }
                     front = brought.or(front);
                 }
                 ToUi::Close => {
@@ -594,24 +572,7 @@ impl AppWindow {
                     shows,
                 } => {
                     front = Some(brought);
-                    // The window's own page first, and no page after it (a tree beside what it
-                    // shows): the item the press showed stands in the root's content, and what
-                    // the person types into it is that item's.
-                    if let Some((press, shows)) = shows {
-                        if press > 0 {
-                            self.shows_by_press.insert(press, shows.clone());
-                            // A press a person made long ago has no typing left on its way.
-                            self.shows_by_press
-                                .retain(|press, _| press.saturating_add(64) > self.fired);
-                        }
-                        self.shown_in_place = Some(shows);
-                    }
-                    // A person's press takes the keyboard into the page it shows; what a
-                    // scenario or a search opened leaves the keyboard where the person had it.
-                    if self.detail.is_none() && brought == wire::Front::Input {
-                        opened_for_input = true;
-                        self.opened = Some(self.fired);
-                    }
+                    opened_for_input |= self.fronted(brought, shows);
                 }
                 ToUi::Patch { lane, patches } => {
                     let view = match lane {
@@ -663,18 +624,7 @@ impl AppWindow {
             self.select_shown();
         }
         self.send_typed_into(opened_for_input);
-        // The page the person's press showed is built again with the item: the keyboard goes
-        // into it once it stands.
-        if let Some(field) = self.page_focus.clone() {
-            if self.focused_field().as_deref() == Some(field.as_str()) || self.page_focus_tries >= 2
-            {
-                self.page_focus = None;
-            } else {
-                self.page_focus_tries = self.page_focus_tries.saturating_add(1);
-                self.focus_request = Some(field);
-                self.structure_dirty = true;
-            }
-        }
+        self.keep_page_focus();
         if self.fired <= self.took {
             self.opened = None;
         }
@@ -685,6 +635,79 @@ impl AppWindow {
             });
         }
         Ok(())
+    }
+
+    /// The lane `lane` opened on `target` with the tree `tree`, coming to the front of a narrow
+    /// window when `brought` names the press that opened it. Whether that press takes the
+    /// keyboard into the page.
+    fn opened(
+        &mut self,
+        lane: Lane,
+        target: ResourceRef,
+        tree: UiNode,
+        brought: Option<wire::Front>,
+    ) -> bool {
+        if lane == Lane::Root {
+            self.failed = None;
+        }
+        self.forget_lane(lane);
+        let view = View { target, tree };
+        match lane {
+            Lane::Root => {
+                self.root = Some(view);
+                // What the window's own view showed in place is no part of a view that opened
+                // again.
+                self.shown_in_place = None;
+                self.page_focus = None;
+                self.page_focus_tries = 0;
+            }
+            Lane::Detail => self.detail = Some(view),
+        }
+        self.track_rows();
+        if lane == Lane::Detail && brought == Some(wire::Front::Input) {
+            // Its Took may come in a later batch: what is typed until then follows the press
+            // into it.
+            self.opened = Some(self.fired);
+            return true;
+        }
+        false
+    }
+
+    /// A lane's page came to the front of a narrow window, showing `shows`' item in place where
+    /// the window draws its own page: what the person types into it is that item's. Whether the
+    /// press takes the keyboard into the page.
+    fn fronted(&mut self, brought: wire::Front, shows: Option<(u64, ResourceRef)>) -> bool {
+        if let Some((press, shows)) = shows {
+            if press > 0 {
+                self.shows_by_press.insert(press, shows.clone());
+                // A press a person made long ago has no typing left on its way.
+                self.shows_by_press
+                    .retain(|press, _| press.saturating_add(64) > self.fired);
+            }
+            self.shown_in_place = Some(shows);
+        }
+        // A person's press takes the keyboard into the page it shows; what a scenario or a
+        // search opened leaves the keyboard where the person had it.
+        if self.detail.is_none() && brought == wire::Front::Input {
+            self.opened = Some(self.fired);
+            return true;
+        }
+        false
+    }
+
+    /// The page the person's press showed is built again with the item: the keyboard goes into
+    /// it once it stands, and once more if the page was built after the first ask.
+    fn keep_page_focus(&mut self) {
+        let Some(field) = self.page_focus.clone() else {
+            return;
+        };
+        if self.focused_field().as_deref() == Some(field.as_str()) || self.page_focus_tries >= 2 {
+            self.page_focus = None;
+        } else {
+            self.page_focus_tries = self.page_focus_tries.saturating_add(1);
+            self.focus_request = Some(field);
+            self.structure_dirty = true;
+        }
     }
 
     /// What the app offers the person at the window now: every action, or the actions of the
@@ -1516,22 +1539,21 @@ impl AppWindow {
         }
         // The page a press showed: the item opened after the window's own, or — for a window
         // whose page is its own, a tree beside what it shows — the first field of its content.
-        let (field, lane) = match self
+        let page = self
             .detail
             .as_ref()
             .and_then(|detail| first_field(&detail.tree))
-        {
-            Some(field) => (composed_key(Lane::Detail, &field.key), Lane::Detail),
-            None => {
-                let Some(root) = self.root.as_ref() else {
-                    return;
-                };
-                let Some(field) = content_nodes(&root.tree).into_iter().find_map(first_field)
-                else {
-                    return;
-                };
-                (field.key.clone(), Lane::Root)
-            }
+            .map(|field| (composed_key(Lane::Detail, &field.key), Lane::Detail));
+        let (field, lane) = if let Some(page) = page {
+            page
+        } else {
+            let Some(root) = self.root.as_ref() else {
+                return;
+            };
+            let Some(field) = content_nodes(&root.tree).into_iter().find_map(first_field) else {
+                return;
+            };
+            (field.key.clone(), Lane::Root)
         };
         // What was typed with no field focused after the press the app just ran, not after a
         // later one.

@@ -169,6 +169,12 @@ impl<'a> Validator<'a> {
         Ok(())
     }
 
+    /// A resource the window names: its id and its type.
+    fn target(&self, target: &ResourceRef) -> Result<(), Refused> {
+        self.key(&target.id)?;
+        self.key(&target.ty)
+    }
+
     fn message(&self, message: &ToUi) -> Result<(), Refused> {
         match message {
             ToUi::Loading
@@ -191,10 +197,7 @@ impl<'a> Validator<'a> {
             ToUi::Front {
                 shows: Some((_, target)),
                 ..
-            } => {
-                self.key(&target.id)?;
-                self.key(&target.ty)
-            }
+            } => self.target(target),
             ToUi::Open { target, tree, .. } => {
                 self.key(&target.id)?;
                 self.key(&target.ty)?;
