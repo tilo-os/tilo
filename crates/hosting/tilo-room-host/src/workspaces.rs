@@ -1131,6 +1131,18 @@ impl Workspaces {
         device.channel_keys(&route.cluster_id, &named, create).await
     }
 
+    /// Every record this host holds of `workspace`, by the app whose document
+    /// it is and its id: what its members' pages and agents may name there,
+    /// whether or not a device's session has been sent it. A public workspace
+    /// sends a device its records only when it opens one, so this is what a
+    /// service listing the workspace's apps goes by. `None` for a workspace
+    /// this host does not hold.
+    pub async fn records(&self, workspace: &str) -> Option<Vec<(String, String)>> {
+        let governed = self.workspace(workspace).await.ok()?;
+        let governed = governed.lock().await;
+        Some(governed.peer().records())
+    }
+
     /// These workspaces, held without keeping them alive.
     #[must_use]
     pub fn downgrade(&self) -> WeakWorkspaces {

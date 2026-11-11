@@ -913,6 +913,13 @@ impl Workspace {
                     frames,
                     ..
                 } if opened == workspace_id => {
+                    tracing::debug!(
+                        app = %route.app_id,
+                        record = %route.record,
+                        frames,
+                        asked = self.asked.contains(&route),
+                        "workspace actions: the workspace answered for a record"
+                    );
                     // The host sent all it holds of a record this member
                     // asked for: none means it holds none of it.
                     if self.asked.remove(&route) && frames == 0 {
@@ -1814,12 +1821,40 @@ impl Worker {
         }
     }
 
-    fn records(&self, state: &WorkspaceState) -> Vec<DocumentRoute> {
-        state
-            .records
-            .iter()
+    /// The records of `cluster_id` a listing shows: those this member's
+    /// replica holds, and those the workspace's host holds of an app the
+    /// catalogue has.
+    ///
+    /// A public workspace sends a device its records only when it opens one,
+    /// so the replica holds a handful of them: without the host's list, every
+    /// app there is installed and none running, and what a member's agent
+    /// names is not found. A record listed here that the replica has not been
+    /// sent is asked for when a request names it.
+    fn records(&self, state: &WorkspaceState, cluster_id: &str) -> Vec<DocumentRoute> {
+        let mut routes: Vec<DocumentRoute> = state.records.clone();
+        if let Some(held) = self
+            .shared
+            .link
+            .get()
+            .and_then(|link| link.records(cluster_id))
+        {
+            for (app_id, record) in held {
+                let route = DocumentRoute {
+                    app_id,
+                    cluster_id: cluster_id.to_owned(),
+                    record,
+                };
+                if !routes.contains(&route) {
+                    routes.push(route);
+                }
+            }
+        }
+        routes
+            .into_iter()
+            // A part of a chain is held beside the record that keeps it, and
+            // is never an app of its own there.
+            .filter(|route| !is_part(&route.record))
             .filter(|route| self.catalogue.get(&route.app_id).is_some())
-            .cloned()
             .collect()
     }
 
@@ -1910,16 +1945,27 @@ impl Worker {
         let state = self.refresh(workspace_id, keys.read())?;
         let revision = state.revision.to_string();
         // A workspace nothing was written in yet is named by the provider
-        // asked for, so its new records are offered.
+        // asked for, so its new records are offered; one this member's replica
+        // holds nothing of yet — a public workspace sends its records when a
+        // device opens them — is named by the session it joined.
         let asked = query.provider.as_deref().and_then(provider_workspace);
-        let Some(cluster_id) = state.workspace.clone().or_else(|| {
-            asked
-                .filter(|named| room_workspace_id(named).ok() == Some(workspace_id))
-                .map(str::to_owned)
-        }) else {
+        let Some(cluster_id) = state
+            .workspace
+            .clone()
+            .or_else(|| {
+                asked
+                    .filter(|named| room_workspace_id(named).ok() == Some(workspace_id))
+                    .map(str::to_owned)
+            })
+            .or_else(|| {
+                self.workspaces
+                    .get(&workspace_id)
+                    .and_then(|workspace| workspace.cluster_id(workspace_id))
+            })
+        else {
             return Ok(CataloguePage::from_rows(revision, Vec::new(), query));
         };
-        let routes = self.records(&state);
+        let routes = self.records(&state, &cluster_id);
         let own_provider = workspace_provider(&cluster_id);
         let wanted: Vec<DocumentRoute> = match query.provider.as_deref() {
             Some(provider) if provider == own_provider => Vec::new(),

@@ -84,6 +84,11 @@ impl Workspace {
             {
                 match self.peer.send(Cmd::OpenRoute(route.clone())) {
                     Ok(()) => {
+                        tracing::debug!(
+                            app = %route.app_id,
+                            record = %route.record,
+                            "workspace actions: asked the workspace for a record this member holds none of"
+                        );
                         self.asked.insert(route.clone());
                     }
                     Err(error) => tracing::warn!(

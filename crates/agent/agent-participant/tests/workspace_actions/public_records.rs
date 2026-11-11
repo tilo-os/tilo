@@ -14,6 +14,11 @@
 //! made named by the title they gave it, and makes another note there, whose
 //! change the member's page then sees. A record the workspace holds none of is
 //! still refused as absent, once the service heard the host say so.
+//!
+//! What the workspace holds is the host's to say, and a listing of it is what a
+//! member's agent names a record by: the chat the operator seated there is one
+//! of the workspace's records whether or not the service's own session was ever
+//! sent it, and a post goes into the channel it opens with.
 
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
@@ -24,6 +29,12 @@ use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_user_identity::DeviceCapabilities;
 
 const NOTES: &str = "so.tilo.notes";
+
+/// The app a workspace keeps one record of, whose channel its operator names.
+const CHAT: &str = "so.tilo.chat";
+
+/// The channel the operator gives the workspace's chat.
+const CHANNEL: &str = "general";
 
 /// The title the member's own note holds.
 const TITLE: &str = "Kickoff";
@@ -197,6 +208,155 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     assert!(
         !member.documents.contains_key(&missing),
         "the host founded a record the workspace has none of"
+    );
+
+    member.peer.close();
+    hosted.agents.shutdown();
+    drop(hosted.web);
+    hosted.relay.shutdown().await;
+}
+
+/// What an agent through the door asks before it names a record: what runs in
+/// the workspace. The chat its operator seated there is one of them, and the
+/// channel it opens with is where a post goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
+    // The workspace, public: anyone may walk in, and its host sends a device
+    // its records when it opens them.
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let host = enrol(
+        &owner,
+        "lounge-host",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = support::scratch_dir();
+    let hosted = start(&owner, &host, state.path()).await;
+    let workspaces = hosted.relay.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &host.cert,
+            Listing {
+                description: "Everyone".into(),
+                default_role: WorkspaceRole::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+
+    // Its chat, as an operator seats it: the app's own record of the workspace,
+    // holding the channel it opens with. Nobody's device has it open, and the
+    // workspace sends it to no one who does not.
+    workspaces
+        .prepare_application(&workspace, &host.cert, &common::catalogue(), CHAT, "")
+        .await
+        .unwrap();
+    workspaces
+        .author_application(
+            &workspace,
+            &host.cert,
+            &common::catalogue(),
+            CHAT,
+            "",
+            |doc| {
+                // The channel the operator seats, under the id the workspace's
+                // own settle gives it (`c_` and its name).
+                chat::demo::apply_as(
+                    doc,
+                    "operator",
+                    chat::Chat::CREATE_CHANNEL_WITH_ID.with(
+                        chat::record::chat::CreateChannelWithId {
+                            id: format!("c_{CHANNEL}"),
+                            name: CHANNEL.parse().expect("a channel name"),
+                            category: None,
+                            kind: None,
+                            topic: None,
+                            participants: None,
+                        },
+                    ),
+                )
+                .map_err(|error| error.to_string())
+            },
+        )
+        .await
+        .unwrap();
+
+    // A member of the workspace, through its door.
+    let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
+    let member_device = enrol(&member_root, "member-browser", DeviceCapabilities::member());
+    admit_person(
+        &hosted,
+        &host,
+        &workspace,
+        &member_device,
+        MemberRole::Editor,
+    )
+    .await;
+    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace).await;
+
+    // What runs there, as the host's service lists it: the chat is one, though
+    // the member's device was sent none of its record. A page names the app it
+    // acts on by this listing, and holds every app as installed rather than
+    // running without it.
+    let chat = DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        record: String::new(),
+    };
+    let chat_provider = record_provider(&chat);
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let page = member
+            .catalogue(CatalogueQuery {
+                max_results: 0,
+                ..CatalogueQuery::default()
+            })
+            .await
+            .expect("the host lists the workspace");
+        if page
+            .providers
+            .iter()
+            .any(|listed| listed.provider == chat_provider)
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the workspace's chat is never listed as running: {:?}",
+            page.providers
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    // A post to the channel the operator gave it reads the chat the workspace
+    // holds: the service asks for the record and its newest part, and the
+    // message lands in the channel that is really there.
+    let post = ActionAddress::new(ui::record::chain_resource_id(&chat::parts::chain()), "post");
+    let posted = |channel: &str| {
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("channel".into(), serde_json::json!(channel));
+        arguments.insert("text".into(), serde_json::json!("first in the Lounge"));
+        request(
+            &chat_provider,
+            post.clone(),
+            InvokeArgument::Json(arguments),
+        )
+    };
+    let receipt = member.invoke(posted("c_general")).await;
+    assert!(
+        matches!(receipt.status, ReceiptStatus::Completed { .. }),
+        "the post reached the workspace's own chat: {:?}",
+        receipt.status
+    );
+    // A channel the workspace's chat does not have is refused: the service read
+    // the chat the workspace holds, not one of its own.
+    let refused = member.invoke(posted("c_missing")).await;
+    assert!(
+        !matches!(refused.status, ReceiptStatus::Completed { .. }),
+        "a channel the chat has not got took a post: {:?}",
+        refused.status
     );
 
     member.peer.close();

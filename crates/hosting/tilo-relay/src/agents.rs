@@ -759,6 +759,11 @@ impl WorkspaceRecordsLink for RelayRecordsLink {
             .block_on(self.workspaces.as_ref()?.own_route_keys(route, create))
     }
 
+    fn records(&self, channel: &str) -> Option<Vec<(String, String)>> {
+        let workspaces = self.workspaces.as_ref()?;
+        self.member.runtime.block_on(workspaces.records(channel))
+    }
+
     fn view_locator(
         &self,
         workspace: &str,
