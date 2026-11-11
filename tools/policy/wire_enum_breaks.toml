@@ -188,6 +188,7 @@ file = "crates/runtime/legacy-vm/src/hosted/size.rs"
 enum = "VmSize"
 reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no ledger, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
 
+[[break]]
 file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
 enum = "WorkspacesRequest"
 reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the relay serves the page's own assets), and these requests are live messages of a session or a door, never bytes kept anywhere, so nothing written under the retirement is read back"
