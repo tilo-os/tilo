@@ -30,6 +30,9 @@ use crate::widget::tile_host::FOCUSED_EDGE_STROKE_WIDTH;
 /// The size a window takes when it floats: the design's floating window,
 /// smaller than the strip's tile so it reads as lifted over the desk.
 pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
+/// The size a conversation sent from a window floats at: a card as narrow as a list panel, beside
+/// the window it was sent from rather than over it, as the activity cards stand over the desk.
+pub const FLOAT_CARD_SIZE: (f64, f64) = (360.0, 520.0);
 /// The pointer's room above a floating window's bar where it is let go: the
 /// window hangs below and right of the hand, as a carried window does.
 const FLOAT_GRAB: (f64, f64) = (80.0, 14.0);
@@ -184,7 +187,7 @@ impl GroupRow {
     /// itself. `None` for a window the strip lays out.
     pub(super) fn float_node_style(&self, i: usize, own: &Style) -> Option<Style> {
         let id = self.groups.get(i)?.id;
-        self.floats.get(&id)?;
+        let at = self.floats.get(&id)?;
         Some(Style {
             position: Position::Absolute,
             inset: taffy::Rect {
@@ -194,8 +197,8 @@ impl GroupRow {
                 bottom: LengthPercentageAuto::auto(),
             },
             size: Size {
-                width: Dimension::length(f32_of_f64(FLOAT_SIZE.0)),
-                height: Dimension::length(f32_of_f64(FLOAT_SIZE.1)),
+                width: Dimension::length(f32_of_f64(at.width())),
+                height: Dimension::length(f32_of_f64(at.height())),
             },
             min_size: Size::auto(),
             max_size: Size::auto(),
@@ -296,7 +299,9 @@ impl GroupRow {
             }
             self.pending_float = Some(FloatAsk::Snap { group: id });
         } else {
-            let at = self.float_rect_at(self.last_cursor);
+            // Where the hand carried it, at the size it floats at: a card stays a card.
+            let carried = self.floats.get(&id).copied().unwrap_or(from);
+            let at = self.keep_float_inside(carried);
             self.floats.insert(id, at);
             self.structure_dirty = true;
             self.pending_float = Some(FloatAsk::Float { group: id, at });
@@ -316,24 +321,10 @@ impl GroupRow {
         self.keep_float_inside(at)
     }
 
-    /// `at` kept inside the desk the row stands on, clear of its edge by
-    /// [`FLOAT_CARD_ROOM`]: the card a float draws round its window — the
-    /// band of its own ground and the focus ring outside it — stays whole.
+    /// `at` kept inside the desk the row stands on ([`keep_float_inside`]).
     #[must_use]
     pub fn keep_float_inside(&self, at: Rect) -> Rect {
-        let area = self.rect;
-        let room = FLOAT_CARD_ROOM;
-        let x = at
-            .x0
-            .min(area.x1 - room - at.width())
-            .max(area.x0 + room)
-            .max(0.0);
-        let y = at
-            .y0
-            .min(area.y1 - room - at.height())
-            .max(area.y0 + room)
-            .max(0.0);
-        Rect::from_origin_size(Point::new(x, y), at.size())
+        keep_float_inside(self.rect, at)
     }
 
     /// Whether a floating window's fading in asks for another frame.
@@ -414,4 +405,22 @@ impl GroupRow {
             }
         }
     }
+}
+
+/// `at` kept inside the desk `area`, clear of its edge by [`FLOAT_CARD_ROOM`]: the card a float
+/// draws round its window — the band of its own ground and the focus ring outside it — stays whole.
+#[must_use]
+pub fn keep_float_inside(area: Rect, at: Rect) -> Rect {
+    let room = FLOAT_CARD_ROOM;
+    let x = at
+        .x0
+        .min(area.x1 - room - at.width())
+        .max(area.x0 + room)
+        .max(0.0);
+    let y = at
+        .y0
+        .min(area.y1 - room - at.height())
+        .max(area.y0 + room)
+        .max(0.0);
+    Rect::from_origin_size(Point::new(x, y), at.size())
 }

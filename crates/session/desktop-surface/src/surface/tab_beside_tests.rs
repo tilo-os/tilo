@@ -239,8 +239,8 @@ fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle)
     };
     assert_eq!(
         card.size(),
-        ui::kurbo::Size::new(ui::widget::FLOAT_SIZE.0, ui::widget::FLOAT_SIZE.1),
-        "it stands at the size a floating window takes"
+        ui::kurbo::Size::new(ui::widget::FLOAT_CARD_SIZE.0, ui::widget::FLOAT_CARD_SIZE.1),
+        "it stands as a conversation card, not a window lifted whole"
     );
     assert_eq!(
         floats::rect_of(float.resolved(area)),

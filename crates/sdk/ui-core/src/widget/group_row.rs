@@ -37,7 +37,7 @@ pub use hint_places::HintPlaces;
 mod canvas;
 #[path = "group_row_floats.rs"]
 mod floats;
-pub use floats::{FLOAT_CARD_ROOM, FLOAT_SIZE, FloatAsk};
+pub use floats::{FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
 #[path = "group_row_scroll.rs"]
 mod scroll;
 pub use canvas::{CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView};

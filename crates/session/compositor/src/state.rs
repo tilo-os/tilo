@@ -1531,7 +1531,35 @@ impl State {
             self.space.refresh();
             self.mark_redraw_all();
         }
-        // A card an app draws stays in front of the windows it floats over.
+        // A window floating over the desk stands in front of the strips' windows, a focused or
+        // maximized one included; the dialogs stay in front of the windows they belong to, and a
+        // card an app draws stays in front of them all.
+        let floats: Vec<_> = self
+            .space
+            .elements()
+            .filter(|window| {
+                describe(self, window).is_some_and(|info| self.covers.contains_key(&info.id))
+            })
+            .cloned()
+            .collect();
+        if !floats.is_empty() {
+            for window in floats {
+                self.space.raise_element(&window, false);
+            }
+            let dialogs: Vec<_> = self
+                .space
+                .elements()
+                .filter(|window| {
+                    window
+                        .toplevel()
+                        .is_some_and(|toplevel| toplevel.parent().is_some())
+                })
+                .cloned()
+                .collect();
+            for window in dialogs {
+                self.space.raise_element(&window, false);
+            }
+        }
         let cards: Vec<_> = self
             .space
             .elements()

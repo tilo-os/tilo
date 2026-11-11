@@ -207,6 +207,7 @@ pub(super) fn window_rows(
                         "app_id": app_id,
                         "title": tab.title,
                         "active": group_active && group.active_tab == tab.id,
+                        "floating": workspace.arrangement.float_of(group.id).is_some(),
                         "rect": rect,
                     }));
                 }

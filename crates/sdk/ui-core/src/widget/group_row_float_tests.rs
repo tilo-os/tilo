@@ -221,7 +221,11 @@ fn a_float_let_go_off_the_strip_stays_over_the_desk_where_it_was_dropped() {
         panic!("a float let go off the strip stays floating: {ask:?}");
     };
     assert_eq!(group, 200);
-    assert_eq!(moved, row.float_rect_at(away));
+    assert_eq!(
+        moved,
+        row.keep_float_inside(at + (away - grab)),
+        "it stands where the hand carried it, at the size it floats at"
+    );
     assert_eq!(
         row.floats().get(&200),
         Some(&moved),
@@ -334,4 +338,19 @@ fn a_floating_window_s_maximize_control_snaps_it_back_where_it_stood() {
         "it goes back to the place in its strip it floated from"
     );
     assert_eq!(row.take_pending_float(), None, "the snap is asked once");
+}
+
+/// A float keeps the size its place says: a conversation card stands at the card's size, not at
+/// the size a window lifted whole takes.
+#[test]
+fn a_float_takes_the_size_its_place_keeps() {
+    let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let at = Rect::from_origin_size(Point::new(400.0, 80.0), super::FLOAT_CARD_SIZE);
+    row.set_floats(floats(&[(200, at)]));
+    let (row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    let rect = row.groups[1].get_rect();
+    assert!(
+        (rect.width() - at.width()).abs() < 0.5 && (rect.height() - at.height()).abs() < 0.5,
+        "the card stands at its own size: {rect:?}"
+    );
 }

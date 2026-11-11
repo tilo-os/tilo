@@ -28,8 +28,8 @@ use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
 use ui::widget::{
-    FLOAT_CARD_ROOM, FLOAT_SIZE, GroupRow, OutputSpan, STRIP_EDGE_GUTTER_PX, TaffyTreeExt as _,
-    TileHost, Widget, WindowGroup,
+    FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, GroupRow, OutputSpan, STRIP_EDGE_GUTTER_PX,
+    TaffyTreeExt as _, TileHost, Widget, WindowGroup,
 };
 use ui::winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -1762,7 +1762,7 @@ impl DesktopSurface {
             // band and ring included, so the card stands beside the window it
             // opened next to, clear of it, not over it.
             if float {
-                row.share_with_floating_neighbour(group, FLOAT_SIZE.0 + 2.0 * FLOAT_CARD_ROOM);
+                row.share_with_floating_neighbour(group, FLOAT_CARD_SIZE.0 + 2.0 * FLOAT_CARD_ROOM);
             } else if !floats::holds(&shared.tree, strip, group) {
                 row.share_with_neighbour(group);
             }
