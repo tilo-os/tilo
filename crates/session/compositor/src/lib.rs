@@ -2191,6 +2191,12 @@ impl Compositor {
         self.data.state.set_layer_shown(namespace, shown);
     }
 
+    /// Hand the keyboard to the session's layer surface `namespace` until it is hidden, when it
+    /// takes the keyboard at all; false while it does not stand yet.
+    pub fn lend_layer_keyboard(&mut self, namespace: &str) -> bool {
+        self.data.state.lend_layer_keyboard(namespace)
+    }
+
     /// Whether the session shows its layer surface `namespace` , hid it, or never said (shown).
     #[must_use]
     pub fn layer_shown(&self, namespace: &str) -> Option<bool> {

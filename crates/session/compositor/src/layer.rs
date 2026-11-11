@@ -30,7 +30,7 @@ use smithay::desktop::utils::{
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
+use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
 use smithay::utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Scale, Size};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::wayland::compositor::{get_parent, with_states};
@@ -55,6 +55,9 @@ pub(crate) struct Layers {
     /// How the session draws a surface it is moving, by the same name: one coming or going is posed
     /// here frame by frame until it rests. A name the session never posed is drawn as it stands.
     poses: std::collections::BTreeMap<String, LayerPose>,
+    /// The layer surface the session handed the keyboard to, by name, and where the keyboard was
+    /// before: it goes back there when that surface is hidden while it still holds it.
+    lent: Option<(String, Option<WlSurface>)>,
 }
 
 /// One layer surface and where it is on its output.
@@ -101,6 +104,7 @@ impl Layers {
             surfaces: Vec::new(),
             visibility: std::collections::BTreeMap::new(),
             poses: std::collections::BTreeMap::new(),
+            lent: None,
         }
     }
 
@@ -306,7 +310,64 @@ impl State {
             return;
         }
         self.layers.visibility.insert(namespace.to_owned(), shown);
+        if !shown {
+            self.return_layer_keyboard(namespace);
+        }
         self.mark_redraw_all();
+    }
+
+    /// Hand the keyboard to the shown layer surface `namespace` , which takes it on demand: a panel
+    /// the person opened from the keyboard is worked from it at once. Where the keyboard was goes
+    /// back to it when the panel is hidden. False while no such surface stands to take it.
+    pub(crate) fn lend_layer_keyboard(&mut self, namespace: &str) -> bool {
+        if self.locked() || self.layers.shown(namespace) == Some(false) {
+            return false;
+        }
+        let Some(focus) = self
+            .layers
+            .surfaces
+            .iter()
+            .find(|placed| {
+                placed.namespace == namespace
+                    && placed.request().keyboard_interactivity != KeyboardInteractivity::None
+            })
+            .map(|placed| placed.surface.wl_surface().clone())
+        else {
+            return false;
+        };
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let before = keyboard.current_focus();
+        if before.as_ref() != Some(&focus) {
+            self.layers.lent = Some((namespace.to_owned(), before));
+            keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
+        }
+        true
+    }
+
+    /// The layer surface `namespace` is hidden: the keyboard it was lent goes back where it was,
+    /// when it still holds it and that is still there.
+    fn return_layer_keyboard(&mut self, namespace: &str) {
+        let Some((lent_to, before)) = self.layers.lent.take() else {
+            return;
+        };
+        if lent_to != namespace {
+            self.layers.lent = Some((lent_to, before));
+            return;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let holds = keyboard.current_focus().is_some_and(|focus| {
+            self.layers.surfaces.iter().any(|placed| {
+                placed.namespace == namespace && *placed.surface.wl_surface() == focus
+            })
+        });
+        if holds {
+            let back = before.filter(Resource::is_alive);
+            keyboard.set_focus(self, back, SERIAL_COUNTER.next_serial());
+        }
     }
 
     /// Whether the session shows the layer surface `namespace`, or hid it;
@@ -366,6 +427,15 @@ impl State {
         let Some(index) = self.layers.index_of(surface) else {
             return;
         };
+        // The keyboard it was lent goes back where it was before it goes.
+        if let Some(namespace) = self
+            .layers
+            .surfaces
+            .get(index)
+            .map(|placed| placed.namespace.clone())
+        {
+            self.return_layer_keyboard(&namespace);
+        }
         let root = self
             .layers
             .surfaces

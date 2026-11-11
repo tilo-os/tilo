@@ -187,6 +187,7 @@ impl crate::Session {
             // Asked again when the panel opens again, a panel that would not stay up is tried
             // afresh.
             self.quick_settings_starts = 0;
+            self.quick_settings_keyboard = false;
             self.shared.panel_asks.borrow_mut().clear();
             self.shared.panel_back.set(None);
             return;
@@ -255,9 +256,8 @@ impl crate::Session {
         }
         // Up, where it stands: the surface is shown rather than started, so an opening the panel
         // already stands for costs nothing.
-        if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true)
-            && self.shared.panel_asks.borrow().is_empty()
-        {
+        let opening = self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true);
+        if opening && self.shared.panel_asks.borrow().is_empty() {
             // An opening nobody asked a page of shows the controls, not the page the panel was left
             // on.
             self.shared.panel_asks.borrow_mut().push("show-controls");
@@ -265,6 +265,15 @@ impl crate::Session {
         self.show_quick_settings();
         // What the keys asked the panel to show, which it can only be told while it runs.
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
+        // Opened for its controls, the panel takes the keyboard: Tab walks them, Enter opens a
+        // section. Opened to paste, the field the person types in keeps it, so the copy they
+        // choose lands there.
+        if opening {
+            self.quick_settings_keyboard = !asked.contains(&"paste");
+        }
+        if self.quick_settings_keyboard && self.compositor.lend_layer_keyboard(SURFACE_NAMESPACE) {
+            self.quick_settings_keyboard = false;
+        }
         for action in asked {
             let id = self.ask_surface(
                 SURFACE,

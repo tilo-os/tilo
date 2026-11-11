@@ -69,13 +69,26 @@ pub fn configured_shortcut_action(
     logical_key: &Key,
     modifiers: Modifiers,
 ) -> Option<ShortcutAction> {
-    shortcuts
-        .bindings
-        .iter()
-        .find_map(|(action, chord)| {
-            shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
+    readings(logical_key, modifiers)
+        .find_map(|modifiers| {
+            shortcuts.bindings.iter().find_map(|(action, chord)| {
+                shortcut_chord_matches(logical_key, modifiers, chord).then_some(*action)
+            })
         })
         .or_else(|| is_bare_f11(logical_key, modifiers).then_some(ShortcutAction::ToggleFullscreen))
+}
+
+/// The modifiers a press is read with, the likelier first. A mark the person's layout types with
+/// Shift (`/` and `=` are Shift+7 and Shift+0 on a German keyboard) is that mark, as the guide
+/// names it: Shift was the layout's, so Super with the keys that type `/` is Super+/. The press as
+/// it came is read after that, so Shift+/ on a US keyboard, which types `?`, is still Shift+/.
+fn readings(logical_key: &Key, modifiers: Modifiers) -> impl Iterator<Item = Modifiers> {
+    let state = modifiers.state();
+    let typed_mark = matches!(logical_key, Key::Character(text)
+        if text.chars().count() == 1
+            && text.chars().all(|ch| ch.is_ascii_punctuation()));
+    let layouts = (typed_mark && state.shift_key()).then(|| (state - ModifiersState::SHIFT).into());
+    layouts.into_iter().chain(std::iter::once(modifiers))
 }
 
 /// The fixed action a live key press asks for, from the fixed table: a chord Settings cannot
@@ -83,8 +96,10 @@ pub fn configured_shortcut_action(
 /// the keys answer where they are resolved (the window walk, the workspace steps, the display
 /// sheet) or that nothing dispatches.
 pub fn fixed_shortcut_action(logical_key: &Key, modifiers: Modifiers) -> Option<FixedAction> {
-    let chord = shortcut_chord_from_event(logical_key, modifiers)?;
-    ui::shortcut_table::fixed_action(&chord)
+    readings(logical_key, modifiers).find_map(|modifiers| {
+        let chord = chord_as_pressed(logical_key, modifiers)?;
+        ui::shortcut_table::fixed_action(&chord)
+    })
 }
 
 /// F11 is every desktop's full-screen key; it toggles the same real fullscreen as the configurable
@@ -136,7 +151,14 @@ fn shortcut_key_name(logical_key: &Key) -> Option<String> {
     Some(name)
 }
 
+/// The chord a press is, read as the desktop's tables read it: a mark the layout typed with Shift
+/// is named without it, so a chord caught on any layout is the one that layout's keys press again.
 pub fn shortcut_chord_from_event(logical_key: &Key, modifiers: Modifiers) -> Option<KeyChord> {
+    let modifiers = readings(logical_key, modifiers).next()?;
+    chord_as_pressed(logical_key, modifiers)
+}
+
+fn chord_as_pressed(logical_key: &Key, modifiers: Modifiers) -> Option<KeyChord> {
     let key = shortcut_key_name(logical_key)?;
     let state = modifiers.state();
     let mut names = BTreeSet::new();
@@ -335,6 +357,44 @@ mod tests {
         assert_eq!(
             native(&Key::Character("3".into()), sup).and_then(ShortcutAction::focus_strip_index),
             Some(2)
+        );
+    }
+
+    /// A mark the layout types with Shift is the mark the chord names, as the guide shows it: on a
+    /// German keyboard Super with the keys that type `/` , `=` and `[` (Shift+7, Shift+0, AltGr+8)
+    /// is Super+/ , Super+= and Super+[ . On a US keyboard Shift+/ types `?` and stays Shift+/ .
+    #[test]
+    fn a_mark_the_layout_types_with_shift_is_the_chord_the_guide_names() {
+        let sup = ModifiersState::SUPER;
+        let shift = ModifiersState::SHIFT;
+        let mark = |text: &str| Key::Character(text.into());
+        assert_eq!(
+            native(&mark("/"), sup | shift),
+            Some(ShortcutAction::SaySomething)
+        );
+        assert_eq!(
+            native(&mark("="), sup | shift),
+            Some(ShortcutAction::ResizeWider)
+        );
+        assert_eq!(
+            native(&mark("="), sup | shift | ModifiersState::ALT),
+            Some(ShortcutAction::MagnifierZoomIn)
+        );
+        assert_eq!(native(&mark("["), sup), Some(ShortcutAction::AttachTabLeft));
+        assert_eq!(
+            native(&mark("?"), sup | shift),
+            Some(ShortcutAction::ShortcutHelp)
+        );
+        assert_eq!(native(&mark("/"), sup), Some(ShortcutAction::SaySomething));
+        // A letter keeps its Shift: Super+Shift+S is the capture, not the strips.
+        assert_eq!(
+            fixed_shortcut_action(&mark("S"), (sup | shift).into()),
+            Some(FixedAction::CaptureScreenshot)
+        );
+        // A chord caught for a rebinding is the one the same keys press again.
+        assert_eq!(
+            shortcut_chord_from_event(&mark("/"), (sup | shift).into()),
+            KeyChord::parse("Super+/").ok()
         );
     }
 

@@ -526,6 +526,10 @@ pub struct Session {
     pub(crate) quick_settings_run: crate::quick_settings::Run,
     #[cfg(target_os = "linux")]
     pub(crate) quick_settings_starts: u32,
+    /// Whether quick settings, opened for its controls, is still to take the keyboard once its
+    /// surface stands: the person works it from the keys that opened it.
+    #[cfg(target_os = "linux")]
+    pub(crate) quick_settings_keyboard: bool,
     /// The portal's link to the loop, while the portal serves.
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<crate::portal_link::SessionLink>,

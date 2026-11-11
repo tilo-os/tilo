@@ -800,6 +800,11 @@ impl State {
                 .iter()
                 .rposition(|host| host.above_lock() && host.accepts_pointer(point.x, point.y));
         }
+        // A layer surface over the windows (quick settings, a panel's popover) is drawn over every
+        // hosted surface, so the pointer on it is its own, as on the desk under it.
+        if self.layer_surface_under(point, true).is_some() {
+            return None;
+        }
         // The last host draws on top, so it is asked first.
         let under = |below: bool| {
             self.hosts.iter().rposition(|host| {

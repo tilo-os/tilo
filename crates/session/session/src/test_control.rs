@@ -1410,23 +1410,34 @@ fn asked_of_keys(
     held: &RefCell<BTreeSet<u32>>,
 ) -> Option<Json> {
     Some(match op {
-        Op::Key => match key_code(request, compositor) {
-            Some(code) => {
-                for pressed in [true, false] {
-                    if let Err(error) = compositor.input(InputEvent::Key {
-                        keycode: code,
-                        pressed,
-                    }) {
-                        return Some(refusal("input_failed", &error.to_string()));
-                    }
-                }
-                json!({"ok": {}})
+        Op::Key => {
+            let pressed = match typed_char(request) {
+                // A character is pressed as the keyboard types it, with the Shift or AltGr its layout
+                // needs held: `/` on a German keyboard is Shift+7.
+                Some(ch) => compositor.type_char(ch).map_err(|error| error.to_string()),
+                None => match key_code(request, compositor) {
+                    Some(code) => [true, false]
+                        .into_iter()
+                        .try_for_each(|pressed| {
+                            compositor.input(InputEvent::Key {
+                                keycode: code,
+                                pressed,
+                            })
+                        })
+                        .map(|()| true)
+                        .map_err(|error| error.to_string()),
+                    None => Ok(false),
+                },
+            };
+            match pressed {
+                Ok(true) => json!({"ok": {}}),
+                Ok(false) => refusal(
+                    "parse_error",
+                    "`key` takes a named key or one character the keyboard types",
+                ),
+                Err(error) => refusal("input_failed", &error),
             }
-            None => refusal(
-                "parse_error",
-                "`key` takes a named key or one character the keyboard types",
-            ),
-        },
+        }
         Op::KeyDown => match key_code(request, compositor) {
             Some(code) => {
                 if let Err(error) = compositor.input(InputEvent::Key {
@@ -2213,6 +2224,17 @@ fn drag(
     Ok(())
 }
 
+/// The one character a request's `key` names, when it names no named key.
+fn typed_char(request: &Json) -> Option<char> {
+    let key = request.get("key").and_then(Json::as_str)?;
+    if named_key(key).is_some() {
+        return None;
+    }
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    chars.next().is_none().then_some(first)
+}
+
 /// The evdev code a request's `key` means: a named key's, or, for one character, the key this
 /// seat's layout puts it on.
 fn key_code(request: &Json, compositor: &mut Compositor) -> Option<u32> {
@@ -2246,7 +2268,17 @@ fn named_key(name: &str) -> Option<u32> {
         "PageUp" => 104,
         "PageDown" => 109,
         "F1" => 59,
+        "F2" => 60,
+        "F3" => 61,
         "F4" => 62,
+        "F5" => 63,
+        "F6" => 64,
+        "F7" => 65,
+        "F8" => 66,
+        "F9" => 67,
+        "F10" => 68,
+        "F11" => 87,
+        "F12" => 88,
         "PrintScreen" => 99,
         "Space" => 57,
         "Shift" => 42,

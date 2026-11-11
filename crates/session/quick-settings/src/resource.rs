@@ -119,6 +119,11 @@ impl QuickSettings {
     /// the panel's main page, and asks it to go back everywhere else.
     #[action(housekeeping, answers)]
     pub fn back(&mut self) {
+        // Opened to paste, the clipboard is the whole panel: there is nothing behind it, and Back
+        // closes it.
+        if self.pasting {
+            return;
+        }
         if self.editing {
             self.editing = false;
         } else if self.page != Page::Root {

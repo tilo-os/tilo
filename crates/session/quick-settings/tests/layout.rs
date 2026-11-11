@@ -970,6 +970,12 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
         !panel.showing().goes_back(),
         "Back closes a panel opened to paste"
     );
+    let pasting = panel.clone();
+    panel.back();
+    assert_eq!(
+        panel, pasting,
+        "Back has nothing to go back to, so the first Escape closes it"
+    );
 }
 
 /// A panel whose page is taller than the room it is given keeps its footer
