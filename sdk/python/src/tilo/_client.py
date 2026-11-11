@@ -287,19 +287,13 @@ class AsyncTilo:
         return [Key.of(key) for key in keys or [] if isinstance(key, Mapping)]
 
     async def _mint(
-        self,
-        workspace: Any,
-        name: str | None,
-        expires_in: int | None,
-        browser_pages: bool = True,
+        self, workspace: Any, name: str | None, expires_in: int | None
     ) -> MintedKey:
         arguments: dict[str, Any] = {"workspace": await self._workspace_id(workspace)}
         if name is not None:
             arguments["name"] = name
         if expires_in is not None:
             arguments["expires_in"] = expires_in
-        if not browser_pages:
-            arguments["browser_pages"] = False
         result = await self._endpoint().outcome(f"{ACCOUNT}/keys#mint", arguments)
         if not isinstance(result, Mapping):
             raise ProtocolError("the door minted a key without naming it")

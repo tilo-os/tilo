@@ -64,17 +64,9 @@ class WorkspaceKeys:
     def __init__(self, workspace: Workspace) -> None:
         self.workspace = workspace
 
-    def mint(
-        self,
-        name: str | None = None,
-        expires_in: int | None = None,
-        browser_pages: bool = True,
-    ) -> Any:
-        """A key for an agent to act in this workspace, narrower than your own.
-        It operates web pages in Browser unless `browser_pages` is false."""
-        return self.workspace.client.handoff(
-            self.workspace._mint(name, expires_in, browser_pages)
-        )
+    def mint(self, name: str | None = None, expires_in: int | None = None) -> Any:
+        """A key for an agent to act in this workspace, narrower than your own."""
+        return self.workspace.client.handoff(self.workspace._mint(name, expires_in))
 
 
 class Members:
@@ -389,20 +381,13 @@ class Workspace:
                     f"tilo_get stopped at {len(received)} of {size} bytes of {content}"
                 )
 
-    async def _mint(
-        self, name: str | None, expires_in: int | None, browser_pages: bool = True
-    ) -> MintedKey:
+    async def _mint(self, name: str | None, expires_in: int | None) -> MintedKey:
         workspace = await self._id()
-        return await self.client._mint(workspace, name, expires_in, browser_pages)
+        return await self.client._mint(workspace, name, expires_in)
 
-    def mint_mcp(
-        self,
-        name: str | None = None,
-        expires_in: int | None = None,
-        browser_pages: bool = True,
-    ) -> Any:
+    def mint_mcp(self, name: str | None = None, expires_in: int | None = None) -> Any:
         """A key for an agent to act in this workspace; `ws.keys.mint` is the same."""
-        return self.keys.mint(name, expires_in, browser_pages)
+        return self.keys.mint(name, expires_in)
 
     def __repr__(self) -> str:
         return f"Workspace({self._info.name if self._info else self.ref!r})"

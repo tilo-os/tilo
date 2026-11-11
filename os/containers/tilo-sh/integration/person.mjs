@@ -7,12 +7,14 @@
 //                   backend's terminal runs it, and the person approves the
 //                   link it prints on the site's own /sign-in page, in this
 //                   same browser, by pressing Allow;
+//   --no-pages      the key they make on the door's grants page does not
+//                   operate web pages in Browser: the box is unticked;
 //   --root FILE     they are a person another program can hold: the page
 //                   makes a recovery key for them (its own "save a recovery
 //                   key") and FILE gets what opens them elsewhere, the
 //                   envelope and that key, as `tilo-approve person` reads it.
 //
-// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR] [--root FILE]
+// usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR [--no-pages]] [--root FILE]
 //
 // Prints one JSON line: {arrivedMs, joinedMs, room, followed, key, entered}.
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
@@ -32,12 +34,13 @@ const option = name => {
   return at < 0 ? null : rest[at + 1];
 };
 if (!site || !relay || !out) {
-  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR] [--root FILE]');
+  console.error('usage: node person.mjs SITE RELAY OUT_DIR [--follow LINK] [--key NAME --tilo BIN --door DOOR [--no-pages]] [--root FILE]');
   process.exit(2);
 }
 const follow = option('--follow');
 const keyName = option('--key');
 const rootFile = option('--root');
+const noPages = rest.includes('--no-pages');
 const tiloBin = option('--tilo');
 const door = option('--door');
 mkdirSync(out, {recursive: true});
@@ -118,7 +121,13 @@ if (rootFile) {
   // The person this page is, opened elsewhere: the page's own identity module
   // makes a recovery key for them and keeps the envelope that goes with it.
   const held = await tab.evaluate(`(async () => {
-    const {browserIdentity} = await import(new URL('./identity.mjs', location.href));
+    // The page's modules live under the build's own version directory
+    // (/v/<hash>/), which its preload hints name: the identity module is one
+    // of them, and importing the same address gives the module the page
+    // itself holds its person in.
+    const hint = document.querySelector('link[rel="modulepreload"][href], script[type="module"][src]');
+    const base = new URL('.', hint.href || hint.src);
+    const {browserIdentity} = await import(new URL('identity.mjs', base).href);
     const person = await browserIdentity();
     const recoveryKey = await person.createRecoveryKey();
     return JSON.stringify({person: person.userPublicKey, recovery_key: recoveryKey, envelope: person.envelope});
@@ -204,7 +213,11 @@ if (keyName) {
   await until(`document.querySelector('ul.grants, form.new') !== null`, 'the grants page');
   await capture('grants');
   await tab.evaluate(`(() => {
-    document.querySelector('form.new input[name="name"]').value = 'Pages backend';
+    document.querySelector('form.new input[name="name"]').value = 'The grants page key';
+    // What the person gives this key: a key they do not let operate web
+    // pages asks them about each page action that acts on one.
+    const box = document.querySelector('form.new input[name="browser_pages"]');
+    if (box) box.checked = ${noPages ? 'false' : 'true'};
     document.querySelector('form.new').requestSubmit();
     return true;
   })()`);
@@ -220,6 +233,11 @@ if (keyName) {
   }
   await until(`document.querySelector('code.key') !== null`, 'the key the grants page made');
   report.madeOnPage = await text();
+  report.madeKey = await tab.evaluate(`document.querySelector('code.key').textContent.trim()`);
+  if (noPages) {
+    report.noPagesKey = report.madeKey;
+    report.noPagesSaid = report.madeOnPage;
+  }
   await capture('key');
 }
 await finish(0);

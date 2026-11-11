@@ -90,11 +90,15 @@ echo "the tilo command: $tilo"
 
 step '1. a fresh startup identity approves a server key on the local site'
 node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
-  --key 'Visa backend' --tilo "$tilo" --door "$door" \
+  --key 'Visa backend' --tilo "$tilo" --door "$door" --no-pages \
   --root "$work/startup/person.json" > "$work/startup.json" \
   || fail "the startup's key was not approved (see $work/startup)"
 key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
-echo "ok: the startup holds its server key"
+# The key they did not let operate web pages, made on the door's grants page:
+# what the last step holds to being asked about each page action.
+plain_key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["noPagesKey"])' "$work/startup.json")
+[[ -n $plain_key ]] || fail 'the startup made no key without the Browser scope (see $work/startup)'
+echo "ok: the startup holds its server key, and one that may not operate web pages"
 
 # The reviewer's helper, up for every run that invites someone: each
 # invitation posted to it is another person in their own headless Chromium.
@@ -176,7 +180,7 @@ if [[ $hosted == 1 ]]; then
     TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
       HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
       HOSTED_VISA_APPROVER=$approve HOSTED_VISA_ROOT=$work/startup/root \
-      HOSTED_VISA_RELAY=$relay_address \
+      HOSTED_VISA_RELAY=$relay_address HOSTED_VISA_UNSCOPED_KEY=$plain_key \
       sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" "$1"
   }
   launch=$SECONDS

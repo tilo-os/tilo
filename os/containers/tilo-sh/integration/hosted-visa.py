@@ -34,8 +34,10 @@ History, the questions the person was asked, and its report. TILO_INVITEE
 names the stack's reviewer helper (integration/reviewer.py); the person is
 answered for by HOSTED_VISA_APPROVER (`tilo-approve`), in the identity root
 HOSTED_VISA_ROOT, through the host HOSTED_VISA_RELAY names as
-`KEY@HOST:PORT`; HOSTED_VISA_PLANS is the plans file the relay counts page
-actions by, and HOSTED_VISA_ACCOUNT the account it counts them for.
+`KEY@HOST:PORT`; HOSTED_VISA_UNSCOPED_KEY is a key of the same person that may
+not operate web pages in Browser; HOSTED_VISA_PLANS is the plans file the
+relay counts page actions by, and HOSTED_VISA_ACCOUNT the account it counts
+them for.
 
 Prints one JSON line with the timings and what it asserted.
 """
@@ -59,6 +61,7 @@ REVIEWER_EMAIL = "rosa@example.com"
 PLANS = os.environ.get("HOSTED_VISA_PLANS", "")
 ACCOUNT = os.environ.get("HOSTED_VISA_ACCOUNT", "")
 APPROVER = os.environ.get("HOSTED_VISA_APPROVER", "")
+UNSCOPED_KEY = os.environ.get("HOSTED_VISA_UNSCOPED_KEY", "")
 PERSON_ROOT = os.environ.get("HOSTED_VISA_ROOT", "")
 HOST = os.environ.get("HOSTED_VISA_RELAY", "")
 # What the agent puts in the page's fields, by the name the page gives each
@@ -312,9 +315,6 @@ async def open_phase(report: dict[str, object]) -> int:
     made = backend.workspace(workspace.id)
     minted = await made.keys.mint(name="Jane Doe's agent")
     check(minted.mcp_url.endswith(f"/w/{workspace.id}/mcp"), "the key reaches that workspace alone")
-    # The same key with its scope unticked: what a person gives a key that
-    # may not operate web pages, which the last step holds to being asked.
-    scoped = await made.keys.mint(name="Jane Doe's agent, no pages", browser_pages=False)
     agent = AsyncTilo(key=minted.token, door=DOOR)
     aws = agent.workspace(workspace.id)
 
@@ -333,7 +333,6 @@ async def open_phase(report: dict[str, object]) -> int:
             {
                 "workspace": workspace.id,
                 "key": minted.token,
-                "unscoped_key": scoped.token,
                 "window": page.provider,
             },
             opened,
@@ -444,8 +443,9 @@ async def fill_phase(report: dict[str, object]) -> int:
         report["history_by_reviewer"] = True
         report["history_names_run"] = RUN_TITLE in json.dumps(history)
 
-    say("h. a key minted without operating web pages is asked about each page action")
-    unscoped = AsyncTilo(key=state["unscoped_key"], door=DOOR)
+    say("h. a key that may not operate web pages is asked about each page action")
+    check(UNSCOPED_KEY, "the startup's key without the Browser scope is named")
+    unscoped = AsyncTilo(key=UNSCOPED_KEY, door=DOOR)
     ows = unscoped.workspace(workspace)
     other, _ = await open_browser(ows)
     async with ows.run(RUN_TITLE):

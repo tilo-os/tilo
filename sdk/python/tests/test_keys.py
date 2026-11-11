@@ -48,14 +48,6 @@ async def test_a_workspace_mints_its_own_key(tilo):
     assert minted.workspace == WORKSPACE_ID
 
 
-async def test_a_minted_key_operates_pages_unless_told_not_to(tilo, door):
-    await tilo.workspace("jane-doe").keys.mint()
-    assert "browser_pages" not in door.asked("tilo_do")[-1]["arguments"]["args"]
-
-    await tilo.workspace("jane-doe").keys.mint("jane's agent", browser_pages=False)
-    assert door.asked("tilo_do")[-1]["arguments"]["args"]["browser_pages"] is False
-
-
 async def test_mint_mcp_is_the_same_key(tilo):
     minted = await tilo.workspace("jane-doe").mint_mcp(expires_in=3600)
 
