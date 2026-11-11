@@ -27,6 +27,9 @@ impl TopBarChrome {
         if self.following {
             return crate::follow_banner::lane_width(self.rect.width());
         }
+        if self.clock_gives_way() {
+            return 0.0;
+        }
         let text_headroom = (f64::from(theme.text_scale) - 1.0).max(0.0) * 16.0;
         if self.rect.width() < NARROW_MENU_BAR_PX {
             // A phone-wide bar keeps the time and gives the rest of the lane to the workspace name
@@ -42,6 +45,13 @@ impl TopBarChrome {
         }
         let min_width = (220.0 + text_headroom).min(260.0);
         (self.rect.width() - 580.0).clamp(min_width, 360.0)
+    }
+
+    /// Whether the bar's middle lane stands empty: a phone-wide bar on a device that shows the
+    /// time itself, with no live activity to show there. The time would be said twice, and the
+    /// workspace name beside it cut to a few letters.
+    pub(super) fn clock_gives_way(&self) -> bool {
+        self.device_clock && !self.following && self.phone_wide() && self.center_pill().is_empty()
     }
 
     pub(super) fn live_clock(&self) -> ClockSnapshot {
@@ -324,6 +334,13 @@ impl TopBarChrome {
                 center + lane / 2.0,
                 center_y + half,
             );
+            return;
+        }
+        if self.clock_gives_way() {
+            // Nothing stands in the lane, and nothing points at it.
+            let center = f64::midpoint(self.rect.x0, self.rect.x1);
+            self.center_rect = Rect::ZERO;
+            self.center_lane = Rect::new(center, center_y, center, center_y);
             return;
         }
         let content_cx = self.draw_center_band(scene, transform, theme, text_renderer, center_y);

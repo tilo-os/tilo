@@ -654,7 +654,9 @@ impl BrowserShell {
         let tree = handle.read(Clone::clone);
         let bar = TopBarChrome::from_tree(&tree)
             .with_chrome(source.clone())
-            .with_tilo_mark();
+            .with_tilo_mark()
+            // A phone shows the time above the page: the bar's own would say it twice.
+            .with_device_clock();
         let mut tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
         // Offered only where the page holds a destination for reports.
         if chrome.shared.feedback.borrow().is_some() {

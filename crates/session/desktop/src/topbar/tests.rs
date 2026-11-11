@@ -1301,6 +1301,45 @@ fn narrow_topbar_releases_center_width_for_workspace_identity() {
     );
 }
 
+/// On a phone the device shows the time above the page: the bar draws no clock of its own there,
+/// tells a reader none, and the workspace name takes the room the clock had rather than being cut
+/// to a few letters. A bar that is the device's only clock keeps it.
+#[test]
+fn a_phone_that_shows_the_time_gives_the_clocks_lane_to_the_workspace_name() {
+    let named = |device_clock: bool| {
+        let mut bar = sample_chrome();
+        if device_clock {
+            bar = bar.with_device_clock();
+        }
+        bar.workspace_name = "Workspace of the design team".to_string();
+        lay_out_and_draw(&mut bar, 390.0);
+        bar
+    };
+    let own = named(false);
+    let device = named(true);
+    assert!(
+        !own.center_rect.is_zero_area(),
+        "a bar that is the only clock keeps it"
+    );
+    assert!(
+        device.center_rect.is_zero_area(),
+        "the clock gives way: {:?}",
+        device.center_rect
+    );
+    assert!(
+        device.ws_pill_rect.width() > own.ws_pill_rect.width() + 32.0,
+        "the name takes the clock's room: {:?} against {:?}",
+        device.ws_pill_rect,
+        own.ws_pill_rect
+    );
+    let mut wide = sample_chrome().with_device_clock();
+    lay_out_and_draw(&mut wide, 1280.0);
+    assert!(
+        !wide.center_rect.is_zero_area(),
+        "wider than a phone, the bar keeps its clock"
+    );
+}
+
 #[test]
 fn narrow_large_text_keeps_workspace_and_right_clusters_separate() {
     let mut tree = DesktopTree {

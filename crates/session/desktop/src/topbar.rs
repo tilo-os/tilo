@@ -413,6 +413,10 @@ pub struct TopBarChrome {
     synced_revision: u64,
     /// `Some(menu open)` when the bar leads with the Tilo mark ([`TopBarChrome::with_tilo_mark`]).
     tilo_mark: Option<bool>,
+    /// Whether the device the bar is drawn on shows the time itself at phone width, as a phone
+    /// does above a web page ([`TopBarChrome::with_device_clock`]): the bar's clock then gives way
+    /// there, and the workspace name gets its lane.
+    device_clock: bool,
     /// The person's own avatar, as last painted.
     own_avatar_rect: Rect,
     // Click geometry — recomputed every frame so it tracks DPI/resize.
@@ -548,6 +552,7 @@ impl TopBarChrome {
             clock: ClockSnapshot::default(),
             synced_revision: 0,
             tilo_mark: None,
+            device_clock: false,
             own_avatar_rect: Rect::ZERO,
             tilo_mark_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
@@ -1531,9 +1536,10 @@ impl Widget for TopBarChrome {
                 node
             })
             .collect();
-        // The time: read, not pressed. While following, the middle lane is the banner's and no
-        // time stands in it, so a reader is not told one the person cannot see.
-        if !self.following {
+        // The time: read, not pressed. While following, the middle lane is the banner's, and where
+        // the device shows the time itself the lane stands empty: no time stands in it then, so a
+        // reader is not told one the person cannot see.
+        if !self.following && !self.clock_gives_way() {
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_hashed_key("topbar-clock-reading")
