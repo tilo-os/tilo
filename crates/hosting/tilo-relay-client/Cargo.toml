@@ -21,6 +21,9 @@ tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identit
 # The one link grammar the page writes a login code with, read here.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
 iroh = { workspace = true, optional = true }
+# The congestion controller an endpoint starts with (`host::transport`):
+# iroh takes noq's factory but does not re-export it.
+noq-proto = { version = "1.1", default-features = false, optional = true }
 iroh-base.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 ed25519-dalek.workspace = true
@@ -40,7 +43,7 @@ hex.workspace = true
 [features]
 default = ["iroh"]
 # The iroh dialers: certification and remote environments over their ALPNs.
-iroh = ["dep:iroh"]
+iroh = ["dep:iroh", "dep:noq-proto"]
 
 [lints]
 workspace = true

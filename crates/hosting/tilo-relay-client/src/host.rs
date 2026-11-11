@@ -125,9 +125,14 @@ impl Host {
             ));
         }
         let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal);
-        #[cfg(not(target_family = "wasm"))]
         if self.carrier == Carrier::Relay {
-            builder = builder.clear_ip_transports();
+            // The relay's TCP connection paces what the network carries;
+            // QUIC's own slow start above it only adds round trips.
+            builder = builder.transport_config(transport());
+            #[cfg(not(target_family = "wasm"))]
+            {
+                builder = builder.clear_ip_transports();
+            }
         }
         if let Some(key) = key {
             builder = builder.secret_key(iroh::SecretKey::from_bytes(&key));
@@ -140,6 +145,38 @@ impl Host {
             .await
             .map_err(|error| LinkError::Unavailable(error.to_string()))
     }
+}
+
+/// How much an endpoint sends on a new connection before its first
+/// acknowledgement: the window QUIC's slow start begins from, and the window
+/// its pacer spreads over a round trip.
+///
+/// A device entering a workspace waits first for its replay: the workspace's
+/// governance and its shared desktop, about half a megabyte for a few hundred
+/// members, which its host writes to the connection at once. From QUIC's
+/// default window (14,720 bytes, RFC 9002) slow start doubles it every round
+/// trip, so that half megabyte took six round trips, every one a wait the
+/// visitor sees; from 256 KiB it takes two. The same default paced the
+/// device's own first flight, its hello, to a packet every 65 ms at a 400 ms
+/// round trip, behind the handshake's own frames. A page reaches its host
+/// through the host's packet relay, whose TCP connection paces what the
+/// network carries and whose queue holds this much; a host's endpoint, which
+/// devices also dial directly, is paced over the round trip, so the window
+/// goes out as a steady stream rather than one burst.
+#[cfg(feature = "iroh")]
+pub const INITIAL_WINDOW: u64 = 256 * 1024;
+
+/// The QUIC transport of an endpoint that sends a workspace's replay or
+/// reaches its host through the relay: iroh's, starting from
+/// [`INITIAL_WINDOW`].
+#[cfg(feature = "iroh")]
+#[must_use]
+pub fn transport() -> iroh::endpoint::QuicTransportConfig {
+    let mut cubic = noq_proto::congestion::CubicConfig::default();
+    cubic.initial_window(INITIAL_WINDOW);
+    iroh::endpoint::QuicTransportConfig::builder()
+        .congestion_controller_factory(std::sync::Arc::new(cubic))
+        .build()
 }
 
 #[cfg(test)]

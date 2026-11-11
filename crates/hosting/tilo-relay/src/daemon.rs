@@ -1024,6 +1024,7 @@ async fn bind_endpoint(
         None => Endpoint::builder(presets::N0),
     };
     builder
+        .transport_config(tilo_relay_client::host::transport())
         .secret_key(secret)
         .bind_addr(cfg.iroh_listen)
         .map_err(|e| RelayError::Iroh(format!("invalid iroh listen address: {e}")))?
