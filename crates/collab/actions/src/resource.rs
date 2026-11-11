@@ -2154,21 +2154,6 @@ impl ActionSpec {
         self
     }
 
-    /// Declare this view as a read of what its record holds that takes
-    /// arguments (a version, a review of one): recorded as
-    /// [`RECORD_READ_TAG`](crate::RECORD_READ_TAG), it moves nothing, anyone
-    /// who may read the record may run it, and it discloses the record to
-    /// them. Call after [`with_contract`](Self::with_contract), which replaces
-    /// the tags.
-    #[must_use]
-    pub fn reads_record(mut self) -> Self {
-        push_tag(
-            &mut self.type_mut().contract,
-            crate::contract::RECORD_READ_TAG,
-        );
-        self
-    }
-
     /// Declare this action as the one that opens the file its `path`
     /// parameter names in this app instance, of any type when `extensions`
     /// is empty, else of those (lowercase, no dot). Recorded as

@@ -226,10 +226,6 @@ session-notifications-open = Die Benachrichtigung öffnen
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
 notification-from-device-only = Von { $device }
-## A notification a program sent from a terminal, with no app this device
-## knows behind it: the person reads where it came from, never a bare
-## command name.
-notification-sender-terminal = Terminal
 ## The person asked to report a problem and this computer has nowhere to
 ## send one: the report box says so where they asked, rather than opening
 ## on an address that would never carry it.

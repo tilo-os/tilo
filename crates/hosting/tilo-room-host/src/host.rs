@@ -242,9 +242,7 @@ impl HostSessions {
             admin: Arc::default(),
             fetch: Arc::default(),
             agents: Arc::default(),
-            environments: crate::environment::EnvironmentRegistry::at(
-                cfg.state_root.join("environments.json"),
-            ),
+            environments: Arc::default(),
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
                 identity.device_cert.clone(),
@@ -1242,9 +1240,6 @@ where
     }
     ctx.metrics.inc_conns_authed();
     ctx.arrivals.arrived(client_peer.device_public_key);
-    // One of an environment's devices may be here: its environment is up, and
-    // an end being waited on is not one.
-    ctx.environments.arrived(client_peer.device_public_key);
     let context = ctx.peer_context();
     if let Err(e) = Box::pin(run_peer_until(client_peer, closed, recv, send, context)).await {
         tracing::debug!("peer session ended with error: {e}");

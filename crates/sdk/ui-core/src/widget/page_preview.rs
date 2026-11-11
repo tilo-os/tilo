@@ -78,13 +78,7 @@ impl PagePreview {
     }
 
     fn position(&self) -> String {
-        crate::i18n::widget_format(
-            "widget-page-of",
-            &[
-                ("page", self.page.into()),
-                ("total", self.page_count.into()),
-            ],
-        )
+        format!("Page {} of {}", self.page, self.page_count)
     }
 }
 
@@ -190,10 +184,7 @@ impl Widget for PagePreview {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         Some(
             crate::a11y::AccessNode::new(crate::a11y::Role::Image)
-                .with_name(crate::i18n::widget_format(
-                    "widget-preview-named",
-                    &[("label", self.label.clone().into())],
-                ))
+                .with_name(format!("{} preview", self.label))
                 .with_description(self.position()),
         )
     }

@@ -503,16 +503,16 @@ impl DateIndexedScrollbar {
             || format!("{:.0}%", Self::position(metrics) * 100.0),
             |preview| preview.label.clone(),
         );
-        let mut children = vec![
-            AccessNode::new(Role::Slider)
-                .with_name(crate::i18n::widget_format("widget-timeline-name", &[]))
-                .with_description(crate::i18n::widget_format("widget-timeline-hint", &[]))
-                .with_value(value)
-                .with_bounds(self.rect)
-                .with_state(AccessState::new().focusable(true).focused(self.focused))
-                .with_hashed_key(format!("{}:position", self.semantic_id))
-                .with_action_target(format!("{}:position", self.semantic_id)),
-        ];
+        let mut children = vec![AccessNode::new(Role::Slider)
+            .with_name("Timeline position")
+            .with_description(
+                "Chronological collection. Arrow keys move, Page Up and Page Down move a screen, Home and End jump to the beginning or end; plus and minus change density.",
+            )
+            .with_value(value)
+            .with_bounds(self.rect)
+            .with_state(AccessState::new().focusable(true).focused(self.focused))
+            .with_hashed_key(format!("{}:position", self.semantic_id))
+            .with_action_target(format!("{}:position", self.semantic_id))];
         for marker in self.project_markers(markers, 12) {
             let bounds = Rect::new(
                 self.rect.x0 - PREVIEW_LANE_WIDTH,
@@ -522,10 +522,7 @@ impl DateIndexedScrollbar {
             );
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n::widget_format(
-                        "widget-timeline-jump",
-                        &[("marker", marker.label.clone().into())],
-                    ))
+                    .with_name(format!("Jump to {}", marker.label))
                     .with_bounds(bounds)
                     .with_state(AccessState::new().focusable(true))
                     .with_hashed_key(format!("{}:jump:{}", self.semantic_id, marker.id))
@@ -533,11 +530,8 @@ impl DateIndexedScrollbar {
             );
         }
         AccessNode::new(Role::Group)
-            .with_name(crate::i18n::widget_format("widget-timeline-group", &[]))
-            .with_description(crate::i18n::widget_format(
-                "widget-timeline-group-hint",
-                &[],
-            ))
+            .with_name("Chronological index")
+            .with_description("Date-indexed scrollbar")
             .with_bounds(self.preview_lane())
             .with_semantic_key(format!("{}:index", self.semantic_id))
             .with_hashed_key(format!("{}:index", self.semantic_id))

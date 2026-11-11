@@ -7,7 +7,6 @@ compose="$root/compose.yaml"
 readme="$root/README.md"
 entrypoint="$root/tilo-agent-mcp"
 containerfile="$root/Containerfile"
-dockerignore="$root/Containerfile.dockerignore"
 arch_doc="$root/../../../docs/architecture/agent-host.md"
 relay_readme="$root/../tilo-relay/README.md"
 
@@ -15,7 +14,7 @@ fail() { echo "tilo-agent-host contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
 forbid() { if grep -Fq -- "$2" "$1"; then fail "$(basename "$1") must not contain: $2"; fi; }
 
-for path in "$compose" "$readme" "$entrypoint" "$containerfile" "$dockerignore" "$arch_doc" "$relay_readme"; do
+for path in "$compose" "$readme" "$entrypoint" "$containerfile" "$arch_doc" "$relay_readme"; do
   [ -f "$path" ] || fail "missing ${path#"$root/../../../"}"
 done
 
@@ -48,17 +47,19 @@ need "$entrypoint" "TILO_RUNTIME_MCP_HTTP"
 need "$entrypoint" "tilo-runtime --profile"
 need "$entrypoint" "127.0.0.1"
 
-# Image builds runtime + enroll only (no compositor).
-need "$containerfile" "cargo build --locked --release -p tilo-runtime -p tilo-relay"
-need "$containerfile" "--bin tilo-runtime --bin tilo-enroll"
+# The image packages the member and its enroll program; it compiles nothing, and it carries the
+# runtime, not the compositor a desktop session would.
+need "$containerfile" "COPY bin/tilo-runtime /usr/bin/tilo-runtime"
+need "$containerfile" "COPY bin/tilo-enroll /usr/libexec/tilo/tilo-enroll"
 need "$containerfile" 'ENTRYPOINT ["/usr/bin/tilo-agent-mcp"]'
 need "$containerfile" "tilo-agent-mcp"
+forbid "$containerfile" "cargo build"
+forbid "$containerfile" "sccache"
 forbid "$containerfile" "wayland"
 forbid "$containerfile" "compositor"
-
-for excluded in .git .forgejo target os/output; do
-  grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"
-done
+# Two steps: t builds the programs, the image build stages them beside the Containerfile.
+need "$readme" "t test relay-binaries"
+need "$readme" "tools/ci/publish/agent-host-build.sh"
 
 # Entrypoint is executable in the tree.
 [ -x "$entrypoint" ] || fail "tilo-agent-mcp is not executable"

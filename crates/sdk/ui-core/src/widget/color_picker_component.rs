@@ -63,10 +63,7 @@ impl Described for ColorPicker {
             .on_change(move |color| {
                 shown.edited(Value::Text(crate::color::to_hex(color)));
             })
-            .with_accessible_name(label.as_deref().map_or_else(
-                || crate::i18n::widget_format("widget-color-name", &[]),
-                str::to_owned,
-            ));
+            .with_accessible_name(label.as_deref().unwrap_or("Colour"));
         if !swatches.is_empty() {
             picker = picker.with_swatches(
                 swatches

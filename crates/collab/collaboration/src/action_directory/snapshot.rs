@@ -83,14 +83,14 @@ impl<F: Fn(&ResourceSpec) -> Option<ActionAddress>> Builder<'_, F> {
                 && let Some(descriptor) = self.descriptors.get(index)
             {
                 if descriptor.kind == OperationKind::View
-                    && first_view.is_none_or(|old| {
-                        descriptor.contract.disclosure_rank()
-                            < self.descriptors[old].contract.disclosure_rank()
-                    })
+                    && (first_view.is_none()
+                        || (descriptor.contract.reads_document()
+                            && first_view.is_some_and(|old| {
+                                !self.descriptors[old].contract.reads_document()
+                            })))
                 {
-                    // Prefer document disclosure, then another read of the
-                    // record, over the first private UI view, as the bounded
-                    // provider path does too.
+                    // Prefer document disclosure over the first private UI
+                    // view, as the bounded provider path does too.
                     first_view = Some(index);
                 }
                 self.effective.action(resource.id.as_str(), action);
@@ -277,9 +277,8 @@ impl ActionDirectorySnapshot {
     /// The directory of `resources`, whose actions `descriptors` describe
     /// (the publication's [`tilo_actions::door::survey`]). A resource is
     /// disclosed through the action `visibility` names for it, or else its
-    /// first view, preferring one that reads the document, then another read
-    /// of the record ([`tilo_actions::ActionContract::disclosure_rank`]); one
-    /// disclosed by neither is flattened into its actions and children.
+    /// first view, preferring one that reads the document; one disclosed by
+    /// neither is flattened into its actions and children.
     #[must_use]
     pub fn build(
         resources: &[ResourceSpec],

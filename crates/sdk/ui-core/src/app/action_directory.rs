@@ -103,10 +103,9 @@ impl App {
                     None => action.kind == tilo_actions::OperationKind::View,
                 })
                 // A document read discloses the resource without borrowing
-                // the publisher's private render, focus or navigation state,
-                // and so does another read of the record. An explicit
-                // disclosure action still takes precedence.
-                .min_by_key(|action| action.contract.disclosure_rank())
+                // the publisher's private render, focus or navigation state.
+                // An explicit disclosure action still takes precedence.
+                .min_by_key(|action| !action.contract.reads_document())
                 .map(|action| App::directory_descriptor(resource, action))
                 .or_else(|| {
                     resource

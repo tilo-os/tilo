@@ -1148,11 +1148,9 @@ impl BrowserShell {
     /// back.
     fn page_intent(&mut self, intent: ChromeIntent) -> Option<ChromeIntent> {
         match intent {
-            ChromeIntent::ToggleQuickSettings
-            | ChromeIntent::ShowQuickSettings
-            | ChromeIntent::ToggleNotifications => {
-                // The page has no quick settings: the cluster and its bell open
-                // the notification centre.
+            ChromeIntent::ToggleQuickSettings | ChromeIntent::ShowQuickSettings => {
+                // The page has no quick settings: the cluster opens the
+                // notification centre.
                 let open = self
                     .handle
                     .presentation()

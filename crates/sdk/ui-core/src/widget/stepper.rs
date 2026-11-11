@@ -191,15 +191,9 @@ impl<'a> StepperFace<'a> {
         match self.current {
             Some(current) => {
                 let n = current.min(self.steps.len().saturating_sub(1)) + 1;
-                crate::i18n::widget_format(
-                    "widget-step-of",
-                    &[("step", n.into()), ("total", self.steps.len().into())],
-                )
+                format!("Step {n} of {}", self.steps.len())
             }
-            None => crate::i18n::widget_format(
-                "widget-steps-count",
-                &[("count", self.steps.len().into())],
-            ),
+            None => format!("{} steps", self.steps.len()),
         }
     }
 

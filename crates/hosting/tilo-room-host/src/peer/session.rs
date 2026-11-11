@@ -275,9 +275,6 @@ where
         session.outbound,
     )
     .await;
-    // A browser environment's device that was here and is not any more: its
-    // environment ends, unless it is back before the host that placed it looks.
-    environments.departed(peer.device_public_key);
     outcome
 }
 

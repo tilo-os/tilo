@@ -556,25 +556,14 @@ impl Session {
             index as std::sync::Arc<dyn tilo_broker_core::services::RecordIndexChanges>
         });
         let channels = engine.as_ref().and_then(|engine| {
-            let settled = record_index.clone();
             crate::channels::Channels::open(
                 engine,
                 std::sync::Arc::clone(&channel_link),
                 std::sync::Arc::clone(&channels_broker),
-                move || {
-                    if let Some(index) = &settled {
-                        index.settled();
-                    }
-                },
             )
             .map_err(|error| tracing::warn!(%error, "the channel service runs no threads"))
             .ok()
         });
-        // What this device holds is read once the channel service that opens its sealed records
-        // runs: read before it, every sealed record reads as nothing.
-        if let Some(index) = &record_index {
-            index.sweep();
-        }
         // The agent door toward the person's other devices: answered on this device's
         // endpoint, and served by the agent door once it opens.
         let remote = crate::remote_door::Remote::new(options.wake.handle());

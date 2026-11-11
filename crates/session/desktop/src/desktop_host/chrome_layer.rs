@@ -828,13 +828,6 @@ impl DesktopChrome {
                 }
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
-            // The bell in the status cluster: the centre it counts is this layer's to open and
-            // close, where quick settings is the session's.
-            ChromeIntent::ToggleNotifications => {
-                if let Some(notices) = self.notices.as_ref() {
-                    notices.notifications().ask_centre(!notices.center_open());
-                }
-            }
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::LeaveWorkspace => {
                 if let Err(refusal) = self.leave_workspace(None) {

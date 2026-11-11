@@ -130,8 +130,6 @@ fn choosing_in_the_workspace_menu_asks_the_desktop() {
     );
 }
 
-/// A cluster with quick settings is the bell and the readings: a press on the readings opens
-/// quick settings, which a host with no quick settings panel turns into the notification centre.
 #[test]
 fn a_click_on_the_status_cluster_opens_quick_settings() {
     let (mut app, link) = hosted("bar");

@@ -682,7 +682,7 @@ impl Button {
     /// the transport draws it (play/pause the one round, prominent control)
     /// and named for what it does now.
     pub fn transport(id: &str, control: crate::widget::TransportControl) -> Self {
-        let mut button = Self::icon_only(id, control.icon(), &control.name());
+        let mut button = Self::icon_only(id, control.icon(), control.name());
         button.transport = Some((control, 0.0));
         button
     }
@@ -695,9 +695,8 @@ impl Button {
         let side = self.transport.map_or(0.0, |(_, side)| side);
         self.transport = Some((control, side));
         self.icon = Some(control.icon());
-        let name = control.name();
-        self.set_accessible_name(&name);
-        self.tooltip = Some(name);
+        self.set_accessible_name(control.name());
+        self.tooltip = Some(control.name().to_owned());
         self.dirty = true;
     }
 

@@ -178,9 +178,15 @@ image() {
     touch "$outputs/.complete"
   fi
   local archive
-  archive=$(find "$outputs" -path "*$file" -type f | head -1)
+  archive=$(image_archive "$check" "$file")
   [[ -n $archive ]] || die "$check's outputs hold no $file (in $outputs)"
   load_archive "$archive"
+}
+
+# image_archive CHECK FILE: the one file of CHECK's outputs this state has fetched,
+# wherever t's output layout put it.
+image_archive() {
+  find "$state/images/$commit/$1" -path "*$2" -type f 2>/dev/null | head -1
 }
 
 # load_archive PATH: the archive in podman's storage, once per digest.
@@ -390,7 +396,7 @@ vm_host() {
   local enrol=${enroll:-${TILO_SH_TILO_ENROLL:-$(cat "$state/vm-host-enroll" 2>/dev/null || true)}}
   "${sudo[@]}" env \
     TILO_SH_STATE="$vm_state" \
-    "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$state/images/$commit/image-vm-host/image.oci.tar}" \
+    "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$(image_archive image-vm-host image.oci.tar)}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_SH_TILO_ENROLL=$enrol" \
     "TILO_SH_RELAY_SECRETS=$state/secrets" \

@@ -1588,7 +1588,7 @@ fn paint_dismiss_button(
                 .control_size(crate::widget::control_size::ControlSize::Small)
                 .hovered(card.close_hovered)
                 .pressed(card.close_pressed)
-                .accessible_name(&crate::i18n::widget_format("widget-dismiss", &[])),
+                .accessible_name("Dismiss"),
         );
     } else {
         // At rest the close is a small glyph in the faintest ink, well

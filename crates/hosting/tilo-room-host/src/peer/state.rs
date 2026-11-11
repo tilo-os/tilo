@@ -202,8 +202,8 @@ impl StateSource {
     /// Whether `channel` is inside what this source may write: everything for
     /// a member, its own record for a browser environment's device.
     fn write_reaches(&self, channel: Option<[u8; 32]>) -> bool {
-        crate::environment::environment_of(&self.environments, &self.peer.device_public_key)
-            .is_none_or(|environment| environment.reaches(channel))
+        crate::environment::scope_of(&self.environments, &self.peer.device_public_key)
+            .is_none_or(|scope| scope.reaches(channel))
     }
     fn authorized_for(
         &self,
@@ -828,8 +828,8 @@ pub(super) fn refused_reason(
     op: WorkspaceOperation,
     channel: Option<[u8; 32]>,
 ) -> &'static str {
-    let outside = crate::environment::environment_of(trust.environments, &peer.device_public_key)
-        .filter(|environment| !environment.reaches(channel))
+    let outside = crate::environment::scope_of(trust.environments, &peer.device_public_key)
+        .filter(|scope| !scope.reaches(channel))
         .map(|_| workspace_access::DenyReason::OutOfEnvironmentScope.reason());
     match workspace_access::decide(runtime, trust, peer, op) {
         workspace_access::Decision::Deny(reason) => reason.reason(),

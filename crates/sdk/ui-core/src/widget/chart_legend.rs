@@ -228,10 +228,7 @@ impl SeriesToggles {
     pub(crate) fn access_node(&self, id: &str, name: &str) -> AccessNode {
         AccessNode::new(Role::ToggleButton)
             .with_action_target(target(id))
-            .with_name(crate::i18n::widget_format(
-                "widget-chart-series",
-                &[("name", name.into())],
-            ))
+            .with_name(format!("{name} series"))
             .with_state(
                 AccessState::new()
                     .focusable(true)

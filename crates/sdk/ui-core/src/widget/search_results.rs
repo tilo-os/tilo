@@ -161,12 +161,11 @@ impl FloatingRow for Row {
             ),
             Self::Loading(_) => {
                 let style = ctx.theme.text(TextRole::Caption);
-                let searching = crate::i18n::widget_format("widget-searching", &[]);
-                let (_, h) = ctx.text.measure_style(&searching, None, &style);
+                let (_, h) = ctx.text.measure_style("Searching…", None, &style);
                 let y = crate::widget::text::centered_text_top(row.y0, row.height(), f64::from(h));
                 ctx.text.draw_style(
                     ctx.scene,
-                    &searching,
+                    "Searching…",
                     ctx.theme.tokens.colors.text_tertiary,
                     ctx.transform
                         .pre_translate(Vec2::new(row.x0 + ROW_TEXT_X, y)),
@@ -1960,13 +1959,13 @@ impl Widget for SearchResultsView {
         if self.loading && !self.flat.is_empty() {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(crate::i18n::widget_format("widget-searching", &[]))
+                    .with_name("Searching…")
                     .with_live(crate::a11y::Politeness::Polite),
             );
         }
         Some(
             AccessNode::new(Role::List)
-                .with_name(crate::i18n::widget_format("widget-search-results", &[]))
+                .with_name("Search results")
                 .with_children(children),
         )
     }

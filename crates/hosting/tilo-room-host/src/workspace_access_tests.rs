@@ -46,7 +46,6 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentExpired) => 'e',
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
         Decision::Deny(DenyReason::OutOfEnvironmentScope) => 'b',
-        Decision::Deny(DenyReason::EnvironmentStopped) => 's',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
     }
 }
@@ -462,67 +461,6 @@ fn decide_matrix() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-}
-
-/// A browser environment's device reaches the planes a window's session
-/// works on in its one workspace, and reaches nothing at all once its
-/// environment stopped — however the workspace lists it.
-#[test]
-fn an_environments_device_is_confined_and_a_stopped_one_is_refused() {
-    let relay = Relay::new();
-    let tmp = tempfile::tempdir().unwrap();
-    let mut runtime = workspace(tmp.path());
-    let now = tilo_clock::unix_now_ns();
-    let until = now.saturating_add(60 * 1_000_000_000);
-    let device = [80; 32];
-    let environment = peer(relay.owner, device, false, Some(until));
-    // The workspace lists it as a member device of the person, as it does
-    // while the session runs: what it reaches is the register's to say.
-    runtime.membership.devices.push(device);
-    let scope = crate::environment::EnvironmentScope::for_record(
-        crate::room_workspace_id(ROOM).unwrap(),
-        "so.tilo.browser",
-        "record-1",
-    );
-    let letters = |runtime: &WorkspaceRuntime| -> String {
-        OPS.iter()
-            .map(|op| {
-                letter(decide_in(
-                    WorkspaceFacts::current(runtime),
-                    &relay.trust(),
-                    &environment,
-                    *op,
-                    now,
-                ))
-            })
-            .collect()
-    };
-    relay.environments.place(device, scope, until).unwrap();
-    assert_eq!(
-        letters(&runtime),
-        "AAAAbbbAbAA",
-        "subscribe, state, replay and live; discovery, compute, environment and \
-         governance are another device's; its record's actions, publishing and \
-         channel access"
-    );
-    relay.environments.stop(device, until).unwrap();
-    assert_eq!(
-        letters(&runtime),
-        "sssssssssss",
-        "a stopped environment's device is refused on every plane, listed or not"
-    );
-    // Past its certificate's expiry the certificate refuses it, and the
-    // register need not keep the entry.
-    assert_eq!(
-        decide_in(
-            WorkspaceFacts::current(&runtime),
-            &relay.trust(),
-            &environment,
-            WorkspaceOperation::State,
-            until,
-        ),
-        Decision::Deny(DenyReason::CertExpired)
-    );
 }
 
 #[test]

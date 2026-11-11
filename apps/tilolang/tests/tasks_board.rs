@@ -835,12 +835,11 @@ fn agent_acting(
     action: &str,
 ) -> ui::tilo_actions::SemanticInteraction {
     let resources = app.harness().resources();
+    let address = ui::tilo_actions::ActionAddress::new(resource, action);
     let descriptor = ui::tilo_actions::door::survey(&resources)
         .into_iter()
-        .find(|descriptor| {
-            descriptor.address.resource == resource && descriptor.address.action == action
-        })
-        .unwrap_or_else(|| panic!("the window publishes {action} of {resource}"));
+        .find(|descriptor| descriptor.address == address)
+        .unwrap_or_else(|| panic!("the window publishes {address:?}"));
     let (agent, _) = change_marks::run();
     ui::tilo_actions::SemanticInteraction {
         version: ui::tilo_actions::INTERACTION_VERSION,

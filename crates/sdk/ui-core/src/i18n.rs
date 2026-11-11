@@ -1111,13 +1111,8 @@ impl I18nManager {
     /// an English app's window German. Without this rule a German machine
     /// reads every toolkit word in German inside an otherwise English window,
     /// whenever the window's own German is not installed (an app that ships
-    /// English only, a device whose language pack is missing). A window that
-    /// has no catalogue of its own — a sheet of frames, a system menu — speaks
-    /// the language selected for it: nothing it says is another language.
+    /// English only, a device whose language pack is missing).
     fn speaking_locale(&self) -> &LanguageIdentifier {
-        if self.spoken.is_empty() {
-            return &self.current_locale;
-        }
         if self.speaks(&self.current_locale) {
             &self.current_locale
         } else {
@@ -1826,25 +1821,6 @@ mod tests {
             I18nManager::lookup_plain("date-field-add"),
             "Add date",
             "the toolkit's own words follow the window's language"
-        );
-    }
-
-    /// A window with no catalogue of its own — a system menu, a sheet of frames — has no
-    /// language of its own to hold: the toolkit's labels read in the language selected for it,
-    /// which is the person's.
-    #[test]
-    fn a_window_with_no_catalogue_speaks_its_selected_language() {
-        let _restore = RestoreLookupState::capture();
-        I18nManager::register_widget_messages();
-        I18nManager::set_locale("de-DE");
-        assert_eq!(
-            I18nManager::lookup_plain("menu-query-placeholder"),
-            "Tippen zum Filtern",
-            "the filter field's hint is in the person's language"
-        );
-        assert_eq!(
-            I18nManager::lookup_plain("date-field-add"),
-            "Datum hinzufügen"
         );
     }
 

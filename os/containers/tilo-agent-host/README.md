@@ -82,15 +82,22 @@ podman compose exec tilo-mcp \
 | `tilo-relay` | `registry.tilo.so/tilo/tilo-relay:latest` | `os/containers/tilo-relay/Containerfile` |
 | `tilo-mcp` | `registry.tilo.so/tilo/tilo-runtime:latest` | this directory's `Containerfile` |
 
-Override with `TILO_RELAY_IMAGE` / `TILO_MCP_IMAGE`. Building the runtime image
-from the repository root:
+Override with `TILO_RELAY_IMAGE` / `TILO_MCP_IMAGE`. Neither image compiles
+Rust inside its build: t builds the programs once and the image build stages them
+beside the Containerfile. From the repository root:
 
 ```sh
-podman build -f os/containers/tilo-agent-host/Containerfile \
-  -t registry.tilo.so/tilo/tilo-runtime:latest .
+# The programs both images ship (t's cache makes this seconds once warm).
+t test relay-binaries
+
+# The runtime image; agent-host-build.sh resolves the frozen RPM snapshot and
+# stages the binaries for it (tools/ci/publish/agent-host-build.sh).
+t test image-agent-host
 ```
 
-(Requires the same `BASE_REF` / `RPMS_REF` digest pins as the relay image build.)
+`podman build` directly also works from the staged context that check leaves
+(its `Containerfile` and `bin/`), and asks for `RPMS_REF`, the digest-pinned
+package snapshot every Tilo server image installs from.
 
 ## Environment
 

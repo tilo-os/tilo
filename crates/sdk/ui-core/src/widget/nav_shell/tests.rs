@@ -15,7 +15,6 @@ mod inspector_sheet;
 mod listed_actions;
 mod nothing_listed;
 mod page_title;
-mod places;
 mod replan;
 mod sidebar_button;
 mod touch;
@@ -641,24 +640,17 @@ fn the_shell_follows_the_window_and_the_text_scale() {
                     );
                 }
             }
-            // The toggle is top-leading, one inset in; a pushed screen has Back there instead,
-            // and a screen the window opened on has neither.
+            // The toggle is top-leading, one inset in; a pushed screen has
+            // Back there instead, and the list screen neither.
             let front = h.root::<NavShell>().front_pane();
-            if g.stack.is_empty() || front != NavPane::Sidebar {
-                assert!(
-                    (g.toggle.x0 - m.inset).abs() < 0.5,
-                    "{scale}x {width}: the toggle leads ({:?})",
-                    g.toggle
-                );
+            if g.stack.is_empty() {
+                assert!((g.toggle.x0 - m.inset).abs() < 0.5, "{scale}x {width}");
                 assert!(g.toggle.y0 > 0.0 && g.toggle.y1 < g.header_height);
+            } else if front == NavPane::Sidebar {
+                assert_eq!(g.back, Rect::ZERO);
             } else {
-                assert_eq!(g.toggle, Rect::ZERO, "{scale}x {width}: the places lead");
+                assert!(g.back.width() > 0.0);
             }
-            assert_eq!(
-                g.back,
-                Rect::ZERO,
-                "{scale}x {width}: this is the screen the window opened on, with no way back"
-            );
         }
     }
 }
@@ -814,26 +806,18 @@ fn narrow_windows_push_the_content_over_the_overview() {
         NavPane::Overview,
         "a narrow window opens on the content's list"
     );
-    assert_eq!(
-        g.back,
-        Rect::ZERO,
-        "the list the window opens on has nowhere to go back to"
-    );
-    assert!(g.toggle.width() > 0.0, "it holds the way to the mailboxes");
-
-    // The mailboxes are a place the toggle reaches, and they lead back to the list.
-    h.root_mut::<NavShell>().show(NavPane::Sidebar);
-    settle(&mut h, 560, 800);
-    let g = geometry(&h);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     assert!(
         g.back.width() > 0.0,
-        "the mailboxes go back to the list they covered"
+        "the overview goes back to the mailboxes"
     );
-    assert_eq!(g.toggle, Rect::ZERO, "one affordance holds the corner");
     assert!(h.root_mut::<NavShell>().back());
     settle(&mut h, 560, 800);
-    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    assert_eq!(
+        geometry(&h).back,
+        Rect::ZERO,
+        "the first screen has no Back"
+    );
 
     h.root_mut::<NavShell>().show(NavPane::Content);
     settle(&mut h, 560, 800);

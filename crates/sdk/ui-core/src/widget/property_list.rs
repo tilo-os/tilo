@@ -1589,7 +1589,7 @@ impl Widget for PropertyValue {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
                     .with_key(0)
-                    .with_name(crate::i18n::widget_format("widget-copy", &[]))
+                    .with_name("Copy")
                     .with_state(AccessState::new().focusable(true)),
             ]);
         }

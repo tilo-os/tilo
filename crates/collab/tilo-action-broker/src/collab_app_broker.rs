@@ -8354,13 +8354,11 @@ impl<'a> DirectoryQuestion<'a> {
             // under the caller's ordinary resource policy, not owner UI.
             // That exception requires a known View kind: a tag alone cannot
             // disclose resource-only metadata with an unknown governing kind.
-            // Another read of the record (`review-restore`) discloses it the
-            // same way.
             private_view: (operation == Some(tilo_actions::OperationKind::View)
                 || operation.is_none())
                 && !contract.is_participant_view()
                 && !(operation == Some(tilo_actions::OperationKind::View)
-                    && contract.reads_record()),
+                    && contract.reads_document()),
         }
     }
 

@@ -288,9 +288,6 @@ pub enum ChromeIntent {
     SwitchWorkspace(i32),
     ToggleQuickSettings,
     ShowQuickSettings,
-    /// Open the notification centre, or close it when it is up: the bell in the status cluster,
-    /// which is its own target inside the cluster's quick settings control.
-    ToggleNotifications,
     ToggleCollaborators,
     /// Invite someone to this workspace, straight from the bar's invite button: the host's own
     /// invite flow, in one step.

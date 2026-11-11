@@ -46,10 +46,9 @@ fn the_bars_sidebar_button_flips_a_docked_sidebar() {
 
 /// A narrow window shows one screen at a time: the list the window opened on is a place, with
 /// no way back, and holds the bar's button that brings the places over it; the sidebar's own
-/// screen, in front then, holds the way back to the screen it covered, and the button stands
-/// aside for it.
+/// screen, in front then, holds the button that puts it away for the screen it left.
 #[test]
-fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
+fn a_sidebar_screen_holds_the_bar_button_and_the_place_before_it_its_way_to_the_places() {
     let mut h = harness(
         NavShell::new()
             .content_kind(ContentKind::List)
@@ -86,24 +85,23 @@ fn a_sidebar_screen_holds_the_way_back_and_the_place_before_it_the_places() {
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
     let toolbar = h.root::<NavShell>().window_toolbar();
     assert_eq!(
-        toolbar.sidebar, None,
-        "the sidebar's own screen holds the way back instead: {toolbar:?}"
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's own screen holds its button: {toolbar:?}"
     );
-    assert_eq!(
-        toolbar.leading.len(),
-        1,
-        "one leading control, its way back: {toolbar:?}"
+    assert!(
+        toolbar.leading.is_empty(),
+        "and is the first screen, with nowhere to go back to: {toolbar:?}"
     );
-    assert!(h.root_mut::<NavShell>().window_toolbar_event(
-        &crate::window_toolbar::ToolbarEvent::Action {
-            id: WINDOW_BACK.into(),
-        }
-    ));
+    assert!(
+        h.root_mut::<NavShell>()
+            .window_toolbar_event(&crate::window_toolbar::ToolbarEvent::ToggleSidebar)
+    );
     settle(&mut h, 400, 800);
     assert_eq!(
         h.root::<NavShell>().front_pane(),
         NavPane::Content,
-        "Back returns to the place the sidebar covered"
+        "pressing it puts the sidebar away for the screen in front"
     );
 }
 

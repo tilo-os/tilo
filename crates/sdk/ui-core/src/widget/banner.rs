@@ -440,8 +440,7 @@ fn paint_banner(
     }
     if let Some(dismiss) = g.dismiss {
         let dismiss = shift(dismiss);
-        let name = crate::i18n::widget_format("widget-dismiss", &[]);
-        let face = ButtonFace::icon_only(dismiss, Icon::X, &name)
+        let face = ButtonFace::icon_only(dismiss, Icon::X, "Dismiss")
             .control_size(ControlSize::Small)
             .hovered(dismiss.contains(hover));
         crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
@@ -860,13 +859,9 @@ impl Banner {
         let id = format!("{}.dismiss", self.id.as_deref().unwrap_or("banner"));
         let requested = Rc::clone(&self.dismiss_requested);
         self.dismiss = Some(
-            Button::icon_only(
-                &id,
-                Icon::X,
-                &crate::i18n::widget_format("widget-dismiss", &[]),
-            )
-            .control_size(ControlSize::Small)
-            .on_view(move || requested.set(true)),
+            Button::icon_only(&id, Icon::X, "Dismiss")
+                .control_size(ControlSize::Small)
+                .on_view(move || requested.set(true)),
         );
         self.body.dismissible = true;
         self

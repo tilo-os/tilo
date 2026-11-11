@@ -36,45 +36,6 @@ const MAX_HITS: usize = 256;
 /// without scrolling.
 const MAX_RECIPIENTS: usize = 12;
 
-/// How well a recipient answers what was typed into a box, best last.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-enum Standing {
-    /// The text matched something else it says.
-    Text,
-    /// A conversation the text matched.
-    Conversation,
-    /// A word of its name starts with what was typed.
-    WordPrefix,
-    /// Its name starts with what was typed.
-    Prefix,
-    /// It is called what was typed.
-    Exact,
-}
-
-impl Standing {
-    fn of(needle: &str, recipient: &ui::floating_surface::Recipient) -> Self {
-        let needle = needle.to_lowercase();
-        let name = recipient.name.to_lowercase();
-        if needle.is_empty() {
-            return Self::Text;
-        }
-        if name == needle {
-            Self::Exact
-        } else if name.starts_with(&needle) {
-            Self::Prefix
-        } else if name
-            .split(|c: char| !c.is_alphanumeric())
-            .any(|word| word.starts_with(&needle))
-        {
-            Self::WordPrefix
-        } else if recipient.kind == ui::floating_surface::RecipientKind::Conversation {
-            Self::Conversation
-        } else {
-            Self::Text
-        }
-    }
-}
-
 /// The conversation a `chat.workspace/channels/<id>` row keeps.
 fn conversation_id(resource: &str) -> Option<&str> {
     let id = resource.rsplit_once('/')?.1;
@@ -643,11 +604,10 @@ impl IndexedContent {
 
     /// The agents, people and conversations `needle` names, as a box that
     /// sends a message lists whom it could go to: found by the same index the
-    /// palette reads. What is called exactly what was typed comes first, then
-    /// what a name starts with it, then the conversations it matches, the
-    /// most recent first, and then the rest by the index's own ranking. An
-    /// empty `needle` lists what the workspace holds, the most recent first,
-    /// which is what a box opens on before anything is typed.
+    /// palette reads, the app's own ranking first and, among equals, what it
+    /// says of when — the most recent at the top. An empty `needle` lists
+    /// what the workspace holds, the most recent first, which is what a box
+    /// opens on before anything is typed.
     #[must_use]
     pub fn recipients(&self, needle: &str) -> Vec<ui::floating_surface::Recipient> {
         let snapshot = self.current();
@@ -672,32 +632,21 @@ impl IndexedContent {
                 })
                 .collect()
         };
-        let mut found: Vec<(Standing, i32, i64, ui::floating_surface::Recipient)> = matches
+        let mut found: Vec<(i32, i64, ui::floating_surface::Recipient)> = matches
             .into_iter()
             .filter_map(|(score, indexed)| {
                 let recipient = self.recipient(indexed)?;
                 let when = indexed.entry.when.unwrap_or(i64::MIN);
-                let standing = Standing::of(needle, &recipient);
-                // Among conversations the most recent leads, whatever the text scored.
-                let score = if standing == Standing::Conversation {
-                    0
-                } else {
-                    score
-                };
-                Some((standing, score, when, recipient))
+                Some((score, when, recipient))
             })
             .collect();
-        // The sort is stable, so the app's own order settles what is equal.
-        found.sort_by(|left, right| {
-            right
-                .0
-                .cmp(&left.0)
-                .then(right.1.cmp(&left.1))
-                .then(right.2.cmp(&left.2))
-        });
+        // The best match first, and among what matches as well the most recent
+        // comes first; the sort is stable, so the app's own order settles the
+        // rest.
+        found.sort_by(|left, right| right.0.cmp(&left.0).then(right.1.cmp(&left.1)));
         let mut seen: HashSet<(ui::floating_surface::RecipientKind, String)> = HashSet::new();
         let mut out: Vec<ui::floating_surface::Recipient> = Vec::new();
-        for (_, _, _, recipient) in found {
+        for (_, _, recipient) in found {
             if seen.insert((recipient.kind, recipient.id.clone())) {
                 out.push(recipient);
             }
@@ -1175,66 +1124,6 @@ mod tests {
                 (RecipientKind::Person, "u_ada"),
             ]
         );
-    }
-
-    /// Of a workspace's 55 agents, the one called what was typed leads, then
-    /// those whose name starts with it, then those with a word that does; a
-    /// conversation that matches some other way comes before an agent that
-    /// does, the most recent first.
-    #[test]
-    fn a_box_finds_an_agent_by_name_among_many() {
-        use ui::floating_surface::{Recipient, RecipientKind};
-
-        let index = Arc::new(AppContentIndex::in_memory());
-        let mut entries = Vec::new();
-        let mut agent = |id: &str, name: &str, when: i64| {
-            let mut entry = shaped(
-                note(&format!("chat.agent/agents/{id}"), name, false),
-                IndexKind::Agent,
-                vec![person(name, &format!("agent:{id}"), "", true)],
-            );
-            entry.when = Some(when);
-            entries.push(entry);
-        };
-        for number in 0..52 {
-            agent(
-                &format!("a_{number}"),
-                &format!("Helper {number}"),
-                100 + i64::from(number),
-            );
-        }
-        agent("a_weekly", "Weekly digest", 1);
-        agent("a_digester", "Digester", 2);
-        agent("a_digest", "Digest", 3);
-        publish(&index, "so.tilo.chat", None, entries);
-        let content = IndexedContent::new(index, str::to_owned, "u_me");
-
-        let ids = |found: Vec<Recipient>| -> Vec<String> {
-            found.into_iter().map(|recipient| recipient.id).collect()
-        };
-        assert_eq!(
-            ids(content.recipients("Digest"))[..3],
-            ["a_digest", "a_digester", "a_weekly"]
-        );
-        assert_eq!(
-            ids(content.recipients("helper 7"))
-                .first()
-                .map(String::as_str),
-            Some("a_7")
-        );
-        assert_eq!(ids(content.recipients("helper 4"))[0], "a_4");
-
-        let conversation = |name: &str| Recipient::found(RecipientKind::Conversation, "c", name);
-        let named = |name: &str| Recipient::found(RecipientKind::Agent, "a", name);
-        assert!(
-            Standing::of("ada", &conversation("Design crit"))
-                > Standing::of("ada", &named("Reviewer"))
-        );
-        assert!(
-            Standing::of("ada", &named("Ada's helper"))
-                > Standing::of("ada", &conversation("Crit"))
-        );
-        assert!(Standing::of("ada", &named("Ada")) > Standing::of("ada", &named("Adam")));
     }
 
     #[test]

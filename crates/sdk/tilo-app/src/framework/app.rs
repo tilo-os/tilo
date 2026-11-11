@@ -1299,11 +1299,6 @@ fn create_component(
 ) -> Result<AppComponent, LaunchError> {
     if let Some(catalog) = (app.catalog)() {
         catalog.ensure();
-    } else {
-        // A window with no catalogue of its own — a sheet of the frames, a system menu — still
-        // speaks the person's language: the toolkit's own labels are part of every window, and on
-        // a thread with no catalogue yet they install it in the desktop's language.
-        ui_core::i18n::I18nManager::register_widget_messages();
     }
     // The workspace's record is being read off the frame: the window shows what the app shows
     // before it, and opens as below once the record is had.

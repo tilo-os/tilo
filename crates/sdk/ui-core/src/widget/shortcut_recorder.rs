@@ -465,14 +465,12 @@ impl Widget for ShortcutRecorder {
         state.invalid = self.invalid;
         let mut node = AccessNode::new(Role::Button)
             .with_bounds(self.interaction.minimum_target_rect(self.rect))
-            .with_name(crate::i18n::widget_format("widget-shortcut-change", &[]))
+            .with_name("Change shortcut")
             .with_value(self.binding().accessible_label(self.platform))
             .with_state(state);
         if self.invalid {
-            node = node.with_description(crate::i18n::widget_format(
-                "widget-shortcut-unavailable",
-                &[],
-            ));
+            node =
+                node.with_description("That shortcut is unavailable. Activate to choose another.");
         }
         Some(node)
     }

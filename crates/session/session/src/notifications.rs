@@ -195,15 +195,7 @@ pub(crate) fn shown(
         notification.icon_kind = told.map_or(NotificationIconKind::System, |notice| notice.leading);
     } else {
         notification.app_name = match app_id.as_deref() {
-            // A program the launcher proved with no installed app behind it is a command line
-            // sender: it is named by the name it gives, the entry it says it comes from, or the
-            // terminal it was typed into, never by its file name.
-            Some(id) if id.trim().starts_with('/') => Some(crate::app_names::program_sender_name(
-                id,
-                &sent.app_name,
-                sent.desktop_entry.as_deref(),
-            )),
-            Some(id) => Some(crate::app_names::app_name(id)),
+            Some(id) => Some(crate::app_names::sender_name(id, &sent.app_name)),
             None => notifications::sender_claim(&sent.app_name),
         };
     }

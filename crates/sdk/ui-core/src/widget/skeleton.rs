@@ -416,7 +416,7 @@ impl Widget for Skeleton {
         use crate::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Generic)
-                .with_name(crate::i18n::widget_format("widget-loading", &[]))
+                .with_name("Loading")
                 .with_state(AccessState::new().busy(true)),
         )
     }

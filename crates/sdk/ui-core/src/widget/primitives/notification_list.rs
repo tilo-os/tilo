@@ -530,14 +530,14 @@ fn paint_row_controls(
         controls.dismiss,
         Icon::X,
         NotificationListControl::Dismiss(index),
-        &crate::i18n::widget_format("widget-dismiss", &[]),
+        "Dismiss",
     );
     if agent && let Some(agent) = controls.agent {
         paint(
             agent,
             Icon::Send,
             NotificationListControl::HandToAgent(index),
-            &crate::i18n::widget_format("widget-hand-to-agent", &[]),
+            "Hand to an agent",
         );
     }
 }

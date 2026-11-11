@@ -407,10 +407,7 @@ impl Widget for QrWidget {
         let mut node = AccessNode::new(Role::Image).with_name(self.alt.clone());
         node.state = node.state.protected(self.secret);
         if let Some(error) = &self.error {
-            node = node.with_description(crate::i18n::widget_format(
-                "widget-qr-failed",
-                &[("error", error.clone().into())],
-            ));
+            node = node.with_description(format!("QR encoding failed: {error}"));
         }
         Some(node)
     }
@@ -604,14 +601,10 @@ mod tests {
             let node = Widget::accessibility(&w).expect("failed output remains inspectable");
             assert_eq!(node.role, Role::Image);
             assert_eq!(node.name.as_deref(), Some("QR code"));
-            let why = w.error().expect("the widget recorded why").to_owned();
-            assert_eq!(
-                node.description.as_deref(),
-                Some(
-                    crate::i18n::widget_format("widget-qr-failed", &[("error", why.into())])
-                        .as_str()
-                ),
-                "the description names the failure that kept the code from being drawn"
+            assert!(
+                node.description
+                    .as_deref()
+                    .is_some_and(|description| description.starts_with("QR encoding failed:"))
             );
         }
     }

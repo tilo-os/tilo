@@ -43,16 +43,11 @@ const WINDOW: &str = "browser@42";
 #[derive(Default)]
 struct InProcessEnvironments {
     starts: Mutex<Vec<Material>>,
-    stops: Mutex<Vec<String>>,
 }
 
 impl InProcessEnvironments {
     fn starts(&self) -> usize {
         self.starts.lock().unwrap().len()
-    }
-
-    fn stops(&self) -> usize {
-        self.stops.lock().unwrap().len()
     }
 
     fn material(&self) -> Material {
@@ -69,9 +64,7 @@ impl BrowserSessions for InProcessEnvironments {
         })
     }
 
-    fn stop(&self, workspace: &str) {
-        self.stops.lock().unwrap().push(workspace.to_owned());
-    }
+    fn stop(&self, _: &str) {}
 }
 
 /// Counts what reached it, and refuses what it is told to.
@@ -430,12 +423,6 @@ struct Fixture {
 }
 
 async fn fixture(meter: Arc<Counting>) -> Fixture {
-    fixture_with(meter, tilo_relay::hosted_browser::RECONNECT).await
-}
-
-/// A fixture that gives a disconnected environment device `reconnect` to come
-/// back before its environment stops.
-async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
     let user = TestUser::fresh("Ada");
     let host = user.enrol("home", DeviceCapabilities::host());
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
@@ -455,14 +442,11 @@ async fn fixture_with(meter: Arc<Counting>, reconnect: Duration) -> Fixture {
         stand_in
     };
     let environments = Arc::new(InProcessEnvironments::default());
-    let browsers = Arc::new(
-        HostedBrowsers::new(
-            Box::new(EnvironmentsHandle(Arc::clone(&environments))),
-            Box::new(SharedMeter(Arc::clone(&meter))),
-            "acct_ada".into(),
-        )
-        .with_reconnect(reconnect),
-    );
+    let browsers = Arc::new(HostedBrowsers::new(
+        Box::new(EnvironmentsHandle(Arc::clone(&environments))),
+        Box::new(SharedMeter(Arc::clone(&meter))),
+        "acct_ada".into(),
+    ));
     let relay = Box::pin(spawn_relay_serving_apps(
         &user,
         host,
@@ -1005,39 +989,13 @@ async fn the_relay_confines_an_environments_device_to_the_record_it_placed() {
     let fixture = fixture(Arc::new(Counting::default())).await;
     let device = fixture.environments.material().device.device_public_key;
     assert_eq!(
-        tilo_relay::environment::environment_of(&fixture.relay.relay.environments(), &device),
-        Some(tilo_relay::environment::Environment::Placed(
-            tilo_relay::environment::EnvironmentScope::for_record(
-                WS,
-                tilo_relay::hosted_browser::APP,
-                "record-1"
-            )
+        tilo_relay::environment::scope_of(&fixture.relay.relay.environments(), &device),
+        Some(tilo_relay::environment::EnvironmentScope::for_record(
+            WS,
+            tilo_relay::hosted_browser::APP,
+            "record-1"
         )),
         "the placement names the one record its device reaches"
-    );
-}
-
-#[tokio::test]
-async fn a_relay_that_restarts_still_confines_the_environment_it_placed() {
-    let fixture = fixture(Arc::new(Counting::default())).await;
-    fixture.list_environment().await;
-    let device = fixture.environments.material().device.device_public_key;
-    // What a relay that starts again reads: its own register, not the
-    // workspace's listing, which still has the device in it.
-    let restarted = tilo_relay::environment::EnvironmentRegistry::at(
-        fixture.relay.state_root.join("environments.json"),
-    );
-    assert_eq!(
-        tilo_relay::environment::environment_of(&restarted, &device),
-        Some(tilo_relay::environment::Environment::Placed(
-            tilo_relay::environment::EnvironmentScope::for_record(
-                WS,
-                tilo_relay::hosted_browser::APP,
-                "record-1"
-            )
-        )),
-        "a placed environment is written down before its device is listed, so a \
-         restart confines it rather than leaving it a member"
     );
 }
 
@@ -1259,38 +1217,18 @@ async fn a_stopped_environment_reaches_nothing() {
     fixture.list_environment().await;
     let material = fixture.environments.material();
     let device = material.device.device_public_key;
-    // The session that holds the window is here, and stays connected over the
-    // stop.
-    let environment = fixture.environment_session().await;
     fixture.browsers.stopped(WS);
     assert_eq!(
-        tilo_relay::environment::environment_of(&fixture.relay.relay.environments(), &device),
-        Some(tilo_relay::environment::Environment::Stopped {
-            until_ns: material.device.expires_at_ns.unwrap()
-        }),
-        "a stopped environment's device is refused until its certificate expires"
+        tilo_relay::environment::scope_of(&fixture.relay.relay.environments(), &device),
+        None,
+        "a stopped environment's device is forgotten"
     );
-    assert_eq!(
-        fixture.environments.stops(),
-        1,
-        "the session in the VM was ended"
-    );
-    // Its connection here is cut: the planes it carried refuse it.
-    assert!(
-        tokio::time::timeout(tilo_test_env::hang_bound(), async {
-            while environment.recv().await.is_some() {}
-        })
-        .await
-        .is_ok(),
-        "a stopped environment's device has no connection left"
-    );
-    // The workspace still lists it — this fixture's host delists through
-    // `Workspaces`, which it has none of, so the delisting fails and the
-    // refusal is all that is left. It is refused, not open.
+    // The relay forgets its device from the workspace as it stops it (`Workspaces`'
+    // listing, which this fixture's host has none of).
     admit_members(
         &fixture.relay.relay,
         WS,
-        &[fixture.agent.device_pubkey(), device],
+        &[fixture.agent.device_pubkey()],
         &fixture.relay.state_root,
     )
     .await;
@@ -1308,46 +1246,9 @@ async fn a_stopped_environment_reaches_nothing() {
     refused
         .send(Envelope::Subscribe { workspace_id: WS })
         .unwrap();
-    // Refused at the handshake or at its subscribe, or closed: never ready.
-    let answer = tokio::time::timeout(tilo_test_env::hang_bound(), refused.recv()).await;
+    let answer = next(&refused, "environment").await;
     assert!(
-        !matches!(answer, Ok(Some(Envelope::Ready { .. }))),
+        !matches!(answer, Envelope::Ready { .. }),
         "a stopped environment's device is no device of the workspace: {answer:?}"
-    );
-}
-
-#[tokio::test]
-async fn an_environment_stops_when_the_session_that_held_it_ends() {
-    let fixture = fixture_with(Arc::new(Counting::default()), Duration::from_millis(20)).await;
-    fixture.list_environment().await;
-    let material = fixture.environments.material();
-    let device = material.device.device_public_key;
-    let environment = fixture.environment_session().await;
-    drop(environment);
-    // The relay hears that the device's session ended and stops its
-    // environment: one signal, and no plane admits it after.
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        if fixture
-            .relay
-            .relay
-            .environments()
-            .of(&device, tilo_clock::unix_now_ns())
-            == Some(tilo_relay::environment::Environment::Stopped {
-                until_ns: material.device.expires_at_ns.unwrap(),
-            })
-        {
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the environment whose session ended never stopped"
-        );
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(
-        fixture.environments.stops(),
-        1,
-        "the session in the VM was ended"
     );
 }

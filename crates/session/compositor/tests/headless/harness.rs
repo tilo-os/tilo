@@ -568,13 +568,6 @@ impl TestClient {
     }
 }
 
-/// Draw a frame and read back the pixel at `(x, y)` of the one output.
-pub fn shown(compositor: &mut Compositor, x: u32, y: u32) -> Option<[u8; 4]> {
-    compositor.draw_frame().expect("a frame");
-    let frame = compositor.screenshot("HEADLESS-1").expect("the frame");
-    frame.pixel(x, y)
-}
-
 /// Let compositor and clients talk until `done` holds.
 pub fn pump(
     compositor: &mut Compositor,
