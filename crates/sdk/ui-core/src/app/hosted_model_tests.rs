@@ -155,8 +155,17 @@ fn an_app_with_no_window_hears_its_workspace_and_publishes_its_view() {
     .unwrap();
     told.push(b'\n');
     shell_side.write_all(&told).unwrap();
-    for _ in 0..3 {
-        app.wake_unshown();
+    // An answer whose placeholder already showed keeps it a moment: the app
+    // wakes when it asks to, as its event loop does.
+    let mut next = app.wake_unshown();
+    for _ in 0..8 {
+        if bumps(&app) {
+            break;
+        }
+        if let Some(at) = next {
+            std::thread::sleep(at.saturating_duration_since(crate::time::now()));
+        }
+        next = app.wake_unshown();
     }
     assert!(
         bumps(&app),
