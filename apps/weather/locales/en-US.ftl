@@ -55,3 +55,7 @@ weather-places-hint = Use Up and Down Arrow to change place, and Enter to open i
 weather-city-name = City name
 weather-no-places = No places yet. Add a place to see its forecast.
 weather-choose-place = Choose a saved place to see its forecast.
+
+## Window and accessibility copy
+weather-a11y-places = Places
+weather-add-place = Add a place

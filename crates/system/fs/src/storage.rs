@@ -132,7 +132,6 @@ impl StorageAuthority {
             eviction_queue,
             eviction: Arc::new(tokio::sync::Mutex::new(())),
             workspace: workspace.into(),
-            #[cfg(target_os = "linux")]
             cache_policy: None,
         }
     }

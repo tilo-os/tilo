@@ -218,7 +218,7 @@ pub(crate) fn zone_list(config: &FirewallConfig, selected: ZoneKind, intents: &I
     let intents = intents.clone();
     NavList::new(vec![NavSection::untitled("zones", zones)])
         .selected(&zone_id(selected))
-        .with_accessible_name("Firewall zones")
+        .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-zones"))
         .on_view("firewall.zones", move |id| {
             if let Some(zone) = id.strip_prefix("zone:").and_then(ZoneKind::from_name) {
                 intents.push(Intent::SelectZone(zone));
@@ -393,7 +393,7 @@ pub(crate) fn zone_page(
         .push(tab);
     if model.applying {
         page = page.push(Box::new(
-            Text::new("Applying the stored rules to this device…")
+            Text::new(&crate::locales::CATALOG.t("firewall-applying-rules"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ));
@@ -539,7 +539,7 @@ impl RuleRow {
 fn rules(model: &PageModel<'_>, intents: &Intents, switches: &Switches) -> Element {
     if model.zone.rules.is_empty() {
         return Box::new(
-            Text::new("This zone has no rules yet.")
+            Text::new(&crate::locales::CATALOG.t("firewall-zone-empty"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         );
@@ -628,7 +628,7 @@ fn rule_table(
         }),
     ])
     .with_id("firewall-rules")
-    .with_accessible_name("Rules")
+    .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-rules"))
     .with_sort_state(sort)
     .selectable(true);
     let ids: Vec<RuleId> = rows.iter().map(|row| row.id).collect();
@@ -820,7 +820,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
     let report = match model.blocked {
         BlockedRead::Reading => {
             return Box::new(
-                Text::new("Reading dropped traffic from the system journal…")
+                Text::new(&crate::locales::CATALOG.t("firewall-reading-dropped"))
                     .with_role(TextRole::Body)
                     .dimmed(),
             );
@@ -837,7 +837,7 @@ fn blocked_page(model: &PageModel<'_>, intents: &Intents) -> Element {
         }
         BlockedRead::Unread => {
             return Box::new(
-                Text::new("Open Blocked again to read the system journal.")
+                Text::new(&crate::locales::CATALOG.t("firewall-reading-dropped-stopped"))
                     .with_role(TextRole::Body)
                     .dimmed(),
             );
@@ -919,7 +919,7 @@ fn blocked_table(report: &BlockedReport) -> DataTable<BlockedRow> {
             .with_text(|row: &BlockedRow| row.scale.clone()),
     ])
     .with_id("firewall-blocked")
-    .with_accessible_name("Dropped traffic, grouped by rule");
+    .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-dropped"));
     table.set_rows(
         report
             .groups
@@ -1057,7 +1057,7 @@ fn services(zone: &Zone, wide: bool, switches: &Switches) -> DataTable<ServiceRo
     ]);
     let mut table = DataTable::new(columns)
         .with_id("firewall-services")
-        .with_accessible_name("Services");
+        .with_accessible_name(crate::locales::CATALOG.t("firewall-a11y-services"));
     table.set_rows(
         ServiceCatalog::ALL
             .iter()

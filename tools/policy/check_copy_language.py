@@ -53,6 +53,15 @@ agent is told a tool does, a key's name, a capture label). A label is painted
 as much when a closure or a conditional picks the literal
 (`map_or_else(|| "Search", …)`, `if open { "Shown" } else { "Hidden" }`) as
 when the builder is handed it directly, so both count.
+
+A surface — an app's window or a session role's — paints through the toolkit's
+text constructors (`Text::new`, the `with_*`/`set_*` label and accessible-name
+setters, the paint helpers that take the scene first), not only through the
+builders above. A literal handed to one of those is the same defect on a German
+desktop, so surfaces are checked for them too.
+
+The toolkit's own crates are outside that sweep: a widget's demo and example
+code paints sample content, not a window's copy.
 """
 
 from __future__ import annotations
@@ -171,7 +180,7 @@ ACRONYMS = frozenset("""
     YAML XWAYLAND KDE GNOME DVD CD RGB HSL HEX DRM CUPS LDAP NTFS FAT EXT HFS APFS
     BTRFS LUKS GPT MBR UEFI KVM VM IO HID SPI ACPI AES RSA ECC GPG PGP MLS NIST
     FIDO HFP A2DP SBC AAC LDAC IMEI APN VOLTE ESIM CSD ATTR TODO BCD MSRV
-    WLAN HEVC OPML RAID ANSI ISO QWERTY QWERTZ AZERTY STARTTLS IANA GET POST PUT
+    WLAN HEVC OPML RAID ANSI ISO EPUB SMART QWERTY QWERTZ AZERTY STARTTLS IANA GET POST PUT
     PATCH DELETE HEAD OPTIONS HOME PATH XDG_STATE_HOME FCAST RAW AVIF FLAC OGG
     WEBM MKV MOV AVI MPEG WAV OPUS H264 VP9 AV1 VAAPI NVENC IPV4 IPV6 DHCP IMAPS
     POP3 CALDAV CARDDAV WEBDAV OAUTH JMAP EWS ASCII UTF CJK RTL LTR FOMO GGUF
@@ -445,6 +454,45 @@ COPY_BUILDERS = (
 )
 
 
+# What a surface paints its words through: the call or setter, and which of its
+# arguments carries them (0-based). `draw_text` and `draw_style` take the scene
+# first, so the words are the second argument.
+TEXT_CONSTRUCTORS = (
+    ("Text::new(", 0),
+    ("Notification::new(", 0),
+    (".with_name(", 0),
+    (".with_label(", 0),
+    (".with_title(", 0),
+    (".with_description(", 0),
+    (".with_tooltip(", 0),
+    (".with_placeholder(", 0),
+    (".with_hint(", 0),
+    (".with_subtitle(", 0),
+    (".with_body(", 0),
+    (".with_accessible_name(", 0),
+    (".set_name(", 0),
+    (".set_label(", 0),
+    (".set_title(", 0),
+    (".set_text(", 0),
+    (".set_placeholder(", 0),
+    (".set_body(", 0),
+    (".set_accessible_name(", 0),
+    (".label(", 0),
+    (".title(", 0),
+    (".heading(", 0),
+    (".caption(", 0),
+    (".message(", 0),
+    (".text(", 0),
+    (".draw_text(", 1),
+    (".draw_text_weighted(", 1),
+    (".draw_style(", 1),
+)
+
+# Where a surface's own words are painted: the roots whose crates draw a
+# window a person opens.
+SURFACE_ROOTS = ("apps/", "crates/session/")
+
+
 def english_words(value: str) -> bool:
     """A literal that reads as English words rather than an id or a key."""
     letters = [character for character in value]
@@ -513,19 +561,49 @@ def painted_literals(code: str, starts: list[int],
     return found
 
 
+def argument(code: str, start: int, index: int) -> tuple[int, int]:
+    """The `index`th (0-based) argument of the call whose bracket opens at
+    `start - 1`, or an empty range when the call has fewer arguments."""
+    end = rust_source.matching(code, start - 1) - 1
+    begin = position = start
+    seen = 0
+    while position < end:
+        if code[position] in "([{":
+            position = rust_source.matching(code, position)
+            continue
+        if code[position] == "," and seen == index:
+            return begin, position
+        if code[position] == ",":
+            seen += 1
+            begin = position + 1
+        position += 1
+    return (begin, end) if seen == index else (0, 0)
+
+
+def surfaces(root: Path) -> list[str]:
+    """The units that draw a window a person opens and ship a translation."""
+    return [unit for unit in translated_units(root)
+            if unit.startswith(SURFACE_ROOTS)]
+
+
 def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
     """(file, line, text) of each English literal handed to a copy builder by a
-    crate that ships translations, in production code."""
+    crate that ships translations, in production code; and of each literal or
+    `format!` sentence a surface hands to a text constructor."""
     from check_app_copy import first_argument
 
     units = translated_units(root)
+    windows = surfaces(root)
     found = []
     for path in rust_sources(root):
         unit = path.relative_to(root).as_posix()
-        if not any(unit.startswith(f"{crate}/") for crate in units):
+        builder_unit = any(unit.startswith(f"{crate}/") for crate in units)
+        window = any(unit.startswith(f"{crate}/") for crate in windows)
+        if not builder_unit and not window:
             continue
         text = path.read_text(errors="replace")
-        if not any(builder in text for builder in COPY_BUILDERS):
+        builders = tuple(b for b in COPY_BUILDERS if b in text) if builder_unit else ()
+        if not builders and not any(call in text for call, _ in TEXT_CONSTRUCTORS):
             continue
         code, literals = rust_source.lex(text)
         marked = list(code)
@@ -536,21 +614,35 @@ def source_copy_literals(root: Path) -> list[tuple[str, int, str]]:
         kept = rust_source.blank_test_items("".join(marked))
         by_start = {literal.start: literal for literal in literals if not literal.byte}
         starts = sorted(by_start)
-        for builder in COPY_BUILDERS:
+        hits: list[rust_source.Literal] = []
+
+        def painted(begin: int, end: int) -> None:
+            for literal in painted_literals(code, starts, by_start, begin, end):
+                if kept[literal.start] == "x" and english_words(literal.value):
+                    hits.append(literal)
+
+        for builder in builders:
             start = code.find(builder)
             while start >= 0:
                 begin, end = first_argument(code, start + len(builder))
                 if begin < len(code) and code[begin] == "&":
                     begin += 1
-                for literal in painted_literals(code, starts, by_start, begin, end):
-                    if kept[literal.start] != "x" or not english_words(literal.value):
-                        continue
-                    found.append((
-                        path.relative_to(root).as_posix(),
-                        rust_source.line_number(text, literal.start),
-                        literal.value,
-                    ))
+                painted(begin, end)
                 start = code.find(builder, start + len(builder))
+        if window:
+            for call, index in TEXT_CONSTRUCTORS:
+                start = code.find(call)
+                while start >= 0:
+                    begin, end = argument(code, start + len(call), index)
+                    painted(begin, end)
+                    close = rust_source.matching(code, start + len(call) - 1)
+                    start = code.find(call, start + len(call))
+        for literal in dict.fromkeys(hits):
+            found.append((
+                path.relative_to(root).as_posix(),
+                rust_source.line_number(text, literal.start),
+                literal.value,
+            ))
     return sorted(set(found))
 
 

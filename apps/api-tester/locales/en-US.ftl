@@ -79,3 +79,12 @@ api-tester-record-sent = Sent a request that returned status { $status }
 ## Accessibility
 api-tester-row-actions = Row actions
 api-tester-url-placeholder = Enter a URL
+
+## Window and accessibility copy
+api-tester-environment = Environment
+api-tester-a11y-use-row = Use this row
+api-tester-request-body = Request body
+api-tester-request-url = Request URL
+api-tester-method = Method
+api-tester-response-headers = Response headers
+api-tester-requests = Requests

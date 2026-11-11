@@ -513,7 +513,8 @@ impl LauncherServices for Launches {
 
     /// Have package `app` run with no window in `workspace`, for an action that shows nothing:
     /// the session's loop starts it unless a process of it runs there already, and the start's
-    /// answer is the one returned. An app this session runs itself, or one that is no package,
+    /// answer is the one returned. An app this session runs itself, one whose windows' instances
+    /// run in a tilolang host (its process holds none of its data), or one that is no package,
     /// has no such instance.
     ///
     /// # Errors
@@ -523,7 +524,7 @@ impl LauncherServices for Launches {
         app: &str,
         workspace: &str,
     ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
-        if self.served(app).is_some() {
+        if self.served(app).is_some() || tilo_app_launch::tilolang_hosts::runs_in_host(app) {
             return Ok(None);
         }
         let Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) =

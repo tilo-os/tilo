@@ -101,3 +101,6 @@ shortcuts-schedule-missed-once = Missed runs execute once.
 shortcuts-schedule-missed-skip = Missed runs are skipped.
 
 shortcuts-no-matching-actions = No actions match this filter
+
+## Window and accessibility copy
+shortcuts-a11y-window = Shortcuts

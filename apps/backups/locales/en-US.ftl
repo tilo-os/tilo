@@ -79,3 +79,10 @@ backups-retention-policy-monthly = { $new ->
     [one] Keeping one monthly snapshot
    *[other] Keeping { $new } monthly snapshots
 }
+
+## Window and accessibility copy
+backups-file-list-pending = The file list for this snapshot isn’t available yet.
+backups-restore-note = The whole snapshot is restored into a new or empty folder you choose, and every file is checked. Nothing that already exists is replaced.
+backups-heading-snapshots = Snapshots
+backups-a11y-order = Order of snapshots
+backups-a11y-window = Backups

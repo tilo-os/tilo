@@ -37,3 +37,6 @@ typst-filter-pdf = PDF-Dokument
 
 typst-a11y-compact-layout = Kompaktes Layout; mit dem Bearbeiten- und Vorschau-Schalter zwischen Quelle und Vorschau wechseln
 typst-a11y-live-preview = Live gerenderte Vorschau
+
+## Fenster- und Barrierefreiheits-Texte
+typst-editor-a11y-outline = Gliederung

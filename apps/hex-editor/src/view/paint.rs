@@ -433,7 +433,7 @@ impl Editor {
         let (_, line) = tr.measure_style("Inspector", None, &style);
         tr.draw_style(
             scene,
-            "Inspector",
+            &crate::resource::CATALOG.t("hex-editor-inspector"),
             colors.text_primary,
             transform
                 * Affine::translate(Vec2::new(

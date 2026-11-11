@@ -240,7 +240,9 @@ pub(crate) fn build(
                 let id = ui::tilo_resource::Id::from_raw(row.id.clone());
                 let state = row.enabled.clone();
                 gated(row, move || -> Element {
-                    let control = Checkbox::from_state(&state).with_accessible_name("Use this row");
+                    let control = Checkbox::from_state(&state).with_accessible_name(
+                        &crate::locales::CATALOG.t("api-tester-a11y-use-row"),
+                    );
                     Box::new(sink.bind_field(
                         control,
                         table.rows().item(&id).enabled,

@@ -398,7 +398,7 @@ pub fn sidebar(catalog: &Catalog, page: &Page, intents: &Intents) -> NavList {
         NavSection::untitled("policy", vec![policy]),
     ])
     .selected(&page.nav_id())
-    .with_accessible_name("Backups")
+    .with_accessible_name(crate::i18n::t("backups-a11y-window"))
     .on_view("backups-places", move |id| {
         if let Some(page) = Page::from_nav_id(&id) {
             intents.push(Intent::Navigate(page));
@@ -427,12 +427,12 @@ fn timeline_heading(current: Order, order: Option<&ActionBinding<String>>) -> Ro
         &LocalState::new(current.label().to_owned()),
     )
     .with_id("backups-order")
-    .with_accessible_name("Order of snapshots")
+    .with_accessible_name(crate::i18n::t("backups-a11y-order"))
     .control_size(ControlSize::Small);
     Row::new()
         .no_wrap()
         .push(Box::new(
-            Text::new("Snapshots")
+            Text::new(&crate::i18n::t("backups-heading-snapshots"))
                 .with_role(TextRole::Heading)
                 .with_heading_level(2),
         ))
@@ -986,11 +986,7 @@ pub fn restore_dialog(
         .with_intrinsic_height()
         .with_no_padding()
         .push(Box::new(
-            Text::new(
-                "The whole snapshot is restored into a new or empty folder you choose, and \
-                 every file is checked. Nothing that already exists is replaced.",
-            )
-            .with_role(TextRole::Body),
+            Text::new(&crate::i18n::t("backups-restore-note")).with_role(TextRole::Body),
         ));
     let mut facts = vec![
         Property::new("Taken", when(snapshot.taken, now)),
@@ -1006,7 +1002,7 @@ pub fn restore_dialog(
                 as Element
         }
         None => Box::new(
-            Text::new("The file list for this snapshot isn’t available yet.")
+            Text::new(&crate::i18n::t("backups-file-list-pending"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ),

@@ -34,7 +34,7 @@ use tilo_peer_state::join::MemberRole;
 use tilo_peer_state::join::invitations::{
     CancelInvitationRequest, IssueInvitationRequest, PendingInvitation,
 };
-#[cfg(target_os = "linux")]
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_peer_state::owner::Change;
 use tilo_peer_state::owner::DocumentRead;
 use tilo_peer_state::owner::NativeWorkspaceOwner;
@@ -44,7 +44,7 @@ use tilo_user_identity::RevocationList;
 
 use crate::channels;
 use crate::custody::Custody;
-#[cfg(target_os = "linux")]
+#[cfg(not(target_arch = "wasm32"))]
 use crate::identity;
 
 /// The engine's record, under this device's state directory: the name an earlier build kept it

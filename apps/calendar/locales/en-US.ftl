@@ -191,3 +191,6 @@ calendar-a11y-editor = Event editor. Changes save automatically.
 calendar-quick-example = Lunch with Sam friday 1pm
 calendar-invite-placeholder = Invite by email
 calendar-location-placeholder = Add location
+
+## Window and accessibility copy
+calendar-a11y-task-due = Task due date

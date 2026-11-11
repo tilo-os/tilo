@@ -85,9 +85,9 @@ pub mod sync_folder;
 pub mod thumbs;
 #[cfg(feature = "filesystem")]
 pub mod transport_gate;
-/// The mounted tree as the Files app's person record: the writer on the
-/// session's record route, which only the Linux daemon holds.
-#[cfg(all(feature = "filesystem", target_os = "linux"))]
+/// A workspace's tree as the Files app's person record: the writer on the
+/// session's record route, which the daemon that mounts the tree holds.
+#[cfg(feature = "filesystem")]
 pub mod tree_record;
 #[cfg(feature = "filesystem")]
 pub mod unsaved;

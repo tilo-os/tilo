@@ -155,3 +155,10 @@ pdf-a11y-review-sidebar = Review sidebar
 pdf-a11y-review-panels = Review panels
 pdf-a11y-page-controls = Page controls
 pdf-a11y-document = Document
+
+## Window and accessibility copy
+pdf-viewer-signature-placed-note = No signature is placed yet.
+pdf-viewer-signature-placed = Placed
+pdf-viewer-signing-as = Signing as
+pdf-viewer-signature-your = Your signature
+pdf-viewer-comment-placeholder = Write a comment…

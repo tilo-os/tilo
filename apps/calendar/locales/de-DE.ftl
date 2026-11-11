@@ -191,3 +191,6 @@ calendar-a11y-editor = Editor für das Ereignis. Änderungen werden von selbst �
 calendar-quick-example = Mittagessen mit Sam Freitag um 13 Uhr
 calendar-invite-placeholder = Per E-Mail einladen
 calendar-location-placeholder = Ort hinzufügen
+
+## Fenster- und Barrierefreiheits-Texte
+calendar-a11y-task-due = Fällig am

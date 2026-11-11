@@ -1031,7 +1031,7 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
                     .with_placeholder(ui::i18n::I18nManager::lookup_plain(
                         "print-centre-all-pages",
                     ))
-                    .with_accessible_name("Pages to print"),
+                    .with_accessible_name(crate::locales::CATALOG.t("print-centre-a11y-pages")),
             )
             .with_help("Print some of the pages, as in 3-5 or 1, 4, 9. Leave it empty for all."),
         );

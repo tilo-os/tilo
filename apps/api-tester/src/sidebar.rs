@@ -179,7 +179,7 @@ pub(crate) fn lists(view: &SidebarView<'_>, sink: &Sink) -> (RequestsNav, NavHan
     let select_sink = sink.clone();
     let menu_sink = sink.clone();
     let mut list = NavList::new(sections(view))
-        .with_accessible_name("Requests")
+        .with_accessible_name(crate::locales::CATALOG.t("api-tester-requests"))
         .on_view("api.nav", move |id| {
             let cmd = if let Some((ci, ri)) = parse_request(&id) {
                 Cmd::LoadRequest(ci, ri)

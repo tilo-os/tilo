@@ -2813,3 +2813,11 @@ settings-billing-invoice-open = Due
 settings-billing-invoice-past-due = Past due
 settings-billing-invoice-void = Void
 settings-paste-code = Paste the code
+
+## Window and accessibility copy
+settings-a11y-apple-password = Apple ID password
+settings-a11y-apple-id = Apple ID
+settings-a11y-server-url = Server URL
+settings-a11y-display-name = Display name
+settings-a11y-verification-code = Verification code
+settings-a11y-provider-code = Code from the provider

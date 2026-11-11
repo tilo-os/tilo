@@ -195,6 +195,10 @@ struct Shown {
     /// Whose card the next frame opens, as the bar's face or the session asked: read once the
     /// roster has drawn the row it opens under.
     card_of: Option<String>,
+    /// That card, resolved from the rows the frame that read who is here drew, for the layout that
+    /// follows it to build: a card asked for before the roster had read a row for them opens a
+    /// frame later, and its widgets are never built while the frame draws ([`Panel::settle_card`]).
+    card_opening: Option<(String, ProfileModel)>,
     /// This person's own card is asked for: the next frame opens it in the roster's place, from the
     /// model the session builds of them.
     own_card: bool,
@@ -225,6 +229,7 @@ impl Shown {
     fn close(&mut self) {
         self.expanded = None;
         self.card_of = None;
+        self.card_opening = None;
         self.own_card = false;
         self.card_open = None;
     }
@@ -246,6 +251,7 @@ fn show_person_in(shown: &RefCell<Shown>, open: &Cell<bool>, person: &str) -> bo
     shown.own_card = false;
     if open.get() && shown.card_open.as_deref() == Some(person) {
         shown.card_of = None;
+        shown.card_opening = None;
         shown.close_card = true;
         return false;
     }
@@ -319,6 +325,7 @@ impl People {
                 // The roster comes in place of any card that stood there.
                 shown.own_card = false;
                 shown.card_of = None;
+                shown.card_opening = None;
                 shown.close_card = true;
             } else {
                 shown.close();
@@ -338,6 +345,7 @@ impl People {
             let mut shown = self.shown.borrow_mut();
             shown.own_card = true;
             shown.card_of = None;
+            shown.card_opening = None;
         }
         self.open.set(true);
         self.dismissed.set(None);
@@ -691,6 +699,10 @@ impl Panel {
     /// as the panel is laid out, never while it draws: the frame's layout maps point at the
     /// widgets it laid out, and input read through them until the next frame (the pointer's
     /// shape, a tooltip) would reach freed ones.
+    ///
+    /// Who is here is read as the roster draws, after this layout, so an ask naming someone the
+    /// roster has not read yet is kept for the frame that reads them to resolve
+    /// ([`Self::read_roster`]).
     fn settle_card(&mut self, theme: &Theme) {
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
@@ -711,25 +723,25 @@ impl Panel {
         if let Some(model) = standing {
             self.profile.updated(&model);
         }
-        let asked = if shown.own_card {
-            shown.own_card = false;
-            Some(SELF_CARD.to_owned())
+        let asked = if std::mem::take(&mut shown.own_card) {
+            Some((SELF_CARD.to_owned(), self.own_model()))
+        } else if shown.card_opening.is_some() {
+            // Resolved by the pass that read who is here, for an ask that came before the roster
+            // had drawn a row for them ([`Panel::read_roster`]).
+            shown.card_opening.take()
         } else {
-            shown.card_of.take()
-        };
-        if let Some(who) = asked {
-            let model = if who == SELF_CARD {
-                Some(self.own_model())
-            } else {
+            shown.card_of.clone().and_then(|who| {
                 self.person_model(&who, &shown.rows)
-            };
-            if let Some(model) = model {
-                self.profile.close();
-                let _ = self.profile.take_choice();
-                self.profile
-                    .toggle(&model, roster_place(shown.area, theme), shown.area);
-                shown.card_open = self.profile.is_open().then_some(who);
-            }
+                    .map(|model| (who, model))
+            })
+        };
+        if let Some((who, model)) = asked {
+            shown.card_of = None;
+            self.profile.close();
+            let _ = self.profile.take_choice();
+            self.profile
+                .toggle(&model, roster_place(shown.area, theme), shown.area);
+            shown.card_open = self.profile.is_open().then_some(who);
         }
     }
 
@@ -737,7 +749,7 @@ impl Panel {
     /// ([`Self::settle_card`]).
     fn card_asked(&self) -> bool {
         let shown = self.shown.borrow();
-        shown.close_card || shown.own_card || shown.card_of.is_some()
+        shown.close_card || shown.own_card || shown.card_opening.is_some()
     }
 
     /// Draw the card standing in the roster's place. Answers whether one stands there.
@@ -1025,6 +1037,17 @@ impl Panel {
             && !self.profile.shows(&model)
         {
             self.live_card.set(true);
+        }
+        // A card asked for before this roster had read who is here — the launcher, or the bar's
+        // face on a roster that was not open: the row is read now, so the model is built here,
+        // where the rows are, and the frame that follows builds the card on it. Someone the roster
+        // has read and does not list has no row to open under, and the ask goes rather than
+        // waiting on them.
+        if let Some(who) = shown.card_of.clone() {
+            match self.person_model(&who, &shown.rows) {
+                Some(model) => shown.card_opening = Some((who, model)),
+                None => shown.card_of = None,
+            }
         }
     }
 

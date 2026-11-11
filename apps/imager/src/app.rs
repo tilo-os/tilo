@@ -1573,7 +1573,7 @@ impl ImagerApp {
             (
                 ProgressRing::new(1.0)
                     .value("100%")
-                    .caption("Verified")
+                    .caption(crate::setup::strings::t("installer-state-verified"))
                     .size(ProgressRingSize::Large)
                     .tone(Tone::Success),
                 headline,
@@ -1584,7 +1584,7 @@ impl ImagerApp {
             (
                 ProgressRing::new(frac)
                     .value(format!("{:.0}%", frac * 100.0))
-                    .caption("Stopped")
+                    .caption(crate::setup::strings::t("installer-state-stopped"))
                     .size(ProgressRingSize::Large)
                     .tone(Tone::Danger),
                 if self.action == Action::Install {

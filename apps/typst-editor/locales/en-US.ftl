@@ -37,3 +37,6 @@ typst-filter-pdf = PDF document
 
 typst-a11y-compact-layout = Compact layout; switch between source and preview with the Edit and Preview control
 typst-a11y-live-preview = Live rendered preview
+
+## Window and accessibility copy
+typst-editor-a11y-outline = Outline

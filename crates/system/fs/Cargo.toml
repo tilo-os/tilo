@@ -232,6 +232,15 @@ cloud-source-icloud = { version = "0.1.0", path = "../cloud-source-icloud", opti
 zeroize = { workspace = true, optional = true }
 tracing.workspace = true
 wire-frame = { version = "0.1.0", path = "../wire-frame", optional = true, features = ["tokio", "postcard"] }
+# The tree's writer joins the session's record route as the Files app does, on
+# whatever host holds the tree: the daemon that mounts it, or a runtime that
+# mirrors it into a folder.
+runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false, features = ["client"], optional = true }
+runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
+# The bytes a device signs to join a workspace, as every app's identity does.
+tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
+# The tree's changes seal under the record's content keys, as an app's do.
+channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto", optional = true }
 
 [dev-dependencies]
 tilo-automerge = { workspace = true, features = ["heap-probe"] }
@@ -250,16 +259,9 @@ workspace = true
 fuser = { workspace = true, optional = true }
 
 # The Tier 1 native data plane: fanotify journal, Btrfs capture epochs and
-# pre-content placeholders. Linux-only kernel interfaces.
+# pre-content placeholders. Linux-only kernel interfaces, which the daemon
+# that mounts the tree reads.
 [target.'cfg(target_os = "linux")'.dependencies]
-# Certified external source/history admission lives only in the Linux daemon.
-# Portable content consumers do not pull native proof or RPC dependencies.
-runtime-collab = { version = "0.1.0", path = "../../runtime/runtime-collab", default-features = false, features = ["client"], optional = true }
-runtime-portal = { version = "0.1.0", path = "../../runtime/runtime-portal", default-features = false, optional = true }
-# The bytes a device signs to join a workspace, as every app's identity does.
-tilo-identity-client = { version = "0.1.0", path = "../../runtime/tilo-identity-client", default-features = false, optional = true }
-# The tree's changes seal under the record's content keys, as an app's do.
-channel-crypto = { version = "0.1.0", path = "../../collab/channel-crypto", optional = true }
 tokio-util = { workspace = true, features = ["compat"], optional = true }
 fs-native = { version = "0.1.0", path = "../fs-native", optional = true }
 

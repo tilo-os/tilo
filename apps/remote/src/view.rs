@@ -83,7 +83,7 @@ pub(crate) fn rail(
     let requests = Rc::clone(requests);
     NavList::new(vec![NavSection::untitled("destinations", items)])
         .rail()
-        .with_accessible_name("Remote")
+        .with_accessible_name(crate::resource::CATALOG.t("remote-a11y-window"))
         .selected(selected.id())
         .on_view("remote.rail", move |id| {
             if let Some(destination) = Destination::from_id(&id) {

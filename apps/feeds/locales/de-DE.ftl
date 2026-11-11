@@ -46,3 +46,7 @@ feeds-refreshing = Feeds werden aktualisiert
 feeds-no-article = Kein Artikel ausgewählt
 feeds-articles-with-tag = Artikel mit diesem Schlagwort zeigen
 feeds-feed-actions = Aktionen für diesen Feed
+
+## Fenster- und Barrierefreiheits-Texte
+feeds-a11y-text-size = Textgröße
+feeds-a11y-subscriptions = Abos

@@ -167,7 +167,7 @@ fn journal_table() -> DataTable<JournalRow> {
         .compact()
         .fill_height()
         .with_id("logs.entries")
-        .with_accessible_name("Journal entries")
+        .with_accessible_name(crate::locales::CATALOG.t("logs-a11y-entries"))
         .selectable(true)
         .with_row_key(|row: &JournalRow| row.key)
 }
@@ -224,7 +224,7 @@ impl JournalPane {
         let boot = Self::facet(actions, "logs.boot", "Boot", paths.boot);
         let severity = Dropdown::from_state(Vec::new(), &LocalState::new(String::new()))
             .with_id("logs.severity")
-            .caption("Severity");
+            .caption(crate::locales::CATALOG.t("logs-severity"));
         let mut severity = match actions.set_binding(paths.severity, |value: String| {
             value
                 .parse::<i64>()

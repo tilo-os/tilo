@@ -75,3 +75,10 @@ contacts-group-entry-value = Die Gruppe { $item } umbenannt
 ## Wie die App sich und ihre Liste nennt
 
 contacts-title = Kontakte
+
+## Fenster- und Barrierefreiheits-Texte
+contacts-a11y-groups = Gruppen
+contacts-a11y-sort = Kontakte sortieren
+contacts-a11y-export-list = Kontakte zum Exportieren
+contacts-a11y-birthday-calendar = Geburtstagskalender
+contacts-a11y-favorite = Favorit

@@ -34,13 +34,13 @@ fn profile_body(text: &str) -> ui::widget::Column {
         .with_no_padding()
         .with_intrinsic_height()
         .push(Box::new(
-            Text::new("Exact embedded profile; secrets are collected on the device.")
+            Text::new(&crate::setup::strings::t("installer-export-profile-note"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ))
         .push(Box::new(profile_preview(text)))
         .push(Box::new(
-            Text::new("Press Escape to close")
+            Text::new(&crate::setup::strings::t("installer-export-close"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ))

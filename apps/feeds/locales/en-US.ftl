@@ -46,3 +46,7 @@ feeds-refreshing = Refreshing feeds
 feeds-no-article = No article selected
 feeds-articles-with-tag = Show articles with this tag
 feeds-feed-actions = Feed actions
+
+## Window and accessibility copy
+feeds-a11y-text-size = Text size
+feeds-a11y-subscriptions = Subscriptions

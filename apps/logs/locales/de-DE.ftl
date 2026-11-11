@@ -14,3 +14,7 @@ logs-logs-unit = Die Einträge der Unit { $new } angezeigt
 logs-logs-boot = Die Einträge eines Systemstarts angezeigt
 logs-logs-search = Im Journal gesucht
 logs-clear-filters = Die Journal-Filter zurückgesetzt
+
+## Fenster- und Barrierefreiheits-Texte
+logs-severity = Schweregrad
+logs-a11y-entries = Journaleinträge

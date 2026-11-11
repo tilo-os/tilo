@@ -1141,7 +1141,8 @@ impl Music {
                 .with_no_padding()
                 .with_gap(gap)
                 .push(Box::new(
-                    ui::widget::Text::new("In this app").with_role(ui::tokens::TextRole::Heading),
+                    ui::widget::Text::new(&crate::i18n::t("music-search-this-app"))
+                        .with_role(ui::tokens::TextRole::Heading),
                 ));
             for (id, label, decl, action, spec) in rows {
                 let (icon, home) = (decl.icon, decl.home);

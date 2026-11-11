@@ -47,10 +47,12 @@ pub mod output;
 pub mod plan;
 pub mod routing;
 pub mod spawner;
+#[cfg(target_os = "linux")]
+pub mod tilolang_hosts;
 pub mod workspace;
 
 pub use authority::Authority;
-pub use doors::{Connects, Doors, HeldDoor, Routed, StartAlone, WindowConnections};
+pub use doors::{Connects, Doors, HeldDoor, HostedWindow, Routed, StartAlone};
 pub use env::SessionEnvironment;
 pub use instance::{Answer, Instance, Shown, Windows, package_identities};
 pub use launch::{Launch, Open};

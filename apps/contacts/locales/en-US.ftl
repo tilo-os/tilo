@@ -75,3 +75,10 @@ contacts-group-entry-value = Renamed the group { $item }
 ## What the app calls itself and its list
 
 contacts-title = Contacts
+
+## Window and accessibility copy
+contacts-a11y-groups = Groups
+contacts-a11y-sort = Sort contacts
+contacts-a11y-export-list = Contacts to export
+contacts-a11y-birthday-calendar = Birthday calendar
+contacts-a11y-favorite = Favorite

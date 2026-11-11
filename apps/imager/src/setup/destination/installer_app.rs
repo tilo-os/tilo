@@ -2198,14 +2198,13 @@ impl InstallerApp {
         let dim = theme.text_dim;
 
         children.push(Box::new(
-            Text::new("Connect to a network").with_role(TextRole::Title),
+            Text::new(&crate::setup::strings::t("installer-network-connect"))
+                .with_role(TextRole::Title),
         ));
         children.push(Box::new(
-            Text::new(
-                "Optional — Tilo installs from this medium and does not require internet access.",
-            )
-            .with_role(TextRole::Caption)
-            .with_color(dim),
+            Text::new(&crate::setup::strings::t("installer-network-optional"))
+                .with_role(TextRole::Caption)
+                .with_color(dim),
         ));
         children.push(Box::new(
             Text::new(&self.network.notice)
@@ -2234,7 +2233,8 @@ impl InstallerApp {
         {
             if selected.secure {
                 children.push(Box::new(
-                    Text::new("Wi-Fi password").with_role(TextRole::Body),
+                    Text::new(&crate::setup::strings::t("installer-wifi-password"))
+                        .with_role(TextRole::Body),
                 ));
                 children.push(Box::new(
                     TextInput::new(Vec::new())
@@ -2260,7 +2260,7 @@ impl InstallerApp {
                     .with_color(theme.text_primary),
             ));
             children.push(Box::new(
-                Text::new("For safety, the privileged live installer does not open portal web content. Continue offline, then open this address after first boot.")
+                Text::new(&crate::setup::strings::t("installer-network-privileged"))
                     .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
@@ -2275,7 +2275,7 @@ impl InstallerApp {
         }
 
         children.push(Box::new(
-            Text::new("Wi-Fi connections made here are saved for first boot. You can also continue without one.")
+            Text::new(&crate::setup::strings::t("installer-wifi-saved"))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
@@ -2349,7 +2349,8 @@ impl InstallerApp {
         let danger = theme.tokens.colors.semantic.danger;
 
         children.push(Box::new(
-            Text::new("Install Tilo").with_role(TextRole::Title),
+            Text::new(&crate::setup::strings::t("installer-install-tilo"))
+                .with_role(TextRole::Title),
         ));
         self.compose_install_method(theme, children);
         children.push(Box::new(
@@ -2406,7 +2407,7 @@ impl InstallerApp {
                 && !self.selected_disk_can_install_alongside());
         if read_only {
             children.push(Box::new(
-                Text::new("This disk is hardware or policy write-protected.")
+                Text::new(&crate::setup::strings::t("installer-disk-protected"))
                     .with_role(TextRole::Caption)
                     .with_color(danger),
             ));
@@ -2626,7 +2627,8 @@ impl InstallerApp {
         plans: &[GuidedAlongsidePlan],
     ) {
         children.push(Box::new(
-            Text::new("Choose the exact unallocated region for Tilo").with_role(TextRole::Body),
+            Text::new(&crate::setup::strings::t("installer-region-choose"))
+                .with_role(TextRole::Body),
         ));
         for (index, plan) in plans.iter().enumerate() {
             // The installer states its partition sizes in binary units
@@ -2649,7 +2651,7 @@ impl InstallerApp {
             ));
         }
         children.push(Box::new(
-            Text::new("The location is measured from the start of the selected disk. Existing partitions between free regions remain untouched.")
+            Text::new(&crate::setup::strings::t("installer-region-measured"))
                 .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
@@ -2669,9 +2671,9 @@ impl InstallerApp {
             .is_some_and(ProfileCompletion::identity_complete);
         children.push(Box::new(
             Text::new(if identity_complete {
-                "Secure your account"
+                crate::setup::strings::t("installer-account-secure")
             } else {
-                "Create your account"
+                crate::setup::strings::t("installer-account-create")
             })
             .with_role(TextRole::Title),
         ));
@@ -2775,7 +2777,8 @@ impl InstallerApp {
                 .with_role(TextRole::Body),
         ));
         children.push(Box::new(
-            Text::new("Keyboard layout").with_role(TextRole::Body),
+            Text::new(&crate::setup::strings::t("installer-keyboard-layout"))
+                .with_role(TextRole::Body),
         ));
         children.push(Box::new(
             Text::new(&crate::setup::strings::t("installer-keyboard-note"))
@@ -2790,7 +2793,7 @@ impl InstallerApp {
         children.push(Box::new(KeyboardView::new(&self.keymap)));
         actions.push(self.nav_row(Step::Keyboard, self.next_control(), "Next", false));
         children.push(Box::new(
-            Text::new("Need files from this computer, or removing an alongside Tilo install? Press Ctrl+Alt+F2 for recovery tools; Ctrl+Alt+F1 returns here.")
+            Text::new(&crate::setup::strings::t("installer-recovery-tools"))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
@@ -2806,7 +2809,8 @@ impl InstallerApp {
         let completion = self.profile_completion.unwrap_or_default();
 
         children.push(Box::new(
-            Text::new("Installation options").with_role(TextRole::Title),
+            Text::new(&crate::setup::strings::t("installer-options-heading"))
+                .with_role(TextRole::Title),
         ));
 
         if self.profile_completion.is_none() || !completion.filesystem.is_complete() {
@@ -2814,10 +2818,11 @@ impl InstallerApp {
         }
 
         children.push(Box::new(
-            Text::new("Disk encryption").with_role(TextRole::Body),
+            Text::new(&crate::setup::strings::t("installer-disk-encryption"))
+                .with_role(TextRole::Body),
         ));
         children.push(Box::new(
-            Text::new("Always on, with LUKS2")
+            Text::new(&crate::setup::strings::t("installer-encryption-always"))
                 .with_role(TextRole::Body)
                 .with_color(theme.status_success),
         ));
@@ -2828,7 +2833,8 @@ impl InstallerApp {
         ));
 
         children.push(Box::new(
-            Text::new("Security key").with_role(TextRole::Body),
+            Text::new(&crate::setup::strings::t("installer-security-key"))
+                .with_role(TextRole::Body),
         ));
         children.push(Box::new(seg_choice(
             &FIDO2_LABELS,
@@ -2839,18 +2845,21 @@ impl InstallerApp {
             "fido2_choice",
         )));
         children.push(Box::new(
-            Text::new("Optionally enroll a FIDO2 security key (e.g. a YubiKey) as another way to unlock. Plug it in before installing.")
+            Text::new(&crate::setup::strings::t("installer-security-key-option"))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
 
         if self.profile_completion.is_none() || !completion.hostname.is_complete() {
-            children.push(Box::new(Text::new("Hostname").with_role(TextRole::Body)));
+            children.push(Box::new(
+                Text::new(&crate::setup::strings::t("installer-hostname"))
+                    .with_role(TextRole::Body),
+            ));
             children.push(Box::new(
                 TextInput::from_state(&self.hostname).with_id("installer.hostname"),
             ));
             children.push(Box::new(
-                Text::new("The name your computer uses on the network.")
+                Text::new(&crate::setup::strings::t("installer-hostname-note"))
                     .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
@@ -2858,7 +2867,8 @@ impl InstallerApp {
 
         if self.profile_completion.is_none() || !completion.locale.is_complete() {
             children.push(Box::new(
-                Text::new("Language & locale").with_role(TextRole::Body),
+                Text::new(&crate::setup::strings::t("installer-language-locale"))
+                    .with_role(TextRole::Body),
             ));
             children.push(Box::new(
                 Dropdown::from_state(
@@ -2868,18 +2878,21 @@ impl InstallerApp {
                     &self.locale,
                 )
                 .with_id("installer.locale")
-                .with_accessible_name("Language & locale")
+                .with_accessible_name(crate::setup::strings::t("installer-a11y-language-locale"))
                 .with_placeholder(&crate::setup::strings::t("installer-language-locale")),
             ));
             children.push(Box::new(
-                Text::new("This controls language, formatting, and regional conventions after installation.")
+                Text::new(&crate::setup::strings::t("installer-language-note"))
                     .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
         }
 
         if self.profile_completion.is_none() || !completion.timezone.is_complete() {
-            children.push(Box::new(Text::new("Time zone").with_role(TextRole::Body)));
+            children.push(Box::new(
+                Text::new(&crate::setup::strings::t("installer-time-zone"))
+                    .with_role(TextRole::Body),
+            ));
             children.push(Box::new(
                 Dropdown::from_state(self.timezones.clone(), &self.timezone)
                     .with_id("installer.timezone")
@@ -2887,7 +2900,7 @@ impl InstallerApp {
                     .open_if(self.tz_open_for_shot),
             ));
             children.push(Box::new(
-                Text::new("Pick from the list — start typing to filter (IANA name, e.g. Europe/Amsterdam or UTC).")
+                Text::new(&crate::setup::strings::t("installer-time-zone-pick"))
                     .with_role(TextRole::Caption)
                     .with_color(dim),
             ));
@@ -2995,7 +3008,9 @@ impl InstallerApp {
     }
 
     fn compose_filesystem_choice(&self, theme: &Theme, children: &mut Vec<Box<dyn Widget>>) {
-        children.push(Box::new(Text::new("Filesystem").with_role(TextRole::Body)));
+        children.push(Box::new(
+            Text::new(&crate::setup::strings::t("installer-filesystem")).with_role(TextRole::Body),
+        ));
         let choices = self.available_filesystem_indices();
         if choices.is_empty() {
             children.push(Box::new(
@@ -3101,7 +3116,7 @@ impl InstallerApp {
         let danger = theme.tokens.colors.semantic.danger;
 
         children.push(Box::new(
-            Text::new("Review your choices").with_role(TextRole::Title),
+            Text::new(&crate::setup::strings::t("installer-review")).with_role(TextRole::Title),
         ));
 
         let dev = self
@@ -3208,7 +3223,7 @@ impl InstallerApp {
             PropertyList::new(summary).with_id("installer.review.summary"),
         ));
         children.push(Box::new(
-            Text::new("This install uses the Tilo image on this medium; it does not download an update. Future system updates come from the signature-required Tilo repository and are checked automatically after first boot whenever the computer is online.")
+            Text::new(&crate::setup::strings::t("installer-image-note"))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
@@ -3258,7 +3273,7 @@ impl InstallerApp {
         // it before they can proceed — otherwise a lost TPM = lost
         // data with no warning.
         children.push(Box::new(
-            Text::new("A recovery key will be shown during install — it is your only backup if the TPM is reset or fails. Save it somewhere safe.")
+            Text::new(&crate::setup::strings::t("installer-recovery-key-note"))
                 .with_role(TextRole::Caption)
                 .with_color(dim),
         ));
@@ -3300,7 +3315,7 @@ impl InstallerApp {
         match self.install_state {
             InstallState::Done => {
                 children.push(Box::new(
-                    Text::new("Tilo is installed")
+                    Text::new(&crate::setup::strings::t("installer-installed"))
                         .with_role(TextRole::Title)
                         .with_color(theme.status_success)
                         .with_role(TextRole::Title)
@@ -3321,9 +3336,9 @@ impl InstallerApp {
                 if self.install_method == InstallMethod::Alongside {
                     children.push(Box::new(
                         Text::new(if self.uses_guided_alongside() {
-                            "To choose Tilo or your existing system, open this computer's firmware boot picker. The installer preserved its previous default."
+                            crate::setup::strings::t("installer-boot-order")
                         } else {
-                            "Tilo can add menu shortcuts for unambiguous loaders on the shared EFI partition. If Linux is not listed, use the computer's firmware boot picker; loaders on other EFI partitions are not guaranteed to appear here."
+                            crate::setup::strings::t("installer-boot-shortcuts")
                         })
                         .with_role(TextRole::Caption)
                         .with_color(dim),
@@ -3343,19 +3358,19 @@ impl InstallerApp {
             }
             InstallState::Failed => {
                 children.push(Box::new(
-                    Text::new("Installation failed")
+                    Text::new(&crate::setup::strings::t("installer-failed"))
                         .with_role(TextRole::Title)
                         .with_color(danger)
                         .with_role(TextRole::Title)
                         .with_live(Politeness::Assertive),
                 ));
                 children.push(Box::new(
-                    Text::new("The installer stopped before it could confirm a bootable system. The destination may already contain a partial encrypted installation. Tilo will not treat on-disk names, labels, or metadata as permission to erase it. Save the recovery key below if one was generated, then review storage or use Ctrl+Alt+F2 for recovery tools.")
+                    Text::new(&crate::setup::strings::t("installer-failed-note"))
                         .with_role(TextRole::Caption)
                         .with_color(dim),
                 ));
                 children.push(Box::new(
-                    Text::new("Details")
+                    Text::new(&crate::setup::strings::t("installer-details"))
                         .with_role(TextRole::Caption)
                         .with_color(dim),
                 ));
@@ -3368,13 +3383,13 @@ impl InstallerApp {
             }
             _ => {
                 children.push(Box::new(
-                    Text::new("Installing Tilo…")
+                    Text::new(&crate::setup::strings::t("installer-installing"))
                         .with_role(TextRole::Title)
                         .with_role(TextRole::Title),
                 ));
                 children.push(Box::new(
                     Row::new().push(Box::new(Spinner::new())).push(Box::new(
-                        Text::new("Working — this can take a few minutes. Don't power off.")
+                        Text::new(&crate::setup::strings::t("installer-installing-note"))
                             .with_role(TextRole::Caption)
                             .with_color(dim),
                     )),
@@ -3390,7 +3405,7 @@ impl InstallerApp {
             return;
         };
         children.push(Box::new(
-            Text::new("Recovery key — save this somewhere off-device")
+            Text::new(&crate::setup::strings::t("installer-recovery-key-heading"))
                 .with_role(TextRole::Caption)
                 .with_color(theme.status_success),
         ));
@@ -3408,9 +3423,9 @@ impl InstallerApp {
         ));
         children.push(Box::new(
             Text::new(if self.recovery_key_copied {
-                "Copied. Paste it into a password manager or an encrypted note on another drive before rebooting."
+                crate::setup::strings::t("installer-recovery-key-copied")
             } else {
-                "Copy it into a password manager or an encrypted note on another drive. The installer clears its clipboard copy after 5 minutes, or when you reboot or power off."
+                crate::setup::strings::t("installer-recovery-key-copy-note")
             })
             .with_role(TextRole::Caption)
             .with_color(if self.recovery_key_copied {

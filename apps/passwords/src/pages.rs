@@ -897,8 +897,7 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
     ];
     if reminded {
         children.push(Box::new(
-            Text::new("Confirm that you understand before choosing a file.")
-                .with_role(TextRole::Caption),
+            Text::new(&crate::CATALOG.t("passwords-confirm-export")).with_role(TextRole::Caption),
         ));
     }
     ModalDialog::new("Export passwords to a CSV file?", body(children))

@@ -424,7 +424,7 @@ impl WeatherApp {
             "weather.places",
             items,
         )])
-        .with_accessible_name("Places")
+        .with_accessible_name(crate::i18n::t("weather-a11y-places"))
         .rail()
         .on_view("weather.rail", {
             let core = Rc::clone(core);

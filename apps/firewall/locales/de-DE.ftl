@@ -41,3 +41,13 @@ firewall-import = Die Firewall-Konfiguration eines Geräts übernommen
 ## Barrierefreiheit
 firewall-a11y-window = Firewall
 firewall-source-anywhere = Überall
+
+## Fenster- und Barrierefreiheits-Texte
+firewall-a11y-services = Dienste
+firewall-a11y-dropped = Verworfener Datenverkehr, nach Regel gruppiert
+firewall-reading-dropped-stopped = Öffne Blockiert erneut, um das Systemjournal zu lesen.
+firewall-reading-dropped = Verworfener Datenverkehr wird aus dem Systemjournal gelesen…
+firewall-a11y-rules = Regeln
+firewall-zone-empty = Diese Zone hat noch keine Regeln.
+firewall-applying-rules = Die gespeicherten Regeln werden auf dieses Gerät angewendet…
+firewall-a11y-zones = Firewall-Zonen

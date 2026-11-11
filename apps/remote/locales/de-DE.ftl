@@ -33,3 +33,6 @@ remote-mark-used = Mit { $item } verbunden
 remote-describe-put-file = Eine lokale Datei an diese SSH-Maschine senden: nenne den lokalen Pfad und wohin sie dort geschrieben wird.
 remote-describe-fetch-file = Eine Datei von dieser SSH-Maschine holen: nenne den entfernten Pfad und wohin sie hier geschrieben wird.
 remote-describe-forget-host-key = Die veraltete SSH-Hostschlüssel-Bindung dieses Geräts entfernen; neu verbinden, um einen Ersatzschlüssel zu prüfen.
+
+## Fenster- und Barrierefreiheits-Texte
+remote-a11y-window = Remote

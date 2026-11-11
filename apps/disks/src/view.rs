@@ -266,7 +266,7 @@ pub(crate) fn drive_list(
     let section = NavSection::untitled("drives", items).pending(u8::from(loading));
     NavList::new(vec![section])
         .selected(&drive_id(selected))
-        .with_accessible_name("Drives")
+        .with_accessible_name(crate::locales::CATALOG.t("disks-a11y-drives"))
         .on_view("disks.drives", move |id| {
             if let Some(index) = id.strip_prefix("drive:").and_then(|n| n.parse().ok()) {
                 intents.push(Intent::SelectDrive(index));
@@ -471,7 +471,7 @@ fn filesystems(drive: &Drive, selected: Option<usize>, intents: &Intents) -> Sec
         .collect();
     if items.is_empty() {
         items.push(Box::new(
-            Text::new("No filesystems are mounted.")
+            Text::new(&crate::locales::CATALOG.t("disks-none-mounted"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ));
@@ -715,7 +715,7 @@ fn attribute_table(attrs: &[SmartAttr]) -> DataTable<SmartAttr> {
     ]);
     let mut table = DataTable::new(columns)
         .with_id("disks-attributes")
-        .with_accessible_name("SMART attributes");
+        .with_accessible_name(crate::locales::CATALOG.t("disks-a11y-smart"));
     table.set_rows(attrs.to_vec());
     table
 }
@@ -824,7 +824,7 @@ fn partitions(model: &DetailModel<'_>, intents: &Intents) -> Element {
     let drive = model.drive;
     if drive.partitions.is_empty() {
         return Box::new(Section::new(vec![Box::new(
-            Text::new("This drive has no partitions.")
+            Text::new(&crate::locales::CATALOG.t("disks-drive-empty"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         )]));

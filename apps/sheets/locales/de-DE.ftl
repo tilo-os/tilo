@@ -88,3 +88,6 @@ sheets-reopen-comment = Kommentar wieder öffnen
 sheets-actions = Tabellenaktionen
 sheets-window-name = Sheets
 sheets-window-detail = Bearbeitbare Arbeitsmappe mit Formelleiste und Blattregistern
+
+## Fenster- und Barrierefreiheits-Texte
+sheets-numbers-none = Keine Zahlen in diesem Bereich

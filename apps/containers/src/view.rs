@@ -106,7 +106,7 @@ pub(crate) fn section_list(
     let intents = intents.clone();
     NavList::new(vec![NavSection::untitled("sections", items)])
         .selected(place_id(selected))
-        .with_accessible_name("Sections")
+        .with_accessible_name(crate::resource::CATALOG.t("containers-a11y-sections"))
         .on_view("containers-sections", move |id| {
             if let Some(place) = Place::parse(&id) {
                 intents.push(Intent::ShowSection(place));
@@ -128,7 +128,7 @@ pub(crate) fn sidebar(
         Box::new(StatusLine::active("Connected"))
     } else if connected {
         Box::new(
-            Text::new("Sample data")
+            Text::new(&crate::resource::CATALOG.t("containers-sample-data"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         )
@@ -318,7 +318,7 @@ pub(crate) fn container_list(
             }),
     ])
     .with_id("containers-list")
-    .with_accessible_name("Containers")
+    .with_accessible_name(crate::resource::CATALOG.t("containers-a11y-containers"))
     .with_sort_state(sort)
     .selectable(true)
     .on_view("containers-list", move |index| {
@@ -1088,12 +1088,12 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
     let state: Element = match (&pull.failed, pull.stopped) {
         (Some(error), _) => Box::new(Text::new(error).with_role(TextRole::Body)),
         (None, true) => Box::new(
-            Text::new("Stopped. What had been fetched stays in the image store.")
+            Text::new(&crate::resource::CATALOG.t("containers-pull-stopped"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ),
         (None, false) if pull.done => Box::new(
-            Text::new("The image is ready to create containers from.")
+            Text::new(&crate::resource::CATALOG.t("containers-image-ready"))
                 .with_role(TextRole::Body)
                 .dimmed(),
         ),
@@ -1126,7 +1126,7 @@ pub(crate) fn pull_body(pull: &crate::app::PullProgress, intents: &Intents) -> C
     column
         .push(output(pull.lines.iter().map(String::as_str)))
         .push(Box::new(
-            Text::new("Every line Podman wrote, oldest first.")
+            Text::new(&crate::resource::CATALOG.t("containers-pull-log"))
                 .with_role(TextRole::Caption)
                 .dimmed(),
         ))

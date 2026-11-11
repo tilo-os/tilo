@@ -155,3 +155,10 @@ pdf-a11y-review-sidebar = Seitenleiste zum Prüfen
 pdf-a11y-review-panels = Panels zum Prüfen
 pdf-a11y-page-controls = Seitensteuerung
 pdf-a11y-document = Dokument
+
+## Fenster- und Barrierefreiheits-Texte
+pdf-viewer-signature-placed-note = Noch keine Unterschrift platziert.
+pdf-viewer-signature-placed = Platziert
+pdf-viewer-signing-as = Unterschrieben als
+pdf-viewer-signature-your = Deine Unterschrift
+pdf-viewer-comment-placeholder = Kommentar schreiben…

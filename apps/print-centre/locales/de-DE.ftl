@@ -29,3 +29,6 @@ print-centre-finding-printers = Drucker in der Nähe werden gesucht
 print-centre-choose-printer = Drucker wählen
 print-centre-preparing-preview = Dokumentvorschau wird vorbereitet
 print-centre-all-pages = Alle Seiten
+
+## Fenster- und Barrierefreiheits-Texte
+print-centre-a11y-pages = Zu druckende Seiten

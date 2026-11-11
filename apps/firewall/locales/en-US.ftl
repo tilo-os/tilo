@@ -41,3 +41,13 @@ firewall-import = Took in the firewall configuration of a device
 ## Accessibility
 firewall-a11y-window = Firewall
 firewall-source-anywhere = Anywhere
+
+## Window and accessibility copy
+firewall-a11y-services = Services
+firewall-a11y-dropped = Dropped traffic, grouped by rule
+firewall-reading-dropped-stopped = Open Blocked again to read the system journal.
+firewall-reading-dropped = Reading dropped traffic from the system journal…
+firewall-a11y-rules = Rules
+firewall-zone-empty = This zone has no rules yet.
+firewall-applying-rules = Applying the stored rules to this device…
+firewall-a11y-zones = Firewall zones

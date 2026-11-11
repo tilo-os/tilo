@@ -182,7 +182,7 @@ impl SidebarNav {
             let fold = Rc::clone(requests);
             let follow = Rc::clone(core);
             NavList::new(Vec::new())
-                .with_accessible_name("Subscriptions")
+                .with_accessible_name(crate::i18n::t("feeds-a11y-subscriptions"))
                 // Headings and a New folder are what a growing library
                 // needs: the sidebar is a list from the start, never a rail.
                 .with_headings()

@@ -413,3 +413,13 @@ browser-filters-failed-worker = Aktualisierung fehlgeschlagen: Hilfsprozess nich
 browser-address-suggestions = Adressvorschläge
 browser-window-name = Browser
 browser-page-menu-name = Seitenmenü
+
+## Fenster- und Barrierefreiheits-Texte
+browser-quit-downloads-running = Downloads laufen noch
+browser-quit-cancelling-downloads = Downloads werden vor dem Beenden abgebrochen…
+browser-section-passwords = Passwörter
+browser-section-address-autofill = Adress-Autofill
+browser-a11y-search-engine = Suchmaschine
+browser-a11y-clear-on-quit = Daten beim Schließen des Browsers löschen
+browser-a11y-block-ads = Werbung und Tracker blockieren
+browser-settings-title = Einstellungen

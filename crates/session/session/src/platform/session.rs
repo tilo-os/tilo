@@ -465,8 +465,11 @@ impl Session {
         });
         let wells = policy.wells();
         policy.set_window_mapped(Rc::new(move |pid| settling.window_mapped(pid)));
+        // The connectors of the apps' outside services: what the record service and every hosted
+        // tilolang instance reach an origin through.
+        let connectors = Rc::new(crate::connectors::ConnectorHost::new());
         if let Some(launch) = &options.launch {
-            launch.lend_doors(Rc::clone(&window_doors));
+            launch.lend_doors(Rc::clone(&window_doors), Rc::clone(&connectors));
         }
 
         // The programs the person downloaded: the registry takes the
@@ -1696,7 +1699,7 @@ impl Session {
                 .take()
                 .map(crate::controllers::Controllers::mount),
             controller_wakes: std::collections::BTreeMap::new(),
-            connectors: crate::connectors::ConnectorHost::new(),
+            connectors,
         };
         session.watch_sockets()?;
         session.shared.directory_store.waking(options.wake.handle());

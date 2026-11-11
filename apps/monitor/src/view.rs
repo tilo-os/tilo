@@ -423,7 +423,7 @@ fn process_table(shape: TableShape, shared: &Shared) -> (DataTable<ProcessRow>, 
     let table = DataTable::new(columns)
         .compact()
         .with_id("monitor.processes")
-        .with_accessible_name("Processes")
+        .with_accessible_name(crate::resource::CATALOG.t("monitor-a11y-processes"))
         .selectable(true)
         .with_row_key(|row: &ProcessRow| u64::from(row.pid))
         .on_header_click(move |index| {
