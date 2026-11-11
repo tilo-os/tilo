@@ -700,6 +700,20 @@ mod tests {
         );
     }
 
+    /// Every tile is named in words, never by the message id it looks its
+    /// name up under.
+    #[test]
+    fn every_tile_has_a_name() {
+        for tile in tiles().iter() {
+            let label = ThemeTiles::label_of(tile.name);
+            assert!(
+                !label.starts_with("settings-"),
+                "the {} tile shows its message id: {label}",
+                tile.name
+            );
+        }
+    }
+
     /// The tiles fill even lines across the width they get: every line
     /// holds as many tiles as the others, more on a desktop pane than on a
     /// phone, and two on a phone.
