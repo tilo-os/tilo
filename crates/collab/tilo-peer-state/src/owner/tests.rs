@@ -430,7 +430,7 @@ fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
     let key = member();
     let envelope = |request: &OwnerCommitRequest| match &request.operation {
         CommitOperation::Document { envelope, .. } => (**envelope).clone(),
-        _ => unreachable!("a document write"),
+        _ => panic!("a document write"),
     };
     let earlier = unordered_edit(&joined, "signed first");
     let later = unordered_edit(&joined, "signed second");

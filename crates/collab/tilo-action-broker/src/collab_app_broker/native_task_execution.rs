@@ -190,7 +190,7 @@ impl AppBrokerState {
 
     /// The resource `target`'s action is published on now by its peer
     /// ([`super::PublishedSurface::current_resource`]).
-    fn published_now(&self, target: runtime_collab::TaskAction<'_>) -> Option<String> {
+    pub(super) fn published_now(&self, target: runtime_collab::TaskAction<'_>) -> Option<String> {
         self.surfaces
             .lock()
             .ok()?

@@ -6195,6 +6195,13 @@ impl AppBrokerState {
         target: runtime_collab::TaskAction<'_>,
         (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
     ) -> Result<StagedJob, String> {
+        // The action as its window publishes it now: one mounted anew as the
+        // window settled carries it under a new alias.
+        let current = self.published_now(target);
+        let target = runtime_collab::TaskAction {
+            resource: current.as_deref().unwrap_or(target.resource),
+            ..target
+        };
         let runtime_collab::TaskAction {
             peer_id: target_peer,
             provider: _,
