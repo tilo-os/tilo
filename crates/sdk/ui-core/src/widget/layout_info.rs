@@ -164,6 +164,25 @@ pub struct ShellLayout {
     pub rows: HeaderRows,
 }
 
+/// Where a field's text stands in it, as the field paints it: the band its first line occupies
+/// (in window coordinates, scrolled in), how tall that line is, how many rows the text takes,
+/// and how many rows the field asked to stand of its own.
+///
+/// An audit reads this to hold a field to what a person reads: one that follows the line it
+/// holds stands that line in the middle of the control, however much room the band around it
+/// takes, while a box given rows of its own starts at its top inset and grows down.
+#[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
+pub struct TextLayout {
+    /// The top of the first line's band.
+    pub top: f32,
+    /// The line's height.
+    pub line: f32,
+    /// The rows the text takes, never less than one.
+    pub rows: u32,
+    /// The rows the field was given of its own: none for a field that follows its text.
+    pub lines: u32,
+}
+
 /// Concrete layout policies. Manual layout information can extend this enum.
 #[derive(serde::Serialize, Clone, Copy, Debug, PartialEq)]
 pub enum LayoutInfo {
@@ -175,6 +194,7 @@ pub enum LayoutInfo {
     Scroll(ScrollLayout),
     Row(RowLayout),
     Shell(ShellLayout),
+    Text(TextLayout),
 }
 
 /// Which way a scroll view lets its content go on past its own box.

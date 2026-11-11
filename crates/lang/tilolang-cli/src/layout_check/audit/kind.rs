@@ -163,10 +163,16 @@ pub enum Kind {
     /// A name tag presence draws — who is there, what an agent is doing — over a word of the
     /// window, or a second tag for one actor: the word is lost, and one actor reads as two.
     PresenceTag,
+    /// A field holding one line of text, standing it above the middle of the control a person
+    /// types into: the band around the line grew (a phone's target, a row that stretches the
+    /// field) while the line stayed at the top, so the words float over empty room instead of
+    /// standing where the field puts the caret. One line stands in the middle of the field;
+    /// text that wraps, and a box given lines of its own, starts at its inset.
+    LineOffCentre,
 }
 
 impl Kind {
-    pub const ALL: [Self; 49] = [
+    pub const ALL: [Self; 50] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -216,6 +222,7 @@ impl Kind {
         Self::DetailRowNotChosen,
         Self::SidebarHeaderOnReveal,
         Self::PresenceTag,
+        Self::LineOffCentre,
     ];
 
     pub fn name(self) -> &'static str {
@@ -269,6 +276,7 @@ impl Kind {
             Self::DetailRowNotChosen => "detail-row-not-chosen",
             Self::SidebarHeaderOnReveal => "sidebar-header-on-reveal",
             Self::PresenceTag => "presence-tag",
+            Self::LineOffCentre => "line-off-centre",
         }
     }
 }

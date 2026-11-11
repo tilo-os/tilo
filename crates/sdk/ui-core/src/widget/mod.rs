@@ -3161,7 +3161,7 @@ pub use form_composition::{Field, Form, FormPage, FormSection, Page};
 pub use layout_info::{
     Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
     LayoutInfo, LayoutOrigin, ManualConflict, ManualLayout, PageLayout, RowLayout, ScrollDirection,
-    ScrollLayout, SectionLayout, ShellLayout, SidebarStanding,
+    ScrollLayout, SectionLayout, ShellLayout, SidebarStanding, TextLayout,
 };
 mod embedded;
 pub use embedded::Embedded;

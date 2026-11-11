@@ -112,6 +112,11 @@ sidebar that declares a header row — the words that name its places and the bu
 them — to drawing it there: what a sidebar says of itself is on the window at every time, never
 only once the person reaches for the bar (`sidebar-header-on-reveal`).
 
+It reads a field's line where the field stands it: one that follows the text it holds keeps that
+line in the middle of the control — the band around it may grow to a finger's target, or a row may
+stretch it to the face of the button beside it — while a box given rows of its own, and text that
+wraps, starts at its inset and grows down.
+
 It reads the words a window shows where their ink stands, the bar's own painted labels among
 them — the words of its tabs, its location, its pickers and its notices: two words drawn in one
 place are a `text-on-text` finding unless a surface of one's own stands between them, since
