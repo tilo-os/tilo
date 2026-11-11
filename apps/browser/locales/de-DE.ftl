@@ -48,7 +48,7 @@ browser-personal-bookmarks-empty = Hier gibt es keine Lesezeichen
 browser-personal-bookmarks-remove = Lesezeichen entfernen
 browser-personal-bookmarks-unnamed-folder = Unbenannter Ordner
 browser-workspace-bookmarks = Lesezeichen des Arbeitsbereichs
-browser-continuity-failed = Wir konnten das Übernehmen deiner Browserdaten nicht abschließen.
+browser-continuity-failed = Wir konnten deine Browserdaten nicht vollständig übernehmen.
 browser-continuity-retry = Erneut versuchen
 browser-service-forget = Konto auf diesem Gerät vergessen
 browser-service-forgetting = Dieses Konto wird auf diesem Gerät vergessen …
@@ -63,9 +63,9 @@ browser-service-open = { $name } öffnen
 browser-engine-failed = Schließe Browser und öffne ihn erneut. Startet er weiterhin nicht, aktualisiere Browser im Store oder installiere ihn neu.
 
 ## Toolbar
-browser-back = Zurück; gedrückt halten oder Rechtsklick für den Verlauf
+browser-back = Zurück
 browser-back-tooltip = Zurück (Alt+Links); gedrückt halten oder Rechtsklick für den Verlauf
-browser-forward = Vor; gedrückt halten oder Rechtsklick für den Verlauf
+browser-forward = Vor
 browser-forward-tooltip = Vor (Alt+Rechts); gedrückt halten oder Rechtsklick für den Verlauf
 browser-stop = Laden stoppen
 browser-reload = Neu laden

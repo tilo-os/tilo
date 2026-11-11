@@ -63,7 +63,7 @@ console-workspace-made-by-you = Made by you
 console-workspace-made-by = Made by { $agent }
 console-workspace-open = Open in Tilo
 
-console-connect-lead = Run one of these where your agent runs. It asks you to sign in once, then works in your workspaces as itself: everything it does shows under Agents, and you can stop or undo it.
+console-connect-lead = Run one of these commands where your agent runs. It asks you to sign in once, then works in your workspaces as itself. Everything it does shows under Agents, where you can stop or undo it.
 console-connect-heading = Connect an agent
 console-client-claude-code = Claude Code
 console-client-codex = Codex

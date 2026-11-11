@@ -48,7 +48,7 @@ browser-personal-bookmarks-empty = No bookmarks here
 browser-personal-bookmarks-remove = Remove bookmark item
 browser-personal-bookmarks-unnamed-folder = Untitled folder
 browser-workspace-bookmarks = Workspace bookmarks
-browser-continuity-failed = We couldn’t finish bringing your browsing over.
+browser-continuity-failed = We couldn’t finish bringing your browsing data over.
 browser-continuity-retry = Try again
 browser-service-forget = Forget account on this device
 browser-service-forgetting = Forgetting this account on this device…
@@ -63,9 +63,9 @@ browser-service-open = Open { $name }
 browser-engine-failed = Close Browser and open it again. If it still won’t start, update or reinstall Browser in Store.
 
 ## Toolbar
-browser-back = Back; hold or right-click for history
+browser-back = Back
 browser-back-tooltip = Back (Alt+Left); hold or right-click for history
-browser-forward = Forward; hold or right-click for history
+browser-forward = Forward
 browser-forward-tooltip = Forward (Alt+Right); hold or right-click for history
 browser-stop = Stop loading
 browser-reload = Reload

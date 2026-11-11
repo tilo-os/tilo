@@ -2,7 +2,7 @@
 
 ## History: what each change to the camera's record did
 
-camera-register-capture = Handed off a new capture
+camera-register-capture = Took a photo or a video
 camera-record-scan = Scanned { $raw }
 
 camera-title = Camera

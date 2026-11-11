@@ -1,6 +1,6 @@
 git-remote-running = Remote-Vorgang läuft…
 git-remote-busy = Warte, bis der aktuelle Remote-Vorgang abgeschlossen ist.
-git-remote-worker-stopped = Der Remote-Prozess wurde unerwartet beendet. Prüfe den Repository-Zustand vor einem erneuten Versuch.
+git-remote-worker-stopped = Der Remote-Vorgang wurde unerwartet beendet. Prüfe das Repository vor einem erneuten Versuch.
 
 # Screens
 git-screen-changes = Änderungen
@@ -27,7 +27,7 @@ git-confirm-discard-body = Deine Änderungen gehen verloren. Das lässt sich nic
 git-confirm-delete-branch-body = Commits, die nur dieser Branch enthält, gehen verloren.
 git-confirm-discard = Verwerfen
 git-confirm-switch-title = Zu { $name } wechseln?
-git-confirm-switch-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; eine Änderung, die überschrieben würde, lehnt beides ab.
+git-confirm-switch-body = Du hast nicht festgeschriebene Änderungen. Lege sie in den Stash und wechsle, oder nimm sie mit; Wechseln scheitert, wenn eine Änderung überschrieben würde.
 git-switch-stash = Stash und wechseln
 git-switch-carry = Änderungen behalten
 git-cancel = Abbrechen

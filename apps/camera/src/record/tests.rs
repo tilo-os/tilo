@@ -127,6 +127,6 @@ fn history_entries_render_as_the_apps_sentences() {
     }));
     assert_eq!(
         sentences,
-        ["Scanned https://tilo.test", "Handed off a new capture"]
+        ["Scanned https://tilo.test", "Took a photo or a video"]
     );
 }

@@ -22,13 +22,13 @@ files-shortcuts-size = Larger, smaller items
 files-shortcuts-refresh = Refresh
 files-selection-empty = Select files first.
 files-clipboard-source-unavailable = A selected file has changed or is no longer available. Select it again before copying.
-files-clipboard-source-changed = The shown object differs from its retained selection. Select it again before copying.
+files-clipboard-source-changed = The file shown here is not the one you selected. Select it again before copying.
 files-clipboard-unavailable = Copy and paste isn’t available right now.
 files-clipboard-empty = The workspace file clipboard is empty.
 files-clipboard-undone = Paste undone.
 files-selection-unavailable = That item is no longer in this folder.
-files-selection-too-large = Select at most 256 items in one request.
-files-copy-too-large = Copy items from one folder at a time when there are more than 256.
+files-selection-too-large = Select at most 256 items at a time.
+files-copy-too-large = Copy at most 256 items at a time, from one folder.
 
 ## Availability actions and status
 files-keep-offline = Keep offline
@@ -463,7 +463,7 @@ files-account-sign-in-where = You can do that in Settings, under External accoun
 files-account-service-at-host = { $service } at { $host }
 files-account-folder = Folder: { $path }
 files-account-check-again = Check again
-files-account-check-again-detail = Reads the account's state again and opens its folder once it is available.
+files-account-check-again-detail = Checks the account again and opens its folder once it is available.
 files-action-send-airdrop = Send to a verified AirDrop lab receiver…
 files-airdrop-unavailable = Verified AirDrop lab transfer is unavailable on this host.
 files-airdrop-endpoint-invalid = Enter the receiver's literal IP address and a TLS port from 1 to 65535.
@@ -476,7 +476,7 @@ files-airdrop-action-detail = You confirm the receiver before this file is sent.
 
 files-nearby-status = Transfer status
 files-nearby-transfer-unavailable = This transfer is no longer available in this Files window.
-files-nearby-status-detail = Read this transfer’s phase and confirmed byte counts.
+files-nearby-status-detail = This transfer’s phase and confirmed byte counts.
 
 files-clipboard-recovered = Recovered { $count } interrupted transfers. Recoverable copies are in Trash.
 files-menu-recover-transfers = Recover interrupted transfers
@@ -497,7 +497,7 @@ file-explorer-rename = Renamed { $entry } to { $name }
 file-explorer-trash = Moved files to Trash
 file-explorer-move = Moved files to { $to }
 file-explorer-copy = Copied files to { $to }
-file-explorer-revert = Took back a change to files
+file-explorer-revert = Undid a change to files
 file-explorer-write-file = Wrote the file { $name }
 file-explorer-compress = Compressed files into an archive
 
