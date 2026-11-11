@@ -138,16 +138,16 @@ fn workspace_over(
 ) -> Workspace {
     let woken = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&woken);
+    // One wake for every answer, as the app's engine has: an answer to a request and news of
+    // mail that arrived both wake the window.
+    let wake: mail::engine::Wake = Arc::new(move || flag.store(true, Ordering::Release));
     let engine = mail::engine::live::LiveEngine::trusting(
         tilo_content::ContentStore::memory(),
-        Arc::new(|| {}),
+        Arc::clone(&wake),
         accepting_client_config(),
     )
     .expect("the engine starts");
-    let (requests, events) = mail::engine::spawn_waking(
-        Box::new(engine),
-        Arc::new(move || flag.store(true, Ordering::Release)),
-    );
+    let (requests, events) = mail::engine::spawn_waking(Box::new(engine), wake);
     let connector = EngineConnector::new(accounts, requests, events);
     let origin = std::rc::Rc::new(std::cell::RefCell::new(
         ImapOrigin::new(Box::new(connector), woken).reconnecting_on(reconnected),
