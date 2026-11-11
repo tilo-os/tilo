@@ -109,10 +109,7 @@ view framed_place(a: Arrangement, p: ArrangementPlace) {
             place_controls(a, p)
         }
         body: {
-            stack(gap: .none, fill) {
-                place_handle(p)
-                place_content(p)
-            }
+            place_content(p)
         }
     }
 }
