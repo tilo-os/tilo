@@ -2216,11 +2216,10 @@ impl AgentParticipant {
     /// name.
     fn show_on_desk(&self, route: &DocumentRoute) {
         let desktop = desktop_route(&self.workspace);
-        let Some(record) = self
-            .apps
-            .get(route)
-            .map(|app| app.record_id().as_str().to_owned())
-        else {
+        // Pages note each window's record on the desk in its wire spelling (empty for an app's
+        // primary record), and the view is named the same way, so a record a person's window
+        // already shows is found there.
+        let Some(record) = self.apps.get(route).map(|app| app.wire_record().to_owned()) else {
             return;
         };
         let beside = self
@@ -2235,7 +2234,7 @@ impl AgentParticipant {
             .and_then(|last| {
                 self.apps
                     .get(&last)
-                    .map(|app| app.record_id().as_str().to_owned())
+                    .map(|app| (last.app_id.clone(), app.wire_record().to_owned()))
             });
         let title = self
             .catalogue
@@ -2245,7 +2244,9 @@ impl AgentParticipant {
             app_id: &route.app_id,
             title,
             record: &record,
-            beside: beside.as_deref(),
+            beside: beside
+                .as_ref()
+                .map(|(app, record)| (app.as_str(), record.as_str())),
         };
         // The window is the person's the agent works for; the run says it
         // was this agent's task that opened it, and what it was asked.

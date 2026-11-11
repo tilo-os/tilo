@@ -662,15 +662,15 @@ impl Shared {
     }
 
     /// The record each window shows, by its tab: what the session's roster places a person's
-    /// record by, as a native session's windows note theirs.
+    /// record by, as a native session's windows note theirs. An app's primary record is spelled
+    /// empty, as an agent working in it names it, and the roster matches the window's app too: a
+    /// Notes window showing Notes' primary record is where an agent writing a note there is, and
+    /// following it brings that window forward rather than opening Notes again.
     pub fn shown_records(&self) -> std::collections::BTreeMap<u64, String> {
         self.records
             .borrow()
             .iter()
-            .filter_map(|(tab, checkout)| {
-                let route = checkout.id.route();
-                (!route.is_empty()).then(|| (*tab, route.to_owned()))
-            })
+            .map(|(tab, checkout)| (*tab, checkout.id.route().to_owned()))
             .collect()
     }
 }
