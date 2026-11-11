@@ -811,6 +811,35 @@ test('whenReady rejects when the host refuses the device', async () => {
   await peer.dispose();
 });
 
+test('a host still replaying the workspace is waited for; one that says nothing is not', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connect(options(runtime, memoryStore()));
+  // Each record arrives inside the wait, though the replay as a whole takes
+  // several times as long: the page waits for it, and is in once it is ready.
+  const replaying = peer.whenReady({timeoutMs: 80, capMs: 5000});
+  for (let record = 0; record < 6; record += 1) {
+    await new Promise(resolve => setTimeout(resolve, 40));
+    runtime.peer.records.push({app: 'so.tilo.notes', record: `note-${record}`});
+    runtime.peer.emit('admitting');
+  }
+  runtime.peer.emit('ready');
+  assert.equal((await replaying).phase, 'ready');
+  await peer.dispose();
+
+  const quiet = fakeRuntime({phase: 'admitting'});
+  const silent = await connect(options(quiet, memoryStore()));
+  await assert.rejects(silent.whenReady({timeoutMs: 80, capMs: 5000}), {name: 'TimeoutError'});
+  // A host that keeps sending but never lets the page in is given up on at the cap.
+  const endless = silent.whenReady({timeoutMs: 80, capMs: 300});
+  const feeding = setInterval(() => {
+    quiet.peer.records.push({app: 'so.tilo.notes', record: `more-${quiet.peer.records.length}`});
+    quiet.peer.emit('admitting');
+  }, 30);
+  await assert.rejects(endless, {name: 'TimeoutError'});
+  clearInterval(feeding);
+  await silent.dispose();
+});
+
 test('a page waiting to show its desktop goes on once it holds the shared desktop, before the rest arrives', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
   const peer = await connect(options(runtime, memoryStore()));

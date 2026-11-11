@@ -1184,25 +1184,42 @@ async function connect({
      * replays it ahead of the workspace's other records, and the desktop
      * shows from it while the rest arrives. A workspace whose desktop record
      * has not reached the page yet still waits for the whole replay, so a
-     * desktop never starts a record of its own beside the workspace's. */
-    whenReady({signal, timeoutMs = 30_000, shown = false} = {}) {
+     * desktop never starts a record of its own beside the workspace's.
+     *
+     * A host that says nothing for `timeoutMs` has not answered. One that
+     * is still getting the page there (the session moving on to admitting,
+     * another of the workspace's records arriving) is waited for, up to
+     * `capMs` in all: a busy host replaying a workspace to a slow device
+     * takes longer than a silent one is given, and is no unreachable host. */
+    whenReady({signal, timeoutMs = 30_000, capMs = 120_000, shown = false} = {}) {
       return new Promise((resolve, reject) => {
         let timer;
+        let done = false;
+        let progress = null;
+        const began = Date.now();
         const finish = (error, value) => {
+          done = true;
           clearTimeout(timer); listeners.delete(check); pendingRecordWaits.delete(finish);
           signal?.removeEventListener('abort', abort);
           if (error) reject(error); else resolve(value);
         };
         const abort = () => finish(signal.reason ?? new DOMException('Aborted', 'AbortError'));
+        // Not a refusal: the host has not answered yet.
+        const timedOut = () => finish(new DOMException('Workspace admission timed out', 'TimeoutError'));
         const check = current => {
           if (disposed) finish(new Error('Shared resource connection closed'));
           else if (current.phase === 'ready') finish(undefined, current);
           else if (shown && current.phase === 'admitting' && hasRecord(DESKTOP_APP, DESKTOP_RECORD)) finish(undefined, current);
           else if (current.phase === 'failed') finish(new Error(current.error ?? 'the host refused this device'));
+          if (done) return;
+          // Each step the host takes gives it `timeoutMs` more, within `capMs`.
+          const now = `${current.phase}:${JSON.parse(peer?.workspaceRecords?.() ?? '[]').length}`;
+          if (now === progress) return;
+          progress = now;
+          clearTimeout(timer);
+          timer = setTimeout(timedOut, Math.max(0, Math.min(timeoutMs, began + capMs - Date.now())));
         };
         if (signal?.aborted) { abort(); return; }
-        // Not a refusal: the host has not answered yet.
-        timer = setTimeout(() => finish(new DOMException('Workspace admission timed out', 'TimeoutError')), timeoutMs);
         listeners.add(check); pendingRecordWaits.add(finish);
         signal?.addEventListener('abort', abort, {once: true});
         check(snapshot);
