@@ -176,6 +176,10 @@ impl TiloStore {
     /// ([`crate::host::Host::index_pending`]). An index derived off the frame wakes the window
     /// when it lands (`TiloStore::set_waker`), and what a frame reads in is read within it, so
     /// nothing polls for either.
+    ///
+    /// A chunk the source cannot give is not one this owes: the store asked for it once and waits
+    /// for the sync that brings it ([`Inner::waited`]), so a window rests over the rows it has
+    /// while the chunk is away rather than reading what is not here at every frame.
     #[must_use]
     pub fn index_pending(&self) -> bool {
         let held = self.held();
@@ -430,6 +434,8 @@ impl Inner {
     /// read again: opening a workspace of many chunks costs what those chunks hold, once.
     pub(super) fn attach_document(&mut self, chunk: ChunkNo, doc: &Doc) {
         self.stats.attaches = self.stats.attaches.saturating_add(1);
+        // The chunk the store waited on is here: what reads the record covers it from now on.
+        self.waited.remove(&chunk);
         self.versions.remove(&chunk);
         self.nested.clear();
         let mirror = mirror_of(doc);
@@ -506,6 +512,9 @@ impl Inner {
     /// not hold, and that hold something of an app the store reads from: what it reads to cover
     /// the record ([`TiloStore::load_short`]). Empty when it cannot read chunks: its indexes are
     /// what the record's manifest was read into.
+    ///
+    /// A chunk the source could not give is not here to read: it is waited on rather than asked
+    /// for again ([`Inner::waited`]), so the store owes no sync for it until it arrives.
     fn chunks_to_read(&self) -> Vec<ChunkNo> {
         if self.chunk_loader.is_none() || !self.chunks.has_record() {
             return Vec::new();
@@ -523,6 +532,7 @@ impl Inner {
             .iter()
             .copied()
             .filter(|chunk| !reflected.contains(chunk) && self.chunks.mirror(*chunk).is_none())
+            .filter(|chunk| !self.waited.contains(chunk))
             .filter(|chunk| self.read_for_an_app(&whose, *chunk))
             .collect()
     }
