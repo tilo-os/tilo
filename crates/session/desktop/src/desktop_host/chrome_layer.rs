@@ -8,7 +8,7 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId, WorkspaceSlot,
 };
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination};
-use tilo_desktop_surface::{DesktopHandle, HostActionSource};
+use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
@@ -127,6 +127,9 @@ pub struct DesktopChrome {
     /// The desk's search palette, over the windows the desk draws: it is the one surface here that
     /// must cover a window in front, so the chrome draws it rather than the desk under them.
     search: SearchOverlay,
+    /// The desk's notifications, over its windows for the same reason: the centre, and the banners
+    /// where the host shows none of its own. `None` on a desk without notifications.
+    notices: Option<NotificationLayer>,
     /// Alt+Tab's panel, as the desk's walk last said what it shows.
     switcher: Switcher,
     /// The desktop's control hints, what this frame shows them, and the person's record as the
@@ -218,6 +221,7 @@ impl DesktopChrome {
         mac: bool,
     ) -> Self {
         let search = SearchOverlay::new(handle.clone());
+        let notices = handle.notifications().map(NotificationLayer::new);
         Self {
             bar,
             compact: Vec::new(),
@@ -256,6 +260,7 @@ impl DesktopChrome {
             answered: None,
             output: None,
             search,
+            notices,
             switcher: Switcher::default(),
             hints: ControlHints::new(ui::control_hints::Learned::default()),
             hints_frame: HintFrame::default(),
@@ -447,6 +452,8 @@ impl DesktopChrome {
             .stands(Slot::WorkspaceMenu, self.workspace_menu.panel_rect());
         self.overlays
             .stands(Slot::TiloMenu, self.tilo_menu.menu_rect());
+        let centre = self.notices.as_ref().and_then(NotificationLayer::panel);
+        self.overlays.stands(Slot::Centre, centre);
         for (slot, open) in [
             (Slot::Emoji, self.emoji.is_open()),
             (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
@@ -454,6 +461,7 @@ impl DesktopChrome {
             (Slot::Overview, self.overview.is_open()),
             (Slot::Strips, self.navigator.takes_keys()),
             (Slot::Search, self.search.is_open()),
+            (Slot::Centre, centre.is_some()),
         ] {
             // The stack took it down — a press outside it, another surface opening — and the widget
             // has yet to follow: what it still shows is the state being left behind, not an opening
@@ -504,6 +512,50 @@ impl DesktopChrome {
         if self.search.is_open() && !self.overlays.is_open(Slot::Search) {
             self.search.close();
             self.overlays.close(Slot::Search);
+        }
+        if let Some(notices) = self.notices.as_mut()
+            && notices.center_open()
+            && !self.overlays.is_open(Slot::Centre)
+        {
+            notices.set_center_open(false);
+            self.overlays.close(Slot::Centre);
+        }
+    }
+
+    /// Open or close the notification centre as the person last asked (the bell, a chord, a
+    /// verb), and stand it where the stack places it: under the bar's trailing end, as quick
+    /// settings stands. Whether it opened or closed.
+    fn follow_notices(&mut self) -> bool {
+        let fallback =
+            crate::overlays::place_on(self.rect, Slot::Centre.anchor(), Slot::Centre.size());
+        let place = self.overlays.place(Slot::Centre).or(fallback);
+        let Some(notices) = self.notices.as_mut() else {
+            return false;
+        };
+        if place.is_some() {
+            notices.set_place(place);
+        }
+        let asked = notices.notifications().take_centre_ask();
+        if let Some(open) = asked {
+            notices.set_center_open(open);
+        }
+        asked.is_some()
+    }
+
+    /// The notifications take what they cover, the keyboard while the centre is up, and the press
+    /// that dismisses it.
+    fn notices_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>, node: Option<NodeId>) {
+        if let (false, Some(layer), Some(node)) = (*ctx.handled, self.notices.as_mut(), node) {
+            layer.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+    }
+
+    /// The node the notifications were laid out at among the chrome's children after search, and
+    /// the other displays' bars after it.
+    fn notices_node(laid_out: bool, rest: &[NodeId]) -> (Option<NodeId>, &[NodeId]) {
+        match (laid_out, rest) {
+            (true, [node, compact @ ..]) => (Some(*node), compact),
+            _ => (None, rest),
         }
     }
 
@@ -2110,6 +2162,10 @@ impl Widget for DesktopChrome {
         }
         changed |= self.emoji.needs_redraw() || self.emoji.needs_animation_frame();
         changed |= self.search.update(state, path);
+        changed |= self.follow_notices();
+        if let Some(notices) = self.notices.as_mut() {
+            changed |= notices.update(state, path);
+        }
         changed |= self.switcher.needs_redraw();
         self.observe_navigation();
         self.publish_overlays();
@@ -2156,6 +2212,9 @@ impl Widget for DesktopChrome {
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
         let search = self.search.build_layout(taffy, theme, map);
         let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu, search];
+        if let Some(notices) = self.notices.as_mut() {
+            kids.push(notices.build_layout(taffy, theme, map));
+        }
         // Every other display's bar stands over its own display's top
         // edge, laid out across the desk: it takes no room in the column,
         // its place carrying it where its display is.
@@ -2200,6 +2259,10 @@ impl Widget for DesktopChrome {
         self.workspace_menu
             .apply_layout(taffy, *workspace_menu, inner);
         self.search.apply_layout(taffy, *search, inner);
+        let (notices, compact) = Self::notices_node(self.notices.is_some(), compact);
+        if let (Some(layer), Some(node)) = (self.notices.as_mut(), notices) {
+            layer.apply_layout(taffy, node, inner);
+        }
         for (bar, node) in self.compact.iter_mut().zip(compact) {
             bar.apply_layout(taffy, *node, inner);
         }
@@ -2231,6 +2294,10 @@ impl Widget for DesktopChrome {
         }
         // Last, so what the bar opens below its band stays above the rest.
         self.bar.draw(scene, transform, text, theme, presence);
+        // The centre hangs under the bar's trailing end, over the windows.
+        if let Some(notices) = self.notices.as_mut() {
+            notices.draw(scene, transform, text, theme, presence);
+        }
         // Above all of it: the emoji picker is modal, the one thing the person works with until it
         // closes.
         if self.emoji.is_open() {
@@ -2332,6 +2399,8 @@ impl Widget for DesktopChrome {
             self.tilo_menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, *tilo_menu));
         }
+        let (notices, compact) = Self::notices_node(self.notices.is_some(), compact);
+        self.notices_event(event, ctx, notices);
         if *ctx.handled {
             self.publish_overlays();
             return;
@@ -2383,6 +2452,7 @@ impl Widget for DesktopChrome {
             &self.workspace_menu,
             &self.search,
         ];
+        children.extend(self.notices.iter().map(|layer| layer as &dyn Widget));
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
         children
     }
@@ -2477,6 +2547,11 @@ impl Widget for DesktopChrome {
             &mut self.workspace_menu,
             &mut self.search,
         ];
+        children.extend(
+            self.notices
+                .iter_mut()
+                .map(|layer| layer as &mut dyn Widget),
+        );
         children.extend(self.compact.iter_mut().map(|bar| bar as &mut dyn Widget));
         children
     }
@@ -2533,6 +2608,7 @@ impl Widget for DesktopChrome {
             &self.search,
         ]
         .into_iter()
+        .chain(self.notices.iter().map(|layer| layer as &dyn Widget))
         .chain(self.compact.iter().map(|bar| bar as &dyn Widget))
         .filter_map(wake_deadline)
         .chain(

@@ -631,7 +631,9 @@ fn the_centre_opens_with_what_the_last_session_kept() {
     assert!(path.is_file(), "the centre was written");
 
     let reopened = DesktopNotifications::default();
-    super::restore_kept(&reopened, &path);
+    reopened
+        .restore_kept(&std::fs::read(&path).unwrap(), ui::time::SystemTime::now())
+        .unwrap();
     let next = SessionNotifications::new(
         Notifications::new(),
         reopened,

@@ -1471,20 +1471,10 @@ impl Persistence {
         if notifications_revision == self.saved_notifications_revision.get() {
             return Ok(());
         }
-        let history: Vec<_> = self
+        let bytes = self
             .notifications
-            .log()
-            .history()
-            .iter()
-            .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
-            .cloned()
-            .collect();
-        let bytes = tilo_desktop_surface::notifications::encode_history(
-            &history,
-            ui::time::SystemTime::now(),
-            ui::time::now(),
-        )
-        .map_err(|error| error.to_string())?;
+            .kept(ui::time::SystemTime::now())
+            .map_err(|error| error.to_string())?;
         self.store
             .write(&self.notifications_key, WriteOp::Replace(bytes), None)
             .map_err(|error| error.to_string())?;
@@ -1811,20 +1801,9 @@ pub(crate) fn mount(
     let notifications_key =
         StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
-    if let Some(history) = store
-        .read(&notifications_key)
-        .ok()
-        .flatten()
-        .and_then(|stored| {
-            tilo_desktop_surface::notifications::decode_history(
-                &stored.bytes,
-                ui::time::SystemTime::now(),
-                ui::time::now(),
-            )
-            .ok()
-        })
-    {
-        notifications.restore_history(history);
+    if let Some(stored) = store.read(&notifications_key).ok().flatten() {
+        // A record this page cannot read leaves the centre empty rather than the page unopened.
+        let _ = notifications.restore_kept(&stored.bytes, ui::time::SystemTime::now());
     }
     let saved_notifications_revision = Cell::new(notifications.revision());
     let profile = Rc::new(ProfileStore {

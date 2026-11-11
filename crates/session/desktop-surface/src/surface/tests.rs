@@ -842,17 +842,17 @@ fn a_retained_notice_can_reopen_its_application_after_its_window_closed() {
     let mut notice = crate::notifications::Notification::new("Timer finished", "Tea is ready");
     notice.app_id = Some("so.tilo.clocks".into());
     notice.app_name = Some("Clocks".into());
-    notifications.restore_history(vec![notice]);
+    let wall = ui::time::SystemTime::now();
+    let kept =
+        crate::notifications::encode_history(&[notice], |_| false, wall, ui::time::now()).unwrap();
+    notifications.restore_kept(&kept, wall).unwrap();
     surface.set_notifications(notifications.clone());
-    surface.set_notification_center(true);
-    surface
-        .notices
-        .as_mut()
-        .unwrap()
-        .apply(crate::notifications::CenterOutcome::OpenApp {
-            app_id: "so.tilo.clocks".into(),
-            label: "Clocks".into(),
-        });
+    let mut centre = NotificationLayer::new(notifications.clone());
+    centre.set_center_open(true);
+    centre.apply(crate::notifications::CenterOutcome::OpenApp {
+        app_id: "so.tilo.clocks".into(),
+        label: "Clocks".into(),
+    });
     let state = AutoCommit::new();
     surface.update(&state, &ui::automerge::ROOT);
     assert!(handle.focus_app("so.tilo.clocks"));
@@ -882,6 +882,11 @@ fn notification_navigation_shows_expired_real_banners_in_the_center() {
         .unwrap();
     let state = AutoCommit::new();
     surface.update(&state, &ui::automerge::ROOT);
+    // The desk asks whoever draws the centre over the windows to open it.
+    assert_eq!(notifications.take_centre_ask(), Some(true));
+    let mut centre = NotificationLayer::new(notifications.clone());
+    centre.set_center_open(true);
+    surface.update(&state, &ui::automerge::ROOT);
     let snapshot = handle.snapshot("g", vec![]);
     assert_eq!(
         snapshot.notifications,
@@ -895,6 +900,9 @@ fn notification_navigation_shows_expired_real_banners_in_the_center() {
     handle
         .dispatch(ChromeEffect::Notifications { open: false })
         .unwrap();
+    surface.update(&state, &ui::automerge::ROOT);
+    assert_eq!(notifications.take_centre_ask(), Some(false));
+    centre.set_center_open(false);
     surface.update(&state, &ui::automerge::ROOT);
     assert!(
         !handle
@@ -2497,4 +2505,34 @@ fn a_swipe_on_a_strip_that_barely_overflows_stops_at_its_end_and_never_turns_bac
         rest.abs() < 0.5,
         "a strip at home springs back home: {rest}"
     );
+}
+
+/// The bell counts what the person has not seen across a restart: a kept notice they never looked
+/// at is unread in the next session, and one they read stays read.
+#[test]
+fn unread_notices_stay_unread_across_a_restart() {
+    let wall = ui::time::SystemTime::now();
+    let before = DesktopNotifications::default();
+    before.post_quiet(crate::notifications::Notification::new("Seen", ""));
+    let _ = before.take_history_dirty();
+    before.mark_read();
+    assert!(
+        before.take_history_dirty(),
+        "reading the centre is kept with it"
+    );
+    before.post_quiet(crate::notifications::Notification::new("New", ""));
+    assert_eq!(before.unread(), 1);
+    let kept = before.kept(wall).unwrap();
+    let after = DesktopNotifications::default();
+    after.restore_kept(&kept, wall).unwrap();
+    assert_eq!(after.counts(), (0, 2), "both rows are back in the centre");
+    assert_eq!(after.unread(), 1, "only the one never seen is unread");
+    let unread: Vec<_> = after
+        .log()
+        .history()
+        .iter()
+        .filter(|notice| after.is_unread(notice.id))
+        .map(|notice| notice.title.clone())
+        .collect();
+    assert_eq!(unread, ["New"]);
 }

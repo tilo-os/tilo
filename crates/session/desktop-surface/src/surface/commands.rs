@@ -214,8 +214,8 @@ impl DesktopSurface {
                         }
                     }
                     Admitted::NotificationCenter(open) => {
-                        if let Some(layer) = self.notices.as_mut() {
-                            layer.set_center_open(open);
+                        if let Some(notifications) = &shared.notifications {
+                            notifications.ask_centre(open);
                         }
                         continue;
                     }

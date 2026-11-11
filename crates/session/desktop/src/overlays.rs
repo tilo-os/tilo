@@ -40,6 +40,8 @@ pub enum Slot {
     WorkspaceMenu,
     /// The menu behind the bar's Tilo mark.
     TiloMenu,
+    /// The notification centre, under the bar's trailing end.
+    Centre,
     /// The workspace overview.
     Overview,
     /// The strip ribbon and rail: which strip of the workspace, which window of the strip.
@@ -51,12 +53,13 @@ pub enum Slot {
 
 impl Slot {
     /// Every slot, topmost first.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::Search,
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
         Self::TiloMenu,
+        Self::Centre,
         Self::Overview,
         Self::Strips,
         Self::QuickSettings,
@@ -71,6 +74,7 @@ impl Slot {
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
             Self::TiloMenu => "tilo-menu",
+            Self::Centre => "centre",
             Self::Overview => "overview",
             Self::Strips => "strips",
             Self::QuickSettings => "quick-settings",
@@ -89,9 +93,11 @@ impl Slot {
         match self {
             Self::Search => Role::Dialog,
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
-            Self::WindowMenu | Self::WorkspaceMenu | Self::TiloMenu | Self::QuickSettings => {
-                Role::Popup
-            }
+            Self::WindowMenu
+            | Self::WorkspaceMenu
+            | Self::TiloMenu
+            | Self::Centre
+            | Self::QuickSettings => Role::Popup,
         }
     }
 
@@ -125,7 +131,7 @@ impl Slot {
             Self::Search | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
             Self::WorkspaceMenu | Self::TiloMenu => Anchor::TopLeading(0.0),
-            Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
+            Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
         }
     }
 
@@ -137,6 +143,11 @@ impl Slot {
             Self::QuickSettings => Size {
                 width: Some(POPOVER_WIDTH),
                 height: Some(POPOVER_HEIGHT),
+            },
+            // As tall as its rows, down to the display's margin.
+            Self::Centre => Size {
+                width: Some(POPOVER_WIDTH),
+                height: None,
             },
             _ => Size {
                 width: None,
@@ -512,7 +523,7 @@ impl Displays {
 
 /// Where a surface stands on `display` , from its anchor and the room its size leaves; `None` for a
 /// surface its own view places, or one whose size and anchor do not settle a rect.
-fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
+pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
     // The bar hangs above a surface anchored to the top edge.
     let top = display.y0 + f64::from(TOPBAR_HEIGHT_PX).ceil();
     let margin = POPOVER_MARGIN;

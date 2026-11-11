@@ -86,7 +86,9 @@ mod window_move;
 
 pub use history::{ActivityModel, ActivityPaneCode, HistorySource, OpenActivity, open_activity};
 pub use liveness::LivenessChoice;
-pub use notices::{AppInbox, AppNotifier, DesktopNotifications, NotificationOutcome};
+pub use notices::{
+    AppInbox, AppNotifier, DesktopNotifications, NotificationLayer, NotificationOutcome,
+};
 pub use personal_ask::PersonalAsk;
 pub use search::{
     HostAction, HostActionSource, PALETTE_EDGE, SearchHost, SearchHostFeed, SearchRow, TypedField,
@@ -294,6 +296,9 @@ struct Shared {
     liveness: Vec<(TabId, LivenessChoice)>,
     /// Where the host confirms in passing what left nothing to see.
     acknowledger: ui::widget::acknowledgement::Acknowledger,
+    /// The notifications the host installed: the desk carries out what the person chose there,
+    /// and the host above the windows draws them ([`DesktopHandle::notifications`]).
+    notifications: Option<DesktopNotifications>,
     /// The windows other devices share with this one, each decoded into its tile as it arrives.
     #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
     peers: Rc<RefCell<peer_view::PeerSurfaces>>,
@@ -682,6 +687,13 @@ impl DesktopHandle {
         true
     }
 
+    /// The notifications the host installed on this desk: what the host above the windows draws
+    /// as the banners and the centre ([`NotificationLayer`]).
+    #[must_use]
+    pub fn notifications(&self) -> Option<DesktopNotifications> {
+        self.shared.borrow().notifications.clone()
+    }
+
     /// Focus a window of application `app_id` in the active workspace (the focused one when it is
     /// that application's), on the next update pass. False when the workspace has none.
     pub fn focus_app(&self, app_id: &str) -> bool {
@@ -847,8 +859,8 @@ pub struct DesktopSurface {
     /// The model was asked for while the host still loads its code: frames keep coming, each asking
     /// again, until it can open.
     activity_loading: bool,
-    /// The banners and centre, when the host installed notifications.
-    notices: Option<notices::NotificationLayer>,
+    /// Applications' notifications, when the host routes them here.
+    inbox: Option<AppInbox>,
     /// What an action that leaves nothing to see confirms in passing ("Link copied"), over
     /// everything else.
     acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer,
@@ -962,7 +974,7 @@ impl DesktopSurface {
             activity_requests: None,
             activity: None,
             activity_loading: false,
-            notices: None,
+            inbox: None,
             acknowledgement: ui::widget::acknowledgement::AcknowledgementLayer::new(acknowledger),
             arrival_hints: arrivals::ArrivalHints::default(),
             hung_apps: hung::HungApps::default(),
@@ -1028,11 +1040,10 @@ impl DesktopSurface {
         self.activity_requests = Some(requests);
     }
 
-    /// Show `notifications` ' banners over the strip, and its centre when a `notification-center`
-    /// command opens it.
+    /// Carry out what the person does with `notifications` : the banners and the centre the host
+    /// above the windows draws, which a `notification-center` command opens.
     pub fn set_notifications(&mut self, notifications: DesktopNotifications) {
-        self.notices = Some(notices::NotificationLayer::new(notifications));
-        self.structure_dirty = true;
+        self.shared.borrow_mut().notifications = Some(notifications);
         self.refresh_notifications();
     }
 
@@ -1040,27 +1051,16 @@ impl DesktopSurface {
     /// host's services hand them), attributed to the window that posted each. Choosing one focuses
     /// that application's window and hands the application its activation.
     pub fn set_app_notifications(&mut self, inbox: AppInbox) {
-        if let Some(layer) = self.notices.as_mut() {
-            layer.inbox = Some(inbox);
-        }
-    }
-
-    /// Open or close the notification centre, as the host's own control does.
-    pub fn set_notification_center(&mut self, open: bool) {
-        if let Some(layer) = self.notices.as_mut() {
-            layer.set_center_open(open);
-            self.refresh_notifications();
-        }
+        self.inbox = Some(inbox);
     }
 
     /// Retire banners that ran out, open what the centre asked to, and record what the
     /// notifications show.
     fn refresh_notifications(&mut self) {
-        let Some(layer) = self.notices.as_mut() else {
+        let Some(notifications) = self.shared.borrow().notifications.clone() else {
             return;
         };
-        let notifications = layer.notifications().clone();
-        if let Some(inbox) = layer.inbox.as_mut() {
+        if let Some(inbox) = self.inbox.as_mut() {
             let shared = self.shared.borrow();
             let tree = &shared.tree;
             inbox.drain(&notifications, &|tab| {
@@ -1074,9 +1074,9 @@ impl DesktopSurface {
                 }
             });
         }
-        layer.tick();
-        let mut open_app = layer.open_app.take();
-        for outcome in layer.notifications().take_outcomes() {
+        notifications.expire(ui::time::now());
+        let mut open_app = notifications.take_open_app();
+        for outcome in notifications.take_outcomes() {
             let NotificationOutcome::Activated {
                 notification,
                 action,
@@ -1091,7 +1091,7 @@ impl DesktopSurface {
                     .push(choice.to_owned());
                 continue;
             }
-            if let Some(uri) = layer
+            if let Some(uri) = self
                 .inbox
                 .as_mut()
                 .and_then(|inbox| inbox.take_activation(notification.id))
@@ -1102,11 +1102,11 @@ impl DesktopSurface {
                 open_app = Some(app);
             }
         }
-        let (active, retained) = layer.notifications().counts();
+        let (active, retained) = notifications.counts();
         let state = NotificationsState {
             active,
             retained,
-            center_open: layer.center_open(),
+            center_open: notifications.centre_open(),
         };
         let handle = DesktopHandle {
             shared: Rc::clone(&self.shared),
@@ -1960,21 +1960,16 @@ impl Widget for DesktopSurface {
                 Some(node)
             })
             .collect();
-        let notices = self
-            .notices
-            .as_mut()
-            .map(|layer| layer.build_layout(taffy, theme, node_map));
         let arrivals = self.arrival_hints.build_layout(taffy, theme, node_map);
         let hung = self.hung_apps.build_layout(taffy, theme, node_map);
         let acknowledgement = self.acknowledgement.build_layout(taffy, theme, node_map);
         // The rows, each over the whole surface and drawing only in its
-        // displays' lanes, come first, then the notifications, when present,
-        // the arrival hints and the cards of apps that stopped answering,
-        // and the acknowledgement last. Search is drawn over the windows, by
-        // the host above them, not in this tree.
+        // displays' lanes, come first, then the arrival hints and the cards of
+        // apps that stopped answering, and the acknowledgement last. Search and
+        // the notifications are drawn over the windows, by the host above them,
+        // not in this tree.
         let children: Vec<NodeId> = rows
             .into_iter()
-            .chain(notices)
             .chain([arrivals, hung, acknowledgement])
             .collect();
         let style = Style {
@@ -1994,12 +1989,6 @@ impl Widget for DesktopSurface {
         let inner = Point::new(self.rect.x0, self.rect.y0);
         let nodes = taffy.children(node).unwrap_or_default();
         let strips = self.drawn_strips();
-        let next = strips.len();
-        if let Some(layer) = self.notices.as_mut()
-            && let Some(&notices) = nodes.get(next)
-        {
-            layer.apply_layout(taffy, notices, inner);
-        }
         if let [.., arrivals, hung, acknowledgement] = nodes[..] {
             self.arrival_hints.apply_layout(taffy, arrivals, inner);
             self.hung_apps.apply_layout(taffy, hung, inner);
@@ -2066,8 +2055,8 @@ impl Widget for DesktopSurface {
             .map(|(strip, row)| (strip, row.viewport(), row.drawn_scroll_x()));
         // Banners start where the windows' content does, below their bars.
         let content_top = shown_tabs.content_top();
-        if let Some(layer) = self.notices.as_mut() {
-            layer.set_clear_top(content_top);
+        if let Some(notifications) = &self.shared.borrow().notifications {
+            notifications.set_clear_top(content_top);
         }
         self.place_arrival_hints(content_top);
         self.place_hung_apps();
@@ -2131,12 +2120,6 @@ impl Widget for DesktopSurface {
         // window a press landed in.
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
-        }
-        if let Some(layer) = self.notices.as_mut()
-            && layer.route(event, ctx.scale_factor)
-        {
-            *ctx.handled = true;
-            return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event {
             let now = ui::time::now();
@@ -2217,14 +2200,17 @@ impl Widget for DesktopSurface {
 
     /// A sideways pan of the shown strip moves windows and changes nothing
     /// else: no document, focus, selection or declaration. Every other wheel
-    /// reaches a layer above the strip (a banner or the notification centre
-    /// shown, search) or the window under the pointer,
-    /// which answer for themselves.
+    /// reaches a layer above the strip (the notification centre shown,
+    /// search) or the window under the pointer, which answer for themselves.
     fn view_only_scroll(&self, event: &WindowEvent) -> bool {
         let WindowEvent::MouseWheel { delta, .. } = event else {
             return false;
         };
-        self.notices.as_ref().is_none_or(|layer| !layer.visible())
+        self.shared
+            .borrow()
+            .notifications
+            .as_ref()
+            .is_none_or(|notifications| !notifications.centre_open())
             && !self.search.borrow().is_open()
             && self.pans_strip(*delta, ui::time::now())
     }
@@ -2255,13 +2241,11 @@ impl Widget for DesktopSurface {
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
-        let notices = self.notices.as_ref().map(|l| l as &dyn Widget);
         let rows: Vec<&dyn Widget> = displays::drawn_rows(&self.rows, &self.drawn_strips())
             .into_iter()
             .map(|row| row as &dyn Widget)
             .collect();
         rows.into_iter()
-            .chain(notices)
             .chain([
                 &self.arrival_hints as &dyn Widget,
                 &self.hung_apps as &dyn Widget,
@@ -2277,9 +2261,6 @@ impl Widget for DesktopSurface {
         for row in self.rows.values_mut() {
             request.visit(row)?;
         }
-        if let Some(notices) = &mut self.notices {
-            request.visit(notices)?;
-        }
         Ok(())
     }
 
@@ -2289,12 +2270,10 @@ impl Widget for DesktopSurface {
             .into_iter()
             .map(|row| row as &mut (dyn Widget + '_))
             .collect();
-        let notices = self.notices.as_mut().map(|l| l as &mut (dyn Widget + '_));
         let arrivals = &mut self.arrival_hints as &mut (dyn Widget + '_);
         let hung = &mut self.hung_apps as &mut (dyn Widget + '_);
         let acknowledgement = &mut self.acknowledgement as &mut (dyn Widget + '_);
         rows.into_iter()
-            .chain(notices)
             .chain([arrivals, hung, acknowledgement])
             .collect()
     }
@@ -2445,9 +2424,6 @@ impl DesktopSurface {
         self.arrival_hints
             .draw(scene, transform, text, theme, presence);
         self.hung_apps.draw(scene, transform, text, theme, presence);
-        if let Some(layer) = self.notices.as_mut() {
-            layer.draw(scene, transform, text, theme, presence);
-        }
         self.acknowledgement
             .draw(scene, transform, text, theme, presence);
     }

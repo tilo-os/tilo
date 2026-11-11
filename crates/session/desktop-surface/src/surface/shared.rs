@@ -79,6 +79,7 @@ impl Shared {
             unresponsive_revision: 0,
             liveness: Vec::new(),
             acknowledger: ui::widget::acknowledgement::Acknowledger::default(),
+            notifications: None,
             #[cfg(all(not(target_arch = "wasm32"), feature = "peer-view"))]
             peers: Rc::new(RefCell::new(super::peer_view::PeerSurfaces::default())),
             bars: super::window_bars::Bars::default(),
