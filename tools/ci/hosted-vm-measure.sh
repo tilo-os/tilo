@@ -80,14 +80,15 @@ open_page() {
   grep -m1 '^{' "$work/$workspace.out" || die "$workspace: no page: $(tail -5 "$work/$workspace.out")"
 }
 
-# Memory of every VM on the host, by its Firecracker process.
+# Memory of every VM on the host, by its Firecracker process, read from this
+# machine's /proc (the container shares its kernel).
 weigh() {
-  inside sh -c 'for pid in $(pgrep -x firecracker); do
-      cg=$(cut -d: -f3 /proc/$pid/cgroup)
-      pss=$(sed -n "s/^Pss: *\([0-9]*\) kB/\1/p" /proc/$pid/smaps_rollup)
-      rss=$(sed -n "s/^Rss: *\([0-9]*\) kB/\1/p" /proc/$pid/smaps_rollup)
-      echo "{\"cgroup\":\"$cg\",\"pss_kib\":$pss,\"rss_kib\":$rss}"
-    done' | jq -s .
+  for proc in /proc/[0-9]*; do
+    [[ $(cat "$proc/comm" 2>/dev/null) == firecracker ]] || continue
+    awk -v pid="${proc#/proc/}" '/^Rss:/ { rss = $2 } /^Pss:/ { pss = $2 }
+      END { printf "{\"pid\":%s,\"pss_kib\":%d,\"rss_kib\":%d}\n", pid, pss, rss }' \
+      "$proc/smaps_rollup"
+  done | jq -s .
 }
 
 status() { as_service tilo-legacy hosted status --run /run/tilo-hosted; }
@@ -113,9 +114,11 @@ jq -n \
   --argjson clone_pages "$(printf '%s\n' "${pages[@]}" | jq -s .)" \
   --argjson clone_weight "$clone_weight" \
   --arg status "$(status)" \
-  '($clone_weight | map(.pss_kib) | sort) as $pss
-   | ($pss[1:] | add / length) as $clone_pss
-   | {cold_page: $cold_page, cold_weight: $cold_weight, clone_pages: $clone_pages,
+  '($cold_weight | max_by(.pss_kib)) as $cold
+   | ($clone_weight | map(select(.pid != $cold.pid) | .pss_kib)) as $pss
+   | ($pss | add / length) as $clone_pss
+   | {cold_page: $cold_page, cold_weight: $cold_weight, cold_pss_mib: ($cold.pss_kib / 1024 | floor),
+      clone_pages: $clone_pages,
       weights: $clone_weight, clone_pss_mib: ($clone_pss / 1024 | floor),
       d4s_v5_clones: (12 * 1024 * 1024 / $clone_pss | floor),
       status: ($status | split("\n"))}' > "$out/report.json"
