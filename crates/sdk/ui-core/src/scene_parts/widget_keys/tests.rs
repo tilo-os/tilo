@@ -184,6 +184,25 @@ fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
     key_widgets(Some(keyer()));
     let alone = draw(false);
     let after_another = draw(true);
-    key_widgets(None);
     assert_eq!(alone, after_another);
+    // Nor when the frame's own scene is drawn, reset and drawn again.
+    begin_frame();
+    let mut scene = Scene::new();
+    panel.draw_child(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::default(),
+    );
+    scene.reset();
+    panel.draw_child(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::default(),
+    );
+    key_widgets(None);
+    assert_eq!(begins(&scene), alone);
 }

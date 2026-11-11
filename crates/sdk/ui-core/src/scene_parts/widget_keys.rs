@@ -245,6 +245,11 @@ fn begin_described(
     index: Option<usize>,
     transform: Affine,
 ) {
+    let scene_id = std::ptr::from_ref(&*scene) as usize;
+    // A scene that holds no key yet starts its roots' count again: one
+    // drawn into, reset and drawn into again in a frame (a layout that
+    // settled on the second pass) numbers its roots as once.
+    let fresh = scene.encoding().resources.marks.is_empty();
     let (key, ancestors) = OPEN.with_borrow_mut(|open| {
         let (parent, slot) = match open.last_mut() {
             Some(parent) => {
@@ -253,9 +258,10 @@ fn begin_described(
                 (parent.key, slot)
             }
             None => ROOTS.with_borrow_mut(|roots| {
-                let count = roots
-                    .entry((std::ptr::from_ref(&*scene) as usize, widget.identity.1))
-                    .or_default();
+                if fresh {
+                    roots.retain(|(drawn_into, _), _| *drawn_into != scene_id);
+                }
+                let count = roots.entry((scene_id, widget.identity.1)).or_default();
                 let slot = index.unwrap_or(*count);
                 *count = slot.saturating_add(1);
                 (0, slot)
