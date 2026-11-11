@@ -71,7 +71,9 @@ pub(crate) struct LaunchRequest {
     pub launch: tilo_app_launch::Launch,
     /// The workspace it belongs to, as the asker named it; empty for a launch into no workspace.
     pub workspace: String,
-    /// Whether the app's window already showing is raised, or a new one opens beside it.
+    /// Where the window this launch starts stands, when it starts one: beside the view the asker
+    /// works in, or beside the person's without taking their focus. An app the desk already shows
+    /// has its window raised instead, whatever place the asker named.
     pub place: LaunchPlace,
     /// What a tool was asked to show, for the tool the launch opens (`TILO_TOOL_CONTEXT`): a
     /// terminal at a folder, a settings route.
@@ -141,7 +143,10 @@ impl Launches {
 
     /// Ask the session's loop to make `launch` in `workspace` at `place`,
     /// opening the tool `context` names when the launch opens one, and wait
-    /// for it: the answer is the same one the desk's own launches get.
+    /// for it: the answer is the same one the desk's own launches get. The
+    /// place says where the window this launch starts stands; a launch of an
+    /// app the desk already shows brings that window forward instead of
+    /// starting one, and the place has nothing to say about it.
     ///
     /// # Errors
     /// The loop did not answer in time, more launches are waiting than a

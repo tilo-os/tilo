@@ -163,7 +163,10 @@ pub trait LegacyWorkspaceProjection: Send + Sync {
 pub type WorkspaceAuthorityHandle = Arc<dyn WorkspaceAuthority>;
 
 /// Where the view of a launched app opens: next to where the actor that
-/// needs it already is, so the person and every actor keep their place.
+/// needs it already is, so the person and every actor keep their place. It
+/// is where a window the launch starts stands, never a request for another
+/// one: a launch of an app the host already shows brings that window
+/// forward, and the place has nothing to say about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LaunchPlace {
     /// Where the person on this device is looking: their own invocation,

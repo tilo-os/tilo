@@ -289,6 +289,93 @@ fn an_agent_opens_notes_in_a_workspace() {
     });
 }
 
+/// An agent whose `notes#open` asks for the place beside the view it works in, on a desk that
+/// already shows Notes: the person's own window comes forward, and nothing starts a second one.
+#[test]
+fn an_agents_open_brings_the_window_the_desk_already_shows_forward() {
+    let _settled = ui::motion::testing::settled();
+    const CLOCKS: &str = "so.tilo.clocks";
+    let mut home = tilo_test_env::TestHome::new().unwrap();
+    let records = home.home().join("starts");
+    packages(&mut home, &[(NOTES, "Notes"), (CLOCKS, "Clocks")]);
+    let launcher = launcher(&home, &records);
+    let (mut session, opened) = session(&home, &launcher, None);
+    session.step(Duration::from_millis(1)).unwrap();
+    let workspace = front(&session);
+
+    // The person's desk: Notes, and another app's window in front of it.
+    for (id, app) in [(11, NOTES), (12, CLOCKS)] {
+        session
+            .desktop()
+            .with_policy(|policy| policy.map(window(id, app)).unwrap());
+    }
+    until(&mut session, "both windows are on the desk", |session| {
+        groups(session) == vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]]
+    });
+    let clocks = session
+        .desktop()
+        .with_policy(|policy| policy.tab_of(12))
+        .expect("the tab the other app's window stands in");
+    session
+        .desktop()
+        .with_policy(|policy| policy.focus_tab(clocks));
+    until(&mut session, "the other app is in front", |session| {
+        in_front(session, "Clocks")
+    });
+
+    // The agent has worked in Notes, so its open asks for the place beside that view: the place is
+    // where a window of the app stands, not that there is another one.
+    let asked = {
+        let opened = Arc::clone(&opened);
+        let workspace = workspace.clone();
+        let place = LaunchPlace::Beside {
+            app_id: NOTES.to_owned(),
+        };
+        std::thread::spawn(move || opened.launch(NOTES, &workspace, None, &place))
+    };
+    // The pass that answers the ask is the desk's own: frames run until the window comes forward,
+    // and the asker is told once it is made.
+    until(
+        &mut session,
+        "the window the desk had comes forward",
+        |session| in_front(session, "Notes"),
+    );
+    asked
+        .join()
+        .expect("the asking thread")
+        .expect("the agent's open is made");
+    assert_eq!(
+        groups(&session),
+        vec![vec!["Notes".to_owned()], vec!["Clocks".to_owned()]],
+        "the app's window comes forward: no second window of it opens"
+    );
+    assert!(
+        !starts(&records)
+            .iter()
+            .any(|(args, _, _)| args.contains(&format!("--app-id {NOTES}"))),
+        "nothing starts the app again: {:?}",
+        starts(&records)
+    );
+}
+
+/// Whether the window titled `title` stands in front of its row.
+fn in_front(session: &Session, title: &str) -> bool {
+    session.handle().read(|tree| {
+        let Some(workspace) = tree.active_workspace() else {
+            return false;
+        };
+        workspace.strips.iter().any(|strip| {
+            let Some(front) = tree.active_group.get(&strip.id) else {
+                return false;
+            };
+            strip
+                .window_groups
+                .iter()
+                .any(|group| group.id == *front && group.tabs.iter().any(|tab| tab.title == title))
+        })
+    })
+}
+
 #[test]
 fn files_lists_the_drives_and_the_apps_it_may_open() {
     let _settled = ui::motion::testing::settled();

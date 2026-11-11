@@ -553,11 +553,11 @@ impl Apps {
             };
             let context = request.context.clone();
             let started = self.starting_tool(context.as_deref(), || {
-                if matches!(request.place, LaunchPlace::Beside { .. }) {
-                    self.start_beside(&request.launch, &workspace, None, None)
-                } else {
-                    self.start(&request.launch, &workspace)
-                }
+                // The place the asker named is where the window it asks for stands, and never that
+                // there is a second one: an app the desk already shows comes forward, as it does for
+                // the person's own launches.
+                self.start_at_place(&request.launch, &workspace, None, Some(&request.place))
+                    .map(|_| ())
             });
             if let Err(error) = &started {
                 tracing::warn!(
@@ -668,7 +668,22 @@ impl Apps {
         workspace: &Workspace,
         instance: Option<u64>,
     ) -> Result<bool, DoorError> {
-        match self.starting(launch, workspace, instance) {
+        self.start_at_place(launch, workspace, instance, None)
+    }
+
+    /// [`Self::start_at`] at `place`, the place a service, an app or an agent named: where the window
+    /// this launch starts stands — beside the view of the app the asker works in, or beside the
+    /// person's without taking their focus. A place is where a window goes, never that there is a
+    /// second one: a launch of an app the desk already shows raises that window, whatever place it
+    /// was asked at, which is the answer [`Instance::answer`] gives every launch.
+    fn start_at_place(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        instance: Option<u64>,
+        place: Option<&LaunchPlace>,
+    ) -> Result<bool, DoorError> {
+        match self.starting(launch, workspace, instance, place) {
             Beginning::Raised => Ok(false),
             Beginning::Start { new_window } => {
                 self.start_window(launch, workspace, new_window, instance, None)
@@ -778,8 +793,17 @@ impl Apps {
     /// start it into the tab a saved window of it waits in, or raise the window it has or
     /// the place one is on its way to. A launch is decided against the tabs the desk has
     /// on the workspace in front, less `instance` — the tab this launch itself holds. A
-    /// launch into another workspace starts its own process.
-    fn starting(&self, launch: &Launch, workspace: &Workspace, instance: Option<u64>) -> Beginning {
+    /// launch into another workspace starts its own process. `place` is the place a service,
+    /// an app or an agent asked the launch at: it says where the window this launch starts
+    /// stands when the app shows nothing yet, and never that an app showing something gets a
+    /// second window — raising the one it has is the whole answer there.
+    fn starting(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        instance: Option<u64>,
+        place: Option<&LaunchPlace>,
+    ) -> Beginning {
         let Some(desktop) = self.desktop.borrow().clone() else {
             return Beginning::Start { new_window: false };
         };
@@ -819,7 +843,11 @@ impl Apps {
             return Beginning::StartIn { tab };
         }
         Beginning::Start {
-            new_window: matches!(answer, Answer::Start { new_window: true }),
+            new_window: matches!(answer, Answer::Start { new_window: true })
+                // A place of its own — one an app or an agent asked for, never the person's own
+                // (`Focus`) — starts the window beside the view it was asked by, so the person's
+                // window keeps its place.
+                || place.is_some_and(|place| !matches!(place, LaunchPlace::Focus)),
         }
     }
 
@@ -923,9 +951,12 @@ impl Apps {
     }
 
     /// Start `launch` as a window of its own, beside the tab its app already has: what
-    /// the app's own ask for another window does. `instance` is the tab the window
-    /// takes, which the app is told, and `reveal` the item it opens on, when the
-    /// launch names none: the conversation a send landed in.
+    /// the app's own ask for another window does, and the person's own ask from search
+    /// for a window of its own. It is the one way to another window of an app showing
+    /// one: a launch at a place, an agent's or a service's, raises that window instead
+    /// ([`Self::start_at_place`]). `instance` is the tab the window takes, which the app
+    /// is told, and `reveal` the item it opens on, when the launch names none: the
+    /// conversation a send landed in.
     /// # Errors
     /// The launch starts nothing, or the process could not be started.
     pub fn start_beside(
