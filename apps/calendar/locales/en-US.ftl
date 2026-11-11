@@ -182,3 +182,12 @@ calendar-help-quick-add = Add an event in one line
 calendar-help-delete = Delete the selected item
 calendar-help-close = Close the editor or card
 calendar-help-shortcuts = This list of keys
+
+## What the window is called and what its fields ask for
+
+calendar-title = Calendar
+calendar-a11y-syncing = Synchronizing calendars
+calendar-a11y-editor = Event editor. Changes save automatically.
+calendar-quick-example = Lunch with Sam friday 1pm
+calendar-invite-placeholder = Invite by email
+calendar-location-placeholder = Add location

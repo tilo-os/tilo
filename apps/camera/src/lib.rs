@@ -42,9 +42,29 @@ pub use app::CameraApp;
 pub use record::Record;
 pub use resource::CameraShell;
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// The app as every host mounts it.
 pub fn definition() -> &'static ui::application::ApplicationDefinition {
     ui::built_in_definition!(CameraShell)
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-'Kamera'.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("camera-title"), "Kamera");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("camera-title"), "Camera");
+    }
 }

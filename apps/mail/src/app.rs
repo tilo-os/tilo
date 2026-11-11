@@ -3981,7 +3981,9 @@ impl MailApp {
             );
             children.push(
                 AccessNode::new(Role::Group)
-                    .with_name("Queued message")
+                    .with_name(&ui::i18n::I18nManager::lookup_plain(
+                        "mail-a11y-queued-message",
+                    ))
                     .with_description(match &message.reason {
                         Some(reason) => format!("The server refused this message: {reason}"),
                         None => "This message has not been sent yet.".to_owned(),
@@ -3991,10 +3993,12 @@ impl MailApp {
         }
         children.extend(rows);
         let mut list = AccessNode::new(Role::List)
-            .with_name("Outbox")
+            .with_name(&ui::i18n::I18nManager::lookup_plain("mail-a11y-outbox"))
             .with_children(children);
         if total == 0 {
-            list = list.with_description("Nothing is waiting to be sent");
+            list = list.with_description(&ui::i18n::I18nManager::lookup_plain(
+                "mail-a11y-outbox-empty",
+            ));
         }
         list
     }
@@ -4009,12 +4013,15 @@ impl MailApp {
 
         let thread = state.selected_thread_messages();
         let Some(current) = state.selected.and_then(|id| state.mailbox.get(id)) else {
-            return AccessNode::new(Role::Group).with_name("No message selected");
+            return AccessNode::new(Role::Group)
+                .with_name(&ui::i18n::I18nManager::lookup_plain("mail-a11y-no-message"));
         };
         let message_count = thread.len();
         let mut children = vec![
             AccessNode::new(Role::Toolbar)
-                .with_name("Message actions")
+                .with_name(&ui::i18n::I18nManager::lookup_plain(
+                    "mail-a11y-message-actions",
+                ))
                 .with_children(
                     [
                         ("Reply", "reply"),
@@ -4057,7 +4064,9 @@ impl MailApp {
                         ))
                         .with_state(AccessState::new().focusable(true).disabled(!downloadable));
                     if !downloadable {
-                        node = node.with_description("Download this attachment before saving it");
+                        node = node.with_description(&ui::i18n::I18nManager::lookup_plain(
+                            "mail-a11y-download-first",
+                        ));
                     }
                     node
                 }),
@@ -4477,7 +4486,10 @@ impl Widget for MailApp {
         if self.is_first_run() {
             // `first_run` remains a real child widget, which supplies the
             // onboarding action and its existing activation path.
-            return Some(AccessNode::new(Role::Window).with_name("Mail"));
+            return Some(
+                AccessNode::new(Role::Window)
+                    .with_name(&ui::i18n::I18nManager::lookup_plain("mail-title")),
+            );
         }
 
         let st = self.shared.borrow();
@@ -4495,7 +4507,7 @@ impl Widget for MailApp {
         if self.state().awaiting_engine {
             children.push(
                 AccessNode::new(Role::Spinner)
-                    .with_name("Syncing mail")
+                    .with_name(&ui::i18n::I18nManager::lookup_plain("mail-a11y-syncing"))
                     .with_state(AccessState::new().busy(true)),
             );
         }
@@ -4536,7 +4548,7 @@ impl Widget for MailApp {
         };
         Some(
             AccessNode::new(Role::Window)
-                .with_name("Mail")
+                .with_name(&ui::i18n::I18nManager::lookup_plain("mail-title"))
                 .with_description(format!("Current view: {composition}"))
                 .with_children(children),
         )

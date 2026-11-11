@@ -67,3 +67,13 @@ reason = "A capture label a frame-timing harness paints."
 file = "crates/sdk/ui-core/src/widget/replaced_tripwire.rs"
 text = "Tripwire"
 reason = "A sample label in the widget that trips on a replaced widget."
+
+[[allow]]
+file = "apps/mail/src/compose.rs"
+text = "Maya Chen <maya@northwind.example>"
+reason = "Sample mail the headless screenshot opens, never a person's own window."
+
+[[allow]]
+file = "apps/mail/src/compose.rs"
+text = "Re: Spring launch plan"
+reason = "Sample mail the headless screenshot opens, never a person's own window."

@@ -11,7 +11,7 @@ use ui::widget::Element;
 use crate::actions::{CalculatorEffect, GraphKind, HISTORY_CAP};
 use crate::model::{CalcModel, HistoryEntry, PlotFn};
 
-ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 /// The calculator's record: its evaluated history, newest first, and its
 /// saved graphs, each row with its stable id. A formula merges per
@@ -684,3 +684,23 @@ mod scenario_tests {
 }
 
 ui::reach_tests!(CalculatorShell);
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-'Rechner'.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("calculator-title"), "Rechner");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("calculator-title"), "Calculator");
+    }
+}

@@ -13,7 +13,7 @@ use ui::widget::Element;
 use crate::app::{MonitorApp, SortKey};
 use crate::model::MonitorModel;
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
 
 /// How the process table is laid out, shared with everyone who sees it.
 /// Each part is edited at its path (`Monitor::paths().flat.set(true)`); the
@@ -684,3 +684,31 @@ mod tests {
 // someone opens lists this machine's processes, and walking its Kill
 // would signal every one of them, the test's own among them.
 ui::reach_tests!(MonitorShell);
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    use ui::i18n::ArgValue;
+
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        let flat = |state: &str| {
+            catalog.t_args(
+                "monitor-monitor-flat",
+                &[("new", ArgValue::Text(state.to_owned()))],
+            )
+        };
+        catalog.set_locale("de-DE");
+        assert_eq!(flat("true"), "Die Prozesse flach aufgelistet");
+        catalog.set_locale("en-US");
+        assert_eq!(flat("true"), "Listed the processes flat");
+    }
+}

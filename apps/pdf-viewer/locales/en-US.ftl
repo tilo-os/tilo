@@ -107,3 +107,18 @@ pdf-note-link-opening = Opening { $address }
 pdf-note-link-failed = { $address } couldn't be opened. Try the link again.
 pdf-note-link-unsupported = Links like { $address } aren't opened from a PDF.
 pdf-note-link-file = Links to other files aren't opened from a PDF. Open { $path } from Files instead.
+
+## What the window and its parts are called for assistive technology
+
+pdf-title = PDF Viewer
+pdf-a11y-opening = Opening PDF
+pdf-a11y-pages = Pages
+pdf-a11y-canvas = PDF page canvas. Arrow keys scroll; Page Up and Page Down change pages.
+pdf-a11y-search-results = Search results
+pdf-a11y-signer-name = Signer name
+pdf-a11y-type-signature = Type signature
+pdf-a11y-draw-signature = Draw signature
+pdf-a11y-review-sidebar = Review sidebar
+pdf-a11y-review-panels = Review panels
+pdf-a11y-page-controls = Page controls
+pdf-a11y-document = Document

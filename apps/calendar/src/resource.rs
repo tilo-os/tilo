@@ -32,7 +32,7 @@ use crate::model::{
     Attendee, Calendar, Event, InviteStatus, Palette, Project, RemoteCopy, Removal, Upload, key,
 };
 
-ui::embedded_catalog!(pub(crate) fn, ["en-US"]);
+ui::embedded_catalog!(pub(crate) fn, ["de-DE", "en-US"]);
 
 /// The most items one import or one task delete takes.
 pub(crate) const MAX_ITEMS_PER_ACTION: usize = 4096;
@@ -1459,5 +1459,25 @@ mod agent_disclosure_tests {
         {
             panic!("{failures}");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-'Monat'.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("calendar-view-month"), "Monat");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("calendar-view-month"), "Month");
     }
 }

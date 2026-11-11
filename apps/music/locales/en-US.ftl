@@ -114,3 +114,14 @@ music-preferences-followed-artists = { $new ->
 }
 music-preferences-preferred-artists = Changed the preferred artists
 music-preferences-dismissed = Changed the hidden recommendations
+
+## What the window and its player are called for assistive technology
+
+music-title = Music
+music-a11y-player = Music player
+music-a11y-search = Search music
+music-a11y-search-description = Search songs, albums, artists and playlists
+music-a11y-search-description-simple = Search for a song, album, or artist
+music-a11y-choose-source = Choose where your music comes from
+music-a11y-empty = Empty music library
+music-a11y-description = Music library and playback controls

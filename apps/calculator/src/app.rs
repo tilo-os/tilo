@@ -1637,9 +1637,13 @@ impl Widget for CalculatorApp {
             Mode::Calc => {
                 let mut controls = Vec::new();
                 let mut display = AccessNode::new(Role::TextInput)
-                    .with_name("Expression")
+                    .with_name(&ui::i18n::I18nManager::lookup_plain(
+                        "calculator-a11y-expression",
+                    ))
                     .with_value(self.model.expr.clone())
-                    .with_description("Type an expression, then activate Evaluate or press Enter.")
+                    .with_description(&ui::i18n::I18nManager::lookup_plain(
+                        "calculator-a11y-expression-hint",
+                    ))
                     .with_action_target("calculator.expression")
                     .with_bounds(self.calc.expression_rect())
                     .with_state(AccessState::new().focusable(true))
@@ -1685,7 +1689,9 @@ impl Widget for CalculatorApp {
                 }
                 children.push(
                     AccessNode::new(Role::Toolbar)
-                        .with_name("Calculator controls")
+                        .with_name(&ui::i18n::I18nManager::lookup_plain(
+                            "calculator-a11y-controls",
+                        ))
                         .with_hashed_key("calculator.keypad-controls")
                         .with_children(controls),
                 );
@@ -1708,10 +1714,12 @@ impl Widget for CalculatorApp {
                     .collect();
                 children.push(
                     AccessNode::new(Role::Group)
-                        .with_name("Scientific keypad")
-                        .with_description(
-                            "Use the calculator keys, or type an expression directly.",
-                        )
+                        .with_name(&ui::i18n::I18nManager::lookup_plain(
+                            "calculator-a11y-keypad",
+                        ))
+                        .with_description(&ui::i18n::I18nManager::lookup_plain(
+                            "calculator-a11y-keypad-hint",
+                        ))
                         .with_hashed_key("calculator.keypad")
                         .with_children(keys),
                 );
@@ -1722,13 +1730,15 @@ impl Widget for CalculatorApp {
         }
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Calculator")
+                .with_name(&ui::i18n::I18nManager::lookup_plain("calculator-title"))
                 .with_value(if self.model.expr.is_empty() {
                     "Empty expression".to_string()
                 } else {
                     self.model.expr.clone()
                 })
-                .with_description("Calculator and graphing workspace")
+                .with_description(&ui::i18n::I18nManager::lookup_plain(
+                    "calculator-a11y-workspace",
+                ))
                 .with_state(
                     AccessState::new()
                         .focusable(true)
@@ -1929,7 +1939,9 @@ impl CalculatorApp {
                         index + 1
                     ))
                     .with_action_target(format!("calculator.graph.delete:{slug}:{index}"))
-                    .with_description("Permanently removes this saved formula.")
+                    .with_description(&ui::i18n::I18nManager::lookup_plain(
+                        "calculator-a11y-remove-formula",
+                    ))
                     .with_state(AccessState::new().focusable(true));
                 if let Some(bounds) = delete_bounds {
                     delete = delete.with_bounds(bounds);

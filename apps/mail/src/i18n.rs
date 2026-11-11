@@ -10,7 +10,7 @@ use ui::i18n::{ArgValue, EmbeddedCatalog};
 
 // The catalogue every host mounting Mail loads before its view. It is loaded
 // per thread on first use; a host's manager is joined, never replaced.
-ui::embedded_catalog!(pub static CATALOG, ["en-US"]);
+ui::embedded_catalog!(pub static CATALOG, ["de-DE", "en-US"]);
 
 /// The catalogue, which every host mounting Mail loads before its view.
 pub fn catalog() -> &'static EmbeddedCatalog {
@@ -61,5 +61,25 @@ mod tests {
                 assert!(!s.trim().is_empty(), "{key} resolves to nothing");
             }
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-'Betreff'.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("mail-compose-label-subject"), "Betreff");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("mail-compose-label-subject"), "Subject");
     }
 }

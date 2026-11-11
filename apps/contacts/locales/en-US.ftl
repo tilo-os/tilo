@@ -71,3 +71,7 @@ contacts-address-region = Changed the region of an address
 contacts-address-postal = Changed the postal code of an address
 contacts-address-country = Changed the country of an address
 contacts-group-entry-value = Renamed the group { $item }
+
+## What the app calls itself and its list
+
+contacts-title = Contacts

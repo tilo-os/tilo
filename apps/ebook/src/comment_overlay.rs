@@ -117,7 +117,7 @@ impl CommentOverlay {
         }));
         vec![
             AccessNode::new(Role::Dialog)
-                .with_name("Highlight comments")
+                .with_name(&ui::i18n::I18nManager::lookup_plain("ebook-a11y-comments"))
                 .with_description(excerpt)
                 .with_state(AccessState::new().modal(true))
                 .with_children(controls),

@@ -208,9 +208,12 @@ pub(super) fn unavailable_notice(areas: &[&str], tx: &Door) -> Option<El> {
 
 pub(super) fn loading_view() -> El {
     page(column().push(section(vec![
-        copy("Looking for printers, scanners and unfinished documents."),
-        Box::new(ProgressBar::indeterminate().with_label("Loading Print Centre")),
-    ])))
+            copy("Looking for printers, scanners and unfinished documents."),
+            Box::new(
+                ProgressBar::indeterminate()
+                    .with_label(&ui::i18n::I18nManager::lookup_plain("print-centre-loading")),
+            ),
+        ])))
 }
 
 /// A supply gauge stays neutral while there is plenty, then turns warning
@@ -825,7 +828,9 @@ pub(super) fn discovery_view(
     let body: El = match result {
         None => section(vec![
             copy("Looking for printers on your network."),
-            Box::new(ProgressBar::indeterminate().with_label("Finding nearby printers")),
+            Box::new(ProgressBar::indeterminate().with_label(
+                &ui::i18n::I18nManager::lookup_plain("print-centre-finding-printers"),
+            )),
         ]),
         Some(Ok(printers)) if printers.is_empty() => section(vec![
             copy(
@@ -897,7 +902,9 @@ fn printer_picker(snapshot: &Snapshot, selected: Option<&str>, tx: &Door) -> Dro
         .collect::<Vec<_>>();
     let mut picker = Dropdown::new(Vec::new(), "")
         .with_id("print-centre.print.printer")
-        .with_placeholder("Choose a printer");
+        .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+            "print-centre-choose-printer",
+        ));
     picker.set_value_options(options);
     if let Some(selected) = selected {
         picker.set_selected(selected);
@@ -949,7 +956,9 @@ fn document_card(filename: &str, preview: &PrintPreview, tx: &Door) -> El {
                 )),
         ),
         PrintPreview::Loading => Box::new(Container::new().with_height(138.0).with_child(
-            Box::new(ProgressBar::indeterminate().with_label("Preparing document preview")),
+            Box::new(ProgressBar::indeterminate().with_label(
+                &ui::i18n::I18nManager::lookup_plain("print-centre-preparing-preview"),
+            )),
         )),
         PrintPreview::Unavailable => Box::new(
             bare_column()
@@ -1016,7 +1025,9 @@ fn print_settings(picker: Dropdown, form: &PrintForm<'_>, tx: &Door) -> Form {
                 "Pages",
                 TextInput::from_state(form.range)
                     .with_id("print-centre.print.pages")
-                    .with_placeholder("All pages")
+                    .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                        "print-centre-all-pages",
+                    ))
                     .with_accessible_name("Pages to print"),
             )
             .with_help("Print some of the pages, as in 3-5 or 1, 4, 9. Leave it empty for all."),

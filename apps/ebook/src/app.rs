@@ -4480,7 +4480,9 @@ impl BooksApp {
             .collect();
         let document = AccessNode::new(Role::Document)
             .with_name(chapter.title.clone())
-            .with_description("Current reading page")
+            .with_description(&ui::i18n::I18nManager::lookup_plain(
+                "ebook-a11y-reading-page",
+            ))
             .with_state(AccessState::new().read_only(true))
             .with_children(children);
         Some(match page_bounds {
@@ -5031,9 +5033,9 @@ impl Widget for BooksApp {
                         "{}%",
                         (self.reading_progress * 100.0).round() as u8
                     ))
-                    .with_description(
-                        "Drag or use left and right arrow keys to move through the book",
-                    )
+                    .with_description(&ui::i18n::I18nManager::lookup_plain(
+                        "ebook-a11y-progress-hint",
+                    ))
                 } else {
                     node
                 })
@@ -5074,7 +5076,7 @@ impl Widget for BooksApp {
                     RenameTarget::Scheme(id) => format!("books.rename.scheme:{id}"),
                 };
                 controls.push(
-                    node.with_name("Name")
+                    node.with_name(&ui::i18n::I18nManager::lookup_plain("ebook-field-name"))
                         .with_bounds(rename.field.get_rect())
                         .with_action_target(target),
                 );

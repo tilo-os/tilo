@@ -330,11 +330,19 @@ fn input(shared: &Shared, field: DraftField, value: &str) -> TextInput {
             .with_kind(TextInputKind::Url)
             .with_placeholder("https://example.com"),
         DraftField::Password => input.with_secret(true),
-        DraftField::Notes => input.with_min_lines(4).with_placeholder("Add a note"),
-        DraftField::Tags => input.with_placeholder("Separate tags with commas"),
-        DraftField::CustomFields => input
-            .with_min_lines(3)
-            .with_placeholder("One per line, such as PIN = 1234"),
+        DraftField::Notes => input
+            .with_min_lines(4)
+            .with_placeholder(&ui::i18n::I18nManager::lookup_plain("passwords-add-note")),
+        DraftField::Tags => {
+            input.with_placeholder(&ui::i18n::I18nManager::lookup_plain("passwords-tags-hint"))
+        }
+        DraftField::CustomFields => {
+            input
+                .with_min_lines(3)
+                .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                    "passwords-custom-fields-hint",
+                ))
+        }
     };
     input
         .with_initial_value(value)
@@ -873,7 +881,9 @@ fn export_dialog(acknowledged: bool, reminded: bool, requests: &Requests) -> Mod
     let ack = {
         let requests = Rc::clone(requests);
         Checkbox::from_state(&ui::LocalState::new(acknowledged))
-            .with_label("I understand the file is not encrypted")
+            .with_label(&ui::i18n::I18nManager::lookup_plain(
+                "passwords-export-acknowledge",
+            ))
             .on_view("passwords-export-acknowledge", move |on| {
                 requests.borrow_mut().push(Request::Acknowledge(on));
             })

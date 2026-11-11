@@ -2770,15 +2770,23 @@ impl Widget for SlidesApp {
             .collect();
             return Some(
                 AccessNode::new(Role::Dialog)
-                    .with_name("Keyboard shortcuts")
-                    .with_description("Slides keyboard reference")
+                    .with_name(&ui::i18n::I18nManager::lookup_plain(
+                        "slides-a11y-shortcuts",
+                    ))
+                    .with_description(&ui::i18n::I18nManager::lookup_plain(
+                        "slides-a11y-shortcuts-reference",
+                    ))
                     .with_state(AccessState::new().modal(true))
                     .with_children(vec![
                         AccessNode::new(Role::List)
-                            .with_name("Shortcuts")
+                            .with_name(&ui::i18n::I18nManager::lookup_plain(
+                                "slides-a11y-shortcuts-heading",
+                            ))
                             .with_children(shortcuts),
                         AccessNode::new(Role::Button)
-                            .with_name("Close keyboard shortcuts")
+                            .with_name(&ui::i18n::I18nManager::lookup_plain(
+                                "slides-a11y-close-shortcuts",
+                            ))
                             .with_action_target("slides.help.close")
                             .with_state(AccessState::new().focusable(true)),
                     ]),
@@ -2821,7 +2829,9 @@ impl Widget for SlidesApp {
                     .with_state(AccessState::new().focusable(true))
                     .with_children(vec![
                         AccessNode::new(Role::Toolbar)
-                            .with_name("Presentation controls")
+                            .with_name(&ui::i18n::I18nManager::lookup_plain(
+                                "slides-a11y-presentation-controls",
+                            ))
                             .with_children(controls),
                     ]),
             );
@@ -2923,10 +2933,10 @@ impl Widget for SlidesApp {
 
         let children = vec![
             AccessNode::new(Role::Toolbar)
-                .with_name("Slides controls")
+                .with_name(&ui::i18n::I18nManager::lookup_plain("slides-a11y-controls"))
                 .with_children(controls),
             AccessNode::new(Role::List)
-                .with_name("Slides")
+                .with_name(&ui::i18n::I18nManager::lookup_plain("slides-title"))
                 .with_description(format!(
                     "Showing slides {} through {} of {count}",
                     start + 1,
@@ -2941,7 +2951,7 @@ impl Widget for SlidesApp {
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
                 .with_value(format!("Slide {} of {count}", self.cur_slide + 1))
-                .with_description("Presentation editor with slide canvas and notes")
+                .with_description(&ui::i18n::I18nManager::lookup_plain("slides-a11y-editor"))
                 .with_state(AccessState::new().focusable(true))
                 .with_children(children),
         )

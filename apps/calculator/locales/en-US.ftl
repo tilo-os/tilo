@@ -35,3 +35,20 @@ calculator-calculator-surfaces = { $op ->
     [remove] Removed a surface
    *[other] Rearranged the surfaces
 }
+
+## What the window and its controls are called for assistive technology
+
+calculator-title = Calculator
+calculator-a11y-expression = Expression
+calculator-a11y-expression-hint = Type an expression, then activate Evaluate or press Enter.
+calculator-a11y-controls = Calculator controls
+calculator-a11y-keypad = Scientific keypad
+calculator-a11y-keypad-hint = Use the calculator keys, or type an expression directly.
+calculator-a11y-workspace = Calculator and graphing workspace
+calculator-a11y-remove-formula = Permanently removes this saved formula.
+calculator-amount = Amount
+calculator-amount-to-convert = Amount to convert
+calculator-currency = Currency
+calculator-quantity = Quantity
+calculator-unit-conversion = Unit conversion
+calculator-unit-conversion-description = Convert an amount from one unit to another, offline.

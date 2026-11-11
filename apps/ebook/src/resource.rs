@@ -31,7 +31,7 @@ use crate::model::{
     Progress, Settings, annotation_key, default_fonts, default_schemes,
 };
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
 
 /// How many books the published library carries as places; the rest are
 /// resolved one by one when addressed.
@@ -1400,5 +1400,25 @@ mod agent_disclosure_tests {
         {
             panic!("{failures}");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-'Bücher'.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("ebook-library"), "Bücher");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("ebook-library"), "Books");
     }
 }

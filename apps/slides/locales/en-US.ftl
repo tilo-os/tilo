@@ -204,3 +204,14 @@ slides-zoom-at = Zoom: { $zoom }
 
 slides-toast-copied-element = Copied the element
 slides-toast-cut-element = Cut the element
+
+## What the window and its panels are called for assistive technology
+
+slides-title = Slides
+slides-a11y-shortcuts = Keyboard shortcuts
+slides-a11y-shortcuts-reference = Slides keyboard reference
+slides-a11y-shortcuts-heading = Shortcuts
+slides-a11y-close-shortcuts = Close keyboard shortcuts
+slides-a11y-presentation-controls = Presentation controls
+slides-a11y-controls = Slides controls
+slides-a11y-editor = Presentation editor with slide canvas and notes
