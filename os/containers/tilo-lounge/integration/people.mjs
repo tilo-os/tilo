@@ -1140,6 +1140,19 @@ try {
     await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 180_000);
+    // The entry is published in the pass that draws the window, and that
+    // frame reaches the page when the GPU has room for it, which on a busy
+    // software rasteriser is seconds later: the open is measured on that
+    // frame, so it is waited for, and one that never comes is said below.
+    for (const deadline = Date.now() + 60_000; Date.now() < deadline;) {
+      const drawn = await a.tab.evaluate(`(() => {
+        const watch = globalThis.__tiloOpen;
+        watch?.read?.();
+        return !watch || watch.shownAt !== null;
+      })()`).catch(() => false);
+      if (drawn) break;
+      await sleep(250);
+    }
     const marks = await openMarks(a.tab);
     // An open the page's own clock never saw begun or never saw end is not a
     // fast one: it is no reading, and the gate says so instead of counting a
