@@ -221,7 +221,11 @@ impl WorkspaceStore {
         &self,
         channel: &[u8; 32],
     ) -> Result<Option<[u8; 32]>, StoreError> {
-        self.read_lineage_records()?;
+        // Every lineage, not only the ones a modification time says are new:
+        // two parts of a chain written inside one tick leave that time equal,
+        // so the cached read misses the later part. The answer is the chain a
+        // device then follows, and "no part yet" is one it can never correct.
+        self.read_lineages_again()?;
         Ok(self.classes().head_of(channel))
     }
 
@@ -324,6 +328,24 @@ impl WorkspaceStore {
         if changed.is_some() && self.classes().scanned == changed {
             return Ok(());
         }
+        self.read_lineages_at(&v2, changed)
+    }
+
+    /// [`Self::read_lineage_records`] whatever the modification time says: a
+    /// lineage added inside the tick the scan last saw is otherwise never read.
+    fn read_lineages_again(&self) -> Result<(), StoreError> {
+        let v2 = self.root.join(RETAINED_DIR).join("v2");
+        let changed = fs::metadata(&v2).and_then(|meta| meta.modified()).ok();
+        self.read_lineages_at(&v2, changed)
+    }
+
+    /// Learn the record of every retained lineage of `v2` not read yet, and
+    /// remember `changed` as the directory's state then.
+    fn read_lineages_at(
+        &self,
+        v2: &Path,
+        changed: Option<std::time::SystemTime>,
+    ) -> Result<(), StoreError> {
         let entries = match fs::read_dir(&v2) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -413,6 +435,10 @@ impl WorkspaceStore {
         Ok(frames)
     }
 }
+
+#[cfg(test)]
+#[path = "record_sync_tests.rs"]
+mod store_tests;
 
 #[cfg(test)]
 mod tests {
