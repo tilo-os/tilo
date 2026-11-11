@@ -104,15 +104,7 @@ impl Task {
                 author_device_public_key,
                 delta,
                 ..
-            } => {
-                if let Some(
-                    CoeditPayload::Checkpoint { body, .. }
-                    | CoeditPayload::RetainedDelta { body, .. },
-                ) = CoeditPayload::decode(&delta)
-                {
-                    self.inbound_body(workspace_id, &body, author_device_public_key);
-                }
-            }
+            } => self.delta(workspace_id, &delta, author_device_public_key),
             Envelope::Position {
                 workspace_id,
                 position,
@@ -156,6 +148,17 @@ impl Task {
                     self.emit(&event);
                 }
             }
+        }
+    }
+
+    /// A coedit delta: its body, when it carries one, is the workspace's
+    /// content from `author`.
+    fn delta(&mut self, workspace_id: u64, delta: &[u8], author: [u8; 32]) {
+        if let Some(
+            CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
+        ) = CoeditPayload::decode(delta)
+        {
+            self.inbound_body(workspace_id, &body, author);
         }
     }
 
