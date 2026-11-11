@@ -542,9 +542,11 @@ impl DesktopSearch {
             self.enter_waiting = None;
             return;
         }
+        // The rows that stand for the query are its answer, as the desk publishes it: an app's
+        // answer still coming on the host's clock may never come, and must not hold the key.
         if self.shown_query.as_deref() != Some(query.as_str())
             || self.answering()
-            || self.waiting()
+            || (self.rows.is_empty() && self.waiting())
             || !ui::search::engine_ready()
         {
             return;
@@ -1145,6 +1147,8 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod early_enter;
     use ui::search::AppScope;
     use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
     use ui::winit::keyboard::ModifiersState;
@@ -2723,30 +2727,6 @@ mod tests {
                 .iter()
                 .all(|entry| entry.id != ALL_RESULTS_ID),
             "nothing is left over to offer"
-        );
-    }
-
-    /// Enter pressed in the same batch of input as the keys before it, before a frame answered
-    /// them, opens the top result of what was typed, never a row of the query before.
-    #[test]
-    fn enter_right_after_typing_opens_what_was_typed() {
-        let mut search = DesktopSearch::new();
-        search.open(data());
-        search.set_query("sheets");
-        settled(&mut search);
-        // "notes", then Enter, with no frame between them.
-        search.palette_mut().set_query("notes");
-        search.palette_mut().activate_selected();
-        search.observe();
-        assert!(
-            search.take_choice().is_none(),
-            "nothing is opened from the earlier rows"
-        );
-        settled(&mut search);
-        let chosen = format!("{:?}", search.take_choice().expect("Enter chose a row"));
-        assert!(
-            chosen.contains("notes") && !chosen.contains("sheets"),
-            "Enter after typing \"notes\" chose {chosen}"
         );
     }
 
