@@ -4953,17 +4953,17 @@ default = false
 # as the image's unprivileged browser user, its device key, and what the page costs in memory.
 # What it found stays in /target/tilo-sh-local-vm.
 #
-# Room: a workspace's VM at `default` is 8 GiB, which is all the guest t gives a step, so the stack
-# places it at `small` (4 GiB) here and the door, relay, web entry and VM host fit beside it. t
-# books a step's guest from what its runs measured (8 GiB for a micro-VM step), and a guest short
-# of it says so and is given more next time; a run that needs a bigger workspace VM raises
-# TILO_SH_HOSTED_VM_SIZE and says why.
+# A workspace's VM runs at `default`, the size production places (4 vCPU, 8 GiB,
+# 50 GiB disk), and the VM host's budget follows it, so the placement here is the
+# one a customer's workspace gets: a check that places a smaller VM proves less
+# than the deployment does, and one that runs out of room underneath it says so
+# in its own log instead of the size being quietly turned down.
 [[check]]
 name = "tilo-sh-local-vm"
 run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs xfsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
 needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest", "tilo-sh-tools"]
-env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_HOSTED_VM_SIZE = "small", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_TILO_ENROLL = "/target/tilo-sh-tools/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-sh-tools/tilo-approve" }
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
 outputs = ["/target/tilo-sh-local-vm/**"]

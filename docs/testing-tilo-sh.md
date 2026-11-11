@@ -259,11 +259,12 @@ What it needs before it can hold:
   says exactly that.
 - **Room for the stack.** Step 8 onwards run a workspace's VM beside the
   door, relay, web entry and VM host in the guest the check itself runs in.
-  A workspace's VM at `default` is 8 GiB, all the room t gives a micro-VM
-  step, so the check places it at `small` (`TILO_SH_HOSTED_VM_SIZE`): 4 GiB
-  for the workspace's VM and the stack's own services beside it. A bigger
-  workspace VM needs the step's guest booked bigger, which `t` does from what
-  the step's runs measured.
+  A workspace's VM runs at `default`, the size production places (4 vCPU,
+  8 GiB, 50 GiB disk), and the VM host's budget is that size beside the
+  host's own (10 GiB), so the placement is the one a customer's workspace
+  gets. A machine with less room places smaller (`TILO_SH_HOSTED_VM_SIZE`),
+  and `t` books the step's guest from what the step's runs measured, so a
+  guest short of room says so and is given more next time.
 
 ## Entry-speed work
 
