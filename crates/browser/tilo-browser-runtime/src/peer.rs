@@ -1012,22 +1012,44 @@ pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsE
 }
 
 /// The host a page pairs its person's new devices through, as that person's
-/// root: it reaches the host as every device does, over iroh through the relay
-/// the host names, from one endpoint it keeps while the page pairs.
+/// root: over the session the page holds there ([`WasmPeer::pairing`]), or,
+/// before it holds one, from an endpoint of its own it keeps while it pairs.
 #[wasm_bindgen(js_name = PairingHost)]
-pub struct PairingHost(tilo_relay_client::MemberApprover);
+pub struct PairingHost(PairingReach);
+
+/// Where a page's pairing commands reach the host.
+enum PairingReach {
+    /// Over the session the page already holds with the host.
+    Session(PeerHandle),
+    /// From an endpoint bound for pairing alone: the page holds no session
+    /// with this host yet.
+    Own(tilo_relay_client::MemberApprover),
+}
+
+impl tilo_relay_client::MemberHost for PairingReach {
+    async fn ask(
+        &self,
+        approval: &tilo_relay_protocol::certify::MemberApproval,
+    ) -> Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError> {
+        match self {
+            Self::Session(session) => session.ask(approval).await,
+            Self::Own(approver) => approver.ask(approval).await,
+        }
+    }
+}
 
 #[wasm_bindgen(js_class = PairingHost)]
 impl PairingHost {
-    /// The host `address` names (`hostInfo().address`, JSON).
+    /// The host `address` names (`hostInfo().address`, JSON), for a page
+    /// that holds no session there.
     ///
     /// # Errors
     /// `address` is not a host's address.
     #[wasm_bindgen(constructor)]
     pub fn new(address: &str) -> Result<Self, JsError> {
-        Ok(Self(tilo_relay_client::MemberApprover::new(host_at(
-            address,
-        )?)))
+        Ok(Self(PairingReach::Own(
+            tilo_relay_client::MemberApprover::new(host_at(address)?),
+        )))
     }
 
     /// The new devices waiting here for the member root the page holds
@@ -1089,7 +1111,9 @@ impl PairingHost {
 
     /// Let go of the host: the page pairs nothing more through it.
     pub async fn close(&self) {
-        self.0.close().await;
+        if let PairingReach::Own(approver) = &self.0 {
+            approver.close().await;
+        }
     }
 }
 
@@ -1907,6 +1931,24 @@ impl WasmPeer {
     ///
     /// Rejects for malformed options, when the root does not sign, or when the
     /// host refuses.
+    /// Pair this person's new devices through this session's host, as the
+    /// person's root custody the page holds: over this session, with no
+    /// connection of its own.
+    pub fn pairing(&self) -> PairingHost {
+        PairingHost(PairingReach::Session(self.handle.clone()))
+    }
+
+    /// Answer what this person's agents on this session's host ask them,
+    /// over this session, as the person whose root custody the page holds
+    /// (`root`), on the question sheet over the desktop. Once per session.
+    ///
+    /// # Errors
+    /// `root` is no custody.
+    #[wasm_bindgen(js_name = answerAgentQuestions)]
+    pub fn answer_agent_questions(&self, root: &JsValue) -> Result<(), JsError> {
+        crate::questions::answer_agent_questions(self.id, root)
+    }
+
     #[wasm_bindgen(js_name = preAdmit)]
     pub async fn pre_admit(&self, root: JsValue, options: String) -> Result<String, JsError> {
         use tilo_session_host::DeviceSigner as _;

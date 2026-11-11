@@ -34,7 +34,7 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_relay_client::CertificationOutcome;
-use tilo_relay_client::MemberApprover;
+use tilo_relay_client::{MemberApprover, MemberHost as _};
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval, PendingCertification,
 };

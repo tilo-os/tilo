@@ -38,8 +38,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::VoiceGrant;
 use tilo_session_host::{
-    Carrier, Host, MemberApprover, MemoryPeerStore, PeerEvent, PeerHandle, PeerSnapshot,
-    TransportPhase, VoiceEvent, answer_pairing, certify, pending_pairings,
+    Carrier, Host, MemoryPeerStore, PeerEvent, PeerHandle, PeerSnapshot, TransportPhase,
+    VoiceEvent, answer_pairing, certify, pending_pairings,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -194,11 +194,14 @@ async fn a_root_holding_device_certifies_a_new_one(carrier: Carrier) {
     ada.host.relay.shutdown().await;
 }
 
-/// What a page holding the person's root runs: it lists the device waiting
-/// for it and pairs it, each command its own root-signed approval.
+/// What a page holding the person's root runs: over the session it already
+/// holds with the host, it lists the device waiting for it and pairs it, each
+/// command its own root-signed approval, binding no endpoint of its own.
 async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     let ada = Ada::start().await;
     let host = ada.host.over(carrier);
+    let (page_key, page_cert, host_cert) = ada.certified(&host).await;
+    let session = page(&ada.host, carrier, page_key, &page_cert, &host_cert);
     let user = ada.root.verifying_key().to_bytes();
     let key = SigningKey::generate(&mut UnwrapErr(SysRng));
     let (code_tx, code_rx) = tokio::sync::oneshot::channel::<String>();
@@ -215,13 +218,14 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     let shown = tilo_test_env::within("the pairing code", code_rx)
         .await
         .unwrap();
-    let root = MemberApprover::new(host);
+    // Until the session first reaches the host it has no endpoint to ask
+    // from, and says so.
     let waiting = wait_for("the phone to wait for the root", || async {
-        pending_pairings(&root, &ada.root).await.unwrap().pop()
+        pending_pairings(&session, &ada.root).await.ok()?.pop()
     })
     .await;
     assert_eq!(waiting.pairing_code, shown, "the person compares codes");
-    let issued = answer_pairing(&root, &ada.root, waiting.request_digest, true)
+    let issued = answer_pairing(&session, &ada.root, waiting.request_digest, true)
         .await
         .unwrap()
         .expect("an approval issues a certificate");
@@ -232,8 +236,13 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
         host_cert.device_public_key,
         ada.host_device.cert.device_public_key
     );
-    assert!(pending_pairings(&root, &ada.root).await.unwrap().is_empty());
-    root.close().await;
+    assert!(
+        pending_pairings(&session, &ada.root)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    session.close();
     ada.host.relay.shutdown().await;
 }
 

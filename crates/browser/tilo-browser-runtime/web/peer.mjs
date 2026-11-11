@@ -1017,6 +1017,12 @@ async function connect({
     /** Issue an invitation to the workspace (`rooms.rs`): resolves to its
      * text, when the person's role lets them invite. */
     createInvitation: options => membership.createInvitation(options),
+    /** Answer what this person's agents on the host ask them, as the root
+     * custody `root` the page holds, over this session (`agent-questions.mjs`). */
+    answerAgentQuestions: root => peer.answerAgentQuestions(root),
+    /** This person's new devices waiting at the host, paired with the root
+     * the page holds over this session (`PairingHost`: `pending`, `answer`). */
+    pairing: () => peer.pairing(),
     /** The person's own workspace on this host, with this very device in it
      * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
      * time, answered again after, another for each `name`; the one called

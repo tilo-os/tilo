@@ -6,7 +6,7 @@
 //! endpoint — and its device signs, for every plane grant, that the endpoint
 //! speaks for it.
 
-use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
+use super::{DeviceSigner, LinkError, PeerConfig, PeerHandle, RelayClient, Task};
 
 /// The statement a page's device signs to speak through `endpoint` for a day:
 /// long enough for a session and its planes to outlive one roster change,
@@ -61,6 +61,30 @@ impl Task {
     pub(super) async fn connect(&mut self) -> Result<RelayClient, LinkError> {
         let access = self.entry_access().await;
         connect_entering(&self.config, access, self.signer.as_ref(), &mut self.dial).await
+    }
+
+    /// Ask the host `approval` from the endpoint this session dials it from,
+    /// on a connection of its own beside the session: a page answering its
+    /// person's agents, or pairing their devices, binds no endpoint of its
+    /// own.
+    pub(super) fn ask_member(
+        &self,
+        approval: Box<tilo_relay_protocol::certify::MemberApproval>,
+        done: tokio::sync::oneshot::Sender<
+            Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
+        >,
+    ) {
+        let Some((endpoint, _)) = self.dial.plane() else {
+            let _ = done.send(Err(LinkError::Unavailable(
+                "the session has not reached its host yet".into(),
+            )
+            .into()));
+            return;
+        };
+        let host = self.config.host.addr();
+        n0_future::task::spawn(async move {
+            let _ = done.send(tilo_relay_client::ask_member(&endpoint, host, &approval).await);
+        });
     }
 }
 
@@ -188,5 +212,19 @@ pub(super) fn iroh_link_error(error: tilo_relay_session::ClientError) -> LinkErr
         error @ (ClientError::Auth(_) | ClientError::Io(_)) => {
             LinkError::Refused(error.to_string())
         }
+    }
+}
+
+impl tilo_relay_client::MemberHost for PeerHandle {
+    async fn ask(
+        &self,
+        approval: &tilo_relay_protocol::certify::MemberApproval,
+    ) -> Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError> {
+        let (done, answer) = tokio::sync::oneshot::channel();
+        self.send(super::Command::AskMember(Box::new(approval.clone()), done))
+            .map_err(LinkError::Unavailable)?;
+        answer
+            .await
+            .map_err(|_| LinkError::Unavailable("the session ended".into()))?
     }
 }

@@ -5,9 +5,9 @@
 //! request, presents it to its host and waits for a root holder to hand over
 //! a certificate. [`request_certification`] is the same conversation over an
 //! endpoint the caller already has, [`Approver`] what a root-holding device
-//! runs to list and answer pending requests, and [`MemberApprover`] what a
-//! page holding a member's root runs to do the same for that member's own
-//! devices.
+//! runs to list and answer pending requests, and [`MemberHost`] where a
+//! page holding a member's root does the same for that member's own devices:
+//! over the session it holds, or [`MemberApprover`] before it holds one.
 
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
 use iroh_base::EndpointAddr;
@@ -329,11 +329,50 @@ impl Approver {
     }
 }
 
-/// A member's root asking one host its approver commands
-/// ([`MemberApproval`]s): what a page holding the root runs to pair the
-/// person's new devices through any host they share. It reaches the host as
-/// [`Host`] says, from one endpoint bound on the first command, each command on
-/// a connection of its own.
+/// Where a member's root-signed approver commands ([`MemberApproval`]s)
+/// reach a host. A device already holding a session to the host asks over
+/// that session's endpoint (`tilo_session_host::PeerHandle`); a device with
+/// none yet binds one of its own ([`MemberApprover`]).
+pub trait MemberHost: Sync {
+    /// The host's answer to `approval`.
+    ///
+    /// # Errors
+    ///
+    /// The host was not reached, or its answer did not decode. A host that
+    /// turns the command away answers [`ApproverReply::Refused`].
+    fn ask(
+        &self,
+        approval: &MemberApproval,
+    ) -> impl std::future::Future<Output = Result<ApproverReply, CertifyError>> + Send;
+}
+
+/// Ask the host at `host` `approval` from `endpoint`, on a connection of its
+/// own: whatever endpoint the device already dials the host from.
+///
+/// # Errors
+///
+/// As [`MemberHost::ask`].
+pub async fn ask_member(
+    endpoint: &Endpoint,
+    host: EndpointAddr,
+    approval: &MemberApproval,
+) -> Result<ApproverReply, CertifyError> {
+    let connection = endpoint
+        .connect(host, CERTIFY_ALPN)
+        .await
+        .map_err(|error| iroh(&error))?;
+    let (mut send, mut recv) = connection.open_bi().await.map_err(|error| iroh(&error))?;
+    write(&mut send, &CertifyOpen::Member(approval.clone())).await?;
+    let reply = read(&mut recv).await;
+    connection.close(0u32.into(), b"");
+    reply
+}
+
+/// A member's root asking one host its approver commands before the device
+/// holds any session there: what a page runs to pair an agent's device
+/// through a host it is not yet let into. It reaches the host as [`Host`]
+/// says, from one endpoint bound on the first command, each command on a
+/// connection of its own.
 pub struct MemberApprover {
     host: Host,
     endpoint: tokio::sync::OnceCell<Endpoint>,
@@ -349,32 +388,20 @@ impl MemberApprover {
         }
     }
 
-    /// The host's answer to `approval`.
-    ///
-    /// # Errors
-    ///
-    /// The host was not reached, or its answer did not decode. A host that
-    /// turns the command away answers [`ApproverReply::Refused`].
-    pub async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
-        let endpoint = self
-            .endpoint
-            .get_or_try_init(|| self.host.bind(None))
-            .await?;
-        let connection = endpoint
-            .connect(self.host.addr(), CERTIFY_ALPN)
-            .await
-            .map_err(|error| iroh(&error))?;
-        let (mut send, mut recv) = connection.open_bi().await.map_err(|error| iroh(&error))?;
-        write(&mut send, &CertifyOpen::Member(approval.clone())).await?;
-        let reply = read(&mut recv).await;
-        connection.close(0u32.into(), b"");
-        reply
-    }
-
     /// Close the endpoint, waiting for the host to hear it.
     pub async fn close(&self) {
         if let Some(endpoint) = self.endpoint.get() {
             endpoint.close().await;
         }
+    }
+}
+
+impl MemberHost for MemberApprover {
+    async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
+        let endpoint = self
+            .endpoint
+            .get_or_try_init(|| self.host.bind(None))
+            .await?;
+        ask_member(endpoint, self.host.addr(), approval).await
     }
 }

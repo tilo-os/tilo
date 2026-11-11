@@ -560,6 +560,15 @@ enum Command {
         RoomsCompletion,
     ),
     AgentRun(String, AgentRunCompletion),
+    /// A member's root-signed approver command, asked from the endpoint
+    /// this session dials its host from ([`PeerHandle`]'s
+    /// [`tilo_relay_client::MemberHost`]).
+    AskMember(
+        Box<tilo_relay_protocol::certify::MemberApproval>,
+        tokio::sync::oneshot::Sender<
+            Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
+        >,
+    ),
     Compact([u8; 16], Vec<u8>),
     Reconnect,
     /// The network is back: a session waiting out its backoff tries again
@@ -2262,6 +2271,10 @@ impl Task {
                 true
             }
             Command::AgentRun(label, done) => self.run_as_agent(label, done, client),
+            Command::AskMember(approval, done) => {
+                self.ask_member(approval, done);
+                true
+            }
             Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
             Command::VoiceCall(workspace, request, op) => {
                 self.voice_call(workspace, request, op, client)

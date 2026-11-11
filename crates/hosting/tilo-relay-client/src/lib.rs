@@ -64,8 +64,8 @@ pub mod signer;
 
 #[cfg(feature = "iroh")]
 pub use certify::{
-    Approver, CERTIFICATION_WAIT_NS, CertificationOutcome, MemberApprover, certify,
-    request_certification,
+    Approver, CERTIFICATION_WAIT_NS, CertificationOutcome, MemberApprover, MemberHost, ask_member,
+    certify, request_certification,
 };
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound};
 pub use error::{CertifyError, LinkError};

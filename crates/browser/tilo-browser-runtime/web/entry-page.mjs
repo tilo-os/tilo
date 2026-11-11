@@ -1244,7 +1244,7 @@ export async function startEntryPage({mode}) {
     identityActions = attachIdentity();
     // A page holding the person's root is asked what their agents here
     // need them to allow, as their native devices are.
-    answerAgentQuestions({peer: page.peer, identity: currentIdentity(), runtime});
+    answerAgentQuestions({peer: page.peer, identity: currentIdentity()});
     // The first screen (first-run.mjs) sets an agent up through this tab's
     // root and signs in with an agent, both through a login code its host
     // makes, and signs in with a passkey, once the page can.
@@ -1866,7 +1866,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     // A peer that cannot set a name of its own (a guest the relay admitted)
     // goes by none; the person's own desktop (no peer) and a workspace they
     // joined do.
-    identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: !peer || peer.setDisplayName ? naming : null,
+    identity, name, pairing: pairingOf({peer, identity, link}), naming: !peer || peer.setDisplayName ? naming : null,
     photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
@@ -2121,12 +2121,12 @@ function pairingAt({origin, identity, runtime, link}) {
  * answering `invite`, and the host's requests waiting for this root to
  * approve them.
  */
-function pairingOf({peer, identity, runtime, link}) {
-  if (!peer?.origin || !peer.workspace || !peer.host?.address || !runtime?.PairingHost || !link) return null;
-  // The host reached as every device reaches it, over iroh, only while the
-  // page pairs: made on the first question, let go once no invite is open.
+function pairingOf({peer, identity, link}) {
+  if (!peer?.origin || !peer.workspace || !peer.pairing || !link) return null;
+  // Asked over the page's own session with the host: made on the first
+  // question, let go once no invite is open.
   let host = null;
-  const at = () => (host ??= new runtime.PairingHost(JSON.stringify(peer.host.address)));
+  const at = () => (host ??= peer.pairing());
   return {
     link: (invite, room = peer.workspace) => {
       const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room}}});

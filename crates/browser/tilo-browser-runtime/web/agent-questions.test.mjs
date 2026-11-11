@@ -3,43 +3,41 @@ import assert from 'node:assert/strict';
 import {answerAgentQuestions} from './agent-questions.mjs';
 
 const ADA = 'ad'.repeat(32);
-const address = {endpointAddr: {id: 'ef'.repeat(32), addrs: []}, relayUrl: 'https://relay.tilo.test/'};
 
-const runtime = () => {
+/** A session that records each root it is asked to answer as. */
+const session = (userPublicKey = ADA) => {
   const calls = [];
-  return {calls, answerAgentQuestions: (at, root) => calls.push([JSON.parse(at), root])};
+  return {calls, userPublicKey, answerAgentQuestions: root => calls.push(root)};
 };
 
-test('a page holding the root of the person it is here as answers their agents at its host', () => {
-  const answering = runtime();
+test('a page holding the root of the person it is here as answers their agents over its session', () => {
+  const peer = session();
   const identity = {userPublicKey: ADA, publicKey: new Uint8Array(32), sign: async () => new Uint8Array(64)};
-  assert.equal(answerAgentQuestions({peer: {userPublicKey: ADA, host: {address}}, identity, runtime: answering}), true);
-  assert.deepEqual(answering.calls, [[address, identity]]);
+  assert.equal(answerAgentQuestions({peer, identity}), true);
+  assert.deepEqual(peer.calls, [identity]);
 });
 
 test('a page paired to a person whose root is elsewhere, or holding none, is no approver', () => {
-  const answering = runtime();
-  const peer = {userPublicKey: ADA, host: {address}};
-  assert.equal(answerAgentQuestions({peer, identity: {userPublicKey: 'be'.repeat(32)}, runtime: answering}), false);
-  assert.equal(answerAgentQuestions({peer, identity: null, runtime: answering}), false);
-  assert.equal(answerAgentQuestions({peer: {host: {address}}, identity: {userPublicKey: ADA}, runtime: answering}), false);
-  assert.deepEqual(answering.calls, []);
+  const peer = session();
+  assert.equal(answerAgentQuestions({peer, identity: {userPublicKey: 'be'.repeat(32)}}), false);
+  assert.equal(answerAgentQuestions({peer, identity: null}), false);
+  const nobody = session(null);
+  assert.equal(answerAgentQuestions({peer: nobody, identity: {userPublicKey: ADA}}), false);
+  assert.deepEqual(peer.calls, []);
+  assert.deepEqual(nobody.calls, []);
 });
 
-test('without a host to reach, or a runtime that answers, nothing is started', () => {
-  const identity = {userPublicKey: ADA};
-  const answering = runtime();
-  assert.equal(answerAgentQuestions({peer: {userPublicKey: ADA}, identity, runtime: answering}), false);
-  assert.equal(answerAgentQuestions({peer: {userPublicKey: ADA, host: {address}}, identity, runtime: {}}), false);
-  assert.deepEqual(answering.calls, []);
+test('without a session to ask over, nothing is started', () => {
+  assert.equal(answerAgentQuestions({peer: null, identity: {userPublicKey: ADA}}), false);
+  assert.equal(answerAgentQuestions({peer: {userPublicKey: ADA}, identity: {userPublicKey: ADA}}), false);
 });
 
-test('a runtime that refuses the custody leaves the page as it was', () => {
+test('a session that refuses the custody leaves the page as it was', () => {
   const warned = console.warn;
   console.warn = () => {};
   try {
-    const refusing = {answerAgentQuestions: () => { throw new Error('custody'); }};
-    assert.equal(answerAgentQuestions({peer: {userPublicKey: ADA, host: {address}}, identity: {userPublicKey: ADA}, runtime: refusing}), false);
+    const refusing = {userPublicKey: ADA, answerAgentQuestions: () => { throw new Error('custody'); }};
+    assert.equal(answerAgentQuestions({peer: refusing, identity: {userPublicKey: ADA}}), false);
   } finally {
     console.warn = warned;
   }

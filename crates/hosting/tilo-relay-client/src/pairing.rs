@@ -17,7 +17,7 @@ use tilo_user_identity::{
 };
 
 #[cfg(feature = "iroh")]
-use crate::certify::MemberApprover;
+use crate::certify::MemberHost;
 use crate::error::CertifyError;
 use crate::https::{self, HttpClient};
 use crate::signer::DeviceSigner;
@@ -278,7 +278,7 @@ pub(crate) async fn member_approval(
 
 #[cfg(feature = "iroh")]
 async fn approve(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     root: &dyn DeviceSigner,
     request: ApproverRequest,
 ) -> Result<ApproverReply, CertifyError> {
@@ -298,7 +298,7 @@ async fn approve(
 /// [`CertifyError::Denied`] when it refuses.
 #[cfg(feature = "iroh")]
 pub async fn pending_pairings(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     root: &dyn DeviceSigner,
 ) -> Result<Vec<tilo_relay_protocol::certify::PendingCertification>, CertifyError> {
     match approve(host, root, ApproverRequest::ListPending).await? {
@@ -319,7 +319,7 @@ pub async fn pending_pairings(
 /// [`CertifyError::Transport`] when it is not reached.
 #[cfg(feature = "iroh")]
 pub async fn answer_pairing(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     root: &dyn DeviceSigner,
     request_digest: [u8; 32],
     approved: bool,
@@ -363,7 +363,7 @@ pub async fn answer_pairing(
 /// As [`answer_pairing`].
 #[cfg(feature = "iroh")]
 pub async fn decide_pairing(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     approver: &dyn DeviceSigner,
     request_digest: [u8; 32],
     cert: Option<DeviceCert>,
