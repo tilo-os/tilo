@@ -768,13 +768,24 @@ impl OwnerCommitService for Joined {
                 async move { this.commit_hosted(workspace, request, record_kind).await },
             );
         }
-        let receipt = self.owner.commit_document(request, SystemTime::now());
-        if receipt.is_ok()
-            && let Some(workspace) = workspace
-        {
-            self.wake(workspace);
-        }
-        Box::pin(std::future::ready(receipt))
+        // Drafted again past its record's floor when this device's local writers signed out of
+        // the order the owner takes them, for this device's custody to sign.
+        let (owner, signer, this) = (
+            self.owner.clone(),
+            Arc::clone(&self.custody.signer),
+            self.this.clone(),
+        );
+        Box::pin(async move {
+            let (_, receipt) = owner
+                .commit_local_document(request, signer.as_ref(), SystemTime::now())
+                .await?;
+            if let Some(workspace) = workspace
+                && let Some(this) = this.upgrade()
+            {
+                this.wake(workspace);
+            }
+            Ok(receipt)
+        })
     }
 
     fn health(&self) -> Result<(), String> {

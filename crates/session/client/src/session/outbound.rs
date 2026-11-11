@@ -8,8 +8,8 @@
 //! everything in custody when it was asked is answered.
 
 use super::{
-    Answered, Arc, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute,
-    Envelope, FailureSubject, RelayClient, Task,
+    Answered, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute, Envelope,
+    FailureSubject, RelayClient, Task,
 };
 
 impl Task {
@@ -103,36 +103,53 @@ impl Task {
         if whole && room < frames.len() {
             return (Vec::new(), 0);
         }
-        let signer = Arc::clone(&self.signer);
-        let mut writes = Vec::new();
-        for frame in frames.iter().take(room) {
-            let Some(cipher) = self.ciphers.get_mut(route) else {
-                self.fail("signature-rejected", "the route's channel keys went away");
-                return (Vec::new(), frames.len());
-            };
-            match crate::document::signed_write(
-                route,
-                frame,
-                signer.as_ref(),
-                cipher.as_mut(),
-                tilo_clock::unix_now_ns(),
-            )
+        let Some(cipher) = self.ciphers.get_mut(route) else {
+            self.fail("signature-rejected", "the route's channel keys went away");
+            return (Vec::new(), frames.len());
+        };
+        let artifact = route.artifact();
+        let author = self.signer.device_public_key();
+        let now = crate::clock::system_time(tilo_clock::unix_now_ns());
+        // Drafted in the owner's turn, signed by this device's custody outside it.
+        let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
+            frames
+                .iter()
+                .take(room)
+                .zip(0..)
+                .map(|(frame, drafted)| {
+                    let mut seal = |plaintext: &[u8]| {
+                        cipher.seal(
+                            artifact,
+                            collab_types::ContentRetention::of_frame(plaintext),
+                            plaintext,
+                        )
+                    };
+                    let op = view.peer().draft_write(
+                        (&route.app_id, &route.record),
+                        frame,
+                        Some(&mut seal),
+                        author,
+                        drafted,
+                        now,
+                    )?;
+                    Ok(tilo_peer_state::owner::Write::Draft(
+                        tilo_peer_state::owner_commit::OwnerCommitRequest {
+                            workspace: route.cluster_id.clone(),
+                            operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                                app: route.app_id.clone(),
+                                record: route.record.clone(),
+                                envelope: Box::new(op),
+                            },
+                        },
+                    ))
+                })
+                .collect()
+        };
+        let committed = match owner
+            .write(workspace, draft, self.signer.as_ref(), whole, now)
             .await
-            {
-                Ok(write) => writes.push(write),
-                Err(error) => {
-                    self.fail("signature-rejected", error.to_string());
-                    return (Vec::new(), frames.len());
-                }
-            }
-        }
-        let committed = match owner.commit_documents(
-            workspace,
-            writes,
-            whole,
-            crate::clock::system_time(tilo_clock::unix_now_ns()),
-        ) {
-            Ok(committed) => committed,
+        {
+            Ok(committed) => committed.len(),
             Err(error) => {
                 self.fail("signature-rejected", error);
                 return (Vec::new(), frames.len());

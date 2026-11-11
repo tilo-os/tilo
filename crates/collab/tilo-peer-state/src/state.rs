@@ -2819,40 +2819,15 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         };
-        // A device that starts a record is told now when the workspace does
-        // not let it create one, or when the record is there already: a
-        // peer's copy of the same start is held or merged as the nothing it
-        // is, but its own write would be answered as published while no peer
-        // ever sees it.
-        if matches!(&mutation, DocumentMutation::Snapshot(bytes) if empty_genesis(bytes))
-            && !self.signed_by_owner(author.as_bytes())
-        {
-            if self.core.documents.contains_key(&route) {
-                return Err("the record exists already".into());
-            }
-            if !self.may_create_record(&self.membership(*author.as_bytes(), now)?, &route, now) {
-                return Err("the workspace does not let this device create the record".into());
-            }
-        }
-        let seq = self
-            .core
-            .documents
-            .get(&route)
-            .and_then(|entry| entry.channel.last_seq_per_author.get(&author))
-            .copied()
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or("sequence exhausted")?;
-        let mut op = SignedOp::new_unsigned(
-            mutation.encode().map_err(err)?,
-            collab_types::document_artifact_id(app, &self.core.workspace, record),
-            author,
-            collab_types::document_attestation_id(app, &self.core.workspace, record),
-            OpKind::Change,
+        let mut op = self.draft_write(
+            (app, record),
+            &mutation.encode().map_err(err)?,
+            None,
+            *author.as_bytes(),
+            0,
             now,
-            seq,
-        )
-        .with_surface(self.signed_surface(app));
+        )?;
+        let seq = op.seq;
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let message = NeighbourMsg::AppDocument {
             peer: peer_handle(author.as_bytes()),

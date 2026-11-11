@@ -620,62 +620,16 @@ impl PeerPublicationMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<NeighbourMsg, String> {
-        let route = Route {
-            app: app.into(),
-            record: record.into(),
-        };
-        // A change needs the record it changes; a checkpoint is the whole
-        // record, so it is all a route it founds needs.
-        let retention = match mutation {
-            DocumentMutation::Incremental(_) => ContentRetention::Delta,
-            DocumentMutation::Snapshot(_) => ContentRetention::Checkpoint,
-        };
-        let document = self.peer.core.documents.get(&route);
-        if document.is_none() && retention == ContentRetention::Delta {
-            return Err("sealed write to a record this state does not hold".into());
-        }
-        // Readers without the key decide a sealed write by the claims of
-        // its changes, as a member's page names them: each naming the units
-        // its action may write by the surface the op names.
-        let surface = self.peer.signed_surface(app);
-        let claims = self.peer.surfaces.with_footprints(
-            &collab_types::Record {
-                room: &self.peer.core.workspace,
-                app,
-                record,
-            },
-            document
-                .and_then(|held| super::record_kind(&*held.doc))
-                .as_deref(),
-            surface.as_ref(),
-            collab_types::mutation_claims(mutation, collab_types::record_unit).map_err(err)?,
-        );
         let plaintext = mutation.encode().map_err(err)?;
-        let (metadata, ciphertext) = seal(&plaintext)?;
-        if metadata.retention() != Some(retention)
-            || metadata.channel
-                != collab_types::document_channel_id(app, &self.peer.core.workspace, record)
-        {
-            return Err("a sealed write is a delta or a checkpoint of the record's channel".into());
-        }
-        let author = Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes());
-        let seq = document
-            .and_then(|held| held.channel.last_seq_per_author.get(&author).copied())
-            .unwrap_or(0)
-            .checked_add(1)
-            .ok_or("sequence exhausted")?;
-        let mut op = SignedOp::new_unsigned_with_encryption(
-            ciphertext,
-            collab_types::document_artifact_id(app, &self.peer.core.workspace, record),
-            author,
-            collab_types::document_attestation_id(app, &self.peer.core.workspace, record),
-            OpKind::Change,
+        let mut op = self.peer.draft_write(
+            (app, record),
+            &plaintext,
+            Some(seal),
+            key.verifying_key().to_bytes(),
+            0,
             now,
-            seq,
-            metadata,
-        )
-        .with_claims(claims)
-        .with_surface(surface);
+        )?;
+        let author = op.author;
         collab_types::sign_op(&mut op, key).map_err(err)?;
         let mut candidate = self.peer.clone();
         candidate.admit_new_local_document(app, record, op.clone(), now)?;

@@ -41,6 +41,7 @@ pub mod testing;
 mod tests;
 mod vouched;
 mod workspace_membership;
+mod write;
 
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use checkpoint::{
@@ -63,6 +64,7 @@ pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
     StoredPendingEnrollment,
 };
+pub use write::{Committed, Write};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
@@ -174,6 +176,9 @@ struct SharedOwner {
     /// The committed record; replaced only inside a publication's `install`.
     authority: RwLock<NativeAuthorityStorage>,
     mutation: Mutex<()>,
+    /// One write of this device at a time, from its draft to its commit
+    /// ([`NativeWorkspaceOwner::write`]).
+    writes: tokio::sync::Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// Who hands on what this device commits to a workspace it hosts itself
@@ -522,6 +527,7 @@ impl NativeWorkspaceOwner {
             store,
             authority: RwLock::new(NativeAuthorityStorage::default()),
             mutation: Mutex::new(()),
+            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
@@ -563,6 +569,7 @@ impl NativeWorkspaceOwner {
             store,
             authority: RwLock::new(authority),
             mutation: Mutex::new(()),
+            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),

@@ -416,13 +416,13 @@ impl SharedDesktops {
         );
         let changes = candidate.save_after(&heads);
         // A write on no history is the whole record: the one that founds it.
-        let committed = engine.write_record(
+        let committed = pollster::block_on(engine.write_record(
             room,
             (DESKTOP_APP, DESKTOP_RECORD),
             &changes,
             heads.is_empty(),
             sealed,
-        );
+        ));
         match committed {
             Ok(_write) => {
                 // What the workspace took is the record this device wrote: the next look at the

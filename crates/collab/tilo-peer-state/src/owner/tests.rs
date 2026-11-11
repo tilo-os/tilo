@@ -311,8 +311,8 @@ fn a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted
     );
 }
 
-#[test]
-fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
+#[tokio::test]
+async fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
     let joined = enrolled();
     let stale = edit_with(&joined.owner, joined.workspace, joined.now, "stale edit");
     let first = edit_with(
@@ -329,12 +329,21 @@ fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
 
     let receipt = joined
         .owner
-        .commit_document_with_current(
+        .write(
             joined.workspace,
-            |view| edit_from_view(view, joined.now, "edit from current owner turn"),
+            |view| {
+                edit_from_view(view, joined.now, "edit from current owner turn")
+                    .map(|edit| vec![crate::owner::Write::Signed(edit)])
+            },
+            &crate::owner::testing::member_key(),
+            true,
             joined.now,
         )
-        .unwrap();
+        .await
+        .unwrap()
+        .pop()
+        .unwrap()
+        .1;
     assert!(receipt.generation > 1);
     joined
         .owner
@@ -424,8 +433,8 @@ fn a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence()
 /// first, is taken all the same, signed again past the record's floor; one
 /// still past the floor, and an exact retry of a taken write, are taken as
 /// they are.
-#[test]
-fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
+#[tokio::test]
+async fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
     let joined = enrolled();
     let key = member();
     let envelope = |request: &OwnerCommitRequest| match &request.operation {
@@ -438,6 +447,7 @@ fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
     let (taken, _) = joined
         .owner
         .commit_local_document(later.clone(), &key, joined.now)
+        .await
         .unwrap();
     assert_eq!(
         envelope(&taken),
@@ -455,6 +465,7 @@ fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
     let (taken, receipt) = joined
         .owner
         .commit_local_document(earlier.clone(), &key, joined.now)
+        .await
         .unwrap();
     receipt.validate_local_document(&earlier, &taken).unwrap();
     assert_ne!(envelope(&taken), envelope(&earlier));
@@ -462,6 +473,7 @@ fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
     let (again, _) = joined
         .owner
         .commit_local_document(taken.clone(), &key, joined.now)
+        .await
         .unwrap();
     assert_eq!(
         envelope(&again),

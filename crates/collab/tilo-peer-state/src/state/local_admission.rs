@@ -24,26 +24,25 @@ impl StatePeer {
     }
 
     /// `envelope`, this device's own write to `app`'s `record`, as the record
-    /// takes it next. A device has several local writers (each instance of an
-    /// app, the file daemon), and each signs its writes with the device's key
-    /// before its owner's turn orders them: a write can reach the turn after a
-    /// write another writer signed later took a greater sequence, and the
-    /// record would refuse it as a replay. Such a write is signed again by
-    /// `key`, the device, under a sequence past the record's floor. A write
-    /// the record holds already, one still past the floor, and one another
-    /// author signed stay as they are.
+    /// takes it next, and whether it is to be signed again. A device has several
+    /// local writers (each instance of an app, the file daemon), and each signs
+    /// its writes with the device's key before its owner's turn orders them: a
+    /// write can reach the turn after a write another writer signed later took a
+    /// greater sequence, and the record would refuse it as a replay. Such a write
+    /// is drafted again under a sequence past the record's floor, for the device
+    /// to sign. A write the record holds already and one still past the floor
+    /// stay as they are.
     ///
     /// # Errors
     ///
-    /// The write does not sign.
+    /// The record's exact admissions cannot be read.
     pub fn sequenced_local_document(
         &self,
         app: &str,
         record: &str,
         mut envelope: SignedOp,
-        key: &ed25519_dalek::SigningKey,
         now: SystemTime,
-    ) -> Result<SignedOp, String> {
+    ) -> Result<(SignedOp, bool), String> {
         let route = Route {
             app: app.into(),
             record: record.into(),
@@ -54,24 +53,139 @@ impl StatePeer {
             .get(&route)
             .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
             .copied()
-            .filter(|floor| {
-                envelope.seq <= *floor
-                    && envelope.author.as_bytes() == &key.verifying_key().to_bytes()
-            })
+            .filter(|floor| envelope.seq <= *floor)
         else {
-            return Ok(envelope);
+            return Ok((envelope, false));
         };
         if self
             .lookup_exact_local_document(app, record, &envelope, now)
             .map_err(|error| error.to_string())?
             .is_some()
         {
-            return Ok(envelope);
+            return Ok((envelope, false));
         }
         envelope.seq = collab_types::next_unordered_document_sequence(now)
             .max(floor.checked_add(1).ok_or("sequence exhausted")?);
-        collab_types::sign_op(&mut envelope, key).map_err(|error| error.to_string())?;
-        Ok(envelope)
+        Ok((envelope, true))
+    }
+
+    /// `frame`, an encoded [`collab_types::DocumentFrame`] of `record` of `app`, drafted as
+    /// `author`'s next write of it after the `drafted` writes of it drafted before in the same
+    /// owner turn, unsigned: sealed for the record's channel by `seal`, the
+    /// channel's key holder, with the claims of its changes for readers without the key, or in
+    /// the clear where `seal` is `None`. A write in the clear that starts a record is refused
+    /// when the workspace does not let `author` create it or holds it already.
+    ///
+    /// # Errors
+    ///
+    /// The frame does not decode, sealing failed, or the record refuses the write.
+    pub fn draft_write(
+        &self,
+        (app, record): (&str, &str),
+        frame: &[u8],
+        seal: Option<&mut super::SealCheckpoint<'_>>,
+        author: [u8; 32],
+        drafted: u64,
+        now: SystemTime,
+    ) -> Result<SignedOp, String> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let mutation =
+            match collab_types::DocumentFrame::decode(frame).map_err(|error| error.to_string())? {
+                collab_types::DocumentFrame::Whole(mutation) => Some(mutation),
+                collab_types::DocumentFrame::Segment(_) => None,
+            };
+        let author = collab_types::Ed25519PublicKey::from_bytes(author);
+        let document = self.core.documents.get(&route);
+        let seq = document
+            .and_then(|held| held.channel.last_seq_per_author.get(&author).copied())
+            .unwrap_or(0)
+            .checked_add(1)
+            .and_then(|next| next.checked_add(drafted))
+            .ok_or("sequence exhausted")?;
+        let artifact = collab_types::document_artifact_id(app, &self.core.workspace, record);
+        let attestation = collab_types::document_attestation_id(app, &self.core.workspace, record);
+        let surface = self.signed_surface(app);
+        let Some(seal) = seal else {
+            // A device that starts a record is told now when the workspace does not let it
+            // create one, or when the record is there already: a peer's copy of the same start
+            // is held or merged as the nothing it is, but its own write would be answered as
+            // published while no peer ever sees it.
+            if matches!(&mutation, Some(collab_types::DocumentMutation::Snapshot(bytes)) if super::empty_genesis(bytes))
+                && !self.signed_by_owner(author.as_bytes())
+            {
+                if document.is_some() {
+                    return Err("the record exists already".into());
+                }
+                if !self.may_create_record(&self.membership(*author.as_bytes(), now)?, &route, now)
+                {
+                    return Err("the workspace does not let this device create the record".into());
+                }
+            }
+            return Ok(SignedOp::new_unsigned(
+                frame.to_vec(),
+                artifact,
+                author,
+                attestation,
+                collab_types::OpKind::Change,
+                now,
+                seq,
+            )
+            .with_surface(surface));
+        };
+        // A change needs the record it changes, held or drafted before it; a checkpoint is the
+        // whole record, so it is all a route it founds needs.
+        let retention = collab_types::ContentRetention::of_frame(frame);
+        if document.is_none() && drafted == 0 && retention == collab_types::ContentRetention::Delta
+        {
+            return Err("sealed write to a record this state does not hold".into());
+        }
+        // Readers without the key decide a sealed write by the claims of its changes, as a
+        // member's page names them: each naming the units its action may write by the surface
+        // the op names.
+        let claims = mutation
+            .as_ref()
+            .and_then(|mutation| {
+                // ignored-failure: a segment of a frame, or changes that name no action, claim
+                // nothing; the readers that open them decide what they wrote
+                collab_types::mutation_claims(mutation, collab_types::record_unit).ok()
+            })
+            .map(|claims| {
+                self.surfaces.with_footprints(
+                    &collab_types::Record {
+                        room: &self.core.workspace,
+                        app,
+                        record,
+                    },
+                    document
+                        .and_then(|held| super::record_kind(&*held.doc))
+                        .as_deref(),
+                    surface.as_ref(),
+                    claims,
+                )
+            })
+            .unwrap_or_default();
+        let (metadata, ciphertext) = seal(frame)?;
+        if metadata.retention() != Some(retention)
+            || metadata.channel
+                != collab_types::document_channel_id(app, &self.core.workspace, record)
+        {
+            return Err("a sealed write is a delta or a checkpoint of the record's channel".into());
+        }
+        Ok(SignedOp::new_unsigned_with_encryption(
+            ciphertext,
+            artifact,
+            author,
+            attestation,
+            collab_types::OpKind::Change,
+            now,
+            seq,
+            metadata,
+        )
+        .with_claims(claims)
+        .with_surface(surface))
     }
 
     /// Admit `envelope`, a local app's signed write to `record`, as a new
