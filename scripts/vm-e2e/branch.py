@@ -659,9 +659,30 @@ def open_passwords(vm: TiloVm) -> None:
 
 
 def password_items(vm: TiloVm) -> set[str]:
-    """The vault items Passwords publishes rows for, by their resource ids."""
-    return {part for row in listed_actions(vm) if row.get("provider") == "app-actions"
-            for part in row["id"].split("\x1f") if part.startswith("passwords:item:")}
+    """The logins in the vault, by their opaque item ids, as Passwords' own list-logins action
+    answers: the vault's rows in the listing name an item only once a query reaches it."""
+    answer = app_action(vm, "", "list-logins", None, PASSWORDS)
+    logins = found_key(answer, "logins")
+    expect(isinstance(logins, list), f"list-logins answered no logins: {json.dumps(answer)[:600]}")
+    return {login["item"] for login in logins if login.get("name") == PASSWORD_TITLE}
+
+
+def found_key(value, key: str):
+    """The first value under `key` anywhere in `value`, or None."""
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            if (hit := found_key(item, key)) is not None:
+                return hit
+    if isinstance(value, str) and key in value:
+        try:
+            return found_key(json.loads(value), key)
+        except ValueError:
+            return None
+    return None
 
 
 def configure_workspace(facts: dict, run: Run) -> None:
@@ -1196,10 +1217,13 @@ def steps(run: Run, args) -> None:
     run.step("S02", "a person signs in on box: the VM's person, certified by their root",
              sign_in, run)
     run.step("S03", "the person sets box up: a Secret Service secret, git, an SSH key", configure, run)
-    run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
-    run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
+    # The workspace first: the apps the person sets up next open in it, so their records are on
+    # box's disk, and so on each branch's. A window a branch opens where its app has no record
+    # yet waits for the workspace's host, and b boots while box, the host, is stopped.
     run.step("S03c", "the person makes a workspace on box and opens a window on its desk",
              configure_workspace, run)
+    run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
+    run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
     try:
         source = machine_facts(run, SOURCE, "S03-box-source")
         source_person = person_facts(run, SOURCE, "S03-box-source")
