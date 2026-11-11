@@ -1,10 +1,13 @@
 //! The desktop surface: layout, chrome and input, driven through its real model.
 
+use super::paging::panned_to;
 use super::*;
 use crate::navigation::{ChromeEffect, DeskEffect, Route};
+use ui::automerge::AutoCommit;
 use ui::search::Scope;
 use ui::widget::{STRIP_BOTTOM_GUTTER_PX, STRIP_TOP_GAP_PX, TileContent};
 use ui::winit::dpi::PhysicalPosition;
+use ui::winit::event::MouseScrollDelta;
 
 struct Notices;
 

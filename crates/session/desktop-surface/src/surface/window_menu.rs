@@ -751,7 +751,7 @@ fn group_at<'a>(tree: &'a DesktopTree, route: &RouteIds) -> Option<&'a WindowGro
 pub(super) fn apply(
     shared: &mut super::Shared,
     command: &crate::navigation::Admitted,
-    ops: &mut Vec<super::RowOp>,
+    ops: &mut Vec<super::row_op::RowOp>,
 ) -> bool {
     use crate::navigation::Admitted;
     let handled = match command {
@@ -764,7 +764,7 @@ pub(super) fn apply(
         // The share is the sharing app's to keep: the ask names the row the window's bar carries,
         // and the app does the same with it.
         Admitted::ShareWindow(ids, shared_now) => {
-            ops.push(super::RowOp::WindowShare(ids.tab, *shared_now));
+            ops.push(super::row_op::RowOp::WindowShare(ids.tab, *shared_now));
             true
         }
         Admitted::SplitRight(ids) => detach(shared, *ids, false),
@@ -901,12 +901,12 @@ fn width_preset(
     shared: &mut Shared,
     ids: RouteIds,
     width: tilo_desktop_model::WindowWidth,
-    ops: &mut Vec<super::RowOp>,
+    ops: &mut Vec<super::row_op::RowOp>,
 ) -> bool {
     match super::find_group(&mut shared.tree, ids.strip, ids.group) {
         Some(group) => {
             group.width = width;
-            ops.push(super::RowOp::Width(ids.strip, ids.group, width));
+            ops.push(super::row_op::RowOp::Width(ids.strip, ids.group, width));
             true
         }
         None => false,
@@ -914,7 +914,7 @@ fn width_preset(
 }
 
 /// Give every window of the strip at `ids` the same share of it.
-fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>) -> bool {
+fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op::RowOp>) -> bool {
     let strip = shared
         .tree
         .workspaces
@@ -930,7 +930,11 @@ fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>) -> 
         Some(strip) => {
             if equalize_widths(strip) {
                 for group in &strip.window_groups {
-                    ops.push(super::RowOp::Width(ids.strip, group.id, group.width));
+                    ops.push(super::row_op::RowOp::Width(
+                        ids.strip,
+                        group.id,
+                        group.width,
+                    ));
                 }
             }
             true
@@ -940,7 +944,7 @@ fn equalize(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>) -> 
 }
 
 /// Close every tab of the window at `ids` : the window goes, and a reopen brings its tabs back.
-fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>) -> bool {
+fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::row_op::RowOp>) -> bool {
     // Backwards, so each close remembers the window's own place and a reopen puts the tabs back in
     // the order they were in.
     let tabs: Vec<TabId> = group_at(&shared.tree, &ids)
@@ -955,7 +959,7 @@ fn close_window(shared: &mut Shared, ids: RouteIds, ops: &mut Vec<super::RowOp>)
     }
     match last {
         Some(removed) => {
-            ops.push(super::RowOp::Close {
+            ops.push(super::row_op::RowOp::Close {
                 strip: removed.strip,
                 group: removed.group,
                 tab: removed.tab.id,
