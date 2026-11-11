@@ -216,13 +216,11 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
     hosted.relay.shutdown().await;
 }
 
-/// What an agent through the door asks before it names a record: what runs in
-/// the workspace. The chat its operator seated there is one of them, and the
-/// channel it opens with is where a post goes.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
-    // The workspace, public: anyone may walk in, and its host sends a device
-    // its records when it opens them.
+/// A public workspace — anyone may walk in, and its host sends a device its
+/// records when it opens them — whose chat the operator seated: the app's own
+/// record of the workspace, holding the channel it opens with. Nobody's
+/// device has it open, and the workspace sends it to no one who does not.
+async fn lounge_with_chat() -> (Hosted, Device, String, tempfile::TempDir) {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
     let host = enrol(
         &owner,
@@ -282,6 +280,16 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
         )
         .await
         .unwrap();
+
+    (hosted, host, workspace, state)
+}
+
+/// What an agent through the door asks before it names a record: what runs in
+/// the workspace. The chat its operator seated there is one of them, and the
+/// channel it opens with is where a post goes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_sent() {
+    let (hosted, host, workspace, _state) = lounge_with_chat().await;
 
     // A member of the workspace, through its door.
     let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
@@ -357,6 +365,98 @@ async fn the_hosts_action_service_lists_a_public_workspaces_chat_it_was_never_se
         !matches!(refused.status, ReceiptStatus::Completed { .. }),
         "a channel the chat has not got took a post: {:?}",
         refused.status
+    );
+
+    member.peer.close();
+    hosted.agents.shutdown();
+    drop(hosted.web);
+    hosted.relay.shutdown().await;
+}
+
+/// What the host keeps of the workspace's chat: its writes, which a chat
+/// founded again would add to.
+async fn chat_history(hosted: &Hosted, workspace: &str) -> (Vec<u8>, usize) {
+    let history = hosted
+        .relay
+        .workspaces()
+        .unwrap()
+        .record_history(workspace, CHAT, "")
+        .await
+        .unwrap()
+        .expect("the host keeps the workspace's chat");
+    (history.base, history.writes.len())
+}
+
+/// A member's agent opens Chat in a public workspace whose chat the operator
+/// seated. The service holds none of that record until asked, and Chat keeps
+/// one record per workspace: opening it must open the chat the workspace
+/// holds, never found it again as if it were new, which would lay an empty
+/// chat's genesis over the one people talk in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
+    let (hosted, host, workspace, _state) = lounge_with_chat().await;
+    let before = chat_history(&hosted, &workspace).await;
+
+    // A member of the workspace, whose device runs their agent.
+    let (member_root, _) = tilo_user_identity::UserIdentity::generate("Member", 2);
+    let member_device = enrol(&member_root, "member-agent", DeviceCapabilities::member());
+    admit_person(
+        &hosted,
+        &host,
+        &workspace,
+        &member_device,
+        MemberRole::Editor,
+    )
+    .await;
+    let mut member = open_admitted_peer(&hosted, &member_device, &host, &workspace).await;
+    tilo_session_client::device::run_as_agent(&member.peer, "Claude Code")
+        .await
+        .expect("the member's device runs their agent");
+
+    // The agent opens Chat, as `app.so.tilo.chat#open` asks.
+    let opened = member
+        .invoke(request(
+            &format!("workspace:{workspace}"),
+            ActionAddress::new(format!("app.{CHAT}"), "open"),
+            InvokeArgument::None,
+        ))
+        .await;
+    let ReceiptStatus::Completed { output } = &opened.status else {
+        panic!("the agent opened Chat: {opened:?}");
+    };
+    let chat = DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        record: String::new(),
+    };
+    assert_eq!(
+        output.value.as_ref().map(|value| value["provider"].clone()),
+        Some(serde_json::json!(record_provider(&chat))),
+        "the open names the workspace's own chat: {output:?}"
+    );
+
+    // Nothing was founded: the chat the host keeps is the one the operator
+    // seated, write for write.
+    assert!(
+        chat_history(&hosted, &workspace).await == before,
+        "opening Chat wrote to the workspace's chat as if it were new"
+    );
+
+    // And it is the chat people talk in: its channel takes a post.
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("channel".into(), serde_json::json!(format!("c_{CHANNEL}")));
+    arguments.insert("text".into(), serde_json::json!("hello from the agent"));
+    let posted = member
+        .invoke(request(
+            &record_provider(&chat),
+            ActionAddress::new(ui::record::chain_resource_id(&chat::parts::chain()), "post"),
+            InvokeArgument::Json(arguments),
+        ))
+        .await;
+    assert!(
+        matches!(posted.status, ReceiptStatus::Completed { .. }),
+        "the agent posts in the chat it opened: {:?}",
+        posted.status
     );
 
     member.peer.close();

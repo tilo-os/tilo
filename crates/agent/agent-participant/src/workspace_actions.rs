@@ -78,7 +78,7 @@ use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, re
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use crate::workspace_records::WorkspaceRecords;
 use collab_types::DocumentMutation;
-use keys::{Keys, catalogue_keys, invoke_keys};
+use keys::{Keys, catalogue_keys};
 use run_context::{caller_context, said_run_title};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
@@ -1336,7 +1336,7 @@ impl Worker {
                 .ledger()
                 .entries
                 .get(invocation)
-                .map_or(Keys::Joined, |entry| invoke_keys(&entry.request)),
+                .map_or(Keys::Joined, |entry| self.invoke_keys(&entry.request)),
             other => other.keys(),
         }
     }
@@ -2252,11 +2252,13 @@ impl Worker {
                 .map(|output| (output, None));
         }
         // Acting on a record waits for that record's keys and no other's;
-        // opening an app on a new record needs only the workspace
-        // ([`invoke_keys`], which the service's thread admitted this request
-        // by).
+        // opening an app on a new record needs only the workspace, and on the
+        // record it keeps per workspace, the host's answer for that record
+        // ([`Self::invoke_keys`], which the service's thread admitted this
+        // request by).
+        let keys = self.invoke_keys(request);
         let state = self
-            .refresh(workspace_id, invoke_keys(request).act())
+            .refresh(workspace_id, keys.needs())
             .map_err(Outcome::Rejected)?;
         if request
             .revision
@@ -2447,7 +2449,7 @@ impl Worker {
                 .unwrap_or_default()
                 .to_owned(),
         };
-        if !state.holds(&route) {
+        if !state.holds(&route) && !self.held_or_owed(workspace_id, &route)? {
             return Err(Outcome::Rejected(ActionHostError::Refused {
                 reason: format!("this workspace has no {app} record {}", route.record),
             }));
@@ -2624,6 +2626,29 @@ impl Worker {
                 (who.person.clone(), actor, Some(permissions))
             }
         };
+        // An app that keeps one record per workspace opens that record: the
+        // one the workspace holds when it has it, founded only when its host
+        // answered it holds none.
+        if self
+            .catalogue
+            .get(app)
+            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record)
+        {
+            let route = DocumentRoute {
+                app_id: app.to_owned(),
+                cluster_id: workspace.to_owned(),
+                record: String::new(),
+            };
+            if self.held_or_owed(workspace_id, &route)? {
+                return Ok(ActionOutput {
+                    value: Some(serde_json::json!({
+                        "provider": record_provider(&route),
+                        "record": route.record,
+                    })),
+                    resources: Vec::new(),
+                });
+            }
+        }
         let hosted =
             ConfinedReplica::open(&self.catalogue, app, workspace, &creator, &actor, Seed::New)
                 .map_err(|error| refused(error.to_string()))?;

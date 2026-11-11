@@ -13,7 +13,13 @@
 //! member's own records could neither be read nor acted on in the workspace
 //! they wrote them in.
 
-use super::{DocumentRoute, Needs, Workspace};
+use super::keys::{Keys, invoke_keys};
+use super::{DocumentRoute, Needs, Outcome, Worker, Workspace};
+use tilo_actions::remote::{
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION,
+    ActionHostError, InvokeRequest, application_provider, application_provider_record,
+    provider_workspace,
+};
 use tilo_session_client::{Cmd, Outbox};
 
 /// The chain `record` is a part of, when it is a part of one.
@@ -102,6 +108,92 @@ impl Workspace {
             owing = owing || self.asked.contains(&route);
         }
         owing
+    }
+}
+
+impl Worker {
+    /// What running `request` waits for: the record it acts on
+    /// ([`invoke_keys`]), and for an open of an app, the record the open
+    /// shows, which the workspace may hold and send only when asked. That is
+    /// the record an open on the desk names, and for an app that keeps one
+    /// record per workspace (Chat) the open of the app itself, whose record
+    /// is that one: asked for and waited on before the open runs, so the open
+    /// finds the record people use rather than taking the workspace for one
+    /// without it. Waited on as a read: a record the workspace holds none of
+    /// is no reason to refuse the open.
+    pub(super) fn invoke_keys(&self, request: &InvokeRequest) -> Keys {
+        match self.opened_record(request) {
+            Some((app_id, record)) => Keys::Record {
+                app_id,
+                record,
+                act: false,
+            },
+            None => invoke_keys(request),
+        }
+    }
+
+    /// The app and record an open of an app in `request` shows, when the
+    /// record is one the workspace may already hold.
+    fn opened_record(&self, request: &InvokeRequest) -> Option<(String, String)> {
+        let target = &request.target;
+        if let Some((_, app)) = application_provider(&target.provider) {
+            return (target.address.action == APPLICATION_OPEN_ACTION).then(|| {
+                let record = application_provider_record(&target.provider).unwrap_or_default();
+                (app.to_owned(), record.to_owned())
+            });
+        }
+        provider_workspace(&target.provider)?;
+        let app = target
+            .address
+            .resource
+            .strip_prefix(APPLICATION_RESOURCE_PREFIX)?;
+        let opens = target.address.action == APPLICATION_OPEN_ACTION
+            || target.address.action == APPLICATION_START_ACTION;
+        let keeps = self
+            .catalogue
+            .get(app)
+            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record);
+        (opens && keeps).then(|| (app.to_owned(), String::new()))
+    }
+
+    /// Whether the workspace `workspace_id` holds `route`, as far as its host
+    /// answered: `Ok(false)` only for a record the host said it holds none of,
+    /// or in a workspace that replayed everything it holds. A record the
+    /// workspace may still send is asked for, and refused as on its way, so
+    /// what an open would found is never founded over a record the workspace
+    /// already has.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    pub(super) fn held_or_owed(
+        &mut self,
+        workspace_id: u64,
+        route: &DocumentRoute,
+    ) -> Result<bool, Outcome> {
+        let workspace = self.workspaces.get_mut(&workspace_id).ok_or_else(|| {
+            Outcome::Rejected(ActionHostError::Unavailable {
+                reason: "the workspace was not joined".into(),
+            })
+        })?;
+        if workspace.holds(route) {
+            return Ok(true);
+        }
+        let needs = Needs::Read {
+            app_id: &route.app_id,
+            record: &route.record,
+        };
+        if workspace.ask(workspace_id, needs) {
+            let record = if route.record.is_empty() {
+                format!("{}'s own record", route.app_id)
+            } else {
+                format!("{} record {}", route.app_id, route.record)
+            };
+            return Err(Outcome::Rejected(ActionHostError::Unavailable {
+                reason: format!("the workspace's {record} is on its way"),
+            }));
+        }
+        Ok(false)
     }
 }
 
