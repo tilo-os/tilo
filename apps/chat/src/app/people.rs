@@ -19,9 +19,9 @@ impl ChatApp {
     /// answers, and a peer only ever supplies its id.
     pub fn display_name(&self, id: &str) -> String {
         if let Some(agent) = id.strip_prefix("agent:")
-            && self.workspace_agents.iter().any(|known| known == agent)
+            && let Some(name) = self.known_agent_name(agent)
         {
-            return self.agent_display_name(agent);
+            return name;
         }
         if self.is_me(id)
             && let Some(own) = &self.own_label
@@ -61,6 +61,28 @@ impl ChatApp {
         id.to_string()
     }
 
+    /// Whether `id` authors as an agent: one of the workspace's own (`agent:<id>`, the actor its
+    /// identity record names) or a run of a task (`agent-task:<id>`). An agent is a collaborator
+    /// and reads as one, in the byline and its face, wherever its name is shown.
+    pub(crate) fn is_agent_author(&self, id: &str) -> bool {
+        id.starts_with("agent:") || self.agent_authors.contains_key(id)
+    }
+
+    /// What the workspace calls the agent `agent` (its bare id): the name its own record keeps for
+    /// it, else the name its device announced while here. `None` for one the workspace names not.
+    pub(crate) fn known_agent_name(&self, agent: &str) -> Option<String> {
+        self.workspace_agent_names
+            .get(agent)
+            .cloned()
+            .or_else(|| {
+                [format!("agent:{agent}"), agent.to_owned()]
+                    .into_iter()
+                    .find_map(|id| self.workspace_names.get(&id).cloned())
+            })
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+    }
+
     /// What to call `id` on screen: this session's own participant by their
     /// name like anyone else, and an honest placeholder for someone the workspace
     /// has not named yet — nobody is ever shown their raw routing id.
@@ -77,12 +99,9 @@ impl ChatApp {
             return crate::identity::unnamed_label(id);
         }
         if let Some(agent) = id.strip_prefix("agent:")
-            && self.workspace_agents.iter().any(|known| known == agent)
+            && let Some(name) = self.known_agent_name(agent)
         {
-            return crate::i18n::t_args(
-                "chat-agent-author",
-                &[("name", self.agent_display_name(agent).into())],
-            );
+            return crate::i18n::t_args("chat-agent-author", &[("name", name.into())]);
         }
         if let Some(agent) = self.agent_authors.get(id) {
             return format!("{agent} (agent)");
@@ -127,14 +146,30 @@ impl ChatApp {
         }
     }
 
-    /// The participant's own colour, in the shared presence vocabulary: the
-    /// workspace's assignment when it made one, otherwise the system-wide
-    /// per-user colour every other surface derives the same way.
+    /// The presence hue `id` wears: the one the workspace announced for them, else the one an
+    /// agent's own record gives it, else the one their identity derives — so a face, a chip and a
+    /// byline are one colour, here as in every app of the workspace.
+    pub(crate) fn participant_hue(&self, id: &str) -> ui::tokens::PresenceHue {
+        self.workspace_colors
+            .get(id)
+            .and_then(|(red, green, blue)| {
+                ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
+            })
+            .or_else(|| {
+                id.strip_prefix("agent:")
+                    .and_then(|agent| self.workspace_agent_colours.get(agent))
+                    .map(|slot| ui::tokens::PresenceHue::from_slot(usize::from(*slot)))
+            })
+            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(id))
+    }
+
+    /// The participant's own colour, in the shared presence vocabulary: the workspace's assignment
+    /// when it made one, otherwise [`Self::participant_hue`] as the colour that hue wears.
     pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
         self.workspace_colors
             .get(id)
             .copied()
-            .unwrap_or_else(|| ui::presence::user_color(id))
+            .unwrap_or_else(|| ui::presence::identity_rgb(self.participant_hue(id)))
     }
 
     /// The chat's people as the composers' `@` lists offer them beside the
@@ -147,7 +182,7 @@ impl ChatApp {
                 id: user.id.clone(),
                 name: self.display_name(&user.id),
                 kind: ui::presence::ParticipantKind::from(user.is_agent),
-                color: self.participant_color(&user.id),
+                hue: self.participant_hue(&user.id),
                 is_self: self.is_me(&user.id),
             })
             .collect()

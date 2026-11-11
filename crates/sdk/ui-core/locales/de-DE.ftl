@@ -53,6 +53,7 @@ host-window-maximize = Maximieren
 host-window-restore = Wiederherstellen
 host-window-snap = Zurück in den Streifen
 host-window-collapse = Einklappen
+host-window-expand = Ausklappen
 host-window-close = Schließen
 window-toolbar-back = Zurück
 window-toolbar-forward = Vorwärts

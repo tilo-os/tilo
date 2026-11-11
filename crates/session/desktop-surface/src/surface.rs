@@ -1287,6 +1287,15 @@ impl DesktopSurface {
                 .find(|group| !floats.contains_key(group))
                 .copied();
             row.set_floats(floats);
+            // The cards the person folded to their header say so in their header: their collapse
+            // control opens them again.
+            let collapsed = if Some(*strip) == shown {
+                let shared = self.shared.borrow();
+                shared.dock.collapsed.keys().copied().collect()
+            } else {
+                std::collections::BTreeSet::new()
+            };
+            row.set_collapsed(&collapsed);
             if Some(*strip) == shown
                 && let Some(group) = back
                 && !row.is_floating(group)

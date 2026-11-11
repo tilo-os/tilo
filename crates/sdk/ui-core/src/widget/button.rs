@@ -70,8 +70,8 @@ pub struct Button {
     /// leads with them.
     faces: Vec<(String, String)>,
     /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
-    /// as a person field's chip shows who it holds.
-    avatar: Option<(String, String)>,
+    /// as a person field's chip shows who it holds, in the presence hue the workspace gives them.
+    avatar: Option<(String, String, crate::tokens::PresenceHue)>,
     /// The label stands for no value yet (`Self::with_placeholder`): painted in the secondary
     /// ink a field shows an empty value in.
     placeholder: bool,
@@ -446,10 +446,17 @@ impl Button {
     }
 
     /// Lead with one person's avatar before the label, so a chip names who it is about as well as
-    /// what it is called.
+    /// what it is called, in the presence `hue` the workspace gives them
+    /// ([`People::hue`](crate::presence::PresenceCtx::hue_of)): the one they chose, never one
+    /// derived here.
     #[must_use]
-    pub fn with_avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
-        self.avatar = Some((name.into(), identity.into()));
+    pub fn with_avatar(
+        mut self,
+        name: impl Into<String>,
+        identity: impl Into<String>,
+        hue: crate::tokens::PresenceHue,
+    ) -> Self {
+        self.avatar = Some((name.into(), identity.into(), hue));
         self.layout_dirty = true;
         self.dirty = true;
         self
@@ -1295,7 +1302,7 @@ struct FaceContent<'a> {
     /// empty for every face that is not a group of people.
     faces: &'a [(String, String)],
     /// One person's avatar before the label, as a person chip leads with it.
-    avatar: Option<(&'a str, &'a str)>,
+    avatar: Option<(&'a str, &'a str, crate::tokens::PresenceHue)>,
     /// The label names no value yet: painted in the secondary ink.
     placeholder: bool,
     /// What the content marks means: its colour, where the face's own ink would stand.
@@ -1445,14 +1452,16 @@ impl FaceContent<'_> {
                 );
                 return;
             }
-            if let Some((name, identity)) = self.avatar {
+            if let Some((name, identity, hue)) = self.avatar {
                 let face = Rect::new(
                     rect.center().x - icon_px / 2.0,
                     rect.center().y - icon_px / 2.0,
                     rect.center().x + icon_px / 2.0,
                     rect.center().y + icon_px / 2.0,
                 );
-                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+                crate::widget::AvatarFace::new(name, identity)
+                    .hue(hue)
+                    .paint(ctx, face);
                 return;
             }
             if let Some(image) = self.image {
@@ -1511,10 +1520,12 @@ impl FaceContent<'_> {
                     ink,
                 );
             }
-            if let Some((name, identity)) = self.avatar {
+            if let Some((name, identity, hue)) = self.avatar {
                 let iy = rect.center().y - icon_px / 2.0;
                 let face = Rect::new(leading, iy, leading + icon_px, iy + icon_px);
-                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+                crate::widget::AvatarFace::new(name, identity)
+                    .hue(hue)
+                    .paint(ctx, face);
             }
             if !self.faces.is_empty() {
                 self.draw_faces(ctx, leading, rect.center().y, rect.height());
@@ -1555,10 +1566,12 @@ impl FaceContent<'_> {
                 ink,
             );
         }
-        if let Some((name, identity)) = self.avatar {
+        if let Some((name, identity, hue)) = self.avatar {
             let iy = rect.center().y - icon_px / 2.0;
             let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
-            crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+            crate::widget::AvatarFace::new(name, identity)
+                .hue(hue)
+                .paint(ctx, face);
         }
         if !self.faces.is_empty() {
             self.draw_faces(ctx, start_x, rect.center().y, rect.height());
@@ -2143,7 +2156,7 @@ impl Button {
                 avatar: self
                     .avatar
                     .as_ref()
-                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
                 placeholder: self.placeholder,
                 tone: None,
                 badge: None,
@@ -2492,7 +2505,7 @@ impl Widget for Button {
                 avatar: self
                     .avatar
                     .as_ref()
-                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
                 placeholder: self.placeholder,
                 tone: self.content_tone,
                 badge: self.badge.as_deref(),

@@ -1921,6 +1921,7 @@ mod tests {
                 author: Some(Person {
                     identity: format!("person-{index}"),
                     name: format!("Writer {index}"),
+                    hue: crate::tokens::PresenceHue::of_identity(&format!("person-{index}")),
                 }),
                 time: Some(Moment(*said)),
                 read_by: read_by(index),
@@ -2098,10 +2099,12 @@ mod tests {
                         Person {
                             identity: "person-0".to_owned(),
                             name: "Mia".to_owned(),
+                            hue: crate::tokens::PresenceHue::of_identity("person-0"),
                         },
                         Person {
                             identity: "person-1".to_owned(),
                             name: "Writer 1".to_owned(),
+                            hue: crate::tokens::PresenceHue::of_identity("person-1"),
                         },
                     ],
                     _ => Vec::new(),
@@ -2222,6 +2225,7 @@ mod tests {
                     by: Some(Person {
                         identity: "person:bo".to_owned(),
                         name: "Bo".to_owned(),
+                        hue: crate::tokens::PresenceHue::of_identity("person:bo"),
                     }),
                     said: Some("moved it to Today".to_owned()),
                     ..ChangeMarkProps::default()

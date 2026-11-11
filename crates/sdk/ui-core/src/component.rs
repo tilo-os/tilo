@@ -355,11 +355,42 @@ impl PropType for Icon {
     }
 }
 
-/// A participant, as a component shows one: their identity and what the workspace calls them.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+/// A participant, as a component shows one: their identity, what the workspace calls them, and the
+/// presence hue they wear.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Person {
     pub identity: String,
     pub name: String,
+    /// The hue their chip and avatar wear. A value names an identity and a name only, so a person
+    /// read from one wears the hue their identity derives ([`PresenceHue::of_identity`]); one a
+    /// host knows more of is given the hue the member list announced.
+    pub hue: crate::tokens::PresenceHue,
+}
+
+impl Default for Person {
+    fn default() -> Self {
+        Self {
+            identity: String::new(),
+            name: String::new(),
+            hue: crate::tokens::PresenceHue::from_slot(0),
+        }
+    }
+}
+
+impl PartialOrd for Person {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for Person {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        (self.identity.as_str(), self.name.as_str(), self.hue.slot()).cmp(&(
+            other.identity.as_str(),
+            other.name.as_str(),
+            other.hue.slot(),
+        ))
+    }
 }
 
 impl PropType for Person {
@@ -370,6 +401,7 @@ impl PropType for Person {
     fn from_value(value: &Value) -> Result<Self, String> {
         match value {
             Value::Principal { identity, name } => Ok(Self {
+                hue: crate::tokens::PresenceHue::of_identity(identity),
                 identity: identity.clone(),
                 name: name.clone(),
             }),

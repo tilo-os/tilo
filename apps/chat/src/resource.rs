@@ -256,7 +256,14 @@ impl ResourceApp for ChatShell {
         let drafts = cx.person::<crate::drafts::ChatDrafts>();
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
-            .with_drafts(drafts);
+            .with_drafts(drafts)
+            // The workspace's agents, as its own record of them names them: an agent is a
+            // collaborator, and its name reads from the same record in every app of the workspace.
+            .with_agents_record(
+                cx.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>(
+                    ui::tilo_workspace_agent::OWNER,
+                ),
+            );
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         // The shell keeps the workspace's channels as its sidebar, their width,

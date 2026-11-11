@@ -234,6 +234,9 @@ pub struct WindowGroup {
     pub maximized: bool,
     /// Floating over the desk: the maximize control snaps it back ([`Self::take_pending_snap`]).
     floating: bool,
+    /// Floating as a card, folded to its header: the collapse control opens it again
+    /// ([`Self::set_collapsed`]).
+    collapsed: bool,
     /// The desktop opens new tabs in the window ([`Self::set_new_tab`]); a floating one shows no
     /// door to them all the same.
     opens_tabs: bool,
@@ -481,6 +484,7 @@ impl WindowGroup {
             grip_dirty: false,
             maximized: false,
             floating: false,
+            collapsed: false,
             opens_tabs: true,
             pending_snap: false,
             search_active: false,

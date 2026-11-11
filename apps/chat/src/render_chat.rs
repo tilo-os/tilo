@@ -405,7 +405,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         if m.author.starts_with("bot:")
-            || self.agent_authors.contains_key(&m.author)
+            || self.is_agent_author(&m.author)
             || self.is_provider_output(m)
         {
             return;
@@ -461,7 +461,7 @@ impl ChatApp {
                 for_person: Some(initiator),
                 color,
             }
-        } else if self.agent_authors.contains_key(&m.author) {
+        } else if self.is_agent_author(&m.author) {
             Author::Agent {
                 name,
                 for_person: None,

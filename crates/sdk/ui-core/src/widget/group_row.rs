@@ -398,6 +398,9 @@ pub struct GroupRow {
     /// Windows floating above the desk at a rect of their own, by group id,
     /// in the surface's coordinates ([`floats`]).
     floats: HashMap<u64, Rect>,
+    /// The floating cards the desk has folded to their header, by group id
+    /// ([`Self::set_collapsed`]).
+    collapsed_cards: std::collections::HashSet<u64>,
     /// The rect a floating window was at when its drag began.
     float_drag_from: Option<Rect>,
     /// Where a float the person moved or snapped goes, for the host to keep
@@ -1226,6 +1229,7 @@ impl GroupRow {
             canvas_drag_from: None,
             pending_canvas_move: None,
             floats: HashMap::new(),
+            collapsed_cards: std::collections::HashSet::new(),
             float_drag_from: None,
             pending_float: None,
             float_fade: HashMap::new(),

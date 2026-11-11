@@ -259,7 +259,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         who.name.clone(),
                         who.agent,
                         Button::new(id, &who.name)
-                            .with_avatar(&who.name, &who.id)
+                            .with_avatar(&who.name, &who.id, people.hue(&who.id))
                             .showing_choice(),
                     ),
                     None => (
@@ -291,7 +291,9 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     ) -> Element {
         let mut button = Button::new(id, label).role(ButtonRole::Plain);
         button = match face {
-            Some((name, identity)) => button.with_avatar(name, identity),
+            Some((name, identity)) => {
+                button.with_avatar(name, identity, self.people().hue(identity))
+            }
             None => button.with_icon(Icon::User).with_placeholder(),
         };
         if agent {

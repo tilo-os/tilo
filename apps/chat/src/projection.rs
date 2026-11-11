@@ -8,7 +8,11 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::tilo_resource::{Id, Identified, Resource};
 
 use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, User};
-use crate::record::{Chat, Conversation};
+use crate::record::{Chat, Conversation, Participant};
+
+/// What the workspace calls each of its agents, by the bare id its actor carries
+/// (`agent:<id>`): the answer of the workspace's own record of its agents.
+pub type AgentNames = HashMap<String, String>;
 
 /// The published id of the item `id` of the record's `field`
 /// (`channels`, `messages`, …): what a caller addresses its actions to.
@@ -86,11 +90,22 @@ impl Chat {
         me: &str,
         messages: &crate::messages::Messages,
     ) -> Vec<Channel> {
-        use crate::record::Participant;
+        self.conversation_rows_named(me, messages, &AgentNames::new())
+    }
+
+    /// [`Self::conversation_rows`], with what the workspace calls its agents: a conversation with
+    /// an agent is named for it whether or not the agent is working here this moment.
+    #[must_use]
+    pub fn conversation_rows_named(
+        &self,
+        me: &str,
+        messages: &crate::messages::Messages,
+        agents: &AgentNames,
+    ) -> Vec<Channel> {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
         let mut push = |id: &Id, participants: Vec<String>, recorded: Option<&Conversation>| {
-            let name = self.display_names(id, Some(me));
+            let name = self.display_names_named(id, Some(me), agents);
             direct.push((
                 name.clone(),
                 Channel {
@@ -173,6 +188,14 @@ impl Chat {
     /// else names it (an agent's run on a turn in it).
     #[must_use]
     pub fn display_names(&self, id: &Id, me: Option<&str>) -> String {
+        self.display_names_named(id, me, &AgentNames::new())
+    }
+
+    /// [`Self::display_names`], with what the workspace's own record calls its agents: an agent is
+    /// named by the identity record every app of the workspace reads, not by whether its device
+    /// happens to be here.
+    #[must_use]
+    pub fn display_names_named(&self, id: &Id, me: Option<&str>, agents: &AgentNames) -> String {
         if let Some(conversation) = self.channels.get(id)
             && !conversation.participants.is_empty()
             && !conversation.name.trim().is_empty()
@@ -183,11 +206,21 @@ impl Chat {
         let named: Vec<String> = participants
             .iter()
             .map(|participant| {
-                self.people
-                    .iter()
-                    .find(|person| person.id.0 == participant.id())
-                    .map(|person| person.name.trim().to_owned())
-                    .filter(|name| !name.is_empty())
+                let agent_name = match participant {
+                    Participant::Agent(agent) => agents
+                        .get(agent)
+                        .map(|name| name.trim().to_owned())
+                        .filter(|name| !name.is_empty()),
+                    Participant::Person(_) => None,
+                };
+                agent_name
+                    .or_else(|| {
+                        self.people
+                            .iter()
+                            .find(|person| person.id.0 == participant.id())
+                            .map(|person| person.name.trim().to_owned())
+                            .filter(|name| !name.is_empty())
+                    })
                     .unwrap_or_else(|| crate::identity::unnamed_label(participant.id()))
             })
             .collect();

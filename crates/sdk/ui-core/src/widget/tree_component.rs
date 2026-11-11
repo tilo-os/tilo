@@ -2423,6 +2423,7 @@ mod tests {
         props.presence = Some(Person {
             identity: "bo".to_owned(),
             name: "Bo".to_owned(),
+            hue: crate::tokens::PresenceHue::of_identity("bo"),
         });
         let tree = tree_of(vec![props], true, Moves::default());
         assert_eq!(

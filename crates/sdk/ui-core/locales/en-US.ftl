@@ -52,6 +52,7 @@ host-window-maximize = Maximize
 host-window-restore = Restore
 host-window-snap = Snap back into the strip
 host-window-collapse = Collapse
+host-window-expand = Expand
 host-window-close = Close
 window-toolbar-back = Back
 window-toolbar-forward = Forward

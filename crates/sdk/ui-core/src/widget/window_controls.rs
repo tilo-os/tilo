@@ -100,20 +100,33 @@ pub enum Resize {
     Restore,
     /// The window floating over the desk goes back into its strip, where it stood.
     Snap,
+    /// The card folded to its header opens again: its collapse control points up while it is shut.
+    Expand,
 }
 
 impl Resize {
+    /// What the control does for a window that is `maximized`, `floating` or folded to its header
+    /// as a card (`collapsed`): a floating window is never maximized.
+    #[must_use]
+    pub fn of_window(maximized: bool, floating: bool, collapsed: bool) -> Self {
+        match (floating, collapsed) {
+            (true, true) => Resize::Expand,
+            (true, false) => Resize::Snap,
+            (false, _) => {
+                if maximized {
+                    Resize::Restore
+                } else {
+                    Resize::Maximize
+                }
+            }
+        }
+    }
+
     /// What the control does for a window that is `maximized` or `floating`: a floating window is
     /// never maximized, it snaps back.
     #[must_use]
     pub fn of(maximized: bool, floating: bool) -> Self {
-        if floating {
-            Resize::Snap
-        } else if maximized {
-            Resize::Restore
-        } else {
-            Resize::Maximize
-        }
+        Self::of_window(maximized, floating, false)
     }
 }
 
@@ -135,10 +148,12 @@ impl WindowControl {
         match (self, resize) {
             // A window floating as a card folds to its header, as every card over the desk does.
             (WindowControl::Minimize, Resize::Snap) => "host-window-collapse",
+            // Folded to its header, the same control opens it again.
+            (WindowControl::Minimize, Resize::Expand) => "host-window-expand",
             (WindowControl::Minimize, _) => "host-window-minimize",
             (WindowControl::Maximize, Resize::Maximize) => "host-window-maximize",
             (WindowControl::Maximize, Resize::Restore) => "host-window-restore",
-            (WindowControl::Maximize, Resize::Snap) => "host-window-snap",
+            (WindowControl::Maximize, Resize::Snap | Resize::Expand) => "host-window-snap",
             (WindowControl::Close, _) => "host-window-close",
         }
     }
@@ -148,10 +163,11 @@ impl WindowControl {
     pub fn icon(self, resize: Resize) -> icons::Icon {
         match (self, resize) {
             (WindowControl::Minimize, Resize::Snap) => icons::Icon::ChevronDown,
+            (WindowControl::Minimize, Resize::Expand) => icons::Icon::ChevronUp,
             (WindowControl::Minimize, _) => icons::Icon::Minus,
             (WindowControl::Maximize, Resize::Maximize) => icons::Icon::Maximize2,
             (WindowControl::Maximize, Resize::Restore) => icons::Icon::Minimize2,
-            (WindowControl::Maximize, Resize::Snap) => icons::Icon::Columns2,
+            (WindowControl::Maximize, Resize::Snap | Resize::Expand) => icons::Icon::Columns2,
             (WindowControl::Close, _) => icons::Icon::X,
         }
     }
@@ -479,6 +495,30 @@ mod tests {
 
     fn row() -> Rect {
         Rect::new(0.0, 0.0, 800.0, 40.0)
+    }
+
+    /// A card folded to its header: its collapse control points up and says it opens the card,
+    /// where an open one points down.
+    #[test]
+    fn a_folded_cards_collapse_control_points_up() {
+        assert_eq!(Resize::of_window(false, true, false), Resize::Snap);
+        assert_eq!(Resize::of_window(false, true, true), Resize::Expand);
+        assert_eq!(
+            WindowControl::Minimize.icon(Resize::Snap),
+            icons::Icon::ChevronDown
+        );
+        assert_eq!(
+            WindowControl::Minimize.icon(Resize::Expand),
+            icons::Icon::ChevronUp
+        );
+        assert_eq!(
+            WindowControl::Minimize.name_key(Resize::Expand),
+            "host-window-expand"
+        );
+        assert_eq!(
+            WindowControl::Minimize.name_key(Resize::Snap),
+            "host-window-collapse"
+        );
     }
 
     #[test]

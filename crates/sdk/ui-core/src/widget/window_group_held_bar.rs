@@ -168,7 +168,22 @@ impl WindowGroup {
     /// What the window's maximize control does where the window stands now.
     #[must_use]
     pub fn resize(&self) -> crate::widget::window_controls::Resize {
-        crate::widget::window_controls::Resize::of(self.maximized, self.floating)
+        crate::widget::window_controls::Resize::of_window(
+            self.maximized,
+            self.floating,
+            self.collapsed,
+        )
+    }
+
+    /// The card stood in the floating layer's column folded to its header, or opened again: its
+    /// collapse control points the way the control folds it.
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        let collapsed = collapsed && self.floating;
+        if self.collapsed != collapsed {
+            self.collapsed = collapsed;
+            self.held_dirty = true;
+            self.bar.set_resize(self.resize());
+        }
     }
 
     /// The window floats over the desk, or stands in its strip: its row says so as it lays it out.
@@ -179,6 +194,7 @@ impl WindowGroup {
             self.held_dirty = true;
             self.bar.set_new_tab(self.opens_tabs && !floating);
             self.bar.set_card(floating);
+            self.bar.set_resize(self.resize());
             self.bar
                 .set_search_control((!floating).then_some(super::SEARCH_CONTROL_ROOM));
         }

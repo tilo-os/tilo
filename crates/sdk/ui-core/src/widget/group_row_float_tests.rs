@@ -340,6 +340,33 @@ fn a_floating_window_s_maximize_control_snaps_it_back_where_it_stood() {
     assert_eq!(row.take_pending_float(), None, "the snap is asked once");
 }
 
+/// The collapse control of a card follows the card: folded to its header it offers to open it
+/// again, pointing up, and the card opens with the same press.
+#[test]
+fn a_folded_card_s_collapse_control_points_up_and_opens_it_again() {
+    let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+    let at = Rect::new(120.0, 60.0, 760.0, 540.0);
+    row.set_floats(floats(&[(200, at)]));
+    let (mut row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    assert_eq!(
+        row.groups[1].resize(),
+        crate::widget::window_controls::Resize::Snap,
+        "an open card's collapse control folds it"
+    );
+    row.set_collapsed(&std::collections::BTreeSet::from([200]));
+    let (row, _taffy, _root) = relayout_row_owned(row, FIXTURE_USABLE_PX);
+    assert_eq!(
+        row.groups[1].resize(),
+        crate::widget::window_controls::Resize::Expand,
+        "folded, the same control opens the card again"
+    );
+    assert_eq!(
+        row.groups[0].resize(),
+        crate::widget::window_controls::Resize::Maximize,
+        "a window in its strip stands as it did"
+    );
+}
+
 /// A float keeps the size its place says: a conversation card stands at the card's size, not at
 /// the size a window lifted whole takes.
 #[test]

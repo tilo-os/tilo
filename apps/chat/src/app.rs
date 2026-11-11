@@ -363,6 +363,17 @@ pub struct ChatApp {
     pub(crate) workspace_colors: HashMap<Id, (u8, u8, u8)>,
     /// Exact bare Agent ids from the authenticated workspace roster.
     pub(crate) workspace_agents: Vec<Id>,
+    /// What the workspace's record of its agents calls each of them, by bare id: the agent identity
+    /// record every app of the workspace reads, followed as it changes. It names an author
+    /// (`agent:<id>`) whether or not the agent is working here this moment.
+    pub(crate) workspace_agent_names: HashMap<Id, String>,
+    /// The presence colour each agent's record gives it, by bare id: the one its keeper chose, or
+    /// the one its identity gives it. An agent wears it here as it does in every app of the
+    /// workspace.
+    pub(crate) workspace_agent_colours: HashMap<Id, u8>,
+    /// The agent identity record, followed every frame (see `follow_agents`).
+    agents_record:
+        Option<ui::framework::WorkspaceRecord<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -762,6 +773,9 @@ impl ChatApp {
             own_label: None,
             workspace_colors: HashMap::new(),
             workspace_agents: Vec::new(),
+            workspace_agent_names: HashMap::new(),
+            workspace_agent_colours: HashMap::new(),
+            agents_record: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),
@@ -1277,15 +1291,6 @@ impl ChatApp {
     /// a spelling the workspace uses for it.
     pub(crate) fn is_me(&self, id: &str) -> bool {
         id == self.me.id || self.former_ids.iter().any(|f| f == id)
-    }
-
-    pub(crate) fn agent_display_name(&self, agent: &str) -> String {
-        self.workspace_names
-            .get(&format!("agent:{agent}"))
-            .or_else(|| self.workspace_names.get(agent))
-            .filter(|name| !name.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| crate::i18n::t("chat-agent-kind"))
     }
 
     pub(crate) fn main_composer_can_edit(&self) -> bool {

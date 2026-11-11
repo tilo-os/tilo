@@ -30,6 +30,7 @@ use crate::presence::{ParticipantKind, PresenceCtx, PresenceUser};
 use crate::search::FieldWeight;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::tokens::PresenceHue;
 use crate::widget::autocomplete::{Suggestion, SuggestionList, SuggestionPerson};
 
 /// Someone a field can mention: a participant of the workspace.
@@ -40,21 +41,26 @@ pub struct MentionCandidate {
     /// What the workspace calls them; the mention reads `@name`.
     pub name: String,
     pub kind: ParticipantKind,
-    /// The colour they wear in the workspace.
-    pub color: (u8, u8, u8),
+    /// The presence hue they wear in the workspace: the one their member list announced, else the
+    /// one their identity derives.
+    pub hue: PresenceHue,
     /// This session's own participant.
     pub is_self: bool,
 }
 
 impl MentionCandidate {
-    /// A participant an owner knows of: a person unless `agent`, in the
-    /// colour their id picks.
+    /// A participant an owner knows of: a person unless `agent`, in the presence `hue` the
+    /// workspace gives them ([`PresenceCtx::hue_of`]).
     #[must_use]
-    pub fn new(id: impl Into<String>, name: impl Into<String>, agent: bool) -> Self {
-        let id = id.into();
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        agent: bool,
+        hue: PresenceHue,
+    ) -> Self {
         Self {
-            color: crate::presence::user_color(&id),
-            id,
+            hue,
+            id: id.into(),
             name: name.into(),
             kind: ParticipantKind::from(agent),
             is_self: false,
@@ -73,6 +79,7 @@ impl MentionCandidate {
     /// ([`PresenceCtx::participant_label`]). Software keeps its own name:
     /// its kind is shown beside it, not in the mention.
     fn of(presence: &PresenceCtx, user: PresenceUser) -> Self {
+        let hue = presence.hue_for(&UserId(user.id.clone()));
         let id = UserId(user.id);
         let kind = presence.participant_kind(&id);
         let name = if kind == ParticipantKind::Person {
@@ -90,7 +97,7 @@ impl MentionCandidate {
             id: id.0,
             name,
             kind,
-            color: user.color,
+            hue,
         }
     }
 }
@@ -444,7 +451,7 @@ fn suggestion_with_value(candidate: &MentionCandidate, value: String) -> Suggest
     };
     let row = Suggestion::labelled(value, candidate.name.clone()).with_person(SuggestionPerson {
         identity: candidate.id.clone(),
-        color: candidate.color,
+        hue: candidate.hue,
         agent: candidate.kind != ParticipantKind::Person,
     });
     match detail {
@@ -459,10 +466,47 @@ mod tests {
 
     fn workspace() -> Vec<MentionCandidate> {
         vec![
-            MentionCandidate::new("u_ada", "Ada Lovelace", false),
-            MentionCandidate::new("u_alan", "Alan Turing", false),
-            MentionCandidate::new("agent:tide", "Tide", true),
+            MentionCandidate::new(
+                "u_ada",
+                "Ada Lovelace",
+                false,
+                PresenceHue::of_identity("u_ada"),
+            ),
+            MentionCandidate::new(
+                "u_alan",
+                "Alan Turing",
+                false,
+                PresenceHue::of_identity("u_alan"),
+            ),
+            MentionCandidate::new(
+                "agent:tide",
+                "Tide",
+                true,
+                PresenceHue::of_identity("agent:tide"),
+            ),
         ]
+    }
+
+    /// A face in the `@` list wears the hue the workspace announced for that person, never one
+    /// derived from their id here.
+    #[test]
+    fn a_candidate_wears_the_hue_the_member_list_announced() {
+        let mut presence = PresenceCtx::empty();
+        presence.set_display_name(UserId("u_ada".into()), "Ada");
+        // Ada's own colour, chosen in her settings: the violet, nothing her id derives.
+        presence.set_presence_hue(UserId("u_ada".into()), PresenceHue::Violet);
+        let announced = presence.hue_of("u_ada");
+        assert_ne!(
+            announced,
+            PresenceHue::of_identity("u_ada"),
+            "the test needs a hue her id does not derive"
+        );
+        let ada = presence
+            .roster()
+            .into_iter()
+            .find(|user| user.id == "u_ada")
+            .expect("Ada is in the roster");
+        assert_eq!(MentionCandidate::of(&presence, ada).hue, announced);
     }
 
     #[test]
@@ -530,9 +574,14 @@ mod roster_tests {
             .names
             .insert(UserId("u_alan".into()), "Alan Turing".into());
         let extra = vec![
-            MentionCandidate::new("u_ada", "Ada L.", false),
-            MentionCandidate::new("u_old", "Zoe Zebra", false),
-            MentionCandidate::new("u_blank", "   ", false),
+            MentionCandidate::new("u_ada", "Ada L.", false, PresenceHue::of_identity("u_ada")),
+            MentionCandidate::new(
+                "u_old",
+                "Zoe Zebra",
+                false,
+                PresenceHue::of_identity("u_old"),
+            ),
+            MentionCandidate::new("u_blank", "   ", false, PresenceHue::of_identity("u_blank")),
         ];
         let merged = merged_roster(&presence, &extra);
         let names: Vec<_> = merged

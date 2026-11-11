@@ -178,6 +178,21 @@ impl GroupRow {
     pub(super) fn mark_floating(&mut self) {
         for group in &mut self.groups {
             group.set_floating(self.floats.contains_key(&group.id));
+            group.set_collapsed(self.collapsed_cards.contains(&group.id));
+        }
+    }
+
+    /// Tell the row which of its floating cards the desk has folded to their header, so their
+    /// collapse controls point the way they fold them ([`FloatAsk::Collapse`]).
+    pub fn set_collapsed(&mut self, collapsed: &std::collections::BTreeSet<u64>) {
+        let collapsed: std::collections::HashSet<u64> = collapsed.iter().copied().collect();
+        if collapsed == self.collapsed_cards {
+            return;
+        }
+        self.collapsed_cards = collapsed;
+        self.structure_dirty = true;
+        for group in &mut self.groups {
+            group.set_collapsed(self.collapsed_cards.contains(&group.id));
         }
     }
 

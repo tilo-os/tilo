@@ -831,9 +831,22 @@ impl Conversations {
     fn turns(&self, workspace: &WorkspaceFacts, person: &str) -> (Vec<Entry>, Vec<String>) {
         match self.opened(workspace, person) {
             Some((chat, part)) => {
+                // A conversation with an agent is named for it, as the window names it: the
+                // workspace's own record of its agents says what it is called.
+                let names: chat::projection::AgentNames = self
+                    .open
+                    .borrow()
+                    .get(&workspace.workspace)
+                    .map(|opened| {
+                        Self::channel_names(opened, person)
+                            .agents
+                            .into_iter()
+                            .collect()
+                    })
+                    .unwrap_or_default();
                 let chat_record = chat.get();
                 let part_record = part.get();
-                turns(&chat_record, &part_record, person)
+                turns(&chat_record, &part_record, person, &names)
             }
             None => (Vec::new(), Vec::new()),
         }
@@ -1374,6 +1387,7 @@ fn turns(
     chat: &chat::Chat,
     part: &chat::parts::ChatPart,
     person: &str,
+    agent_names: &chat::projection::AgentNames,
 ) -> (Vec<Entry>, Vec<String>) {
     let mut conversations: Vec<Id> = Vec::new();
     for (_, message) in part.messages.iter() {
@@ -1455,7 +1469,7 @@ fn turns(
             turns.push(Entry {
                 run: TrackerRun {
                     issue: format!("{address}/messages/{message_id}"),
-                    title: chat.display_names(id, Some(person)),
+                    title: chat.display_names_named(id, Some(person), agent_names),
                     instruction,
                     agent: agent.clone(),
                     epoch: 1,
@@ -1604,7 +1618,7 @@ mod tests {
 
     /// The turns `chat` 's conversations give for the messages of `head` .
     fn read(chat: &chat::Chat, head: &chat::parts::ChatPart) -> Vec<Entry> {
-        turns(chat, head, ME).0
+        turns(chat, head, ME, &chat::projection::AgentNames::new()).0
     }
 
     #[test]
@@ -1804,7 +1818,7 @@ mod tests {
     fn a_runs_spend_is_charged_to_its_agent_for_what_each_report_added() {
         let chat = workspace();
         let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
-        let (entries, agents) = turns(&chat, &head, ME);
+        let (entries, agents) = turns(&chat, &head, ME, &chat::projection::AgentNames::new());
         let issue = entries[0].run.issue.clone();
         let epoch = entries[0].run.epoch;
         let agent = entries[0].run.agent.clone();
@@ -1852,7 +1866,7 @@ mod tests {
     fn the_run_channel_knows_only_the_workspaces_it_read() {
         let chat = workspace();
         let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
-        let (entries, agents) = turns(&chat, &head, ME);
+        let (entries, agents) = turns(&chat, &head, ME, &chat::projection::AgentNames::new());
         let runs = Runs::new(std::sync::Arc::new(|| {}));
         *runs.held.lock().unwrap() = Held {
             workspaces: vec![Facts {
@@ -1880,7 +1894,7 @@ mod tests {
     fn a_new_turn_is_a_change_and_the_same_turns_are_not() {
         let chat = workspace();
         let asked = part(vec![("m1", message(ME, "what is on my task list?", 10))]);
-        let (entries, agents) = turns(&chat, &asked, ME);
+        let (entries, agents) = turns(&chat, &asked, ME, &chat::projection::AgentNames::new());
         let facts = |turns: Vec<Entry>| Held {
             workspaces: vec![Facts {
                 workspace: "w1".into(),
@@ -1912,7 +1926,7 @@ mod tests {
     fn a_door_connections_run_goes_beside_the_turns_while_it_is_held() {
         let chat = workspace();
         let head = part(vec![("m1", message(ME, "add the revenue curve", 10))]);
-        let (entries, agents) = turns(&chat, &head, ME);
+        let (entries, agents) = turns(&chat, &head, ME, &chat::projection::AgentNames::new());
         let runs = Runs::new(std::sync::Arc::new(|| {}));
         *runs.held.lock().unwrap() = Held {
             workspaces: vec![Facts {
