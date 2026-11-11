@@ -2579,15 +2579,39 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c
 outputs = ["/target/publish/rpm-snapshot/**"]
 default = false
 
+# The relay's programs and the agent host's member, one compile graph: the images package what
+# this leaves, so neither compiles Rust inside its build.
+[[check]]
+name = "relay-binaries"
+run = "bash tools/ci/publish/server-binaries.sh relay /target/publish/relay/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/relay/binaries/**"]
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "image-relay"
-run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay"
-needs = ["rpm-snapshot", "image-rpms-x86_64", "os-assets"]
+run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
+needs = ["relay-binaries", "rpm-snapshot", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
 git = true
 outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest", "/target/publish/relay/rpms-source"]
+default = false
+
+# The agent host's image (os/containers/tilo-agent-host): the member and its enroll program on the
+# same base and snapshot as the relay, which it runs beside.
+[[check]]
+name = "image-agent-host"
+run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/agent-host"
+needs = ["relay-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+outputs = ["/target/publish/agent-host/image.oci.tar", "/target/publish/agent-host/digest", "/target/publish/agent-host/rpms-source"]
 default = false
 
 [[check]]
@@ -5090,7 +5114,7 @@ on = ["dispatch", "stable"]
 # with its member device installed, and a clean `down`.
 [[check]]
 name = "tilo-sh-vm-host"
-run = "cargo build --locked -p tilo-relay --bin tilo-enroll\nbash os/containers/tilo-sh/test-vm-host.sh /target/images/image-vm-host/image.oci.tar /target/publish/hosted-guest/image \"$CARGO_TARGET_DIR/debug/tilo-enroll\"\n"
+run = "cargo build --locked -p tilo-relay --bin tilo-enroll\nbash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image \"$CARGO_TARGET_DIR/debug/tilo-enroll\"\n"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all" }
 env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 needs = ["image-vm-host", "image-hosted-guest"]
