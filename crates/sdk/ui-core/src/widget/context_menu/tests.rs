@@ -892,3 +892,56 @@ fn the_field_that_takes_typing_shows_its_hint_whole() {
         "the field shows {shown} px of the {hint_width} px hint {hint:?}"
     );
 }
+
+/// A menu opened a second time stands as it did the first, the host having told it how the person
+/// works since (a mouse, then a key pressed): its caption and rules keep their own heights, never
+/// a pressable row's each.
+#[test]
+fn a_menu_opened_again_keeps_its_rows_heights() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::light();
+    let presence = PresenceCtx::default();
+    let mut text = TextRenderer::new();
+    let items = || {
+        vec![
+            MenuItem::caption("Hosted by example.org"),
+            MenuItem::separator(),
+            MenuItem::selection("Join a workspace"),
+            MenuItem::separator(),
+            MenuItem::selection("Rename workspace").with_icon(crate::icons::Icon::Pencil),
+            MenuItem::selection("Overview"),
+            MenuItem::selection("New strip").with_icon(crate::icons::Icon::Plus),
+        ]
+    };
+    let mut menu = ContextMenu::new();
+    let open = |menu: &mut ContextMenu, text: &mut TextRenderer| {
+        menu.set_items(items());
+        menu.open_anchored(
+            Rect::new(50.0, 4.0, 160.0, 28.0),
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        menu.layout_within(text, &theme);
+        let mut top = Scene::new();
+        menu.draw_overlay(&mut top, Affine::IDENTITY, text, &theme, &presence);
+        (0..menu.items().len())
+            .filter_map(|index| menu.item_rect(index).map(|rect| (rect.y0, rect.height())))
+            .collect::<Vec<_>>()
+    };
+    let first = open(&mut menu, &mut text);
+    menu.close();
+    Widget::set_interaction_environment(&mut menu, crate::InteractionEnvironment::POINTER);
+    Widget::set_interaction_environment(
+        &mut menu,
+        crate::InteractionEnvironment {
+            modality: crate::interaction::InputModality::Keyboard,
+            ..crate::InteractionEnvironment::POINTER
+        },
+    );
+    let mut top = Scene::new();
+    menu.draw_overlay(&mut top, Affine::IDENTITY, &mut text, &theme, &presence);
+    let second = open(&mut menu, &mut text);
+    assert_eq!(
+        first, second,
+        "where the second opening's rows stand, and how tall"
+    );
+}
