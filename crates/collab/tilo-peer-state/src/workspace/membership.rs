@@ -229,7 +229,7 @@ fn added_ops(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Vec<SignedM
     crate::members::ops(candidate)
         .into_iter()
         .filter(|(id, _)| !held.contains_key(id))
-        .map(|(_, op)| op)
+        .map(|(_, op)| std::sync::Arc::unwrap_or_clone(op))
         .collect()
 }
 
@@ -241,8 +241,8 @@ fn rows_permitted(
     rows: &[GovernanceRow],
     now_ns: u64,
 ) -> Result<(), MembershipRefusal> {
-    let held = tilo_desktop_model::projection::workspace_policy_of(at, workspace);
-    let wanted = tilo_desktop_model::projection::workspace_policy_of(after, workspace);
+    let held = crate::workspace::policy_of(at, workspace);
+    let wanted = crate::workspace::policy_of(after, workspace);
     let actor = op.person();
     let foreign = op.author.capabilities.foreign && !held.is_owner(&actor);
     let bound = roles::foreign_device_bound();
@@ -324,8 +324,8 @@ pub fn authorize(
     if !its_own {
         return Err(MembershipRefusal::NotMembership);
     }
-    let held = tilo_desktop_model::projection::workspace_policy_of(at, workspace);
-    let wanted = tilo_desktop_model::projection::workspace_policy_of(after, workspace);
+    let held = crate::workspace::policy_of(at, workspace);
+    let wanted = crate::workspace::policy_of(after, workspace);
     let stages = stages(at, batch)?;
     let actor = hex::encode(person);
     let bound = roles::foreign_device_bound();
@@ -350,7 +350,7 @@ pub fn authorize(
     let mut previous_document = at.clone();
     let mut previous = held.clone();
     for stage in &stages {
-        let stage_policy = tilo_desktop_model::projection::workspace_policy_of(stage, workspace);
+        let stage_policy = crate::workspace::policy_of(stage, workspace);
         let admitted = redemptions(
             workspace,
             &previous,
@@ -511,7 +511,7 @@ fn redemptions(
             let row = written
                 .identities
                 .get(&device)
-                .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
+                .map(|bytes| GovernedIdentity::decode(bytes))
                 .transpose()
                 .map_err(|error| malformed(error.to_string()))?;
             let on_row = receipt.on_row();
@@ -795,7 +795,7 @@ fn identities(
     (before, written): (&WorkspaceGovernance, &WorkspaceGovernance),
 ) -> Result<(), MembershipRefusal> {
     let person_of = |bytes: &[u8]| {
-        serde_json::from_slice::<GovernedIdentity>(bytes)
+        GovernedIdentity::decode(bytes)
             .map(|identity| hex::encode(identity.device_cert.user_public_key))
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))
     };
@@ -805,7 +805,7 @@ fn identities(
             continue;
         }
         let person = person_of(bytes)?;
-        let identity: GovernedIdentity = serde_json::from_slice(bytes)
+        let identity = GovernedIdentity::decode(bytes)
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;
         tilo_user_identity::verify_device_cert(&identity.device_cert)
             .map_err(|error| MembershipRefusal::Malformed(error.to_string()))?;

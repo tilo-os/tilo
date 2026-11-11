@@ -24,7 +24,7 @@ pub(crate) fn identity_fixture() -> (GovernedIdentity, SystemTime) {
     let automerge::ScalarValue::Bytes(bytes) = value.as_ref() else {
         panic!("actual seeded identity is not bytes")
     };
-    let mut identity: GovernedIdentity = serde_json::from_slice(bytes).unwrap();
+    let mut identity = GovernedIdentity::decode(bytes).unwrap();
     let root = SigningKey::from_bytes(&[1; 32]);
     identity.device_cert.device_label = "Desk 🦀\n\"Workspace\"\\".into();
     identity.device_cert.expires_at_ns = Some(u64::MAX);
@@ -69,7 +69,7 @@ fn json_resource_fixture_signed_nested_identity_roundtrip_preserves_canonical_by
     let (identity, now) = identity_fixture();
     verify_identity(&identity, now);
     let wire = serde_json::to_vec(&identity).unwrap();
-    let decoded: GovernedIdentity = serde_json::from_slice(&wire).unwrap();
+    let decoded = GovernedIdentity::decode(&wire).unwrap();
     assert_eq!(
         postcard::to_allocvec(&decoded).unwrap(),
         postcard::to_allocvec(&identity).unwrap()

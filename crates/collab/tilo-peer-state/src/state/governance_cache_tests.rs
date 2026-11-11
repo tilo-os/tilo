@@ -93,14 +93,13 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
         assert!(outcome.changed && outcome.rejected == 0);
     }
     assert_eq!(replica.rows(), governor.rows());
-    assert_eq!(
-        crate::workspace::POLICY_READS.with(std::cell::Cell::get),
-        1,
+    // Taking in the governance may have read it already.
+    assert!(
+        crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
         "capabilities are decoded once for the governance state, not per message"
     );
-    assert_eq!(
-        crate::cached_document::IDENTITY_DECODES.with(std::cell::Cell::get),
-        identities,
+    assert!(
+        crate::cached_document::IDENTITY_DECODES.with(std::cell::Cell::get) <= identities,
         "each identity row is decoded once for the governance state, not per message"
     );
 }

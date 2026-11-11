@@ -78,10 +78,11 @@ fn original_role(peer: &StatePeer, source: &[u8; 32], now: SystemTime) -> Result
         joined: workspace_policy.joined.clone(),
         grants: workspace_policy.grants.clone(),
         identities,
+        names: std::collections::BTreeMap::new(),
         damaged: crate::workspace::policy::Damaged::default(),
     };
     // A root-signed certificate must also be the certificate admitted by workspace governance.
-    let identity: GovernedIdentity = serde_json::from_slice(
+    let identity = GovernedIdentity::decode(
         policy
             .identities
             .get(&hex::encode(source))

@@ -26,8 +26,7 @@ impl PeerWorkspace<'_> {
             .workspace_doc
             .as_deref()
             .ok_or("admitted workspace document unavailable")?;
-        let policy =
-            tilo_desktop_model::projection::workspace_policy_of(doc, &self.peer.core.workspace);
+        let policy = crate::workspace::policy_of(doc, &self.peer.core.workspace);
         if let Some(delegation) = delegation {
             let task = TaskDelegation::decode(delegation).map_err(|error| error.to_string())?;
             if task.agent_id != agent_id {

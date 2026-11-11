@@ -392,7 +392,7 @@ fn may_write(
         return Ok(true);
     };
     let before = before.ok_or(WorkspaceRefusal::GovernanceMissing)?;
-    let policy = tilo_desktop_model::projection::workspace_policy_of(before, workspace);
+    let policy = crate::workspace::policy_of(before, workspace);
     let person = hex::encode(person);
     if policy.active_role(&person).is_none() {
         return Err(WorkspaceRefusal::WriteForbidden);

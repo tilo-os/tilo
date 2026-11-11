@@ -13,6 +13,11 @@ pub(crate) trait Destination {
         Ok(())
     }
     fn identity(&mut self, key: &str, bytes: &[u8]) -> Result<(), Self::Error>;
+    /// The display name beside a device row; only a destination that shows
+    /// people keeps it.
+    fn peer(&mut self, _key: &str, _name: &str) -> Result<(), Self::Error> {
+        Ok(())
+    }
 }
 pub(crate) fn project<R: WorkspaceRead, D: Destination>(
     read: &R,
@@ -24,7 +29,8 @@ pub(crate) fn project<R: WorkspaceRead, D: Destination>(
         GovernanceEntry::Member { key, bytes } => destination.member(key, bytes),
         GovernanceEntry::MemberJoined { key, bytes } => destination.member_joined(key, bytes),
         GovernanceEntry::Identity { key, bytes } => destination.identity(key, bytes),
-        GovernanceEntry::Peer { .. } | GovernanceEntry::Sandbox { .. } => Ok(()),
+        GovernanceEntry::Peer { key, name } => destination.peer(key, name),
+        GovernanceEntry::Sandbox { .. } => Ok(()),
     })
 }
 /// Rows of a workspace's governance that did not decode: their grants and
@@ -96,6 +102,10 @@ impl Destination for PolicyData {
         self.identities.insert(key.to_owned(), bytes.to_vec());
         Ok(())
     }
+    fn peer(&mut self, key: &str, name: &str) -> Result<(), Self::Error> {
+        self.names.insert(key.to_owned(), name.to_owned());
+        Ok(())
+    }
 }
 pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
     #[cfg(test)]
@@ -106,6 +116,7 @@ pub(crate) fn legacy(document: &automerge::AutoCommit) -> PolicyData {
         joined: std::collections::BTreeMap::new(),
         grants: Vec::new(),
         identities: std::collections::BTreeMap::new(),
+        names: std::collections::BTreeMap::new(),
         damaged: Damaged::default(),
     };
     // This concrete legacy adapter has neither resource failures nor fallible
@@ -128,6 +139,7 @@ mod tests {
             joined: std::collections::BTreeMap::new(),
             grants: Vec::new(),
             identities: std::collections::BTreeMap::new(),
+            names: std::collections::BTreeMap::new(),
             damaged: Damaged::default(),
         }
     }

@@ -164,9 +164,8 @@ fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyEr
     let identities = strict_map(doc, &ROOT, "peer_identities_v1")?;
     let mut floors = BTreeMap::new();
     for key in doc.keys(&identities) {
-        let row: crate::state::GovernedIdentity =
-            serde_json::from_slice(&strict_bytes(doc, &identities, &key)?)
-                .map_err(|_| MediaPolicyError::Malformed)?;
+        let row = crate::state::GovernedIdentity::decode(&strict_bytes(doc, &identities, &key)?)
+            .map_err(|_| MediaPolicyError::Malformed)?;
         for entry in row.revocations {
             if entry.user_public_key != row.device_cert.user_public_key {
                 return Err(MediaPolicyError::Binding);
@@ -845,8 +844,10 @@ mod workspace_media_tests {
     fn legacy_identity_revocation_floor_survives_media_bootstrap() {
         let (mut before, root, device) = governed_legacy_workspace();
         let identities = before.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-        let mut row: crate::state::GovernedIdentity =
-            serde_json::from_slice(&strict_bytes(&before, &identities, &device).unwrap()).unwrap();
+        let mut row = crate::state::GovernedIdentity::decode(
+            &strict_bytes(&before, &identities, &device).unwrap(),
+        )
+        .unwrap();
         let mut revoked = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: [99; 32],

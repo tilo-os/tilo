@@ -76,6 +76,18 @@ pub(crate) struct GovernedIdentity {
     pub(crate) workspace_delegations: Vec<WorkspaceDelegation>,
 }
 
+impl GovernedIdentity {
+    /// The identity row `bytes` hold, as stored.
+    ///
+    /// # Errors
+    ///
+    /// The bytes are not an identity row.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, serde_json::Error> {
+        crate::governance_work::identity_decoded();
+        serde_json::from_slice(bytes)
+    }
+}
+
 /// A workspace delegation as a build before [`super::DURABLE_BASE_VERSION`]
 /// wrote it, read for the media authorization basis and nothing else. The
 /// fields are that layout's; nothing here interprets them.

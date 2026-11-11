@@ -48,8 +48,9 @@ pub enum AdmissionOutcome {
     clippy::too_many_lines,
     reason = "one atomic governance transaction; on error the document stays unchanged"
 )]
-pub fn admit_invited_member(
+pub(crate) fn admit_invited_member(
     document: &mut AutoCommit,
+    held: &crate::cached_document::CachedDocument,
     redemption: &crate::join::VerifiedRedemption,
     now: SystemTime,
 ) -> Result<AdmissionOutcome, String> {
@@ -66,9 +67,10 @@ pub fn admit_invited_member(
         .map_err(|error| error.to_string())?
         .and_then(|(value, _)| value.as_str().map(ToOwned::to_owned))
         .ok_or("governed workspace id is missing")?;
-    let policy = tilo_desktop_model::projection::workspace_policy_of(document, &declared_workspace);
+    // Read once per governance state, not once per admission.
+    let policy = held.workspace_policy(&declared_workspace);
     let grant = crate::workspace::membership::invitation_admits(
-        &policy,
+        policy,
         &declared_workspace,
         redemption.join().signed_invitation(),
         cert.user_public_key,
@@ -85,26 +87,22 @@ pub fn admit_invited_member(
             redemption.join().signed_invitation(),
         )),
     };
-    let governance = crate::workspace::governance_of(Some(document));
-    let invitation_receipts = crate::workspace::invitation_receipts(document)?;
+    // The receipts of this invitation: the ledger's under its key, and the
+    // ones device rows keep ([`crate::cached_document::CachedDocument::redemptions`]).
     let mut exact_redemption = false;
-    let spent = invitation_receipts
-        .values()
-        .flatten()
-        .map(|bytes| serde_json::from_slice::<RedemptionReceipt>(bytes))
-        .chain(governance.identities.values().flat_map(|bytes| {
-            match serde_json::from_slice::<GovernedIdentity>(bytes) {
-                Ok(identity) => identity
-                    .admission
-                    .into_iter()
-                    .chain(identity.admissions)
-                    .map(Ok)
-                    .collect::<Vec<_>>(),
-                Err(error) => vec![Err(error)],
-            }
-        }));
-    for existing in spent {
-        let existing = existing.map_err(|error| error.to_string())?;
+    let ledgered =
+        crate::workspace::invitation_receipts_of(document, &hex::encode(receipt.invite_id))?
+            .into_iter()
+            .map(|bytes| {
+                serde_json::from_slice::<RedemptionReceipt>(&bytes)
+                    .map_err(|error| error.to_string())
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+    let on_rows = held.redemptions().map_err(ToOwned::to_owned)?;
+    for existing in ledgered
+        .iter()
+        .chain(on_rows.get(&receipt.invite_id).into_iter().flatten())
+    {
         if existing.invite_id == receipt.invite_id {
             if existing.on_row() != receipt.on_row() {
                 return Err("invitation was already redeemed by another request or device".into());
@@ -121,12 +119,11 @@ pub fn admit_invited_member(
         return Err("this person is banned from the workspace".into());
     }
     let id = hex::encode(cert.device_public_key);
-    let prior = governance
-        .identities
+    let prior = held
+        .identities()
         .get(&id)
-        .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
-        .transpose()
-        .map_err(|error| error.to_string())?;
+        .map(|identity| identity.clone().map_err(|error| error.to_string()))
+        .transpose()?;
     if prior.as_ref().is_some_and(|old| {
         old.device_cert != *cert && !crate::state::supersedes(&old.device_cert, cert)
     }) {
@@ -587,8 +584,8 @@ mod retention_tests {
         }
         let invite = |r: &VerifiedRedemption| r.join().invite_id();
         let governed = governance(&peer);
-        let row: GovernedIdentity =
-            serde_json::from_slice(&governed.identities[&hex::encode(guest.1.device_public_key)])
+        let row =
+            GovernedIdentity::decode(&governed.identities[&hex::encode(guest.1.device_public_key)])
                 .unwrap();
         assert_eq!(
             row.admission.as_ref().map(|r| r.invite_id),

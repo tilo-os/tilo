@@ -31,20 +31,20 @@ use tilo_action_policy::{Change, Context, Grant, GrantId, Role, WorkspacePolicy,
 use super::legacy;
 use super::op::{MEMBERS_KEY, MembershipOpCommand, OpId, SignedMembershipOp};
 
+/// The operations a workspace document holds, by id.
+pub type HeldOps = BTreeMap<OpId, std::sync::Arc<SignedMembershipOp>>;
+
 /// Every operation `doc` holds, by id, that proves its author. A blob that
 /// does not decode, or whose signature is not its author device's, is kept in
 /// the document and ignored here: admission refuses such a blob, and a device
 /// that was sent one another way is still never governed by it.
 #[must_use]
-pub fn ops(doc: &AutoCommit) -> BTreeMap<OpId, SignedMembershipOp> {
+pub fn ops(doc: &AutoCommit) -> HeldOps {
     let mut held = BTreeMap::new();
     for bytes in raw(doc).into_values() {
-        // ignored-failure: an operation that does not prove its author governs nothing
-        let Ok(op) = SignedMembershipOp::verified(&bytes) else {
-            continue;
-        };
-        // ignored-failure: an operation that cannot be keyed by its own id governs nothing
-        let Ok(id) = op.id() else {
+        // ignored-failure: an operation that does not prove its author, or
+        // cannot be keyed by its own id, governs nothing
+        let Ok((id, op)) = SignedMembershipOp::verified_stored(&bytes) else {
             continue;
         };
         held.insert(id, op);
@@ -55,7 +55,7 @@ pub fn ops(doc: &AutoCommit) -> BTreeMap<OpId, SignedMembershipOp> {
 /// The operations no other operation was written on top of: the membership
 /// heads a device writing now names as its parents.
 #[must_use]
-pub fn heads(held: &BTreeMap<OpId, SignedMembershipOp>) -> Vec<OpId> {
+pub fn heads(held: &HeldOps) -> Vec<OpId> {
     let mut heads: BTreeSet<OpId> = held.keys().copied().collect();
     for op in held.values() {
         for parent in &op.parents {
@@ -67,7 +67,7 @@ pub fn heads(held: &BTreeMap<OpId, SignedMembershipOp>) -> Vec<OpId> {
 
 /// The id of the genesis operation `held` holds, when it holds one.
 #[must_use]
-pub fn genesis(held: &BTreeMap<OpId, SignedMembershipOp>) -> Option<OpId> {
+pub fn genesis(held: &HeldOps) -> Option<OpId> {
     held.values()
         .filter(|op| {
             matches!(op.command, MembershipOpCommand::Genesis { .. }) && op.parents.is_empty()
@@ -82,7 +82,7 @@ pub fn genesis(held: &BTreeMap<OpId, SignedMembershipOp>) -> Option<OpId> {
 /// log, and the operations are kept for when they start.
 #[must_use]
 pub fn starts(doc: &AutoCommit, workspace: &str) -> bool {
-    start(doc, workspace, &ops(doc)).is_some()
+    remembered(doc, workspace).1
 }
 
 /// The workspace's membership as `doc`'s operations make it.
@@ -92,52 +92,247 @@ pub fn starts(doc: &AutoCommit, workspace: &str) -> bool {
 /// them.
 #[must_use]
 pub fn replay(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
-    let held = ops(doc);
-    let Some(mut policy) = start(doc, workspace, &held) else {
+    remembered(doc, workspace).0
+}
+
+/// The membership a document state gives, as [`remembered`] keeps it.
+#[derive(Clone)]
+struct Replayed {
+    policy: WorkspacePolicy,
+    /// Whether the log starts in the state ([`starts`]).
+    started: bool,
+    /// The document keys of the state's operations.
+    op_keys: BTreeSet<String>,
+    /// Operations the state's operations were written on top of that it does
+    /// not hold: one arriving could let those apply.
+    missing: BTreeSet<OpId>,
+}
+
+/// The document states whose membership was read, by workspace and heads.
+type States =
+    std::sync::Mutex<std::collections::VecDeque<(String, Vec<automerge::ChangeHash>, Replayed)>>;
+
+fn states() -> &'static States {
+    static STATES: std::sync::OnceLock<States> = std::sync::OnceLock::new();
+    STATES.get_or_init(States::default)
+}
+
+/// The states a write and the admissions after it read again.
+const REMEMBERED: usize = 8;
+
+fn recall(workspace: &str, heads: &[automerge::ChangeHash]) -> Option<Replayed> {
+    states().lock().ok().and_then(|states| {
+        states
+            .iter()
+            .find(|(of, at, _)| of == workspace && at.as_slice() == heads)
+            .map(|(_, _, replayed)| replayed.clone())
+    })
+}
+
+fn keep(workspace: &str, heads: Vec<automerge::ChangeHash>, replayed: Replayed) {
+    if let Ok(mut states) = states().lock() {
+        if states.len() >= REMEMBERED {
+            states.pop_front();
+        }
+        states.push_back((workspace.to_owned(), heads, replayed));
+    }
+}
+
+/// [`replay`], and whether the log starts in `doc` ([`starts`]).
+fn remembered(doc: &AutoCommit, workspace: &str) -> (WorkspacePolicy, bool) {
+    // A change is replayed where it is written and again where it is taken
+    // in, from the same document state: the membership that state gives is
+    // remembered by its heads. A document with a change still open is not
+    // the state its heads name, and is replayed as it is.
+    if doc.pending_ops() > 0 {
+        let replayed = replayed_from(doc, workspace);
+        return (replayed.policy, replayed.started);
+    }
+    let heads = doc.base_heads();
+    if let Some(replayed) = recall(workspace, &heads) {
+        return (replayed.policy, replayed.started);
+    }
+    let replayed = replayed_from(doc, workspace);
+    let answer = (replayed.policy.clone(), replayed.started);
+    keep(workspace, heads, replayed);
+    answer
+}
+
+/// The document keys a replay reads, besides its operations': the rows the
+/// membership starts from, the invitations that admitted people, and the
+/// map the operations were kept in before each had a key of its own.
+const REPLAY_KEYS: [&str; 6] = [
+    tilo_desktop_model::projection::WORKSPACE_OWNER_KEY,
+    tilo_desktop_model::projection::WORKSPACE_MEMBERS_KEY,
+    tilo_desktop_model::projection::WORKSPACE_MEMBERS_JOINED_KEY,
+    tilo_desktop_model::projection::WORKSPACE_GRANTS_KEY,
+    "invitation_receipts_v1",
+    MEMBERS_KEY,
+];
+
+/// Remember the membership of `after`, the state at `before` with `changes`
+/// on top, as the one remembered for that state, when the changes wrote
+/// nothing a replay reads but operations that change no membership row
+/// ([`MembershipOpCommand::Governance`]) and that no operation the state
+/// holds waits for.
+///
+/// Such an operation is applied, whenever it is reached, without moving the
+/// membership, and the order of the others is decided by the membership
+/// alone, so it leaves every other operation's effect as it was. A name, a
+/// device's row or the operation each governance write records then costs
+/// no replay of every admission the workspace holds.
+pub(crate) fn carry(
+    before: &[automerge::ChangeHash],
+    after: &AutoCommit,
+    changes: &[automerge::Change],
+    workspace: &str,
+) {
+    if after.pending_ops() > 0 {
+        return;
+    }
+    let Some(mut replayed) = recall(workspace, before) else {
+        return;
+    };
+    let Some(touched) = crate::workspace::rows::touched(after, changes) else {
+        return;
+    };
+    for key in touched.keys() {
+        if REPLAY_KEYS.contains(&key.as_str()) {
+            return;
+        }
+        if super::op::keyed(key).is_none() {
+            continue;
+        }
+        if !replayed.op_keys.insert(key.clone()) {
+            // An operation the state held, written over.
+            return;
+        }
+        let Some((Value::Scalar(value), _)) = after.get(ROOT, key.as_str()).ok().flatten() else {
+            return;
+        };
+        let ScalarValue::Bytes(bytes) = value.as_ref() else {
+            return;
+        };
+        // ignored-failure: an operation that does not prove its writer is
+        // never applied, so it moves nothing
+        if let Ok((id, op)) = SignedMembershipOp::verified_stored(bytes) {
+            if !matches!(op.command, MembershipOpCommand::Governance { .. })
+                || replayed.missing.contains(&id)
+            {
+                return;
+            }
+            replayed.missing.extend(op.parents.iter().copied());
+        }
+    }
+    // Every carry a test makes is checked against replaying the state.
+    #[cfg(test)]
+    {
+        let fresh = read_replay(after, workspace);
+        assert!(
+            fresh.policy == replayed.policy && fresh.started == replayed.started,
+            "a carried membership is the one its state replays to"
+        );
+    }
+    keep(workspace, after.base_heads(), replayed);
+}
+
+/// [`remembered`], read from the document.
+fn replayed_from(doc: &AutoCommit, workspace: &str) -> Replayed {
+    crate::governance_work::replayed();
+    read_replay(doc, workspace)
+}
+
+/// [`replayed_from`], uncounted.
+fn read_replay(doc: &AutoCommit, workspace: &str) -> Replayed {
+    let raw = raw(doc);
+    let op_keys = raw
+        .keys()
+        .map(|key| format!("{MEMBERS_KEY}/{key}"))
+        .collect();
+    let held: HeldOps = raw
+        .into_values()
+        // ignored-failure: an operation that does not prove its author, or
+        // cannot be keyed by its own id, governs nothing
+        .filter_map(|bytes| SignedMembershipOp::verified_stored(&bytes).ok())
+        .collect();
+    let missing = held
+        .values()
+        .flat_map(|op| op.parents.iter().copied())
+        .filter(|parent| !held.contains_key(parent))
+        .collect();
+    let (policy, started) = replay_held(doc, workspace, &held);
+    Replayed {
+        policy,
+        started,
+        op_keys,
+        missing,
+    }
+}
+
+/// The membership `held`, `doc`'s operations, give, and whether the log
+/// starts.
+fn replay_held(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> (WorkspacePolicy, bool) {
+    let Some(mut policy) = start(doc, workspace, held) else {
         // No log to replay: the rows govern, read the one order every device
         // reads them in.
-        let mut policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+        let mut policy = crate::workspace::policy_of(doc, workspace);
         order(&mut policy);
-        return policy;
+        return (policy, false);
     };
     redeem(doc, workspace, &mut policy);
-    let Some(genesis) = genesis(&held) else {
+    let Some(genesis) = genesis(held) else {
         order(&mut policy);
-        return policy;
+        return (policy, true);
     };
-    let mut applied: BTreeSet<OpId> = BTreeSet::from([genesis]);
     order(&mut policy);
-    let mut pending: BTreeMap<OpId, &SignedMembershipOp> = held
-        .iter()
-        .filter(|(id, _)| **id != genesis)
-        .map(|(id, op)| (*id, op))
-        .collect();
-    while !pending.is_empty() {
-        let reached: Vec<OpId> = pending
-            .iter()
-            .filter(|(_, op)| op.parents.iter().all(|parent| applied.contains(parent)))
-            .map(|(id, _)| *id)
-            .collect();
-        if reached.is_empty() {
-            // Every operation left was written on top of one this device does
-            // not hold, or on top of one that was never applied: it waits.
-            break;
+    // Each operation waits for the parents it was written on top of; one
+    // whose parents are all applied is ready. Of the ready ones the next is
+    // the one the order reaches first. An operation written on top of one
+    // this device does not hold, or one never applied, waits for good.
+    let mut waiting: BTreeMap<OpId, usize> = BTreeMap::new();
+    let mut children: BTreeMap<OpId, Vec<OpId>> = BTreeMap::new();
+    let mut ready: BTreeSet<OpId> = BTreeSet::new();
+    for (id, op) in held {
+        if *id == genesis {
+            continue;
         }
-        let Some((next, _)) = reached
-            .into_iter()
-            .filter_map(|id| pending.get(&id).map(|op| (id, op)))
-            .min_by_key(|(id, op)| (tier(&policy, &op.person()), *id))
-        else {
-            break;
-        };
-        let Some(op) = pending.remove(&next) else {
-            break;
-        };
-        op_effect(&mut policy, op);
-        order(&mut policy);
-        applied.insert(next);
+        let parents: BTreeSet<OpId> = op
+            .parents
+            .iter()
+            .copied()
+            .filter(|parent| *parent != genesis)
+            .collect();
+        if parents.is_empty() {
+            ready.insert(*id);
+            continue;
+        }
+        for parent in &parents {
+            children.entry(*parent).or_default().push(*id);
+        }
+        waiting.insert(*id, parents.len());
     }
-    policy
+    while let Some(next) = ready
+        .iter()
+        .filter_map(|id| held.get(id).map(|op| (*id, op)))
+        .min_by_key(|(id, op)| (tier(&policy, &op.person()), *id))
+        .map(|(id, _)| id)
+    {
+        ready.remove(&next);
+        if let Some(op) = held.get(&next) {
+            op_effect(&mut policy, op);
+            order(&mut policy);
+        }
+        for child in children.remove(&next).unwrap_or_default() {
+            if let Some(count) = waiting.get_mut(&child) {
+                *count = count.saturating_sub(1);
+                if *count == 0 {
+                    waiting.remove(&child);
+                    ready.insert(child);
+                }
+            }
+        }
+    }
+    (policy, true)
 }
 
 /// The membership `doc`'s rows hold, its grants in the one order the log's
@@ -146,7 +341,7 @@ pub fn replay(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
 /// allows, so the two compare as the same membership when they hold the same.
 #[must_use]
 pub fn rows(doc: &AutoCommit, workspace: &str) -> WorkspacePolicy {
-    let mut policy = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+    let mut policy = crate::workspace::policy_of(doc, workspace);
     order(&mut policy);
     policy
 }
@@ -166,12 +361,8 @@ fn order(policy: &mut WorkspacePolicy) {
 /// that), at heads this device holds the history of. A genesis by anyone
 /// else's device, or naming a history this device does not hold, starts
 /// nothing.
-fn start(
-    doc: &AutoCommit,
-    workspace: &str,
-    held: &BTreeMap<OpId, SignedMembershipOp>,
-) -> Option<WorkspacePolicy> {
-    let owner = tilo_desktop_model::projection::workspace_policy_of(doc, workspace).owner?;
+fn start(doc: &AutoCommit, workspace: &str, held: &HeldOps) -> Option<WorkspacePolicy> {
+    let owner = crate::workspace::policy_of(doc, workspace).owner?;
     let op = held.get(&genesis(held)?)?;
     if op.person() != owner {
         return None;
@@ -216,7 +407,7 @@ fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) {
     let Ok(receipts) = crate::workspace::invitation_receipts(doc) else {
         return;
     };
-    let rows = tilo_desktop_model::projection::workspace_policy_of(doc, workspace);
+    let rows = crate::workspace::policy_of(doc, workspace);
     for (_invite, values) in receipts {
         let mut values = values;
         // The order the ledger holds an invitation's receipts in is the order
@@ -299,6 +490,11 @@ fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
 /// one refused step takes the whole operation with it, so a writer cannot slip
 /// a change past the membership by putting an allowed one in front of it.
 fn op_effect(policy: &mut WorkspacePolicy, op: &SignedMembershipOp) {
+    // An operation that changes no row of the membership leaves it as it is,
+    // without copying it: a workspace's log holds one for every admission.
+    if !matches!(op.command, MembershipOpCommand::Project { .. }) {
+        return;
+    }
     // ignored-failure: a change this author's grants do not allow takes the
     // whole operation with it, and it has no effect
     if let Ok(next) = effect(policy, op) {
@@ -513,27 +709,26 @@ pub fn steps(from: &WorkspacePolicy, to: &WorkspacePolicy) -> Result<Vec<Change>
 /// change it made.
 pub fn growth(before: Option<&AutoCommit>, candidate: &AutoCommit) -> Result<usize, String> {
     let held = raw(candidate);
-    if let Some(before) = before {
-        for (key, bytes) in raw(before) {
-            match held.get(&key) {
-                Some(held) if held == &bytes => {}
-                Some(_) => return Err("the workspace's membership operations were changed".into()),
-                None => {
-                    return Err("the workspace's membership operations were removed".into());
-                }
+    let before = before.map(raw).unwrap_or_default();
+    for (key, bytes) in &before {
+        match held.get(key) {
+            Some(held) if held == bytes => {}
+            Some(_) => return Err("the workspace's membership operations were changed".into()),
+            None => {
+                return Err("the workspace's membership operations were removed".into());
             }
         }
     }
     let mut added: usize = 0;
     for (key, bytes) in held {
-        if before.is_some_and(|before| raw(before).contains_key(&key)) {
+        if before.contains_key(&key) {
             continue;
         }
         // ignored-failure: an operation that does not prove its writer is refused
-        let op = SignedMembershipOp::verified(&bytes)?;
+        let (id, _) = SignedMembershipOp::verified_stored(&bytes)?;
         // ignored-failure: an operation stored under a key that is not its own
         // id is refused
-        if op.id()?.to_key() != key {
+        if id.to_key() != key {
             return Err("a membership operation is stored under another operation's id".into());
         }
         added = added.saturating_add(1);
@@ -577,11 +772,10 @@ pub(crate) fn raw(doc: &AutoCommit) -> BTreeMap<String, Vec<u8>> {
 /// A workspace whose operations do not start yet is left as it is: its rows
 /// govern until its owner's device starts its log.
 pub fn settle(doc: &mut AutoCommit, workspace: &str) -> Result<(), String> {
-    let held = ops(doc);
-    if start(doc, workspace, &held).is_none() {
+    let (policy, started) = remembered(doc, workspace);
+    if !started {
         return Ok(());
     }
-    let policy = replay(doc, workspace);
     materialise(doc, &policy)?;
     Ok(())
 }

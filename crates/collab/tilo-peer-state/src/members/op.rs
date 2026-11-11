@@ -9,7 +9,7 @@
 //! workspace's first operation at once write two keys, where two maps to
 //! merge would be two objects only one device's history could keep.
 
-use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
+use ed25519_dalek::{Signer, SigningKey};
 use serde::{Deserialize, Serialize};
 use tilo_action_policy::{Change, Grant, Role, WorkspacePolicy};
 use tilo_user_identity::DeviceCert;
@@ -209,13 +209,58 @@ impl SignedMembershipOp {
         Ok(op)
     }
 
+    /// [`Self::verified`] and the operation's id, remembered by the stored
+    /// bytes: every read of the workspace's membership reads every operation
+    /// its log holds (one more with each admission), and an operation's
+    /// bytes prove the same writer whenever they are read. Only operations
+    /// that prove their writer are remembered.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::verified`], or the operation has no id.
+    pub fn verified_stored(bytes: &[u8]) -> Result<(OpId, std::sync::Arc<Self>), String> {
+        use std::collections::HashMap;
+        use std::sync::{Arc, Mutex, OnceLock};
+        type Seen = Mutex<HashMap<Vec<u8>, (OpId, Arc<SignedMembershipOp>)>>;
+        static SEEN: OnceLock<Seen> = OnceLock::new();
+        /// Room for the logs of every workspace a host holds, kept from
+        /// growing without bound.
+        const LIMIT: usize = 65_536;
+        let seen = SEEN.get_or_init(Seen::default);
+        if let Some(known) = seen.lock().ok().and_then(|seen| seen.get(bytes).cloned()) {
+            return Ok(known);
+        }
+        let op = Self::verified(bytes)?;
+        let id = op.id()?;
+        let known = (id, Arc::new(op));
+        if let Ok(mut seen) = seen.lock() {
+            if seen.len() >= LIMIT {
+                seen.clear();
+            }
+            seen.insert(bytes.to_vec(), known.clone());
+        }
+        Ok(known)
+    }
+
     /// Whether the operation proves its writer.
     pub fn verify(&self) -> Result<(), String> {
         tilo_user_identity::verify_device_cert(&self.author).map_err(|error| error.to_string())?;
-        let key = VerifyingKey::from_bytes(&self.author.device_public_key)
-            .map_err(|error| error.to_string())?;
-        key.verify_strict(&self.signing_bytes()?, &Signature::from_bytes(&self.sig))
-            .map_err(|_| "membership operation is not signed by its author's device".to_owned())
+        // Every replay of the workspace's membership reads every operation
+        // its log holds: one that verified before is remembered.
+        tilo_user_identity::verify_remembered(
+            &self.author.device_public_key,
+            &self.signing_bytes()?,
+            &self.sig,
+            true,
+        )
+        .map_err(|refused| match refused {
+            tilo_user_identity::RememberedRefusal::Key => {
+                "membership operation names no device key".to_owned()
+            }
+            tilo_user_identity::RememberedRefusal::Signature => {
+                "membership operation is not signed by its author's device".to_owned()
+            }
+        })
     }
 
     /// The person whose device wrote it, hex.

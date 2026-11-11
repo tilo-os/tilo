@@ -66,8 +66,7 @@ fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, Im
                 // Exact historical winner/ignore traversal. Decode every
                 // identity before checking any receipt, key, certificate or
                 // revocation.
-                let value: GovernedIdentity =
-                    serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)?;
+                let value = GovernedIdentity::decode(bytes).map_err(ImportError::LegacyJson)?;
                 let key = work.text(key)?;
                 work.tree::<String, GovernedIdentity>()?;
                 identities.insert(key, value);
@@ -82,6 +81,15 @@ fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, Im
         Ok(())
     })
     .map_err(read_error)?;
+    receipts_checked(workspace, work)?;
+    Ok(Inputs {
+        identities,
+        members,
+    })
+}
+/// Every invitation receipt the workspace holds reads back as a receipt of
+/// the invitation it is kept under.
+fn receipts_checked<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<(), ImportError> {
     // The old invitation_receipts helper checks ALL root container shapes
     // before examining rows, then all row shapes before decoding any JSON.
     workspace
@@ -152,25 +160,53 @@ fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, Im
     // receiver holds them alike.
     for (key, values) in &receipts {
         for bytes in values {
-            let receipt: RedemptionReceipt =
-                serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)?;
-            if !is_key(key, &receipt.invite_id) {
-                return Err(ImportError::ReceiptKey);
-            }
+            receipt_checked(key, bytes)?;
         }
     }
-    Ok(Inputs {
-        identities,
-        members,
-    })
+    Ok(())
 }
+
+/// The receipt `bytes`, kept under `key`, reads back as a receipt of that
+/// invitation. Remembered: a receipt never changes, and the workspace's
+/// receipts are read again with every change to its governance.
+fn receipt_checked(key: &str, bytes: &[u8]) -> Result<(), ImportError> {
+    use std::collections::HashSet;
+    use std::sync::{Mutex, OnceLock};
+    static CHECKED: OnceLock<Mutex<HashSet<Vec<u8>>>> = OnceLock::new();
+    /// Room for the receipts of every workspace a host holds.
+    const LIMIT: usize = 65_536;
+    let mut seen_as = key.as_bytes().to_vec();
+    seen_as.push(0);
+    seen_as.extend_from_slice(bytes);
+    let checked = CHECKED.get_or_init(Mutex::default);
+    if checked
+        .lock()
+        .is_ok_and(|checked| checked.contains(&seen_as))
+    {
+        return Ok(());
+    }
+    let receipt: RedemptionReceipt =
+        serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)?;
+    if !is_key(key, &receipt.invite_id) {
+        return Err(ImportError::ReceiptKey);
+    }
+    if let Ok(mut checked) = checked.lock() {
+        if checked.len() >= LIMIT {
+            checked.clear();
+        }
+        checked.insert(seen_as);
+    }
+    Ok(())
+}
+
 fn is_key(text: &str, key: &[u8; 32]) -> bool {
     let mut encoded = [0; 64];
     hex::encode_to_slice(key, &mut encoded).is_ok() && text.as_bytes() == encoded
 }
 
-fn apply(
-    inputs: &Inputs,
+fn apply<'a>(
+    identities: impl IntoIterator<Item = (&'a str, &'a GovernedIdentity)>,
+    member: &dyn Fn(&str) -> bool,
     original: &BTreeMap<[u8; 32], VerifiedCertificate>,
     certificates: &mut BTreeMap<[u8; 32], VerifiedCertificate>,
     revocations: &mut RevocationList,
@@ -179,7 +215,7 @@ fn apply(
     cert_work: &mut Work,
 ) -> Result<bool, ImportError> {
     let mut changed = false;
-    for (id, identity) in &inputs.identities {
+    for (id, identity) in identities {
         let cert = &identity.device_cert;
         if !is_key(id, &cert.device_public_key) {
             return Err(ImportError::IdentityKey);
@@ -202,7 +238,7 @@ fn apply(
         if !original.contains_key(&cert.device_public_key)
             && cert.user_public_key != *owner
             && !identity.has_admission()
-            && !inputs.members.contains(&hex::encode(cert.user_public_key))
+            && !member(&hex::encode(cert.user_public_key))
         {
             return Err(ImportError::MissingAdmission);
         }
@@ -246,7 +282,55 @@ pub(in crate::state) fn legacy(
     let mut certificates = original.clone();
     let mut revocations = revocations.clone();
     let changed = apply(
-        &inputs,
+        inputs
+            .identities
+            .iter()
+            .map(|(id, identity)| (id.as_str(), identity)),
+        &|person| inputs.members.contains(person),
+        original,
+        &mut certificates,
+        &mut revocations,
+        owner,
+        now,
+        &mut work,
+    )?;
+    Ok((certificates, revocations, changed))
+}
+/// [`legacy`] of a document whose rows were read once per state
+/// ([`crate::cached_document`]): an identity row a change left as it was is
+/// neither decoded again nor its certificate checked again, so taking in a
+/// change costs what the change touched, not the workspace.
+pub(in crate::state) fn cached(
+    workspace: &crate::cached_document::CachedDocument,
+    original: &BTreeMap<[u8; 32], VerifiedCertificate>,
+    revocations: &RevocationList,
+    owner: &[u8; 32],
+    now: SystemTime,
+) -> Result<LegacyImport, ImportError> {
+    let mut work = Work::unlimited();
+    let views = workspace.identities();
+    let mut identities = Vec::with_capacity(views.len());
+    for (key, identity) in views {
+        let Ok(identity) = identity else {
+            // The error as the row's own bytes give it.
+            let bytes = workspace
+                .policy()
+                .identities
+                .get(key)
+                .ok_or(ImportError::Read)?;
+            return Err(GovernedIdentity::decode(bytes)
+                .err()
+                .map_or(ImportError::Read, ImportError::LegacyJson));
+        };
+        identities.push((key.as_str(), identity));
+    }
+    receipts_checked(&LegacyRead(&**workspace), &mut work)?;
+    let policy = workspace.policy();
+    let mut certificates = original.clone();
+    let mut revocations = revocations.clone();
+    let changed = apply(
+        identities,
+        &|person| policy.members.contains_key(person) || policy.damaged.members.contains(person),
         original,
         &mut certificates,
         &mut revocations,

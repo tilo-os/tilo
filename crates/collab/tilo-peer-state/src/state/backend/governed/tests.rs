@@ -18,7 +18,7 @@ fn original_import(
         .identities
         .into_iter()
         .map(|(id, bytes)| {
-            serde_json::from_slice::<GovernedIdentity>(&bytes)
+            GovernedIdentity::decode(&bytes)
                 .map(|identity| (id, identity))
                 .map_err(err)
         })
@@ -91,6 +91,19 @@ fn compare_case(
     assert_eq!(got, expected);
     assert_eq!(actual.certificates(), oracle.certificates());
     assert_eq!(actual.revocations(), oracle.revocations());
+    // The rows read once per document state import alike, read fresh and
+    // read after the state the peer holds, whose views carry over.
+    let fresh = crate::cached_document::CachedDocument::from(workspace.clone());
+    let following = peer.core.workspace_doc.as_ref().map(|held| {
+        let _ = (held.identities(), held.identity_certificates());
+        held.followed_by(workspace.clone())
+    });
+    for rows in std::iter::once(fresh).chain(following) {
+        let mut cached = peer.clone();
+        assert_eq!(cached.import_governed_rows(&rows, now), expected);
+        assert_eq!(cached.certificates(), oracle.certificates());
+        assert_eq!(cached.revocations(), oracle.revocations());
+    }
     legacy(
         workspace,
         &peer.core.certificates,

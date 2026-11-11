@@ -8,6 +8,7 @@
 )]
 mod frames;
 pub mod governance;
+pub mod governance_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
 pub mod join_ledger;
@@ -18,6 +19,8 @@ pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
 use neighbour_wire::NeighbourMsg;
 pub use neighbour_wire::{RefusalReason, WriteRefusal};
+#[cfg(test)]
+mod admission_cost_tests;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]

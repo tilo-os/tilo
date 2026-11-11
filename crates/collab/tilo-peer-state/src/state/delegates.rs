@@ -164,7 +164,7 @@ impl PeerGovernance<'_> {
     ) -> Option<(DeviceCert, Delegation, Option<u64>)> {
         let doc = self.peer.core.workspace_doc.as_ref()?;
         let bytes = doc.policy().identities.get(&hex::encode(device))?.clone();
-        let identity: GovernedIdentity = serde_json::from_slice(&bytes).ok()?;
+        let identity = GovernedIdentity::decode(&bytes).ok()?;
         let agent = identity.delegate?;
         agent.delegation.delegate.agent_id()?;
         Some((
@@ -183,7 +183,7 @@ impl PeerGovernance<'_> {
             .ok_or("workspace governance missing")?;
         let mut agents = Vec::new();
         for bytes in doc.policy().identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            let identity = GovernedIdentity::decode(bytes).map_err(err)?;
             let acting = identity
                 .delegate_acting(&self.peer.core.workspace, now_ns(now))
                 .is_ok();
@@ -261,7 +261,7 @@ impl PeerGovernanceMut<'_> {
         let prior = workspace::governance_of(Some(&doc))
             .identities
             .get(&id)
-            .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes))
+            .map(|bytes| GovernedIdentity::decode(bytes))
             .transpose()
             .map_err(err)?;
         let identity = match prior {
@@ -337,7 +337,7 @@ impl PeerGovernanceMut<'_> {
         else {
             return Ok(false);
         };
-        let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
+        let mut identity = GovernedIdentity::decode(&bytes).map_err(err)?;
         let Some(agent) = identity.delegate.as_mut() else {
             return Err("the device is a member, not an agent".into());
         };

@@ -617,9 +617,8 @@ fn workspace_media_security_basis_excludes_labels_and_normalizes_identity_json()
         .unwrap()
         .1;
     let id = hex::encode(peer.owner_certificates()[0].device_public_key);
-    let row: GovernedIdentity =
-        serde_json::from_slice(&workspace::governance_of(Some(&workspace)).identities[&id])
-            .unwrap();
+    let row = GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
+        .unwrap();
     workspace
         .put(
             &ids,
@@ -731,8 +730,8 @@ fn workspace_media_verified_independent_revocation_denies_before_promotion() {
         .unwrap()
         .1;
     let id = hex::encode(members[0].1.device_public_key);
-    let mut row: GovernedIdentity =
-        serde_json::from_slice(&workspace::governance_of(Some(&workspace)).identities[&id])
+    let mut row =
+        GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
             .unwrap();
     row.revocations.push(revoked);
     workspace
@@ -820,8 +819,8 @@ fn workspace_media_restore_rejects_governed_certificate_replacement() {
         .unwrap()
         .1;
     let id = hex::encode(peer.owner_certificates()[0].device_public_key);
-    let mut row: GovernedIdentity =
-        serde_json::from_slice(&workspace::governance_of(Some(&workspace)).identities[&id])
+    let mut row =
+        GovernedIdentity::decode(&workspace::governance_of(Some(&workspace)).identities[&id])
             .unwrap();
     row.device_cert.device_label = "replacement certificate".into();
     sign_device_cert(&mut row.device_cert, &SigningKey::from_bytes(&[101; 32])).unwrap();
@@ -1004,8 +1003,8 @@ fn workspace_media_governed_revocation_fence_cannot_be_removed_by_higher_revisio
     // Every owner device's row carries the owner's revocations: clear them all.
     for cert in peer.owner_certificates() {
         let id = hex::encode(cert.device_public_key);
-        let mut row: GovernedIdentity =
-            serde_json::from_slice(&workspace::governance_of(Some(&current)).identities[&id])
+        let mut row =
+            GovernedIdentity::decode(&workspace::governance_of(Some(&current)).identities[&id])
                 .unwrap();
         row.revocations.clear();
         current

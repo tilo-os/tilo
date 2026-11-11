@@ -16,7 +16,7 @@ pub use admit::{
 };
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
-pub use rows::{GovernanceRow, changed_rows, governance_rows};
+pub use rows::{GovernanceRow, changed_rows, changed_rows_by, governance_rows};
 pub use saved_shortcut::{proven_saver, sign_saved_shortcut, workspace_revocations};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
@@ -69,6 +69,14 @@ impl WorkspaceGovernance {
 }
 #[cfg(test)]
 thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+/// The workspace's authority as `doc`'s rows record it
+/// ([`tilo_desktop_model::projection::workspace_policy_of`]): a whole read of
+/// its governance, counted as one ([`crate::governance_work`]).
+#[must_use]
+pub fn policy_of(doc: &AutoCommit, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
+    crate::governance_work::governance_read();
+    tilo_desktop_model::projection::workspace_policy_of(doc, workspace)
+}
 pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     let Some(doc) = doc else {
         return WorkspaceGovernance::absent();
@@ -122,7 +130,7 @@ pub struct IdentityRow {
 
 /// Decode one [`WorkspaceGovernance::identities`] row exactly as admission does.
 pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
-    let identity: crate::state::GovernedIdentity = serde_json::from_slice(bytes)?;
+    let identity = crate::state::GovernedIdentity::decode(bytes)?;
     Ok(IdentityRow {
         device_cert: identity.device_cert,
         revocations: identity.revocations,
@@ -131,6 +139,35 @@ pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
 
 /// The redemption receipts `doc` records, by invite id: every receipt it has
 /// seen under one invitation, as the ledger holds them.
+/// The receipts kept under `key`, one invitation's id, in every receipt
+/// ledger the document holds: [`invitation_receipts`] of one invitation,
+/// without reading anyone else's.
+pub(crate) fn invitation_receipts_of(doc: &AutoCommit, key: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut receipts = Vec::new();
+    for (value, ledger) in doc
+        .get_all(ROOT, "invitation_receipts_v1")
+        .map_err(|error| error.to_string())?
+    {
+        if !matches!(value, Value::Object(automerge::ObjType::Map)) {
+            return Err("governed invitation receipt ledger is not a map".to_string());
+        }
+        for (value, _) in doc
+            .get_all(&ledger, key)
+            .map_err(|error| error.to_string())?
+        {
+            match value {
+                Value::Scalar(value) => match value.as_ref() {
+                    ScalarValue::Bytes(bytes) => receipts.push(bytes.clone()),
+                    _ => return Err("governed invitation receipt is not bytes".to_string()),
+                },
+                Value::Object(_) => {
+                    return Err("governed invitation receipt is not bytes".to_string());
+                }
+            }
+        }
+    }
+    Ok(receipts)
+}
 pub(crate) fn invitation_receipts(
     doc: &AutoCommit,
 ) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {
@@ -201,7 +238,7 @@ pub fn workspace_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceB
         .identities
         .values()
         // ignored-failure: a row that does not decode names no bot, per this reader's contract
-        .filter_map(|bytes| serde_json::from_slice::<crate::state::GovernedIdentity>(bytes).ok())
+        .filter_map(|bytes| crate::state::GovernedIdentity::decode(bytes).ok())
         .filter_map(|identity| {
             let row = identity.delegate?;
             if row.withdrawn_at_ns.is_some() {
@@ -267,7 +304,7 @@ pub fn extract_governed_fields(
     let workspace = text("room").unwrap_or_default();
     (
         text("name"),
-        tilo_desktop_model::projection::workspace_policy_of(candidate, &workspace),
+        crate::workspace::policy_of(candidate, &workspace),
     )
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.

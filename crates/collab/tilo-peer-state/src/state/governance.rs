@@ -31,14 +31,22 @@ impl PeerGovernance<'_> {
         now: SystemTime,
     ) -> Result<std::collections::BTreeMap<[u8; 32], tilo_action_policy::Standing>, String> {
         let access = self.peer.governance().governed_access(now)?;
+        let doc = self
+            .peer
+            .core
+            .workspace_doc
+            .as_ref()
+            .ok_or("workspace governance missing")?;
+        // One policy, shared by every device's standing.
+        let policy = std::sync::Arc::new(doc.workspace_policy(&self.peer.core.workspace).clone());
         Ok(access
             .member_devices
             .into_iter()
             .filter_map(|device| {
                 self.peer
-                    .permissions(device, now)
+                    .member_with(device, std::sync::Arc::clone(&policy), now)
                     .ok()
-                    .map(|member| (device, member.standing()))
+                    .map(|member| (device, member))
             })
             .collect())
     }
@@ -54,7 +62,7 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        let workspace_policy = doc.policy().workspace_policy(&self.peer.core.workspace);
+        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
         let certificates = doc.identity_certificates();
         let mut member_devices = Vec::new();
         let mut member_user_roots = Vec::new();
@@ -101,10 +109,10 @@ impl PeerGovernance<'_> {
             return false;
         };
         let policy = doc.policy();
-        let workspace_policy = policy.workspace_policy(&self.peer.core.workspace);
+        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
         let mut named = false;
         for bytes in policy.identities.values() {
-            let Ok(identity) = serde_json::from_slice::<GovernedIdentity>(bytes) else {
+            let Ok(identity) = GovernedIdentity::decode(bytes) else {
                 continue;
             };
             if identity.device_cert.device_public_key != device {
@@ -314,7 +322,7 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        Ok(doc.policy().workspace_policy(&self.peer.core.workspace))
+        Ok(doc.workspace_policy(&self.peer.core.workspace).clone())
     }
     /// How the workspace's membership log stands against its rows, for an
     /// operator: how many operations it holds, whether it has started, and
@@ -375,15 +383,18 @@ impl PeerGovernance<'_> {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?;
-        let policy = doc.policy();
-        let workspace_policy = policy.workspace_policy(&self.peer.core.workspace);
-        let names = workspace::governance_of(Some(doc)).peers;
+        let workspace_policy = doc.workspace_policy(&self.peer.core.workspace);
+        // Read once per document state ([`crate::cached_document`]), so
+        // listing the people costs no decoding or signature check for a row
+        // a change left as it was.
+        let names = &doc.policy().names;
+        let certificates = doc.identity_certificates();
         let mut rows: BTreeMap<[u8; 32], GovernedMember> = BTreeMap::new();
         // The name each person goes by here, which one of their own devices
         // says and no key of theirs does ([`Naming`]).
         let mut naming: BTreeMap<[u8; 32], Naming> = BTreeMap::new();
-        for (id, bytes) in &policy.identities {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+        for (id, identity) in doc.identities() {
+            let identity = identity.as_ref().map_err(err)?;
             let Some(receipt) = identity
                 .admission
                 .as_ref()
@@ -421,7 +432,9 @@ impl PeerGovernance<'_> {
                 row.role = role;
                 row.removed = false;
                 let cert = &identity.device_cert;
-                if tilo_user_identity::verify_device_cert_at(cert, now_ns(now)).is_ok()
+                if certificates
+                    .get(id)
+                    .is_some_and(|verified| verified.current_typed(now_ns(now)).is_ok())
                     && !self.peer.core.revocations.refuses(cert)
                 {
                     row.active_device_keys.push(cert.device_public_key);
@@ -664,7 +677,7 @@ impl PeerGovernanceMut<'_> {
         let mut document = (**cached).clone();
         document.set_actor(self.peer.workspace_actor_of(key));
         let before = document.get_heads();
-        match crate::governance::admit_invited_member(&mut document, redemption, now)? {
+        match crate::governance::admit_invited_member(&mut document, cached, redemption, now)? {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { .. } => {
                 self.peer
@@ -707,7 +720,6 @@ impl PeerGovernanceMut<'_> {
         let owner = self.peer.core.owner == device.user_public_key;
         if !owner
             && doc
-                .policy()
                 .workspace_policy(&self.peer.core.workspace)
                 .active_role(&person)
                 .is_none()
@@ -753,19 +765,16 @@ impl PeerGovernanceMut<'_> {
     /// Returns an error if the change is not `key`'s device's to make, a row does not
     /// read back, or governance cannot be updated.
     pub fn forget_expired_devices(self, key: &SigningKey, now: SystemTime) -> Result<bool, String> {
-        let Some(doc) = self
-            .peer
-            .core
-            .workspace_doc
-            .as_ref()
-            .map(crate::cached_document::CachedDocument::policy)
-        else {
+        let Some(doc) = self.peer.core.workspace_doc.as_ref() else {
             return Ok(false);
         };
+        // The rows as read once per governance state: a settle after every
+        // change looks for expired rows, and decoding every member's row each
+        // time made each change cost the workspace.
         let expired: Vec<[u8; 32]> = doc
-            .identities
+            .identities()
             .values()
-            .map(|bytes| serde_json::from_slice::<GovernedIdentity>(bytes).map_err(err))
+            .map(|row| row.as_ref().map_err(err))
             .collect::<Result<Vec<_>, String>>()?
             .into_iter()
             .filter(|row| row.revocations.is_empty())
@@ -871,11 +880,10 @@ impl PeerGovernanceMut<'_> {
             .workspace_doc
             .clone()
             .ok_or("workspace governance missing")?;
-        let policy = doc.policy();
-        let names = workspace::governance_of(Some(&doc)).peers;
+        let names = &doc.policy().names;
         let mut devices = Vec::new();
-        for (id, bytes) in &policy.identities {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+        for (id, identity) in doc.identities() {
+            let identity = identity.as_ref().map_err(err)?;
             if identity.device_cert.user_public_key == user_public_key && identity.has_admission() {
                 devices.push(id.clone());
             }
@@ -1093,7 +1101,7 @@ impl PeerGovernanceMut<'_> {
                 .identities
                 .into_iter()
                 .filter(|(_, bytes)| {
-                    serde_json::from_slice::<super::GovernedIdentity>(bytes).is_ok_and(|identity| {
+                    super::GovernedIdentity::decode(bytes).is_ok_and(|identity| {
                         identity.device_cert.user_public_key == user_public_key
                     })
                 })

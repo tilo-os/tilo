@@ -12,6 +12,7 @@ pub(crate) use super::fixtures::{
     test_host, test_host_with_grants,
 };
 
+pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;
 

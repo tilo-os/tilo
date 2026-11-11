@@ -160,6 +160,137 @@ pub fn changed_rows(
         .collect()
 }
 
+/// [`changed_rows`] of `after`, which is `before` with `changes` applied on
+/// top of it.
+///
+/// A value of the document changes only where an operation of `changes`
+/// wrote, so only the parts holding a key those operations name are compared,
+/// and of a part's map only the entries they name. A change to a workspace of
+/// hundreds then costs what it wrote rather than an encoding of every
+/// member's row, twice. Where the operations do not say where they wrote
+/// (an object this reading cannot place), every part is compared as
+/// [`changed_rows`] compares it.
+#[must_use]
+pub fn changed_rows_by(
+    before: &AutoCommit,
+    after: &AutoCommit,
+    changes: &[automerge::Change],
+    membership: bool,
+) -> Vec<GovernanceRow> {
+    let Some(touched) = touched(after, changes) else {
+        return changed_rows(Some(before), Some(after), membership);
+    };
+    GovernanceRow::ALL
+        .into_iter()
+        .filter(|row| {
+            *row != GovernanceRow::Log
+                && (membership || *row != GovernanceRow::Membership)
+                && row.keys().iter().any(|key| {
+                    touched
+                        .get(*key)
+                        .is_some_and(|wrote| differs(before, after, key, wrote))
+                })
+                && !(*row == GovernanceRow::Media && refreshed_media(Some(before), Some(after)))
+        })
+        .collect()
+}
+
+/// Where operations wrote under one document key.
+#[derive(Debug)]
+pub(crate) enum Wrote {
+    /// The key's value as a whole: the key itself, or something nested
+    /// deeper than its map's entries.
+    Whole,
+    /// These entries of the map the key holds.
+    Entries(std::collections::BTreeSet<String>),
+}
+
+/// The document keys `changes` wrote under, each with where, read against
+/// `after`, the document holding them. `None` when an operation names an
+/// object that cannot be placed under a key.
+pub(crate) fn touched(
+    after: &AutoCommit,
+    changes: &[automerge::Change],
+) -> Option<BTreeMap<String, Wrote>> {
+    use automerge::legacy::{Key, ObjectId};
+    // The objects held directly under a document key, by their id.
+    let mut roots: BTreeMap<(u64, Vec<u8>), String> = BTreeMap::new();
+    for key in after.keys(ROOT) {
+        for (value, object) in after.get_all(ROOT, key.as_str()).ok()? {
+            if let (Value::Object(_), ObjId::Id(counter, actor, _)) = (value, object) {
+                roots.insert((counter, actor.to_bytes().to_vec()), key.clone());
+            }
+        }
+    }
+    let mut touched: BTreeMap<String, Wrote> = BTreeMap::new();
+    let whole = |touched: &mut BTreeMap<String, Wrote>, key: String| {
+        touched.insert(key, Wrote::Whole);
+    };
+    for change in changes {
+        for op in change.decode().operations {
+            match (&op.obj, &op.key) {
+                (ObjectId::Root, Key::Map(key)) => whole(&mut touched, key.to_string()),
+                (ObjectId::Root, Key::Seq(_)) => return None,
+                (ObjectId::Id(id), key) => {
+                    if let Some(root) = roots.get(&(id.0, id.1.to_bytes().to_vec())) {
+                        match (key, touched.get_mut(root)) {
+                            (_, Some(Wrote::Whole)) => {}
+                            (Key::Map(entry), Some(Wrote::Entries(entries))) => {
+                                entries.insert(entry.to_string());
+                            }
+                            (Key::Map(entry), None) => {
+                                touched.insert(
+                                    root.clone(),
+                                    Wrote::Entries([entry.to_string()].into()),
+                                );
+                            }
+                            (Key::Seq(_), _) => whole(&mut touched, root.clone()),
+                        }
+                        continue;
+                    }
+                    // Nested deeper: the key it lies under, rewritten whole.
+                    let (object, _) = after.import(&format!("{}@{}", id.0, id.1)).ok()?;
+                    let top = after.parents(&object).ok()?.last()?;
+                    let Prop::Map(key) = top.prop else {
+                        return None;
+                    };
+                    whole(&mut touched, key);
+                }
+            }
+        }
+    }
+    Some(touched)
+}
+
+/// Whether what `wrote` names under `key` reads differently in `before` and
+/// `after`, encoded as [`GovernanceRow::digest`] encodes it.
+fn differs(before: &AutoCommit, after: &AutoCommit, key: &str, wrote: &Wrote) -> bool {
+    let at = |doc: &AutoCommit, object: &ObjId, prop: Prop| {
+        let mut encoded = Vec::new();
+        if let Ok(Some((value, child))) = doc.get(object, prop) {
+            encoded.push(1);
+            encode(doc, &value, &child, &mut encoded);
+        }
+        encoded
+    };
+    let map = |doc: &AutoCommit| match doc.get(ROOT, key) {
+        Ok(Some((Value::Object(ObjType::Map | ObjType::Table), object))) => Some(object),
+        _ => None,
+    };
+    match (wrote, map(before), map(after)) {
+        (Wrote::Entries(entries), Some(held), Some(written)) if held == written => {
+            entries.iter().any(|entry| {
+                at(before, &held, Prop::Map(entry.clone()))
+                    != at(after, &written, Prop::Map(entry.clone()))
+            })
+        }
+        _ => {
+            at(before, &ROOT, Prop::Map(key.to_owned()))
+                != at(after, &ROOT, Prop::Map(key.to_owned()))
+        }
+    }
+}
+
 /// Whether `after`'s media policy is `before`'s with only the authorization
 /// basis and revision renewed: what [`super::media::refresh_authorization`]
 /// writes beside the change to the rows that basis is made of, and never a
