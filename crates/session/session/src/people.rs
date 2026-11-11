@@ -541,6 +541,7 @@ pub fn mount(
     let asks: Rc<RefCell<Vec<PeopleAsk>>> = Rc::default();
     let open = Rc::new(Cell::new(false));
     let dismissed: Rc<Cell<Option<ui::time::Instant>>> = Rc::default();
+    let banner_rect: Rc<Cell<Rect>> = Rc::new(Cell::new(Rect::ZERO));
     let panel = Panel {
         shown: Rc::clone(&shown),
         open: Rc::clone(&open),
@@ -561,6 +562,7 @@ pub fn mount(
         motion_until: Cell::new(0.0),
         followed: RefCell::default(),
         banner: tilo_desktop::follow_banner::FollowBanner::default(),
+        banner_rect: Rc::clone(&banner_rect),
     };
     let people = Rc::new(RefCell::new(People {
         layer: RefCell::new(None),
@@ -575,6 +577,8 @@ pub fn mount(
     let heard = crate::platform::surfaces::Heard {
         wants_keyboard: Rc::new(move || open.get()),
         pressed_elsewhere: Rc::new(move || roster.borrow().dismiss()),
+        // The banner stands in the bar while following: its face and Stop are pressed there.
+        takes_bar_point: Rc::new(move |point| banner_rect.get().contains(point)),
     };
     let placement = crate::platform::surfaces::Placement {
         origin: (0, 0),
@@ -637,6 +641,11 @@ struct Panel {
     followed: RefCell<Option<String>>,
     /// The "Following Ada" banner, as the page draws it, round the desk this panel floats over.
     banner: tilo_desktop::follow_banner::FollowBanner,
+    /// Where the banner stands to be pressed while following, `Rect::ZERO` otherwise: what the
+    /// layer tells a host whose bar takes presses over its band ([`Heard::takes_bar_point`]).
+    ///
+    /// [`Heard::takes_bar_point`]: crate::platform::surfaces::Heard::takes_bar_point
+    banner_rect: Rc<Cell<Rect>>,
 }
 
 impl Panel {
@@ -1273,6 +1282,12 @@ impl Panel {
         if !kept {
             self.stop_following();
         }
+        let pressable = !self.banner.stop_rect().is_zero_area();
+        self.banner_rect.set(if pressable {
+            self.banner.chip_rect()
+        } else {
+            Rect::ZERO
+        });
     }
 
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at

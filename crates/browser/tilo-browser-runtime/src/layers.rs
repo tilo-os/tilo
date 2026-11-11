@@ -93,6 +93,11 @@ impl LayerWidget {
         (self.heard.wants_keyboard)()
     }
 
+    /// Whether the role draws something pressed at `point` of the bar, which the bar hands to it.
+    pub(crate) fn takes_bar_point(&self, point: Point) -> bool {
+        (self.heard.takes_bar_point)(point)
+    }
+
     /// The pointer was pressed somewhere else: what the role has open closes.
     pub(crate) fn pressed_elsewhere(&self) {
         (self.heard.pressed_elsewhere)();
