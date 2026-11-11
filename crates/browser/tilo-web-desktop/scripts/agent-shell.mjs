@@ -192,6 +192,38 @@ async function until(fn, ms, interval = 100) {
     await sleep(interval);
   }
 }
+/** How many frames the page has presented so far, or `null` before it mounted. */
+const presentedFrames = tab => tab.evaluate('globalThis.tiloMount?.state?.()?.frames ?? null').catch(() => null);
+/** The frames a page draws before what a press asked of it shows: the press's own frame, the one
+ * laying out what it opened, and one more for what that brought in. */
+const DRAWN_FRAMES = 3;
+/** The longest a press waits for the page, however slowly it draws. */
+const DRAWN_CAP_MS = 90000;
+/**
+ * `fn`'s answer about what the page shows, waited for as long as the page takes to draw it: at
+ * least `ms`, and until the page has presented {@link DRAWN_FRAMES} frames since the wait began.
+ * A page answers what a person did on its next frames, and on a machine with every core busy a
+ * software-drawn page makes one every few seconds: a wait measured in wall time alone gave up
+ * before the frame that showed the answer, and a press tried again then undid the one that had
+ * worked (a second Follow is a Stop following). Measured in frames, a slow page is waited for and a
+ * fast one gives up as soon as before.
+ */
+async function untilDrawn(tab, fn, ms, interval = 150) {
+  const began = Date.now();
+  const first = await presentedFrames(tab);
+  for (;;) {
+    let value;
+    try { value = await fn(); } catch { value = undefined; }
+    if (value) return value;
+    const waited = Date.now() - began;
+    if (waited > DRAWN_CAP_MS) return undefined;
+    if (waited > ms) {
+      const now = await presentedFrames(tab);
+      if (first === null || now === null || now - first >= DRAWN_FRAMES) return undefined;
+    }
+    await sleep(interval);
+  }
+}
 /** A port nothing holds, and no other of this run's: a port is free again the
  * moment it is closed, so asking twice can answer with the same one. */
 const ports = new Set();
@@ -719,6 +751,20 @@ async function planActions(agent, apps) {
         }
       }
       note = pages.length ? `${path}/${pages[0]}` : path;
+      // The person's own "New note" leaves a blank note named "Untitled", and that is the one the
+      // agent is given: it names it for what it is about to write, as a person would before
+      // writing, with the note's own rename. Its path is its title, so the agent reads the
+      // notebook again for where the note now is.
+      if (pages.length && /^untitled$/i.test(pages[0])) {
+        const rename = (await actionsOf(note)).find(row => /^rename$/.test(row.name));
+        if (rename) {
+          const renamed = await ask('tilo_do', {path: `${note}#${rename.name}`, args: {title: 'Launch notes'}});
+          log('agent: named the note', verdict(renamed), renamed.text.slice(0, 300));
+          const again = resourceNames((await ask('tilo_ls', {path})).text);
+          const named = again.find(page => /^launch notes$/i.test(page));
+          if (named) note = `${path}/${named}`;
+        }
+      }
     }
     if (note) {
       // The text lives in the note's body, a part of the note rather than the
@@ -782,6 +828,8 @@ async function planActions(agent, apps) {
     }
   }
   // The shot of the follow mid-edit comes while the first write is in flight.
+  // The title the note it writes in stands under, as its window names it.
+  steps.noteTitle = note ? note.split('/').at(-1) : null;
   const at = steps.findIndex(step => /writing/.test(step.label));
   steps.shootAt = at < 0 ? steps.length - 1 : at;
   return steps;
@@ -802,7 +850,7 @@ const rosterOf = nodes => nodes.find(node => /people here now/i.test(node.name))
  * that opened nothing shows in the run's log with what the bar drew instead. */
 async function rosterOpens(tab, wait) {
   const began = Date.now();
-  const panel = await until(async () => rosterOf(await semantics(tab)), wait, 150);
+  const panel = await untilDrawn(tab, async () => rosterOf(await semantics(tab)), wait, 150);
   return {panel, took: Date.now() - began};
 }
 
@@ -831,7 +879,7 @@ async function openPeople(tab) {
 async function closePeople(tab) {
   if (!rosterOf(await semantics(tab))) return null;
   await press(tab, /^everyone here$/i, {what: 'closing who is here'});
-  const closed = await until(async () => !rosterOf(await semantics(tab)), 4000, 150);
+  const closed = await untilDrawn(tab, async () => !rosterOf(await semantics(tab)), 4000, 150);
   return closed ? null : `who is here stayed open: ${names(await semantics(tab))}`;
 }
 
@@ -849,7 +897,7 @@ async function followAgent(tab, label) {
   if (opened) return opened;
   // The workspace can carry following from an earlier session: the row then offers the way back
   // rather than Follow, and the person's view is already the agent's.
-  if (await until(async () => matching(await semantics(tab), new RegExp(`^stop following ${label}`, 'i')), 3000, 150)) {
+  if (await untilDrawn(tab, async () => matching(await semantics(tab), new RegExp(`^stop following ${label}`, 'i')), 3000, 150)) {
     log(`${label} is already the person's view: the roster offers Stop following`);
     return null;
   }
@@ -857,7 +905,7 @@ async function followAgent(tab, label) {
   /** The panel with a row to follow in it: what the press that opened it owes. */
   const filled = async (wait) => {
     const began = Date.now();
-    const nodes = await until(async () => {
+    const nodes = await untilDrawn(tab, async () => {
       const seen = await semantics(tab);
       return rosterOf(seen) && (matching(seen, follow) ?? matching(seen, /^follow$/i)) ? seen : undefined;
     }, wait, 150);
@@ -884,7 +932,7 @@ async function followAgent(tab, label) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     // Following is the banner's business: the control says so once it took.
     if (await press(tab, follow, {what: `following ${label}`}) ?? await press(tab, /^follow$/i, {what: `following ${label}`})) {
-      const following = await until(async () => (await semantics(tab)).some(node => new RegExp(`stop following ${label}|following ${label}`, 'i').test(node.name)), 3000);
+      const following = await untilDrawn(tab, async () => (await semantics(tab)).some(node => new RegExp(`stop following ${label}|following ${label}`, 'i').test(node.name)), 3000);
       if (following) return null;
     } else {
       return `the Follow control for ${label} has no bounds`;
@@ -912,11 +960,11 @@ async function pinOverlay(tab) {
   }
   if (!pressed) return `no "Keep on screen" control: ${names(await semantics(tab))}`;
   await sleep(1200);
-  if (!await until(pinned, 4000, 150)) {
+  if (!await untilDrawn(tab, pinned, 4000, 150)) {
     // Whether the press was lost or only not drawn: a pointer move asks for the frame the press
     // itself should have drawn.
     await nudge(tab);
-    if (await until(pinned, 4000, 150)) {
+    if (await untilDrawn(tab, pinned, 4000, 150)) {
       return '"Keep on screen" kept it only once the pointer moved: the press drew no frame of its own';
     }
     // Pressed as a reader presses it, through the page's accessible mirror rather than the pointer.
@@ -926,7 +974,7 @@ async function pinOverlay(tab) {
       }
       return false;
     })()`).catch(() => false);
-    const read = mirrored && await until(pinned, 4000, 150);
+    const read = mirrored && await untilDrawn(tab, pinned, 4000, 150);
     return `"Keep on screen" did not keep it from the pointer${read ? ', but did from its accessible button' : mirrored ? ' nor from its accessible button' : ' (no accessible button to press)'}: ${names(await semantics(tab))}`;
   }
   return null;
@@ -942,7 +990,7 @@ async function unpinned(tab) {
   await press(tab, /^put back in the bar$/i, {what: 'putting who is here back in the bar'});
   // Back in the bar, the panel it was pinned as is gone, and so is the control only the pinned
   // panel offers. A list still standing over the desk is the press having done nothing.
-  const left = await until(async () => {
+  const left = await untilDrawn(tab, async () => {
     const seen = await semantics(tab);
     const pinned = seen.some(node => speaks(node, /^put back in the bar$/i));
     return !pinned && !rosterOf(seen) ? seen : undefined;
@@ -960,7 +1008,7 @@ async function palette(tab, words) {
   const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
   for (let attempt = 0; attempt < 2; attempt += 1) {
     await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
-    const open = await until(async () => (await semantics(tab)).some(node => /search apps, windows, documents/i.test(node.name)), 8000);
+    const open = await untilDrawn(tab, async () => (await semantics(tab)).some(node => /search apps, windows, documents/i.test(node.name)), 8000);
     if (open) break;
   }
   await typeText(tab, words);
@@ -968,7 +1016,7 @@ async function palette(tab, words) {
   const result = /listitem|menuitem|treeitem|option|button/i;
   // A loaded machine draws the page a frame every few seconds: the results come a few frames
   // after the words are typed.
-  const hit = await until(async () => matching(await semantics(tab), new RegExp(`^${words}$`, 'i'), result), 20000);
+  const hit = await untilDrawn(tab, async () => matching(await semantics(tab), new RegExp(`^${words}$`, 'i'), result), 20000);
   if (!hit) return `the palette found no ${words}: ${names(await semantics(tab))}`;
   await key(tab, 'Enter', 'Enter', 13);
   await sleep(2500);
@@ -981,17 +1029,17 @@ async function pressBesideSearch(tab, {height}) {
   const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
   const showing = async () => (await semantics(tab)).some(node => /search apps, windows, documents/i.test(node.name));
   await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
-  if (!await until(showing, 8000)) return `the search chord opened no search: ${names(await semantics(tab))}`;
+  if (!await untilDrawn(tab, showing, 8000)) return `the search chord opened no search: ${names(await semantics(tab))}`;
   const searchOpen = () => tab.evaluate('globalThis.tiloMount?.state()?.searchOpen ?? null');
   // The desk's bottom-left corner: the card stands centred over the top of it.
   const x = 40, y = height - 40;
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
   await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount: 1});
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
-  if (!await until(async () => !await showing(), 8000)) {
+  if (!await untilDrawn(tab, async () => !await showing(), 8000)) {
     return `the search stayed up after a press beside it: ${names(await semantics(tab))}`;
   }
-  const state = await until(async () => (await searchOpen()) === false, 8000);
+  const state = await untilDrawn(tab, async () => (await searchOpen()) === false, 8000);
   return state ? null : `the page still says search is open: ${JSON.stringify(await tab.evaluate('globalThis.tiloMount?.state() ?? null')).slice(0, 300)}`;
 }
 
@@ -1007,7 +1055,7 @@ async function openNote(tab) {
     // The desk's own app list first ("Open an app"), the palette after.
     if (await press(tab, /^open an app$/i, {what: 'the app list'})) {
       await press(tab, /^notes$/i, {what: 'Notes'});
-      await until(windowed, 6000);
+      await untilDrawn(tab, windowed, 6000);
     }
     if (!await windowed()) {
       const opened = await palette(tab, 'Notes');
@@ -1026,7 +1074,7 @@ async function openNote(tab) {
   if (!await withNote() && !await press(tab, /^new note$/i, {what: 'a new note'})) {
     return `Notes offers no note to make: ${names(await semantics(tab))}`;
   }
-  const noted = await until(withNote, 8000);
+  const noted = await untilDrawn(tab, withNote, 8000);
   if (!noted) return `Notes made no note: ${names(await semantics(tab))}`;
   await sleep(800);
   return null;
@@ -1180,6 +1228,15 @@ async function record(browser, tab, name, {width, height}, body) {
     return {frames: 0, file: null, framesDir: null};
   }
   const began = Date.now() / 1000;
+  // What the page itself presented over the same stretch: a recording with few frames is either a
+  // page that drew few (the renderer is starved) or a screencast that dropped what it drew.
+  const presented = () => presentedFrames(tab);
+  const drawnBefore = await presented();
+  // And where each of those frames spent its time, by the page's own stages: what is left of a
+  // slow frame once its stages are added up is the GPU's.
+  const RUNTIME = `import(new URL('pkg/tilo_browser_runtime.js', document.baseURI).href)`;
+  await tab.evaluate(`(async () => { const r = await ${RUNTIME}; r.configure_frame_metrics(true); r.take_frame_metrics(); return true; })()`)
+    .catch(() => {});
   try {
     await body();
   } finally {
@@ -1189,6 +1246,22 @@ async function record(browser, tab, name, {width, height}, body) {
   }
   const ended = Date.now() / 1000;
   const seconds = +(ended - began).toFixed(1);
+  const drawnAfter = await presented();
+  const stages = await tab.evaluate(`(async () => {
+    const r = await ${RUNTIME};
+    const taken = JSON.parse(r.take_frame_metrics());
+    r.configure_frame_metrics(false);
+    const by = {};
+    for (const mount of taken) for (const {stage, ms} of mount.samples ?? []) {
+      const entry = by[stage] ??= {n: 0, ms: 0, max: 0};
+      entry.n += 1; entry.ms += ms; entry.max = Math.max(entry.max, ms);
+    }
+    return Object.entries(by).sort((a, b) => b[1].ms - a[1].ms).slice(0, 8)
+      .map(([stage, {n, ms, max}]) => stage + ' ' + n + 'x ' + Math.round(ms) + ' ms (max ' + Math.round(max) + ')').join(', ');
+  })()`).catch(error => `unread (${error.message ?? error})`);
+  log(`${name}: the page's frame stages while recording: ${stages || 'none measured'}`);
+  log(`${name}: over ${seconds} s the page presented ${drawnBefore === null || drawnAfter === null ? 'an unknown number of'
+    : drawnAfter - drawnBefore} frames and the screencast pushed ${frames.length}`);
   if (!frames.length) return {frames: 0, seconds, file: null, framesDir: dir};
   // Each frame is held for as long as the page showed it: a page that drew nothing new for two
   // seconds is two seconds of that frame, not a skipped stretch. The last stands until the end.
@@ -1560,7 +1633,8 @@ try {
                       .map(node => ({role: node.role, name: node.name, rect: node.rect})))}: ${names(await semantics(tab))}`);
               log(`${combo}: mid-edit shot in the note` +
                 `${cursor ? `, its cursor at ${JSON.stringify(cursor.rect)}` : ', with no agent cursor'}`);
-              await shot(tab, combo, 'following-mid-edit', {expect: [/^launch notes$/i], read: showing});
+              await shot(tab, combo, 'following-mid-edit', {read: showing,
+                expect: [new RegExp(`^${(steps.noteTitle ?? 'launch notes').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')]});
             }
             const answer = await sending;
             step.answer = answer;
@@ -1595,7 +1669,7 @@ try {
         const openCard = async () => {
           if (cardSays(await semantics(tab))) return;
           await press(tab, /^claude code, agent$/i, {what: "the agent's face"});
-          await until(async () => matching(await semantics(tab), /^open card$/i), 3000, 200);
+          await untilDrawn(tab, async () => matching(await semantics(tab), /^open card$/i), 3000, 200);
           await press(tab, /^open card$/i, {what: "the agent's card"});
         };
         await openCard();
