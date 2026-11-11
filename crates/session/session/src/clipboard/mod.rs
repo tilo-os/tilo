@@ -85,19 +85,25 @@ struct Reading {
     pull: Pull,
 }
 
-/// What quick settings asked of the history.
+/// What the history's resource and the roles beside it asked of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ask {
     /// Put a copy back on the clipboard and paste it into the app in front.
     Paste(String),
-    /// Put `text` on the clipboard for the person to paste somewhere else,
-    /// without keeping it, for as long as `kept_for` says.
-    Copy { text: String, kept_for: Duration },
+    /// Put `text` on the clipboard for the person to paste somewhere else. A credential stays
+    /// only as long as `kept_for` says, and is no copy of the person's; anything else is.
+    Copy {
+        text: String,
+        kept_for: Option<Duration>,
+    },
 }
 
 impl crate::platform::clipboard::Clipboard for Clipboard {
     fn copy(&self, text: String, kept_for: Duration) {
-        self.ask(Ask::Copy { text, kept_for });
+        self.ask(Ask::Copy {
+            text,
+            kept_for: Some(kept_for),
+        });
     }
 }
 
@@ -391,14 +397,23 @@ impl Clipboard {
                 Ask::Paste(key) => {
                     self.paste(compositor, &key);
                 }
-                Ask::Copy { text, kept_for } => {
-                    self.copy_for_person(
-                        compositor,
-                        tilo_compositor::clipboard_history::TEXT_MIME,
-                        text.into_bytes(),
-                        Some(kept_for),
-                    );
-                }
+                Ask::Copy { text, kept_for } => match kept_for {
+                    // A credential the session hands over: on the clipboard for as long as it is
+                    // wanted there, and never kept among the person's copies.
+                    Some(kept_for) => {
+                        self.copy_for_person(
+                            compositor,
+                            tilo_compositor::clipboard_history::TEXT_MIME,
+                            text.into_bytes(),
+                            Some(kept_for),
+                        );
+                    }
+                    // What the person asked to copy: the history takes it in as it takes what
+                    // they copied in an app.
+                    None => {
+                        self.copy_text(compositor, text);
+                    }
+                },
             }
         }
     }
@@ -447,6 +462,24 @@ impl Clipboard {
             .set(compositor.selection_changes(Selection::Clipboard));
         self.kept_until
             .set(kept_for.and_then(|kept| Instant::now().checked_add(kept)));
+        true
+    }
+
+    /// Put `text` on the clipboard as a copy of the person's own: what they asked to copy, here or
+    /// in an app of theirs, so the history keeps it as it keeps what they copied.
+    fn copy_text(&self, compositor: &mut Compositor, text: String) -> bool {
+        if let Err(error) = compositor.set_selection(
+            Selection::Clipboard,
+            vec![(
+                tilo_compositor::clipboard_history::TEXT_MIME.to_owned(),
+                text.into_bytes(),
+            )],
+        ) {
+            tracing::warn!(%error, "the text could not be put on the clipboard");
+            return false;
+        }
+        // The history reads it back on its next pass, as it reads a copy of any app's.
+        self.kept_until.set(None);
         true
     }
 
@@ -582,6 +615,10 @@ impl Service for Served {
             ClipboardAction::Clear => {
                 self.clipboard.clear();
             }
+            ClipboardAction::Copy { text } => self.clipboard.ask(Ask::Copy {
+                text,
+                kept_for: None,
+            }),
             ClipboardAction::PasteFiles {
                 destination,
                 conflict,
@@ -640,6 +677,13 @@ pub(crate) enum ClipboardAction {
     /// Clear the history, keeping what the person pinned
     #[effect(own_device, idempotent)]
     Clear,
+    /// Put text on the clipboard, as if it had been copied
+    #[effect(own_device)]
+    Copy {
+        /// The text to copy
+        #[param("The text to copy")]
+        text: String,
+    },
     /// Paste the copied files into a folder, as a copy, or a move after a cut
     #[effect(own_device, label = "Paste files")]
     PasteFiles {

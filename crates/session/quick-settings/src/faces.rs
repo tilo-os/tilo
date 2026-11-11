@@ -220,7 +220,7 @@ pub(crate) fn control_label(control: QuickSettingsControl) -> String {
 }
 
 /// A control's stable name in effects and test ids.
-pub(crate) fn control_id(control: QuickSettingsControl) -> &'static str {
+pub fn control_id(control: QuickSettingsControl) -> &'static str {
     match control {
         QuickSettingsControl::Wifi => "wifi",
         QuickSettingsControl::Bluetooth => "bluetooth",
@@ -235,7 +235,7 @@ pub(crate) fn control_id(control: QuickSettingsControl) -> &'static str {
 }
 
 /// The control a stable name names.
-pub(crate) fn control_named(name: &str) -> Option<QuickSettingsControl> {
+pub fn control_named(name: &str) -> Option<QuickSettingsControl> {
     QuickSettingsControl::ALL
         .into_iter()
         .find(|control| control_id(*control) == name)

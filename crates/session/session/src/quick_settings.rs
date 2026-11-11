@@ -497,9 +497,241 @@ pub(crate) fn open_settings(shared: &Shared, link: &str) {
     }
 }
 
+/// Which controls the panel shows, and in what order: the person's own setting of this device,
+/// published as an action so that a press in the panel, an agent and a script change it the same
+/// way, whether the panel is drawn or not.
+pub const ARRANGEMENT: &str = "session:quick-settings";
+/// What the arrangement resource is, to a reader with no words of its own.
+const ARRANGEMENT_KIND: &str = "session.quick-settings";
+
+/// What the arrangement resource offers: the controls the panel shows.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.quick-settings")]
+pub(crate) enum ArrangementAction {
+    /// Show a control on the panel
+    #[effect(own_device, idempotent)]
+    ShowControl {
+        /// The control's name, as the panel's arrangement lists it
+        #[param(
+            "The control: `wifi`, `bluetooth`, `vpn`, `night_light`, `airplane_mode`, `mobile_data`, `do_not_disturb`, `rotation_lock` or `power_mode`"
+        )]
+        control: String,
+    },
+    /// Take a control off the panel. Wi-Fi stays: it is how a desktop without a network gets online
+    #[effect(own_device, idempotent)]
+    HideControl {
+        /// The control's name, as the panel's arrangement lists it
+        #[param("The control, as Show control names it")]
+        control: String,
+    },
+    /// Move a control to another place on the panel
+    #[effect(own_device, idempotent)]
+    MoveControl {
+        /// The control's name, as the panel's arrangement lists it
+        #[param("The control, as Show control names it")]
+        control: String,
+        /// The control it stands in front of; none for the last place
+        #[param("The control it stands in front of; none for the last place")]
+        before: Option<String>,
+    },
+    /// Put the panel's controls back as they were at first
+    #[effect(own_device)]
+    ResetControls,
+}
+
+/// The arrangement resource: which controls the panel shows, read by the panel and by anyone else
+/// who asks.
+fn arrangement_resource() -> tilo_actions::ResourceSpec {
+    tilo_service::offer::<ArrangementAction>(
+        tilo_actions::ResourceSpec::new(
+            ARRANGEMENT,
+            ARRANGEMENT_KIND,
+            crate::i18n::t("session-quick-settings"),
+        )
+        .with_granted_reading(),
+    )
+}
+
+/// Which controls the panel shows, as the panel reads them: the person's arrangement of this
+/// device, kept in its settings document.
+#[derive(Default)]
+pub(crate) struct QuickSettingsService {
+    /// The arrangement as last read, published as the reading.
+    shown: std::cell::RefCell<settings_store::hardware::QuickSettingsConfig>,
+    /// Whether the settings document was read at all, and the version that was read: one that did
+    /// not move is not read again.
+    seen: bool,
+    stamp: Option<settings_store::SettingsStamp>,
+}
+
+impl QuickSettingsService {
+    /// The service, holding the person's arrangement as their settings document has it.
+    pub(crate) fn new() -> Self {
+        let mut service = Self::default();
+        service.follow();
+        service
+    }
+
+    /// Read the person's arrangement, and say the resource changed when it is not what was
+    /// published.
+    fn follow(&mut self) -> bool {
+        let stamp = settings_store::stamp();
+        if !settings_store::document_changed(self.seen, self.stamp, stamp) {
+            return false;
+        }
+        self.seen = true;
+        self.stamp = stamp;
+        let arrangement = settings_store::hardware::QuickSettingsConfig::load().normalised();
+        let changed = *self.shown.borrow() != arrangement;
+        *self.shown.borrow_mut() = arrangement;
+        changed
+    }
+
+    /// Carry `action` out on the person's arrangement, and keep it: whether it changed.
+    fn carry(&mut self, action: &ArrangementAction) -> Result<bool, tilo_actions::DoorError> {
+        let mut arrangement = self.shown.borrow().clone();
+        let changed = match action {
+            ArrangementAction::ShowControl { control } => {
+                tilo_quick_settings::host::show_control(&mut arrangement, control)
+            }
+            ArrangementAction::HideControl { control } => {
+                tilo_quick_settings::host::hide_control(&mut arrangement, control)
+            }
+            ArrangementAction::MoveControl { control, before } => {
+                tilo_quick_settings::host::move_control(
+                    &mut arrangement,
+                    control,
+                    before.as_deref(),
+                )
+            }
+            ArrangementAction::ResetControls => {
+                tilo_quick_settings::host::reset_controls(&mut arrangement)
+            }
+        };
+        if !changed {
+            return Ok(false);
+        }
+        arrangement.save().map_err(|error| {
+            tilo_actions::DoorError::Failed(format!(
+                "the Quick Settings arrangement was not kept: {error}"
+            ))
+        })?;
+        *self.shown.borrow_mut() = arrangement;
+        self.stamp = settings_store::stamp();
+        Ok(true)
+    }
+}
+
+impl tilo_service::Service for QuickSettingsService {
+    fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
+        vec![arrangement_resource()]
+    }
+
+    fn read(&self, resource: &str) -> Option<serde_json::Value> {
+        (resource == ARRANGEMENT).then(|| {
+            serde_json::json!({
+                "controls": self
+                    .shown
+                    .borrow()
+                    .controls
+                    .iter()
+                    .map(|control| tilo_quick_settings::control_id(*control))
+                    .collect::<Vec<_>>(),
+            })
+        })
+    }
+
+    fn invoke(
+        &mut self,
+        resource: &str,
+        action: &str,
+        arguments: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<tilo_service::Started, tilo_actions::DoorError> {
+        let action = tilo_service::decode::<ArrangementAction>(
+            &self.resources(),
+            resource,
+            action,
+            arguments,
+        )?;
+        self.carry(&action)?;
+        Ok(tilo_service::Started::Done(
+            tilo_actions::ActionOutput::default(),
+        ))
+    }
+
+    fn poll(&mut self) -> bool {
+        self.follow()
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use tilo_service::Service as _;
+
     use super::*;
+
+    /// Ask the arrangement resource `action` with `arguments`, as the door decodes it.
+    fn asked(service: &mut QuickSettingsService, action: &str, arguments: &serde_json::Value) {
+        let arguments = arguments.as_object().cloned().unwrap_or_default();
+        service
+            .invoke(ARRANGEMENT, action, &arguments)
+            .expect("the arrangement takes it");
+    }
+
+    /// The controls the arrangement publishes now.
+    fn shown(service: &QuickSettingsService) -> String {
+        service
+            .read(ARRANGEMENT)
+            .expect("the arrangement is published")["controls"]
+            .to_string()
+    }
+
+    /// The arrangement is the person's own setting, so it is read, changed and kept whether the
+    /// panel is drawn or not, and a control moves in front of the one it was dropped on.
+    #[test]
+    fn the_arrangement_is_published_by_the_session_and_kept() {
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let mut service = QuickSettingsService::new();
+        assert!(shown(&service).contains("bluetooth"), "{}", shown(&service));
+
+        asked(
+            &mut service,
+            "hide-control",
+            &serde_json::json!({ "control": "bluetooth" }),
+        );
+        assert!(
+            !shown(&service).contains("bluetooth"),
+            "{}",
+            shown(&service)
+        );
+        asked(
+            &mut service,
+            "hide-control",
+            &serde_json::json!({ "control": "wifi" }),
+        );
+        assert!(
+            shown(&service).contains("wifi"),
+            "Wi-Fi stays: {}",
+            shown(&service)
+        );
+        asked(
+            &mut service,
+            "move-control",
+            &serde_json::json!({ "control": "vpn", "before": "wifi" }),
+        );
+        assert!(
+            shown(&service).starts_with(r#"["vpn","wifi""#),
+            "the control stands in front of the one it was dropped on: {}",
+            shown(&service)
+        );
+        asked(&mut service, "reset-controls", &serde_json::json!({}));
+        assert!(shown(&service).contains("bluetooth"), "{}", shown(&service));
+
+        // Kept: the session reads it back from the person's settings document, as a panel that
+        // starts later does.
+        let kept = QuickSettingsService::new();
+        assert_eq!(shown(&kept), shown(&service));
+    }
 
     /// The panel grows from its corner when its first frame is drawn, stands as it stands, and
     /// shrinks back into the corner while it leaves, until it asks for nothing at all.

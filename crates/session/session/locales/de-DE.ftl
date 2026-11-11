@@ -195,6 +195,7 @@ session-displays-close-sheet = Das Bildschirmfenster schließen
 session-display-builtin = Eingebauter Bildschirm
 session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
+session-quick-settings = Schnelleinstellungen
 session-devices = Geräte
 session-devices-press = Eines der Geräte der Person drücken
 session-bluetooth-app = Bluetooth

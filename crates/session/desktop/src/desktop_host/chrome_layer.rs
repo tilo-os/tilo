@@ -1122,7 +1122,7 @@ impl DesktopChrome {
                 None
             }
             OverviewPick::AboutTilo => {
-                self.tilo_menu.show_about();
+                self.tilo_menu.set_about_open(true);
                 None
             }
             OverviewPick::Feedback => {
@@ -1891,6 +1891,14 @@ impl DesktopChrome {
                     return Ok(true);
                 }
                 ChromeIntent::ToggleTiloMenu
+            }
+            // The About sheet, as the menu's own entry and the overview's About show it.
+            ChromeEffect::About { open } => {
+                let open = open.unwrap_or(!self.tilo_menu.is_about_open());
+                if self.tilo_menu.is_about_open() != open {
+                    self.tilo_menu.set_about_open(open);
+                }
+                return Ok(true);
             }
             ChromeEffect::QuickSettings => ChromeIntent::ToggleQuickSettings,
             ChromeEffect::WorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu { at: None },

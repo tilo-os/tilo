@@ -10,8 +10,8 @@
 //! thread never waits on a service.
 //!
 //! What the panel does itself stays here: the prompts it opens, what it
-//! shows, the arrangement it keeps, the player it steers, and the reading of
-//! the Wi-Fi section that keeps looking for networks while it is open.
+//! shows, the player it steers, and the reading of the Wi-Fi section that
+//! keeps looking for networks while it is open.
 
 use std::rc::Rc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
@@ -22,7 +22,7 @@ use ui::WakeHandle;
 use ui::serde_json;
 
 use crate::effect::QsEffect;
-use crate::host::{Feed, PanelHost, Showing, arrange};
+use crate::host::{Feed, PanelHost, Showing};
 use crate::media::Media;
 use crate::readings::{Readings, land};
 use crate::session::{BLUETOOTH, MEDIA, NETWORK, Watch};
@@ -134,22 +134,6 @@ impl Live {
                     prompt.error = None;
                     state.wifi_joining = Some(network.clone());
                 });
-            }
-            effect @ (QsEffect::ShowControl { .. }
-            | QsEffect::HideControl { .. }
-            | QsEffect::MoveControl { .. }
-            | QsEffect::ResetControls) => {
-                let arranged = readings.read(|state| {
-                    let visible = crate::faces::visible_controls(&state.arrangement, state);
-                    let mut arrangement = state.arrangement.clone();
-                    arrange(&mut arrangement, &visible, effect).then_some(arrangement)
-                });
-                if let Some(arrangement) = arranged {
-                    readings.update(|state| state.arrangement = arrangement.clone());
-                    if let Err(error) = arrangement.save() {
-                        tracing::warn!(%error, "could not keep the Quick Settings arrangement");
-                    }
-                }
             }
             QsEffect::SetNightLight { on } => {
                 // The session turns the screen warm and keeps the switch; the

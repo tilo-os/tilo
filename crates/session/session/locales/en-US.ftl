@@ -191,6 +191,7 @@ session-displays-close-sheet = Put the display sheet away
 session-display-builtin = Built-in display
 session-display-external = External display
 session-clipboard = Clipboard
+session-quick-settings = Quick Settings
 session-devices = Devices
 session-devices-press = Press one of the person's devices
 session-bluetooth-app = Bluetooth

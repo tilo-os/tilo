@@ -44,6 +44,8 @@ pub(crate) const DISPLAY_SETTINGS: &str = "settings:settings.display";
 pub(crate) const NOTIFICATIONS: &str = "session:notifications";
 /// The session's reading of the clipboard history.
 pub(crate) const CLIPBOARD: &str = "session:clipboard";
+/// The session's reading of which controls the panel shows, and in what order.
+pub(crate) const QUICK_SETTINGS: &str = "session:quick-settings";
 /// The session's reading of the person's devices.
 pub(crate) const DEVICES: &str = "session:devices";
 /// The session's own screen: locking it, the power menu.
@@ -60,7 +62,7 @@ pub(crate) const CHROME: &str = "desktop:chrome";
 /// app that plays a song opens through the chrome. A resource is opened
 /// before its actions are asked of it, so the screen and the night light are
 /// here even where the panel only presses them or only shows the switch.
-pub(crate) const WATCHED: [&str; 16] = [
+pub(crate) const WATCHED: [&str; 17] = [
     NETWORK,
     BLUETOOTH,
     VPN,
@@ -72,6 +74,7 @@ pub(crate) const WATCHED: [&str; 16] = [
     DISPLAYS,
     NOTIFICATIONS,
     CLIPBOARD,
+    QUICK_SETTINGS,
     DEVICES,
     SCREEN,
     NIGHT_LIGHT,

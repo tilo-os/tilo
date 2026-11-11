@@ -11,14 +11,17 @@
 //!
 //! Its keys are typed into the field through the compositor's input method,
 //! as any keyboard's are: what it draws is the only thing the session places.
+//! What the keyboard's resource offers — whether it shows, and text typed into the field in front
+//! — is carried out on the session's pass, where the compositor is, so the app's Dismiss and an
+//! agent's step reach the same path.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tilo_actions::{ActionAddress, DoorError, ResourceSpec};
-use tilo_service::{Service, Started, reading};
+use tilo_actions::{ActionOutput, DoorError, ResourceSpec};
+use tilo_service::{Service, Started, decode, reading};
 
 use crate::surfaces::{
     Anchor, Keyboard as Interactivity, Layer, StartError, Surface, program_path,
@@ -122,10 +125,31 @@ pub enum Run {
     Standing { display: String, size: (u32, u32) },
 }
 
+/// What the keyboard's resource asks of the session: the person's own word on whether it shows,
+/// and text typed into the field in front.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Ask {
+    /// Show the keyboard, or put it away, until the field it was asked over is left.
+    SetVisible(bool),
+    /// Type `text` into the field the person types into, as a key of the keyboard commits it.
+    Type(String),
+}
+
+/// The person's own word on the keyboard, and what the field was asking for when they said it: it
+/// stands until that field is left or one is reached, where the automatic rule takes over again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Asked {
+    visible: bool,
+    wanted_typing: bool,
+}
+
 /// The keyboard's state, as the session's loop keeps it.
 #[derive(Clone, Default)]
 pub struct Keyboard {
     shown: Rc<RefCell<Shown>>,
+    /// What the resource asked for, waiting for the loop that has the compositor.
+    asks: Rc<RefCell<Vec<Ask>>>,
+    asked: Rc<Cell<Option<Asked>>>,
 }
 
 impl Keyboard {
@@ -141,6 +165,48 @@ impl Keyboard {
     #[must_use]
     pub fn shown(&self) -> Shown {
         self.shown.borrow().clone()
+    }
+
+    /// Ask the session for `ask`, on its next pass.
+    fn ask(&self, ask: Ask) {
+        self.asks.borrow_mut().push(ask);
+    }
+
+    /// What was asked since the last pass.
+    pub(crate) fn take_asks(&self) -> Vec<Ask> {
+        std::mem::take(&mut *self.asks.borrow_mut())
+    }
+
+    /// The person's own word on whether the keyboard shows, while it stands: `None` while the
+    /// automatic rule decides.
+    #[must_use]
+    pub fn asked(&self) -> Option<bool> {
+        self.asked.get().map(|asked| asked.visible)
+    }
+
+    /// The person said whether the keyboard shows while the field asks `wanted_typing`.
+    pub(crate) fn say(&self, visible: bool, wanted_typing: bool) {
+        self.asked.set(Some(Asked {
+            visible,
+            wanted_typing,
+        }));
+    }
+
+    /// The field the person's word was about is gone: the automatic rule decides again.
+    pub(crate) fn forget_ask(&self) {
+        self.asked.set(None);
+    }
+
+    /// The person's word was about a field that wants typing, or one that does not: a pass that
+    /// finds the other lets it go, so the field they moved to decides as it always does.
+    pub(crate) fn forget_ask_when_the_field_moved(&self, wanted_typing: bool) {
+        if self
+            .asked
+            .get()
+            .is_some_and(|asked| asked.wanted_typing != wanted_typing)
+        {
+            self.asked.set(None);
+        }
     }
 }
 
@@ -162,26 +228,27 @@ impl KeyboardService {
 
 impl Service for KeyboardService {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![ResourceSpec::new(
-            KEYBOARD,
-            KEYBOARD_KIND,
-            "On-screen keyboard",
-        )]
+        vec![keyboard_resource()]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
         (resource == KEYBOARD).then(|| reading(&*self.state.shown.borrow()))
     }
 
-    /// The keyboard is read, never asked: it types through the compositor's input method, and shows
-    /// or hides itself by what is published here.
+    /// The keyboard shows itself by the person's own word on it and by what the field in front asks,
+    /// and types through the compositor's input method: both are the session's to carry out, so what
+    /// a press of its Dismiss and an agent's step ask for is one resource's actions.
     fn invoke(
         &mut self,
         resource: &str,
         action: &str,
-        _arguments: &serde_json::Map<String, Value>,
+        arguments: &serde_json::Map<String, Value>,
     ) -> Result<Started, DoorError> {
-        Err(DoorError::Unknown(ActionAddress::new(resource, action)))
+        match decode::<KeyboardAction>(&self.resources(), resource, action, arguments)? {
+            KeyboardAction::SetVisible { visible } => self.state.ask(Ask::SetVisible(visible)),
+            KeyboardAction::Type { text } => self.state.ask(Ask::Type(text)),
+        }
+        Ok(Started::Done(ActionOutput::default()))
     }
 
     fn poll(&mut self) -> bool {
@@ -194,6 +261,35 @@ impl Service for KeyboardService {
     }
 }
 
+/// What the on-screen keyboard offers: whether it shows, and typing text into the field in front.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "so.tilo.session.keyboard")]
+pub(crate) enum KeyboardAction {
+    /// Show the keyboard, or put it away, until the field it was asked over is left
+    #[effect(own_device, idempotent)]
+    SetVisible {
+        /// Whether the keyboard belongs on screen
+        #[param("Whether the keyboard belongs on screen")]
+        visible: bool,
+    },
+    /// Type text into the field the person types into
+    #[effect(own_device)]
+    Type {
+        /// The text to type
+        #[param("The text to type")]
+        text: String,
+    },
+}
+
+/// The on-screen keyboard as the session publishes it.
+fn keyboard_resource() -> ResourceSpec {
+    tilo_service::offer::<KeyboardAction>(ResourceSpec::new(
+        KEYBOARD,
+        KEYBOARD_KIND,
+        "On-screen keyboard",
+    ))
+}
+
 impl crate::Session {
     /// Follow the on-screen keyboard: run its app while the person may want it, on the display they
     /// are working on, and publish whether it shows and where it stands.
@@ -202,8 +298,16 @@ impl crate::Session {
     /// decided each pass, from the person's choice and what the compositor sees of their typing.
     pub(crate) fn follow_keyboard(&mut self) {
         let keyboard = self.shared.keyboard.clone();
+        self.serve_keyboard_asks();
         let entry = self.compositor.text_entry();
         let preference = self.keyboard_preference;
+        // The person's own word on the keyboard stands over the field it was said over: once that
+        // field is left, or one is reached, the automatic rule decides again.
+        keyboard.forget_ask_when_the_field_moved(entry.wants_typing);
+        // Whether it shows: the person's word while it stands, and the automatic rule otherwise.
+        let shows = keyboard
+            .asked()
+            .unwrap_or_else(|| crate::a11y_settings::keyboard_visible(preference, entry));
         // The lock screen draws its own keyboard over a locked session, and takes every key:
         // nothing of the session's stands over it.
         let unlocked = !self.compositor.locked();
@@ -218,6 +322,7 @@ impl crate::Session {
             // last not wanted at all.
             self.keyboard_run = Run::Down;
             self.keyboard_starts = 0;
+            keyboard.forget_ask();
             keyboard.show(Shown::default());
             return;
         }
@@ -283,9 +388,26 @@ impl crate::Session {
             self.keyboard_run = started;
         }
         keyboard.show(Shown {
-            visible: crate::a11y_settings::keyboard_visible(preference, entry),
+            visible: shows,
             display: Some(screen),
         });
+    }
+
+    /// Carry out what the keyboard's resource asked for: text typed into the field in front, and
+    /// the person's own word on whether it shows.
+    fn serve_keyboard_asks(&mut self) {
+        let keyboard = self.shared.keyboard.clone();
+        let wanted_typing = self.compositor.text_entry().wants_typing;
+        for ask in keyboard.take_asks() {
+            match ask {
+                Ask::SetVisible(visible) => keyboard.say(visible, wanted_typing),
+                Ask::Type(text) => {
+                    if self.compositor.insert_active_text(&text).is_none() {
+                        tracing::debug!("no field took the typed text");
+                    }
+                }
+            }
+        }
     }
 
     /// Stop the on-screen keyboard's app, if it runs.
@@ -333,5 +455,79 @@ impl crate::Session {
                 .cloned()
         });
         holding.or_else(|| displays.first().cloned())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The arguments of `arguments` as the door hands them over.
+    fn arguments(arguments: serde_json::Value) -> serde_json::Map<String, Value> {
+        match arguments {
+            Value::Object(map) => map,
+            other => panic!("{other} is not an object"),
+        }
+    }
+
+    /// What the resource's actions ask is carried out on the session's pass, where the compositor
+    /// is: the resource only says what was asked.
+    #[test]
+    fn the_keyboard_s_actions_are_asked_of_the_session() {
+        let keyboard = Keyboard::default();
+        let mut service = KeyboardService::new(keyboard.clone());
+        service
+            .invoke(
+                KEYBOARD,
+                "set-visible",
+                &arguments(serde_json::json!({ "visible": false })),
+            )
+            .expect("the keyboard shows nothing");
+        service
+            .invoke(
+                KEYBOARD,
+                "type",
+                &arguments(serde_json::json!({ "text": "hi" })),
+            )
+            .expect("the keyboard types");
+        assert_eq!(
+            keyboard.take_asks(),
+            [Ask::SetVisible(false), Ask::Type("hi".into())],
+            "both wait for the loop that has the compositor"
+        );
+    }
+
+    /// The person's word stands while the field it was said over is there, and the automatic rule
+    /// decides again once they leave it or reach one.
+    #[test]
+    fn the_persons_word_on_the_keyboard_stands_over_that_field() {
+        let keyboard = Keyboard::default();
+        assert_eq!(keyboard.asked(), None, "the rule decides until they say");
+        keyboard.say(false, true);
+        assert_eq!(keyboard.asked(), Some(false));
+        keyboard.forget_ask_when_the_field_moved(true);
+        assert_eq!(
+            keyboard.asked(),
+            Some(false),
+            "the same field keeps their word"
+        );
+        keyboard.forget_ask_when_the_field_moved(false);
+        assert_eq!(
+            keyboard.asked(),
+            None,
+            "the field they were in is left: the rule decides again"
+        );
+    }
+
+    /// The keyboard reads what it shows, and only that: an action of another resource is refused.
+    #[test]
+    fn another_resource_s_action_is_refused() {
+        let mut service = KeyboardService::new(Keyboard::default());
+        assert!(
+            service
+                .invoke("session:input", "type", &serde_json::Map::new())
+                .is_err(),
+            "the input resource has no keyboard action"
+        );
     }
 }

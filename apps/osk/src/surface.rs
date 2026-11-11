@@ -61,6 +61,9 @@ pub struct OskSurface {
     /// one: whether it belongs on screen, which the input method alone cannot
     /// say.
     said: Option<Said>,
+    /// The person put the keyboard away: the session heard it, and its reading of the moment still
+    /// says it shows until its next word arrives.
+    dismissed: bool,
     context: Option<service::ContextChanges>,
     /// The scenario to stage on the next sync.
     staged: Rc<RefCell<Option<Scenario>>>,
@@ -98,6 +101,7 @@ impl OskSurface {
             vocabulary_identity: (None, 0),
             focus: None,
             said: None,
+            dismissed: false,
             context: None,
             staged: Rc::default(),
         }
@@ -246,12 +250,25 @@ impl Decorator for OskSurface {
                 self.keyboard.follow_input_method(transition);
             }
         }
+        // The person put the keyboard away: the session decides whether it belongs on screen, so
+        // it hears the press and stops saying it does.
+        if self.keyboard.take_dismissed()
+            && let Some(said) = &self.said
+        {
+            said.set_visible(false);
+            self.dismissed = true;
+        }
         // The session's own word on whether the keyboard belongs on screen
         // comes after the input method's: an always-on keyboard is up with no
         // field focused at all, and one the person is not typing on the glass
         // stays down even as a field takes the focus.
         if let Some(visible) = self.said.as_ref().and_then(Said::visible) {
-            self.keyboard.set_visible(visible);
+            // What the session said before the person put the keyboard away still says it shows:
+            // it comes back when the session's own next word says so.
+            if visible || !self.dismissed {
+                self.keyboard.set_visible(visible);
+            }
+            self.dismissed = self.dismissed && visible;
         }
         if let Some(context) = &mut self.context {
             for transition in context.take() {

@@ -12,7 +12,6 @@ use std::rc::Rc;
 
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
-pub use crate::faces::visible_controls;
 pub use crate::readings::Feed;
 
 /// What the panel shows now, so what shows it reads what it lists.
@@ -118,12 +117,12 @@ impl PanelHost for FixtureHost {
     }
 
     fn run(&self, effect: QsEffect) -> Result<(), String> {
-        // The arrangement is the panel's own to show: a fixture keeps it,
-        // so arranging can be seen without a desktop.
+        // The arrangement is a published action like any other: a fixture
+        // carries it out on the readings it keeps, so arranging can be seen
+        // without a desktop.
         if let Some(feed) = self.feed.borrow().as_ref() {
             feed.update(|state| {
-                let visible = crate::faces::visible_controls(&state.arrangement, state);
-                arrange(&mut state.arrangement, &visible, &effect);
+                arrange(&mut state.arrangement, &effect);
                 if effect == QsEffect::DismissRefusal {
                     state.refusal = None;
                 }
@@ -135,58 +134,92 @@ impl PanelHost for FixtureHost {
 }
 
 /// Apply an arrangement effect (show, hide, move or reset controls) to
-/// `arrangement`, whose `visible` controls are the ones the panel shows on
-/// this machine. Whether it was one, and changed something.
+/// `arrangement`. Whether it was one, and changed something.
 pub fn arrange(
     arrangement: &mut settings_store::hardware::QuickSettingsConfig,
-    visible: &[settings_store::hardware::QuickSettingsControl],
     effect: &QsEffect,
 ) -> bool {
-    let before = arrangement.clone();
     match effect {
-        QsEffect::ShowControl { control } => {
-            if let Some(control) = crate::faces::control_named(control)
-                && !arrangement.controls.contains(&control)
-            {
-                arrangement.controls.push(control);
-            }
+        QsEffect::ShowControl { control } => show_control(arrangement, control),
+        QsEffect::HideControl { control } => hide_control(arrangement, control),
+        QsEffect::MoveControl { control, before } => {
+            move_control(arrangement, control, before.as_deref())
         }
-        QsEffect::HideControl { control } => {
-            if let Some(control) = crate::faces::control_named(control)
-                && !control.required()
-            {
-                arrangement.controls.retain(|shown| *shown != control);
-            }
-        }
-        QsEffect::MoveControl { control, to } => {
-            // `to` is a place among the controls shown: the control takes
-            // the place of the one shown there, so a control this machine
-            // does not show never decides where another lands.
-            let target = usize::try_from(*to)
-                .ok()
-                .and_then(|to| visible.get(to))
-                .copied();
-            if let (Some(control), Some(target)) = (crate::faces::control_named(control), target)
-                && let Some(from) = arrangement.controls.iter().position(|c| *c == control)
-            {
-                let moved = arrangement.controls.remove(from);
-                let at = arrangement
-                    .controls
-                    .iter()
-                    .position(|c| *c == target)
-                    .map_or(arrangement.controls.len(), |at| {
-                        if at >= from { at.saturating_add(1) } else { at }
-                    });
-                arrangement
-                    .controls
-                    .insert(at.min(arrangement.controls.len()), moved);
-            }
-        }
-        QsEffect::ResetControls => {
-            *arrangement = settings_store::hardware::QuickSettingsConfig::default();
-        }
-        _ => return false,
+        QsEffect::ResetControls => reset_controls(arrangement),
+        _ => false,
     }
-    *arrangement = arrangement.clone().normalised();
-    *arrangement != before
+}
+
+/// Show the control `control` names on the panel. Whether the arrangement changed.
+pub fn show_control(
+    config: &mut settings_store::hardware::QuickSettingsConfig,
+    control: &str,
+) -> bool {
+    let Some(control) = crate::faces::control_named(control) else {
+        return false;
+    };
+    settled(config, |config| {
+        if !config.controls.contains(&control) {
+            config.controls.push(control);
+        }
+    })
+}
+
+/// Take the control `control` names off the panel: Wi-Fi stays, as the way a desktop without a
+/// network gets online. Whether the arrangement changed.
+pub fn hide_control(
+    config: &mut settings_store::hardware::QuickSettingsConfig,
+    control: &str,
+) -> bool {
+    let Some(control) = crate::faces::control_named(control) else {
+        return false;
+    };
+    settled(config, |config| {
+        if !control.required() {
+            config.controls.retain(|shown| *shown != control);
+        }
+    })
+}
+
+/// Move the control `control` names to stand before `before`, the last place when none is named.
+/// Whether the arrangement changed.
+pub fn move_control(
+    config: &mut settings_store::hardware::QuickSettingsConfig,
+    control: &str,
+    before: Option<&str>,
+) -> bool {
+    let Some(control) = crate::faces::control_named(control) else {
+        return false;
+    };
+    let before = before.and_then(crate::faces::control_named);
+    settled(config, |config| {
+        let Some(from) = config.controls.iter().position(|shown| *shown == control) else {
+            return;
+        };
+        let moved = config.controls.remove(from);
+        let at = before
+            .filter(|before| *before != control)
+            .and_then(|before| config.controls.iter().position(|shown| *shown == before))
+            .unwrap_or(config.controls.len());
+        config.controls.insert(at.min(config.controls.len()), moved);
+    })
+}
+
+/// Put the panel's controls back as they were at first. Whether the arrangement changed.
+pub fn reset_controls(config: &mut settings_store::hardware::QuickSettingsConfig) -> bool {
+    let mut fresh = settings_store::hardware::QuickSettingsConfig::default();
+    std::mem::swap(config, &mut fresh);
+    fresh != *config
+}
+
+/// `change` applied to `config`, and the arrangement kept as a panel reads it: duplicates gone,
+/// Wi-Fi where every panel starts. Whether it changed.
+fn settled(
+    config: &mut settings_store::hardware::QuickSettingsConfig,
+    change: impl FnOnce(&mut settings_store::hardware::QuickSettingsConfig),
+) -> bool {
+    let before = config.clone();
+    change(config);
+    *config = config.clone().normalised();
+    *config != before
 }

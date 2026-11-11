@@ -1245,6 +1245,11 @@ impl Session {
             .add(Box::new(crate::keyboard::KeyboardService::new(
                 keyboard.clone(),
             )));
+        // Which controls Quick Settings shows, and in what order: this device's own setting, kept
+        // here so the arrangement is the same whether the panel is drawn or not.
+        services
+            .borrow_mut()
+            .add(Box::new(crate::quick_settings::QuickSettingsService::new()));
         // Dictation joins the services: its recognizer, microphone and
         // consent are only the session's, and the sheet asks about them.
         let dictation =

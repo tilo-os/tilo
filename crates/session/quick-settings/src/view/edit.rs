@@ -58,11 +58,11 @@ fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
                 .with_role(TextRole::Label)
                 .strong(),
         ));
-    let active = arrangement.active.clone();
-    let count = active.len();
+    let visible = arrangement.active.clone();
+    let count = visible.len();
     let rows_cx = cx.actions();
     let list = VirtualList::from_items(
-        active,
+        visible.clone(),
         ui::tokens::Metrics::BASE.row_single,
         |control| control_id(*control),
         move |control, index, _| {
@@ -76,17 +76,22 @@ fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
             } else {
                 "qs-edit-optional-control-a11y"
             }));
-            let moved = |to: usize| QsEffect::MoveControl {
-                control: control_id(*control).to_owned(),
-                to: u32::try_from(to).unwrap_or(u32::MAX),
+            // A control moves to stand in front of another: the one above it for a step up, and
+            // the one below its neighbour for a step down, which is the last place when no other
+            // follows.
+            let moved = |before: Option<&settings_store::hardware::QuickSettingsControl>| {
+                QsEffect::MoveControl {
+                    control: control_id(*control).to_owned(),
+                    before: before.map(|before| control_id(*before).to_owned()),
+                }
             };
-            if let Some(up) = index.checked_sub(1)
-                && let Some(binding) = rows_cx.effect(&moved(up))
+            if let Some(up) = index.checked_sub(1).and_then(|up| visible.get(up))
+                && let Some(binding) = rows_cx.effect(&moved(Some(up)))
             {
                 row = row.action_binding(Icon::ArrowUp, t("qs-edit-move-up"), binding);
             }
             if let Some(down) = index.checked_add(1).filter(|down| *down < count)
-                && let Some(binding) = rows_cx.effect(&moved(down))
+                && let Some(binding) = rows_cx.effect(&moved(visible.get(down.saturating_add(1))))
             {
                 row = row.action_binding(Icon::ArrowDown, t("qs-edit-move-down"), binding);
             }
@@ -118,15 +123,17 @@ fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
                     ui::reorder::DropPlacement::After => target.saturating_add(1),
                     ui::reorder::DropPlacement::Inside => return false,
                 };
+                // It lands in front of whatever the drop left after it.
+                let before = model.key_at(boundary).map(str::to_owned);
+                dispatcher.effect(&QsEffect::MoveControl {
+                    control: dropped.source.to_owned(),
+                    before,
+                });
                 let to = if boundary > from {
                     boundary.saturating_sub(1)
                 } else {
                     boundary
                 };
-                dispatcher.effect(&QsEffect::MoveControl {
-                    control: dropped.source.to_owned(),
-                    to: u32::try_from(to).unwrap_or(u32::MAX),
-                });
                 model.move_item(from, to)
             },
         );

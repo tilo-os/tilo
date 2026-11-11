@@ -505,3 +505,48 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
         "no field has the focus any more"
     );
 }
+
+/// The person puts the keyboard away, and an agent asks for it back: both are the keyboard's own
+/// published action, so what a press of its Dismiss asks for is what a step of an agent's asks for.
+#[test]
+fn the_keyboard_shows_and_hides_by_its_published_action() {
+    let _settled = ui::motion::testing::settled();
+    let home = private_home();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_RUNTIME_DIR", home.path());
+    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Always);
+    pump(&mut session, &mut [], |session, _| {
+        session.surfaces().running(keyboard::SURFACE) && reading(session)["visible"] == true
+    });
+
+    // Away, as the keyboard's own Dismiss asks: the session stops saying it shows, which no
+    // reading of its own would have taken back.
+    session
+        .invoke_with_actor(
+            "person:ada",
+            KEYBOARD,
+            "set-visible",
+            &serde_json::json!({ "visible": false }),
+        )
+        .expect("the keyboard is put away");
+    pump(&mut session, &mut [], |session, _| {
+        reading(session)["visible"] == false
+    });
+    assert!(
+        session.surfaces().running(keyboard::SURFACE),
+        "its app keeps running: it is back on the next touch of a field"
+    );
+
+    // And back, as any step of an agent's that asks for it does.
+    session
+        .invoke_with_actor(
+            "agent:helper",
+            KEYBOARD,
+            "set-visible",
+            &serde_json::json!({ "visible": true }),
+        )
+        .expect("the keyboard is asked back");
+    pump(&mut session, &mut [], |session, _| {
+        reading(session)["visible"] == true
+    });
+}

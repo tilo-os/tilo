@@ -821,7 +821,7 @@ fn arranging_hides_adds_and_moves_controls_but_never_wifi() {
     );
     app.effect(&QsEffect::MoveControl {
         control: "bluetooth".into(),
-        to: 0,
+        before: Some("wifi".into()),
     })
     .unwrap();
     app.settle();
@@ -885,7 +885,7 @@ fn ctrl_up_and_down_move_the_focused_control_and_it_keeps_the_keyboard() {
         host.ran(),
         [QsEffect::MoveControl {
             control: "bluetooth".into(),
-            to: 0,
+            before: Some("wifi".into()),
         }]
     );
     let bluetooth = target(&mut app, "qs-edit-bluetooth");
@@ -907,7 +907,7 @@ fn ctrl_up_and_down_move_the_focused_control_and_it_keeps_the_keyboard() {
         host.ran().last(),
         Some(&QsEffect::MoveControl {
             control: "bluetooth".into(),
-            to: 1,
+            before: Some("vpn".into()),
         })
     );
     let bluetooth = target(&mut app, "qs-edit-bluetooth");
@@ -945,7 +945,7 @@ fn a_control_dragged_part_way_waits_for_the_release_and_lands_there() {
         host.ran(),
         [QsEffect::MoveControl {
             control: "bluetooth".into(),
-            to: 2,
+            before: Some("do_not_disturb".into()),
         }],
         "let go past the next control, it lands after it"
     );

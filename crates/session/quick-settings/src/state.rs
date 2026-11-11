@@ -184,7 +184,9 @@ impl Default for QuickSettingsState {
             microphone: None,
             sound_streams: Vec::new(),
             device_rows: Vec::new(),
-            arrangement: settings_store::hardware::QuickSettingsConfig::default(),
+            // As the person left it: the session keeps the arrangement and publishes it, and a
+            // panel started before that reading arrives starts where they left it.
+            arrangement: settings_store::hardware::QuickSettingsConfig::load(),
             notifications: 0,
             handoff_targets: None,
             now_playing: None,
@@ -259,6 +261,9 @@ impl QuickSettingsState {
     #[must_use]
     pub fn fixture() -> Self {
         Self {
+            // The controls as they come, not as this machine's settings happen to have them: what
+            // a screenshot, a test or a panel run on its own shows.
+            arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             brightness: 0.6,
             brightness_available: true,
             status: crate::status::SystemStatus {

@@ -652,6 +652,17 @@ pub enum ChromeEffect {
     #[effect(view, own_device, idempotent)]
     WorkspaceMenu,
 
+    /// Open or close the About sheet
+    ///
+    /// What this Tilo is, where it runs and which version: the same sheet the Tilo menu's About
+    /// shows.
+    #[effect(view, own_device, idempotent)]
+    About {
+        /// Whether it is open.
+        #[param("Whether the sheet is open; toggled when absent")]
+        open: Option<bool>,
+    },
+
     /// Run a fixed desktop shortcut
     ///
     /// By its id in the shortcut catalogue: a chord Settings cannot rebind,
@@ -1205,6 +1216,7 @@ fn admit_chrome(
         | ChromeEffect::QuickSettings
         | ChromeEffect::TiloMenu { .. }
         | ChromeEffect::WorkspaceMenu
+        | ChromeEffect::About { .. }
         | ChromeEffect::SwitchWorkspace {
             workspace: None, ..
         } => Err("The surfaces carry this out themselves".into()),

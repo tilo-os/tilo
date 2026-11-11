@@ -1,7 +1,8 @@
 //! An agent working beside the person takes a short story across apps and the shell by published
 //! actions alone, as its catalogue lists them: it opens a notebook in a window, puts the person's
-//! banners on hold, warms the screen and shares the notebook with a person. Nothing is pressed and
-//! no pixel is read; every step is one action of the resource a person's own control invokes,
+//! banners on hold, warms the screen, shares the notebook with a person, copies a line for them to
+//! paste, puts a control away on their Quick Settings and shows About. Nothing is pressed and no
+//! pixel is read; every step is one action of the resource a person's own control invokes,
 //! attributed to the agent.
 
 #![cfg(target_os = "linux")]
@@ -42,6 +43,11 @@ fn act(session: &mut Session, resource: &str, action: &str, arguments: &serde_js
 }
 
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one story told end to end: each step shapes the one after it, and a story split in \
+              two would start a session of its own for its second half"
+)]
 fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
     let root = common::private_home();
     let mut session = common::seeded_session(root.path());
@@ -118,5 +124,55 @@ fn an_agent_takes_a_story_across_apps_and_the_shell_by_actions_alone() {
             .as_str()
             .is_some_and(|app| !app.is_empty()),
         "and names the app that keeps it: {sent}"
+    );
+
+    // Copy a line the person is to paste somewhere else: it is on the clipboard, and the history
+    // keeps it as it keeps what they copied themselves.
+    act(
+        &mut session,
+        "session:clipboard",
+        "copy",
+        &json!({ "text": "the autumn release" }),
+    );
+    let history = common::wait_for(
+        &mut session,
+        "the line in the clipboard's history",
+        |session| {
+            session
+                .read("session:clipboard")
+                .filter(|history| history.to_string().contains("the autumn release"))
+        },
+    );
+    assert!(
+        history.is_array(),
+        "the history lists what was copied: {history}"
+    );
+
+    // Take a control off Quick Settings, as the panel's own arranging does: the arrangement is this
+    // device's setting, so it reads back whether the panel is drawn or not.
+    act(
+        &mut session,
+        "session:quick-settings",
+        "hide-control",
+        &json!({ "control": "bluetooth" }),
+    );
+    let arranged = session
+        .read("session:quick-settings")
+        .expect("the session publishes the panel's arrangement");
+    assert!(
+        !arranged["controls"].to_string().contains("bluetooth"),
+        "the control is off the panel: {arranged}"
+    );
+    assert!(
+        arranged["controls"].to_string().contains("wifi"),
+        "Wi-Fi stays, as the way a desktop without a network gets online: {arranged}"
+    );
+
+    // Show the About sheet, as the Tilo menu's own About does.
+    act(
+        &mut session,
+        "desktop:chrome",
+        "about",
+        &json!({ "open": true }),
     );
 }
