@@ -8,13 +8,11 @@
 //!
 //! - `frames.csv`: every loop tick, the same columns as `TILO_FRAME_TRACE`
 //!   ([`super::CSV_HEADER`]), written by the same [`super::FrameRecorder`].
-//! - `phases.csv`: every pump phase and checkpoint `TILO_LOOP_TIMING` times,
-//!   keyed by the tick's `seq`, not only the slow ones it logs.
 //! - `threads.csv`: each thread's CPU, sampled from `/proc/self/task` by a
 //!   thread of the profile's own, so the presenter, GPU and worker threads
 //!   are seen as well as the loop.
-//! - `summary.json`, written last: the frame summary, per-phase totals and
-//!   per-thread CPU totals. Its presence means the profile is complete.
+//! - `summary.json`, written last: the frame summary and per-thread CPU
+//!   totals. Its presence means the profile is complete.
 //!
 //! Nothing here reaches outside the process: no ptrace, no
 //! `perf_event_open`, only what the process can already read about itself.
@@ -47,7 +45,6 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(50);
 /// How often buffered rows are handed to their writer threads.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
-const PHASES_HEADER: &str = "seq,phase,elapsed_us,items";
 const THREADS_HEADER: &str = "t_us,tid,thread,cpu_us";
 
 /// Whether a profile is recording: the one load the loop pays per tick.
@@ -114,23 +111,6 @@ pub fn deadline() -> Option<Instant> {
         return None;
     }
     lock().capture.as_ref().map(|capture| capture.deadline)
-}
-
-/// A tick numbered `seq` began; the phases recorded until the next carry it.
-pub fn begin_tick(seq: u64) {
-    if let Some(capture) = lock().capture.as_mut() {
-        capture.seq = seq;
-    }
-}
-
-/// One loop-timing phase or checkpoint span of the current tick.
-pub fn record_phase(name: &'static str, elapsed: Duration, items: Option<usize>) {
-    if !active() {
-        return;
-    }
-    if let Some(capture) = lock().capture.as_mut() {
-        capture.phase(name, elapsed, items);
-    }
 }
 
 /// The tick the frame recorder just closed. Ends the profile once its
@@ -208,24 +188,14 @@ impl Profiler {
     }
 }
 
-#[derive(Default, serde::Serialize)]
-struct PhaseTotal {
-    count: u64,
-    total_us: u64,
-    max_us: u64,
-}
-
 /// One profile being recorded.
 struct Capture {
     dir: PathBuf,
     started: Instant,
     deadline: Instant,
     next_flush: Instant,
-    seq: u64,
     ticks: u64,
     frames: TraceWriter,
-    phases: TraceWriter,
-    phase_totals: BTreeMap<&'static str, PhaseTotal>,
     /// Every tick, for the summary. A profile is at most [`MAX_SECONDS`].
     samples: Vec<FrameSample>,
     target_period_us: u32,
@@ -238,7 +208,6 @@ impl Capture {
         prune(root, KEPT_PROFILES.saturating_sub(1));
         let dir = new_profile_dir(root)?;
         let frames = csv_writer(&dir.join("frames.csv"), super::CSV_HEADER)?;
-        let phases = csv_writer(&dir.join("phases.csv"), PHASES_HEADER)?;
         let threads = private_file(&dir.join("threads.csv"))?;
         let started = Instant::now();
         Ok(Self {
@@ -247,24 +216,11 @@ impl Capture {
             started,
             deadline: started.checked_add(length).unwrap_or(started),
             next_flush: started,
-            seq: 0,
             ticks: 0,
             frames,
-            phases,
-            phase_totals: BTreeMap::new(),
             samples: Vec::new(),
             target_period_us: 0,
         })
-    }
-
-    fn phase(&mut self, name: &'static str, elapsed: Duration, items: Option<usize>) {
-        let us = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
-        let items = items.map(|n| n.to_string()).unwrap_or_default();
-        let _ = writeln!(self.phases, "{},{name},{us},{items}", self.seq);
-        let total = self.phase_totals.entry(name).or_default();
-        total.count = total.count.saturating_add(1);
-        total.total_us = total.total_us.saturating_add(us);
-        total.max_us = total.max_us.max(us);
     }
 
     fn tick(&mut self, sample: &FrameSample, target_period_us: u32, now: Instant) {
@@ -274,7 +230,6 @@ impl Capture {
         self.target_period_us = target_period_us;
         if now >= self.next_flush {
             let _ = self.frames.flush();
-            let _ = self.phases.flush();
             self.next_flush = now.checked_add(FLUSH_INTERVAL).unwrap_or(now);
         }
     }
@@ -283,7 +238,6 @@ impl Capture {
     /// on the disk for it.
     fn close(mut self, wait: bool) -> Finished {
         let _ = self.frames.flush();
-        let _ = self.phases.flush();
         let seconds = self.started.elapsed().as_secs_f64();
         let finished = Finished {
             dir: self.dir.clone(),
@@ -293,11 +247,9 @@ impl Capture {
         let summary = serde_json::json!({
             "seconds": seconds,
             "frames": super::summarize(&self.samples, self.target_period_us),
-            "phases": self.phase_totals,
         });
         let closing = Closing {
             frames: self.frames,
-            phases: self.phases,
             summary,
             dir: self.dir,
         };
@@ -312,7 +264,6 @@ impl Capture {
 /// What remains to write once recording ends.
 struct Closing {
     frames: TraceWriter,
-    phases: TraceWriter,
     summary: serde_json::Value,
     dir: PathBuf,
 }
@@ -322,7 +273,6 @@ impl Closing {
     /// and whole, so its presence means the profile is complete.
     fn complete(mut self, threads: BTreeMap<String, ThreadTotal>) {
         let _ = self.frames.close();
-        let _ = self.phases.close();
         let mut threads = threads.into_iter().collect::<Vec<_>>();
         threads.sort_by_key(|(_, total)| std::cmp::Reverse(total.cpu_us));
         let threads = threads
