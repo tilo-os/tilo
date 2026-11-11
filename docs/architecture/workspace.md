@@ -28,9 +28,12 @@ grants and history name members, never devices.
 the device key is its iroh `EndpointId`. Pairing brings the identity to a new
 device; any of the person's devices can pair another, and the devices that hold
 the identity key approve it. Revocations travel in the same hellos as
-certificates and win over them. Another person's device is never admitted
-through pairing; it comes in through an invitation to a workspace, as that
-person's device.
+certificates and win over them. Each device lists the certificates it holds in
+a record of the person's own store, which only their devices are handed, so
+every device comes to know the others whichever of them it paired with; a
+certificate read there is checked as one a device shows for itself. Another
+person's device is never admitted through pairing; it comes in through an
+invitation to a workspace, as that person's device.
 
 **Each device has a role in each workspace it holds:**
 

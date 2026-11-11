@@ -14,6 +14,12 @@
 //! of every document it holds. Then it carries every write this device
 //! publishes while the link lasts. Whoever holds a document can hand over its
 //! whole state, so a device added later catches up from any of its siblings.
+//!
+//! The store's own record of the person's devices travels the same way, to a
+//! device the store already holds a certificate of and to no other: it is
+//! published again whenever the certificates this device holds move, so a
+//! device learns of the person's other devices from whichever of them it
+//! meets.
 
 // Nothing compiled for the web dials the person's own store yet: the page's
 // session opens its links with its own wiring.
@@ -174,7 +180,28 @@ impl PersonalSync {
         if changed {
             self.published(self.0.store.read(super::PersonalStore::hello));
         }
+        self.publish_devices();
         Ok(changed)
+    }
+
+    /// Send the record of the person's devices to every open link whose
+    /// device is one of them, when the certificates this device holds moved
+    /// since it last was: what a sibling that never met those devices learns
+    /// of them from.
+    fn publish_devices(&self) {
+        let update = self
+            .0
+            .store
+            .write(|store| store.take_devices_update(&self.0.key, SystemTime::now()));
+        match update {
+            Ok(Some(message)) => {
+                self.published(message);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(%error, "the record of the person's devices was not published");
+            }
+        }
     }
 
     fn published(&self, message: NeighbourMsg) -> NeighbourMsg {
@@ -219,6 +246,9 @@ impl PersonalSync {
     #[cfg(not(target_arch = "wasm32"))]
     async fn run(&self, connection: &Connection) -> Result<(), String> {
         let remote = *connection.remote_id().as_bytes();
+        // What this device holds of the person's devices is in their record
+        // before the catch-up is taken from it.
+        self.publish_devices();
         // Subscribe before taking the catch-up, so a write published in
         // between is sent after it rather than lost.
         let live = self.0.outgoing.subscribe();
@@ -228,7 +258,13 @@ impl PersonalSync {
             .await
             .map_err(|error| error.to_string())?;
         let receiving = self.receive_all(remote, connection);
-        let sending = send_all(send, remote, catch_up, live);
+        // The record of the person's devices goes only to a device the
+        // store holds a certificate of by the time it is published.
+        let sending = send_all(send, remote, catch_up, live, |message| {
+            self.0
+                .store
+                .read(|store| store.hands(message, &remote, SystemTime::now()))
+        });
         tokio::select! {
             result = receiving => result,
             result = sending => result,
@@ -266,6 +302,9 @@ impl PersonalSync {
             if self.publish_refusals() {
                 self.0.changed.send_modify(bump);
             }
+            // A device this one just met, or learned of, is one its other
+            // siblings may lack: their record is sent with it.
+            self.publish_devices();
             match admitted {
                 Ok(outcome) => {
                     if outcome.changed || outcome.metadata_changed {
@@ -306,6 +345,10 @@ fn admitted_frame(message: &NeighbourMsg) -> Option<AdmittedFrame> {
     else {
         return None;
     };
+    // The record of the person's devices is the store's own: no app has it.
+    if super::PersonalStore::is_devices_record(app_id, record_id) {
+        return None;
+    }
     Some(AdmittedFrame {
         app: app_id.clone(),
         record: record_id.clone(),

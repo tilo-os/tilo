@@ -54,12 +54,13 @@ pub(crate) fn from_device(message: &NeighbourMsg, device: [u8; 32]) -> bool {
 }
 
 /// Write `catch_up`, then every message published live that `remote` did not
-/// send, to `send`.
+/// send and that `hands` says is `remote`'s to be sent, to `send`.
 pub(crate) async fn send_all<W: AsyncWrite + Unpin>(
     send: W,
     remote: [u8; 32],
     catch_up: Vec<NeighbourMsg>,
     mut live: broadcast::Receiver<NeighbourMsg>,
+    hands: impl Fn(&NeighbourMsg) -> bool,
 ) -> Result<(), String> {
     let mut send = send;
     for message in &catch_up {
@@ -67,7 +68,7 @@ pub(crate) async fn send_all<W: AsyncWrite + Unpin>(
     }
     loop {
         match live.recv().await {
-            Ok(message) if from_device(&message, remote) => {}
+            Ok(message) if from_device(&message, remote) || !hands(&message) => {}
             Ok(message) => write_message(&mut send, &message).await?,
             Err(broadcast::error::RecvError::Lagged(_)) => {
                 return Err("the link fell behind the device's changes".into());
