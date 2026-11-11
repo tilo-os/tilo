@@ -2240,12 +2240,6 @@ impl Worker {
         let appearance = self
             .admit_appearance(workspace_id, caller, request)
             .map_err(Outcome::Rejected)?;
-        if let Some(output) = self
-            .try_registered_read(workspace_id, caller, request)
-            .map_err(|error| *error)?
-        {
-            return Ok((output, None));
-        }
         if let Some((named, app)) = application_provider(&request.target.provider) {
             return self
                 .show_on_desk(workspace_id, caller, (named, app), request)
@@ -2281,6 +2275,22 @@ impl Worker {
             .ok_or_else(unknown_action)?;
         let target = &self.with_record_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
+        // What the record publishes, its own door runs. What only its
+        // committed source publishes — a canonical read of it — is asked of
+        // that source, which reads the record and opens a worker for it: an
+        // action the record publishes never pays for that.
+        let holder = self.holder_of(&route);
+        let published_here = self
+            .mounted
+            .get(&holder)
+            .is_some_and(|mounted| mounted.app.descriptor(&target.address).is_some());
+        if !published_here
+            && let Some(output) = self
+                .try_registered_read(workspace_id, caller, request)
+                .map_err(|error| *error)?
+        {
+            return Ok((output, None));
+        }
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
             // Sharing asks the record for everything it lists, which is what
@@ -2663,7 +2673,7 @@ impl Worker {
             .map_err(|error| refused(error.to_string()))?;
         if let (Some(permissions), Some(mutation)) = (&permissions, &genesis) {
             let unwritable =
-                bounded::refused_writes(permissions, (app, None), None, mutation, false)
+                bounded::refused_writes(permissions, (app, None), None, mutation, (None, false))
                     .map_err(|reason| commit_failed(reason, false))?;
             if !unwritable.is_empty() {
                 return Err(Outcome::Rejected(ActionHostError::NotPermitted));

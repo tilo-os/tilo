@@ -182,6 +182,9 @@ fn key_of(prop: &automerge::Prop) -> String {
     }
 }
 
+/// The keys a change writes, as its record's replica reports them.
+pub(super) type WrittenKeys = Result<Vec<Vec<String>>, String>;
+
 /// The storage keys `mutation` writes at, each top down to what it put or
 /// deleted, in a record whose changes so far are `before`.
 fn written_keys(
@@ -229,11 +232,12 @@ pub(super) fn refused_writes(
     (app, declared): (&str, Option<&str>),
     before: Option<&[u8]>,
     mutation: &DocumentMutation,
-    confirmed: bool,
+    (written, confirmed): (Option<WrittenKeys>, bool),
 ) -> Result<Vec<TreePath>, String> {
     let mut refused = Vec::new();
     let mut seen = HashSet::new();
-    for keys in written_keys(before, mutation)? {
+    let written = written.unwrap_or_else(|| written_keys(before, mutation));
+    for keys in written? {
         let node = written_node(app, &keys, declared);
         if !seen.insert(node.clone()) {
             continue;
@@ -760,13 +764,24 @@ impl Worker {
             .map_err(Outcome::Rejected)?;
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
         for (changed, mutation) in &taken {
-            let before = state.document(changed).ok().map(|(bytes, _)| bytes);
+            // What it wrote, from the record's own replica: neither the record
+            // nor its history is read for what one change touched.
+            let written = reads::record_id(&changed.record).ok().and_then(|record| {
+                self.mounted
+                    .get(&holder)
+                    .and_then(|mounted| mounted.app.changed_keys(&record, mutation))
+            });
+            let before = if written.is_none() {
+                state.document(changed).ok().map(|(bytes, _)| bytes)
+            } else {
+                None
+            };
             let refused = refused_writes(
                 &permissions,
                 (&changed.app_id, declared.as_deref()),
                 before.as_deref(),
                 mutation,
-                confirmed,
+                (written, confirmed),
             )
             .map_err(|reason| super::commit_failed(reason, false))?;
             if !refused.is_empty() {
@@ -940,7 +955,14 @@ mod tests {
             doc.put(automerge::ROOT, "title", "Renamed").unwrap();
         });
         let refused = |role, mutation: &DocumentMutation| {
-            refused_writes(&as_role(role), (APP, None), Some(&before), mutation, false).unwrap()
+            refused_writes(
+                &as_role(role),
+                (APP, None),
+                Some(&before),
+                mutation,
+                (None, false),
+            )
+            .unwrap()
         };
         assert!(refused(Role::Commenter, &commented).is_empty());
         assert_eq!(
@@ -964,7 +986,7 @@ mod tests {
                 (APP, Some(policy::roles::COMMENTS_FIELD)),
                 Some(&before),
                 &retitled,
-                false,
+                (None, false),
             )
             .unwrap()
         };

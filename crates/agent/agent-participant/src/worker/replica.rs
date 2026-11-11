@@ -382,6 +382,37 @@ impl ConfinedReplica {
         }
     }
 
+    /// The keys `mutation` writes in `record`, as the worker holds that record
+    /// now, or `None` when it holds none of it.
+    pub fn changed_keys(
+        &self,
+        record: &ui::record::RecordId,
+        mutation: &DocumentMutation,
+    ) -> Option<Result<Vec<Vec<String>>, String>> {
+        let (snapshot, bytes) = match mutation {
+            DocumentMutation::Snapshot(bytes) => (true, bytes.clone()),
+            DocumentMutation::Incremental(bytes) => (false, bytes.clone()),
+        };
+        let answered = self.call(
+            &mut self.lock(),
+            &Request::ChangedKeys {
+                record: record.as_str().to_owned(),
+                snapshot,
+                bytes,
+            },
+        );
+        match answered {
+            Ok(Reply::Keys(text)) => {
+                match serde_json::from_str::<Option<Vec<Vec<String>>>>(&text) {
+                    Ok(keys) => keys.map(Ok),
+                    Err(error) => Some(Err(error.to_string())),
+                }
+            }
+            Ok(Reply::Failed(reason)) => Some(Err(reason)),
+            _ => None,
+        }
+    }
+
     /// The one operation `address` names, as [`Self::survey`] lists it, or
     /// `None`: what a host that already knows what it runs asks its record
     /// for, rather than the whole listing.

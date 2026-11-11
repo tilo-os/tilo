@@ -136,6 +136,23 @@ pub struct ChatApp {
     /// reactors, mentioned people, and voice participants in its channels.
     pub(crate) users: Vec<User>,
     pub(crate) messages: Vec<Message>,
+    /// The rows each held part of the messages chain was read as, with the
+    /// part state they were read from: a part whose state is the same
+    /// [`Rc`](std::rc::Rc) as here changed nothing since, and its rows are
+    /// the ones already read. A chat that grows holds thousands of messages in
+    /// one part, and a reload reads the parts that changed and no others.
+    pub(crate) rows_by_part: std::collections::BTreeMap<
+        u64,
+        (
+            std::rc::Rc<Vec<Message>>,
+            std::rc::Rc<crate::parts::ChatPart>,
+        ),
+    >,
+    /// Top-level messages each channel has in each part held, as that part's
+    /// rows were read: what an unread count sums, instead of reading every
+    /// part of the chain.
+    pub(crate) counts_by_part:
+        std::collections::BTreeMap<u64, std::collections::BTreeMap<String, usize>>,
     /// Whole-document snapshots used by global search. The visible `messages`
     /// are the open channel's.
     pub(crate) search_messages: Vec<Message>,
@@ -678,6 +695,8 @@ impl ChatApp {
             categories: Vec::new(),
             users: Vec::new(),
             messages: Vec::new(),
+            rows_by_part: std::collections::BTreeMap::new(),
+            counts_by_part: std::collections::BTreeMap::new(),
             search_messages: Vec::new(),
             search_users: Vec::new(),
             reports: Vec::new(),

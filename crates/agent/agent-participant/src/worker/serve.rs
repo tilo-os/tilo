@@ -221,6 +221,30 @@ impl Worker {
         };
         match request {
             Request::Survey => descriptors(&replica.survey()),
+            Request::ChangedKeys {
+                record,
+                snapshot,
+                bytes,
+            } => {
+                let Some(record) = parse_record(&record) else {
+                    return Reply::Failed(format!("{record} is not a record id"));
+                };
+                let mutation = if snapshot {
+                    DocumentMutation::Snapshot(bytes)
+                } else {
+                    DocumentMutation::Incremental(bytes)
+                };
+                match replica.changed_keys(&record, &mutation) {
+                    Some(Ok(keys)) => match serde_json::to_string(&keys) {
+                        Ok(text) => Reply::Keys(text),
+                        Err(error) => Reply::Failed(error.to_string()),
+                    },
+                    Some(Err(reason)) => Reply::Failed(reason),
+                    // A record it holds none of: the host reads that one as it
+                    // always did.
+                    None => Reply::Keys("null".into()),
+                }
+            }
             Request::Resolve { address } => match decode(&address) {
                 Ok(address) => {
                     descriptors(&replica.descriptor(&address).into_iter().collect::<Vec<_>>())

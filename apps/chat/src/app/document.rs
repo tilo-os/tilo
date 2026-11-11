@@ -113,16 +113,28 @@ impl ChatApp {
             c.unread = if c.id == self.active_channel {
                 0
             } else {
-                chat.unread(&held, &c.id, &self.me.id)
+                let mark = chat.read_mark(&c.id, &self.me.id);
+                let unread = held.unread_counted(
+                    &ui::tilo_resource::Id::from_raw(c.id.clone()),
+                    mark,
+                    &self.counts_by_part,
+                );
+                u32::try_from(unread).unwrap_or(u32::MAX)
             };
         }
-        // Read every channel's messages once per reload: the open channel,
-        // search and the workspace's people directory all project from them
-        // (reading them three times dominated typing with a long history).
+        // The parts that changed are read, and the parts that did not keep the
+        // rows they were read as: a chat of ten thousand messages costs a
+        // reload what the one part it posted to holds, not all of it.
+        let parts = self.read_parts();
         let per_channel: Vec<(Id, Vec<Message>)> = self
             .channels
             .iter()
-            .map(|channel| (channel.id.clone(), chat.message_rows(&held, &channel.id)))
+            .map(|channel| {
+                (
+                    channel.id.clone(),
+                    chat.rows_from_parts(&parts, &held, &channel.id),
+                )
+            })
             .collect();
         self.note_mentions(&per_channel);
         self.messages_revision += 1;
@@ -185,6 +197,49 @@ impl ChatApp {
         // the record says so, not at the window's next settled frame,
         // which an idle window may not have for a long while.
         self.follow_share_grants();
+    }
+
+    /// Each held part of the messages chain as its rows, oldest first,
+    /// re-reading the parts whose state changed since they were last read and
+    /// no others. A part's rows and its channels' counts are what the open
+    /// channel, search, the unread badges and the mention scan project from.
+    fn read_parts(&mut self) -> Vec<(u64, std::rc::Rc<Vec<Message>>)> {
+        let held: Vec<(u64, std::rc::Rc<crate::parts::ChatPart>)> = self
+            .chain
+            .as_ref()
+            .map(ui::framework::Chain::parts)
+            .unwrap_or_default();
+        self.rows_by_part
+            .retain(|index, _| held.iter().any(|(held, _)| held == index));
+        self.counts_by_part
+            .retain(|index, _| held.iter().any(|(held, _)| held == index));
+        let mut parts = Vec::with_capacity(held.len());
+        for (index, state) in held {
+            if let Some((rows, seen)) = self.rows_by_part.get(&index)
+                && std::rc::Rc::ptr_eq(seen, &state)
+            {
+                parts.push((index, std::rc::Rc::clone(rows)));
+                continue;
+            }
+            let rows: Vec<Message> = state
+                .messages
+                .iter()
+                .map(|(id, message)| crate::projection::row_of(id, message))
+                .collect();
+            let counts = state
+                .counts()
+                .into_iter()
+                .filter_map(|(channel, count)| {
+                    Some((channel, usize::try_from(count).ok().filter(|one| *one > 0)?))
+                })
+                .collect();
+            let rows = std::rc::Rc::new(rows);
+            self.rows_by_part
+                .insert(index, (std::rc::Rc::clone(&rows), state));
+            self.counts_by_part.insert(index, counts);
+            parts.push((index, rows));
+        }
+        parts
     }
 
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
