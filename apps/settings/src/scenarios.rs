@@ -122,7 +122,6 @@ const NETWORK_SCENARIOS: [&str; 19] = [
 /// Billing for an account new to its provider: no card yet, nothing used.
 const BILLING_NEW: &str = "billing-new";
 /// Devices & sync with a device's row open, asking whether to remove it.
-const DEVICES_REMOVE: &str = "devices-remove";
 /// Speakers' room layout step: the first speaker selected, a speaker
 /// chosen in the picker (open), and a speaker held mid drag on a guide.
 const SPEAKERS_LAYOUT: &str = "speakers-layout";
@@ -190,7 +189,6 @@ pub fn names() -> &'static [&'static str] {
                 NETWORK_VPN_DEVICES,
                 NETWORK_VPN_KILL_SWITCH,
                 NETWORK_VPN_BLOCKING,
-                DEVICES_REMOVE,
                 BILLING_NEW,
                 SPEAKERS_LAYOUT,
                 SPEAKERS_LAYOUT_PICKED,
@@ -253,6 +251,9 @@ pub struct CaptureScene {
     pub storage_capacity: Option<os_actions::DiskCapacity>,
     #[cfg(feature = "tilo-os")]
     pub remembered_drives: Vec<ntfs_mount::protocol::RememberedDrive>,
+    /// The devices, agents and asking devices the Devices and access
+    /// captures show in place of the host's.
+    pub access: Option<crate::panes::devices_access::AccessSample>,
     /// A workspace bridged to Discord, and where the person's account there
     /// stands, for the linked-accounts captures.
     pub linked_account: Option<ui::linked_accounts::LinkState>,
@@ -265,8 +266,6 @@ pub struct CaptureScene {
     /// The person's account with their hosting provider, as a stand-in for
     /// the host's answer, for the billing captures.
     pub billing: Option<ui::tilo_actions::remote::host_account::HostAccount>,
-    /// Whether the capture asks about removing the first other device.
-    pub device_removal: bool,
     pub network: Option<NetworkSample>,
     /// The modem the mobile captures show; `None` for none.
     pub mobile: Option<MobileSample>,
@@ -440,14 +439,14 @@ pub fn prepare(fixture: &mut Fixture<Settings>) {
         } else {
             Vec::new()
         },
+        access: access_fixture(fixture.scenario()),
         linked_account: capture_link_state(fixture.scenario()),
-        device_removal: fixture.scenario() == Some(DEVICES_REMOVE),
         home_relay: (fixture.scenario() == Some(Category::DeviceMesh.slug()))
             .then(home_relay_fixture),
         billing: billing_fixture(fixture.scenario()),
         fleet_devices: if matches!(
             fixture.scenario(),
-            Some(scenario) if scenario == Category::DeviceMesh.slug() || scenario == DEVICES_REMOVE
+            Some(scenario) if scenario == Category::DeviceMesh.slug()
         ) {
             fleet_fixture()
         } else {
@@ -535,6 +534,92 @@ fn home_relay_fixture() -> ui::tilo_actions::remote::home_relay_hosting::HomeRel
             workspace("4d6f1a2c-0000-4000-8000-000000000003", "Taxes", false),
         ],
     }
+}
+
+/// A person's laptop, phone and browser, a phone they lost, two agents
+/// and a script's key, and a new tablet asking to be them: what the
+/// Devices and access capture shows.
+pub(crate) fn access_fixture(
+    scenario: Option<&str>,
+) -> Option<crate::panes::devices_access::AccessSample> {
+    use crate::device_fleet::DeviceView;
+    use crate::panes::devices_access::{AccessSample, Asking};
+    use ui::tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
+    const DAY: i64 = 86_400_000;
+    const NOW: i64 = 1_794_400_000_000;
+    if scenario != Some(Category::DevicesAccess.slug()) {
+        return None;
+    }
+    let device = |n: u8, label: &str, current, revoked| DeviceView {
+        label: label.into(),
+        key: [n; 32],
+        fingerprint: format!("{n:02X} {n:02X} {n:02X} {n:02X} {n:02X} {n:02X}"),
+        current,
+        revoked,
+        can_host: false,
+    };
+    Some(AccessSample {
+        devices: vec![
+            device(1, "Framework 16", true, false),
+            device(2, "Pixel 9 phone", false, false),
+            device(3, "Tilo on the web", false, false),
+            device(4, "Old phone", false, true),
+        ],
+        door: Door {
+            endpoint: "https://mcp.tilo.sh".into(),
+            grants: vec![
+                Grant {
+                    id: "aa".repeat(32),
+                    agent: "Claude Code".into(),
+                    reach: Reach::Account,
+                    granted_ms: NOW - 9 * DAY,
+                    last_ms: Some(NOW - 3_600_000),
+                    runs: vec![Run {
+                        name: "Claude Code #2".into(),
+                        started_ms: NOW - 3_600_000,
+                    }],
+                    runs_on: "Framework 16".into(),
+                    expires_ms: Some(NOW + 81 * DAY),
+                    browser_pages: true,
+                    script_key: false,
+                },
+                Grant {
+                    id: "bb".repeat(32),
+                    agent: "ChatGPT".into(),
+                    reach: Reach::Workspace {
+                        id: "6f1c0a52-8e9d-4c1b-9d2e-0c8a7b5e4f31".into(),
+                        name: "Launch plan".into(),
+                    },
+                    granted_ms: NOW - 2 * DAY,
+                    last_ms: Some(NOW - DAY),
+                    runs: Vec::new(),
+                    runs_on: "mcp.tilo.sh".into(),
+                    expires_ms: Some(NOW + 28 * DAY),
+                    browser_pages: false,
+                    script_key: false,
+                },
+                Grant {
+                    id: "cc".repeat(32),
+                    agent: "Nightly export".into(),
+                    reach: Reach::Account,
+                    granted_ms: NOW - 30 * DAY,
+                    last_ms: None,
+                    runs: Vec::new(),
+                    runs_on: "build-server".into(),
+                    expires_ms: None,
+                    browser_pages: false,
+                    script_key: true,
+                },
+            ],
+            workspaces: Vec::new(),
+        },
+        asking: vec![Asking {
+            ask: "dd".repeat(32),
+            label: "Safari on iPad".into(),
+            code: "482 913".into(),
+            via: "Pixel 9 phone".into(),
+        }],
+    })
 }
 
 /// Tilo Cloud selling Pro: for `billing`, the account on it with a card, most of a working week
@@ -895,7 +980,6 @@ pub fn staged(scenario: Option<&str>) -> Staged {
             | NETWORK_MOBILE_LOCKED
             | NETWORK_MOBILE_PUK,
         ) => Staged::Pane(Category::Network),
-        Some(DEVICES_REMOVE) => Staged::Pane(Category::DeviceMesh),
         Some(BILLING_NEW) => Staged::Pane(Category::Billing),
         Some(SPEAKERS_LAYOUT | SPEAKERS_LAYOUT_PICKED | SPEAKERS_LAYOUT_DRAG) => {
             Staged::Pane(Category::Speakers)
@@ -1051,7 +1135,7 @@ mod tests {
     fn scenarios_name_their_pane_and_size() {
         assert_eq!(
             names().len(),
-            Category::ALL.len() + 47 + CODEC_SCENARIOS.len() + WINDOWS_SCENARIOS.len()
+            Category::ALL.len() + 46 + CODEC_SCENARIOS.len() + WINDOWS_SCENARIOS.len()
         );
         assert_eq!(
             staged(Some(DISPLAYS_KEYBOARD)),
@@ -1082,10 +1166,6 @@ mod tests {
         assert_eq!(
             staged(Some(PERMISSIONS_ALL)),
             Staged::Pane(Category::Permissions)
-        );
-        assert_eq!(
-            staged(Some(DEVICES_REMOVE)),
-            Staged::Pane(Category::DeviceMesh)
         );
         assert_eq!(staged(Some(BILLING_NEW)), Staged::Pane(Category::Billing));
         for scenario in CODEC_SCENARIOS {

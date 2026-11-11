@@ -6,10 +6,9 @@ use tilo_relay_protocol::{DeviceRole, ReplicationIntent};
 use ui::widget::{Button, ButtonRole, DisclosureRow, Dropdown, EditableLabel, Widget};
 
 use super::{
-    DeviceMeshEffect, Page, PairingTarget, REVOKE_REASONS, RelayRuntimeStatus, home_server_row,
-    last_seen_label, mesh_status_shown, peer_health_badge, peer_key, personal_device_key,
-    personal_device_row, replication_description, replication_shown, revoke_shown, role_shown,
-    runtime_status_tone, shows_advanced_services,
+    DeviceMeshEffect, Page, PairingTarget, RelayRuntimeStatus, home_server_row, last_seen_label,
+    mesh_status_shown, peer_health_badge, peer_key, personal_device_key, replication_description,
+    replication_shown, role_shown, runtime_status_tone, shows_advanced_services,
 };
 use crate::effects::effect;
 use crate::i18n::{t, t_args};
@@ -410,19 +409,31 @@ impl Page<'_> {
         ]
     }
 
-    /// Removing a device: a destructive button that asks first, in place.
-    /// Asked, it says what removing does, takes the reason a trusted
-    /// device's revocation signs, and offers Remove beside Cancel.
+    /// Removing a device. A home server asks first, in place, and offers
+    /// Remove beside Cancel. A personal device's access ends where every
+    /// key acting as the person is managed: its button opens Devices and
+    /// access, which revokes it with the reason the person gives.
     fn removal_rows(&self, entry: &DeviceEntry<'_>) -> Vec<provider_settings_ui::widgets::Item> {
-        let home = entry.peer.is_some();
-        // The device's own row offers what removing it does: the personal
-        // device's, else the home server's.
-        let live = match (entry.personal, entry.peer) {
-            (Some(device), _) => personal_device_row(device),
-            (None, Some(peer)) => home_server_row(peer),
-            (None, None) => return Vec::new(),
-        }
-        .into_resource();
+        let Some(peer) = entry.peer else {
+            if entry.personal.is_none() {
+                return Vec::new();
+            }
+            let open = self.bind_invocation(
+                Button::new(
+                    &personal_device_key("manage-access", &entry.key),
+                    &t("mesh-manage-access"),
+                ),
+                crate::effects::NavigationEffect::OpenPane {
+                    pane: crate::categories::Category::DevicesAccess.slug().to_owned(),
+                },
+            );
+            return vec![provider_settings_ui::widgets::row(Box::new(
+                ui::widget::Row::new()
+                    .push(Box::new(open))
+                    .push(Box::new(ui::widget::Spacer::new())),
+            ))];
+        };
+        let live = home_server_row(peer).into_resource();
         if self.removing.as_deref() != Some(entry.key.as_str()) {
             return vec![provider_settings_ui::widgets::row(Box::new(
                 ui::widget::Row::new()
@@ -430,11 +441,7 @@ impl Page<'_> {
                         self.bind_row(
                             Button::new(
                                 &peer_key("review-remove", &entry.key),
-                                &t(if home {
-                                    "mesh-remove-home"
-                                } else {
-                                    "mesh-remove-device"
-                                }),
+                                &t("mesh-remove-home"),
                             )
                             .role(ButtonRole::Destructive),
                             &live,
@@ -446,60 +453,26 @@ impl Page<'_> {
                     .push(Box::new(ui::widget::Spacer::new())),
             ))];
         }
-        let confirm: Button = if let Some(peer) = entry.peer {
-            self.bind_row(
-                Button::new(
-                    &peer_key("remove", &peer.device_node_id),
-                    &t("mesh-remove-home-confirm"),
-                )
-                .role(ButtonRole::Destructive),
-                &home_server_row(peer).into_resource(),
-                DeviceMeshEffect::RemoveHomeServer {
-                    device: peer.device_node_id.clone(),
-                },
+        let confirm = self.bind_row(
+            Button::new(
+                &peer_key("remove", &peer.device_node_id),
+                &t("mesh-remove-home-confirm"),
             )
-        } else {
-            let device = entry.key.clone();
-            let reason = self.removal_reason.clone();
-            self.bind_on_row(
-                &live,
-                Button::new(
-                    &personal_device_key("revoke", &entry.key),
-                    &t("mesh-remove-device-confirm"),
-                )
-                .role(ButtonRole::Destructive),
-                effect(DeviceMeshEffect::REVOKE_DEVICE)
-                    .map(move |()| (device.clone(), reason.with(Clone::clone))),
-            )
-        };
+            .role(ButtonRole::Destructive),
+            &live,
+            DeviceMeshEffect::RemoveHomeServer {
+                device: peer.device_node_id.clone(),
+            },
+        );
         let cancel = self.bind_invocation(
             Button::new(&peer_key("cancel-remove", &entry.key), &t("mesh-cancel")),
             DeviceMeshEffect::CancelRemoval,
         );
-        let mut out = Vec::new();
-        if !home {
-            out.push(provider_settings_ui::widgets::setting_row(
-                &t("mesh-why-ending"),
-                Box::new(
-                    Dropdown::from_state(
-                        REVOKE_REASONS.iter().map(|id| revoke_shown(id)).collect(),
-                        &self.removal_reason,
-                    )
-                    .with_id(&personal_device_key("reason", &entry.key))
-                    .with_accessible_name(t("mesh-why-ending")),
-                ),
-            ));
-        }
-        out.push(provider_settings_ui::widgets::item_row(
+        vec![provider_settings_ui::widgets::item_row(
             &t_args("mesh-remove-ask", &[("label", entry.label.as_str().into())]),
             Vec::new(),
-            &[t(if home {
-                "mesh-files-stay-desc"
-            } else {
-                "mesh-why-ending-desc"
-            })],
+            &[t("mesh-files-stay-desc")],
             vec![confirm, cancel],
-        ));
-        out
+        )]
     }
 }

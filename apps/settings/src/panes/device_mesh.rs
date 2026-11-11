@@ -14,7 +14,7 @@ use ui::time::{Duration, Instant, SystemTime};
 use provider_settings_ui::bound::SettingRows as _;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
 use ui::LocalState;
-use ui::framework::{Actions, EffectAnswer, EffectCx, EffectReply, Effected, LiveRow, ViewCx};
+use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, LiveRow, ViewCx};
 use ui::tilo_resource::{self, Effect};
 use ui::widget::{DisclosureGroup, Element};
 
@@ -78,9 +78,6 @@ const ROLE_SERVER: &str = "Always-on server";
 const REPLICATION_ON_DEMAND: &str = "On demand";
 const REPLICATION_WORKSPACE: &str = "Workspace state";
 const REPLICATION_FULL: &str = "Full workspace copy";
-const REVOKE_REASONS: &[&str] = &[DEFAULT_REVOKE_REASON, "Lost", "Stolen", "Compromised"];
-/// The reason a removal starts with: the device is no longer used.
-const DEFAULT_REVOKE_REASON: &str = "Retired";
 
 fn role_shown(role: DeviceRole) -> String {
     t(match role {
@@ -127,15 +124,6 @@ fn replication_description(intent: &ReplicationIntent) -> String {
         ReplicationIntent::WorkspaceOnly => "mesh-repl-workspace-desc",
         ReplicationIntent::OnDemand | ReplicationIntent::Resources(_) => "mesh-repl-demand-desc",
         ReplicationIntent::FullWorkspace => "mesh-repl-full-desc",
-    })
-}
-
-fn revoke_shown(id: &str) -> String {
-    t(match id {
-        "Lost" => "mesh-revoke-lost",
-        "Stolen" => "mesh-revoke-stolen",
-        "Compromised" => "mesh-revoke-compromised",
-        _ => "mesh-revoke-retired",
     })
 }
 
@@ -416,14 +404,6 @@ pub enum DeviceMeshEffect {
     /// Look for a new personal device nearby, then approve the one found.
     #[effect(label = "Add personal device")]
     AddPersonalDevice,
-    /// End a personal device's access to the person's workspaces.
-    #[effect(job, row, destructive, label = "Revoke access")]
-    RevokeDevice {
-        #[param("The device's key, in hex")]
-        device: String,
-        #[param("Retired, Lost, Stolen or Compromised", choices = REVOKE_REASONS.iter().copied())]
-        reason: String,
-    },
     /// Rename a home server.
     #[effect(row)]
     RenameHomeServer {
@@ -486,13 +466,6 @@ pub(crate) fn answer(
         .ok_or_else(crate::area::missing)?
         .model();
     let mut model = model.borrow_mut();
-    // A revocation is signed by the host; its caller hears how it ended.
-    if let DeviceMeshEffect::RevokeDevice { device, reason } = &effect {
-        let device = model.revocable(device)?;
-        model.start_revoke(&device, reason, Some(cx.reply()));
-        model.removing = None;
-        return Ok(Effected::Pending);
-    }
     // The host carries out a home relay choice; its caller hears how.
     if let DeviceMeshEffect::SetHomeRelayHosting { workspace, on } = &effect {
         model.choose_home_relay(workspace, *on, Some(cx.reply()))?;
@@ -579,15 +552,6 @@ impl DeviceMeshArea {
                     Ok(devices) => model.personal_devices = devices,
                     Err(error) => model.personal_device_error = Some(error),
                 }
-                if scene.device_removal
-                    && let Some(other) = model
-                        .personal_devices
-                        .iter()
-                        .find(|device| !device.current && !device.can_host)
-                {
-                    let device = hex::encode(other.key);
-                    model.follow_removal(&DeviceMeshEffect::ReviewRemoval { device });
-                }
             }
             Rc::new(RefCell::new(model))
         })
@@ -644,55 +608,22 @@ impl DeviceMeshArea {
         self.model.get().is_some()
     }
 
-    /// One row per personal device and home server, and per workspace
-    /// the home relay may host.
+    /// One row per home server, and per workspace the home relay may host.
+    /// The person's devices are Devices and access's rows.
     pub(crate) fn rows(&self) -> Vec<LiveRow> {
         let model = self.model().borrow();
-        let devices = model
-            .personal_devices
+        model
+            .home_peers
             .iter()
-            .filter(|device| !device.current && !device.revoked)
-            .map(personal_device_row);
-        let servers = model.home_peers.iter().map(home_server_row);
-        devices
-            .chain(servers)
+            .map(home_server_row)
             .chain(model.home_relay_rows())
             .collect()
     }
 }
 
-/// The live row of the personal device `key` (hex).
-fn personal_device_row_id(key: &str) -> String {
-    format!("settings.personal-device:{key}")
-}
-
 /// The live row of the home server `node`.
 fn home_server_row_id(node: &str) -> String {
     format!("settings.home-server:{node}")
-}
-
-/// A trusted personal device's row: asking whether to remove it, and
-/// ending its access for the reason its caller gives.
-fn personal_device_row(device: &crate::device_fleet::DeviceView) -> LiveRow {
-    let key = hex::encode(device.key);
-    LiveRow::new(
-        personal_device_row_id(&key),
-        "settings.personal-device",
-        device.label.clone(),
-    )
-    .operation(
-        SettingsEffect::from(DeviceMeshEffect::ReviewRemoval {
-            device: key.clone(),
-        })
-        .bound(),
-    )
-    .operation(
-        SettingsEffect::from(DeviceMeshEffect::RevokeDevice {
-            device: key,
-            reason: DEFAULT_REVOKE_REASON.into(),
-        })
-        .bound_asking(&["reason"]),
-    )
 }
 
 /// A home server's row: renaming it to the name its caller gives, asking
@@ -743,8 +674,6 @@ pub struct DeviceMeshModel {
     device_rows: DisclosureGroup,
     /// The device whose removal is being asked about, by its row's key.
     removing: Option<String>,
-    /// The reason chosen for the revocation being asked about.
-    removal_reason: ui::LocalState<String>,
     roaming_provenance_path: Option<PathBuf>,
     roaming_provenance_stamp: Option<SystemTime>,
     roaming_provenance: Option<RoamingProvenance>,
@@ -756,9 +685,6 @@ pub struct DeviceMeshModel {
     management_call: Option<(ui::InvocationCall, String)>,
     /// The host's answer to the device list, while it is asked.
     devices_call: Option<ui::InvocationCall>,
-    /// The revocation the host signs: its invocation, the device's name and
-    /// the caller waiting for it.
-    revoke_call: Option<RevokeCall>,
     next_peer_health: usize,
     apply_child: Option<bounded_command::AsyncCommand>,
     apply_queued: bool,
@@ -786,13 +712,6 @@ pub struct DeviceMeshModel {
     /// A home server's removal still waits to be delivered; it is retried
     /// with the health checks.
     removals_pending: bool,
-}
-
-/// A device revocation the host is signing.
-struct RevokeCall {
-    call: ui::InvocationCall,
-    label: String,
-    reply: Option<EffectReply>,
 }
 
 /// The device the host's discovery found, as its action answers it.
@@ -934,19 +853,6 @@ fn shown_roaming_provenance(read: ProvenanceRead) -> ProvenanceRead {
 
 fn load_roaming_provenance(path: Option<&std::path::Path>) -> ProvenanceRead {
     shown_roaming_provenance(read_roaming_provenance(path))
-}
-
-/// The reason the host's revocation takes for the label `label` shows.
-fn revocation_reason(label: &str) -> &'static str {
-    if label == "Lost" || label == t("mesh-revoke-lost") {
-        "lost"
-    } else if label == "Stolen" || label == t("mesh-revoke-stolen") {
-        "stolen"
-    } else if label == "Compromised" || label == t("mesh-revoke-compromised") {
-        "compromised"
-    } else {
-        "retired"
-    }
 }
 
 fn home_peer_health_path() -> PathBuf {
@@ -1151,7 +1057,6 @@ impl DeviceMeshModel {
             personal_device_error: None,
             device_rows: DisclosureGroup::new(),
             removing: None,
-            removal_reason: ui::LocalState::new(revoke_shown(DEFAULT_REVOKE_REASON)),
             roaming_provenance_path: read.roaming_provenance_path,
             roaming_provenance_stamp,
             roaming_provenance,
@@ -1161,7 +1066,6 @@ impl DeviceMeshModel {
             management_call: None,
             devices_call: None,
             home_relay: home_relay::HomeRelay::default(),
-            revoke_call: None,
             next_peer_health: 0,
             apply_child: None,
             apply_queued: false,
@@ -1237,11 +1141,6 @@ impl DeviceMeshModel {
                 self.approve_enrollment(PairingTarget::PersonalDevice);
                 false
             }
-            DeviceMeshEffect::RevokeDevice { device, reason } => {
-                let device = self.revocable(device)?;
-                self.start_revoke(&device, reason, None);
-                false
-            }
             DeviceMeshEffect::RenameHomeServer { device, name } => {
                 let peer = self.home_peer(device)?;
                 if !tilo_relay_protocol::valid_home_peer_label(name) {
@@ -1274,46 +1173,14 @@ impl DeviceMeshModel {
     fn follow_removal(&mut self, effect: &DeviceMeshEffect) {
         match effect {
             DeviceMeshEffect::ReviewRemoval { device } => {
-                self.removal_reason.set(revoke_shown(DEFAULT_REVOKE_REASON));
                 self.removing = Some(device.clone());
                 self.device_rows.open(device);
             }
-            DeviceMeshEffect::CancelRemoval
-            | DeviceMeshEffect::RevokeDevice { .. }
-            | DeviceMeshEffect::RemoveHomeServer { .. } => self.removing = None,
+            DeviceMeshEffect::CancelRemoval | DeviceMeshEffect::RemoveHomeServer { .. } => {
+                self.removing = None;
+            }
             _ => {}
         }
-    }
-
-    /// The trusted device `device` names, other than this one.
-    fn revocable(&self, device: &str) -> Result<crate::device_fleet::DeviceView, String> {
-        self.personal_devices
-            .iter()
-            .find(|known| hex::encode(known.key) == device && !known.current && !known.revoked)
-            .cloned()
-            .ok_or_else(|| "that device is no longer trusted here".to_string())
-    }
-
-    /// Ask the host to revoke `device` for the reason `reason` shows; the
-    /// answer, and `reply`'s, arrive in [`Self::poll_host_calls`].
-    fn start_revoke(
-        &mut self,
-        device: &crate::device_fleet::DeviceView,
-        reason: &str,
-        reply: Option<EffectReply>,
-    ) {
-        if let Some(previous) = self.revoke_call.take()
-            && let Some(reply) = previous.reply
-        {
-            reply.finish(Err("another revocation replaced it".into()));
-        }
-        self.revoke_call = Some(RevokeCall {
-            call: crate::device_fleet::revoke(&self.remote, &device.key, revocation_reason(reason)),
-            label: device.label.clone(),
-            reply,
-        });
-        self.load_status = format!("Revoking {}…", device.label);
-        self.changed = true;
     }
 
     /// Ask the host again which devices are trusted.
@@ -1327,7 +1194,6 @@ impl DeviceMeshModel {
     /// a home-server removal, once each settled.
     fn poll_host_calls(&mut self) {
         if self.devices_call.is_some()
-            || self.revoke_call.is_some()
             || self.management_call.is_some()
             || self.home_relay.waiting()
         {
@@ -1347,22 +1213,6 @@ impl DeviceMeshModel {
                 }
                 Err(error) => self.personal_device_error = Some(error),
             }
-            self.changed = true;
-        }
-        if let Some(answer) = self
-            .revoke_call
-            .as_ref()
-            .and_then(|revoke| crate::device_fleet::settled(&revoke.call))
-            && let Some(RevokeCall { label, reply, .. }) = self.revoke_call.take()
-        {
-            self.load_status = match &answer {
-                Ok(_) => format!("{label} can no longer access your workspaces"),
-                Err(error) => format!("{label} was not revoked: {error}"),
-            };
-            if let Some(reply) = reply {
-                reply.finish(answer);
-            }
-            self.refresh_personal_devices();
             self.changed = true;
         }
         if let Some(answer) = self
@@ -2873,39 +2723,14 @@ mod tests {
             );
         }
 
-        // Removing the phone asks first; Cancel keeps it.
-        let review = peer_key("review-remove", PHONE);
-        let confirm = personal_device_key("revoke", PHONE);
-        let has = |app: &mut TestApp<SettingsShell>, id: &str| {
-            test_ids(app.harness().root_widget())
-                .iter()
-                .any(|known| known == id)
-        };
-        assert!(has(&mut app, &review) && !has(&mut app, &confirm));
-        change_model(&mut app, |pane| {
-            pane.apply(&DeviceMeshEffect::ReviewRemoval {
-                device: PHONE.into(),
-            })
-        })
-        .unwrap();
+        // The phone's access ends where every key acting as the person is
+        // managed: its row opens Devices and access, and asks nothing here.
+        let manage = personal_device_key("manage-access", PHONE);
+        let ids = test_ids(app.harness().root_widget());
+        assert!(ids.contains(&manage), "{ids:?}");
         assert!(
-            has(&mut app, &confirm),
-            "asked, Remove device stands beside Cancel"
-        );
-        let asked = text(&mut app);
-        assert!(
-            asked
-                .iter()
-                .any(|line| line.contains("Remove Ada's Phone?")),
-            "{asked:#?}"
-        );
-        change_model(&mut app, |pane| {
-            pane.apply(&DeviceMeshEffect::CancelRemoval)
-        })
-        .unwrap();
-        assert!(
-            !has(&mut app, &confirm) && has(&mut app, &review),
-            "cancelled, nothing changed"
+            !ids.iter().any(|id| *id == peer_key("review-remove", PHONE)),
+            "{ids:?}"
         );
         assert_eq!(
             change_model(&mut app, |pane| pane.personal_devices.len()),
@@ -2913,36 +2738,29 @@ mod tests {
         );
     }
 
-    /// Removing a home server and revoking a device ask first, and only
-    /// what is paired is touched; pairing is single-flight.
+    /// Removing a home server asks first, and only what is paired is
+    /// touched; pairing is single-flight.
     #[test]
     fn device_removal_asks_first_and_pairing_is_single_flight() {
-        // Case `removal_and_revocation_ask_first_and_refuse_strangers`.
+        // Case `removal_asks_first_and_refuses_strangers`.
         {
-            for effect in [
-                DeviceMeshEffect::RemoveHomeServer {
-                    device: "11".repeat(32),
-                },
-                DeviceMeshEffect::RevokeDevice {
-                    device: "2a".repeat(32),
-                    reason: "Retired".into(),
-                },
-            ] {
-                let declaration = DeviceMeshEffect::declarations()
-                    .into_iter()
-                    .find(|declaration| declaration.id == effect.id())
-                    .unwrap();
-                assert_eq!(
-                    declaration.risk,
-                    ui::tilo_actions::RiskLevel::Destructive,
-                    "{} asks first",
-                    effect.id()
-                );
-                let dir = tempfile::tempdir().unwrap();
-                let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-                assert!(pane.apply(&effect).is_err(), "nothing unpaired is touched");
-                assert!(pane.management_child.is_none());
-            }
+            let effect = DeviceMeshEffect::RemoveHomeServer {
+                device: "11".repeat(32),
+            };
+            let declaration = DeviceMeshEffect::declarations()
+                .into_iter()
+                .find(|declaration| declaration.id == effect.id())
+                .unwrap();
+            assert_eq!(
+                declaration.risk,
+                ui::tilo_actions::RiskLevel::Destructive,
+                "{} asks first",
+                effect.id()
+            );
+            let dir = tempfile::tempdir().unwrap();
+            let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
+            assert!(pane.apply(&effect).is_err(), "nothing unpaired is touched");
+            assert!(pane.management_child.is_none());
         }
 
         // Case `duplicate_pair_action_is_ignored_while_pairing_is_active`.
@@ -3082,17 +2900,14 @@ mod tests {
         }
     }
 
-    /// The device fleet and the root key are the host's: the pane lists the
-    /// devices and revokes one through its identity actions, with the
-    /// person's confirmation, and reads no fleet file.
+    /// The device fleet is the host's: the pane lists the devices through
+    /// its identity actions and reads no fleet file.
     #[test]
-    fn device_revocation_runs_on_the_host() {
-        use ui::tilo_actions::remote::{Confirmation, InvokeArgument, identity_admin};
+    fn the_device_list_is_the_hosts() {
         let dir = tempfile::tempdir().unwrap();
         let mut pane = DeviceMeshModel::with_path(&dir.path().join("relay.toml"));
-        let host = Arc::new(PairingHost::default());
         pane.remote = ui::RemoteActions::with_host(
-            host.clone(),
+            Arc::new(PairingHost::default()),
             ui::tilo_actions::remote::Caller::local_person("owner"),
         );
 
@@ -3104,46 +2919,6 @@ mod tests {
                 .map(|device| (device.label.as_str(), device.current))
                 .collect::<Vec<_>>(),
             [("This laptop", true), ("Phone", false)]
-        );
-        assert!(
-            pane.apply(&DeviceMeshEffect::RevokeDevice {
-                device: THIS_DEVICE.into(),
-                reason: "Retired".into(),
-            })
-            .is_err(),
-            "the device in use is revoked from another one"
-        );
-
-        pane.apply(&DeviceMeshEffect::RevokeDevice {
-            device: PHONE.into(),
-            reason: "Lost".into(),
-        })
-        .unwrap();
-        pane.poll_background_tasks();
-        assert_eq!(
-            pane.load_status,
-            "Phone can no longer access your workspaces"
-        );
-        let asked = host.asked();
-        let revoke = &asked[1];
-        assert_eq!(
-            revoke.target,
-            identity_admin::target(identity_admin::REVOKE)
-        );
-        assert_eq!(revoke.confirmation, Some(Confirmation::Confirmed));
-        assert_eq!(
-            revoke.argument,
-            InvokeArgument::Json(
-                serde_json::json!({"device": PHONE, "reason": "lost", "confirm": true})
-                    .as_object()
-                    .unwrap()
-                    .clone()
-            )
-        );
-        assert_eq!(
-            asked[2].target,
-            identity_admin::target(identity_admin::DEVICES),
-            "the list is read again after the revocation"
         );
     }
 

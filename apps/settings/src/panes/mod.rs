@@ -35,6 +35,7 @@ pub mod billing;
 pub mod bluetooth;
 #[cfg(feature = "tilo-os")]
 pub mod device_mesh;
+pub mod devices_access;
 #[cfg(feature = "tilo-os")]
 pub mod disk_unlock;
 #[cfg(feature = "tilo-os")]
@@ -138,6 +139,7 @@ pub(crate) fn view(
         #[cfg(feature = "tilo-os")]
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
         crate::categories::Category::Billing => billing::view(cx, app),
+        crate::categories::Category::DevicesAccess => devices_access::view(cx, app),
         #[cfg(not(feature = "tilo-os"))]
         _ => None,
     }

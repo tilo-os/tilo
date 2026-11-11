@@ -89,6 +89,7 @@ pub enum Category {
     Updates,
     About,
     Billing,
+    DevicesAccess,
 }
 
 impl Category {
@@ -120,6 +121,7 @@ impl Category {
         Category::Printers,
         Category::Power,
         // Hubs
+        Category::DevicesAccess,
         Category::Users,
         Category::Billing,
         Category::ExternalAccounts,
@@ -142,6 +144,7 @@ impl Category {
         // Devices
         Category::KeyboardShortcuts,
         // Hubs
+        Category::DevicesAccess,
         Category::Billing,
     ];
 
@@ -177,7 +180,8 @@ impl Category {
             | Category::Spelling
             | Category::RegionFormats
             | Category::TimeDate => Section::Personal,
-            Category::Users
+            Category::DevicesAccess
+            | Category::Users
             | Category::Billing
             | Category::ExternalAccounts
             | Category::AgentModels
@@ -242,6 +246,7 @@ impl Category {
             Category::Updates => Icon::Refresh,
             Category::About => Icon::Info,
             Category::Billing => Icon::Landmark,
+            Category::DevicesAccess => Icon::MonitorSmartphone,
         }
     }
 
@@ -330,6 +335,7 @@ impl Category {
             Category::Updates => "updates",
             Category::About => "about",
             Category::Billing => "billing",
+            Category::DevicesAccess => "devices_access",
         }
     }
 }

@@ -98,7 +98,6 @@ pub mod window;
 
 #[cfg(feature = "tilo-os")]
 pub mod account_probe;
-#[cfg(feature = "tilo-os")]
 pub mod device_fleet;
 #[cfg(feature = "tilo-os")]
 pub mod dispatcher;
