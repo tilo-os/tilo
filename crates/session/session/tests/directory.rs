@@ -32,6 +32,7 @@ mod sheet;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tilo_session_client::{Cmd, Outbox};
 
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
@@ -1204,14 +1205,14 @@ impl LoungeHost {
             page
         };
         let mut chat = chat_with(written);
-        page.publish(route.clone(), &DocumentMutation::Snapshot(chat.save()))
+        page.write(route.clone(), &DocumentMutation::Snapshot(chat.save()))
             .expect("the site's page records in the lounge's chat");
         for line in 0..HISTORY {
             let before = chat.get_heads();
             chat.put(automerge::ROOT, format!("line{line}"), line)
                 .expect("a chat line");
             chat.commit();
-            page.publish(
+            page.write(
                 route.clone(),
                 &DocumentMutation::Incremental(chat.save_after(&before)),
             )
@@ -1462,7 +1463,7 @@ impl Lounge {
         } else {
             DocumentMutation::Incremental(doc.save_after(&before))
         };
-        page.publish(
+        page.write(
             DocumentRoute {
                 app_id: DESKTOP_APP.to_owned(),
                 cluster_id: self.workspace.clone(),
@@ -1923,20 +1924,20 @@ fn join_the_lounge(session: &mut Session, lounge: &Lounge) {
 /// in the workspace, under their own device.
 fn other_member_arrives(lounge: &Lounge) {
     let page = lounge.page.as_ref().expect("the site's page runs");
-    page.publish_presence(
+    page.send(Cmd::Presence(
         tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::desktop(
             &lounge.workspace,
             collab_types::PeerPresencePayload::Arrived,
         )],
-    )
+    ))
     .expect("the other member says they are here");
 }
 
 /// The lounge's other member moves their pointer to `(x, y)` of the tile of `tab` in the workspace.
 fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
     let page = lounge.page.as_ref().expect("the site's page runs");
-    page.publish_presence(
+    page.send(Cmd::Presence(
         tilo_relay_protocol::room_workspace_id(&lounge.workspace).expect("a workspace id"),
         vec![collab_types::presence::Presence::pointing(
             &lounge.workspace,
@@ -1944,7 +1945,7 @@ fn other_member_points_at(lounge: &Lounge, tab: u64, x: f32, y: f32) {
             x,
             y,
         )],
-    )
+    ))
     .expect("the other member's pointer moves");
 }
 
@@ -2216,7 +2217,7 @@ fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
         .put(automerge::ROOT, "text", "The door's shut")
         .expect("a chat line after the removal");
     after.commit();
-    page.publish(
+    page.write(
         route,
         &DocumentMutation::Incremental(after.save_after(&before)),
     )

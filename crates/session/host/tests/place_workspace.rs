@@ -14,6 +14,7 @@ mod support;
 // This binary re-execs as the automerge worker (support is shared with crates that lack the dep).
 tilo_automerge_isolate::test_worker!();
 
+use tilo_session_client::Outbox;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, start_peer, start_workspace_host};

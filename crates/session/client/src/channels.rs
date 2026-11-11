@@ -296,10 +296,12 @@ impl ChannelLink {
     fn say(&self, workspace: ModelWorkspaceId, message: NeighbourMsg) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
         outgoing.is_some_and(|outgoing| {
-            outgoing.send(Cmd::Publish {
-                ws: topic_of(workspace),
-                msg: Box::new(message),
-            })
+            outgoing
+                .send(Cmd::Publish {
+                    ws: topic_of(workspace),
+                    msg: Box::new(message),
+                })
+                .is_ok()
         })
     }
 
@@ -398,7 +400,7 @@ impl ChannelLink {
         channels.into_iter().all(|channel| {
             outgoing
                 .as_ref()
-                .is_none_or(|outgoing| outgoing.send(Cmd::OpenRecord { ws, channel }))
+                .is_none_or(|outgoing| outgoing.send(Cmd::OpenRecord { ws, channel }).is_ok())
         })
     }
 
@@ -459,7 +461,7 @@ impl ChannelLink {
     /// roster is told again when a later pass finds it changed.
     fn tell_roster(&self, ws: Topic, devices: Roster) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
-        outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }))
+        outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }).is_ok())
     }
 }
 

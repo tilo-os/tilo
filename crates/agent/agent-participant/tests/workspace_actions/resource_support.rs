@@ -2,6 +2,7 @@
 use super::{Browser, Device, Host, Hosted, RevocationList, ready, start_peer};
 use tilo_peer_state::join::{MemberRole, decode_and_verify_invitation};
 use tilo_relay::workspaces::IssueInvitationRequest;
+use tilo_session_client::{Cmd, Outbox};
 
 pub(super) async fn open_admitted_peer(
     hosted: &Hosted,
@@ -17,7 +18,7 @@ pub(super) async fn open_admitted_peer(
         device.key.clone(),
     );
     let events = peer.events();
-    peer.join(workspace).unwrap();
+    peer.send(Cmd::Join(workspace)).unwrap();
     ready(&[&peer]).await;
     Browser::joined((peer, events), device, host, cluster_id)
 }

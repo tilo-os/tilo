@@ -147,8 +147,10 @@ pub(crate) struct HostOutbox {
 
 #[cfg(target_os = "linux")]
 impl Outbox for HostOutbox {
-    fn send(&self, command: Cmd) -> bool {
+    fn send(&self, command: Cmd) -> Result<(), tilo_session_client::Closed> {
         self.plane(command)
+            .then_some(())
+            .ok_or(tilo_session_client::Closed)
     }
 }
 

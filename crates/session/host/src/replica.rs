@@ -22,7 +22,7 @@
 //! workspace with no governance yet (no bootstrap received) admits no
 //! member's write and names no channel participants. A page places its
 //! person's own workspaces on their host before joining them
-//! ([`crate::PeerHandle::join_placed`]), so those have governance too.
+//! ([`Outbox::join_placed`](tilo_session_client::Outbox::join_placed)), so those have governance too.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;

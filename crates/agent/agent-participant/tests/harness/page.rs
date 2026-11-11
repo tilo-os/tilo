@@ -21,6 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Outbox};
 
 use tilo_actions::InvocationId;
 use tilo_actions::door::ActionAddress;
@@ -98,16 +99,11 @@ impl Page {
             peer.join_placed(cluster_id, "Workspace").unwrap();
         } else {
             ready(&[&peer]).await;
-            let (reply, answer) = tokio::sync::oneshot::channel();
-            peer.rooms_then(
-                tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
+            let answer = peer
+                .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
                     workspace: cluster_id.into(),
-                },
-                Box::new(move |result| {
-                    let _ = reply.send(result);
-                }),
-            )
-            .unwrap();
+                })
+                .unwrap();
             assert!(matches!(
                 tilo_test_env::within("the node enters the governed fixture", answer)
                     .await
@@ -115,7 +111,7 @@ impl Page {
                     .unwrap(),
                 tilo_relay_protocol::workspaces::WorkspacesReply::Workspace(_)
             ));
-            peer.join(workspace).unwrap();
+            peer.send(Cmd::Join(workspace)).unwrap();
         }
         // The page acts as soon as it is open, and an action the host has not
         // subscribed the session to yet is refused and never answered.
@@ -262,7 +258,7 @@ impl Page {
         let bytes = doc.save();
         let route = self.desk_route();
         self.peer
-            .publish(
+            .write(
                 route.clone(),
                 &collab_types::DocumentMutation::Snapshot(bytes.clone()),
             )
@@ -290,7 +286,7 @@ impl Page {
     pub fn send(&self, message: RemoteActionMessage) {
         let frame = RemoteActionFrame::new(message).encode().unwrap();
         self.peer
-            .send_remote_action(self.workspace, self.host_key, frame)
+            .send(Cmd::RemoteAction(self.workspace, self.host_key, frame))
             .unwrap();
     }
 
@@ -413,7 +409,7 @@ impl Page {
         loop {
             match receipt.try_recv() {
                 Ok(result) => return result.unwrap(),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(tilo_session_client::TryRecvError::Empty) => {}
                 Err(error) => panic!("the barrier ended: {error}"),
             }
             assert!(

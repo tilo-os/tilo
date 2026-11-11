@@ -19,6 +19,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::time::Duration;
+use tilo_session_client::{Cmd, Outbox};
 
 use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
@@ -169,7 +170,7 @@ async fn comes_back_after_its_stop(
         host_device.cert.clone(),
         computer.key.clone(),
     );
-    agent.join(workspace).unwrap();
+    agent.send(Cmd::Join(workspace)).unwrap();
     in_workspace(&agent, workspace).await;
     agent
 }
@@ -189,12 +190,12 @@ async fn revoked_by_someone_else(
     let foreign = revoke_device(other_root, device, now(), Retired)
         .await
         .unwrap();
-    other.revoke(foreign).unwrap();
+    other.send(Cmd::Revoke(foreign)).unwrap();
     let spare = enrol(other_root, "old phone", DeviceCapabilities::member());
     let theirs = revoke_device(other_root, spare.cert.device_public_key, now(), Retired)
         .await
         .unwrap();
-    other.revoke(theirs.clone()).unwrap();
+    other.send(Cmd::Revoke(theirs.clone())).unwrap();
     wait_for("the host to keep their own revocation", || {
         let logged = tilo_relay::store::load_revocations(state);
         let theirs = theirs.clone();
@@ -246,7 +247,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
             host_device.cert.clone(),
             device.key.clone(),
         );
-        peer.join(workspace).unwrap();
+        peer.send(Cmd::Join(workspace)).unwrap();
         in_workspace(&peer, workspace).await;
         peers.push(peer);
     }
@@ -303,7 +304,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     let entry = revoke_device(&root, computer.cert.device_public_key, now(), Retired)
         .await
         .unwrap();
-    page.revoke(entry).unwrap();
+    page.send(Cmd::Revoke(entry)).unwrap();
     door_until(
         "the revoked agent to leave the door",
         &door,

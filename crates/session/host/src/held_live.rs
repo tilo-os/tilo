@@ -40,7 +40,9 @@ impl Waiting {
     /// Give up on the frame: whoever waits on it learns it is gone.
     fn drop_frame(self) {
         match self {
-            Self::Seal { done, .. } => done(None),
+            Self::Seal { done, .. } => {
+                let _ = done.send(None);
+            }
             Self::Send { .. } | Self::Receive { .. } => {}
         }
     }
@@ -121,8 +123,6 @@ impl HeldLive {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
     use super::*;
 
     fn record(name: &str) -> LiveRecord {
@@ -135,23 +135,27 @@ mod tests {
     #[test]
     fn frames_wait_for_their_keys_within_bounds() {
         let mut held = HeldLive::new();
-        let dropped = Arc::new(Mutex::new(0));
+        let mut receipts = Vec::new();
         for seq in 0..=PER_KEY {
-            let dropped = dropped.clone();
+            let (done, receipt) = tilo_session_client::answer();
+            receipts.push(receipt);
             held.hold_outbound(
                 1,
                 record("r"),
                 Waiting::Seal {
                     workspace_id: 1,
                     frame: vec![u8::try_from(seq).unwrap()],
-                    done: Box::new(move |sealed| {
-                        assert!(sealed.is_none());
-                        *dropped.lock().unwrap() += 1;
-                    }),
+                    done,
                 },
             );
         }
-        assert_eq!(*dropped.lock().unwrap(), 1, "the oldest gave way");
+        let dropped = || {
+            receipts
+                .iter()
+                .filter(|receipt| receipt.try_recv() == Ok(None))
+                .count()
+        };
+        assert_eq!(dropped(), 1, "the oldest gave way");
         held.hold_inbound(
             [7; 16],
             Waiting::Receive {

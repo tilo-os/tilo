@@ -18,21 +18,7 @@ use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
 use tilo_relay_protocol::transport::Envelope;
 use tilo_relay_session::RelayClient;
 
-use super::{Command, PeerHandle, Task};
-
-impl PeerHandle {
-    /// Say `words` for a run this host executes, in `workspace_id`, signed
-    /// with this device's key and carried outside the live plane
-    /// ([`tilo_relay_protocol::host_voice`]): a host speaks for its runs
-    /// without holding the plane's keys. Dropped while disconnected.
-    ///
-    /// # Errors
-    ///
-    /// When the session has ended.
-    pub fn say_for_run(&self, workspace_id: u64, words: HostWords) -> Result<(), String> {
-        self.send(Command::SayForRun(workspace_id, words))
-    }
-}
+use super::Task;
 
 impl Task {
     /// Say `words` for a run this host executes, in `workspace_id`, signed

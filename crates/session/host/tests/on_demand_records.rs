@@ -21,6 +21,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeMap;
+use tilo_session_client::{Cmd, Outbox};
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
@@ -147,16 +148,16 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     let archive = record(neighbour_wire::on_demand_record("uuid:archive"));
     let mut writes = Author::default();
     author
-        .publish(note.clone(), &writes.first(&note, "note"))
+        .write(note.clone(), &writes.first(&note, "note"))
         .unwrap();
     author
-        .publish(archive.clone(), &writes.first(&archive, "archive"))
+        .write(archive.clone(), &writes.first(&archive, "archive"))
         .unwrap();
     author
-        .publish(part(0), &writes.first(&part(0), "part 0"))
+        .write(part(0), &writes.first(&part(0), "part 0"))
         .unwrap();
     author
-        .publish(part(1), &writes.first(&part(1), "part 1"))
+        .write(part(1), &writes.first(&part(1), "part 1"))
         .unwrap();
     durable(&author).await;
 
@@ -179,8 +180,12 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
 
     // The reader opens the earlier part and the archive: their history
     // arrives, and then their changes.
-    reader.open_record(workspace(), part(0)).unwrap();
-    reader.open_record(workspace(), archive.clone()).unwrap();
+    reader
+        .send(Cmd::OpenRecordAt(workspace(), part(0)))
+        .unwrap();
+    reader
+        .send(Cmd::OpenRecordAt(workspace(), archive.clone()))
+        .unwrap();
     // The host's answer comes once it sent the history; the history opens
     // once a participant admitted the page to each record.
     until("the opened records", &reader, &mut at_reader, |received| {
@@ -192,21 +197,21 @@ async fn a_join_replays_eager_records_and_a_page_opens_the_rest() {
     assert!(at_reader.opened.contains(&(part(0).record, 1)));
 
     author
-        .publish(part(0), &writes.change(&part(0), "an edit"))
+        .write(part(0), &writes.change(&part(0), "an edit"))
         .unwrap();
     author
-        .publish(archive.clone(), &writes.change(&archive, "filed"))
+        .write(archive.clone(), &writes.change(&archive, "filed"))
         .unwrap();
     // A later part starts the chain anew; the part before it is still
     // followed by the pages that held it.
     author
-        .publish(part(2), &writes.first(&part(2), "part 2"))
+        .write(part(2), &writes.first(&part(2), "part 2"))
         .unwrap();
     author
-        .publish(part(1), &writes.change(&part(1), "a reaction"))
+        .write(part(1), &writes.change(&part(1), "a reaction"))
         .unwrap();
     author
-        .publish(note.clone(), &writes.change(&note, "marker"))
+        .write(note.clone(), &writes.change(&note, "marker"))
         .unwrap();
     durable(&author).await;
     for (page, received) in [(&early, &mut at_early), (&reader, &mut at_reader)] {

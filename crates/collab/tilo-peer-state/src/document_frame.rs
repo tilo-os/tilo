@@ -85,6 +85,12 @@ pub trait ContentCipher: Send {
     }
 }
 
+impl std::fmt::Debug for dyn ContentCipher {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ContentCipher")
+    }
+}
+
 /// A read-only adapter over content keys the caller already owns.
 /// It cannot seal a document, enroll a device, or obtain missing keys.
 #[must_use]

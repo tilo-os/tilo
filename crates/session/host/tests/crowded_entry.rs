@@ -44,6 +44,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Outbox};
 
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
@@ -478,7 +479,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     };
     let author = first.arrive("Member 0").await;
     author
-        .publish(desktop.clone(), &DocumentMutation::Snapshot(base.save()))
+        .write(desktop.clone(), &DocumentMutation::Snapshot(base.save()))
         .unwrap();
     let records = record_bytes / (100 * 1024);
     for record in 0..records {
@@ -487,9 +488,9 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
             cluster_id: lounge.workspace.clone(),
             record: format!("note-{record}"),
         };
-        author.open_route(route.clone()).unwrap();
+        author.send(Cmd::OpenRoute(route.clone())).unwrap();
         author
-            .publish(
+            .write(
                 route,
                 &DocumentMutation::Snapshot(record_of(100 * 1024, record as u64 + 7).save()),
             )
@@ -498,9 +499,9 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     // The crowd's chat: its newest part, which a chain's reader finds by
     // opening the chain's head.
     let chat = chat_part(&lounge.workspace);
-    author.open_route(chat.clone()).unwrap();
+    author.send(Cmd::OpenRoute(chat.clone())).unwrap();
     author
-        .publish(
+        .write(
             chat,
             &DocumentMutation::Snapshot(record_of(CHAT_BYTES, 3).save()),
         )
@@ -619,8 +620,8 @@ impl Member {
             std::sync::Arc::new(MemoryPeerStore::default()),
             entry,
         );
-        page.join(self.workspace_id).unwrap();
-        page.open_route(self.desktop.clone()).unwrap();
+        page.send(Cmd::Join(self.workspace_id)).unwrap();
+        page.send(Cmd::OpenRoute(self.desktop.clone())).unwrap();
         let waiting = Instant::now();
         while !keyed(&page, &self.desktop) {
             if let Some(tilo_session_host::Entry::Refused { .. }) = &page.status().entry {
@@ -639,7 +640,7 @@ impl Member {
     /// Write `part`, `page`'s own part of the shared desktop, and wait until
     /// the host keeps it.
     async fn leave_part(&self, page: &PeerHandle, part: Vec<u8>) {
-        page.publish(self.desktop.clone(), &DocumentMutation::Incremental(part))
+        page.write(self.desktop.clone(), &DocumentMutation::Incremental(part))
             .unwrap();
         let receipt = page.barrier().unwrap();
         let deadline = tilo_test_env::hang_deadline();
@@ -1065,8 +1066,8 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         std::sync::Arc::new(MemoryPeerStore::default()),
         entry,
     );
-    page.join(place.workspace_id).unwrap();
-    page.open_route(place.desktop.clone()).unwrap();
+    page.send(Cmd::Join(place.workspace_id)).unwrap();
+    page.send(Cmd::OpenRoute(place.desktop.clone())).unwrap();
     let (mut connected, mut admitted, mut ready, mut keyed_desktop, mut desktop_doc) =
         (None, None, None, None, None);
     let mut when_opened = None;
@@ -1136,7 +1137,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         notes_before, 0,
         "a note or the chat reached the guest before it opened one"
     );
-    page.open_record(place.workspace_id, place.note.clone())
+    page.send(Cmd::OpenRecordAt(place.workspace_id, place.note.clone()))
         .unwrap();
     let (mut note, mut opened) = (false, None);
     while !note || opened.is_none() || when_opened.is_none() {
@@ -1183,7 +1184,8 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         record: neighbour_wire::chain_head(CHAT_CHAIN),
         ..place.chat.clone()
     };
-    page.open_record(place.workspace_id, head.clone()).unwrap();
+    page.send(Cmd::OpenRecordAt(place.workspace_id, head.clone()))
+        .unwrap();
     let (mut part, mut answered) = (false, None);
     while !part || answered.is_none() {
         for event in page.drain() {

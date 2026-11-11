@@ -6,6 +6,7 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_runtime::mcp_windows;
+use tilo_session_client::Outbox;
 use tilo_session_core::remote::SessionActions;
 
 /// The app the agent writes in.

@@ -11,6 +11,7 @@
 //! the members can join.
 
 use std::time::{Duration, Instant};
+use tilo_session_client::Outbox;
 
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{

@@ -627,7 +627,11 @@ impl Task {
     /// Publish `frames` on `workspace_id`'s plane as this page's voice, in
     /// the order given: one Opus frame per voice object, numbered on from the
     /// last this page published.
-    pub(super) fn publish_call_audio(&mut self, workspace_id: u64, frames: Vec<crate::CallFrame>) {
+    pub(super) fn publish_call_audio(
+        &mut self,
+        workspace_id: u64,
+        frames: Vec<tilo_session_client::CallFrame>,
+    ) {
         use tilo_live::live::Track;
         for frame in frames {
             let Some(joined) = self.planes.joined_mut(workspace_id) else {

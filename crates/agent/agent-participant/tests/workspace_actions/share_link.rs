@@ -11,6 +11,7 @@ use super::{
 use tilo_actions::remote::ReceiptStatus;
 use tilo_agent_participant::ReplicaActor;
 use tilo_peer_state::join::MemberRole;
+use tilo_session_client::Outbox;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn the_host_mints_a_message_link_with_its_range() {
@@ -71,11 +72,11 @@ async fn the_host_mints_a_message_link_with_its_range() {
     };
     publisher
         .peer
-        .publish(route.clone(), &source.take_mutation().unwrap())
+        .write(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
     let route = part_route(&workspace.workspace, &chat::parts::part(0));
     for (_, mutation) in source.take_record_mutations() {
-        publisher.peer.publish(route.clone(), &mutation).unwrap();
+        publisher.peer.write(route.clone(), &mutation).unwrap();
     }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
     let receipt = publisher

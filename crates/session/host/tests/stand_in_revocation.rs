@@ -19,6 +19,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_session_host::issue_stand_in;
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationRequest, DeviceCapabilities, RevocationList,
@@ -109,7 +110,7 @@ async fn a_stand_in_revoked_beside_a_session_refuses_what_it_signs_after() {
     )
     .await
     .unwrap();
-    peer.revoke(entry.clone()).unwrap();
+    peer.send(Cmd::Revoke(entry.clone())).unwrap();
     let learned = wait_for("the host to record the revocation", || {
         let entry = entry.clone();
         let workspaces = host.relay.workspaces().unwrap();

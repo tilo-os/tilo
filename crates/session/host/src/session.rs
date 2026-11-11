@@ -14,15 +14,15 @@
 //!   the whole outbox in order. Re-applying a document change is idempotent.
 //! - **Fail closed.** An expired certificate, or a host that keeps refusing
 //!   the handshake (a revoked device), ends in [`TransportPhase::Failed`]
-//!   instead of retrying forever; only [`PeerHandle::reconnect`] retries.
+//!   instead of retrying forever; only [`Cmd::Reconnect`] retries.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use std::time::Duration;
-use tilo_session_client::Event;
 use tilo_session_client::content::Kept;
+use tilo_session_client::{CallPicture, CallShown, Closed, Cmd, Event, Outbox, PageShown};
 use tilo_session_core::remote::Heard;
 
 use collab_types::DocumentMutation;
@@ -33,7 +33,7 @@ use tokio::sync::mpsc;
 
 use crate::custody::{PeerRecord, PeerStore};
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::document_frame::{Ciphers, ContentCipher, DocumentRoute};
+use tilo_peer_state::document_frame::{Ciphers, DocumentRoute};
 use tilo_relay_client::LinkError;
 use tilo_relay_session::RelayClient;
 
@@ -141,7 +141,7 @@ pub enum TransportPhase {
     Reconnecting,
     /// Waiting for the next retry.
     Offline,
-    /// Refused; retries only on [`PeerHandle::reconnect`].
+    /// Refused; retries only on [`Cmd::Reconnect`].
     Failed,
     /// Disposed.
     Closed,
@@ -283,27 +283,12 @@ impl PeerStatus {
 /// from the host's device under the same id.
 pub const HOST_ITSELF: u64 = 0;
 
-/// One Opus frame of a page's microphone, as its call publishes it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CallFrame {
-    /// The first sample's place in the page's 48 kHz timeline.
-    pub timestamp_48k: u64,
-    /// The Opus frame.
-    pub opus: Vec<u8>,
-}
-
+/// What a session's task is told: the client's own commands, and the transport's own.
 enum Command {
-    Join(u64),
-    /// Join the workspace (its UUID) of this device's person, named as given,
-    /// once the host governs it ([`PeerHandle::join_placed`]).
-    JoinPlaced(String, String),
+    /// One of the client's commands.
+    Client(Cmd),
     /// The host answered the placement of this workspace.
     Placed(u64),
-    OpenRecord(u64, DocumentRoute),
-    Publish(DocumentRoute, Vec<Vec<u8>>),
-    InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
-    InstallChannelKeys(DocumentRoute, channel_crypto::ChannelContentKeys),
-    OpenRoute(DocumentRoute),
     /// What asking the host for `workspace_id`'s live plane, and joining it,
     /// came to: the plane itself, except on wasm, where the page's carrier
     /// cannot travel in a command and waits in [`plane::arrived`].
@@ -316,41 +301,6 @@ enum Command {
     /// The plane of `workspace_id` ended: the relay closed it, or the plane
     /// no longer admits what it reads.
     PlaneEnded(u64),
-    Live(u64, Vec<u8>),
-    SealLive(u64, Vec<u8>, LiveCompletion),
-    RemoteAction(u64, [u8; 32], Vec<u8>),
-    WantContent(u64, Vec<u8>),
-    /// What this device keeps of the workspace's content, answered to the members that ask.
-    KeepContent(u64, Arc<dyn Kept>),
-    Barrier(Completion),
-    /// Presence frames for the workspace's plane, said as this device.
-    Presence(u64, Vec<collab_types::presence::Presence>),
-    /// The host's word for a run it executes ([`PeerHandle::say_for_run`]).
-    SayForRun(u64, tilo_relay_protocol::host_voice::HostWords),
-    /// The page's microphone frames, published on the workspace's plane as
-    /// this device's voice.
-    CallAudio(u64, Vec<CallFrame>),
-    VoiceCalls(u64),
-    VoiceCall(u64, [u8; 16], tilo_relay_protocol::voice::CallOperation),
-    VoiceJoin(u64, [u8; 32]),
-    VoiceLeave(u64),
-    VoiceShow(u64, tilo_relay_protocol::voice::Showing),
-    /// Pictures this page's camera and screen encoded, for the plane of the
-    /// workspace named.
-    CallPictures(u64, Vec<CallPicture>),
-    /// What this page shows of each device in its call's plane: the layers of
-    /// their camera and screen it draws.
-    CallShowing(u64, Vec<CallShown>),
-    /// The windows whose pages this page draws, by the device hosting them: each
-    /// owner publishes a window's page only while a member asks for its track.
-    ShowPages(u64, Vec<PageShown>),
-    /// This page needs `source` of `device` afresh: a keyframe from its next
-    /// group on.
-    CallPictureRestart(u64, [u8; 32], tilo_live::video::Source),
-    Administer(
-        tilo_relay_protocol::workspaces::WorkspacesRequest,
-        RoomsCompletion,
-    ),
     AgentRun(String, AgentRunCompletion),
     /// A member's root-signed approver command, asked from the endpoint
     /// this session dials its host from ([`PeerHandle`]'s
@@ -364,50 +314,6 @@ enum Command {
     /// Make another entry on the session's connection
     /// ([`PeerHandle::enter_then`]).
     Enter(tilo_relay_protocol::entering::Entering, EntryCompletion),
-    Reconnect,
-    /// The network is back: a session waiting out its backoff tries again
-    /// now; a connected or failed one stays as it is.
-    Retry,
-    /// A revocation this device's person's root signed: announce it to
-    /// every workspace this session is admitted to.
-    Revoke(tilo_user_identity::RevocationEntry),
-    Refresh,
-    Close,
-}
-
-/// One tilo-video/1 object this page encoded for its call's plane: one layer
-/// of its camera or screen.
-#[derive(Clone, Debug)]
-pub struct CallPicture {
-    pub source: tilo_live::video::Source,
-    pub layer: tilo_live::video::Layer,
-    /// The object's place in the source's stream.
-    pub sequence: u64,
-    pub keyframe: bool,
-    pub timestamp_us: u64,
-    pub width: u16,
-    pub height: u16,
-    /// The encoded access unit.
-    pub payload: Vec<u8>,
-}
-
-/// What this page shows of one device in its call's plane.
-#[derive(Clone, Debug)]
-pub struct CallShown {
-    pub device: [u8; 32],
-    /// The camera layers it draws.
-    pub camera: Vec<tilo_live::video::Layer>,
-    /// The screen layers it draws.
-    pub screen: Vec<tilo_live::video::Layer>,
-}
-
-/// The windows whose pages one device of a workspace hosts, as this page draws them.
-#[derive(Clone, Debug, Default)]
-pub struct PageShown {
-    /// The device hosting the windows.
-    pub device: [u8; 32],
-    /// The tabs the windows stand in, the same ids on every device of the workspace.
-    pub tabs: Vec<u64>,
 }
 
 type Wake = Arc<dyn Fn() + Send + Sync>;
@@ -429,15 +335,14 @@ enum Opening {
     /// Malformed, or does not open.
     Dropped,
 }
-/// Called once with the outcome of a [`PeerHandle::barrier_then`].
-pub type Completion = Box<dyn FnOnce(Result<(), String>) + Send>;
-/// Called once with a live frame sealed or opened with its record's channel
-/// keys, or `None` when this device holds none; see
-/// [`PeerHandle::seal_live_then`].
-pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
-/// Called once with the host's answer, see [`PeerHandle::rooms_then`].
-pub type RoomsCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
+/// Where a barrier's outcome goes ([`Cmd::Barrier`]).
+pub(crate) type Completion = tilo_session_client::Answer<Result<(), String>>;
+/// Where a live frame sealed with its record's channel keys goes, or `None` when this device holds
+/// none ([`Cmd::SealLive`]).
+pub(crate) type LiveCompletion = tilo_session_client::Answer<Option<Vec<u8>>>;
+/// Where the host's answer to a workspace administration request goes ([`Cmd::Administer`]).
+pub(crate) type RoomsCompletion =
+    tilo_session_client::Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>;
 type Queue = Arc<Mutex<VecDeque<Event>>>;
 
 struct Shared {
@@ -689,226 +594,12 @@ impl PeerHandle {
     }
 
     fn send(&self, command: Command) -> Result<(), String> {
-        self.commands
-            .send(command)
-            .map_err(|_| "peer session is closed".to_string())
-    }
-
-    /// Add `entry`, which this device's person's root signed, to the
-    /// revocations this session announces: a host reads them with this
-    /// device's certificate, and the one entry takes effect from the moment it
-    /// names, without waiting for the next session.
-    pub fn revoke(&self, entry: tilo_user_identity::RevocationEntry) -> Result<(), String> {
-        self.send(Command::Revoke(entry))
-    }
-
-    /// Subscribe to a workspace.
-    pub fn join(&self, workspace_id: u64) -> Result<(), String> {
-        self.send(Command::Join(workspace_id))
-    }
-
-    /// Join `workspace` (its UUID), a workspace of this device's person, named
-    /// `name`: the host is first asked to govern it
-    /// ([`tilo_relay_protocol::workspaces::WorkspacesRequest::Place`]), creating it
-    /// unless it does, so the workspace has governance like every other; then it
-    /// is subscribed. A device of another person than the host's asks nothing
-    /// of the kind, which only the host's person may do: the workspace is
-    /// subscribed at once and its own admission decides, as it does where the
-    /// host places nothing (a host reached without its administration route).
-    ///
-    /// # Errors
-    ///
-    /// `workspace` is no workspace UUID, or the session is closed.
-    pub fn join_placed(&self, workspace: &str, name: &str) -> Result<(), String> {
-        tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| error.to_string())?;
-        self.send(Command::JoinPlaced(workspace.to_owned(), name.to_owned()))
-    }
-
-    /// Open `route`, an on-demand record of the joined workspace `workspace_id`
-    /// (`neighbour_wire::record_sync`): one a join does not replay. Its
-    /// history lands ([`Event::Landed`]), then
-    /// [`Event::RecordOpened`]; its changes keep arriving after, and
-    /// the record is opened again whenever the session reconnects.
-    pub fn open_record(&self, workspace_id: u64, route: DocumentRoute) -> Result<(), String> {
-        self.send(Command::OpenRecord(workspace_id, route))
-    }
-
-    /// Publish a document mutation on `route`: split into signed frames,
-    /// committed in order.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the mutation cannot be encoded or the session
-    /// is closed.
-    pub fn publish(&self, route: DocumentRoute, mutation: &DocumentMutation) -> Result<(), String> {
-        let frames = mutation
-            .encode_frames()
-            .map_err(|error| error.to_string())?;
-        self.send(Command::Publish(route, frames))
-    }
-
-    /// Seal `route`'s documents with `cipher` from now on.
-    pub fn install_cipher(
-        &self,
-        route: DocumentRoute,
-        cipher: Box<dyn ContentCipher>,
-    ) -> Result<(), String> {
-        self.send(Command::InstallCipher(route, cipher))
-    }
-
-    /// Hold `keys` as `route`'s channel keys, exactly as if a participant
-    /// had admitted this session to the channel: documents held for them
-    /// open, the route's status stops awaiting keys, and edits held for them
-    /// go out sealed. For an application endpoint of a device that takes part
-    /// in the channel, which hands it the keys it already holds
-    /// ([`channel_crypto::ChannelPeer::content_keys`]); any other session is
-    /// admitted by a participant over the channel itself.
-    pub fn install_channel_keys(
-        &self,
-        route: DocumentRoute,
-        keys: channel_crypto::ChannelContentKeys,
-    ) -> Result<(), String> {
-        // Its replica's readers read with them from now on, not once the session got to them.
-        if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) {
-            self.engine.hand_keys(
-                workspace,
-                collab_types::ChannelRoute::new(&route.app_id, &route.record),
-                keys.clone(),
-            );
-        }
-        self.send(Command::InstallChannelKeys(route, keys))
-    }
-
-    /// Take part in `route`'s encrypted channel: ask its participants for
-    /// access so documents on it can be opened and sealed. Routes
-    /// are also opened by publishing on them or receiving their documents.
-    pub fn open_route(&self, route: DocumentRoute) -> Result<(), String> {
-        self.send(Command::OpenRoute(route))
-    }
-
-    /// Publish one canonical live frame, sealed with the channel keys of the
-    /// record it names. Dropped while disconnected (live state is never
-    /// queued), and dropped when it names no record or this device holds
-    /// none of that record's keys: a live frame never leaves in the clear.
-    pub fn publish_live(&self, workspace_id: u64, frame: Vec<u8>) -> Result<(), String> {
-        self.send(Command::Live(workspace_id, frame))
-    }
-
-    /// Seal one canonical live frame of `workspace_id` with the channel keys
-    /// of the record it names, for a carrier other than this session (the
-    /// page's live plane); `done` receives the sealed frame, or `None`.
-    pub fn seal_live_then(
-        &self,
-        workspace_id: u64,
-        frame: Vec<u8>,
-        done: LiveCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::SealLive(workspace_id, frame, done))
-    }
-
-    /// Send one remote-action frame to device `to` of the workspace (the host's
-    /// own device reaches its app-serving plane). A workspace this session
-    /// has joined but not been admitted to yet holds the frame until it is:
-    /// the host takes no action from a session it has not subscribed, and the
-    /// request would be refused and never answered. Dropped while
-    /// disconnected: an action that ran late is worse than one that did not
-    /// run, so the caller retries with the same invocation id.
-    pub fn send_remote_action(
-        &self,
-        workspace_id: u64,
-        to: [u8; 32],
-        frame: Vec<u8>,
-    ) -> Result<(), String> {
-        self.send(Command::RemoteAction(workspace_id, to, frame))
-    }
-
-    /// Ask workspace `workspace_id` for content its records reference: `request`
-    /// is a postcard-encoded `NeighbourMsg::RecordContentWant`. The host
-    /// fans it out to every member and answers itself from what it keeps;
-    /// the pieces come back to this device alone as
-    /// [`Event::RecordContent`]. Dropped while disconnected: the caller
-    /// asks again.
-    pub fn want_content(&self, workspace_id: u64, request: Vec<u8>) -> Result<(), String> {
-        self.send(Command::WantContent(workspace_id, request))
-    }
-
-    /// Answer `workspace_id`'s members that ask for content its records reference from `kept`,
-    /// for as long as this session runs.
-    pub fn keep_content(&self, workspace_id: u64, kept: Arc<dyn Kept>) -> Result<(), String> {
-        self.send(Command::KeepContent(workspace_id, kept))
-    }
-
-    /// Publish the page's microphone `frames` on `workspace_id`'s plane as
-    /// this device's voice, in the order given. Dropped where this page holds
-    /// no plane for the workspace: a call's voice is current, never replayed.
-    pub fn publish_call_audio(
-        &self,
-        workspace_id: u64,
-        frames: Vec<CallFrame>,
-    ) -> Result<(), String> {
-        self.send(Command::CallAudio(workspace_id, frames))
-    }
-
-    /// Say `frames` on `workspace_id`'s presence track, the way every other
-    /// device says its presence. Dropped where this page holds no plane for
-    /// the workspace: presence is ephemeral, and the next change says where
-    /// its sender is.
-    pub fn publish_presence(
-        &self,
-        workspace_id: u64,
-        frames: Vec<collab_types::presence::Presence>,
-    ) -> Result<(), String> {
-        self.send(Command::Presence(workspace_id, frames))
-    }
-
-    /// A receipt that completes once every document published before this
-    /// call is durable on the host.
-    pub fn barrier(&self) -> Result<std::sync::mpsc::Receiver<Result<(), String>>, String> {
-        let (reply, receipt) = std::sync::mpsc::sync_channel(1);
-        self.barrier_then(Box::new(move |result| {
-            let _ = reply.send(result);
-        }))?;
-        Ok(receipt)
-    }
-
-    /// Call `done` once every document published before this call is
-    /// durable on the host, or with the refusal that prevents it.
-    pub fn barrier_then(&self, done: Completion) -> Result<(), String> {
-        self.send(Command::Barrier(done))
-    }
-
-    /// Ask the host's workspace administration `request`; `done` gets the answer.
-    pub fn rooms_then(
-        &self,
-        request: tilo_relay_protocol::workspaces::WorkspacesRequest,
-        done: RoomsCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::Administer(request, done))
-    }
-
-    /// Drop the connection and reconnect now, also after a failure.
-    pub fn reconnect(&self) -> Result<(), String> {
-        self.send(Command::Reconnect)
-    }
-
-    /// The network is back (the browser is online again, or the host just
-    /// answered on another connection): a session waiting out its backoff
-    /// tries again now instead of up to `MAX_BACKOFF` later. A connected
-    /// session is left as it is.
-    pub fn retry_now(&self) -> Result<(), String> {
-        self.send(Command::Retry)
-    }
-
-    /// Ask the host for every joined workspace's shared state again: the workspaces
-    /// are subscribed anew, the host replays their retained checkpoints and
-    /// answers `Ready`. Offline, this reconnects now.
-    pub fn refresh(&self) -> Result<(), String> {
-        self.send(Command::Refresh)
+        self.commands.send(command).map_err(|_| Closed.to_string())
     }
 
     /// End the session.
     pub fn close(&self) {
-        let _ = self.send(Command::Close);
+        let _ = Outbox::send(self, Cmd::Stop);
     }
 
     fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
@@ -1072,6 +763,32 @@ impl PeerHandle {
     }
 }
 
+impl std::fmt::Debug for PeerHandle {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PeerHandle").finish_non_exhaustive()
+    }
+}
+
+/// The session carries the client's commands: what a participant says to its workspaces goes
+/// through the relay session it keeps with its host.
+impl Outbox for PeerHandle {
+    fn send(&self, command: Cmd) -> Result<(), Closed> {
+        // The replica's readers read with them from now on, not once the session got to them.
+        if let Cmd::InstallChannelKeys(route, keys) = &command
+            && let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
+        {
+            self.engine.hand_keys(
+                workspace,
+                collab_types::ChannelRoute::new(&route.app_id, &route.record),
+                keys.clone(),
+            );
+        }
+        self.commands
+            .send(Command::Client(command))
+            .map_err(|_| Closed)
+    }
+}
+
 enum Exit {
     Closed,
     Reconnect,
@@ -1129,7 +846,7 @@ struct Task {
     /// Governance frames received and not admitted yet, admitted together
     /// ([`Self::admit_governance`]).
     governance_batch: Option<inbound::GovernanceBatch>,
-    /// What this device keeps of each workspace's content ([`PeerHandle::keep_content`]).
+    /// What this device keeps of each workspace's content ([`Cmd::KeepContent`]).
     kept: BTreeMap<u64, Arc<dyn Kept>>,
     /// Workspaces of this device's person joined once the host governs them:
     /// each one's UUID and name, until the host answered its placement.
@@ -1179,7 +896,7 @@ struct Task {
     /// The on-demand records this page opened, by retained channel: opened
     /// again after every resubscription.
     opened_records: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
-    /// The routes this session was asked to open ([`PeerHandle::open_route`]):
+    /// The routes this session was asked to open ([`Cmd::OpenRoute`]):
     /// in a workspace that sends records when opened, each is opened as a
     /// record too, so it arrives.
     opened_routes: BTreeSet<DocumentRoute>,
@@ -1685,9 +1402,9 @@ impl Task {
                 tokio::select! {
                     biased;
                     command = commands.recv() => match command {
-                        None | Some(Command::Close) => return self.closed().await,
-                        Some(Command::Reconnect | Command::Retry) => break,
-                        Some(Command::Refresh) => {
+                        None | Some(Command::Client(Cmd::Stop)) => return self.closed().await,
+                        Some(Command::Client(Cmd::Reconnect | Cmd::Retry)) => break,
+                        Some(Command::Client(Cmd::Refresh)) => {
                             self.positions.clear();
                             self.received.clear();
                             break;
@@ -1718,9 +1435,9 @@ impl Task {
     ) -> bool {
         loop {
             match commands.recv().await {
-                None | Some(Command::Close) => return false,
-                Some(Command::Reconnect) => return true,
-                Some(Command::Refresh) => {
+                None | Some(Command::Client(Cmd::Stop)) => return false,
+                Some(Command::Client(Cmd::Reconnect)) => return true,
+                Some(Command::Client(Cmd::Refresh)) => {
                     self.positions.clear();
                     self.received.clear();
                     return true;
@@ -1898,16 +1615,16 @@ impl Task {
         command: Option<Command>,
     ) -> Option<Exit> {
         match command {
-            None | Some(Command::Close) => {
+            None | Some(Command::Client(Cmd::Stop)) => {
                 client.disconnect().await;
                 Some(Exit::Closed)
             }
-            Some(Command::Reconnect) => {
+            Some(Command::Client(Cmd::Reconnect)) => {
                 // The next session dials from this same endpoint.
                 client.disconnect().await;
                 Some(Exit::Reconnect)
             }
-            Some(Command::Refresh) => {
+            Some(Command::Client(Cmd::Refresh)) => {
                 (!self.refresh(client)).then(|| Exit::Lost("host session saturated".into()))
             }
             Some(command) => (!self.apply(command, Some(client)).await)
@@ -2047,7 +1764,7 @@ impl Task {
         }
     }
 
-    /// Ask the workspace for content ([`PeerHandle::want_content`]): the host
+    /// Ask the workspace for content ([`Cmd::WantContent`]): the host
     /// fans the request out and answers with what it keeps. Nothing while
     /// disconnected.
     fn want_content(&self, workspace_id: u64, request: Vec<u8>, client: Option<&RelayClient>) {
@@ -2092,8 +1809,10 @@ impl Task {
     )]
     async fn apply(&mut self, command: Command, client: Option<&RelayClient>) -> bool {
         match command {
-            Command::Join(workspace_id) => self.join(workspace_id, client),
-            Command::JoinPlaced(workspace, name) => self.join_placed(workspace, name, client),
+            Command::Client(Cmd::Join(workspace_id)) => self.join(workspace_id, client),
+            Command::Client(Cmd::JoinPlaced(workspace, name)) => {
+                self.join_placed(workspace, name, client)
+            }
             Command::Placed(workspace_id) => {
                 if self.placing.remove(&workspace_id).is_some() {
                     self.join(workspace_id, client)
@@ -2101,7 +1820,7 @@ impl Task {
                     true
                 }
             }
-            Command::OpenRecord(workspace_id, route) => {
+            Command::Client(Cmd::OpenRecordAt(workspace_id, route)) => {
                 self.open_record(workspace_id, route, client)
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -2122,28 +1841,28 @@ impl Task {
                 self.plane_ended(workspace_id);
                 true
             }
-            command @ (Command::Live(..) | Command::SealLive(..)) => {
+            Command::Client(command @ (Cmd::Live(..) | Cmd::SealLive(..))) => {
                 self.apply_live(command);
                 true
             }
-            Command::RemoteAction(workspace_id, to, frame) => {
+            Command::Client(Cmd::RemoteAction(workspace_id, to, frame)) => {
                 self.remote_action(workspace_id, to, frame, client);
                 true
             }
-            Command::WantContent(workspace_id, request) => {
+            Command::Client(Cmd::WantContent(workspace_id, request)) => {
                 self.want_content(workspace_id, request, client);
                 true
             }
-            Command::KeepContent(workspace_id, kept) => {
+            Command::Client(Cmd::KeepContent(workspace_id, kept)) => {
                 self.kept.insert(workspace_id, kept);
                 true
             }
-            Command::InstallCipher(route, cipher) => {
+            Command::Client(Cmd::InstallCipher(route, cipher)) => {
                 self.ciphers.insert(route.clone(), cipher);
                 self.release_live(&route);
                 true
             }
-            Command::InstallChannelKeys(route, keys) => {
+            Command::Client(Cmd::InstallChannelKeys(route, keys)) => {
                 // Settled with the next channel changes, the same way as
                 // keys the channel's own governance hands this session. The
                 // channel's records are sealed with them, and so is a call on
@@ -2154,7 +1873,7 @@ impl Task {
                 self.new_keys.push((route, keys));
                 true
             }
-            Command::OpenRoute(route) => {
+            Command::Client(Cmd::OpenRoute(route)) => {
                 self.open_channel(&route);
                 let asked = match route.workspace_id() {
                     Ok(workspace_id) if self.when_opened.contains(&workspace_id) => {
@@ -2165,11 +1884,11 @@ impl Task {
                 self.opened_routes.insert(route);
                 asked
             }
-            Command::Publish(route, frames) => {
+            Command::Client(Cmd::Write(route, frames)) => {
                 self.publish(route, frames);
                 true
             }
-            Command::Barrier(done) => {
+            Command::Client(Cmd::Barrier(done)) => {
                 let held: BTreeSet<DocumentRoute> =
                     self.engine.held_writes().lock().keys().cloned().collect();
                 if held.is_empty() {
@@ -2179,15 +1898,15 @@ impl Task {
                 }
                 true
             }
-            Command::Presence(workspace_id, frames) => {
+            Command::Client(Cmd::Presence(workspace_id, frames)) => {
                 self.publish_presence(workspace_id, frames);
                 true
             }
-            Command::SayForRun(workspace_id, words) => {
+            Command::Client(Cmd::SayForRun(workspace_id, words)) => {
                 self.say_for_run(workspace_id, words, client).await;
                 true
             }
-            Command::CallAudio(workspace_id, frames) => {
+            Command::Client(Cmd::CallAudio(workspace_id, frames)) => {
                 self.publish_call_audio(workspace_id, frames);
                 true
             }
@@ -2200,41 +1919,54 @@ impl Task {
                 self.enter(entering, done, client);
                 true
             }
-            Command::VoiceCalls(workspace_id) => self.voice_calls(workspace_id, client),
-            Command::VoiceCall(workspace, request, op) => {
+            Command::Client(Cmd::VoiceCalls(workspace_id)) => {
+                self.voice_calls(workspace_id, client)
+            }
+            Command::Client(Cmd::VoiceCall(workspace, request, op)) => {
                 self.voice_call(workspace, request, op, client)
             }
-            Command::VoiceJoin(workspace_id, call) => self.voice_join(workspace_id, call, client),
-            Command::VoiceLeave(workspace_id) => self.voice_leave(workspace_id, client),
-            Command::VoiceShow(ws, showing) => self.voice_show(ws, showing, client),
-            Command::CallPictures(workspace_id, pictures) => {
+            Command::Client(Cmd::VoiceJoin(workspace_id, call)) => {
+                self.voice_join(workspace_id, call, client)
+            }
+            Command::Client(Cmd::VoiceLeave(workspace_id)) => {
+                self.voice_leave(workspace_id, client)
+            }
+            Command::Client(Cmd::VoiceShow(ws, showing)) => self.voice_show(ws, showing, client),
+            Command::Client(Cmd::CallPictures(workspace_id, pictures)) => {
                 self.publish_call_pictures(workspace_id, pictures);
                 true
             }
-            Command::CallShowing(workspace_id, shown) => {
+            Command::Client(Cmd::CallShowing(workspace_id, shown)) => {
                 self.show_call_pictures(workspace_id, &shown);
                 true
             }
-            Command::ShowPages(workspace_id, shown) => {
+            Command::Client(Cmd::ShowPages(workspace_id, shown)) => {
                 self.show_pages(workspace_id, &shown);
                 true
             }
-            Command::CallPictureRestart(workspace_id, device, source) => {
+            Command::Client(Cmd::CallPictureRestart(workspace_id, device, source)) => {
                 self.restart_call_picture(workspace_id, device, source);
                 true
             }
-            Command::Administer(request, done) => {
+            Command::Client(Cmd::Administer(request, done)) => {
                 self.administer(&request, done, client);
                 true
             }
-            Command::Revoke(entry) => self.revoke(entry, client),
+            Command::Client(Cmd::Revoke(entry)) => self.revoke(entry, client),
             // Handled by the caller's loop.
-            Command::Reconnect | Command::Retry | Command::Refresh | Command::Close => true,
+            Command::Client(Cmd::Reconnect | Cmd::Retry | Cmd::Refresh | Cmd::Stop) => true,
+            // What only a desktop's own plane carries: nothing a relay session says.
+            Command::Client(_) => true,
         }
     }
 
     /// Subscribe to `workspace_id`, now or once connected.
     fn join(&mut self, workspace_id: u64, client: Option<&RelayClient>) -> bool {
+        // Taking part again is taking part: a page's client says it on every pass over the
+        // workspaces it shows, and one still being placed is subscribed once the host governs it.
+        if self.workspaces.contains(&workspace_id) || self.placing.contains_key(&workspace_id) {
+            return true;
+        }
         self.workspaces.insert(workspace_id);
         self.planes_due.insert(workspace_id);
         self.update(|status| {
@@ -2245,7 +1977,7 @@ impl Task {
         client.is_none_or(|client| client.send(self.subscribe(workspace_id)).is_ok())
     }
 
-    /// Join `workspace` once the host governs it ([`PeerHandle::join_placed`]).
+    /// Join `workspace` once the host governs it ([`Cmd::JoinPlaced`]).
     fn join_placed(
         &mut self,
         workspace: String,
@@ -2280,14 +2012,16 @@ impl Task {
         let commands = self.commands.clone();
         // Refused (not this person's host, a workspace governed elsewhere) or
         // unanswered: the workspace's admission decides.
-        let placed = move |_: Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>| {
+        let (placed, answered) = tilo_session_client::answer();
+        n0_future::task::spawn(async move {
+            let _ = answered.await;
             if let Some(commands) = commands.upgrade() {
                 let _ = commands.send(Command::Placed(workspace_id));
             }
-        };
+        });
         self.administer(
             &tilo_relay_protocol::workspaces::WorkspacesRequest::Place { workspace, name },
-            Box::new(placed),
+            placed,
             Some(client),
         );
         true
@@ -2347,14 +2081,16 @@ impl Task {
         client: Option<&RelayClient>,
     ) {
         let Some(client) = client else {
-            return done(Err("not connected to the host".into()));
+            let _ = done.send(Err("not connected to the host".into()));
+            return;
         };
         let request_id = self.rooms_next;
         self.rooms_next = self.rooms_next.wrapping_add(1);
         let frame = match postcard::to_stdvec(request) {
             Ok(frame) => frame,
             Err(error) => {
-                return done(Err(format!("the request does not encode: {error}")));
+                let _ = done.send(Err(format!("the request does not encode: {error}")));
+                return;
             }
         };
         self.rooms_pending.insert(request_id, done);
@@ -2363,14 +2099,14 @@ impl Task {
             .is_err()
             && let Some(done) = self.rooms_pending.remove(&request_id)
         {
-            done(Err("the host's session closed".into()));
+            let _ = done.send(Err("the host's session closed".into()));
         }
     }
 
     /// The host answered administration request `request_id`.
     fn rooms_reply(&mut self, request_id: u64, frame: &[u8]) {
         if let Some(done) = self.rooms_pending.remove(&request_id) {
-            done(answered(frame));
+            let _ = done.send(answered(frame));
         }
     }
 
@@ -2378,24 +2114,24 @@ impl Task {
     /// answered here, so nothing waits on a connection that is gone.
     fn requests_lost(&mut self) {
         for (_, done) in std::mem::take(&mut self.rooms_pending) {
-            done(Err("the session ended before the host answered".into()));
+            let _ = done.send(Err("the session ended before the host answered".into()));
         }
         for (_, done) in std::mem::take(&mut self.agent_runs_pending) {
-            done(Err("the session ended before the host answered".into()));
+            let _ = done.send(Err("the session ended before the host answered".into()));
         }
     }
 
     /// Send, seal or open one live frame. Nothing leaves unsealed: a frame
     /// whose record's keys are not here yet waits for them (bounded), and a
     /// frame that names no record is dropped.
-    fn apply_live(&mut self, command: Command) {
+    fn apply_live(&mut self, command: Cmd) {
         use crate::held_live::Waiting;
         let waiting = match command {
-            Command::Live(workspace_id, frame) => Waiting::Send {
+            Cmd::Live(workspace_id, frame) => Waiting::Send {
                 workspace_id,
                 frame,
             },
-            Command::SealLive(workspace_id, frame, done) => Waiting::Seal {
+            Cmd::SealLive(workspace_id, frame, done) => Waiting::Seal {
                 workspace_id,
                 frame,
                 done,
@@ -2444,7 +2180,9 @@ impl Task {
                 frame,
                 done,
             } => match self.seal_live(workspace_id, &frame) {
-                Sealing::Sealed(sealed) => done(Some(sealed)),
+                Sealing::Sealed(sealed) => {
+                    let _ = done.send(Some(sealed));
+                }
                 Sealing::NoKeys(record) if hold => self.held_live.hold_outbound(
                     workspace_id,
                     record,
@@ -2454,7 +2192,9 @@ impl Task {
                         done,
                     },
                 ),
-                Sealing::NoKeys(_) | Sealing::Dropped => done(None),
+                Sealing::NoKeys(_) | Sealing::Dropped => {
+                    let _ = done.send(None);
+                }
             },
             Waiting::Receive {
                 workspace_id,
@@ -3076,7 +2816,11 @@ impl tilo_session_core::remote::RemoteSession for Asking {
         frame: Vec<u8>,
     ) -> Result<(), String> {
         self.commands
-            .send(Command::RemoteAction(workspace_id, device, frame))
+            .send(Command::Client(Cmd::RemoteAction(
+                workspace_id,
+                device,
+                frame,
+            )))
             .map_err(|_| "peer session is closed".to_string())
     }
 

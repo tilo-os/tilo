@@ -22,6 +22,7 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
 use tilo_session_client::Event;
 use tilo_session_client::VoiceEvent;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_session_host::PeerHandle;
 
 use call::{GovernedCall, native, operate};
@@ -74,12 +75,12 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
         workspace.host.cert.clone(),
         page.key.clone(),
     );
-    peer.join(workspace_id).unwrap();
+    peer.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&peer]).await;
     let mut pending = Vec::new();
 
     // The workspace lists its call: active, on the chat's voice channel, empty.
-    peer.voice_calls(workspace_id).unwrap();
+    peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
     let calls = voice(&peer, &mut pending, "the call list", |event| match event {
         VoiceEvent::Calls { result, .. } => Some(result.clone()),
         _ => None,
@@ -111,7 +112,8 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
         _ => None,
     })
     .await;
-    peer.voice_join(workspace_id, workspace.call.call).unwrap();
+    peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
+        .unwrap();
     let bob = voice(&peer, &mut pending, "Bob's grant", granted).await;
     assert_eq!(bob.participants.len(), 2);
     assert_eq!(alice_alone.participants.len(), 1);
@@ -123,7 +125,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     assert!(alice.directions.publish && alice.directions.subscribe);
     // The page watches the list since it first asked: each join pushed a
     // new one, so the list naming Bob may follow one with Alice alone.
-    peer.voice_calls(workspace_id).unwrap();
+    peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
     let listed = voice(
         &peer,
         &mut pending,
@@ -140,13 +142,13 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
 
     // A dropped session resumes the same participation: the host keeps Bob
     // in the call and answers the resumed join with his grant.
-    peer.reconnect().unwrap();
+    peer.send(Cmd::Reconnect).unwrap();
     let resumed = voice(&peer, &mut pending, "Bob's resumed grant", granted).await;
     assert_eq!(resumed.participation, bob.participation);
     assert_eq!(resumed.participants.len(), 2);
 
     // Bob leaves: Alice's roster shrinks.
-    peer.voice_leave(workspace_id).unwrap();
+    peer.send(Cmd::VoiceLeave(workspace_id)).unwrap();
     let alone_again = native(&workspace.owner, |envelope| match envelope {
         Envelope::VoiceGranted { grant, .. } if grant.participants.len() == 1 => Some(*grant),
         _ => None,
@@ -155,7 +157,8 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     assert_eq!(alone_again.participation, alice_alone.participation);
 
     // Bob joins again; when Alice ends the call his session reports it ended.
-    peer.voice_join(workspace_id, workspace.call.call).unwrap();
+    peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
+        .unwrap();
     voice(&peer, &mut pending, "Bob's second grant", granted).await;
     operate(
         &workspace.owner,
@@ -179,7 +182,7 @@ async fn a_browser_session_lists_joins_keeps_and_leaves_a_governed_call() {
     )
     .await;
     assert!(reason.contains("ended"), "{reason}");
-    peer.voice_calls(workspace_id).unwrap();
+    peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
     let ended = voice(
         &peer,
         &mut pending,

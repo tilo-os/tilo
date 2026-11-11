@@ -15,7 +15,7 @@
 //! ([`narration::lines`]): looking at the apps, reading a record, the action
 //! it takes on what, and what that action changed is its selection. The host
 //! says it signed with its own device key, outside the live plane
-//! ([`PeerHandle::say_for_run`]): a host that is no member of the plane holds
+//! ([`Cmd::SayForRun`](tilo_session_client::Cmd::SayForRun)): a host that is no member of the plane holds
 //! none of its keys, and needs none to speak for its runs.
 //!
 //! A run is present from the moment its session says it is one
@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Outbox};
 
 use collab_types::presence::{Payload, Presence, ShellSelection, agent_rgb};
 use tilo_actions::remote::{ActorPlace, Caller, RemoteActionTarget};
@@ -128,7 +129,10 @@ impl RunVoices {
         };
         if let Some(event) = narration::frame(&narrated, voice.narrated, tilo_clock::unix_now_ms())
         {
-            let _ = peer.say_for_run(workspace_id, HostWords::Narration { record, event });
+            let _ = peer.send(Cmd::SayForRun(
+                workspace_id,
+                HostWords::Narration { record, event },
+            ));
         }
     }
 
@@ -196,7 +200,7 @@ impl RunVoices {
         let key = (workspace_id, run.id.clone());
         if !self.runs.contains_key(&key) {
             let arrived = Presence::desktop(cluster, Payload::Arrived).spoken_for(&run.id);
-            let _ = peer.say_for_run(workspace_id, HostWords::Presence(arrived));
+            let _ = peer.send(Cmd::SayForRun(workspace_id, HostWords::Presence(arrived)));
         }
         let voice = self.runs.entry(key).or_insert_with(|| Voice {
             cluster: cluster.to_owned(),
@@ -236,7 +240,7 @@ impl RunVoices {
             };
             if !voice.lease.is_live() {
                 let left = Presence::desktop(&voice.cluster, Payload::Left).spoken_for(run);
-                let _ = peer.say_for_run(*workspace_id, HostWords::Presence(left));
+                let _ = peer.send(Cmd::SayForRun(*workspace_id, HostWords::Presence(left)));
                 return false;
             }
             if voice
@@ -269,7 +273,7 @@ impl Voice {
         let mut view = view;
         view.selection.clone_from(&self.selection);
         let face = Presence::desktop(&self.cluster, Payload::Shell(Box::new(view))).spoken_for(run);
-        let _ = peer.say_for_run(workspace_id, HostWords::Presence(face));
+        let _ = peer.send(Cmd::SayForRun(workspace_id, HostWords::Presence(face)));
     }
 }
 

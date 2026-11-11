@@ -20,8 +20,9 @@ use tilo_relay_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 use web_time::{Duration as Wait, Instant};
 
-use crate::session::{AgentRunCompletion, HOST_ITSELF, PeerConfig, PeerHandle, TransportPhase};
+use crate::session::{HOST_ITSELF, PeerConfig, PeerHandle, TransportPhase};
 use crate::{MemoryPeerStore, PeerStore};
+use tilo_session_client::{Cmd, Outbox};
 use tilo_session_core::remote::SessionActions;
 
 /// How long joining a workspace waits for its host to admit this device.
@@ -203,7 +204,9 @@ impl Device {
         let id = tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| {
             CertifyError::Request(format!("{workspace} names no workspace: {error}"))
         })?;
-        self.peer.join(id).map_err(CertifyError::Request)?;
+        self.peer
+            .send(Cmd::Join(id))
+            .map_err(|closed| CertifyError::Request(closed.to_string()))?;
         if !self.admitted(id).await {
             return Err(CertifyError::Denied(
                 "The workspace did not admit this device.".to_owned(),
@@ -244,14 +247,9 @@ impl Device {
     pub async fn redeem(&self, invitation: &[u8], name: &str) -> Result<Admission, CertifyError> {
         let entering =
             invitation_entering(invitation, name, None).map_err(CertifyError::Request)?;
-        let (send, receive) = tokio::sync::oneshot::channel();
+        let (done, receive) = tokio::sync::oneshot::channel();
         self.peer
-            .enter_then(
-                entering,
-                Box::new(move |answer| {
-                    let _ = send.send(answer);
-                }),
-            )
+            .enter_then(entering, done)
             .map_err(CertifyError::Request)?;
         let entered = receive.await.map_err(|_| {
             CertifyError::Request("the session ended before the host answered".into())
@@ -980,10 +978,7 @@ impl From<HostRefusal> for CertifyError {
 /// # Errors
 /// The session is already another agent's run, the session is closed, or the host did not answer.
 pub async fn run_as_agent(peer: &PeerHandle, label: &str) -> Result<(), String> {
-    let (send, receive) = tokio::sync::oneshot::channel();
-    let done: AgentRunCompletion = Box::new(move |answer| {
-        let _ = send.send(answer);
-    });
+    let (done, receive) = tokio::sync::oneshot::channel();
     peer.run_as_agent_then(label, done)?;
     receive
         .await

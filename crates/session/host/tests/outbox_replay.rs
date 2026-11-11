@@ -20,6 +20,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
+use tilo_session_client::{Cmd, Outbox};
 
 use automerge::AutoCommit;
 use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerHandle, TransportPhase};
@@ -62,7 +63,7 @@ async fn a_barrier_covers_an_edit_held_for_the_workspaces_replay() {
         browser.key.clone(),
     );
     // Before the page joins, it holds no keys.
-    peer.publish(
+    peer.write(
         route(),
         &say(&mut AutoCommit::new(), "written before the replay"),
     )
@@ -122,7 +123,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
         store.clone(),
     );
     peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    peer.open_route(route()).unwrap();
+    peer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&peer]).await;
     admitted(&peer).await;
 
@@ -130,7 +131,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     host.relay.shutdown().await;
     let mut offline = AutoCommit::new();
     for text in ["written while offline", "typed while offline"] {
-        peer.publish(route(), &say(&mut offline, text)).unwrap();
+        peer.write(route(), &say(&mut offline, text)).unwrap();
     }
     // The outbox persists an edit before the link to the stopped host has
     // reported its end, so wait for the peer to see the host gone as well.
@@ -144,7 +145,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
 
     let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     laptop.reconnect(&host.relay, &root).await;
-    peer.reconnect().unwrap();
+    peer.send(Cmd::Reconnect).unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the replayed commits to be durable", || async {
         receipt.try_recv().ok()
@@ -163,7 +164,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     observer_peer
         .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
-    observer_peer.open_route(route()).unwrap();
+    observer_peer.send(Cmd::OpenRoute(route())).unwrap();
     holds(&observer_peer, &route(), &offline).await;
     peer.close();
     observer_peer.close();

@@ -1,6 +1,7 @@
 //! Real certified HTTPS submit/retry and a canonical retained receipt.
 use super::*;
 use tilo_agent_participant::ReplicaActor;
+use tilo_session_client::Outbox;
 use ui::feedback::{Destination, Draft, Submission};
 
 async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
@@ -39,7 +40,7 @@ async fn create_feedback_record(browser: &mut Browser) -> DocumentRoute {
     )
     .unwrap();
     let mutation = collab_types::DocumentMutation::Snapshot(doc.save());
-    browser.peer.publish(route.clone(), &mutation).unwrap();
+    browser.peer.write(route.clone(), &mutation).unwrap();
     let (collab_types::DocumentMutation::Snapshot(bytes)
     | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
     browser
@@ -613,7 +614,7 @@ fn publish_participant(
     route: &DocumentRoute,
     mutation: &collab_types::DocumentMutation,
 ) {
-    browser.peer.publish(route.clone(), mutation).unwrap();
+    browser.peer.write(route.clone(), mutation).unwrap();
     let (collab_types::DocumentMutation::Snapshot(bytes)
     | collab_types::DocumentMutation::Incremental(bytes)) = mutation;
     browser

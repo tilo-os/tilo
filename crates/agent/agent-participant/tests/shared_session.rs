@@ -47,6 +47,7 @@ tilo_automerge_isolate::test_worker!();
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Outbox};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -224,7 +225,7 @@ async fn call(
     .unwrap();
     let events = browser.events();
     browser
-        .send_remote_action(workspace(), host_device, frame)
+        .send(Cmd::RemoteAction(workspace(), host_device, frame))
         .unwrap();
     let mut agent = agent;
     wait_for("the host's receipt", || {
@@ -425,7 +426,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         record: page.wire_record().to_owned(),
     };
     browser
-        .publish(route.clone(), &page.take_mutation().unwrap())
+        .write(route.clone(), &page.take_mutation().unwrap())
         .unwrap();
     let receipt = browser.barrier().unwrap();
     wait_for("the page's record to be durable", || async {
@@ -512,7 +513,9 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // 5. The host keeps the agent to its delegated workspaces.
     agent
         .peer()
-        .join(tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap())
+        .send(Cmd::Join(
+            tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap(),
+        ))
         .unwrap();
     wait_for(
         "the host to refuse a workspace outside the delegation",

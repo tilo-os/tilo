@@ -20,6 +20,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_session_client::{Cmd, Outbox};
 
 use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
@@ -88,7 +89,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
         Arc::new(MemoryPeerStore::default()),
         entry.clone(),
     );
-    peer.join(lounge.workspace_id).unwrap();
+    peer.send(Cmd::Join(lounge.workspace_id)).unwrap();
     let admission = entered(&peer).await.unwrap();
     assert_eq!(admission.workspace, lounge.workspace);
     assert_eq!(admission.workspace_id, lounge.workspace_id);
@@ -122,7 +123,7 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_door_say
     .unwrap();
     assert_eq!(kept, cert);
     let member = start_peer(host.iroh(), cert, host_cert.clone(), page);
-    member.join(lounge.workspace_id).unwrap();
+    member.send(Cmd::Join(lounge.workspace_id)).unwrap();
     in_workspace(&member, lounge.workspace_id).await;
     member.close();
 
@@ -350,7 +351,7 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
         host_device.cert.clone(),
         device.clone(),
     );
-    probe.join(lounge.workspace_id).unwrap();
+    probe.send(Cmd::Join(lounge.workspace_id)).unwrap();
     tokio::time::sleep(Duration::from_secs(2)).await;
     let status = probe.status();
     assert_ne!(

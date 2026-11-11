@@ -16,6 +16,7 @@
 //! a caller is a device of the workspace's user.
 
 use std::collections::VecDeque;
+use tilo_session_client::{Cmd, Outbox};
 
 use tilo_actions::door::DoorError;
 use tilo_actions::remote::{
@@ -172,7 +173,10 @@ impl AgentParticipant {
         };
         match RemoteActionFrame::new(reply).encode() {
             Ok(bytes) => {
-                if let Err(error) = self.peer.send_remote_action(self.workspace_id, from, bytes) {
+                if let Err(error) =
+                    self.peer
+                        .send(Cmd::RemoteAction(self.workspace_id, from, bytes))
+                {
                     tracing::warn!(%error, "agent: a remote-action answer was not sent");
                 }
             }

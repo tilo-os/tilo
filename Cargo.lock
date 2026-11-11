@@ -21590,6 +21590,7 @@ dependencies = [
  "iroh",
  "iroh-base",
  "neighbour-wire",
+ "oneshot",
  "postcard",
  "rand_core 0.10.0",
  "serde",

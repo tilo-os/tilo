@@ -5,7 +5,7 @@
 //! and sends every other record to a device once that device opens it,
 //! saying so in the [`Event::HostReady`] that ends the replay. So a record
 //! the agent does not hold there is not a record the workspace does not
-//! have: it is asked for ([`PeerHandle::open_route`], which asks the host
+//! have: it is asked for ([`Cmd::OpenRoute`](tilo_session_client::Cmd::OpenRoute), which asks the host
 //! for it and delivers it as an ordinary change when it comes), and it is
 //! the agent's to make only once the host answered it holds none of it
 //! ([`Event::RecordOpened`] with no frames). Without that, an agent
@@ -13,6 +13,7 @@
 //! change it published forked the workspace's document.
 
 use super::{AgentParticipant, DocumentRoute, Step, parts};
+use tilo_session_client::{Cmd, Outbox};
 
 impl AgentParticipant {
     /// Take the workspace's answer about a record this agent asked for: the
@@ -85,7 +86,7 @@ impl AgentParticipant {
             if self.absent_records.contains(&route) || !self.asked_records.insert(route.clone()) {
                 continue;
             }
-            if let Err(error) = self.peer.open_route(route) {
+            if let Err(error) = self.peer.send(Cmd::OpenRoute(route)) {
                 tracing::warn!(%error, "agent: a record the workspace may hold was not asked for");
             }
         }
@@ -104,7 +105,7 @@ impl AgentParticipant {
             return false;
         }
         if self.asked_records.insert(route.clone())
-            && let Err(error) = self.peer.open_route(route.clone())
+            && let Err(error) = self.peer.send(Cmd::OpenRoute(route.clone()))
         {
             tracing::warn!(%error, "agent: a record the workspace may hold was not asked for");
         }

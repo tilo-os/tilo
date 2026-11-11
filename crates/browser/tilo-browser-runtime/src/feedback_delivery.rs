@@ -16,7 +16,7 @@ use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
-use tilo_session::sync::Event;
+use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_core::remote::Heard;
 use tilo_session_host::{PeerEvents, PeerHandle};
 use tilo_user_identity::DeviceCert;
@@ -192,8 +192,11 @@ impl Connection {
         })
         .encode()
         .map_err(|error| error.to_string())?;
-        self.peer
-            .send_remote_action(self.workspace, self.owner.device_public_key, frame)?;
+        self.peer.send(Cmd::RemoteAction(
+            self.workspace,
+            self.owner.device_public_key,
+            frame,
+        ))?;
         self.pending
             .insert(self.serial, (web_time::Instant::now(), submission));
         Ok(self.serial)
@@ -249,8 +252,11 @@ impl Connection {
         let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request))
             .encode()
             .map_err(|error| error.to_string())?;
-        self.peer
-            .send_remote_action(self.workspace, self.owner.device_public_key, frame)?;
+        self.peer.send(Cmd::RemoteAction(
+            self.workspace,
+            self.owner.device_public_key,
+            frame,
+        ))?;
         self.filing
             .insert(invocation, (web_time::Instant::now(), submission.clone()));
         Ok(())

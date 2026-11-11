@@ -6,7 +6,7 @@ use std::sync::Arc;
 use iroh_base::{EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId;
 use tilo_session_client::presence::OwnPresence;
-use tilo_session_client::{Device, Presence, SayPresence, topic_of};
+use tilo_session_client::{Cmd, Device, Outbox, Presence, SayPresence, topic_of};
 use tilo_user_identity::DeviceCert;
 
 use crate::session::PeerHandle;
@@ -76,8 +76,9 @@ impl SayPresence for Saying {
     ) -> Result<(), String> {
         // The plane numbers the objects it carries itself; `sequence` is the board's count.
         let _ = sequence;
-        self.peer
-            .publish_presence(topic_of(workspace), vec![frame.clone()])
+        Ok(self
+            .peer
+            .send(Cmd::Presence(topic_of(workspace), vec![frame.clone()]))?)
     }
 }
 

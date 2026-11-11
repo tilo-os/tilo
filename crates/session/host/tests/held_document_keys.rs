@@ -23,6 +23,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeSet;
 use std::time::SystemTime;
+use tilo_session_client::Outbox;
 
 use channel_crypto::{ChannelPeer, VaultKey};
 use collab_types::surface::ContentSurfaces;

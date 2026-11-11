@@ -12,6 +12,7 @@
 
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_client::{Cmd, Outbox};
 
 use super::{COMMIT_WAIT, Needs, Worker, bytes_of, is_part};
 
@@ -72,13 +73,13 @@ impl Worker {
                 .get_mut(&workspace_id)
                 .ok_or("the workspace was not joined")?
                 .peer
-                .install_channel_keys(route.clone(), keys)?;
+                .send(Cmd::InstallChannelKeys(route.clone(), keys))?;
         }
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
-        workspace.peer.publish(route.clone(), mutation)?;
+        workspace.peer.write(route.clone(), mutation)?;
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
         self.index_record(workspace_id, route, &bytes_of(mutation));
@@ -186,7 +187,7 @@ impl Worker {
         {
             workspace
                 .peer
-                .install_channel_keys(index_route.clone(), keys?)?;
+                .send(Cmd::InstallChannelKeys(index_route.clone(), keys?))?;
         }
         workspace
             .wait_for(

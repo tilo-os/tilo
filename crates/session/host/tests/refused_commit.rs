@@ -24,6 +24,7 @@ use tilo_peer_state::document_frame::ContentCipher;
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
 use tilo_session_client::Event;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -215,10 +216,10 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         workspace(),
     )
     .await;
-    peer.install_cipher(
+    peer.send(Cmd::InstallCipher(
         route.clone(),
         Box::new(Keys(creator.content_keys().unwrap())),
-    )
+    ))
     .unwrap();
 
     // Bob pins notes on his board, each sent as the page sends a record's
@@ -235,7 +236,7 @@ async fn a_change_over_the_change_budget_is_withdrawn_and_its_app_told_why() {
         } else {
             DocumentMutation::Incremental(app.read_document(|doc| doc.clone().save_after(&heads)))
         };
-        peer.publish(route.clone(), &mutation).unwrap();
+        peer.write(route.clone(), &mutation).unwrap();
         if let Answer::Refused { changes, reason } = answer(&peer).await {
             refused = Some((pinned, changes, reason));
             break;

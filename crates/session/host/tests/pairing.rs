@@ -29,6 +29,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
+use tilo_session_client::{Cmd, Outbox};
 
 use ed25519_dalek::{Signer as _, SigningKey};
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -211,15 +212,15 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
     ready(&[&phone_peer]).await;
     let mut note = automerge::AutoCommit::new();
     laptop_peer
-        .publish(route(), &say(&mut note, "written on the laptop"))
+        .write(route(), &say(&mut note, "written on the laptop"))
         .unwrap();
     hears(&phone_peer, &route(), "written on the laptop").await;
 
     // It reconnects as the same device and still follows the workspace.
-    phone_peer.reconnect().unwrap();
+    phone_peer.send(Cmd::Reconnect).unwrap();
     ready(&[&phone_peer]).await;
     laptop_peer
-        .publish(route(), &say(&mut note, "after the reconnect"))
+        .write(route(), &say(&mut note, "after the reconnect"))
         .unwrap();
     hears(&phone_peer, &route(), "after the reconnect").await;
 
@@ -233,7 +234,7 @@ async fn a_paired_device_is_the_same_person_and_keeps_working_after_reconnecting
         .unwrap();
     ready(&[&reloaded]).await;
     laptop_peer
-        .publish(route(), &say(&mut note, "after the reload"))
+        .write(route(), &say(&mut note, "after the reload"))
         .unwrap();
     hears(&reloaded, &route(), "after the reload").await;
     reloaded.close();
@@ -662,7 +663,7 @@ async fn a_device_paired_through_the_door_enters_the_workspace_as_the_person() {
     }
 
     // The phone reconnects and is let in again, still as Bob.
-    phone_peer.reconnect().unwrap();
+    phone_peer.send(Cmd::Reconnect).unwrap();
     in_workspace(&phone_peer, workspace.workspace_id).await;
     phone_peer.close();
     laptop.close();

@@ -24,6 +24,7 @@ tilo_automerge_isolate::test_worker!();
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_user_identity::DeviceCapabilities;
 
 use support::{
@@ -77,9 +78,9 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
             host.cert.clone(),
             device.key.clone(),
         );
-        page.join(lounge_id).unwrap();
+        page.send(Cmd::Join(lounge_id)).unwrap();
         ready(&[&page]).await;
-        page.open_route(welcome.clone()).unwrap();
+        page.send(Cmd::OpenRoute(welcome.clone())).unwrap();
         pages.push(page);
     }
     let [carol, dave] = [&pages[0], &pages[1]];
@@ -87,7 +88,7 @@ async fn a_later_person_finds_nothing_in_the_clear_in_a_sealed_lounge() {
     // Carol writes the workspace's welcome note; it goes out sealed once the
     // host admitted her to its channel.
     carol
-        .publish(
+        .write(
             welcome.clone(),
             &say(&mut automerge::AutoCommit::new(), "welcome to the lounge"),
         )

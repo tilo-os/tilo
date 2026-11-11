@@ -70,6 +70,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
@@ -881,7 +882,7 @@ impl Workspace {
                 let _ = jobs.send((Instant::now(), Job::Joined(workspace_id)));
             }
         }));
-        peer.join(workspace_id)?;
+        peer.send(Cmd::Join(workspace_id))?;
         Ok(Self {
             peer,
             events,
@@ -1076,8 +1077,10 @@ impl Workspace {
                 None => {}
                 Some(Ok(keys)) => {
                     self.peer
-                        .install_channel_keys(route, keys)
-                        .map_err(|reason| ActionHostError::Unavailable { reason })?;
+                        .send(Cmd::InstallChannelKeys(route, keys))
+                        .map_err(|closed| ActionHostError::Unavailable {
+                            reason: closed.to_string(),
+                        })?;
                 }
                 Some(Err(reason)) => {
                     if let Needs::Act { app_id, record } = needs {
@@ -2623,8 +2626,8 @@ impl Worker {
                 .get(&workspace_id)
                 .ok_or_else(|| refused("the workspace was not joined".into()))?
                 .peer
-                .install_channel_keys(route.clone(), keys)
-                .map_err(refused)?;
+                .send(Cmd::InstallChannelKeys(route.clone(), keys))
+                .map_err(|closed| refused(closed.to_string()))?;
         }
         if let Some(mutation) = genesis {
             self.commit(workspace_id, &route, &mutation)

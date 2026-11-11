@@ -28,6 +28,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
+use tilo_session_client::{Cmd, Outbox};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::presence::Presence;
@@ -275,7 +276,7 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     // An acknowledged commit from the page reaches the laptop, and the
     // laptop's reply reaches the page.
     let mut note = automerge::AutoCommit::new();
-    page.publish(route(), &say(&mut note, "written on the page"))
+    page.write(route(), &say(&mut note, "written on the page"))
         .unwrap();
     // Behind a lock: the receipt itself is not shared between threads, and
     // the wait holds it across its sleeps.
@@ -288,7 +289,7 @@ async fn documents_sync_both_ways_until_the_device_is_revoked(carrier: Carrier) 
     .unwrap();
     let mut on_laptop = holds(&laptop, &route(), &note).await;
     laptop
-        .publish(route(), &say(&mut on_laptop, "typed on the laptop"))
+        .write(route(), &say(&mut on_laptop, "typed on the laptop"))
         .unwrap();
     holds(&page, &route(), &on_laptop).await;
     assert_eq!(page.snapshot().synchronization, "acknowledged");
@@ -343,13 +344,13 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
 
     // The workspace's governance admits the page.
     let page = page(&ada.host, carrier, key, &cert, &host_cert);
-    page.install_channel_keys(plane_route(), keys.clone())
+    page.send(Cmd::InstallChannelKeys(plane_route(), keys.clone()))
         .unwrap();
     page.join_placed(WORKSPACE, "Workspace").unwrap();
     in_workspace(&page, support::workspace()).await;
     let laptop = ada.laptop_peer(&host_cert).await;
     laptop
-        .install_channel_keys(plane_route(), keys.clone())
+        .send(Cmd::InstallChannelKeys(plane_route(), keys.clone()))
         .unwrap();
     in_workspace(&laptop, support::workspace()).await;
 
@@ -358,7 +359,7 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
     let events = laptop.events();
     let said = Presence::pointing(WORKSPACE, 7, 0.25, 0.75);
     let (from, track, body) = wait_for("the laptop to hear the page on its plane", || {
-        page.publish_presence(support::workspace(), vec![said.clone()])
+        page.send(Cmd::Presence(support::workspace(), vec![said.clone()]))
             .unwrap();
         let events = events.drain();
         async move {
@@ -423,11 +424,11 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
         page.key.clone(),
         Arc::new(MemoryPeerStore::default()),
     );
-    peer.join(workspace_id).unwrap();
+    peer.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&peer]).await;
     let mut pending = Vec::new();
 
-    peer.voice_calls(workspace_id).unwrap();
+    peer.send(Cmd::VoiceCalls(workspace_id)).unwrap();
     let calls = voice(&peer, &mut pending, "the call list", |event| match event {
         VoiceEvent::Calls { result, .. } => Some(result.clone()),
         _ => None,
@@ -447,7 +448,8 @@ async fn the_device_takes_part_in_a_call(carrier: Carrier) {
             participation: None,
         })
         .unwrap();
-    peer.voice_join(workspace_id, workspace.call.call).unwrap();
+    peer.send(Cmd::VoiceJoin(workspace_id, workspace.call.call))
+        .unwrap();
     let bob: VoiceGrant = voice(&peer, &mut pending, "Bob's grant", |event| match event {
         VoiceEvent::Granted { grant, .. } if grant.participants.len() == 2 => {
             Some((**grant).clone())

@@ -33,6 +33,7 @@ tilo_automerge_isolate::test_worker!();
 use std::path::Path;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming as _;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use automerge::transaction::Transactable as _;
@@ -110,14 +111,7 @@ fn dev_tls(state: &Path) -> TlsSource {
 }
 
 async fn workspaces(peer: &PeerHandle, request: WorkspacesRequest) -> WorkspacesReply {
-    let (reply, answer) = tokio::sync::oneshot::channel();
-    peer.rooms_then(
-        request,
-        Box::new(move |result| {
-            let _ = reply.send(result);
-        }),
-    )
-    .unwrap();
+    let answer = peer.ask_workspaces(request).unwrap();
     tilo_test_env::within("the node answers its administration route", answer)
         .await
         .unwrap()
@@ -326,7 +320,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         matches!(entered, WorkspacesReply::Workspace(_)),
         "{entered:?}"
     );
-    ada.join(acme.workspace_id).unwrap();
+    ada.send(Cmd::Join(acme.workspace_id)).unwrap();
     ready(&[&ada]).await;
 
     // A document, sealed before it leaves the page: the node takes part in
@@ -337,9 +331,9 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         record: "plan".into(),
     };
     let (snapshot, change) = plan();
-    ada.publish(route.clone(), &DocumentMutation::Snapshot(snapshot.clone()))
+    ada.write(route.clone(), &DocumentMutation::Snapshot(snapshot.clone()))
         .unwrap();
-    ada.publish(
+    ada.write(
         route.clone(),
         &DocumentMutation::Incremental(change.clone()),
     )
@@ -438,7 +432,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
         "the invitation admits the person who holds it"
     );
     assert_eq!(asked.role, WorkspaceRole::Editor);
-    bo.join(acme.workspace_id).unwrap();
+    bo.send(Cmd::Join(acme.workspace_id)).unwrap();
     let mut written = automerge::AutoCommit::load(&snapshot).unwrap();
     written.load_incoming(&change).unwrap();
     support::holds(&bo, &route, &written).await;
@@ -523,7 +517,7 @@ async fn a_company_node_governs_and_seals_the_workspace_people_join() {
     );
     let cy_device = cy_cert.device_public_key;
     let cy = start_peer(host.clone(), cy_cert, host_cert.clone(), cy_key);
-    cy.join(acme.workspace_id).unwrap();
+    cy.send(Cmd::Join(acme.workspace_id)).unwrap();
     support::holds(
         &cy,
         &route,

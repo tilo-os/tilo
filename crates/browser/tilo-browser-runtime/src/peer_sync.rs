@@ -15,7 +15,7 @@ use collab_types::presence::{
 };
 use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
-use tilo_session::sync::{Client, Device, Outbox, OwnPresence, Topic, Transport};
+use tilo_session::sync::{Client, Device, OwnPresence, Topic, Transport};
 use tilo_session_core::remote::SessionActions;
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::DeviceCert;
@@ -181,17 +181,6 @@ fn pointer_of(value: &JsPresence) -> Result<Option<tilo_live::presence::Point>, 
         .transpose()
 }
 
-/// What this page has no carrier for: the client's commands to the plane, which this session says
-/// through its host — the mount that shows a workspace opens its live plane.
-#[derive(Debug)]
-struct NoCarrier;
-
-impl Outbox for NoCarrier {
-    fn send(&self, _command: tilo_session::sync::Cmd) -> bool {
-        false
-    }
-}
-
 /// The most narrated work a workspace holds for its mounts between two frames: a burst past it is
 /// older than what the frame shows anyway.
 const MAX_HELD_INTERACTIONS: usize = 32;
@@ -251,9 +240,16 @@ pub(crate) fn register(
     };
     let (_heard, arrived) = std::sync::mpsc::channel();
     let (_landed, enrolled) = std::sync::mpsc::channel();
+    #[cfg_attr(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "a page runs on one thread, and its session's handle holds the page's engine"
+        )
+    )]
     let client = Rc::new(Client::over(
         Transport {
-            outgoing: std::sync::Arc::new(NoCarrier),
+            outgoing: std::sync::Arc::new(handle.clone()),
             arrived,
             enrolled,
             saying: Some(tilo_session_host::saying(handle)),

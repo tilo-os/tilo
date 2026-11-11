@@ -42,6 +42,7 @@ tilo_automerge_isolate::test_worker!();
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
+use tilo_session_client::{Cmd, Outbox};
 
 use std::time::Duration;
 use tilo_session_client::Event;
@@ -337,9 +338,8 @@ impl Lounge {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(support::ready(&[&page]));
         });
-        let (done, reply) = std::sync::mpsc::sync_channel(1);
-        page.rooms_then(
-            WorkspacesRequest::Invite {
+        let reply = page
+            .ask_workspaces(WorkspacesRequest::Invite {
                 workspace: self.workspace.clone(),
                 // The host takes one request per id, and a second invitation is
                 // a request of its own: the id names this ask, not a fixed
@@ -350,12 +350,8 @@ impl Lounge {
                 inviter_name: Some("The Lounge".into()),
                 wait_list_entry: None,
                 recipient: Some(to.root.verifying_key().to_bytes()),
-            },
-            Box::new(move |result| {
-                let _ = done.send(result);
-            }),
-        )
-        .unwrap();
+            })
+            .unwrap();
         let reply = reply
             .recv_timeout(Duration::from_secs(180))
             .expect("the host answers the invite")
@@ -530,8 +526,8 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         cluster_id: lounge.workspace.clone(),
         record: String::new(),
     };
-    page.open_route(chat.clone()).unwrap();
-    page.open_route(desktop.clone()).unwrap();
+    page.send(Cmd::OpenRoute(chat.clone())).unwrap();
+    page.send(Cmd::OpenRoute(desktop.clone())).unwrap();
     // 1. The records' keys: each record's channel is the page's, ready.
     // Their admission is the workspace's participants' (the host's own device
     // among them), not a note's, so this waits on the two routes themselves.
@@ -611,7 +607,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
     let other = person("Second visitor").await;
     let second_invitation = lounge.invite(&other);
     let second = fresh_page(&lounge, &other, &second_invitation).await;
-    second.open_route(desktop.clone()).unwrap();
+    second.send(Cmd::OpenRoute(desktop.clone())).unwrap();
     let first_device = visitor.cert.device_public_key;
     let second_device = other.cert.device_public_key;
     let (tab, at) = (0x41, (12.0f32, 34.0f32));
@@ -624,12 +620,12 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         // The first page says where its pointer is; presence is a live frame
         // the host fans out and never keeps, so it says it again while the
         // second page listens.
-        page.publish_presence(
+        page.send(Cmd::Presence(
             room_id,
             vec![Presence::pointing(&lounge.workspace, tab, at.0, at.1)],
-        )
+        ))
         .unwrap();
-        page.publish_presence(
+        page.send(Cmd::Presence(
             room_id,
             vec![Presence::desktop(
                 &lounge.workspace,
@@ -638,7 +634,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
                     automatic: false,
                 },
             )],
-        )
+        ))
         .unwrap();
         let (frames, people) = presence_frames(&second, 1).await;
         live_seen = live_seen.saturating_add(frames.len());
@@ -727,10 +723,10 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
     // board draws it: what a person's page does when they move the pointer,
     // measured from the word leaving the first page to the second drawing it.
     let started = std::time::Instant::now();
-    page.publish_presence(
+    page.send(Cmd::Presence(
         workspace_id,
         vec![Presence::pointing(&lounge.workspace, tab, at.0, at.1)],
-    )
+    ))
     .unwrap();
     loop {
         gather_presence(&other, &mut heard, &mut live_peers);

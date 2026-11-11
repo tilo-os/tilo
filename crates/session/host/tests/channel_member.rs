@@ -20,6 +20,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeSet;
+use tilo_session_client::{Cmd, Outbox};
 
 use automerge::AutoCommit;
 use channel_crypto::{Access, ChannelPeer, VaultKey};
@@ -346,11 +347,11 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         std::sync::Arc::new(tilo_session_host::MemoryPeerStore::default()),
     );
     peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    peer.open_route(route()).unwrap();
+    peer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&peer]).await;
     // Written before it holds the keys: held, then sealed once admitted.
     let edit = say(&mut AutoCommit::new(), "from the browser");
-    peer.publish(route(), &edit).unwrap();
+    peer.write(route(), &edit).unwrap();
 
     // The laptop admits the browser when its signed request arrives, and
     // opens what the browser sealed.
@@ -446,10 +447,10 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     };
     let first = start();
     first.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    first.open_route(route()).unwrap();
+    first.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&first]).await;
     let edit = say(&mut AutoCommit::new(), "before the reload");
-    first.publish(route(), &edit).unwrap();
+    first.write(route(), &edit).unwrap();
     // The edit is kept with the channel state while it waits for its keys.
     wait_for("the held edit to be stored", || {
         let stored = store.load_channels().is_some_and(|bytes| {
@@ -466,7 +467,7 @@ async fn an_edit_held_for_the_keys_survives_a_reload() {
     reloaded
         .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
-    reloaded.open_route(route()).unwrap();
+    reloaded.send(Cmd::OpenRoute(route())).unwrap();
     assert_eq!(
         laptop.admit_until_edit(&browser).await,
         DocumentFrame::Whole(edit)
@@ -500,10 +501,10 @@ async fn a_page_that_joined_first_holds_its_edit_until_the_genesis_admits_it() {
         browser.key.clone(),
     );
     peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    peer.open_route(route()).unwrap();
+    peer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&peer]).await;
     let edit = say(&mut AutoCommit::new(), "before the genesis");
-    peer.publish(route(), &edit).unwrap();
+    peer.write(route(), &edit).unwrap();
 
     laptop.govern();
     assert_eq!(

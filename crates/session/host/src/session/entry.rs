@@ -11,10 +11,9 @@ use tokio::sync::mpsc;
 
 use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, PeerHandle, Task, TransportPhase};
 
-/// Called once with the host's answer to another entry, see
-/// [`PeerHandle::enter_then`].
+/// Where the host's answer to another entry goes, see [`PeerHandle::enter_then`].
 pub type EntryCompletion =
-    Box<dyn FnOnce(Result<tilo_relay_protocol::entering::Entered, LinkError>) + Send>;
+    tokio::sync::oneshot::Sender<Result<tilo_relay_protocol::entering::Entered, LinkError>>;
 impl PeerHandle {
     /// Enter another workspace as `entering` says, on a stream of its own on
     /// this session's connection ([`tilo_relay_protocol::entering`]): a
@@ -232,7 +231,7 @@ impl Task {
         client: Option<&tilo_relay_session::RelayClient>,
     ) {
         let Some(entrance) = client.and_then(tilo_relay_session::RelayClient::entrance) else {
-            done(Err(LinkError::Unavailable(
+            let _ = done.send(Err(LinkError::Unavailable(
                 "not connected to the host".to_owned(),
             )));
             return;
@@ -249,7 +248,7 @@ impl Task {
                 LinkError::Unavailable("the host did not answer the entry in time".to_owned())
             })
             .and_then(|answer| answer.map_err(super::connect::link_error));
-            done(answer);
+            let _ = done.send(answer);
         });
     }
 

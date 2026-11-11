@@ -253,7 +253,7 @@ impl Task {
             .map(|entry| entry.0)
             .collect();
         if owed.is_empty() {
-            done(Ok(()));
+            let _ = done.send(Ok(()));
         } else {
             self.barriers.push((owed, None, done));
         }
@@ -353,7 +353,7 @@ impl Task {
                 .partition(|(owed, _, _)| !owed.is_empty());
             self.barriers = waiting;
             for (_, refused, complete) in done {
-                complete(refused.map_or(Ok(()), Err));
+                let _ = complete.send(refused.map_or(Ok(()), Err));
             }
         }
     }

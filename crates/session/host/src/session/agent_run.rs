@@ -6,9 +6,8 @@ use tilo_relay_session::RelayClient;
 
 use super::{Command, PeerHandle, Task};
 
-/// Called once with whether the session is now the agent's run, see
-/// [`PeerHandle::run_as_agent_then`].
-pub type AgentRunCompletion = Box<dyn FnOnce(Result<(), String>) + Send>;
+/// Where whether the session is now the agent's run goes, see [`PeerHandle::run_as_agent_then`].
+pub type AgentRunCompletion = tokio::sync::oneshot::Sender<Result<(), String>>;
 
 impl PeerHandle {
     /// Say this session is one run of the agent `label` names: from then on every request it makes
@@ -33,7 +32,7 @@ impl Task {
         client: Option<&RelayClient>,
     ) -> bool {
         let Some(client) = client else {
-            done(Err("not connected to the host".into()));
+            let _ = done.send(Err("not connected to the host".into()));
             return true;
         };
         let request_id = self.agent_runs_next;
@@ -44,7 +43,7 @@ impl Task {
             .is_err()
             && let Some(done) = self.agent_runs_pending.remove(&request_id)
         {
-            done(Err("the host's session closed".into()));
+            let _ = done.send(Err("the host's session closed".into()));
         }
         true
     }
@@ -59,7 +58,7 @@ impl Task {
             return;
         };
         if let Some(done) = self.agent_runs_pending.remove(&request_id) {
-            done(refusal.map_or(Ok(()), Err));
+            let _ = done.send(refusal.map_or(Ok(()), Err));
         }
     }
 }

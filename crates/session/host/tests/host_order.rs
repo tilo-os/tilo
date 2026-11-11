@@ -22,6 +22,7 @@ tilo_automerge_isolate::test_worker!();
 
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
+use tilo_session_client::Outbox;
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -92,10 +93,10 @@ async fn https_and_iroh_commits_share_one_host_order() {
     let (mut over_https, mut over_iroh) = (AutoCommit::new(), AutoCommit::new());
     for index in 0..EACH {
         browser_peer
-            .publish(route(), &say(&mut over_https, &format!("https-{index}")))
+            .write(route(), &say(&mut over_https, &format!("https-{index}")))
             .unwrap();
         laptop_peer
-            .publish(route(), &say(&mut over_iroh, &format!("iroh-{index}")))
+            .write(route(), &say(&mut over_iroh, &format!("iroh-{index}")))
             .unwrap();
     }
     let (browser_kept, browser_last) = durable(&browser_peer).await;

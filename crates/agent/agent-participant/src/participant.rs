@@ -23,6 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Outbox};
 
 use collab_types::presence::Shown;
 use iroh::EndpointId;
@@ -122,7 +123,7 @@ struct Finishing {
     outcome: Result<String, String>,
     /// Completes once every change published before the task finished is
     /// durable; `None` when the session is closed.
-    durable: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    durable: Option<tilo_session_client::Receipt<Result<(), String>>>,
     since: Instant,
 }
 
@@ -1569,7 +1570,7 @@ impl AgentParticipant {
         let waiting = finishing.durable.as_ref().is_some_and(|durable| {
             matches!(
                 durable.try_recv(),
-                Err(std::sync::mpsc::TryRecvError::Empty)
+                Err(tilo_session_client::TryRecvError::Empty)
             )
         });
         if waiting && finishing.since.elapsed() < COMMIT_WAIT {
@@ -1925,7 +1926,7 @@ impl AgentParticipant {
             match app.take_mutation() {
                 Ok(Some(mutation)) => {
                     self.generation = self.generation.wrapping_add(1);
-                    if let Err(error) = self.peer.publish(route.clone(), &mutation) {
+                    if let Err(error) = self.peer.write(route.clone(), &mutation) {
                         tracing::warn!(%error, "agent: a change could not be committed");
                     }
                 }
@@ -2031,7 +2032,7 @@ impl AgentParticipant {
         let route = route(app.wire_record());
         let made = app.take_mutation().map_err(|error| error.to_string())?;
         if let Some(mutation) = &made {
-            self.peer.publish(route.clone(), mutation)?;
+            self.peer.write(route.clone(), mutation)?;
         }
         self.apps.insert(route.clone(), app);
         self.ask_workspace_through(&route);
@@ -2171,7 +2172,7 @@ impl AgentParticipant {
         if let Some(mutation) = &changed {
             self.generation = self.generation.wrapping_add(1);
             self.peer
-                .publish(route.clone(), mutation)
+                .write(route.clone(), mutation)
                 .map_err(Refusal::Agent)?;
         }
         let place = app.presence();
@@ -2282,7 +2283,7 @@ impl AgentParticipant {
             return;
         };
         let mutation = crate::desk::desk_mutation(holds, change);
-        if let Err(error) = self.peer.publish(desktop.clone(), &mutation) {
+        if let Err(error) = self.peer.write(desktop.clone(), &mutation) {
             tracing::warn!(%error, "agent: its view did not reach the desk");
             return;
         }
@@ -2355,11 +2356,11 @@ fn join(
     let events = peer.events();
     let woken = Arc::clone(control);
     peer.on_change(Arc::new(move || woken.wake()));
-    peer.join(workspace_id)?;
-    peer.keep_content(
+    peer.send(Cmd::Join(workspace_id))?;
+    peer.send(Cmd::KeepContent(
         workspace_id,
         kept_content(&config.workspace, &config.content),
-    )?;
+    ))?;
     Ok((peer, events))
 }
 

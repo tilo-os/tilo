@@ -21,6 +21,7 @@ use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::DeviceCapabilities;
 
@@ -42,13 +43,13 @@ fn keyed(peer: &PeerHandle, route: &DocumentRoute) -> bool {
 /// host has admitted it to the record's channel, and wait until the host has
 /// it: what the workspace holds of that record from then on.
 async fn written(page: &Browser, route: &DocumentRoute, mutation: collab_types::DocumentMutation) {
-    page.peer.open_route(route.clone()).unwrap();
+    page.peer.send(Cmd::OpenRoute(route.clone())).unwrap();
     let route_keyed = route.clone();
     support::wait_for("the member's channel to be keyed", || async {
         keyed(&page.peer, &route_keyed).then_some(())
     })
     .await;
-    page.peer.publish(route.clone(), &mutation).unwrap();
+    page.peer.write(route.clone(), &mutation).unwrap();
     let receipt = page.peer.barrier().unwrap();
     support::wait_for("the member's write to be durable on the host", || async {
         receipt.try_recv().ok()

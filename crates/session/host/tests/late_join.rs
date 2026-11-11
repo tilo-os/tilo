@@ -21,6 +21,7 @@ tilo_automerge_isolate::test_worker!();
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
+use tilo_session_client::Outbox;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer};
@@ -66,7 +67,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
     doc.put(ROOT, "checkpoint", noise(5 * 1024 * 1024 / 2, 1))
         .unwrap();
     author
-        .publish(route(), &DocumentMutation::Snapshot(doc.save()))
+        .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
     for index in 0..TAIL {
         doc.put(
@@ -76,7 +77,7 @@ async fn a_late_joiner_receives_a_segmented_checkpoint_and_its_tail_in_bounded_p
         )
         .unwrap();
         author
-            .publish(
+            .write(
                 route(),
                 &DocumentMutation::Incremental(doc.save_incremental()),
             )

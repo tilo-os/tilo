@@ -25,6 +25,7 @@ tilo_automerge_isolate::test_worker!();
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
+use tilo_session_client::Outbox;
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -73,7 +74,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     let mut base = AutoCommit::new();
     base.put(ROOT, "title", "base").unwrap();
     base.commit();
-    a.publish(route(), &DocumentMutation::Snapshot(base.save()))
+    a.write(route(), &DocumentMutation::Snapshot(base.save()))
         .unwrap();
     durable(&a).await;
 
@@ -81,7 +82,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     let mut on_b = base.fork();
     on_b.put(ROOT, "from_b", "concurrent").unwrap();
     on_b.commit();
-    b.publish(
+    b.write(
         route(),
         &DocumentMutation::Incremental(on_b.save_after(&base.get_heads())),
     )
@@ -91,7 +92,7 @@ async fn a_checkpoint_missing_a_concurrent_change_keeps_it_for_late_joiners() {
     let mut on_a = base.fork();
     on_a.put(ROOT, "from_a", "own").unwrap();
     on_a.commit();
-    a.publish(route(), &DocumentMutation::Snapshot(on_a.save()))
+    a.write(route(), &DocumentMutation::Snapshot(on_a.save()))
         .unwrap();
     durable(&a).await;
 

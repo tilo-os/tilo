@@ -13,6 +13,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
+use tilo_session::sync::{Cmd, Outbox};
 
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::page_code::{PAGE, PageHandle};
@@ -101,12 +102,12 @@ pub(crate) fn follow(id: u32, workspace: &str, desk: &DesktopHandle) -> bool {
         true
     });
     if changed {
-        let shown: Vec<tilo_session_host::PageShown> = shown
+        let shown: Vec<tilo_session::sync::PageShown> = shown
             .into_iter()
-            .map(|(device, tabs)| tilo_session_host::PageShown { device, tabs })
+            .map(|(device, tabs)| tilo_session::sync::PageShown { device, tabs })
             .collect();
         // A host that took the ask answers by publishing the pages: nothing here waits on it.
-        let _ = handle.show_pages(workspace, shown);
+        let _ = handle.send(Cmd::ShowPages(workspace, shown));
     }
     changed
 }

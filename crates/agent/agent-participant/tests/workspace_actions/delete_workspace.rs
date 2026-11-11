@@ -10,6 +10,7 @@ use super::hosted_documents::application_pdf;
 use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use tilo_session_client::{Cmd, Outbox};
 
 /// Every path under `root` that is `workspace`'s, as the relay names what it
 /// keeps of one: its id, first in a file's name, or its relay workspace.
@@ -145,7 +146,7 @@ async fn only_member_hears_deleted(
         on_relay.host.cert.clone(),
         page.key.clone(),
     );
-    back.join(workspace_id).unwrap();
+    back.send(Cmd::Join(workspace_id)).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     while !back
         .status()
@@ -260,7 +261,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         rosa_page.key.clone(),
     );
-    page.join(workspace_id).unwrap();
+    page.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&page]).await;
     // Another reviewer, who works in the other customer's workspace too,
     // had it open earlier and is away while it is deleted.
@@ -273,7 +274,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         sam_page.key.clone(),
     );
-    away.join(workspace_id).unwrap();
+    away.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&away]).await;
     away.close();
     // A customer, invited to only this workspace, had it open earlier too.
@@ -285,7 +286,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         lin_page.key.clone(),
     );
-    lin_away.join(workspace_id).unwrap();
+    lin_away.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&lin_away]).await;
     lin_away.close();
 
@@ -366,7 +367,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         sam_page.key.clone(),
     );
-    back.join(workspace_id).unwrap();
+    back.send(Cmd::Join(workspace_id)).unwrap();
     heard_deleted(&back, workspace_id).await;
     only_member_hears_deleted(&on_relay, &lin_page, &workspace, workspace_id).await;
     // Deleting it again finds no such workspace.

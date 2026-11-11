@@ -7,6 +7,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::Duration;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent, VERSION};
+use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 struct Workspace {
@@ -955,19 +956,19 @@ async fn persons_read_the_room_and_are_refused(
     let (host, host_cert, route) = chat_route(plain, cluster).await;
 
     let visiting = page(host.clone(), visiting_key, visiting_cert, &host_cert);
-    visiting.join(workspace_id).unwrap();
-    visiting.open_route(route.clone()).unwrap();
+    visiting.send(Cmd::Join(workspace_id)).unwrap();
+    visiting.send(Cmd::OpenRoute(route.clone())).unwrap();
     assert_page_reads_the_chat("Ana", &visiting, workspace_id, &route, &["general"]).await;
 
     // Another person holds the listing's default role, a viewer's: they read
     // the room and write nothing.
     let writer = page(host.clone(), writing_key, writing_cert, &host_cert);
-    writer.join(workspace_id).unwrap();
-    writer.open_route(route.clone()).unwrap();
+    writer.send(Cmd::Join(workspace_id)).unwrap();
+    writer.send(Cmd::OpenRoute(route.clone())).unwrap();
     let mut chat =
         assert_page_reads_the_chat("Ben", &writer, workspace_id, &route, &["general"]).await;
     writer
-        .publish(route.clone(), &edit(&mut chat, "a viewer's edit"))
+        .write(route.clone(), &edit(&mut chat, "a viewer's edit"))
         .unwrap();
     // Held across the waits below, which need what they borrow to be shared.
     let saved = std::sync::Mutex::new(writer.barrier().unwrap());
@@ -988,7 +989,7 @@ async fn persons_read_the_room_and_are_refused(
     assert!(!committed, "the viewer's write was committed: {refused:?}");
 
     let other = page(host, sibling_key, sibling_cert, &host_cert);
-    other.join(workspace_id).unwrap();
+    other.send(Cmd::Join(workspace_id)).unwrap();
     let refused = wait_for(
         "the sibling device to be refused",
         || {
@@ -1024,12 +1025,12 @@ async fn an_editor_page_writes_and_is_committed(
 ) {
     let (host, host_cert, route) = chat_route(plain, cluster).await;
     let editor = page(host, editor_key, editor_cert, &host_cert);
-    editor.join(workspace_id).unwrap();
-    editor.open_route(route.clone()).unwrap();
+    editor.send(Cmd::Join(workspace_id)).unwrap();
+    editor.send(Cmd::OpenRoute(route.clone())).unwrap();
     let mut chat =
         assert_page_reads_the_chat("editor", &editor, workspace_id, &route, &["general"]).await;
     editor
-        .publish(route.clone(), &edit(&mut chat, "an editor's edit"))
+        .write(route.clone(), &edit(&mut chat, "an editor's edit"))
         .unwrap();
     // Held across the waits below, which need what they borrow to be shared.
     let saved = std::sync::Mutex::new(editor.barrier().unwrap());
@@ -1113,8 +1114,8 @@ fn a_persistent_room_reopens_after_hard_stops() {
             record: tilo_relay::room_bots::workspace_record(&catalogue, CHAT),
         };
         let visiting = page(host, key, cert, &host_cert);
-        visiting.join(workspace_id).unwrap();
-        visiting.open_route(route.clone()).unwrap();
+        visiting.send(Cmd::Join(workspace_id)).unwrap();
+        visiting.send(Cmd::OpenRoute(route.clone())).unwrap();
         assert_page_reads_the_chat("visiting", &visiting, workspace_id, &route, &["general"]).await;
         visiting.close();
     });

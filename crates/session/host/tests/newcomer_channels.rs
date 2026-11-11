@@ -19,6 +19,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
+use tilo_session_client::{Cmd, Outbox};
 
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
@@ -94,8 +95,8 @@ async fn visitor(
         Arc::new(MemoryPeerStore::default()),
         entry,
     );
-    page.join(workspace_id).unwrap();
-    page.open_route(desktop.clone()).unwrap();
+    page.send(Cmd::Join(workspace_id)).unwrap();
+    page.send(Cmd::OpenRoute(desktop.clone())).unwrap();
     in_workspace(&page, workspace_id).await;
     wait_keyed(&page, desktop).await;
     page
@@ -152,7 +153,7 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
         doc
     };
     member
-        .publish(desktop.clone(), &DocumentMutation::Snapshot(base.save()))
+        .write(desktop.clone(), &DocumentMutation::Snapshot(base.save()))
         .unwrap();
 
     // The newcomer reads it.
@@ -161,25 +162,25 @@ async fn a_newcomer_reads_writes_follows_and_rejoins_its_channel_group() {
 
     // Keyed, it writes, and the member reads that.
     let written = change(&mut base, "newcomer");
-    newcomer.publish(desktop.clone(), &written).unwrap();
+    newcomer.write(desktop.clone(), &written).unwrap();
     hears(&member, &desktop, "newcomer").await;
 
     // Someone else arrives: the group moves to a later epoch, which the
     // newcomer follows, reading what is sealed under it.
     let later = enter("Later").await;
     let after = change(&mut base, "later");
-    later.publish(desktop.clone(), &after).unwrap();
+    later.write(desktop.clone(), &after).unwrap();
     hears(&newcomer, &desktop, "later").await;
 
     // Its connection drops; once back it reads and writes as before.
-    newcomer.reconnect().unwrap();
+    newcomer.send(Cmd::Reconnect).unwrap();
     in_workspace(&newcomer, lounge.workspace_id).await;
     wait_keyed(&newcomer, &desktop).await;
     let again = change(&mut base, "member-again");
-    member.publish(desktop.clone(), &again).unwrap();
+    member.write(desktop.clone(), &again).unwrap();
     hears(&newcomer, &desktop, "member-again").await;
     let back = change(&mut base, "newcomer-back");
-    newcomer.publish(desktop.clone(), &back).unwrap();
+    newcomer.write(desktop.clone(), &back).unwrap();
     hears(&later, &desktop, "newcomer-back").await;
 
     for page in [member, newcomer, later] {

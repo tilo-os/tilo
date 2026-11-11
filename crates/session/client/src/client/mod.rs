@@ -330,7 +330,7 @@ impl Client {
 
     /// Say `command` to the plane.
     pub fn say(&self, command: Cmd) -> bool {
-        self.outgoing.send(command)
+        self.outgoing.send(command).is_ok()
     }
 
     /// Take what became of the enrollments and entries asked for since the last call.

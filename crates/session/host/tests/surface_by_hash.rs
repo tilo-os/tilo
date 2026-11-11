@@ -22,6 +22,7 @@ tilo_automerge_isolate::test_worker!();
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::SystemTime;
+use tilo_session_client::Outbox;
 
 use automerge::transaction::Transactable as _;
 use channel_crypto::{ChannelPeer, VaultKey};

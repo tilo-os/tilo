@@ -43,7 +43,7 @@ use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session::sync::Event;
+use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_host::{PeerEvents, PeerHandle};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
@@ -195,10 +195,10 @@ pub(crate) fn open(
 ) -> Result<(), String> {
     let workspace_id = tilo_relay_protocol::room_workspace_id(workspace)
         .map_err(|_| "a workspace must be a uuid")?;
-    peer.keep_content(
+    peer.send(Cmd::KeepContent(
         workspace_id,
         Arc::new(kept_content(id, workspace.to_owned())),
-    )?;
+    ))?;
     let joined = Joined {
         peer,
         device,
@@ -433,11 +433,29 @@ pub(crate) fn committed_record(
 pub(crate) fn host_then(
     id: u32,
     request: impl FnOnce(&str) -> tilo_relay_protocol::workspaces::WorkspacesRequest,
-    done: tilo_session_host::RoomsCompletion,
+    done: impl FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + 'static,
 ) -> Result<(), String> {
     let joined = replica_of(id).ok_or("this page joined no workspace")?;
     let joined = joined.borrow();
-    joined.peer.rooms_then(request(&joined.uuid), done)
+    Ok(ask_then(&joined.peer, request(&joined.uuid), done)?)
+}
+
+/// Ask `peer`'s host `request` of its workspace administration, and hand `answered` the answer
+/// once it comes.
+fn ask_then(
+    peer: &PeerHandle,
+    request: tilo_relay_protocol::workspaces::WorkspacesRequest,
+    answered: impl FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + 'static,
+) -> Result<(), tilo_session::sync::Closed> {
+    let receipt = peer.ask_workspaces(request)?;
+    wasm_bindgen_futures::spawn_local(async move {
+        answered(
+            receipt
+                .await
+                .unwrap_or_else(|_| Err("the session ended before the host answered".to_owned())),
+        );
+    });
+    Ok(())
 }
 
 /// The workspace told peer `id`'s person whether they may change things at
@@ -591,45 +609,41 @@ impl Joined {
                 workspace: self.uuid.clone(),
                 node: node.to_string(),
             };
-            if let Err(error) = self.peer.rooms_then(
-                request,
-                Box::new(move |answer| {
-                    let may = match &answer {
-                        Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
-                        Ok(other) => {
-                            warn(&format!(
-                                "the workspace did not say what this page may do: {other:?}"
-                            ));
-                            false
-                        }
-                        Err(_) => {
-                            due.store(
-                                crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
-                                Ordering::Relaxed,
-                            );
-                            return;
-                        }
-                    };
-                    let answered = {
-                        let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
-                        if let Some(slot) = answers.get_mut(index) {
-                            *slot = Some(may);
-                        }
-                        *answers
-                    };
-                    let [Some(writes), Some(moderating), Some(governs)] = answered else {
-                        return;
-                    };
-                    let role =
-                        tilo_action_policy::roles::role_answered([writes, moderating, governs]);
-                    let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
-                    if standing.set(Some(role)) || moved {
-                        for wake in &wake {
-                            wake();
-                        }
+            if let Err(error) = ask_then(&self.peer, request, move |answer| {
+                let may = match &answer {
+                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                    Ok(other) => {
+                        warn(&format!(
+                            "the workspace did not say what this page may do: {other:?}"
+                        ));
+                        false
                     }
-                }),
-            ) {
+                    Err(_) => {
+                        due.store(
+                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                            Ordering::Relaxed,
+                        );
+                        return;
+                    }
+                };
+                let answered = {
+                    let mut answers = answers.lock().unwrap_or_else(PoisonError::into_inner);
+                    if let Some(slot) = answers.get_mut(index) {
+                        *slot = Some(may);
+                    }
+                    *answers
+                };
+                let [Some(writes), Some(moderating), Some(governs)] = answered else {
+                    return;
+                };
+                let role = tilo_action_policy::roles::role_answered([writes, moderating, governs]);
+                let moved = moderates.swap(moderating, Ordering::Relaxed) != moderating;
+                if standing.set(Some(role)) || moved {
+                    for wake in &wake {
+                        wake();
+                    }
+                }
+            }) {
                 warn(&format!(
                     "could not ask the workspace what this page may do: {error}"
                 ));
@@ -661,32 +675,29 @@ impl Joined {
             workspace: self.uuid.clone(),
             node: node.to_string(),
         };
-        if let Err(error) = self.peer.rooms_then(
-            request,
-            Box::new(move |answer| {
-                let may = match &answer {
-                    Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
-                    Ok(other) => {
-                        warn(&format!(
-                            "the workspace did not say whether this page may invite: {other:?}"
-                        ));
-                        return;
-                    }
-                    Err(_) => {
-                        due.store(
-                            crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
-                            Ordering::Relaxed,
-                        );
-                        return;
-                    }
-                };
-                if invitable.swap(may, Ordering::Relaxed) != may {
-                    for wake in &wake {
-                        wake();
-                    }
+        if let Err(error) = ask_then(&self.peer, request, move |answer| {
+            let may = match &answer {
+                Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) => *may,
+                Ok(other) => {
+                    warn(&format!(
+                        "the workspace did not say whether this page may invite: {other:?}"
+                    ));
+                    return;
                 }
-            }),
-        ) {
+                Err(_) => {
+                    due.store(
+                        crate::shell::now_ms().saturating_add(MODERATION_RETRY_MS),
+                        Ordering::Relaxed,
+                    );
+                    return;
+                }
+            };
+            if invitable.swap(may, Ordering::Relaxed) != may {
+                for wake in &wake {
+                    wake();
+                }
+            }
+        }) {
             warn(&format!(
                 "could not ask the workspace whether this page may invite: {error}"
             ));
@@ -726,28 +737,48 @@ impl Joined {
                 workspace: self.uuid.clone(),
                 node: node.clone(),
             };
-            if let Err(error) = self.peer.rooms_then(
-                request,
-                Box::new(move |answer| {
-                    if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) =
-                        answer
-                    {
-                        answers
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .push((asked, may));
-                        for wake in &wake {
-                            wake();
-                        }
+            if let Err(error) = ask_then(&self.peer, request, move |answer| {
+                if let Ok(tilo_relay_protocol::workspaces::WorkspacesReply::Permits(may)) = answer {
+                    answers
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push((asked, may));
+                    for wake in &wake {
+                        wake();
                     }
-                }),
-            ) {
+                }
+            }) {
                 warn(&format!(
                     "could not ask the workspace what this page may change: {error}"
                 ));
                 return;
             }
         }
+    }
+
+    /// Once the workspace answered every write said so far, `route`'s windows say what they did.
+    /// `false` when the session is gone.
+    fn settle_when_durable(&self, route: DocumentRoute) -> bool {
+        let settled = Arc::clone(&self.settled);
+        let notify: Vec<_> = self
+            .mounts
+            .values()
+            .map(|mounted| Arc::clone(&mounted.attachment.notify))
+            .collect();
+        let Ok(durable) = self.peer.barrier() else {
+            return false;
+        };
+        wasm_bindgen_futures::spawn_local(async move {
+            let _ = durable.await;
+            settled
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(route);
+            for notify in notify {
+                notify();
+            }
+        });
+        true
     }
 
     /// Give every mount's apps the role the workspace last answered, once per
@@ -1004,7 +1035,11 @@ impl Joined {
                     ) else {
                         continue;
                     };
-                    if self.peer.want_content(self.workspace, request).is_err() {
+                    if self
+                        .peer
+                        .send(Cmd::WantContent(self.workspace, request))
+                        .is_err()
+                    {
                         lane.retry_want(hash);
                     }
                 }
@@ -1360,7 +1395,11 @@ impl Joined {
             {
                 continue;
             }
-            if self.peer.open_record(self.workspace, route).is_err() {
+            if self
+                .peer
+                .send(Cmd::OpenRecordAt(self.workspace, route))
+                .is_err()
+            {
                 return;
             }
         }
@@ -1370,27 +1409,10 @@ impl Joined {
             // A first snapshot carries what was there already; an
             // increment is what this page changed.
             let authored = matches!(mutation, DocumentMutation::Incremental(_));
-            if self.peer.publish(route.clone(), &mutation).is_err() {
+            if self.peer.write(route.clone(), &mutation).is_err() {
                 return;
             }
-            // Once the workspace answered it (and all before it), the record's windows say
-            // what they did.
-            let settled = Arc::clone(&self.settled);
-            let notify: Vec<_> = self
-                .mounts
-                .values()
-                .map(|mounted| Arc::clone(&mounted.attachment.notify))
-                .collect();
-            let answered = self.peer.barrier_then(Box::new(move |_| {
-                settled
-                    .lock()
-                    .unwrap_or_else(PoisonError::into_inner)
-                    .push(route);
-                for notify in notify {
-                    notify();
-                }
-            }));
-            if answered.is_err() {
+            if !self.settle_when_durable(route) {
                 return;
             }
             if authored {
@@ -1533,7 +1555,7 @@ impl Joined {
             (DocumentMutation::Snapshot(doc.save()), doc.get_heads())
         };
         let route = self.route(DESKTOP_APP, DESKTOP_RECORD);
-        if self.peer.publish(route, &mutation.0).is_ok() {
+        if self.peer.write(route, &mutation.0).is_ok() {
             self.desktop.advance_outbound(mutation.1);
             self.desktop_sending = DesktopSending::Changes;
             self.desktop_value = desktop_value(self.desktop.document());

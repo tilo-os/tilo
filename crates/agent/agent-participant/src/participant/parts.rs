@@ -9,6 +9,7 @@
 
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_client::Outbox;
 
 use super::AgentParticipant;
 
@@ -141,7 +142,7 @@ impl AgentParticipant {
             };
             self.generation = self.generation.wrapping_add(1);
             tracing::debug!(part = %part.record, "agent: published a part");
-            self.peer.publish(part.clone(), &mutation)?;
+            self.peer.write(part.clone(), &mutation)?;
             self.beside.insert(part, holder.clone());
         }
         Ok(published)

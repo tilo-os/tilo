@@ -35,6 +35,7 @@ mod support;
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Outbox};
 
 use common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
@@ -91,11 +92,11 @@ async fn ask(
     message: RemoteActionMessage,
 ) -> RemoteActionMessage {
     browser
-        .send_remote_action(
+        .send(Cmd::RemoteAction(
             workspace(),
             agent_key,
             RemoteActionFrame::new(message).encode().unwrap(),
-        )
+        ))
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {

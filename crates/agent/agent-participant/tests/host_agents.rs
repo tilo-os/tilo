@@ -45,6 +45,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::InvokeArgument;
@@ -459,7 +460,7 @@ impl Page {
         };
         browser
             .peer
-            .publish(route.clone(), &page.take_mutation().unwrap())
+            .write(route.clone(), &page.take_mutation().unwrap())
             .unwrap();
         Self {
             app: page,
@@ -491,7 +492,7 @@ impl Page {
                 )
                 .unwrap();
                 if let Some(own) = app.take_mutation() {
-                    browser.peer.publish(creator.route.clone(), &own).unwrap();
+                    browser.peer.write(creator.route.clone(), &own).unwrap();
                 }
                 return Self {
                     app,

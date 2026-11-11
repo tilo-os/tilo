@@ -110,6 +110,9 @@ use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
+#[cfg(test)]
+use tilo_session_client::Cmd;
+use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
@@ -215,13 +218,13 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     browser
         .peer
-        .publish(record, &source.take_mutation().unwrap())
+        .write(record, &source.take_mutation().unwrap())
         .unwrap();
     // The message's own record is the part, published on its own route.
     let route = resource_support::part_route(&workspace.workspace, &part);
     for (changed, mutation) in source.take_record_mutations() {
         assert_eq!(changed, part);
-        browser.peer.publish(route.clone(), &mutation).unwrap();
+        browser.peer.write(route.clone(), &mutation).unwrap();
     }
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
@@ -609,7 +612,7 @@ impl Page {
         };
         let mutation = page.take_mutation().unwrap();
         before_publish(&route);
-        self.peer.publish(route.clone(), &mutation).unwrap();
+        self.peer.write(route.clone(), &mutation).unwrap();
         // The host never echoes a device's own change back to it.
         let bytes = match mutation {
             collab_types::DocumentMutation::Snapshot(bytes)
@@ -769,7 +772,7 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
     };
     // The page opens the record the host made for it, as a person opening the
     // record does: without keys it holds that open record sealed.
-    browser.peer.open_route(created.clone()).unwrap();
+    browser.peer.send(Cmd::OpenRoute(created.clone())).unwrap();
     let provider = record_provider(&created);
     let new_sheet = browser
         .catalogue(CatalogueQuery {

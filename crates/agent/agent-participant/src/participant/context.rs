@@ -3,6 +3,7 @@
 //! apps can do; and the workspace's records the planner may search.
 
 use std::collections::BTreeMap;
+use tilo_session_client::{Cmd, Outbox};
 
 use automerge::ReadDoc as _;
 use tilo_actions::ActionOutput;
@@ -281,7 +282,7 @@ impl AgentParticipant {
                 Ok(route) => {
                     // A new record publishes nothing until its first edit:
                     // ask for its channel's keys now.
-                    if let Err(error) = self.peer.open_route(route.clone()) {
+                    if let Err(error) = self.peer.send(Cmd::OpenRoute(route.clone())) {
                         tracing::warn!(%error, "agent: keys for a new record were not asked for");
                     }
                     // The task's to fill: an import naming no record goes

@@ -5,7 +5,7 @@
 //! desktop, and sends every other record once that device opens it, saying so
 //! in the [`tilo_session_client::Event::HostReady`] that ends the replay. So a
 //! record this service holds none of is not one the workspace lacks: it is
-//! asked for ([`PeerHandle::open_route`], which asks the host and delivers
+//! asked for ([`Cmd::OpenRoute`](tilo_session_client::Cmd::OpenRoute), which asks the host and delivers
 //! what arrives as an ordinary change), and it is absent only once the host
 //! answered it holds none of it ([`tilo_session_client::Event::RecordOpened`]
 //! with no frames). Without that, every read and action about a record the
@@ -14,6 +14,7 @@
 //! they wrote them in.
 
 use super::{DocumentRoute, Needs, Workspace};
+use tilo_session_client::{Cmd, Outbox};
 
 /// The chain `record` is a part of, when it is a part of one.
 pub(super) fn chain_of(record: &str) -> Option<ui::record::RecordId> {
@@ -81,7 +82,7 @@ impl Workspace {
         for route in asked_routes(&cluster_id, app_id, record) {
             if !self.holds(&route) && !self.absent.contains(&route) && !self.asked.contains(&route)
             {
-                match self.peer.open_route(route.clone()) {
+                match self.peer.send(Cmd::OpenRoute(route.clone())) {
                     Ok(()) => {
                         self.asked.insert(route.clone());
                     }

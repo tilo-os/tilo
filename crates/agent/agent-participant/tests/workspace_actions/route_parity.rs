@@ -32,6 +32,7 @@ use tilo_agent_participant::workspace_actions::{
     ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
 };
 use tilo_broker_core::{BrokerActor, CrdtRoute, PublishedAction, PublishedInput, PublishedSurface};
+use tilo_session_client::{Cmd, Outbox};
 
 const NOTES: &str = "so.tilo.notes";
 const PDF: &str = "so.tilo.pdf-viewer";
@@ -952,14 +953,14 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     .spoken_for("agent-run:forged");
     agent
         .peer
-        .say_for_run(
+        .send(Cmd::SayForRun(
             agent.workspace,
             tilo_relay_protocol::host_voice::HostWords::Presence(forged.clone()),
-        )
+        ))
         .unwrap();
     agent
         .peer
-        .publish_presence(agent.workspace, vec![forged])
+        .send(Cmd::Presence(agent.workspace, vec![forged]))
         .unwrap();
 
     // The agent writes in a document: an action in a record, which the host

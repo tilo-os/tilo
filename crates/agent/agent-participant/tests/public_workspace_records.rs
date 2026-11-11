@@ -32,6 +32,7 @@ mod participant;
 mod support;
 
 use std::sync::Mutex;
+use tilo_session_client::{Cmd, Outbox};
 
 use collab_types::DocumentMutation;
 use common::{Body as _, Driveable};
@@ -130,14 +131,14 @@ fn keyed(peer: &PeerHandle, route: &DocumentRoute) -> bool {
 /// host has admitted it to the record's channel, and wait until the host has
 /// it: what the workspace holds of that record from then on.
 async fn written(member: &PeerHandle, route: &DocumentRoute, document: Vec<u8>) {
-    member.open_route(route.clone()).unwrap();
+    member.send(Cmd::OpenRoute(route.clone())).unwrap();
     let route_keyed = route.clone();
     wait_for("the member's channel to be keyed", || async {
         keyed(member, &route_keyed).then_some(())
     })
     .await;
     member
-        .publish(route.clone(), &DocumentMutation::Snapshot(document))
+        .write(route.clone(), &DocumentMutation::Snapshot(document))
         .unwrap();
     let receipt = member.barrier().unwrap();
     wait_for("the member's write to be durable on the host", || async {

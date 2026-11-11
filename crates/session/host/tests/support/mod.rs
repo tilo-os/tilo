@@ -13,6 +13,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_session_client::{Cmd, Outbox};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
@@ -121,7 +122,7 @@ pub fn workspace() -> u64 {
 
 /// Have `relay` govern [`WORKSPACE`], the person's workspace, unless it does,
 /// and admit `device` to it as its owner: what a page asks of its host
-/// before it joins ([`PeerHandle::join_placed`]), done here for a peer
+/// before it joins ([`Outbox::join_placed`](tilo_session_client::Outbox::join_placed)), done here for a peer
 /// that reaches the host without the route that administers them.
 pub async fn place(relay: &Relay, device: &DeviceCert) {
     let workspaces = relay.workspaces().unwrap();
@@ -868,7 +869,7 @@ pub async fn enter(
 ) -> PeerHandle {
     redeem(host, door, cert, key).await;
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
-    peer.join(workspace_id).unwrap();
+    peer.send(Cmd::Join(workspace_id)).unwrap();
     in_workspace(&peer, workspace_id).await;
     peer
 }

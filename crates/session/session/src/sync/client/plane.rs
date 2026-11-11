@@ -802,5 +802,8 @@ async fn carry_out(
             .await
             .is_ok(),
         Cmd::Stop => return None,
+        // A relay session's own commands: this desktop's plane carries none of them, and an answer
+        // one asks for is dropped unanswered.
+        _ => false,
     })
 }

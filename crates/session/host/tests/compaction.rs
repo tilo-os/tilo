@@ -24,6 +24,7 @@ tilo_automerge_isolate::test_worker!();
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming as _;
+use tilo_session_client::Outbox;
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
@@ -116,7 +117,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     let mut on_a = AutoCommit::new();
     on_a.put(ROOT, "title", "sealed").unwrap();
     on_a.commit();
-    a.publish(route.clone(), &DocumentMutation::Snapshot(on_a.save()))
+    a.write(route.clone(), &DocumentMutation::Snapshot(on_a.save()))
         .unwrap();
     for edit in 0..EDITS {
         let before = on_a.get_heads();
@@ -127,7 +128,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
         )
         .unwrap();
         on_a.commit();
-        a.publish(
+        a.write(
             route.clone(),
             &DocumentMutation::Incremental(on_a.save_after(&before)),
         )
@@ -141,7 +142,7 @@ async fn a_member_compacts_a_sealed_route_the_host_cannot_read() {
     on_c.put(ROOT, "from_c", "concurrent").unwrap();
     on_c.commit();
     let asked = Instant::now();
-    c.publish(
+    c.write(
         route.clone(),
         &DocumentMutation::Incremental(on_c.save_incremental()),
     )

@@ -19,6 +19,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
+use tilo_session_client::{Cmd, Outbox};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -83,7 +84,7 @@ async fn a_device_accepts_an_invitation_on_its_session_under_its_own_certificate
         Arc::new(MemoryPeerStore::default()),
         entry,
     );
-    peer.join(acme.workspace_id).unwrap();
+    peer.send(Cmd::Join(acme.workspace_id)).unwrap();
     let admission = entered(&peer).await.unwrap();
     assert_eq!(admission.workspace, acme.workspace);
     assert_eq!(admission.workspace_id, acme.workspace_id);

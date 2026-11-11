@@ -21,6 +21,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use tilo_session_client::Event;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_session_host::{FailureSubject, LocalState};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -56,7 +57,7 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     peer.join_placed(support::WORKSPACE, "Workspace").unwrap();
     ready(&[&peer]).await;
     let mut tree = automerge::AutoCommit::new();
-    peer.publish(route(), &say(&mut tree, "desktop tree"))
+    peer.write(route(), &say(&mut tree, "desktop tree"))
         .unwrap();
     let receipt = peer.barrier().unwrap();
     wait_for("the snapshot to be durable", || async {
@@ -69,11 +70,11 @@ async fn refresh_asks_the_restarted_host_for_the_workspace_again() {
     host.relay.shutdown().await;
     let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     // A reconnect resumes: the page already holds what it published.
-    peer.reconnect().unwrap();
+    peer.send(Cmd::Reconnect).unwrap();
     ready(&[&peer]).await;
 
     let before = peer.status().generation;
-    peer.refresh().unwrap();
+    peer.send(Cmd::Refresh).unwrap();
     wait_for("the refreshed session", || {
         let refreshed = peer.status().generation > before;
         async move { refreshed.then_some(()) }
@@ -138,7 +139,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     // Any status change bumps the generation (each envelope's contact
     // time does); a reconnect is what subscribes the workspace anew.
     let _ = peer.drain();
-    peer.retry_now().unwrap();
+    peer.send(Cmd::Retry).unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(
         !peer
@@ -159,7 +160,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
     })
     .await;
     let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
-    peer.retry_now().unwrap();
+    peer.send(Cmd::Retry).unwrap();
     ready(&[&peer]).await;
     assert!(
         tilo_clock::unix_now_ms() < due,

@@ -20,6 +20,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeSet;
+use tilo_session_client::{Cmd, Outbox};
 
 use channel_crypto::{ChannelPeer, VaultKey};
 use collab_types::{
@@ -196,14 +197,14 @@ async fn a_page_and_the_other_persons_desktop_talk_in_their_conversations_record
     // people in the conversation, each on their own devices.
     let bob_device = Ed25519PublicKey::from_bytes(bob_cert.device_public_key);
 
-    bob.open_record(workspace.workspace_id, route.clone())
+    bob.send(Cmd::OpenRecordAt(workspace.workspace_id, route.clone()))
         .unwrap();
-    bob.open_route(route.clone()).unwrap();
+    bob.send(Cmd::OpenRoute(route.clone())).unwrap();
     let message = say(
         &mut automerge::AutoCommit::new(),
         "a message from Bob's page",
     );
-    bob.publish(route.clone(), &message).unwrap();
+    bob.write(route.clone(), &message).unwrap();
 
     // The desktop admits the page to the record's channel when it asks, then
     // opens what the page sealed in it: the message arrives live.

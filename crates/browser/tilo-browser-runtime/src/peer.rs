@@ -34,7 +34,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_relay_protocol::web::{PageHost, PageHostAddress};
-use tilo_session::sync::Event;
+use tilo_session::sync::{Cmd, Event, Outbox};
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::{
     DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvents,
@@ -952,7 +952,7 @@ pub async fn revoke_device(root: JsValue, key_hex: String) -> Result<String, JsE
     .await
     .map_err(js_error)?;
     for handle in crate::peer_sync::handles_of(&hex::encode(entry.user_public_key)) {
-        handle.revoke(entry.clone()).map_err(js_error)?;
+        handle.send(Cmd::Revoke(entry.clone())).map_err(js_error)?;
     }
     serde_json::to_string(&entry).map_err(js_error)
 }
@@ -1617,7 +1617,7 @@ fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
         workspace: workspace.to_owned(),
         name: name.to_owned(),
     };
-    let _ = handle.rooms_then(request, Box::new(|_| {}));
+    let _ = handle.ask_workspaces(request);
 }
 
 impl WasmPeer {
@@ -1626,16 +1626,9 @@ impl WasmPeer {
         &self,
         request: tilo_relay_protocol::workspaces::WorkspacesRequest,
     ) -> Result<tilo_relay_protocol::workspaces::WorkspacesReply, JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
         self.handle
-            .rooms_then(
-                request,
-                Box::new(move |answer| {
-                    let _ = reply.send(answer);
-                }),
-            )
-            .map_err(js_error)?;
-        receipt
+            .ask_workspaces(request)
+            .map_err(js_error)?
             .await
             .map_err(|_| js_error("peer session closed"))?
             .map_err(js_error)
@@ -2014,7 +2007,7 @@ impl WasmPeer {
             return Ok(false);
         };
         self.handle
-            .publish_live(workspace_id, sealed)
+            .send(Cmd::Live(workspace_id, sealed))
             .map_err(js_error)?;
         Ok(true)
     }
@@ -2031,7 +2024,7 @@ impl WasmPeer {
         let frame = encode_live_preview_end(record)?;
         if let Some(sealed) = self.seal_live(workspace.to_owned(), frame).await? {
             self.handle
-                .publish_live(workspace_id, sealed)
+                .send(Cmd::Live(workspace_id, sealed))
                 .map_err(js_error)?;
         }
         Ok(())
@@ -2045,15 +2038,9 @@ impl WasmPeer {
         workspace: String,
         frame: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
+        let (sealed, receipt) = tilo_session::sync::answer();
         self.handle
-            .seal_live_then(
-                workspace_number(&workspace)?,
-                frame,
-                Box::new(move |sealed| {
-                    let _ = reply.send(sealed);
-                }),
-            )
+            .send(Cmd::SealLive(workspace_number(&workspace)?, frame, sealed))
             .map_err(js_error)?;
         receipt.await.map_err(|_| js_error("peer session closed"))
     }
@@ -2067,7 +2054,7 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = voiceCalls)]
     pub fn voice_calls(&self, workspace: &str) -> Result<(), JsError> {
         self.handle
-            .voice_calls(workspace_number(workspace)?)
+            .send(Cmd::VoiceCalls(workspace_number(workspace)?))
             .map_err(js_error)
     }
 
@@ -2092,11 +2079,11 @@ impl WasmPeer {
             .and_then(|bytes| bytes.try_into().ok())
             .ok_or_else(|| js_error("request must be 16 bytes of hex"))?;
         self.handle
-            .voice_call(
+            .send(Cmd::VoiceCall(
                 workspace_number(workspace)?,
                 request,
                 operation.into_operation()?,
-            )
+            ))
             .map_err(js_error)
     }
 
@@ -2110,7 +2097,10 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = voiceJoin)]
     pub fn voice_join(&self, workspace: &str, call: &str) -> Result<(), JsError> {
         self.handle
-            .voice_join(workspace_number(workspace)?, hex32(call, "call")?)
+            .send(Cmd::VoiceJoin(
+                workspace_number(workspace)?,
+                hex32(call, "call")?,
+            ))
             .map_err(js_error)
     }
 
@@ -2122,7 +2112,7 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = voiceLeave)]
     pub fn voice_leave(&self, workspace: &str) -> Result<(), JsError> {
         self.handle
-            .voice_leave(workspace_number(workspace)?)
+            .send(Cmd::VoiceLeave(workspace_number(workspace)?))
             .map_err(js_error)
     }
 
@@ -2148,7 +2138,7 @@ impl WasmPeer {
         deafened: bool,
     ) -> Result<(), JsError> {
         self.handle
-            .voice_show(
+            .send(Cmd::VoiceShow(
                 workspace_number(workspace)?,
                 tilo_relay_protocol::voice::Showing {
                     camera,
@@ -2156,7 +2146,7 @@ impl WasmPeer {
                     muted,
                     deafened,
                 },
-            )
+            ))
             .map_err(js_error)
     }
 
@@ -2243,17 +2233,17 @@ impl WasmPeer {
             opus: String,
         }
         let frames: Vec<Frame> = serde_json::from_str(frames).map_err(js_error)?;
-        let frames: Vec<tilo_session_host::CallFrame> = frames
+        let frames: Vec<tilo_session::sync::CallFrame> = frames
             .into_iter()
             .filter_map(|frame| {
-                Some(tilo_session_host::CallFrame {
+                Some(tilo_session::sync::CallFrame {
                     timestamp_48k: frame.timestamp48k,
                     opus: hex::decode(frame.opus).ok()?,
                 })
             })
             .collect();
         self.handle
-            .publish_call_audio(workspace_number(workspace)?, frames)
+            .send(Cmd::CallAudio(workspace_number(workspace)?, frames))
             .map_err(js_error)
     }
 
@@ -2281,10 +2271,10 @@ impl WasmPeer {
             payload: String,
         }
         let pictures: Vec<Picture> = serde_json::from_str(pictures).map_err(js_error)?;
-        let pictures: Vec<tilo_session_host::CallPicture> = pictures
+        let pictures: Vec<tilo_session::sync::CallPicture> = pictures
             .into_iter()
             .filter_map(|picture| {
-                Some(tilo_session_host::CallPicture {
+                Some(tilo_session::sync::CallPicture {
                     source: source_of_name(&picture.source)?,
                     layer: layer_of_name(&picture.layer)?,
                     sequence: picture.sequence,
@@ -2297,7 +2287,7 @@ impl WasmPeer {
             })
             .collect();
         self.handle
-            .publish_call_pictures(workspace_number(workspace)?, pictures)
+            .send(Cmd::CallPictures(workspace_number(workspace)?, pictures))
             .map_err(js_error)
     }
 
@@ -2318,11 +2308,11 @@ impl WasmPeer {
             screen: Vec<String>,
         }
         let shown: Vec<Shown> = serde_json::from_str(shown).map_err(js_error)?;
-        let shown: Vec<tilo_session_host::CallShown> = shown
+        let shown: Vec<tilo_session::sync::CallShown> = shown
             .into_iter()
             .filter_map(|entry| {
                 let device: [u8; 32] = hex::decode(&entry.device).ok()?.try_into().ok()?;
-                Some(tilo_session_host::CallShown {
+                Some(tilo_session::sync::CallShown {
                     device,
                     camera: entry
                         .camera
@@ -2338,7 +2328,7 @@ impl WasmPeer {
             })
             .collect();
         self.handle
-            .show_call_pictures(workspace_number(workspace)?, shown)
+            .send(Cmd::CallShowing(workspace_number(workspace)?, shown))
             .map_err(js_error)
     }
 
@@ -2364,7 +2354,11 @@ impl WasmPeer {
         let source =
             source_of_name(source).ok_or_else(|| js_error("source must be camera or screen"))?;
         self.handle
-            .restart_call_picture(workspace_number(workspace)?, device, source)
+            .send(Cmd::CallPictureRestart(
+                workspace_number(workspace)?,
+                device,
+                source,
+            ))
             .map_err(js_error)
     }
 
@@ -2593,13 +2587,9 @@ impl WasmPeer {
 
     /// Resolve once every published document is durable on the host.
     pub async fn flush(&self) -> Result<(), JsError> {
-        let (reply, receipt) = tokio::sync::oneshot::channel();
         self.handle
-            .barrier_then(Box::new(move |result| {
-                let _ = reply.send(result);
-            }))
-            .map_err(js_error)?;
-        receipt
+            .barrier()
+            .map_err(js_error)?
             .await
             .map_err(|_| js_error("peer session closed"))?
             .map_err(js_error)
@@ -2607,19 +2597,19 @@ impl WasmPeer {
 
     /// Reconnect now (also after a failure).
     pub fn reconnect(&self) -> Result<(), JsError> {
-        self.handle.reconnect().map_err(js_error)
+        self.handle.send(Cmd::Reconnect).map_err(js_error)
     }
 
     /// The network is back: a session waiting to reconnect tries now; a
     /// connected one stays as it is.
     #[wasm_bindgen(js_name = retryNow)]
     pub fn retry_now(&self) -> Result<(), JsError> {
-        self.handle.retry_now().map_err(js_error)
+        self.handle.send(Cmd::Retry).map_err(js_error)
     }
 
     /// Ask the host for the joined workspaces' shared state again.
     pub fn refresh(&self) -> Result<(), JsError> {
-        self.handle.refresh().map_err(js_error)
+        self.handle.send(Cmd::Refresh).map_err(js_error)
     }
 
     /// Report a failure of the page store (no `surface`), of desktop surface

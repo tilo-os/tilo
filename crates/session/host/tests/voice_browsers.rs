@@ -20,6 +20,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use tilo_session_client::{Cmd, Outbox};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::scope::Scope;
@@ -330,21 +331,19 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
             bob_device.key,
         ),
     });
-    page.peer.join(governed.workspace_id).unwrap();
+    page.peer.send(Cmd::Join(governed.workspace_id)).unwrap();
     support::ready(&[&page.peer]).await;
 
     // The plane's frames are sealed with the workspace scope's keys; the page
     // holds them as a workspace member, and so does the device it calls.
     let keys = channel_keys(collab_types::ChannelId::new());
     page.peer
-        .install_channel_keys(plane_route(&governed.cluster_id), keys.clone())
+        .send(Cmd::InstallChannelKeys(
+            plane_route(&governed.cluster_id),
+            keys.clone(),
+        ))
         .unwrap();
-    let (installed, settles) = tokio::sync::oneshot::channel();
-    page.peer
-        .barrier_then(Box::new(move |result| {
-            let _ = installed.send(result);
-        }))
-        .unwrap();
+    let settles = page.peer.barrier().unwrap();
     settles.await.unwrap().unwrap();
 
     // Alice's own laptop takes part in the call, in the workspace it belongs
@@ -406,11 +405,14 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                 return text(server_page.events().to_string());
             }
             if op == "leave" {
-                server_page.peer.voice_leave(workspace).unwrap();
+                server_page.peer.send(Cmd::VoiceLeave(workspace)).unwrap();
             } else if op.starts_with("join/") {
-                server_page.peer.voice_join(workspace, call).unwrap();
+                server_page
+                    .peer
+                    .send(Cmd::VoiceJoin(workspace, call))
+                    .unwrap();
             } else if op == "calls" {
-                server_page.peer.voice_calls(workspace).unwrap();
+                server_page.peer.send(Cmd::VoiceCalls(workspace)).unwrap();
             } else if let Some(id) = op.strip_prefix("call/") {
                 let Some(operation) = call_operation(&request.body) else {
                     return Some(Reply::status(400));
@@ -423,20 +425,20 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                 };
                 server_page
                     .peer
-                    .voice_call(workspace, id, operation)
+                    .send(Cmd::VoiceCall(workspace, id, operation))
                     .unwrap();
             } else if op == "reconnect" {
-                server_page.peer.reconnect().unwrap();
+                server_page.peer.send(Cmd::Reconnect).unwrap();
             } else if op == "pictures" {
                 // The pictures the page's encoders made, as they are made:
                 // published on the workspace's plane as the page's device.
                 let Ok(pictures) = serde_json::from_slice::<Vec<Value>>(&request.body) else {
                     return Some(Reply::status(400));
                 };
-                let pictures: Vec<tilo_session_host::CallPicture> = pictures
+                let pictures: Vec<tilo_session_client::CallPicture> = pictures
                     .into_iter()
                     .filter_map(|picture| {
-                        Some(tilo_session_host::CallPicture {
+                        Some(tilo_session_client::CallPicture {
                             source: source_of(picture.get("source")?.as_str()?)?,
                             layer: layer_of(picture.get("layer")?.as_str()?)?,
                             sequence: picture.get("sequence")?.as_u64()?,
@@ -450,7 +452,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                     .collect();
                 server_page
                     .peer
-                    .publish_call_pictures(workspace, pictures)
+                    .send(Cmd::CallPictures(workspace, pictures))
                     .unwrap();
             } else if op == "showing" {
                 // What the page draws of the call's devices: the plane reads
@@ -458,7 +460,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                 let Ok(shown) = serde_json::from_slice::<Vec<Value>>(&request.body) else {
                     return Some(Reply::status(400));
                 };
-                let shown: Vec<tilo_session_host::CallShown> = shown
+                let shown: Vec<tilo_session_client::CallShown> = shown
                     .into_iter()
                     .filter_map(|entry| {
                         let layers = |key: &str| -> Vec<Layer> {
@@ -473,7 +475,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                                 })
                                 .unwrap_or_default()
                         };
-                        Some(tilo_session_host::CallShown {
+                        Some(tilo_session_client::CallShown {
                             device: hex::decode(entry.get("device")?.as_str()?)
                                 .ok()?
                                 .try_into()
@@ -485,7 +487,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                     .collect();
                 server_page
                     .peer
-                    .show_call_pictures(workspace, shown)
+                    .send(Cmd::CallShowing(workspace, shown))
                     .unwrap();
             } else if let Some(rest) = op.strip_prefix("keyframe/") {
                 // A device's picture the page needs to start decoding at.
@@ -503,7 +505,7 @@ async fn a_page_and_a_native_device_exchange_pictures_in_a_governed_call() {
                 };
                 server_page
                     .peer
-                    .restart_call_picture(workspace, device, source)
+                    .send(Cmd::CallPictureRestart(workspace, device, source))
                     .unwrap();
             } else {
                 return Some(Reply::status(404));

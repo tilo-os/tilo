@@ -22,6 +22,7 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
 use tilo_session_client::Event;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -43,14 +44,7 @@ fn landed(peer: &PeerHandle) -> usize {
 /// present the position before it and be sent the delta again. The host
 /// answers a request on the same stream, after what it wrote before.
 async fn settled(peer: &PeerHandle) {
-    let (reply, answer) = tokio::sync::oneshot::channel();
-    peer.rooms_then(
-        WorkspacesRequest::List,
-        Box::new(move |result| {
-            let _ = reply.send(result);
-        }),
-    )
-    .unwrap();
+    let answer = peer.ask_workspaces(WorkspacesRequest::List).unwrap();
     tilo_test_env::within("the host to answer the page", answer)
         .await
         .unwrap()
@@ -76,7 +70,7 @@ async fn before_marker(
     doc: &mut AutoCommit,
     marker: &str,
 ) -> usize {
-    author.publish(route(), &say(doc, marker)).unwrap();
+    author.write(route(), &say(doc, marker)).unwrap();
     hears(peer, &route(), marker).await;
     settled(peer).await;
     landed(peer)
@@ -122,13 +116,13 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     observer
         .join_placed(support::WORKSPACE, "Workspace")
         .unwrap();
-    observer.open_route(route()).unwrap();
+    observer.send(Cmd::OpenRoute(route())).unwrap();
     ready(&[&author, &observer]).await;
 
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "seed", vec![1_u8; 4096]).unwrap();
     author
-        .publish(route(), &DocumentMutation::Snapshot(doc.save()))
+        .write(route(), &DocumentMutation::Snapshot(doc.save()))
         .unwrap();
     for index in 0..HISTORY {
         doc.put(
@@ -138,7 +132,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
         )
         .unwrap();
         author
-            .publish(
+            .write(
                 route(),
                 &DocumentMutation::Incremental(doc.save_incremental()),
             )
@@ -151,7 +145,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
 
     // A new session: nothing retained is replayed.
     settled(&observer).await;
-    observer.reconnect().unwrap();
+    observer.send(Cmd::Reconnect).unwrap();
     resumed(&observer).await;
     let replayed = before_marker(&observer, &author, &mut doc, "after").await;
     assert_eq!(replayed, 0, "replayed {replayed} documents");
@@ -162,9 +156,9 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     host.relay.shutdown().await;
     let host = start_host_at(&root, &host_device, state.path(), listen, iroh_listen).await;
     laptop.reconnect(&host.relay, &root).await;
-    author.reconnect().unwrap();
+    author.send(Cmd::Reconnect).unwrap();
     ready(&[&author]).await;
-    author.publish(route(), &say(&mut doc, "missed")).unwrap();
+    author.write(route(), &say(&mut doc, "missed")).unwrap();
     let receipt = author.barrier().unwrap();
     wait_for("the missed edit to be durable", || async {
         receipt.try_recv().ok()
@@ -175,7 +169,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     // cuts its backoff short. A forced reconnect instead could drop a session
     // that already resumed before it read the position covering the edit,
     // and have the edit sent twice.
-    observer.retry_now().unwrap();
+    observer.send(Cmd::Retry).unwrap();
     resumed(&observer).await;
     let replayed = before_marker(&observer, &author, &mut doc, "back").await;
     assert_eq!(replayed, 1, "only the edit made while away is replayed");
@@ -185,7 +179,7 @@ async fn a_reconnect_resumes_after_the_last_position_instead_of_replaying_histor
     let fresh = enrol(&root, "tablet", DeviceCapabilities::member());
     let fresh = start_peer(host.iroh(), fresh.cert, host_device.cert.clone(), fresh.key);
     fresh.join_placed(support::WORKSPACE, "Workspace").unwrap();
-    fresh.open_route(route()).unwrap();
+    fresh.send(Cmd::OpenRoute(route())).unwrap();
     holds(&fresh, &route(), &doc).await;
     settled(&fresh).await;
     assert_eq!(landed(&fresh), HISTORY + 4);

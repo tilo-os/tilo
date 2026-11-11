@@ -12,6 +12,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
+use tilo_session_client::{Cmd, Outbox};
 
 use neighbour_wire::content::ContentWants;
 use tilo_session_client::Event;
@@ -55,12 +56,12 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
     let kept = picture.clone();
     let workspace = support::WORKSPACE.to_owned();
     keeper_peer
-        .keep_content(
+        .send(Cmd::KeepContent(
             support::workspace(),
             Arc::new(move |_app: &str, cluster: &str, _hash: &str| {
                 (cluster == workspace).then(|| kept.clone())
             }),
-        )
+        ))
         .unwrap();
 
     let device = asker.cert.device_public_key;
@@ -69,7 +70,7 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
         .ask(&device, (), ("so.tilo.notes", support::WORKSPACE), &hash, 1)
         .unwrap();
     asker_peer
-        .want_content(support::workspace(), request)
+        .send(Cmd::WantContent(support::workspace(), request))
         .unwrap();
     let arrived = wait_for("the page's pieces", || {
         let whole = heard.drain().into_iter().find_map(|event| match event {

@@ -21,6 +21,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::time::{Duration, Instant};
+use tilo_session_client::Outbox;
 
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
@@ -63,7 +64,7 @@ async fn a_message_reaches_the_other_page_without_waiting_for_a_poll() {
         let text = format!("message-{index}");
         let message = support::say(&mut doc, &text);
         let sent = Instant::now();
-        a.publish(route(), &message).unwrap();
+        a.write(route(), &message).unwrap();
         support::hears(&b, &route(), &text).await;
         let arrived = Instant::now();
         // The first one also opens the record's channel.
