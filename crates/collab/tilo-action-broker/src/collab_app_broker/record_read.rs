@@ -175,6 +175,15 @@ impl RecordChanges for RunRecords {
 }
 
 impl RecordReads for RunRecords {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
     fn read(
         &self,
         caller: &Caller,
@@ -236,6 +245,15 @@ struct BrokerRecordReads {
 }
 
 impl RecordReads for BrokerRecordReads {
+    fn answer_read(
+        self: Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage> {
+        tilo_actions::remote::answer_read(self, caller, correlation, read)
+    }
+
     fn read(
         &self,
         caller: &Caller,

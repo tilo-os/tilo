@@ -99,7 +99,7 @@ pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use record_read::{
     HeldCopies, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE,
     RecordAddress, RecordAsk, RecordChange, RecordChanges, RecordCopy, RecordReadings, RecordReads,
-    RecordWake, read_records,
+    RecordWake, answer_read, read_records,
 };
 pub use search::{Found, ResourceSearch, stem_word};
 #[cfg(any(test, feature = "test-support"))]
@@ -1232,9 +1232,14 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::Cancel { invocation } => host
             .cancel(caller, &invocation)
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
+        // Read by a host's own reader, which answers through its trait object: what a reading is
+        // made of loads with the code that reads records, not with every host's door.
         RemoteActionMessage::RecordRead {
             correlation, read, ..
-        } => record_read::serve_read(host.record_reads(), caller, correlation, read),
+        } => host.record_reads().map_or_else(
+            || record_read::unanswered(correlation),
+            |reads| reads.answer_read(caller, correlation, read),
+        ),
         // A question is the person's to answer, on the device they are at.
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),

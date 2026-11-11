@@ -53,6 +53,21 @@ pub trait RecordReads: Send + Sync {
     fn read(&self, caller: &Caller, address: &RecordAddress)
     -> Result<RecordCopy, ActionHostError>;
 
+    /// Answer a read of one of this host's records, asked as `correlation` over the door
+    /// ([`super::RemoteActionMessage::RecordRead`]), with what every reader of it is answered:
+    /// [`answer_read`], which every host that reads records through this trait answers with.
+    ///
+    /// The door posts a read here rather than to code of its own, so what a reading is made of —
+    /// every copy as JSON, and the record format behind it — is reached only from the reader's
+    /// code. A host that serves an app's windows and reads no record through the door leaves
+    /// [`super::ActionHost::record_reads`] `None` and carries none of it.
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: super::RecordReadRequest,
+    ) -> super::Pending<super::RemoteActionMessage>;
+
     /// Wake `wake` once the next write to `address` lands on this host, decided as a read is:
     /// what a reader holding a copy waits on before it reads again. Watched before the read it
     /// guards, so no write between the two is missed.
@@ -98,6 +113,15 @@ impl HeldCopies {
 }
 
 impl RecordReads for HeldCopies {
+    fn answer_read(
+        self: std::sync::Arc<Self>,
+        caller: &Caller,
+        correlation: u64,
+        read: super::RecordReadRequest,
+    ) -> super::Pending<super::RemoteActionMessage> {
+        answer_read(self, caller, correlation, read)
+    }
+
     fn read(&self, _: &Caller, address: &RecordAddress) -> Result<RecordCopy, ActionHostError> {
         Ok(self
             .0
@@ -218,8 +242,13 @@ pub fn read_records(
 
 /// Answer `read`, asked as `correlation`, for `caller` from `reads`, the host's record door: on
 /// a thread of its own, which the wait for a write past `read.after` and the record's capture hold.
-pub(super) fn serve_read(
-    reads: Option<std::sync::Arc<dyn RecordReads>>,
+///
+/// Every host that reads records answers [`RecordReads::answer_read`] with this, and the door
+/// posts a read through that method rather than here: the reading, the JSON every reader is
+/// answered and the record format behind it are reached only from a reader's own code, so a host
+/// that serves an app's windows and reads no record does not carry them.
+pub fn answer_read(
+    reads: std::sync::Arc<dyn RecordReads>,
     caller: &Caller,
     correlation: u64,
     read: super::RecordReadRequest,
@@ -232,18 +261,24 @@ pub(super) fn serve_read(
     })
 }
 
+/// What a host that reads no records answers a read of one: the door posts every read through
+/// [`RecordReads::answer_read`], and a host whose [`super::ActionHost::record_reads`] is `None`
+/// answers as this one does.
+pub(crate) fn unanswered(correlation: u64) -> super::Pending<super::RemoteActionMessage> {
+    super::Pending::ready(super::RemoteActionMessage::RecordReading {
+        correlation,
+        result: Err(ActionHostError::Unavailable {
+            reason: RECORD_READS_UNAVAILABLE.into(),
+        }),
+    })
+}
+
 fn serve_readings(
-    reads: Option<std::sync::Arc<dyn RecordReads>>,
+    reads: std::sync::Arc<dyn RecordReads>,
     caller: &Caller,
     read: super::RecordReadRequest,
 ) -> super::Pending<Result<String, ActionHostError>> {
     let (answer, answered) = super::pending();
-    let Some(reads) = reads else {
-        answer.complete(Err(ActionHostError::Unavailable {
-            reason: RECORD_READS_UNAVAILABLE.into(),
-        }));
-        return answered;
-    };
     let caller = caller.clone();
     let deadline = super::wait::deadline(read.wait_ms.unwrap_or(0));
     let ask = [RecordAsk {
