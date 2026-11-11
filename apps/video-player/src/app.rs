@@ -612,7 +612,7 @@ impl PlayerState {
             drawer: SidebarDrawer::new()
                 .left()
                 .closed()
-                .content_kind(ui::widget::ContentKind::Document)
+                .content_kind(ui::widget::ContentKind::Canvas)
                 .with_push(),
             content_inset: 0.0,
             content_inset_stale: false,
