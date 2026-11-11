@@ -1080,6 +1080,14 @@ impl NativeWorkspaceOwner {
     /// as durable as the replica, and a restart reuses no number a member
     /// already holds.
     ///
+    /// A durable receipt is the governor's assertion about the workspace, and
+    /// its generation is the workspace's: only a device that hosts this
+    /// workspace writes one, as its own commits do elsewhere
+    /// ([`super::effect_receipt`]). Every other device of the workspace's
+    /// person publishes the snapshots alone: their generations are each
+    /// device's own count, and two of them stamping the same receipts would
+    /// leave every member with a receipt no other member can merge.
+    ///
     /// # Errors
     /// The workspace is not held here, `key` is not this device's, or the
     /// commit failed.
@@ -1099,9 +1107,12 @@ impl NativeWorkspaceOwner {
                 .generation
                 .checked_add(1)
                 .ok_or("native owner generation exhausted")?;
-            let messages = live
-                .publication_mut()
-                .durable_bootstrap_messages(key, now, generation)?;
+            let messages = if stored.hosted_here() {
+                live.publication_mut()
+                    .durable_bootstrap_messages(key, now, generation)?
+            } else {
+                live.publication_mut().bootstrap_messages(key, now)?
+            };
             stored.generation = generation;
             Ok(messages)
         })?;

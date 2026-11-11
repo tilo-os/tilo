@@ -47,7 +47,7 @@ use tokio::sync::{broadcast, watch};
 use web_time::SystemTime;
 
 /// ALPN of a direct replica link between two devices of one workspace.
-pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/1";
+pub const DIRECT_ALPN: &[u8] = b"tilo-peer-state-direct/2";
 
 /// One frame of a direct link's control stream.
 ///
@@ -63,8 +63,11 @@ enum LinkFrame {
     Cursors(Vec<Cursor>),
     /// Retained history after the asker's cursors, and whether more is left.
     Frames {
-        /// The frames the other device holds after the asker's cursors.
-        frames: Vec<NeighbourMsg>,
+        /// The frames the other device holds after the asker's cursors, each
+        /// with the device that authored it: a round opens with the other
+        /// device's own state, which is history too, and a frame is judged
+        /// under the device that wrote it, as the live stream's are.
+        frames: Vec<([u8; 32], NeighbourMsg)>,
         /// Whether a further ask carries more.
         more: bool,
     },
@@ -76,7 +79,7 @@ enum LinkFrame {
 async fn fetch_store(
     control: &mut Control,
     mut cursors: Vec<Cursor>,
-    mut take: impl FnMut(&[NeighbourMsg]) -> Result<(), String>,
+    mut take: impl FnMut(&[([u8; 32], NeighbourMsg)]) -> Result<(), String>,
 ) -> Result<(), String> {
     write_link(&mut control.send, &LinkFrame::Cursors(cursors.clone())).await?;
     while let Some(frame) = read_link(&mut control.recv, MAX_FRAME_BYTES).await? {
@@ -84,7 +87,11 @@ async fn fetch_store(
             return Err("the device answered something else than retained frames".into());
         };
         take(&frames)?;
-        store::advance(&mut cursors, &frames);
+        let messages = frames
+            .into_iter()
+            .map(|(_, message)| message)
+            .collect::<Vec<_>>();
+        store::advance(&mut cursors, &messages);
         if !more {
             return Ok(());
         }
@@ -963,7 +970,7 @@ impl DirectSync {
                 self.0.caught_up.send_replace(true);
                 return std::future::pending().await;
             }
-            self.ask_store(&mut control, remote).await?;
+            self.ask_store(&mut control).await?;
             // The history is in hand: the frames from here on are the live
             // ones the link brings. A write this device let go unapplied
             // waits in the other device's history; once what it waited for
@@ -975,7 +982,7 @@ impl DirectSync {
             *self.0.other_store.lock_recover() = Some(OtherStore::Dialled(asks));
             loop {
                 tokio::select! {
-                    () = self.0.replay.notified() => self.ask_store(&mut control, remote).await?,
+                    () = self.0.replay.notified() => self.ask_store(&mut control).await?,
                     Some((cursors, answer)) = asked.recv() => {
                         let fetched = Self::fetch_history(&mut control, cursors).await;
                         let failed = fetched.as_ref().err().cloned();
@@ -1009,15 +1016,14 @@ impl DirectSync {
     /// Ask the other device for the history this device lacks, round by round
     /// while it says more are left, and return once it says no more are: the
     /// history is in hand. Each ask's first round opens with the other
-    /// device's state, its catch-up ([`Self::catch_up`]), which names `remote`
-    /// where a frame of it names no author; the frames its store keeps follow.
-    /// A frame still waiting for history after that waits for what the other
-    /// device lacks too: asking again would bring nothing.
-    async fn ask_store(&self, control: &mut Control, remote: [u8; 32]) -> Result<(), String> {
+    /// device's state, its catch-up ([`Self::catch_up`]), and the frames its
+    /// store keeps follow; each frame is judged under the device the round
+    /// names as its author. A frame still waiting for history after that waits
+    /// for what the other device lacks too: asking again would bring nothing.
+    async fn ask_store(&self, control: &mut Control) -> Result<(), String> {
         fetch_store(control, self.cursors(), |frames| {
-            for message in frames {
-                let author = store::author_of(message).unwrap_or(remote);
-                self.admit(author, message.clone(), true)?;
+            for (author, message) in frames {
+                self.admit(*author, message.clone(), true)?;
             }
             Ok(())
         })
@@ -1033,7 +1039,7 @@ impl DirectSync {
     ) -> Result<Vec<NeighbourMsg>, String> {
         let mut fetched = Vec::new();
         fetch_store(control, cursors, |frames| {
-            fetched.extend_from_slice(frames);
+            fetched.extend(frames.iter().map(|(_, message)| message.clone()));
             Ok(())
         })
         .await?;
@@ -1075,10 +1081,16 @@ impl DirectSync {
                 frames.extend(
                     self.answer_state_request()
                         .into_iter()
-                        .map(|state| state.message),
+                        .map(|state| (state.from, state.message)),
                 );
             }
-            frames.extend(kept);
+            // A frame the store keeps names its own author; one that does not
+            // is this device's.
+            let own = self.device();
+            frames.extend(
+                kept.into_iter()
+                    .map(|message| (store::author_of(&message).unwrap_or(own), message)),
+            );
             write_link(&mut control.send, &LinkFrame::Frames { frames, more }).await?;
             answered.send_replace(true);
             opens_an_ask = !more;
