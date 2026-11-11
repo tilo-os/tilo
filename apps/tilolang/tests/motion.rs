@@ -867,14 +867,10 @@ fn idle_ticks(app: &mut TestApp<TlApp>, start: ui::time::Instant) -> (usize, std
     (produced, cpu)
 }
 
-/// A frame of a window whose controls are bound to the actions it publishes reads each control's
-/// action again, and runs none of them: binding a control checks what its action takes, it never
-/// plans the action. Planning one is a trial run of it, and a frame that planned the action of
-/// every row it reads took ten times as long as the frame itself.
-#[test]
-fn a_frame_of_bound_controls_plans_no_action() {
-    let mut app = staged("a busy week");
-    let bound = ui::widget::controls::control_action_bindings(app.harness().root_widget())
+/// How many of the controls the window shows are bound to an action the app publishes, as the
+/// actions' own controls are (an invocation's is the press that runs it).
+fn bound_controls(app: &mut TestApp<TlApp>) -> usize {
+    ui::widget::controls::control_action_bindings(app.harness().root_widget())
         .into_iter()
         .filter(|binding| {
             matches!(
@@ -882,24 +878,69 @@ fn a_frame_of_bound_controls_plans_no_action() {
                 ui::widget::ControlBindingKind::Action(address) if address.action != "invoke"
             )
         })
-        .count();
+        .count()
+}
+
+/// How many times the observed frame ran the scope `phase`.
+fn calls(samples: &[ui::tilo_resource::profiling::Sample], phase: &str) -> usize {
+    samples
+        .iter()
+        .filter(|sample| sample.phase == phase)
+        .map(|sample| sample.calls)
+        .sum()
+}
+
+/// A frame of a window whose controls are bound to the actions it publishes reads each control's
+/// action again, and runs none of them: binding a control checks what its action takes, it never
+/// plans the action. Planning one is a trial run of it, and a frame that planned the action of
+/// every row it reads took ten times as long as the frame itself.
+#[test]
+fn a_frame_of_bound_controls_plans_no_action() {
+    let mut app = staged("a busy week");
+    let bound = bound_controls(&mut app);
     assert!(
         bound > 0,
         "the window's controls are bound to the actions it publishes"
     );
     let ((), samples) = ui::tilo_resource::profiling::observe(|| app.harness().relayout());
-    let calls = |phase: &str| {
-        samples
-            .iter()
-            .filter(|sample| sample.phase == phase)
-            .map(|sample| sample.calls)
-            .sum::<usize>()
-    };
-    assert_eq!(calls("ui.frame_sync"), 1, "the frame syncs: {samples:?}");
     assert_eq!(
-        calls("tl.plan"),
+        calls(&samples, "ui.frame_sync"),
+        1,
+        "the frame syncs: {samples:?}"
+    );
+    assert_eq!(
+        calls(&samples, "tl.plan"),
         0,
         "a frame plans no action of the {bound} controls it shows"
+    );
+}
+
+/// A frame reads every row and menu item the window shows again, and binds none of their
+/// controls: what a row's controls were bound to when it was read last is what they stay bound
+/// to, until the app publishes other actions. Finding the action a control runs searched the
+/// published ones, and validating it read the action's arguments, so a frame that bound the
+/// controls of every row it read spent most of the frame at that.
+#[test]
+fn a_still_frame_builds_no_action_bindings() {
+    let mut app = staged("a busy week");
+    let bound = bound_controls(&mut app);
+    assert!(
+        bound > 0,
+        "the window's controls are bound to the actions it publishes"
+    );
+    // The frame the window settled on read its rows against what the app publishes now.
+    app.harness().relayout();
+    let ((), samples) = ui::tilo_resource::profiling::observe(|| app.harness().relayout());
+    assert_eq!(
+        calls(&samples, "ui.frame_sync"),
+        1,
+        "the frame syncs: {samples:?}"
+    );
+    let calls = |phase: &str| calls(&samples, phase);
+    assert_eq!(
+        calls("ui.bind"),
+        0,
+        "a still frame builds no binding of the {bound} controls it shows: {samples:?}"
     );
 }
 

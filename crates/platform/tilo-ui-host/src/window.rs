@@ -748,19 +748,20 @@ impl AppWindow {
     /// in the window's own process publishes its actions itself and binds them here; an app in
     /// a host sends them ([`ToUi::Actions`]).
     pub fn bind_published(&mut self, published: &[tilo_actions::ResourceSpec]) {
-        let shown = self
-            .reconciler
-            .borrow()
-            .adapter()
-            .published(published.to_vec());
         // A control is bound to the action its event runs when its widget is built: controls
         // whose events would now take the other path are built again, so a press and anyone
-        // else running the action take the one path.
-        if self
-            .built
-            .as_ref()
-            .is_some_and(|built| rebinding(&shown, published, built))
-        {
+        // else running the action take the one path. The app publishing the same actions again
+        // binds nothing anew.
+        let rebind = {
+            let reconciler = self.reconciler.borrow();
+            let adapter = reconciler.adapter();
+            adapter.published(published.to_vec()).is_some_and(|shown| {
+                self.built
+                    .as_ref()
+                    .is_some_and(|built| rebinding(&shown, adapter, built))
+            })
+        };
+        if rebind {
             self.built = None;
             self.compose();
         }
@@ -2555,22 +2556,19 @@ fn declared_action(node: &UiNode, pressed: &ui::platform::Shortcut) -> Option<(S
 }
 
 /// Whether some control of the tree `node` an app built while the actions `before` were
-/// published would take the other path now that `after` are: an event that runs an action the
-/// app publishes is bound to the action itself, and one that runs an action it does not
-/// publish is the view's own.
+/// published would take the other path now that the window offers the actions `after`: an event
+/// that runs an action the app publishes is bound to the action itself, and one that runs an
+/// action it does not publish is the view's own.
 fn rebinding(
-    before: &[tilo_actions::ResourceSpec],
-    after: &[tilo_actions::ResourceSpec],
+    before: &crate::adapter::Published,
+    after: &crate::adapter::Adapter,
     node: &UiNode,
 ) -> bool {
     node.events.values().any(|event| {
         let Some((resource, action)) = event.invokes.as_ref() else {
             return false;
         };
-        let bound = |published: &[tilo_actions::ResourceSpec]| {
-            crate::adapter::bound_to(published, resource, action).is_some()
-        };
-        bound(before) != bound(after)
+        before.holds(resource, action) != after.holds(resource, action)
     }) || node
         .children
         .iter()

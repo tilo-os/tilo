@@ -86,22 +86,145 @@ pub struct Adapter {
     built: Rc<RefCell<HashMap<String, Built>>>,
     /// The resources components were given, by id: what an event that carries one reports.
     resources: Rc<RefCell<HashMap<String, ResourceRef>>>,
-    /// The actions the app publishes at the window, as the window offers them: what an event
-    /// that runs one of them is bound to.
-    published: Rc<RefCell<Vec<tilo_actions::ResourceSpec>>>,
+    /// The actions the app publishes at the window, as the window offers them, and the bindings
+    /// the controls reading them were made with.
+    published: Rc<RefCell<Published>>,
+}
+
+/// The actions the app publishes at the window, as its controls bind to them: each resource by
+/// the id a control names it with, and the binding of each action a control's event runs, kept
+/// so a frame that reads a control it already bound builds nothing.
+#[derive(Default)]
+pub struct Published {
+    /// The resources, as the window offered them: each holds the resources published under it.
+    resources: Vec<tilo_actions::ResourceSpec>,
+    /// Where each resource stands, by the id a control names it with (the last segment of its
+    /// published id): the way to it from the window's first resource, by index.
+    stands: HashMap<String, Vec<usize>>,
+    /// The binding of the action a control's event runs, by the resource a control names and
+    /// the action on it; `None` where the published actions offer none that binds. Kept until
+    /// the window offers other actions.
+    bindings: HashMap<String, HashMap<String, Option<tilo_actions::ActionBinding<()>>>>,
+}
+
+impl Published {
+    /// The actions `resources`, as the window offers them.
+    #[must_use]
+    fn new(resources: Vec<tilo_actions::ResourceSpec>) -> Self {
+        let mut stands = HashMap::new();
+        stand(&resources, &mut Vec::new(), &mut stands);
+        Self {
+            resources,
+            stands,
+            bindings: HashMap::new(),
+        }
+    }
+
+    /// Whether these are the actions `resources`, resource for resource and action for action:
+    /// a control bound to one of them is bound to the same one.
+    fn same(&self, resources: &[tilo_actions::ResourceSpec]) -> bool {
+        fn same(a: &[tilo_actions::ResourceSpec], b: &[tilo_actions::ResourceSpec]) -> bool {
+            a.len() == b.len()
+                && a.iter().zip(b).all(|(a, b)| {
+                    a.id == b.id
+                        && a.actions.len() == b.actions.len()
+                        && a.actions.iter().zip(&b.actions).all(|(a, b)| a.id == b.id)
+                        && same(&a.children, &b.children)
+                })
+        }
+        same(&self.resources, resources)
+    }
+
+    /// The resource a control names with `resource` — the last segment of its published id, as
+    /// an item is published under the record that holds it — the first one published. `None`
+    /// when the window publishes no such resource.
+    fn holding(&self, resource: &str) -> Option<&tilo_actions::ResourceSpec> {
+        let (first, below) = self.stands.get(resource)?.split_first()?;
+        below
+            .iter()
+            .try_fold(self.resources.get(*first)?, |held, at| {
+                held.children.get(*at)
+            })
+    }
+
+    /// The binding of the action (`resource`, `action`) a control's event runs: the action the
+    /// window publishes for the resource a control names, when it takes no arguments. Built
+    /// once and kept, so a frame that reads the control again builds nothing.
+    fn binding(&mut self, resource: &str, action: &str) -> Option<tilo_actions::ActionBinding<()>> {
+        // What the control runs, as it was bound when it read these actions: a row read again
+        // reads it, and nothing is searched or validated for it.
+        if let Some(bound) = self
+            .bindings
+            .get(resource)
+            .and_then(|on_resource| on_resource.get(action))
+        {
+            return bound.clone();
+        }
+        let bound = {
+            let _phase = tilo_resource::profiling::Phase::start("ui.bind");
+            self.holding(resource)
+                .and_then(|held| tilo_actions::ActionBinding::unit_for(held, action).ok())
+        };
+        self.bindings
+            .entry(resource.to_owned())
+            .or_default()
+            .insert(action.to_owned(), bound.clone());
+        bound
+    }
+
+    /// Whether the window publishes (`resource`, `action`) as a binding: what a control's event
+    /// running it takes the action's path, not the view's.
+    pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
+        self.holding(resource)
+            .is_some_and(|held| tilo_actions::ActionBinding::unit_for(held, action).is_ok())
+    }
+}
+
+/// Note where each resource of `resources` stands at `path`, and where those it holds under it
+/// stand: the first resource of an id is the one a control naming that id finds, as the first
+/// match depth first was before the actions were indexed.
+fn stand(
+    resources: &[tilo_actions::ResourceSpec],
+    path: &mut Vec<usize>,
+    stands: &mut HashMap<String, Vec<usize>>,
+) {
+    for (at, resource) in resources.iter().enumerate() {
+        path.push(at);
+        if let Some((_, id)) = resource.id.as_str().rsplit_once(':') {
+            stands.entry(id.to_owned()).or_insert_with(|| path.clone());
+        }
+        stand(&resource.children, path, stands);
+        path.pop();
+    }
 }
 
 impl Adapter {
     /// Offer the actions the app publishes (`resources`): an event that runs one of them is
     /// bound to the action itself, so pressing the control and anyone else running the action
     /// take one path, and what the window publishes names the control that is bound to it.
-    /// Answers what was offered before.
-    pub fn published(
-        &self,
-        resources: Vec<tilo_actions::ResourceSpec>,
-    ) -> Vec<tilo_actions::ResourceSpec> {
-        std::mem::replace(&mut *self.published.borrow_mut(), resources)
+    /// Answers the actions offered before, when these are not the same ones: the controls bound
+    /// while they were stand may bind differently now. Nothing is offered again while the app
+    /// publishes the same actions, so the bindings its controls were made with stand.
+    pub fn published(&self, resources: Vec<tilo_actions::ResourceSpec>) -> Option<Published> {
+        let mut held = self.published.borrow_mut();
+        if held.same(&resources) {
+            return None;
+        }
+        Some(std::mem::replace(&mut *held, Published::new(resources)))
     }
+
+    /// The binding of the action (`resource`, `action`) a control's event runs, as the actions
+    /// the window publishes offer it, or the binding it built when the control last read them.
+    fn bind(&self, resource: &str, action: &str) -> Option<tilo_actions::ActionBinding<()>> {
+        self.published.borrow_mut().binding(resource, action)
+    }
+
+    /// Whether a control whose event runs (`resource`, `action`) is bound to the action the
+    /// window publishes now.
+    pub(crate) fn holds(&self, resource: &str, action: &str) -> bool {
+        self.published.borrow().holds(resource, action)
+    }
+
     /// What the components reported since the last call, as what the window applies.
     #[must_use]
     pub fn take_events(&self) -> Vec<UiEvent> {
@@ -507,11 +630,7 @@ impl NodeSource<'_> {
             return None;
         }
         let (resource, action) = self.node.events.get(name)?.invokes.as_ref()?;
-        bound_to(
-            &self.reconciler.adapter().published.borrow(),
-            resource,
-            action,
-        )
+        self.reconciler.adapter().bind(resource, action)
     }
 
     /// Whether the event `name` is a press of its control: the event the description declares
@@ -527,38 +646,6 @@ impl NodeSource<'_> {
         }
         tilo_render_protocol::patch::validate::offers(self.description, name)
     }
-}
-
-/// The binding of the action (`resource`, `action`) of the actions `published`: an event that
-/// runs it is bound to the action itself, so pressing the control and anyone else running the
-/// action take the one path. `None` when the app publishes no such resource, or none of the
-/// resource's actions is this one that takes no arguments.
-pub(crate) fn bound_to(
-    published: &[tilo_actions::ResourceSpec],
-    resource: &str,
-    action: &str,
-) -> Option<tilo_actions::ActionBinding<()>> {
-    // The app publishes the resource it names as its own id with the app's before it: the
-    // action the view attached names the resource the same way the app's surface does. An
-    // item is published under the record that holds it.
-    fn holding<'a>(
-        published: &'a [tilo_actions::ResourceSpec],
-        resource: &str,
-    ) -> Option<&'a tilo_actions::ResourceSpec> {
-        published.iter().find_map(|held| {
-            if held
-                .id
-                .as_str()
-                .rsplit_once(':')
-                .is_some_and(|(_, id)| id == resource)
-            {
-                Some(held)
-            } else {
-                holding(&held.children, resource)
-            }
-        })
-    }
-    tilo_actions::ActionBinding::unit_for(holding(published, resource)?, action).ok()
 }
 
 impl Source for NodeSource<'_> {

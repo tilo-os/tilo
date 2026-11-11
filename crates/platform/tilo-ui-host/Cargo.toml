@@ -16,6 +16,9 @@ tilo-formats = { version = "0.1.0", path = "../../sdk/tilo-formats" }
 tilo-render-protocol = { version = "0.1.0", path = "../tilo-render-protocol" }
 # The actions the window's app publishes for its command palette.
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The named scopes a frame's work is counted in (`ui.bind`): what a test reads to see that a
+# still frame binds no control again.
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 chrono = { workspace = true, features = ["std"] }
 serde.workspace = true
 serde_json.workspace = true

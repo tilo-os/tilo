@@ -22320,6 +22320,7 @@ dependencies = [
  "tilo-actions",
  "tilo-formats",
  "tilo-render-protocol",
+ "tilo-resource",
  "tilo-ui",
  "tracing",
  "workspace-hack",
