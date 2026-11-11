@@ -482,12 +482,16 @@ BROWSER_KPIS = {
     "demo_work_ms": ("browser.demo.frame_work", "ms"),
     "typing_ms": ("browser.typing.key_to_frame", "ms"),
     "typing_work_ms": ("browser.typing.frame_work", "ms"),
+    "scroll_ms": ("browser.scroll.wheel_to_frame", "ms"),
+    "scroll_vs_dom": ("browser.scroll.share_of_plain_page", "percent"),
     "idle_per_s": ("browser.idle.presented_per_s", "per_s"),
 }
 # Reported only by a run with the demo workload (`--demo-seconds` above 0).
 BROWSER_DEMO_FIELDS = frozenset({"demo_interval_ms", "demo_work_ms"})
 # Reported only by a run with the typing workload (`--typing-keys` above 0).
 BROWSER_TYPING_FIELDS = frozenset({"typing_ms", "typing_work_ms"})
+# Reported only by a run with the scroll workload (`--scroll-steps` above 0).
+BROWSER_SCROLL_FIELDS = frozenset({"scroll_ms", "scroll_vs_dom"})
 
 
 def browser_qualification(report: dict[str, Any], env: dict[str, Any],
@@ -521,6 +525,8 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
     typing = int(workload.get("typingKeys", 0)) > 0
     absent = set() if demo else set(BROWSER_DEMO_FIELDS)
     absent |= set() if typing else set(BROWSER_TYPING_FIELDS)
+    scrolling = int(workload.get("scrollSteps", 0)) > 0
+    absent |= set() if scrolling else set(BROWSER_SCROLL_FIELDS)
     fields = [field for field in BROWSER_KPIS if field not in absent]
     missing = [field for field in fields if not samples.get(field)]
     if missing:
@@ -529,6 +535,8 @@ def browser_qualification(report: dict[str, Any], env: dict[str, Any],
         raise ValueError("the report has demo samples from a run without the demo")
     if not typing and any(samples.get(field) for field in BROWSER_TYPING_FIELDS):
         raise ValueError("the report has typing samples from a run without the typing workload")
+    if not scrolling and any(samples.get(field) for field in BROWSER_SCROLL_FIELDS):
+        raise ValueError("the report has scroll samples from a run without the scroll workload")
     adapter = report.get("adapter") or {}
     meta = {**env.get("meta", {}), "bundle_digest": bundle["digest"], "runtime_sha256": bundle["runtimeSha256"],
             "browser": report["browser"]["product"],

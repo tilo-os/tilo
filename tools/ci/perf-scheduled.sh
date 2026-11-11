@@ -204,7 +204,7 @@ case $group in
     chrome
     env_json release swiftshader kvm > "$out/env.json"
     node scripts/perf/browser_qualification.mjs "$bundle" --out "$out/browser.json" \
-      --renderer swiftshader --demo-seconds 0 --rounds 1 --activations 10 --typing-keys 16 --viewport 960x540 \
+      --renderer swiftshader --demo-seconds 0 --rounds 1 --activations 10 --typing-keys 16 --scroll-steps 24 --viewport 960x540 \
       --expect-revision "$(git rev-parse HEAD)" | tee "$out/browser-summary.txt"
     python3 tools/perf/adapters.py browser-qualification --env-json "$out/env.json" "$out/browser.json" \
       > "$out/browser.jsonl"

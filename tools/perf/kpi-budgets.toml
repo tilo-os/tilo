@@ -1512,6 +1512,28 @@ p95 = 16.7
 baseline_min_runs = 3
 source = "the runtime's CPU for each frame a typed key presented (headless, SwiftShader)"
 
+# The note the typing workload wrote, filled with a few screens of paragraphs
+# and wheeled up and back down (--scroll-steps), each wheel timed from the
+# event to the frame that presented it as Chrome traces it (EventLatency).
+# Beside it, the same wheels over the same paragraphs in a plain page that
+# scrolls them from its own script, in the same browser: the floor for a page
+# whose every scroll goes through its main thread, as the canvas's does
+# (Chrome scrolls a plain element on its compositor, which a canvas cannot
+# use). The share holds the runtime against that floor on any machine. A
+# GPU runs the note at about twice the floor (the qualification's 200 % goal);
+# the ceiling leaves room for a busy host, where one round reached 310 %.
+[kpi."browser.scroll.wheel_to_frame"]
+unit = "ms"
+p95 = 100.0
+baseline_min_runs = 3
+source = "wheel event to the frame that presented it (EventLatency), a filled note wheeled up and down (headless, SwiftShader)"
+
+[kpi."browser.scroll.share_of_plain_page"]
+unit = "percent"
+max = 300.0
+baseline_min_runs = 1
+source = "the note's wheel-to-frame p95 as a share of a plain page's scrolled from its own script, one per round, same browser (headless, SwiftShader)"
+
 # Session startup and frame budgets, per device class, read by
 # tools/perf/check_kpi.py (the [kpi.*] tables above stay compare.py's).
 #
