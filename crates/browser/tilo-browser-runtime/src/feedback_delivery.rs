@@ -16,7 +16,7 @@ use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
-use tilo_session_host::session_actions::Heard;
+use tilo_session_core::remote::Heard;
 use tilo_session_host::{PeerEvent, PeerEvents, PeerHandle};
 use tilo_user_identity::DeviceCert;
 

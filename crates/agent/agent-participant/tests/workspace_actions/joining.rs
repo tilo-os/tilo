@@ -5,8 +5,8 @@
 //! that workspace admits it, and the request is answered then.
 use super::*;
 use tilo_actions::remote::{RemoteActionFrame, RemoteActionMessage};
+use tilo_session_core::remote::Heard;
 use tilo_session_host::PeerEvent;
-use tilo_session_host::session_actions::Heard;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_request_sent_as_the_page_joins_is_answered_once_it_is_admitted() {

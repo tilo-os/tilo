@@ -802,7 +802,7 @@ async fn an_agent_through_tilo_mcp_is_seen_once_as_the_hosts_run() {
     ) else {
         panic!("a key names a person")
     };
-    let actions = tilo_session_host::session_actions::SessionActions::new(
+    let actions = tilo_session_core::remote::SessionActions::new(
         &codex.peer,
         codex.workspace,
         host.cert.device_public_key,
@@ -902,7 +902,7 @@ async fn an_agent_is_seen_once_on_a_host_another_person_runs() {
     ) else {
         panic!("a key names a person")
     };
-    let actions = tilo_session_host::session_actions::SessionActions::new(
+    let actions = tilo_session_core::remote::SessionActions::new(
         &agent.peer,
         agent.workspace,
         host.cert.device_public_key,

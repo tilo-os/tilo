@@ -23,7 +23,7 @@ use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desk::{Desk, Store};
-use tilo_session_host::session_actions::SessionActions;
+use tilo_session_core::remote::SessionActions;
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };

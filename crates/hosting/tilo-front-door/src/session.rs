@@ -35,7 +35,7 @@ use std::{
 };
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_runtime::mcp_windows;
-use tilo_session_host::session_actions::SessionActions;
+use tilo_session_core::remote::SessionActions;
 
 /// The header naming an MCP session (Streamable HTTP).
 pub const SESSION_HEADER: &str = "mcp-session-id";

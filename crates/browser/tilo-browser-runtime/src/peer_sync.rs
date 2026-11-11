@@ -16,8 +16,8 @@ use collab_types::presence::{
 use iroh::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_session::sync::{Client, Device, Outbox, OwnPresence, Topic, Transport};
+use tilo_session_core::remote::SessionActions;
 use tilo_session_host::PeerHandle;
-use tilo_session_host::session_actions::SessionActions;
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
@@ -215,10 +215,7 @@ struct Page {
     interactions: HashMap<String, Vec<tilo_actions::SemanticInteraction>>,
     /// The doors this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
-    doors: RefCell<HashMap<u64, tilo_session_host::session_actions::SessionActions>>,
-    /// How a door is made: named where the page starts, with the peer's code, so
-    /// a mount that asks for one carries none of it.
-    open_door: fn(&PeerHandle, u64, [u8; 32]) -> SessionActions,
+    doors: RefCell<HashMap<u64, SessionActions>>,
 }
 
 thread_local! {
@@ -285,7 +282,6 @@ pub(crate) fn register(
                 waved: None,
                 interactions: HashMap::new(),
                 doors: RefCell::default(),
-                open_door: |handle, workspace, host| SessionActions::new(handle, workspace, host),
             },
         );
     });
@@ -303,14 +299,14 @@ pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
     })
 }
 
-/// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
-/// host: one session path per workspace, whichever of the page's callers asks.
 /// The host handle of the started page `id`: what this page asks its session for over the peer it
 /// is with.
 pub(crate) fn handle_of(id: u32) -> Option<PeerHandle> {
     PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.handle.clone()))
 }
 
+/// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
+/// host: one session path per workspace, whichever of the page's callers asks.
 pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&id)?;
@@ -318,7 +314,7 @@ pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
         Some(
             doors
                 .entry(workspace)
-                .or_insert_with(|| (page.open_door)(&page.handle, workspace, page.host))
+                .or_insert_with(|| SessionActions::new(&page.handle, workspace, page.host))
                 .clone(),
         )
     })

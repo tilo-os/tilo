@@ -729,7 +729,7 @@ impl AgentParticipant {
                 frames,
             } if workspace_id == self.workspace_id => self.record_answered(route, frames),
             PeerEvent::Landed { route, author } => self.document_said(route, author),
-            PeerEvent::Remote(tilo_session_host::session_actions::Heard::Action {
+            PeerEvent::Remote(tilo_session_core::remote::Heard::Action {
                 workspace_id,
                 from,
                 frame,

@@ -21,6 +21,7 @@ tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-session-host = { path = "../../session/host" }
+tilo-session-core = { path = "../../session/core" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # HTTPS to the relay and the site, as every client of the relay makes its requests.
 tilo-relay-client = { path = "../tilo-relay-client" }

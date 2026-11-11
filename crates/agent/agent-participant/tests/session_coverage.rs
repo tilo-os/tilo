@@ -50,8 +50,8 @@ use tilo_agent_participant::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_session_core::remote::Heard;
 use tilo_session_host::PeerEvent;
-use tilo_session_host::session_actions::Heard;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};

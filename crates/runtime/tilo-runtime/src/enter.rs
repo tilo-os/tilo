@@ -27,9 +27,9 @@ use iroh::Endpoint;
 use serde_json::Value;
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostMode};
 use tilo_relay_session::workspaces::WorkspaceHostAddress;
+use tilo_session_core::remote::SessionActions;
 use tilo_session_host::PeerConfig;
 use tilo_session_host::device::Device;
-use tilo_session_host::session_actions::SessionActions;
 use tilo_user_identity::DeviceCert;
 
 use crate::mcp::{McpServer, Surface};

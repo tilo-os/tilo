@@ -33,7 +33,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
-use tilo_session_host::session_actions::Heard;
+use tilo_session_core::remote::Heard;
 use tilo_session_host::{Host, PeerEvent, PeerEvents, PeerHandle};
 
 use super::hosted::Hosted;

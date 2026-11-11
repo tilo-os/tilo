@@ -21,8 +21,8 @@ use tilo_user_identity::DeviceCert;
 use web_time::{Duration as Wait, Instant};
 
 use crate::session::{AgentRunCompletion, HOST_ITSELF, PeerConfig, PeerHandle, TransportPhase};
-use crate::session_actions::SessionActions;
 use crate::{MemoryPeerStore, PeerStore};
+use tilo_session_core::remote::SessionActions;
 
 /// How long joining a workspace waits for its host to admit this device.
 const ADMITTING: Wait = Wait::from_secs(20);

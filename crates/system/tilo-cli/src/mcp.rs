@@ -28,8 +28,8 @@ use anyhow::Result;
 use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_session_core::remote::SessionActions;
 use tilo_session_host::device::Device as Entered;
-use tilo_session_host::session_actions::SessionActions;
 
 use crate::login::{Device, NOT_LOGGED_IN};
 use tilo_runtime::mcp_windows;

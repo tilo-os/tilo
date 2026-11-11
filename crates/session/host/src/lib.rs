@@ -13,8 +13,7 @@
 //! - the **workspace's governance**: each joined workspace's replica, built
 //!   from the bootstrap the host sends ahead of the workspace's replay and
 //!   admitting the governance it relays, as a native device's does (`replica`);
-//! - the **live plane** ([`live`]): ephemeral presence and previews relayed
-//!   by the host to live members;
+//! - the **live plane**: ephemeral presence and previews the host relays;
 //! - **calls** ([`voice`] for the relay's own media path, and the plane's
 //!   camera and screen tracks for what a call carries): the grants that admit
 //!   the page to a call, and the pictures and voice it publishes and shows.
@@ -50,8 +49,6 @@ mod replica;
 pub mod saying;
 pub use saying::saying;
 pub mod session;
-/// Another device's actions, asked through this device's session.
-pub use tilo_session_core::remote as session_actions;
 pub mod surfaces;
 pub mod voice;
 pub mod way_in;
@@ -63,8 +60,6 @@ pub use session::{
     LocalState, PAGE_FAILURE_CODES, PageShown, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
     PeerStatus, RoomsCompletion, SessionMemberHost, TransportPhase,
 };
-/// The record a session's [`PeerHandle::open_route`] takes part in.
-pub use tilo_peer_state::document_frame::DocumentRoute;
 /// The identity layer's device side, re-exported for this crate's own tests
 /// and its peers.
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info, workspace_deleted};

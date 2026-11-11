@@ -86,6 +86,7 @@ tilo-session-host = { path = "../../session/host", features = ["toolkit"] }
 # The participant's client: the board of who is here and the agent's own word on it, as every host
 # keeps them.
 tilo-session-client = { path = "../../session/client" }
+tilo-session-core = { path = "../../session/core" }
 # A device on the plane is named by its endpoint id.
 iroh.workspace = true
 iroh-base.workspace = true
