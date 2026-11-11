@@ -720,8 +720,16 @@ async function settled(agent, answer) {
  * has it (a workspace is its person's: it has what it has).
  */
 async function planActions(agent, apps) {
+  // What the agent reads its next step off: an action still pending is waited for, as an agent
+  // asks after it, and a listing the host could not answer in time is asked again, a few times. On
+  // a loaded machine making a note answered "pending", the listing after it timed out, and the run
+  // wrote in the notebook rather than the note it had just made.
   const ask = async (tool, args) => {
-    const answer = await agent.call(tool, args);
+    let answer = await settled(agent, await agent.call(tool, args));
+    for (let retry = 0; retry < 3 && tool === 'tilo_ls' && answer.failed && /did not answer/i.test(answer.text); retry += 1) {
+      log(`agent ${tool} ${JSON.stringify(args)} timed out; asking again`);
+      answer = await agent.call(tool, args);
+    }
     log(`agent ${tool} ${JSON.stringify(args)} -> ${verdict(answer)} ${answer.text.slice(0, 600)}`);
     return answer;
   };
