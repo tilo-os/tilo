@@ -110,10 +110,10 @@ pub fn camera_import_photo(
     if bytes.is_empty() || bytes.len() > 64 * 1024 * 1024 {
         return Err(crate::strings::tr("photos-camera-error-integrity"));
     }
-    let image = pixels::decode(&bytes)
+    let image = pixels::size(&bytes)
         .ok_or_else(|| crate::strings::tr("photos-camera-error-unsupported"))?;
     Ok(model::LibraryPhoto::from_image(OpenImage::new(
-        name, image.w, image.h, hash,
+        name, image.0, image.1, hash,
     )))
 }
 

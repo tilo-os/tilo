@@ -548,7 +548,9 @@ impl ResourceApp for PhotosShell {
         let (Some(file), Some(content)) = (input.file(), input.content()) else {
             return Vec::new();
         };
-        let Some(image) = crate::pixels::decode(file.bytes()) else {
+        // The header names the picture's size, which is all the record needs:
+        // its pixels are decoded off the frame when the window shows it.
+        let Some((width, height)) = crate::pixels::size(file.bytes()) else {
             tracing::warn!(
                 name = file.name(),
                 "photos: the launched file is not an image"
@@ -562,7 +564,7 @@ impl ResourceApp for PhotosShell {
                 return Vec::new();
             }
         };
-        let open = OpenImage::new(file.name(), image.w, image.h, hash);
+        let open = OpenImage::new(file.name(), width, height, hash);
         vec![import(&LibraryPhoto::from_image(open))]
     }
 

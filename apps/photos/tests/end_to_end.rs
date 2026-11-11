@@ -119,6 +119,24 @@ impl Harness {
         Framed::harness(framed).scene().clone()
     }
 
+    /// Frame until the photograph the window shows is on screen: its pixels
+    /// are decoded off the frame, so the pass that opens it draws the loading
+    /// state and a later one draws the picture. Returns the scene of the frame
+    /// that showed it.
+    fn frame_until_shown(&mut self) -> Scene {
+        let deadline = tilo_test_env::hang_deadline();
+        let mut scene = self.frame();
+        while !self.app().state().has_image() {
+            assert!(
+                ui::time::now() < deadline,
+                "the photograph did not decode off the frame in time"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+            scene = self.frame();
+        }
+        scene
+    }
+
     /// The edits of the photograph the window shows.
     fn edits(&mut self) -> Edits {
         let id = self
@@ -233,7 +251,7 @@ fn library_accessibility_is_certified_and_album_actions_are_canonical() {
         let (app, _) = hz.parts();
         app.state().show_selection_for_shot();
         app.state().show_selection_destination_chooser_for_shot();
-        hz.frame();
+        hz.frame_until_shown();
 
         let tree = hz
             .app()
@@ -295,7 +313,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         ] {
             let mut hz = Harness::new(w, h);
             hz.app().state().open_path(&path);
-            hz.frame();
+            hz.frame_until_shown();
 
             assert!(
                 hz.app().state().has_image(),
@@ -344,7 +362,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         let (path, _) = staged(dir.path(), 800, 1200);
         let mut hz = Harness::new(390.0, 844.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         let visible = hz.app().state().visible_rect();
         assert!(
@@ -383,7 +401,7 @@ fn photographs_fit_the_canvas_and_non_images_open_nothing() {
         // plus two runs of text, so opening a photograph *reduces* the path count
         // while adding the one draw that matters.
         hz.app().state().open_path(&path);
-        let loaded = hz.frame();
+        let loaded = hz.frame_until_shown();
         assert_eq!(
             images(&loaded),
             1,
@@ -451,7 +469,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let (path, _) = staged(dir.path(), 300, 200);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         let before = hz.app().state().edited_pixels().expect("rendered").clone();
         assert_eq!((before.w, before.h), (300, 200));
@@ -517,7 +535,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let (path, original) = staged(dir.path(), 400, 400);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         let before = hz.app().state().edited_pixels().expect("rendered").clone();
         assert_eq!((before.w, before.h), (400, 400));
@@ -561,7 +579,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         let (path, original) = staged(dir.path(), 240, 160);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
             x: 0.1,
@@ -595,7 +613,7 @@ fn rotate_crop_and_reset_change_exactly_the_exported_pixels() {
         // arithmetic below is not fighting a letterbox.
         let mut hz = Harness::new(600.0, 600.0 + 48.0 + 28.8);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         hz.app().state().set_zoom(2.0);
         hz.frame();
@@ -687,7 +705,7 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         let (path, original) = staged(dir.path(), 400, 300);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         let e = Edits::default().rotated_right().cropped_from_view(Rect01 {
             x: 0.5,
@@ -731,7 +749,7 @@ fn copy_and_save_export_what_was_shown_without_overwriting() {
         let (path, _) = staged(dir.path(), 320, 240);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         let turned = hz.edits().rotated_left();
         hz.set_edits(turned);
@@ -791,7 +809,7 @@ fn save_asks_the_chooser_with_a_bare_name() {
         let (path, _) = staged(dir.path(), 320, 240);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
         let shown = hz.app().state().edited_pixels().expect("rendered").clone();
 
         let chosen = dir.path().join("chosen.png");
@@ -838,7 +856,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         let (path, _) = staged(dir.path(), 400, 200);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         let before = hz.state().doc.save();
         let resources = [published(&hz.state().doc)];
@@ -932,7 +950,7 @@ fn resource_surface_acts_on_the_open_photograph_without_a_display() {
         let (path, original) = staged(dir.path(), 400, 400);
         let mut hz = Harness::new(1000.0, 700.0);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
 
         // Address the photograph by the id derived from its content — no
         // enumeration, no coordinate, nothing that needs a screen.
@@ -1051,7 +1069,7 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
         ] {
             let mut hz = Harness::new(w, h);
             hz.app().state().open_path(&path);
-            hz.frame();
+            hz.frame_until_shown();
             hz.frame();
 
             // Every command stays reachable in the window's bar: those its
@@ -1092,7 +1110,7 @@ fn toolbar_controls_fit_legibly_at_every_size_and_theme() {
         let dir = tempfile::tempdir().unwrap();
         let (path, _) = staged(dir.path(), 200, 150);
         hz.app().state().open_path(&path);
-        hz.frame();
+        hz.frame_until_shown();
         assert!(
             hz.app().state().status_rect().height() > 0.0,
             "an open photograph must get a status line"
@@ -1128,7 +1146,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
             }
             set_library(&mut hz.state().doc, &library);
             hz.app().state().show_library();
-            hz.frame();
+            hz.frame_until_shown();
             hz.frame();
 
             let layouts = hz.app().state().library_card_action_rects();
@@ -1190,7 +1208,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         });
         set_library(&mut hz.state().doc, &library);
         hz.app().state().show_library();
-        hz.frame();
+        hz.frame_until_shown();
         hz.frame();
 
         let cards = hz.app().state().library_card_action_rects();
@@ -1234,7 +1252,7 @@ fn library_cards_lay_out_inside_the_canvas_at_every_size() {
         }
         set_library(&mut hz.state().doc, &library);
         hz.app().state().show_library();
-        hz.frame();
+        hz.frame_until_shown();
         hz.frame();
 
         let names = hz.app().state().window_bar_names();
