@@ -436,8 +436,8 @@ fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
     english();
     let mut operating = connect(true);
     assert!(
-        says(&mut operating, "operates web pages in Browser"),
-        "the agent's key operates web pages, and its row says so"
+        says(&mut operating, "Browser pages"),
+        "the agent's key operates web pages in Browser, and its row says so"
     );
     operating
         .harness()
@@ -451,7 +451,7 @@ fn the_connected_agents_list_says_when_a_key_operates_web_pages() {
     );
     let mut asked = connect(false);
     assert!(
-        !says(&mut asked, "operates web pages in Browser"),
+        !says(&mut asked, "Browser pages"),
         "a key asked about every page action says nothing of it"
     );
 }

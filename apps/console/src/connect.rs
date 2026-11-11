@@ -5,7 +5,7 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_actions::remote::agent_door as door;
 use ui::tilo_actions::remote::workspace_activity as wire;
-use ui::widget::{ButtonRole, ListRow, Property, PropertyList, Section};
+use ui::widget::{ButtonRole, ChipStyle, ListRow, Property, PropertyList, Section};
 
 use crate::{Console, Doors, Reads, ago, faced, page, tr, trf};
 
@@ -60,21 +60,14 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     }))
 }
 
-/// Where `reach` lets the agent work, and what else its key may do, in
-/// words: the reach first, then whether the key operates web pages in
-/// Browser without asking, as the door's own grants page says it.
+/// Where the grant lets the agent work, in words.
 pub(crate) fn access(grant: &door::Grant) -> String {
-    let reach = match &grant.reach {
+    match &grant.reach {
         door::Reach::Account => tr("console-reach-account"),
         door::Reach::Workspace { name, .. } => trf(
             "console-reach-workspace",
             &[("workspace", name.clone().into())],
         ),
-    };
-    if grant.browser_pages {
-        trf("console-reach-browser-pages", &[("reach", reach.into())])
-    } else {
-        reach
     }
 }
 
@@ -123,6 +116,14 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
     .secondary_lines(2)
     .meta(status)
     .trailing(Box::new(revoke));
+    // The key operating web pages in Browser without asking is a fact of its
+    // own beside the reach, not a clause of it.
+    if grant.browser_pages {
+        row = row.tags(&[(
+            tr("console-grant-browser-pages").as_str(),
+            ChipStyle::Neutral,
+        )]);
+    }
     if !grant.runs.is_empty() {
         row = row.active();
     }
