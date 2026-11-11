@@ -934,7 +934,16 @@ async function closePeople(tab) {
   if (!rosterOf(await semantics(tab))) return null;
   await press(tab, /^everyone here$/i, {what: 'closing who is here'});
   const closed = await untilDrawn(tab, async () => !rosterOf(await semantics(tab)), 4000, 150);
-  return closed ? null : `who is here stayed open: ${names(await semantics(tab))}`;
+  if (!closed) return `who is here stayed open: ${names(await semantics(tab))}`;
+  // Where the bar's faces stand for everyone here, the press landed on a face, which opens its
+  // person's card in the roster's place: the person puts that away too, with Escape, before
+  // reading on, or the card stands over the work they follow.
+  if (personCardOf(await semantics(tab))) {
+    await key(tab, 'Escape', 'Escape', 27);
+    const away = await untilDrawn(tab, async () => !personCardOf(await semantics(tab)), 4000, 150);
+    if (!away) return `the card a face opened stayed up: ${names(await semantics(tab))}`;
+  }
+  return null;
 }
 
 /** Whether the note following brought forward is the window in front, by the
