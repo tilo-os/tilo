@@ -299,6 +299,14 @@ browser-review-did-type = In { $target } getippt
 browser-review-did-type-page = In die Seite getippt
 browser-review-by-typing = Direkte Eingabe
 browser-review-wrote-secret = Gesetzt, nicht angezeigt
+browser-review-held-submit = Absenden für Sie angehalten: { $what }
+browser-review-held-request = Anfrage für Sie angehalten: { $what }
+browser-review-held-download = Download für Sie angehalten: { $what }
+browser-review-held-other = Für Sie angehalten: { $what }
+browser-review-hold-allowed-by = Von { $name } freigegeben
+browser-review-hold-allowed-by-you = Von Ihnen freigegeben
+browser-review-hold-kept = Unverändert belassen
+browser-review-hold-dropped = Verworfen, niemand hat geantwortet
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = Noch keine Downloads

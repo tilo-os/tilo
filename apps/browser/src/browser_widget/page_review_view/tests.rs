@@ -503,6 +503,72 @@ fn what_a_person_typed_is_listed_as_typing_and_a_secret_only_as_set() {
     );
 }
 
+/// What the window held from leaving the page stands in the review among the
+/// actions: what waited for the person and whose action reached it, who let
+/// it leave, who kept the page as it is, and what was dropped with nobody
+/// answering.
+#[test]
+fn what_was_held_is_listed_with_who_let_it_leave() {
+    let (engine, mut app) = window();
+    let visa = "POST https://visas.example.org";
+    let tracker = "POST https://tracker.example";
+    let receipt = "receipt.pdf, https://visas.example.org";
+    let hold = |seq: u64, actor: &str, action: &str, message: &str| {
+        json!({"seq": seq, "actor": actor, "how": "hold", "action": action, "ok": true,
+            "message": message, "url": FORM})
+    };
+    let record = [
+        json!({"seq": 1, "actor": "agent:intake", "action": "click", "ok": true,
+            "target": {"role": "button", "name": "Send application"}}),
+        hold(2, "agent:intake", "submit", visa),
+        hold(3, "", "allow", visa),
+        hold(4, "", "request", tracker),
+        hold(5, "agent:rev", "keep", tracker),
+        hold(6, "", "download", receipt),
+        hold(7, "", "drop", receipt),
+    ];
+    page_holds(
+        &engine,
+        &[("Email", "email", "ada@example.org", json!({"how": "input"}))],
+        &record,
+    );
+    invoke(&mut app, None, &BrowserEffect::ReviewPage);
+    let held = format!("Submission held for you: {visa}");
+    eventually(&mut app, "the review lists what was held", |app| {
+        row(app, &held).is_some()
+    });
+    assert_eq!(
+        row(&mut app, &held).as_deref(),
+        Some("By intake"),
+        "under the agent whose action reached it"
+    );
+    assert_eq!(
+        row(&mut app, "Let leave by you").as_deref(),
+        Some(visa),
+        "the person let it leave, and the row says what"
+    );
+    let texts = app.texts();
+    for said in [
+        format!("Request held for you: {tracker}"),
+        format!("Download held for you: {receipt}"),
+    ] {
+        assert!(texts.contains(&said), "{said:?} is not in {texts:?}");
+    }
+    assert_eq!(
+        row(&mut app, "Kept as it is").as_deref(),
+        Some("POST https://tracker.example, By rev"),
+        "the agent that kept the page is named"
+    );
+    assert_eq!(
+        row(&mut app, "Dropped, nobody answered").as_deref(),
+        Some(receipt)
+    );
+    assert!(
+        !texts.iter().any(|text| text == "Sent the form"),
+        "a held submission is not listed as one that was sent: {texts:?}"
+    );
+}
+
 /// A secret is reviewed as set or not set. Its text is in no part of the
 /// window's accessibility tree, whatever a read of the page carried.
 #[test]

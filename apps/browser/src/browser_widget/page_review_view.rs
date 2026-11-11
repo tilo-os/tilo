@@ -663,9 +663,54 @@ fn record_section(record: &Record, secrets: &[&str]) -> Section {
         .with_header(SectionHeader::heading(t("browser-review-record")).count(record.steps.len()))
 }
 
+/// One hold of the tab's record: that something the page was about to send
+/// waits for the person, or how that ended, with what it was, who did it and
+/// when.
+fn hold_row(step: &Step) -> Element {
+    let who = actor_name(&step.actor);
+    let held = |key: &str| CATALOG.t_args(key, &[("what", ArgValue::Text(step.leaving.clone()))]);
+    let ended = matches!(step.action.as_str(), "allow" | "keep" | "drop");
+    let title = match (step.action.as_str(), &who) {
+        ("allow", Some(name)) => named("browser-review-hold-allowed-by", name),
+        ("allow", None) => t("browser-review-hold-allowed-by-you"),
+        ("keep", _) => t("browser-review-hold-kept"),
+        ("drop", _) => t("browser-review-hold-dropped"),
+        ("submit", _) => held("browser-review-held-submit"),
+        ("request", _) => held("browser-review-held-request"),
+        ("download", _) => held("browser-review-held-download"),
+        _ => held("browser-review-held-other"),
+    };
+    let mut row = ListRow::new(format!("browser.review.step.{}", step.seq), title);
+    // A hold that began says what waits in its own words; one that ended
+    // says what it was an answer about.
+    if ended && !step.leaving.is_empty() {
+        row = row.subtitle(step.leaving.clone());
+    }
+    // Who kept the page as it is, and whose action reached what was held.
+    // Letting it leave names who in its own words, and nobody dropped what
+    // nobody answered. A hold no actor's action reached names nobody: the
+    // page sent it on its own, or the person at the window did.
+    let by = match (step.action.as_str(), who) {
+        ("allow" | "drop", _) => None,
+        (_, Some(name)) => Some(named("browser-review-by", &name)),
+        ("keep", None) => Some(t("browser-review-by-you")),
+        (_, None) => None,
+    };
+    if let Some(by) = by {
+        row = row.secondary(by);
+    }
+    if let Some(when) = step.time_ms.and_then(time_of) {
+        row = row.meta(when);
+    }
+    Box::new(row)
+}
+
 /// One action of the tab's record: what was done, what it wrote, who did it
 /// and when.
 fn step_row(step: &Step, secrets: &[&str]) -> Element {
+    if step.held {
+        return hold_row(step);
+    }
     let mut row = ListRow::new(
         format!("browser.review.step.{}", step.seq),
         step_title(step),

@@ -299,6 +299,14 @@ browser-review-did-type = Typed into { $target }
 browser-review-did-type-page = Typed into the page
 browser-review-by-typing = Direct input
 browser-review-wrote-secret = Set, not shown
+browser-review-held-submit = Submission held for you: { $what }
+browser-review-held-request = Request held for you: { $what }
+browser-review-held-download = Download held for you: { $what }
+browser-review-held-other = Held for you: { $what }
+browser-review-hold-allowed-by = Let leave by { $name }
+browser-review-hold-allowed-by-you = Let leave by you
+browser-review-hold-kept = Kept as it is
+browser-review-hold-dropped = Dropped, nobody answered
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = No downloads yet

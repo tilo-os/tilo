@@ -446,6 +446,14 @@ pub(crate) struct Step {
     pub(crate) action: String,
     /// It is no action: a person typed it straight into the page.
     pub(crate) typed: bool,
+    /// It is no action: the window held something the page was about to
+    /// send, which `action` names (`submit`, `request`, `download`), or what
+    /// it held ended, as `action` says (`allow`, `keep`, `drop`).
+    pub(crate) held: bool,
+    /// Of a hold, what the page was about to send, as the record says it:
+    /// its method and where it would go, and of a download the file. Never
+    /// what it carried.
+    pub(crate) leaving: String,
     /// It wrote into a secret field: the record says the field was set and
     /// holds none of what was written.
     pub(crate) secret: bool,
@@ -490,11 +498,18 @@ impl Step {
                 .filter(|name| !name.is_empty())
                 .map(str::to_owned),
         );
+        let held = text(entry, "how") == "hold";
         Some(Self {
             seq: whole(entry.get("seq"))?,
             actor: text(entry, "actor").to_owned(),
             action: text(entry, "action").to_owned(),
             typed: text(entry, "how") == "input",
+            held,
+            leaving: if held {
+                text(entry, "message").to_owned()
+            } else {
+                String::new()
+            },
             secret,
             ok: entry.get("ok").and_then(Value::as_bool).unwrap_or(true),
             target,
@@ -766,6 +781,40 @@ mod tests {
         assert!(!secret.typed && secret.secret);
         assert!(secret.wrote.is_empty());
         assert!(!format!("{record:?}").contains("leaked"));
+    }
+
+    /// The record says of an entry that the window held something the page
+    /// was about to send, and how that ended: what it was, and who answered.
+    #[test]
+    fn a_step_says_what_was_held_and_how_it_ended() {
+        let mut record = Record::default();
+        record.take(&json!({"entries": [
+            {"seq": 1, "actor": "agent:ada", "action": "click", "ok": true,
+                "message": "Clicked button \"Send\"",
+                "target": {"role": "button", "name": "Send"}},
+            {"seq": 2, "actor": "agent:ada", "how": "hold", "action": "submit", "ok": true,
+                "message": "POST https://visa.example", "to_url": "https://visa.example"},
+            {"seq": 3, "actor": "", "how": "hold", "action": "allow", "ok": true,
+                "message": "POST https://visa.example", "to_url": "https://visa.example"},
+        ], "next": 3, "more": false}));
+        let clicked = &record.steps[0];
+        assert!(!clicked.held && clicked.leaving.is_empty());
+        let held = &record.steps[1];
+        assert!(held.held && !held.typed);
+        assert_eq!(
+            (
+                held.action.as_str(),
+                held.actor.as_str(),
+                held.leaving.as_str()
+            ),
+            ("submit", "agent:ada", "POST https://visa.example")
+        );
+        let allowed = &record.steps[2];
+        assert!(allowed.held);
+        assert_eq!(
+            (allowed.action.as_str(), allowed.actor.as_str()),
+            ("allow", "")
+        );
     }
 
     #[test]

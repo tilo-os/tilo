@@ -98,6 +98,28 @@ number or security code, a one-time code. The engine watches a document from
 when it is first read or operated, which the window's own read of a loaded
 page's forms does, so what was typed before that is not in the record.
 
+**What was held is in the record.** A window an agent operates holds what
+its page is about to send until the person allows it
+([hosted Browser](../hosted-browser.md)): a form submission, a request with
+data, a download. That is no action either, and the record says it all the
+same, so a reviewer reads that a submission waited, whose action reached it
+and who let it leave. The engine sets down that something waits (`how` is
+`hold` and `action` what waits: `submit`, `request` or `download`), under
+the actor whose action was running when the page reached it and under nobody
+when the page sent it on its own. The entry names the page, the origin it
+would go to and its method there, and of a download the file's name. When
+the hold ends the engine sets down how: `allow` when it was let leave, `keep`
+when the page was kept as it is, `drop` when nobody answered. Who answered
+the engine cannot know, so the window says it with its answer. It is the
+person when their allow ran again the invocation that reached the hold: that
+invocation is its actor's, whom the held entry already names, and only the
+person's own answer runs it a second time. It is whoever the action system
+admitted `send-held-request` or `keep-held-request` for, the person at the
+window when it names nobody. It is nobody when the window dropped the hold
+at its own deadline. An entry that comes while an action runs takes its
+place after that action's own, as typing does. Neither entry carries what
+was about to leave: no request's body, no field's value and no secret.
+
 ## Reading
 
 Acting on a page starts with reading it, and reading is where an agent's time
@@ -156,7 +178,10 @@ own script, or no one), with a mark on a field that no longer holds what was
 set, on a required one left empty and on one the page refuses. A secret is
 said as set or not set. Under the forms stands the tab's record, in order,
 with who did each action; what a person typed stands there as typing, and
-what was written into a secret field as set, not shown. The Page menu, a key, the palette and an agent all
+what was written into a secret field as set, not shown. What the window held
+stands there in plain words: what waited for the person and whose action
+reached it, who let it leave, who kept the page as it is, and what was
+dropped with nobody answering. The Page menu, a key, the palette and an agent all
 open it through that one action, and `show-page` closes it. The review keeps
 nothing: it is drawn from the forms, fields and record reads, made as the
 tab's unnamed actor, so they take no place in the record and tell no agent
@@ -296,6 +321,14 @@ reason under "Not built yet".
   change to the record that arrives from another of the person's devices is
   merged as that device wrote it, and is not checked against that device's
   engine.
+- **Holds in the record: what is left.** When the person denies the action
+  whose run reached a hold, the action system ends that invocation and the
+  window is not told: the hold is set down as dropped once the window's own
+  deadline passes, not as kept when they said no. A held download the person
+  cancels in the downloads list, instead of answering it, has no entry for
+  how it ended. A tab that closes with something held sets nothing more down.
+  The record does not tell a departure the page sent on its own from one the
+  person at the window started: both are under nobody's name.
 - **Presence on the page.** Where each actor is acting, drawn on the page
   for everyone watching, as agents are shown in other apps.
 - **Who types.** Direct input is one source. Input that arrives through a
