@@ -9,8 +9,8 @@ use super::{
 
 impl TopBarChrome {
     /// The bar control under the pointer, from the hit rects the last paint laid down: plain at
-    /// rest, it lifts while the pointer is over it. An open ask's card under the band is the bar's
-    /// too, so its chips lift as the bar's do.
+    /// rest, it lifts while the pointer is over it. An open ask is the bar's too, so its chips lift
+    /// as the bar's do.
     pub fn hovered_control(&self) -> Option<String> {
         let point = self.last_cursor?;
         if !self.rect.contains(point) && !self.ask.pill.contains(point) {
