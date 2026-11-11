@@ -16,9 +16,9 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The app model crates a host test runs, each built as the module an app ships: Tasks and
-/// Tube, the two apps the storage migration moves first (`one-app-model.md` §6).
-const MODELS: &[&str] = &["tasks-model", "tube-model"];
+/// The app model crates a host test runs, each built as the module an app ships: Tasks, Tube
+/// and Console, the apps the storage migration has moved (`one-app-model.md` §6).
+const MODELS: &[&str] = &["tasks-model", "tube-model", "console-model"];
 
 fn main() -> Result<(), String> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));

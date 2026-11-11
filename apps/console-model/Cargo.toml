@@ -1,0 +1,36 @@
+[package]
+name = "console-model"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+description = "Console's record: which agent runs it shows, its verb, its effects, and the module the document host runs"
+
+# The record Console draws, as the app reads it and as the document host runs its verb. It has
+# no window and no surface of its own; the app draws it.
+#
+# It is also the model module the document host runs (docs/architecture/apps.md §1), so it
+# depends on the resource layer and the action door, never the toolkit.
+
+[lib]
+name = "console_model"
+path = "src/lib.rs"
+# A model crate builds both ways: the wasm module the host loads, and the rlib the app links
+# to read the same types.
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The module the document host runs: its export and the host imports under it. Off, the crate
+# is the record's types alone — what an app links.
+module = ["dep:tilo-model-guest"]
+
+[dependencies]
+tilo-resource = { path = "../../crates/sdk/tilo-resource" }
+# The module side: the export the host calls and the tree it answers.
+tilo-model-guest = { path = "../../crates/sdk/tilo-model-guest", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }
+
+[lints]
+workspace = true

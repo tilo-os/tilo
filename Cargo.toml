@@ -96,6 +96,7 @@ members = [
     # Applications
     "apps/activity",
     "apps/console",
+    "apps/console-model",
     "apps/agent",
     "apps/api-tester",
     "apps/backups",

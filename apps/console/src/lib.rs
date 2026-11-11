@@ -312,6 +312,14 @@ impl ResourceApp for App {
     type Resource = Console;
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
+    /// The session's document host runs the record's model (`console-model`,
+    /// built as the `console.view` module), so the app's process opens no
+    /// record of its own: it joins no workspace of its own, reads the reading
+    /// the session publishes and submits its actions, and its asks of the
+    /// history and the agent door, over its one connection
+    /// (`docs/architecture/apps.md` §8 step 2, `one-app-model.md` §4).
+    const ATTACHES_RUNTIME: bool = false;
+    const HOSTED_BY_SESSION: bool = true;
 
     fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
@@ -354,7 +362,7 @@ impl ResourceApp for App {
         // Opening the run a link names shows its page here, in this window.
         let opened = nav.clone();
         cx.effects(move |effect: ConsoleEffect, _cx| {
-            match effect.agent() {
+            match effects::agent(&effect) {
                 Some((client, command)) => opened.show_agent(client, command),
                 None => {
                     if let ConsoleEffect::ViewRun { run } = &effect {

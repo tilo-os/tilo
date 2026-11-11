@@ -2878,6 +2878,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "console-model"
+version = "0.1.0"
+dependencies = [
+ "tilo-model-guest",
+ "tilo-resource",
+ "workspace-hack",
+]
+
+[[package]]
 name = "console_error_panic_hook"
 version = "0.1.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18147,11 +18156,14 @@ dependencies = [
 name = "tilo-console"
 version = "0.1.0"
 dependencies = [
+ "console-model",
  "runtime-dylib",
  "serde",
  "serde_json",
  "tilo-app",
  "tilo-console",
+ "tilo-model-host",
+ "tilo-service",
  "workspace-hack",
 ]
 
@@ -27339,6 +27351,7 @@ dependencies = [
  "concurrent-queue",
  "console",
  "console-control",
+ "console-model",
  "const-crc32-nostd",
  "const-oid 0.10.2",
  "const-oid 0.9.6",

@@ -206,7 +206,7 @@ fn list(cx: &ViewCx<Console>, nav: &Nav, seen: &Seen) -> Element {
         .runs
         .runs
         .iter()
-        .filter(|run| filter.shows(run))
+        .filter(|run| crate::record::shows(&filter, run))
         .collect();
     if shown.is_empty() {
         let state = if seen.runs.pending {
