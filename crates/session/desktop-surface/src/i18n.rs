@@ -120,24 +120,20 @@ mod tests {
 
     #[test]
     fn counts_choose_the_plural_form_in_every_locale() {
-        let changes = |changes: usize, people: usize| {
+        let opened = |windows: usize| {
             t_args(
-                "activity-changes-workspace",
-                &[
-                    ("workspace", "Design".into()),
-                    ("changes", changes.into()),
-                    ("people", people.into()),
-                ],
+                "activity-event-opened-windows",
+                &[("count", windows.into())],
             )
         };
-        let english = (changes(1, 1), changes(3, 2));
+        let english = (opened(1), opened(3));
         ui::i18n::I18nManager::set_locale("de-DE");
-        let german = (changes(1, 1), changes(3, 2));
+        let german = (opened(1), opened(3));
         ui::i18n::I18nManager::set_locale("en-US");
-        assert_eq!(english.0, "Design · 1 change by 1 person");
-        assert_eq!(english.1, "Design · 3 changes by 2 people");
-        assert_eq!(german.0, "Design · 1 Änderung von 1 Person");
-        assert_eq!(german.1, "Design · 3 Änderungen von 2 Personen");
+        assert_eq!(english.0, "Opened 1 window");
+        assert_eq!(english.1, "Opened 3 windows");
+        assert_eq!(german.0, "1 Fenster geöffnet");
+        assert_eq!(german.1, "3 Fenster geöffnet");
     }
 
     #[test]
