@@ -867,6 +867,42 @@ fn idle_ticks(app: &mut TestApp<TlApp>, start: ui::time::Instant) -> (usize, std
     (produced, cpu)
 }
 
+/// A frame of a window whose controls are bound to the actions it publishes reads each control's
+/// action again, and runs none of them: binding a control checks what its action takes, it never
+/// plans the action. Planning one is a trial run of it, and a frame that planned the action of
+/// every row it reads took ten times as long as the frame itself.
+#[test]
+fn a_frame_of_bound_controls_plans_no_action() {
+    let mut app = staged("a busy week");
+    let bound = ui::widget::controls::control_action_bindings(app.harness().root_widget())
+        .into_iter()
+        .filter(|binding| {
+            matches!(
+                &binding.kind,
+                ui::widget::ControlBindingKind::Action(address) if address.action != "invoke"
+            )
+        })
+        .count();
+    assert!(
+        bound > 0,
+        "the window's controls are bound to the actions it publishes"
+    );
+    let ((), samples) = ui::tilo_resource::profiling::observe(|| app.harness().relayout());
+    let calls = |phase: &str| {
+        samples
+            .iter()
+            .filter(|sample| sample.phase == phase)
+            .map(|sample| sample.calls)
+            .sum::<usize>()
+    };
+    assert_eq!(calls("ui.frame_sync"), 1, "the frame syncs: {samples:?}");
+    assert_eq!(
+        calls("tl.plan"),
+        0,
+        "a frame plans no action of the {bound} controls it shows"
+    );
+}
+
 /// A still window is not a frame source: left alone, it produces no frames at all, and a frame
 /// something outside it forces re-measures nothing, syncs nothing and asks no History surface
 /// anything, because nothing it shows moved.

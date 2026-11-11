@@ -105,9 +105,11 @@ type Arguments<I> =
 /// Type-safe adapter from a control's input value to an exported action.
 ///
 /// Construction requires the real [`ResourceSpec`] and [`ActionSpec`], rather
-/// than parallel string constants. Emission pre-validates arguments against a
-/// clone of that spec; the host nevertheless re-resolves and validates again
-/// at dispatch time because this object is convenience, not authority.
+/// than parallel string constants. Construction and emission validate the
+/// arguments against the parameters of a clone of that spec and never run its
+/// encoder, which may plan the whole action: a binding is made for each control
+/// a frame reads. The host re-resolves, validates and encodes at dispatch time
+/// because this object is convenience, not authority.
 #[derive(Clone)]
 pub struct ActionBinding<I> {
     address: ActionAddress,
@@ -172,13 +174,7 @@ impl<I> ActionBinding<I> {
     /// violates the exported action's parameter contract.
     pub fn invoke(&self, input: I) -> Result<ControlInvocation, ActionBindingError> {
         let arguments = (self.arguments)(input).map_err(ActionBindingError::Unbindable)?;
-        if self.spec.deferred_invocation_type().is_some()
-            || matches!(self.spec.input(), ActionInput::Deferred { .. })
-        {
-            self.spec.validate_json(&arguments)?;
-        } else {
-            self.spec.build_json(&arguments)?;
-        }
+        self.spec.validate_json(&arguments)?;
         Ok(ControlInvocation {
             address: self.address.clone(),
             arguments,
@@ -195,13 +191,7 @@ impl ActionBinding<()> {
     pub fn unit(resource: &ResourceSpec, spec: &ActionSpec) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, |()| serde_json::Map::new())?;
         // Refuse a required-argument action at construction, not first click.
-        if binding.spec.deferred_invocation_type().is_some()
-            || matches!(binding.spec.input(), ActionInput::Deferred { .. })
-        {
-            binding.spec.validate_json(&serde_json::Map::new())?;
-        } else {
-            binding.spec.build_json(&serde_json::Map::new())?;
-        }
+        binding.spec.validate_json(&serde_json::Map::new())?;
         Ok(binding)
     }
 
@@ -226,17 +216,9 @@ impl ActionBinding<()> {
         arguments: serde_json::Map<String, serde_json::Value>,
     ) -> Result<Self, ActionBindingError> {
         let binding = Self::new(resource, spec, move |()| arguments.clone())?;
-        if binding.spec.deferred_invocation_type().is_some()
-            || matches!(binding.spec.input(), ActionInput::Deferred { .. })
-        {
-            binding
-                .spec
-                .validate_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
-        } else {
-            binding
-                .spec
-                .build_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
-        }
+        binding
+            .spec
+            .validate_json(&(binding.arguments)(()).map_err(ActionBindingError::Unbindable)?)?;
         Ok(binding)
     }
 
