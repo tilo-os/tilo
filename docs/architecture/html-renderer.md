@@ -313,52 +313,6 @@ Against the targets:
   presenter and the HTML frame path stay in their own module
   (`dom_presenter`), fetched only by a page that asks for `dom: true`.
 
-## Next steps, with what this stage learned
-
-- **Keys for every widget: done.** Every container draws its children
-  through a keyed path, and clippy rejects a direct `Widget::draw` call
-  outside tests (about 480 call sites moved: 150 in ui-core, 325 in
-  apps and the session crates). Two gaps remain: a container that leaves a
-  child undrawn without saying so (`skip_widget`, or an index through
-  `draw_child_at`) shifts the keys of the children after it, which is
-  correct but rewrites more; and calls inside a macro's expansion are not
-  always linted, so the decorator's forwarding draw is allowed by name.
-- **Native selection after typing: done.** Two things emptied it. The
-  reconciler moved an element whose place among its siblings changed, and
-  a move takes the selection out of what it holds; and every root key
-  changed on the press that blurred the editor, so the note's panel was
-  rebuilt under the selection. Both are fixed (above, 9).
-- **Canvas islands: done** (above, 10). Pictures are named by the widgets
-  that are pictures (charts, plots, maps); any other widget becomes one by
-  its draw count alone. An island is rasterized at one image pixel per CSS
-  pixel, so on a screen of more pixels per CSS pixel it is softer than the
-  canvas; gradients on paths and text still show their first stop.
-- **Real `<input>` with autofill and passkeys: done** (above, 11), proven
-  in Chrome on Passwords' new-item form (`fields.mjs`). The username field
-  is `<input autocomplete="username webauthn">` and the password field
-  `<input type="password" autocomplete="current-password">`, each where
-  the pointer finds it (`elementFromPoint` is the input). A click focuses
-  the input; typed keys, a value the browser inserts and a fill that sets
-  the value with an `input` event, as autofill does, all reach the app's
-  field (the tree's value follows), and no painted text shows the value
-  under the input. A passkey: with a virtual platform authenticator
-  holding one for the site, `isConditionalMediationAvailable()` is true
-  and a conditional `credentials.get` made by the page resolves with the
-  credential once the username field has the focus. What headless Chrome
-  cannot show is its own autofill and passkey menus, so the menus a person
-  picks from are proven only by the attributes they key on. A secret the
-  app clears (after a failed sign-in) does not clear the page's password
-  input yet: the tree never says a secret's value, empty or not.
-- **Paragraph grouping: done** (above, 8). Runs are grouped by how they
-  follow one another inside one widget, not by what the toolkit knows of
-  paragraphs: two labels a widget draws one under the other are one flow.
-  Nothing marks a paragraph in the scene yet.
-- **Other apps: measured** (below). Open: ebook's pages are set in a
-  narrower face as HTML than on the canvas, and even the toolkit's line
-  breaks differ between the two runs; not explained yet. A widget that
-  leaves a child undrawn without saying so still renumbers the keys after
-  it (the gap under "Keys for every widget").
-
 ## Is `dom: true` ready to be the web default?
 
 Not yet. What is ready: every app of the desktop bundle draws as HTML
@@ -366,24 +320,30 @@ without an error and within 1 % of the canvas's pixels but for two; text
 is real, selectable and in one flow per paragraph; scroll containers are
 native, with the browser's wheel and touch; sign-in fields are real inputs
 that autofill and offer passkeys on; the semantic tree is one with the
-painted one for most widgets; the start module did not grow beyond noise.
+painted one for most widgets; a widget key no longer moves when the
+container that draws it leaves a child out; the start module did not grow
+beyond noise.
 What blocks it:
 
 - **Typing in painted text** (the editors: Notes, the word processor) is
-  still 15 – 20 ms p50 and 25 – 50 ms p90 behind a plain page's 2 – 3 ms:
-  layout runs in wasm on every key, and its variance on a shared builder
-  is most of the p90. It needs a trace on a quiet machine and a quicker
-  path for a keystroke that changes one line.
+  still behind a plain page's 2 – 3 ms. Half of a keystroke was waiting, not
+  working: the frame the input asked for was drawn in a task of its own, and
+  a rendering update often came between the two. The frame is now drawn
+  inside the input's own task, and a frame nothing changed is skipped. What
+  is left is still two frames per key (the frame schedule asks for an
+  animation frame after the first) and a layout pass of about 4 ms in wasm,
+  plus the browser's style, layout and paint of the changed line; the next step is a CPU trace per key on a
+  quiet machine, not another headless timing run. The measured split per
+  keystroke (`typingBreakdown` in `results.json`: input → frame handed over,
+  and present → first paint) is what that trace starts from, and the phone
+  width improved with the change from 23.1 / 44.4 ms to 18.2 / 29.6 ms
+  (p50 / p90) in runs whose plain-DOM baseline stayed sane.
 - **Not every app is measured past its first screen.** The parity run
   mounts each app and types into its first field; menus, dialogs, drags,
   the canvas app's drawing and the video editor's timeline are not driven
   yet, and ebook's pages differ from the canvas for a reason not found.
 - **Phones.** Only Notes is measured at 390 px. Pictures are rasterized at
   one pixel per CSS pixel, so they are soft on a phone's screen.
-- **Keys still shift** where a container leaves a child undrawn without
-  saying so: correct, but a rebuilt element loses a selection or a focus
-  inside it.
-- **A secret the app clears** does not clear the page's password input.
 - **Real hardware.** Every number here is headless Chrome without a GPU;
   Safari and Firefox are not run at all.
 
