@@ -1,3 +1,2 @@
-
-de-DE files-resolve-keep-current glyph
-de-DE files-resolve-use-other glyph
+# Copy that still breaks a rule of tools/policy/check_copy_language.py.
+# Fix a message and delete its line; nothing may be added.

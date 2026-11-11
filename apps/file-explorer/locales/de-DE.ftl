@@ -155,8 +155,8 @@ files-import-local-destination = Ein einmaliger Import benötigt einen lokalen Z
 ## Verlauf und Konfliktlösung
 files-version-history = Versionsverlauf…
 files-restore-previous = Vorherige Version wiederherstellen
-files-resolve-keep-current = { $conflict } lösen — Aktuelle behalten
-files-resolve-use-other = { $conflict } lösen — Andere verwenden (Gerät { $device })
+files-resolve-keep-current = { $conflict } lösen: Aktuelle behalten
+files-resolve-use-other = { $conflict } lösen: Andere verwenden (Gerät { $device })
 files-conflict-resolved = Gelöst
 files-strategy-keep-current = Aktuelle behalten
 files-strategy-use-other = Andere verwenden
