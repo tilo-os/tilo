@@ -350,14 +350,17 @@ class AppReleaseTests(unittest.TestCase):
                 app_release.apps_from_changes(["apps/browser/src/main.rs"], catalog), ["browser"]
             )
         with self.subTest(phase='release graph keeps image codecs explicit'):
-            # One app must not enable unused image codecs in every thin tapp.
+            # No tapp may pull image's default features: every dependency names
+            # the formats it reads. Apps decode through the toolkit's one codec,
+            # so the formats a slides tapp carries are the codec's.
             expected = {
-                ROOT / "apps/slides/Cargo.toml": ["jpeg", "png", "gif", "webp"],
+                ROOT / "crates/platform/tilo-image-codec/Cargo.toml": ["gif", "jpeg", "png", "webp"],
                 ROOT / "crates/doc/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
             }
             for manifest, formats in expected.items():
                 dependency = tomllib.loads(manifest.read_text())["dependencies"]["image"]
-                self.assertFalse(dependency["default-features"], manifest)
+                self.assertTrue(dependency["workspace"], manifest)
+                self.assertFalse(dependency.get("default-features", False), manifest)
                 self.assertEqual(dependency["features"], formats, manifest)
 
     def test_lockfile_changes_select_proven_dependants_or_the_whole_fleet(self):
