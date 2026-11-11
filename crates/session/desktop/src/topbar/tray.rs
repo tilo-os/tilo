@@ -86,7 +86,12 @@ impl TopBarChrome {
             }
             None => StatusCluster::new(),
         };
-        let hovered = self.hovered_control().as_deref() == Some(Self::CONTROL_QUICK_SETTINGS);
+        // One pill, two targets: the bell at its leading end and the rest of the cluster. Either
+        // under the pointer lights the pill, as one control on the bar.
+        let hovered = matches!(
+            self.hovered_control().as_deref(),
+            Some(Self::CONTROL_NOTIFICATIONS | Self::CONTROL_QUICK_SETTINGS)
+        );
         let face = StatusClusterFace::new(&slots, status)
             .hovered(hovered)
             .at_height(BAR_CONTROL_PX);
@@ -105,6 +110,38 @@ impl TopBarChrome {
             tokens.colors.surfaces.base,
         );
         self.bell_badge_rect = layout.badge;
+        // The bell's slot is the cluster's first; a press there opens the notification centre, and
+        // a press on the readings beside it opens quick settings. The bell's target takes the
+        // pill's leading padding and stops halfway to the next slot, so the two targets meet
+        // without overlapping. A host with no quick settings has one target: the whole pill.
+        let bell = layout.slots.first().copied().unwrap_or(Rect::ZERO);
+        self.bell_hit_rect = if self.bell.only {
+            self.tray_hit_rect
+        } else if bell.is_zero_area() {
+            Rect::ZERO
+        } else {
+            let next = layout
+                .slots
+                .iter()
+                .skip(1)
+                .find(|slot| !slot.is_zero_area())
+                .copied();
+            let right = next.map_or(bell.x1 + f64::from(tokens.spacing.s2), |next| {
+                (bell.x1 + next.x0) / 2.0
+            });
+            // The unread count sits on the bell's shoulder and is the bell's too.
+            let right = if layout.badge.is_zero_area() {
+                right
+            } else {
+                right.max(layout.badge.x1 + f64::from(tokens.spacing.s1))
+            };
+            Rect::new(
+                self.tray_pill_rect.x0,
+                self.tray_pill_rect.y0,
+                right.min(self.tray_pill_rect.x1),
+                self.tray_pill_rect.y1,
+            )
+        };
         tray_w
     }
 

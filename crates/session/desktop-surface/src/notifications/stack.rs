@@ -63,8 +63,9 @@ const SWIPE_DISMISS: f64 = 0.35;
 const SWIPE_VELOCITY: f64 = 700.0;
 /// The margin a panel pinned to a display's top-right corner keeps from its edge: one number for
 /// the banner stack, the notification centre and quick settings, so the corner reads as one place
-/// rather than three panels that nearly line up.
-pub const CORNER_INSET: f64 = 24.0;
+/// rather than three panels that nearly line up. The overlay stack that hangs the centre and
+/// quick settings under the bar reads this constant too.
+pub const CORNER_INSET: f64 = 8.0;
 /// Horizontal text inset of the locked card and the "more" card. Deliberately the shared toast
 /// card's own `CARD_PAD_X` (`ui::widget::toast`, 14) so their text starts on the cards' line; it is
 /// off the 4 px grid for the same reason the card is.

@@ -311,10 +311,10 @@ fn quiet_mode_silences_the_bell_in_the_status_cluster() {
     let tray = node
         .children
         .iter()
-        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_QUICK_SETTINGS))
-        .expect("the status cluster");
+        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_NOTIFICATIONS))
+        .expect("the bell");
     assert_eq!(
-        tray.description.as_deref(),
+        tray.name.as_deref(),
         Some("Notifications silenced, 2 unread"),
         "the silenced bell is named"
     );
@@ -364,21 +364,94 @@ fn the_unread_count_stays_inside_the_bar() {
 /// that is all it opens.
 #[test]
 fn without_quick_settings_the_status_cluster_is_the_notifications_bell() {
-    let mut bar = sample_chrome();
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = fixture::FixtureChrome::new(tree.clone());
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
     lay_out_and_draw(&mut bar, 1280.0);
     let desktop = bar.tray_pill_rect;
     assert_eq!(bar.tray_slots().len(), 1, "the bell, with nothing unread");
-    bar.bell.only = true;
+    chrome.borrow_mut().notifications_only = true;
     lay_out_and_draw(&mut bar, 1280.0);
     assert_eq!(bar.tray_slots().len(), 1, "the same bell");
     assert_eq!(bar.tray_pill_rect, desktop, "one tray on both hosts");
+    assert_eq!(
+        bar.bell_hit_rect, bar.tray_hit_rect,
+        "the whole cluster is the bell's one target"
+    );
     let node = bar.accessibility().expect("topbar semantics");
     let tray = node
         .children
         .iter()
-        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_QUICK_SETTINGS))
-        .expect("the status cluster");
+        .find(|child| child.action_target.as_deref() == Some(TopBarChrome::CONTROL_NOTIFICATIONS))
+        .expect("the bell");
     assert_eq!(tray.name.as_deref(), Some("Notifications"));
+    assert!(
+        !node
+            .children
+            .iter()
+            .any(|child| child.action_target.as_deref()
+                == Some(TopBarChrome::CONTROL_QUICK_SETTINGS)),
+        "a host with no quick settings offers no quick settings control"
+    );
+    let middle = bar.tray_pill_rect.center();
+    assert!(click(&mut bar, middle));
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        &[ChromeIntent::ToggleNotifications],
+        "the bell opens the notification centre"
+    );
+}
+
+/// The status cluster carries two targets: the bell at its leading end opens the notification
+/// centre, and the readings beside it open quick settings.
+#[test]
+fn the_bell_opens_the_centre_and_the_readings_open_quick_settings() {
+    let mut tree = DesktopTree {
+        workspaces: vec![Workspace::new(WorkspaceSlot(1), "A")],
+        active: WorkspaceSlot::from(0),
+        ..Default::default()
+    };
+    tree.active = tree.workspaces[0].slot;
+    let chrome = fixture::FixtureChrome::new(tree.clone());
+    chrome.borrow_mut().status.volume = Some(crate::chrome::VolumeState {
+        level: 0.5,
+        muted: false,
+    });
+    let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome.clone());
+    lay_out_and_draw(&mut bar, 1280.0);
+    let bell = bar.bell_hit_rect;
+    assert!(!bell.is_zero_area(), "the bell is its own target");
+    let pill = bar.tray_pill_rect;
+    assert!(
+        bell.x0 >= pill.x0 - 0.5
+            && bell.x1 <= pill.x1 + 0.5
+            && bell.y0 >= pill.y0 - 0.5
+            && bell.y1 <= pill.y1 + 0.5,
+        "the bell's target {bell:?} lies inside the pill {pill:?}"
+    );
+    assert!(bell.x1 < pill.x1, "the readings keep a target of their own");
+    assert!(click(&mut bar, bell.center()));
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        &[ChromeIntent::ToggleNotifications],
+        "a press on the bell opens the notification centre"
+    );
+
+    let readings = Point::new((bell.x1 + bar.tray_pill_rect.x1) / 2.0, bell.center().y);
+    assert!(click(&mut bar, readings));
+    assert_eq!(
+        chrome.borrow().intents.as_slice(),
+        &[
+            ChromeIntent::ToggleNotifications,
+            ChromeIntent::ToggleQuickSettings
+        ],
+        "a press on the readings opens quick settings"
+    );
 }
 
 #[test]

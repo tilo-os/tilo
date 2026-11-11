@@ -191,8 +191,9 @@ pub const POPOVER_WIDTH: f64 = 380.0;
 /// this, and what a page has beyond it scrolls inside it.
 pub const POPOVER_HEIGHT: f64 = 640.0;
 
-/// The gap between a popover and the edges of its display.
-pub const POPOVER_MARGIN: f64 = 8.0;
+/// The gap between a popover and the edges of its display: the same corner margin the banner stack
+/// and the notification centre keep, so the three line up on one trailing edge.
+pub const POPOVER_MARGIN: f64 = tilo_desktop_surface::notifications::CORNER_INSET;
 
 /// The kind of thing a surface is: what the person sees standing over the desktop. The kind fixes
 /// how Escape and a press outside it answer, how assistive technology hears it and whether it

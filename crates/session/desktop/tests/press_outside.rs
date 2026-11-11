@@ -270,6 +270,52 @@ fn a_press_on_the_menu_itself_is_the_menus() {
     assert!(with_chrome(&mut frame, |chrome| chrome.menu_open()));
 }
 
+/// The bar's bell opens the notification centre and closes it again.
+#[test]
+fn the_bell_opens_and_closes_the_centre() {
+    use tilo_desktop::chrome::ChromeIntent;
+    let notifications = DesktopNotifications::default();
+    notifications.post(Notification::new("Tea is ready", "The timer finished"));
+    let (mut frame, overlays) = chrome_over(Some(notifications.clone()));
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleNotifications);
+    });
+    frame.relayout();
+    assert!(overlays.is_open(Slot::Centre), "the bell opens the centre");
+    assert!(notifications.centre_open(), "and the chrome shows it");
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(ChromeIntent::ToggleNotifications);
+    });
+    frame.relayout();
+    assert!(
+        !overlays.is_open(Slot::Centre),
+        "a second press on the bell closes it"
+    );
+    assert!(!notifications.centre_open(), "the chrome follows it down");
+}
+
+/// Banners, the notification centre and quick settings hang from one corner margin: the three
+/// share one trailing edge rather than nearly lining up.
+#[test]
+fn banners_line_up_with_the_centre_and_quick_settings() {
+    let banner =
+        tilo_desktop_surface::notifications::transient_slot(DISPLAY, 48.0, (360.0, 72.0), &[]);
+    assert_eq!(
+        banner.x1,
+        DISPLAY.x1 - POPOVER_MARGIN,
+        "a banner keeps the corner margin"
+    );
+    let notifications = DesktopNotifications::default();
+    let (mut frame, overlays) = chrome_over(Some(notifications.clone()));
+    notifications.ask_centre(true);
+    frame.relayout();
+    let centre = overlays.place(Slot::Centre).expect("the centre is placed");
+    assert_eq!(
+        banner.x1, centre.x1,
+        "the banner's edge is the centre's edge"
+    );
+}
+
 #[test]
 fn nothing_up_means_the_desk_press_is_the_desks() {
     let (_frame, overlays) = chrome();
