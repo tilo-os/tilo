@@ -109,6 +109,69 @@ if grep -qE '(^|/)(Cargo\.toml|lib\.rs|main\.rs)$|^docs/codemap\.md$' <<< "$lock
   fi
 fi
 
+# The SDK's types are generated from the apps' surfaces and manifests
+# (`tilo sdk gen`), so a change to either leaves them stale: they are what an
+# agent or a script reads an app's actions from, and nothing else in a commit
+# notices. Regenerating them is not a judgement call, so do it here with this
+# tree's own generator and stage what it wrote; a tree that has not built one
+# is told the one command that writes them, rather than left stale.
+if grep -qE '^apps/[^/]+/(surface|tilo-app)\.toml$' <<< "$lock_staged_names"; then
+  # Like the tilolang formatter below: the freshest generator this tree has
+  # built into target/, under any profile, answering `--help` so a binary for
+  # another platform is skipped rather than run.
+  sdk_gen=""
+  sdk_found=()
+  while IFS= read -r -d '' c; do sdk_found+=("$c"); done < <(
+    find "$root/target" -maxdepth 4 -type f -name tilo -perm -u+x -print0 2>/dev/null)
+  if [ "${#sdk_found[@]}" -gt 0 ]; then
+    while IFS= read -r c; do
+      [ -n "$c" ] && [ -x "$c" ] || continue
+      case "$("$c" --help 2>&1)" in
+        *"sdk"*) sdk_gen=$c; break ;;
+      esac
+    done < <(ls -td -- "${sdk_found[@]}" 2>/dev/null || true)
+  fi
+  sdk_paths="sdk/python/src/tilo/types sdk/typescript/src/types"
+  if [ -n "$sdk_gen" ]; then
+    # Which generated files the person is editing by hand: those are left
+    # alone, since staging them would stage their edits too.
+    sdk_dirty=$(git diff --name-only -- $sdk_paths)
+    for lang in python ts; do
+      case "$lang" in
+        python) out=sdk/python/src/tilo/types ;;
+        ts) out=sdk/typescript/src/types ;;
+      esac
+      (cd "$root" && "$sdk_gen" sdk gen --lang "$lang" --out "$out") >/dev/null || {
+        note "the SDK's types could not be written with $sdk_gen; run 't fix sdk-types'"
+        fail=1
+      }
+    done
+    sdk_wrote=0
+    sdk_left=""
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      if grep -qxF "$f" <<< "$sdk_dirty"; then
+        sdk_left="$sdk_left$f"$'\n'
+      else
+        GIT_INDEX_FILE="$full_index" git add -- "$f"
+        sdk_wrote=$((sdk_wrote + 1))
+      fi
+    done < <(GIT_INDEX_FILE="$full_index" git diff --name-only -- $sdk_paths)
+    if [ "$sdk_wrote" -gt 0 ]; then
+      note "sdk: wrote the types of the apps whose surface changed and staged them"
+    fi
+    if [ -n "$sdk_left" ]; then
+      note "sdk: these have unstaged edits, stage the whole file and commit again:"
+      printf '%s' "$sdk_left" | sed 's/^/  /' >&2
+      fail=1
+    fi
+  else
+    note "sdk: an app's surface changed and this tree has no generator built; run 't fix sdk-types' and stage sdk/"
+    fail=1
+  fi
+fi
+
+
 # A vendored crate under vendor/ is upstream's code, carried as it ships: the
 # added-code policy (ignore reasons, allow placement, dbg!) and rustfmt skip it.
 own_rs=('*.rs' ':!vendor/')
