@@ -1048,15 +1048,10 @@ impl App {
     }
 
     fn initial_presence_context() -> PresenceCtx {
-        // Own identity, in preference order: the handle announced on `Hello`,
-        // then the fallback app id. Anything else is somebody else and gets
-        // painted.
+        // Own identity: this person's id. Anything else is somebody else and
+        // gets painted.
         let mut context = PresenceCtx::empty();
-        context.set_own_identity(
-            crate::collaboration::presence_handle_env()
-                .into_iter()
-                .chain(std::iter::once(crate::collaboration::local_user_id().0)),
-        );
+        context.set_own_identity(std::iter::once(crate::collaboration::local_user_id().0));
         context
     }
 

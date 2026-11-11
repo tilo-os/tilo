@@ -17,7 +17,7 @@ use super::{
     CollabRequest, CollabTransport, CollaborationManager, Collaborator, DocumentMutation,
     DocumentPublicationError, DocumentPublicationReceipt, ExportedAction, ExportedInput,
     PresenceKey, PresencePayload, PrimaryRouteState, RouteSpec, SignedOp, TransportCommand,
-    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc, presence_handle_env,
+    TransportError, TransportStatus, Uuid, auto_hello_env, mpsc, presence_handle,
 };
 use runtime_collab::OpAdmission;
 use tilo_sort::CompactSort as _;
@@ -2592,7 +2592,7 @@ impl CollaborationManager {
             cluster_id: primary.cluster_id,
             record,
             record_kind: Some(checkout.kind.as_str().to_owned()),
-            handle: presence_handle_env(),
+            handle: presence_handle(),
         }) {
             return Err("native route queue unavailable".into());
         }
@@ -2686,7 +2686,7 @@ impl CollaborationManager {
                 record: None,
             },
             Some(kind.as_str().to_owned()),
-            presence_handle_env(),
+            presence_handle(),
         ))
     }
 
@@ -2973,7 +2973,7 @@ impl CollaborationManager {
                 record,
             },
             record_kind,
-            presence_handle_env(),
+            presence_handle(),
         )
     }
 
@@ -3205,7 +3205,7 @@ impl CollaborationManager {
             cluster_id,
             record: None,
             record_kind: None,
-            handle: presence_handle_env(),
+            handle: presence_handle(),
         });
         manager
             .await_primary_route()
@@ -8865,7 +8865,7 @@ mod tests {
             "so.tilo.notes".into(),
             workspace,
             Some("tab:0000000000000003".into()),
-            presence_handle_env(),
+            presence_handle(),
             Some(SdkJoinIdentity {
                 presentation: harness_presentation(),
                 participant_kind: "person",

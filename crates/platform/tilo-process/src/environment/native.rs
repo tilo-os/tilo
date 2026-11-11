@@ -44,7 +44,6 @@ pub fn process_environment() -> super::HostEnvironment {
             app_name: text("TILO_APP_NAME"),
             workspace_id: text("TILO_WORKSPACE_ID"),
             user_id: text("TILO_USER_ID"),
-            presence_handle: text("TILO_PRESENCE_HANDLE"),
             account_name: text("USER"),
             continuity_resume,
             continuity_instance: text("TILO_CONTINUITY_INSTANCE"),

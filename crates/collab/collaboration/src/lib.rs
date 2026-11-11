@@ -1192,7 +1192,7 @@ impl CollaborationManager {
             cluster_id: pending.cluster_id,
             record,
             record_kind: Some(checkout.kind.as_str().to_owned()),
-            handle: presence_handle_env(),
+            handle: presence_handle(),
         }) {
             return Err("native route queue unavailable".into());
         }
@@ -1838,14 +1838,12 @@ impl CollaborationManager {
     }
 }
 
-/// The presence handle announced on `Hello`. `TILO_PRESENCE_HANDLE` wins,
-/// then `TILO_USER_ID`; absent both, the broker's synthetic name.
-pub fn presence_handle_env() -> Option<String> {
-    let environment = crate::host::environment();
-    let identity = &environment.identity;
-    [&identity.presence_handle, &identity.user_id]
-        .into_iter()
-        .find_map(|handle| handle.clone().filter(|v| !v.trim().is_empty()))
+/// The name announced on `Hello`: the person's profile name from their
+/// public identity record. Without one the broker names them by their id.
+pub fn presence_handle() -> Option<String> {
+    crate::local_identity::bound()
+        .map(|identity| identity.display_name.trim().to_owned())
+        .filter(|name| !name.is_empty())
 }
 
 pub use runtime_collab::route::channel_key;

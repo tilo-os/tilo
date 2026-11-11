@@ -234,6 +234,33 @@ impl LocalIdentitySource for FixedIdentity {
     }
 }
 
+#[cfg(test)]
+mod handle_tests {
+    use super::*;
+
+    /// Peers learn what to call this person from the name the app announces
+    /// on joining: the profile name, never an id standing in for one.
+    #[test]
+    fn an_app_announces_its_person_by_their_profile_name() {
+        let _guard = tilo_test_env::lock();
+        let person = |name: &str| {
+            install_source(Some(Arc::new(FixedIdentity(LocalIdentity {
+                group_public_key: [7; 32],
+                display_name: name.into(),
+                avatar_color: [200, 40, 90],
+            }))));
+        };
+        person("  Throwaway test identity ");
+        assert_eq!(
+            crate::presence_handle().as_deref(),
+            Some("Throwaway test identity")
+        );
+        person(" ");
+        assert_eq!(crate::presence_handle(), None);
+        install_source(None);
+    }
+}
+
 #[cfg(all(test, feature = "local-daemons"))]
 mod photo_tests {
     use super::*;

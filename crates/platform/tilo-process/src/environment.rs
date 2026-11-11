@@ -56,8 +56,6 @@ pub struct HostIdentity {
     pub workspace_id: Option<String>,
     /// The signed-in person's id, when the launcher bound one.
     pub user_id: Option<String>,
-    /// The presence handle to announce, overriding the user id.
-    pub presence_handle: Option<String>,
     /// The operating-system account name.
     pub account_name: Option<String>,
     /// The resume projection this window was relaunched with.
