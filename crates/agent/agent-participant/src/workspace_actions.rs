@@ -53,6 +53,7 @@ mod content;
 mod feedback;
 mod keys;
 mod link;
+mod opened;
 mod publish;
 mod reads;
 mod run_context;
@@ -778,10 +779,17 @@ fn sealed_for(
     gave_up: &GaveUp,
 ) -> Vec<DocumentRoute> {
     // A part of a chain is held beside a record of its app that keeps it:
-    // reading or acting on it needs that record open too.
+    // reading or acting on it needs that record open too, and any other
+    // part of the same chain, which the request's host sends beside it.
     let named = |route: &DocumentRoute, app_id: &str, record: &str| {
+        let same_chain = match (opened::chain_of(record), opened::chain_of(&route.record)) {
+            (Some(asked), Some(held)) => asked == held,
+            _ => false,
+        };
         route.app_id == app_id
-            && (route.record == record || (is_part(record) && !is_part(&route.record)))
+            && (route.record == record
+                || same_chain
+                || (is_part(record) && !is_part(&route.record)))
     };
     routes
         .iter()
@@ -809,6 +817,15 @@ struct Workspace {
     /// service's thread [`Job::Joined`], which looks at what waited again.
     awaited: Arc<AtomicBool>,
     ready: bool,
+    /// The workspace sends its records only when a device opens them (its
+    /// `Ready`): what this member does not hold is a record it may still
+    /// be sent, never one the workspace lacks.
+    when_opened: bool,
+    /// The records this member asked the workspace's host for and that it
+    /// has not answered yet ([`PeerEvent::RecordOpened`]).
+    asked: HashSet<DocumentRoute>,
+    /// The records the host answered it holds none of.
+    absent: HashSet<DocumentRoute>,
     /// What earlier waits for keys gave up on.
     gave_up: GaveUp,
     /// Every change the member opened or wrote, in order.
@@ -856,6 +873,9 @@ impl Workspace {
             events,
             awaited,
             ready: false,
+            when_opened: false,
+            asked: HashSet::new(),
+            absent: HashSet::new(),
             gave_up: GaveUp::default(),
             log: Vec::new(),
             desktop: SharedDesktop::new(),
@@ -867,9 +887,21 @@ impl Workspace {
             match event {
                 PeerEvent::Ready {
                     workspace_id: ready,
-                    ..
+                    records_when_opened,
                 } if ready == workspace_id => {
                     self.ready = true;
+                    self.when_opened = records_when_opened;
+                }
+                PeerEvent::RecordOpened {
+                    workspace_id: opened,
+                    route,
+                    frames,
+                } if opened == workspace_id => {
+                    // The host sent all it holds of a record this member
+                    // asked for: none means it holds none of it.
+                    if self.asked.remove(&route) && frames == 0 {
+                        self.absent.insert(route);
+                    }
                 }
                 PeerEvent::Document(document) => {
                     if room_workspace_id(&document.route.cluster_id).ok() != Some(workspace_id) {
@@ -1355,6 +1387,11 @@ impl Worker {
             return true;
         };
         workspace.pump(workspace_id);
+        // A record the workspace did not replay is asked for here, and the
+        // host's answer is the change that wakes this thread to look again.
+        if workspace.ask(workspace_id, needs) {
+            return false;
+        }
         let sealed = workspace.sealed(workspace_id, needs);
         if sealed.is_empty() {
             return true;

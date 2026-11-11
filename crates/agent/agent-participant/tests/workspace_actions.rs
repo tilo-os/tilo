@@ -80,6 +80,9 @@ mod member_roles;
 #[cfg(test)]
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;
+#[cfg(test)]
+#[path = "workspace_actions/public_records.rs"]
+mod public_records;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]
