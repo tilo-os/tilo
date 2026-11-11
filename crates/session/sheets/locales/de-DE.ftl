@@ -15,7 +15,7 @@ power-restart = Neu starten
 power-restart-detail = Geöffnete Apps werden geschlossen
 power-shut-down = Ausschalten
 power-shut-down-detail = Geöffnete Apps werden geschlossen
-power-shut-down-session-detail = Das Fenster schließt sich; der Rechner bleibt an
+power-shut-down-session-detail = Das Fenster schließt sich. Der Rechner bleibt an
 power-not-offered-switch-user = Benutzerwechsel ist in diesem Fenster nicht möglich
 power-not-offered-power = Dieses Fenster kann die Energieverwaltung des Rechners nicht ändern
 
@@ -75,7 +75,7 @@ dictation-open-settings = Einrichten
 ## Shortcut guide
 
 guide-title = Tastenkürzel
-guide-reopen-hint = Wähle ein Navigationskürzel, um es zu ändern
+guide-reopen-hint = Navigationskürzel lassen sich hier ändern
 guide-done = Fertig
 guide-press-new-shortcut = Neues Tastenkürzel für „{ $action }“ drücken
 guide-listening-cancel = Abbrechen
@@ -218,7 +218,6 @@ directory-role-moderator = Moderierende
 
 ## Display sheet
 display-sheet-title = Anzeige
-display-sheet-subtitle = Wähle, wo dein Desktop erscheint.
 display-sheet-a11y-description = Pfeil nach oben und unten wechseln zwischen den Optionen, Eingabe übernimmt die markierte, Super+P wechselt zur nächsten Anordnung, Escape schließt.
 display-mode-extend = Erweitern
 display-mode-extend-detail = Ein Desktop über alle Bildschirme
@@ -313,7 +312,7 @@ portal-email-to = An: { $addresses }
 portal-email-cc = Cc: { $addresses }
 portal-email-bcc = Bcc: { $addresses }
 portal-email-subject = Betreff: { $subject }
-portal-email-attachments = { $count } Anhang/Anhänge
+portal-email-attachments = Anhänge: { $count }
 portal-email-open = Mailprogramm öffnen
 portal-background-title = { $app } weiterlaufen lassen?
 portal-background-background = Im Hintergrund laufen lassen
@@ -414,7 +413,6 @@ portal-sim-pin-wrong = Diese PIN ist falsch.
 portal-sim-puk-title = SIM gesperrt
 portal-sim-puk-lead = Zu viele falsche PINs haben die SIM für „{ $network }“ gesperrt. Gib die PUK vom Kartenhalter der SIM ein und wähle eine neue PIN.
 portal-sim-puk-wrong = Diese PUK ist falsch.
-portal-network-heading = Netzwerk
 portal-network-this-network = dieses Netzwerk
 portal-network-password = Passwort
 portal-network-key = Schlüssel
@@ -512,14 +510,12 @@ agent-door-environment-as-person = Ein Programm in einer Umgebung arbeitet als A
 agent-door-seat = { $client } #{ $instance }
 agent-door-seat-in-environment = { $client } in { $environment } #{ $instance }
 agent-door-workspace-gone = Der Arbeitsbereich, in dem dieses Programm arbeiten wollte, existiert nicht mehr.
-agent-door-not-administrator = Du verwaltest diesen Arbeitsbereich nicht, daher wurde { $agent } nicht hinzugefügt.
 agent-door-withdrawn = Die Anfrage wurde zurückgezogen, bevor jemand sie beantwortet hat.
 agent-door-declined = Du hast dieses Programm nicht als Agenten hier arbeiten lassen.
 agent-door-no-run = Die Arbeit dieses Agenten hier konnte nicht beginnen
 agent-door-person-from-device = Nur ein Programm auf diesem Gerät kann als du handeln; ein Agent von einem anderen deiner Geräte arbeitet hier als Agent.
 agent-door-admission-person = In „{ $workspace }“ als du handeln
 agent-door-admission-person-detail = Alles, was es tut, ist deins: es führt aus, was du tippst, als du, dir zugeschrieben, mit allem, was du hier darfst. Erlaube das nur einem Programm, das du selbst gestartet hast, etwa einem Terminal.
-agent-door-session-reads-only = Ein Agent liest hier die eigenen Ressourcen des Desktops; bitte die Person, das zu tun.
 
 ## The shortcut catalogue on the action door: every desktop shortcut with its
 ## live and default chords, as the shortcut guide shows them.
@@ -579,7 +575,6 @@ workspace-delete-title = { $name } löschen?
 workspace-delete-body = Alles in diesem Arbeitsbereich geht mit ihm: seine Fenster, seine Gruppen, seine Geschichte. Er verschwindet von jedem Gerät, auf dem er ist.
 workspace-delete-confirm = Löschen
 workspace-delete-keep = Behalten
-workspace-delete-lens = Arbeitsbereich löschen
 
 # Inviting people: the link into the workspace in front, and the links that
 # still work.

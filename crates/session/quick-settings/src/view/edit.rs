@@ -51,9 +51,6 @@ fn editor(cx: &ViewCx<QuickSettings>, arrangement: &Arrangement) -> Element {
                 .push(Box::new(done)),
         ))
         .push(Box::new(
-            Text::new(&t("qs-edit-help")).with_role(TextRole::Caption),
-        ))
-        .push(Box::new(
             Text::new(&t("qs-edit-active-heading"))
                 .with_role(TextRole::Label)
                 .strong(),
