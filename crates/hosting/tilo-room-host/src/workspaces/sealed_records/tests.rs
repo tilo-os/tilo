@@ -19,10 +19,10 @@ use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_user_identity::DeviceCert;
 
-const APP: &str = "so.tilo.notes";
+pub(super) const APP: &str = "so.tilo.notes";
 const RECORD: &str = "welcome";
 
-fn title(bytes: &[u8]) -> Option<String> {
+pub(super) fn title(bytes: &[u8]) -> Option<String> {
     automerge::AutoCommit::load(bytes)
         .ok()?
         .get(ROOT, "title")
@@ -31,7 +31,12 @@ fn title(bytes: &[u8]) -> Option<String> {
         .and_then(|(value, _)| value.into_string().ok())
 }
 
-async fn set_title(member: &SealingMember, workspaces: &Workspaces, workspace: &str, value: &str) {
+pub(super) async fn set_title(
+    member: &SealingMember,
+    workspaces: &Workspaces,
+    workspace: &str,
+    value: &str,
+) {
     member
         .writes(workspaces, workspace, |document| {
             document.put(ROOT, "title", value).unwrap();
@@ -88,20 +93,20 @@ async fn follows_field(workspaces: &Workspaces, workspace: &str, field: &str, wa
 
 /// A node governing a "Lounge" workspace, the workspace's record of [`APP`] it holds, and
 /// a member device that writes it sealed under the keys the node takes part in.
-struct Lounge {
-    _dir: tempfile::TempDir,
-    relay: crate::workspaces::fixtures::TestHost,
-    workspaces: Workspaces,
-    workspace: String,
-    workspace_id: u64,
-    governor: DeviceCert,
-    governor_key: ed25519_dalek::SigningKey,
-    member_key: ed25519_dalek::SigningKey,
-    member_cert: DeviceCert,
-    member: SealingMember,
+pub(super) struct Lounge {
+    pub(super) _dir: tempfile::TempDir,
+    pub(super) relay: crate::workspaces::fixtures::TestHost,
+    pub(super) workspaces: Workspaces,
+    pub(super) workspace: String,
+    pub(super) workspace_id: u64,
+    pub(super) governor: DeviceCert,
+    pub(super) governor_key: ed25519_dalek::SigningKey,
+    pub(super) member_key: ed25519_dalek::SigningKey,
+    pub(super) member_cert: DeviceCert,
+    pub(super) member: SealingMember,
 }
 
-async fn lounge() -> Lounge {
+pub(super) async fn lounge() -> Lounge {
     lounge_reading(0).await
 }
 
@@ -147,7 +152,7 @@ async fn lounge_reading(capacity: usize) -> Lounge {
 
 /// [`lounge`] with its member's own subscription to the node's host, as the member's phone
 /// or laptop reaches it.
-async fn lounge_with_client() -> (Lounge, crate::RelayClient) {
+pub(super) async fn lounge_with_client() -> (Lounge, crate::RelayClient) {
     lounge_reading_with_client(0).await
 }
 
@@ -286,7 +291,7 @@ async fn retained_writes(
 
 /// A member's own client to `relay`'s host, subscribed to `workspace_id`'s
 /// workspace, as the member's phone or laptop reaches it.
-async fn subscribed_member(
+pub(super) async fn subscribed_member(
     relay: &crate::workspaces::fixtures::TestHost,
     key: &ed25519_dalek::SigningKey,
     cert: DeviceCert,
@@ -357,7 +362,7 @@ fn send_sealed(
 
 /// `member` writes `line` as the record's title and sends it to the host
 /// sealed, as the member's own writes travel.
-fn seal_and_send_title(
+pub(super) fn seal_and_send_title(
     member: &SealingMember,
     client: &crate::RelayClient,
     workspace: &str,

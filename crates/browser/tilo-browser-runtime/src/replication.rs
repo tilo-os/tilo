@@ -1528,29 +1528,7 @@ impl Joined {
                 }
             }
         }
-        // A record a window opened that is not here: the workspace sends it,
-        // or says it has none of it, and only then is it new.
-        for mounted in self.mounts.values() {
-            for store in mounted.attachment.stores.borrow().iter() {
-                let (app, home) = store.package_and_home();
-                if home != self.uuid {
-                    continue;
-                }
-                for record in store.wanted_records() {
-                    let key = (
-                        app.clone(),
-                        tilo_desktop_surface::host::records::wire_record(&record).to_owned(),
-                    );
-                    if !self.asked.contains(&key) {
-                        opening.push(DocumentRoute {
-                            app_id: key.0,
-                            cluster_id: self.uuid.clone(),
-                            record: key.1,
-                        });
-                    }
-                }
-            }
-        }
+        opening.extend(self.wanted_routes());
         for route in opening {
             if !self
                 .asked
@@ -1588,6 +1566,44 @@ impl Joined {
             }
         }
         self.send_desktop();
+    }
+
+    /// The records windows opened that are not here and that this page has
+    /// not asked the workspace for yet: it sends each, or says it has none
+    /// of it, and only then is it new.
+    fn wanted_routes(&self) -> Vec<DocumentRoute> {
+        let mut wanted = Vec::new();
+        for mounted in self.mounts.values() {
+            for store in mounted.attachment.stores.borrow().iter() {
+                let (app, home) = store.package_and_home();
+                if home != self.uuid {
+                    continue;
+                }
+                for record in store.wanted_records() {
+                    // A workspace that replays every chain's head answered
+                    // for each with its replay: what this page holds of a
+                    // chain is all of its head there is.
+                    if record.is_chain_head() && !self.when_opened {
+                        if self.ready {
+                            store.note_workspace_answered(record);
+                        }
+                        continue;
+                    }
+                    let key = (
+                        app.clone(),
+                        tilo_desktop_surface::host::records::wire_record(&record).to_owned(),
+                    );
+                    if !self.asked.contains(&key) {
+                        wanted.push(DocumentRoute {
+                            app_id: key.0,
+                            cluster_id: self.uuid.clone(),
+                            record: key.1,
+                        });
+                    }
+                }
+            }
+        }
+        wanted
     }
 
     /// The workspace's members as the peer last heard its governance list them:

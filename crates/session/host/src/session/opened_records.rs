@@ -17,7 +17,14 @@ impl Task {
         client: Option<&RelayClient>,
     ) -> bool {
         let channel = neighbour_wire::app_document_channel(&route.app_id, &route.record);
-        self.open_channel(&route);
+        // A chain's head names a part and holds nothing of its own: the
+        // part's keys are asked for as it arrives, like a replayed head's.
+        if !matches!(
+            neighbour_wire::record_sync(&route.record),
+            neighbour_wire::RecordSync::ChainHead { .. }
+        ) {
+            self.open_channel(&route);
+        }
         self.opened_records.insert(channel, (workspace_id, route));
         client.is_none_or(|client| {
             client

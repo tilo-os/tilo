@@ -2,6 +2,8 @@
 //! sessions each frame reaches. A single state commit and a committed
 //! checkpoint batch publish through the same steps.
 
+use crate::store::record_sync::Reach;
+
 use super::{
     Arc, Envelope, FanoutStamp, HashMap, Invariant, ReplayCatchup, StateDelivery, StateSession,
     StateSource, Subscriber, WorkspaceOperation, gated_checkpoint_channel, live_audience, mpsc,
@@ -71,7 +73,6 @@ fn record_reach(
     envelope: &Arc<Envelope>,
 ) -> crate::store::record_sync::Reach {
     use crate::coedit::CoeditPayload;
-    use crate::store::record_sync::Reach;
     let Envelope::Delta { delta, .. } = &**envelope else {
         return Reach::Everyone;
     };
@@ -143,12 +144,17 @@ impl LiveFanout<'_> {
         {
             return None;
         }
-        // An on-demand record's changes go to who opened it; a host this
-        // workspace is attached to keeps all of the workspace.
-        if let crate::store::record_sync::Reach::Opened(channel) = self.frame.reach
-            && !runtime.attached(recipient)
-            && !runtime.holds_record(recipient, &channel)
-        {
+        // An on-demand record's changes go to who opened it, a chain's head
+        // to who follows the chain; a host this workspace is attached to
+        // keeps all of the workspace.
+        let held = match self.frame.reach {
+            Reach::Everyone | Reach::Head(_) => true,
+            Reach::Opened(channel) => runtime.holds_record(recipient, &channel),
+            Reach::ChainHead { head, chain } => {
+                runtime.holds_record(recipient, &head) || runtime.holds_record(recipient, &chain)
+            }
+        };
+        if !held && !runtime.attached(recipient) {
             return None;
         }
         Some((sub, target))
@@ -233,7 +239,9 @@ impl LiveFanout<'_> {
                 }
                 // It follows this chain part now, and keeps it once a later
                 // part is the head.
-                if let crate::store::record_sync::Reach::Head(channel) = self.frame.reach {
+                if let Reach::Head(channel) | Reach::ChainHead { head: channel, .. } =
+                    self.frame.reach
+                {
                     runtime.hold_record(recipient, channel);
                 }
             }

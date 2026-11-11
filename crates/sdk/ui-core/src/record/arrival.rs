@@ -56,6 +56,18 @@ impl RecordStore {
             .is_ok_and(|set| set.answered.borrow().contains(id))
     }
 
+    /// Whether the newest part of the chain `base` is still on its way: this
+    /// store's records come from its workspace's hosts
+    /// ([`Self::ask_workspace_for_missing`]) and they have not answered the
+    /// chain's head ([`RecordId::chain_head`]), which is wanted from them
+    /// meanwhile ([`Self::wanted_records`]). A store that holds no part of
+    /// the chain does not know which part is the newest until then: a part
+    /// it started would be an old one, or a second first one.
+    #[must_use]
+    pub fn awaits_chain_head(&self, base: &RecordId) -> bool {
+        self.awaits_workspace(&base.chain_head())
+    }
+
     /// Something of `id` arrived: more of it may follow.
     pub(super) fn arrived(&self, id: &RecordId) {
         if let Ok(set) = self.0.try_borrow() {

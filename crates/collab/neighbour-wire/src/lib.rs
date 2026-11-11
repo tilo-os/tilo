@@ -27,7 +27,7 @@ pub mod unit_chain;
 
 pub use retention::{Retention, app_document_channel, audience, retention, standalone};
 pub use tilo_actions::record_sync::{
-    RecordSync, on_demand_record, record_chunk, record_part, record_sync,
+    RecordSync, chain_head, on_demand_record, record_chunk, record_part, record_sync,
 };
 
 use serde::{Deserialize, Serialize};

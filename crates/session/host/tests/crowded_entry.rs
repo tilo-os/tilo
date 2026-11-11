@@ -393,6 +393,16 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
                     )
                     .unwrap();
             }
+            // The crowd's chat: its newest part, which a chain's reader
+            // finds by opening the chain's head.
+            let chat = chat_part(&lounge.workspace);
+            author.open_route(chat.clone()).unwrap();
+            author
+                .publish(
+                    chat,
+                    &DocumentMutation::Snapshot(record_of(CHAT_BYTES, 3).save()),
+                )
+                .unwrap();
         }
         // Every member's device writes its own part of the shared desktop.
         for (offset, page) in batch.iter().enumerate() {
@@ -438,6 +448,7 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
             cluster_id: lounge.workspace.clone(),
             record: "note-0".into(),
         },
+        chat: &chat_part(&lounge.workspace),
     };
     let quick = guest_enters(&place, Duration::ZERO).await;
     quick.report("no delay");
@@ -559,6 +570,24 @@ struct Place<'a> {
     desktop: &'a DocumentRoute,
     /// A record the members wrote, which a guest is sent once it opens it.
     note: &'a DocumentRoute,
+    /// The newest part of the crowd's chat, which a guest is sent once it
+    /// opens the chat's head.
+    chat: &'a DocumentRoute,
+}
+
+/// The chain the crowd's chat keeps its messages in.
+const CHAT_CHAIN: &str = "messages";
+
+/// What the crowd wrote in its chat's newest part.
+const CHAT_BYTES: usize = 300 * 1024;
+
+/// The first part of the crowd's chat, its head.
+fn chat_part(workspace: &str) -> DocumentRoute {
+    DocumentRoute {
+        app_id: "so.tilo.chat".into(),
+        cluster_id: workspace.to_owned(),
+        record: neighbour_wire::record_part(CHAT_CHAIN, 0),
+    }
 }
 
 /// The network's round trip for the guest that counts them.
@@ -608,12 +637,12 @@ const MAX_ROUND_TRIPS: f64 = 8.0;
 const MAX_REQUESTS: usize = 1;
 
 /// What a fresh guest may receive before its desktop shows: the workspace's
-/// governance (a compressed base with the changes since, about 0.2 to 0.5 MB
-/// for 300 members) and its shared desktop. The Lounge is public, so the
-/// members' records (3.5 MB here) come only when the guest opens them;
-/// governance sent twice or uncompressed, or any of those records sent with
-/// the desktop, crosses this.
-const MAX_BYTES: u64 = 700_000;
+/// governance (a compressed base with the changes since, about 0.5 MB for 300
+/// members) and its shared desktop. The Lounge is public, so the members'
+/// records (3.5 MB here) and its chat (0.3 MB in its newest part) come only
+/// when the guest opens them; governance sent twice or uncompressed, or any
+/// of those records or the chat sent with the desktop, crosses this.
+const MAX_BYTES: u64 = 620_000;
 
 /// One guest's entry, as it went.
 struct Entry {
@@ -743,7 +772,10 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
                 PeerEvent::Document(document) if document.route == *place.desktop => {
                     desktop_doc.get_or_insert_with(|| started.elapsed());
                 }
-                PeerEvent::Document(document) if document.route.app_id == place.note.app_id => {
+                PeerEvent::Document(document)
+                    if document.route.app_id == place.note.app_id
+                        || document.route.app_id == place.chat.app_id =>
+                {
                     notes_before += 1;
                 }
                 PeerEvent::Ready {
@@ -768,10 +800,11 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     marks.push(("desktop keyed", keyed_desktop.unwrap_or_default()));
     marks.push(("desktop record", desktop_doc.unwrap_or_default()));
     // A public workspace sends its records when they are opened: none of the
-    // members' notes came with the desktop, and one opened now arrives.
+    // members' notes nor any of their chat came with the desktop, and one
+    // opened now arrives.
     assert_eq!(
         notes_before, 0,
-        "a note reached the guest before it opened one"
+        "a note or the chat reached the guest before it opened one"
     );
     page.open_record(place.workspace_id, place.note.clone())
         .unwrap();
@@ -805,6 +838,33 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     assert!(
         opened.is_some_and(|frames| frames > 0),
         "the host sent the note's frames"
+    );
+    // Opening the chat: its head, which names whichever part is the newest,
+    // brings that part in one round trip.
+    let asked = Instant::now();
+    let head = DocumentRoute {
+        record: neighbour_wire::chain_head(CHAT_CHAIN),
+        ..place.chat.clone()
+    };
+    page.open_record(place.workspace_id, head.clone()).unwrap();
+    let (mut part, mut answered) = (false, None);
+    while !part || answered.is_none() {
+        for event in page.drain() {
+            match event {
+                PeerEvent::Document(document) if document.route == *place.chat => part = true,
+                PeerEvent::RecordOpened { route, frames, .. } if route == head => {
+                    answered = Some(frames);
+                }
+                _ => {}
+            }
+        }
+        assert!(Instant::now() < deadline, "the chat's head never arrived");
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    marks.push(("the chat opened after", asked.elapsed()));
+    assert!(
+        answered.is_some_and(|frames| frames > 0),
+        "the host sent the chat's newest part for its head"
     );
     page.close();
     let http = std::mem::take(&mut *network.asked.lock().unwrap());

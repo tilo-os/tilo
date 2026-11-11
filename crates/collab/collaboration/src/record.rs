@@ -221,6 +221,24 @@ impl RecordId {
         numbered(role.strip_prefix("part.")?).map(|index| (Self(base.to_owned()), index))
     }
 
+    /// The head of the chained record `self`: a name for whichever of its
+    /// parts is the newest, which holds nothing of its own. A device that
+    /// holds no part of the chain opens it to be sent that part and to
+    /// follow the chain's later heads; answered with nothing, the chain has
+    /// no part yet. The wire form is `neighbour_wire::chain_head`'s.
+    #[must_use]
+    pub fn chain_head(&self) -> Self {
+        Self::derived("head", self)
+    }
+
+    /// Whether this is the [`Self::chain_head`] of a chain.
+    #[must_use]
+    pub fn is_chain_head(&self) -> bool {
+        self.0
+            .strip_prefix("derived:head@")
+            .is_some_and(|base| !base.is_empty())
+    }
+
     /// Chunk `number` of the record `self`: the platform keeps a large
     /// record's resources in several documents, each a record of its own, so
     /// that a write reaches only the chunk it changed. Chunk `0` is the

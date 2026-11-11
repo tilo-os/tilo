@@ -503,9 +503,10 @@ fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
     let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
     // A record whose channel orders before any other by hash.
     let other = raw_generation(&store, 0, 0x00);
-    store.learn_record([0x00; 32], "note-1");
+    store.learn_record([0x00; 32], "notes", "note-1");
     store.learn_record(
         neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_RECORD),
+        DESKTOP_APP,
         DESKTOP_RECORD,
     );
     fs::write(other.join("checkpoint.delta"), frame(1, 8, 10)).unwrap();

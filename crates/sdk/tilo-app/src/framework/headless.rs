@@ -1009,6 +1009,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(took_in)
     }
 
+    /// Take this window's records to come from its workspace's hosts, as a
+    /// page's do ([`ui_core::record::RecordStore::ask_workspace_for_missing`]):
+    /// a record not here is asked for, and new only once they answered.
+    pub fn asks_the_workspace(&mut self) {
+        self.records.ask_workspace_for_missing();
+    }
+
+    /// What this window asks its workspace's hosts for
+    /// ([`ui_core::record::RecordStore::wanted_records`]).
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        self.records.wanted_records()
+    }
+
     /// The workspace's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
     /// ([`ui_core::record::RecordStore::note_workspace_answered`]).

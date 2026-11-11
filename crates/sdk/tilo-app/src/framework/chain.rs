@@ -44,6 +44,13 @@
 //! A part opened in the app's store by anyone — a peer's merged into an
 //! attached view, one this device asked the workspace for — is held from the
 //! next read on.
+//!
+//! Where the store's records come from the workspace's hosts (a page's), the
+//! chain asks them for its head as it opens ([`RecordId::chain_head`]): a
+//! public workspace sends a newcomer no part of it until then, and the head
+//! they send is held like any part that arrives. Until they answered, a
+//! window that holds no part does not know which part is the newest, and
+//! writes nothing ([`Chain::head_arriving`]).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -272,6 +279,9 @@ impl<P: Chained> ChainState<P> {
             published: RefCell::new(None),
             pending: RefCell::default(),
         };
+        // Asked for as the chain opens, with the window's other records: the
+        // newest part arrives in the same round trip.
+        let _ = state.workspace.store.awaits_chain_head(&state.chain);
         state.look();
         Some(state)
     }
@@ -297,6 +307,12 @@ impl<P: Chained> ChainState<P> {
     pub(crate) fn head(&self) -> Option<u64> {
         self.refresh();
         self.parts.borrow().keys().next_back().copied()
+    }
+
+    /// Whether no part is held here and the workspace's hosts have not yet
+    /// said which is the newest ([`RecordStore::awaits_chain_head`]).
+    pub(crate) fn head_arriving(&self) -> bool {
+        self.head().is_none() && self.workspace.store.awaits_chain_head(&self.chain)
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -752,6 +768,11 @@ impl<P: Chained> ChainState<P> {
     /// [`Self::apply_answering`], telling a part on its way from the
     /// workspace apart from a refusal.
     fn try_apply(&self, action: &P::Action, invoker: &ActionInvoker) -> Result<Write, ActionError> {
+        // Which part is the newest is on its way: a part started now would be
+        // an old one, or a second first one.
+        if self.head_arriving() {
+            return Ok(Write::Arriving);
+        }
         let mut action = action.clone();
         let base = (self.base)();
         P::prepare(&mut action, &base).map_err(ActionError::Refused)?;
@@ -1141,6 +1162,15 @@ impl<P: Chained> Chain<P> {
     #[must_use]
     pub fn head(&self) -> Option<u64> {
         self.state.head()
+    }
+
+    /// Whether the chain's newest part is still on its way: no part is held
+    /// here and the workspace's hosts, asked for the chain's head, have not
+    /// answered. A view shows the chain loading rather than empty; an action
+    /// is refused until then.
+    #[must_use]
+    pub fn head_arriving(&self) -> bool {
+        self.state.head_arriving()
     }
 
     /// Increases whenever a held part changed or a newer head arrived.
