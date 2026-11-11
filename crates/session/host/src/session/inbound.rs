@@ -160,12 +160,19 @@ impl Task {
 
     /// A coedit delta: its body, when it carries one, is the workspace's
     /// content from `author`.
+    ///
+    /// A delta is what a host's store kept, so its body is history: the
+    /// author signed it when it was fresh, and the host hands it over later,
+    /// whether it replays a newcomer or answers for a record a device opens
+    /// after its replay ([`Task::open_record`]). Its record's frames are
+    /// therefore decided as of their own timestamps, never as of now: a chat
+    /// written an hour ago and opened now reads.
     fn delta(&mut self, workspace_id: u64, delta: &[u8], author: [u8; 32]) {
-        if let Some(
-            CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
-        ) = CoeditPayload::decode(delta)
-        {
-            self.inbound_body(workspace_id, &body, author);
+        match CoeditPayload::decode(delta) {
+            Some(
+                CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. },
+            ) => self.inbound_body(workspace_id, &body, author, true),
+            None => {}
         }
     }
 
@@ -229,11 +236,22 @@ impl Task {
     /// the workspace's governance (a member's certificate, the workspace document)
     /// is admitted through the workspace's replica; channel governance and
     /// documents go on.
-    pub(super) fn inbound_body(&mut self, workspace_id: u64, body: &[u8], author: [u8; 32]) {
-        let retained = self
-            .reports
-            .read(|status| status.workspaces.get(&workspace_id).copied())
-            != Some(true);
+    ///
+    /// `history` says the host handed this over from what its store kept, so
+    /// it is decided as of its own timestamp: what a replay carried before the
+    /// `Ready`, and what the store answered for a record opened after it.
+    pub(super) fn inbound_body(
+        &mut self,
+        workspace_id: u64,
+        body: &[u8],
+        author: [u8; 32],
+        history: bool,
+    ) {
+        let retained = history
+            || self
+                .reports
+                .read(|status| status.workspaces.get(&workspace_id).copied())
+                != Some(true);
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) {
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
                 self.gather_governance(workspace_id, author, retained, room, changes);
