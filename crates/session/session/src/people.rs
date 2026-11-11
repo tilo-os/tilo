@@ -329,6 +329,17 @@ impl People {
     /// Open the roster at the person `person` , their card in the roster's place: a press on them
     /// elsewhere (a face in the bar, a wave, the launcher) lands here.
     pub fn show_person(&self, person: &str) {
+        // Their card stands already: the press asks for everyone here, in the card's place. The bar
+        // has no people button while it shows a face, so this is how a pointer reaches the roster.
+        if self.open.get() && self.shown.borrow().card_open.as_deref() == Some(person) {
+            let mut shown = self.shown.borrow_mut();
+            shown.own_card = false;
+            shown.card_of = None;
+            shown.close_card = true;
+            drop(shown);
+            self.redraw();
+            return;
+        }
         // A row this roster has not read yet still opens: the next frame reads it and the card
         // comes up under it.
         {
