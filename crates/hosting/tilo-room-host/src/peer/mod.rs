@@ -307,7 +307,7 @@ impl SessionCtx<'_> {
     /// environments' devices ([`crate::environment`]): its one workspace and
     /// the one record there. `None` for every other device.
     fn environment(&self, device: &[u8; 32]) -> Option<crate::environment::EnvironmentScope> {
-        crate::environment::scope_of(self.environments, device)
+        crate::environment::environment_of(self.environments, device)?.placed()
     }
 
     /// The workspace admission decision for `peer` on `op`.

@@ -607,8 +607,8 @@ async fn prepare_admission(
             .as_ref()
             .map(|source| &source.environments)
             .is_some_and(|environments| {
-                crate::environment::scope_of(environments, device)
-                    .is_some_and(|scope| !scope.reaches(channel))
+                crate::environment::environment_of(environments, device)
+                    .is_some_and(|environment| !environment.reaches(channel))
             })
     };
     let sessions = runtime

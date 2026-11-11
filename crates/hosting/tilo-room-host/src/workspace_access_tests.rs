@@ -46,6 +46,7 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentExpired) => 'e',
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
         Decision::Deny(DenyReason::OutOfEnvironmentScope) => 'b',
+        Decision::Deny(DenyReason::EnvironmentStopped) => 's',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
     }
 }

@@ -272,7 +272,8 @@ impl Authority {
             member.set(true);
             member
         } else {
-            let environment = crate::environment::scope_of(&self.environments, &device).is_some();
+            let environment =
+                crate::environment::environment_of(&self.environments, &device).is_some();
             let member = Arc::new(Grant::new(id, &workspace, peer, environment));
             self.members.lock_recover().insert(key, member.clone());
             member

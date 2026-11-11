@@ -237,6 +237,9 @@ pub enum DenyReason {
     /// A hosted browser environment's device, outside the one workspace and
     /// the one record the relay confines it to.
     OutOfEnvironmentScope,
+    /// A hosted browser environment's device whose environment stopped: it
+    /// reaches nothing, and no plane admits it, until its certificate expires.
+    EnvironmentStopped,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a workspace this relay does
     /// not govern.
@@ -257,6 +260,9 @@ impl DenyReason {
             Self::NotAMember => "device not in workspace membership",
             Self::OutOfEnvironmentScope => {
                 "a browser environment's device reaches one workspace and its own record"
+            }
+            Self::EnvironmentStopped => {
+                "the browser environment this device belongs to has stopped"
             }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
@@ -303,6 +309,15 @@ impl RelayTrust<'_> {
             .is_some_and(|expiry| expiry <= now_ns)
         {
             return Err(DenyReason::CertExpired);
+        }
+        // A device whose environment stopped is refused on every plane, as a
+        // revoked one is, until the certificate it was given expires: this is
+        // the check every plane and every audit makes.
+        if matches!(
+            crate::environment::environment_of(self.environments, &peer.device_public_key),
+            Some(crate::environment::Environment::Stopped { .. })
+        ) {
+            return Err(DenyReason::EnvironmentStopped);
         }
         if !self
             .revocations
@@ -471,8 +486,14 @@ pub(crate) fn decide_in(
     if let Err(reason) = trust.principal(peer, workspace.runtime.store.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
-    if let Some(scope) = crate::environment::scope_of(trust.environments, &peer.device_public_key) {
-        return environment_decision(workspace, scope, op);
+    match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
+        Some(crate::environment::Environment::Placed(scope)) => {
+            return environment_decision(workspace, scope, op);
+        }
+        Some(crate::environment::Environment::Stopped { .. }) => {
+            return Decision::Deny(DenyReason::EnvironmentStopped);
+        }
+        None => {}
     }
     if let Some(scope) = peer.cert.capabilities.agent {
         return grant_decision(workspace, peer, scope, op);

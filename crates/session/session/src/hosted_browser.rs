@@ -318,8 +318,24 @@ fn take_identity(material: &Material) -> Result<(), String> {
     paths
         .ensure_directories()
         .map_err(|error| format!("this device's identity has nowhere to live: {error}"))?;
+    // Only this session's user reads any of it: a workspace's own agent has
+    // sudo in this VM and may copy what it finds, so what it finds is one key
+    // for one record, in directories nobody else may enter.
+    for directory in [
+        paths.user_pubkey.parent(),
+        paths.device_privkey.parent(),
+        paths.device_cert.parent(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        tilo_files::native::private::restrict_directory(directory)
+            .map_err(|error| format!("this device's identity is not private: {error}"))?;
+    }
     let key = material.key()?;
-    tilo_user_identity::persist::write_device_key(&paths.device_privkey, &key)
+    // [`write_signing_key`] is the one way to write a key only its owner may
+    // read (0600), rather than the device key's group-readable mode.
+    tilo_user_identity::persist::write_signing_key(&paths.device_privkey, &key)
         .map_err(|error| format!("this device's key was not written: {error}"))?;
     tilo_user_identity::install_device_cert(&paths, &material.device, tilo_clock::unix_now_ns())
         .map_err(|error| format!("this device's certificate was not taken: {error}"))?;
@@ -409,6 +425,90 @@ fn tab_of(shared: &Shared, workspace: &str, app: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
+
+    /// What a relay hands a session: a device of the workspace's person that
+    /// the host certified with its stand-in.
+    fn material() -> Material {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let user = root.verifying_key().to_bytes();
+        let now = tilo_clock::unix_now_ns();
+        let stand_in_key = ed25519_dalek::SigningKey::from_bytes(&[2; 32]);
+        let mut stand_in = tilo_user_identity::prepare_stand_in_cert(
+            user,
+            stand_in_key.verifying_key().to_bytes(),
+            "the person's host",
+            now,
+            now.saturating_add(24 * 60 * 60 * 1_000_000_000),
+        );
+        tilo_user_identity::sign_device_cert(&mut stand_in, &root).unwrap();
+        let secret = [3_u8; 32];
+        let mut device = tilo_user_identity::DeviceCert {
+            user_public_key: user,
+            device_public_key: ed25519_dalek::SigningKey::from_bytes(&secret)
+                .verifying_key()
+                .to_bytes(),
+            device_label: "Browser".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: now,
+            expires_at_ns: Some(now.saturating_add(2 * 60 * 60 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: Some(Box::new(stand_in)),
+        };
+        tilo_user_identity::sign_device_cert(&mut device, &stand_in_key).unwrap();
+        Material {
+            workspace: "11111111-1111-4111-8111-111111111111".into(),
+            workspace_id: 7,
+            record: "browser-1".into(),
+            device,
+            secret,
+            relay: iroh::EndpointAddr::new(iroh::SecretKey::from_bytes(&[7; 32]).public()),
+            user_public_key: user,
+            account: "acct-1".into(),
+        }
+    }
+
+    /// The session takes the identity it was handed, and nothing but this
+    /// session's user may read any of it: the workspace's own agent has sudo in
+    /// this VM, and what it can copy is one key for one record, for two hours.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_sessions_key_is_written_for_its_user_alone() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().unwrap();
+        let identity = dir.path().join("identity");
+        let config = dir.path().join("config");
+        std::fs::create_dir_all(&config).unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("TILO_IDENTITY_ROOT", &identity)
+            .set("XDG_CONFIG_HOME", &config);
+        take_identity(&material()).expect("the session took the identity it was handed");
+        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let mode =
+            |path: &std::path::Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode(&paths.device_privkey),
+            0o600,
+            "the browser device's key is its user's alone"
+        );
+        assert_eq!(
+            mode(&paths.user_pubkey),
+            0o644,
+            "the person's key is public"
+        );
+        for directory in [
+            identity.join("device-private"),
+            identity.join("user-identity"),
+            identity.join("device"),
+        ] {
+            assert_eq!(
+                mode(&directory),
+                0o700,
+                "{} is readable by this user alone",
+                directory.display()
+            );
+        }
+    }
 
     /// A session in a workspace's VM, holding the window `provider` and reporting into `said`.
     fn holding(provider: u64, said: &Arc<Mutex<Vec<String>>>) -> HostedBrowser {
