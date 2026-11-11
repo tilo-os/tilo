@@ -92,8 +92,9 @@ struct KeptRow {
 #[derive(Default)]
 pub(crate) struct Timeline {
     /// The messages the fingerprints were taken of: their revision, where
-    /// they lie and how many there are.
-    seen: Option<(u64, usize, usize)>,
+    /// they lie, how many there are, and whether their replies stand in
+    /// threads.
+    seen: Option<(u64, usize, usize, bool)>,
     /// Each message as last seen, and a number that changes whenever it
     /// does: what a kept row is checked against.
     fingerprints: HashMap<String, (Message, u64)>,

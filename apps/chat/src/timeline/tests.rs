@@ -318,7 +318,7 @@ fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_
     use crate::record::{Chat, Participant};
     use ui::tilo_resource::Id;
 
-    let doc = crate::testing::demo_doc();
+    let mut doc = crate::testing::demo_doc();
     let mut app = ChatApp::new_ephemeral();
     app.attach_workspace(&doc);
     app.reload(&doc);
@@ -339,7 +339,6 @@ fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_
     // The same workspace, spoken into a conversation with an agent: the
     // person's message and the agent's answer to it stand in the timeline,
     // in the order they were written.
-    let mut doc = doc;
     let dm = Chat::direct_id([
         Participant::person(crate::model::ME),
         Participant::agent("notes"),
