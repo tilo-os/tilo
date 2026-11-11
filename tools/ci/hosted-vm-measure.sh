@@ -67,7 +67,7 @@ finish() {
         echo "== $log"
         tail -n 80 "$log"
       done
-      cat /sys/fs/cgroup/cgroup.controllers' >&2 || true
+      cat /sys/fs/cgroup/cgroup.controllers; ls -l /dev/net/tun /dev/kvm' >&2 || true
   fi
   podman rm -f vm-host >/dev/null 2>&1 || true
   losetup -d "$device" || true

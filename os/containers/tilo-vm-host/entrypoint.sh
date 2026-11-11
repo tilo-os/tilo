@@ -6,6 +6,9 @@
 #      root on the host itself can give: an image build's are its own;
 #   1. user namespaces: each VM's network namespace is owned through one, which
 #      Ubuntu's AppArmor refuses to unprivileged users unless told otherwise;
+#   1b. /dev/net/tun open to every uid, as udev leaves it on a node: each VM's
+#      network uid opens it for pasta's tap, and a pod's /dev made without
+#      udev (devtmpfs's 0600) would refuse it, and every VM with it;
 #   2. the cgroup tree: this pod's cgroup namespace is its root; the start moves
 #      itself into a leaf so the root can hand cpu, memory and pids to the VMs'
 #      cgroup (TILO_VM_CGROUP, the jail configuration's `cgroup`);
@@ -50,6 +53,10 @@ if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
   echo 0 > /proc/sys/kernel/apparmor_restrict_unprivileged_userns
 fi
 [ "$(cat /proc/sys/user/max_user_namespaces)" -gt 0 ] || { say 'user namespaces are off'; exit 1; }
+
+# 1b. the tun device
+[ -c /dev/net/tun ] || { say 'no /dev/net/tun'; exit 1; }
+chmod 0666 /dev/net/tun
 
 # 2. cgroups
 grep -qw cgroup2 /proc/mounts || { say 'no cgroup v2'; exit 1; }
