@@ -11,6 +11,7 @@ use legacy_vm::hosted::files::{self, Served};
 use legacy_vm::hosted::firecracker::Machine;
 use legacy_vm::hosted::guest;
 use legacy_vm::hosted::jail;
+use legacy_vm::hosted::placement::Host;
 use legacy_vm::hosted::service::{Service, ServiceConfig};
 use legacy_vm::hosted::vm::{Settings, system_clock};
 
@@ -42,12 +43,16 @@ usage: tilo-legacy hosted <command>
                          reachable from outside, or a loopback address when
                          the relay runs on the host itself.
   status --run DIR       every VM, its phase and its last wake
-  place --listen ADDR --record FILE --statefulset NAMESPACE/NAME --max N
-        --status-port PORT
+  place --listen ADDR --record FILE
+        (--statefulset NAMESPACE/NAME --status-port PORT --max N
+         | --hosts NAME=ADDR[,NAME=ADDR])
                          say which host runs each workspace's VM (the one holding
                          it, else the first with room), and start hosts, the
                          StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
-                         them: past three quarters, or for any VM waiting
+                         them: past three quarters, or for any VM waiting.
+                         --hosts names a stack's hosts and where each answers
+                         Status, for a stack that runs a known set of machines
+                         and starts none
   fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
                          kernel's and the root filesystem's paths
@@ -305,6 +310,7 @@ fn vm_size(flags: &Flags) -> Result<legacy_vm::hosted::size::VmSize, String> {
 struct StatefulSetScale {
     namespace: String,
     name: String,
+    port: String,
 }
 
 impl StatefulSetScale {
@@ -339,14 +345,25 @@ impl StatefulSetScale {
 }
 
 impl legacy_vm::hosted::placement::Scale for StatefulSetScale {
-    fn hosts(&self) -> Result<usize, String> {
+    fn hosts(&self) -> Result<Vec<Host>, String> {
         let scale = self.call("GET", None)?;
-        scale
+        let count = scale
             .get("spec")
             .and_then(|spec| spec.get("replicas"))
             .and_then(serde_json::Value::as_u64)
             .and_then(|count| usize::try_from(count).ok())
-            .ok_or_else(|| format!("no replicas in {scale}"))
+            .ok_or_else(|| format!("no replicas in {scale}"))?;
+        // Each pod by name (`vm-host-0`), its Status at the service's own
+        // name for it.
+        Ok((0..count)
+            .map(|index| {
+                let (namespace, name, port) = (&self.namespace, &self.name, &self.port);
+                Host::new(
+                    &format!("{name}-{index}"),
+                    &format!("{name}-{index}.{name}.{namespace}.svc:{port}"),
+                )
+            })
+            .collect())
     }
 
     fn set_hosts(&self, count: usize) -> Result<(), String> {
@@ -359,34 +376,53 @@ impl legacy_vm::hosted::placement::Scale for StatefulSetScale {
     }
 }
 
-/// Place VMs on the `StatefulSet`'s hosts and scale them.
+/// Place VMs on the hosts the environment names: a `StatefulSet`'s, which
+/// it scales, or the named hosts of a stack that runs a known set of machines
+/// (`--hosts`), which it never starts.
 fn place(flags: &Flags) -> Result<ExitCode, String> {
-    use legacy_vm::hosted::placement::{Placer, read_load};
+    use legacy_vm::hosted::placement::{FixedHosts, Placer, Scale, read_load};
 
-    let (namespace, name) = flags
-        .need("--statefulset")?
-        .split_once('/')
-        .ok_or("--statefulset takes NAMESPACE/NAME")?;
-    let max: usize = flags
-        .need("--max")?
-        .parse()
-        .map_err(|_| "--max takes a count".to_string())?;
-    let port = flags.need("--status-port")?;
-    let suffix = format!(".{name}.{namespace}.svc:{port}");
-    let placer = Arc::new(
-        Placer::new(
-            &flags.path("--record")?,
-            &format!("{name}-"),
-            max,
+    let scale: Box<dyn Scale> = match (flags.get("--statefulset"), flags.get("--hosts")) {
+        (Some(statefulset), None) => {
+            let (namespace, name) = statefulset
+                .split_once('/')
+                .ok_or("--statefulset takes NAMESPACE/NAME")?;
             Box::new(StatefulSetScale {
                 namespace: namespace.to_owned(),
                 name: name.to_owned(),
-            }),
-            Box::new(read_load),
-            system_clock(),
-        )?
-        .with_status_suffix(&suffix),
+                port: flags.need("--status-port")?.to_owned(),
+            })
+        }
+        (None, Some(hosts)) => Box::new(FixedHosts::parse(hosts)?),
+        _ => {
+            return Err(format!(
+                "place names its hosts once: --statefulset NAMESPACE/NAME --status-port PORT, or \
+                 --hosts NAME=ADDR[,NAME=ADDR]\n{USAGE}"
+            ));
+        }
+    };
+    let max: usize = match flags.get("--max") {
+        Some(max) => max.parse().map_err(|_| "--max takes a count".to_string())?,
+        None if flags.get("--hosts").is_some() => scale.hosts()?.len(),
+        None => return Err("--statefulset needs --max (the most hosts to start)".to_string()),
+    };
+    let hosts = scale.hosts().map_or_else(
+        |_| "them".to_owned(),
+        |hosts| {
+            hosts
+                .iter()
+                .map(|host| host.name.clone())
+                .collect::<Vec<_>>()
+                .join(", ")
+        },
     );
+    let placer = Arc::new(Placer::new(
+        &flags.path("--record")?,
+        max,
+        scale,
+        Box::new(read_load),
+        system_clock(),
+    )?);
     let address = flags.need("--listen")?;
     let listener =
         std::net::TcpListener::bind(address).map_err(|e| format!("--listen {address}: {e}"))?;
@@ -406,7 +442,7 @@ fn place(flags: &Flags) -> Result<ExitCode, String> {
             });
         }
     });
-    eprintln!("tilo-legacy hosted place: placing on {name}-N{suffix}, at most {max}, on {address}");
+    eprintln!("tilo-legacy hosted place: placing on {hosts}, at most {max}, on {address}");
     while !STOP.load(Ordering::SeqCst) {
         placer.rescale();
         std::thread::sleep(Duration::from_secs(10));

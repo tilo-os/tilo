@@ -107,14 +107,15 @@ fn files(dir: &Path) -> Fetched {
 }
 
 /// The reference the guest is fetched by: `reference` when given, else the
-/// pin compiled in.
+/// pin compiled in. An empty reference names the pin, so a start can pass the
+/// variable it holds without asking whether it is set.
 ///
 /// # Errors
 ///
 /// The reference is not a digest pin of the guest's repository, or nothing
 /// has been published for it.
 pub fn reference(reference: Option<&str>) -> Result<String, GuestError> {
-    match reference {
+    match reference.filter(|reference| !reference.is_empty()) {
         Some(reference) if valid_pinned_ref(reference) => Ok(reference.to_string()),
         Some(reference) => Err(GuestError::NotARef(reference.to_string())),
         None => current_ref().ok_or(GuestError::NotPublished),

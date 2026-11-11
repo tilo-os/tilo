@@ -5015,6 +5015,22 @@ id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch", "stable"]
 
+# The local tilo.sh stack's VM host (os/containers/tilo-sh/vm-host.sh): the same image,
+# privileged with a loop-backed state disk, the placer that places workspaces' VMs on it, and
+# the guest image this checkout built instead of a release's. It is what a hosted workspace
+# needs under it locally: its Linux programs and its Browser run in its VM there. The check
+# boots it and holds it to a workspace's VM waking from that guest and running a program,
+# with its member device installed, and a clean `down`.
+[[check]]
+name = "tilo-sh-vm-host"
+run = "cargo build --locked -p tilo-relay --bin tilo-enroll\nbash os/containers/tilo-sh/test-vm-host.sh /target/images/image-vm-host/image.oci.tar /target/publish/hosted-guest/image \"$CARGO_TARGET_DIR/debug/tilo-enroll\"\n"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all" }
+needs = ["image-vm-host", "image-hosted-guest"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+timeout_secs = 3600
+default = false
+
 # The front door of hosted Tilo (os/containers/tilo-front-door): the MCP endpoint behind
 # https://mcp.tilo.sh, with OAuth for agents and routing to the workspace's host. It is
 # configured entirely by its environment, so the deployment's values never enter the image;
