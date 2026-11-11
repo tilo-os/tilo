@@ -356,6 +356,60 @@ impl Map {
         self.set_camera(camera);
     }
 
+    /// [`Self::reveal`] holding `anchor` (canvas pixels) as well: what a canvas does when a place
+    /// arrives beside another, so the place it came from stays where the person was looking
+    /// rather than being pushed out of the viewport by the pan to what arrived (`shell.md` §3,
+    /// "a place next to where it came from"). `anchor` is the pin the person was looking at: both
+    /// it and what arrived end up wholly in view — panning the least that does, and zooming out
+    /// only as far as both need, since neither may be lost. When both already stand in the
+    /// viewport the camera does not move at all, and with no anchor this is [`Self::reveal`].
+    pub fn reveal_with(&mut self, area: Rect, margin: f64, anchor: Option<Rect>) {
+        let Some(anchor) = anchor else {
+            self.reveal(area, margin);
+            return;
+        };
+        let (width, height) = (self.rect.width(), self.rect.height());
+        if width <= 0.0 || height <= 0.0 {
+            return;
+        }
+        let area = area.inflate(margin, margin);
+        let anchor = anchor.inflate(margin, margin);
+        let together = area.union(anchor);
+        let origin = self.camera.origin;
+        let zoom = self.camera.zoom;
+        // Both already stand in sight: the person's view stays their own.
+        let shows = |zoom: f64| {
+            let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
+            span.x >= together.width() && span.y >= together.height()
+        };
+        // Zoom out only when the two cannot stand in the viewport at the person's zoom, and no
+        // further than they need: the canvas keeps the zoom it can.
+        let zoom = if shows(zoom) {
+            zoom
+        } else {
+            (width / together.width().max(1.0))
+                .min(height / together.height().max(1.0))
+                .clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX)
+        };
+        let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
+        // The least pan that holds both: where they were looking stays where it was as far as
+        // that allows, and what arrived joins it, both wholly in view.
+        let along = |origin: f64, (low_edge, high_edge): (f64, f64), extent: f64| {
+            let (low, high) = (high_edge - extent, low_edge);
+            if low <= high {
+                origin.clamp(low, high)
+            } else {
+                low_edge
+            }
+        };
+        let x = along(origin.x, (together.x0, together.x1), span.x);
+        let y = along(origin.y, (together.y0, together.y1), span.y);
+        self.set_camera(MapCamera {
+            origin: Point::new(x, y),
+            zoom,
+        });
+    }
+
     /// The smallest canvas rect holding every pin: what [`Self::show`] fits the camera to.
     #[must_use]
     pub fn bounds(&self) -> Rect {
@@ -891,11 +945,14 @@ impl Widget for Map {
         // built around it is laid out (`shell.md` §3, "a place next to where it came from"; the
         // session's `open` brings the canvas to what it stood). Only the last pin — the place
         // just put on the canvas — and only when it stands wholly outside the viewport, so a
-        // place already in sight moves nothing.
+        // place already in sight moves nothing. The place it arrived beside, the pin before it,
+        // stays in view too: a place opened beside a conversation never pushes the conversation
+        // out of the viewport (`reveal_with`).
         let arriving = self
             .pins
             .last()
             .map(|(key, place, _)| (key.clone(), *place));
+        let beside = self.pins.iter().rev().nth(1).map(|(_, place, _)| *place);
         if let Some((key, place)) = arriving
             && !self.arrived.contains(&key)
             && self.rect.width() > 0.0
@@ -906,9 +963,16 @@ impl Widget for Map {
                 Point::new(place.x, place.y),
                 (place.width.max(1.0), place.height.unwrap_or(0.0)),
             );
-            self.reveal(
+            let beside = beside.map(|beside| {
+                Rect::from_origin_size(
+                    Point::new(beside.x, beside.y),
+                    (beside.width.max(1.0), beside.height.unwrap_or(0.0)),
+                )
+            });
+            self.reveal_with(
                 area,
                 f64::from(crate::tokens::RhythmScale::BASE.get(crate::tokens::Rhythm::Group)),
+                beside,
             );
         }
     }

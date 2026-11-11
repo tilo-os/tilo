@@ -184,9 +184,10 @@ fn a_map_is_known_by_the_key_its_view_gave_it_not_by_where_it_stands() {
 #[test]
 fn a_place_that_arrives_off_screen_is_panned_into_view() {
     // The conversation stands at the origin and the viewport shows it; a place opened beside it
-    // far down the canvas — a third answer below two others — arrives wholly outside what the
-    // map shows. The map pans to it once, without changing its zoom, so the person sees what
-    // was just placed.
+    // one row down — the row `free_place_next_to` puts below a taken column — arrives outside what
+    // the map shows. The map moves so the person sees what was just placed, and never so far that
+    // the conversation it came from leaves the viewport: it pans the least it can, and zooms out
+    // only where both cannot fit at the person's zoom.
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut map = map_of(&[("conversation", 0.0)], viewport);
     let before = map.camera();
@@ -194,7 +195,7 @@ fn a_place_that_arrives_off_screen_is_panned_into_view() {
         "answer".to_owned(),
         PinPlace {
             x: 0.0,
-            y: 1900.0,
+            y: 544.0,
             width: 200.0,
             height: Some(120.0),
         },
@@ -203,21 +204,23 @@ fn a_place_that_arrives_off_screen_is_panned_into_view() {
     lay_out_again(&mut map, viewport);
     let after = map.camera();
     assert!(
-        (after.zoom - before.zoom).abs() <= f64::EPSILON,
-        "the zoom is the person's: {} against {}",
-        after.zoom,
-        before.zoom
+        after.origin != before.origin || (after.zoom - before.zoom).abs() > f64::EPSILON,
+        "the camera moved to show the place that arrived: {after:?} against {before:?}"
     );
-    assert!(
-        after.origin.y > before.origin.y,
-        "the camera moved down to show the place that arrived: {after:?} against {before:?}"
-    );
-    // The place now stands inside the viewport.
-    let shown = after.to_screen(viewport.origin(), Point::new(0.0, 1900.0));
-    assert!(
-        shown.y >= viewport.y0 && shown.y < viewport.y1,
-        "the place stands in view: {shown:?} in {viewport:?}"
-    );
+    // Both stand wholly in view: what arrived, and the conversation it came from.
+    for (what, at) in [
+        ("the place", (0.0, 544.0)),
+        ("the conversation", (0.0, 0.0)),
+    ] {
+        let shown = Rect::from_origin_size(
+            after.to_screen(viewport.origin(), Point::new(at.0, at.1)),
+            (200.0 * after.zoom, 120.0 * after.zoom),
+        );
+        assert!(
+            shown.y0 >= viewport.y0 && shown.y1 <= viewport.y1,
+            "{what} stands in view: {shown:?} in {viewport:?}"
+        );
+    }
 }
 
 #[test]
@@ -369,4 +372,54 @@ fn ctrl_and_a_wheel_notch_zooms_the_pins() {
         );
         seen = now;
     }
+}
+
+#[test]
+fn a_place_opened_beside_a_conversation_keeps_the_conversation_in_view() {
+    // The live run's failure: an agent opened Mail beside its conversation and the pan to the new
+    // place took the conversation out of the viewport, composer and all. A place that arrives
+    // beside another comes into view, and the place it came from stays in it: here the second
+    // answer arrives one row below the first, the row the free space puts it in.
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut map = map_of(&[("conversation", 0.0)], viewport);
+    let camera = map.camera();
+    // The conversation stands wholly in the viewport, as it did when the person was looking at it.
+    let conversation = Rect::from_origin_size(
+        camera.to_screen(viewport.origin(), Point::new(0.0, 0.0)),
+        (200.0 * camera.zoom, 120.0 * camera.zoom),
+    );
+    assert!(
+        conversation.y0 >= viewport.y0 && conversation.y1 <= viewport.y1,
+        "the conversation starts in view: {conversation:?} in {viewport:?}"
+    );
+    map.pins.push((
+        "answer".to_owned(),
+        PinPlace {
+            x: 0.0,
+            y: 544.0,
+            width: 200.0,
+            height: Some(120.0),
+        },
+        Box::new(crate::widget::Spacer::new()),
+    ));
+    lay_out_again(&mut map, viewport);
+    let camera = map.camera();
+    // When the camera must move, it moves so both the conversation and the new place are visible:
+    // the conversation's composer (its foot) is in the viewport, and so is what arrived.
+    let conversation = Rect::from_origin_size(
+        camera.to_screen(viewport.origin(), Point::new(0.0, 0.0)),
+        (200.0 * camera.zoom, 120.0 * camera.zoom),
+    );
+    assert!(
+        conversation.y0 >= viewport.y0 && conversation.y1 <= viewport.y1,
+        "the conversation stays in view: {conversation:?} in {viewport:?}"
+    );
+    let answer = Rect::from_origin_size(
+        camera.to_screen(viewport.origin(), Point::new(0.0, 544.0)),
+        (200.0 * camera.zoom, 120.0 * camera.zoom),
+    );
+    assert!(
+        answer.y0 >= viewport.y0 && answer.y1 <= viewport.y1,
+        "the place that arrived is in view too: {answer:?} in {viewport:?}"
+    );
 }

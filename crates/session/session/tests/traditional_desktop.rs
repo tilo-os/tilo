@@ -418,6 +418,88 @@ fn press_key(session: &mut Session, code: u32) {
 /// The evdev code of the right arrow.
 const KEY_ARROW_RIGHT: u32 = 106;
 
+/// How far the desk's own bar reaches down the screen: a control standing below it is the desk's
+/// own content (a place's frame), never the bar naming the window in front.
+const BAR_FOOT: f64 = 40.0;
+
+/// The live run's failure: an agent opened Mail "beside" the conversation, and the pan to what it
+/// opened took the conversation out of the viewport — its top at y -544, its composer unreachable
+/// — so the person lost their chat. Opening something beside a place keeps that place in view: the
+/// camera moves so what arrived and the place it came from both stand on the screen, zooming out
+/// only as far as the two need.
+#[test]
+fn opening_beside_a_conversation_keeps_the_conversation_in_view() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = common::seeded_session(root.path());
+    let notes = note_ids(&session);
+    assert!(notes.len() >= 2, "the seed keeps two notes: {notes:?}");
+    // The conversation far down the canvas, past the viewport's foot: the place an agent opens
+    // beside it stands further still, so showing what arrived moves the camera — and must not
+    // take the conversation out of view doing it.
+    let conversation = place(&mut session, &notes[0], 0, 3000, 720, 520);
+    let inbox = root_of(&session, ".Mail");
+    let titled = common::window_name_of(&session, &notes[0]);
+
+    // Only the frame on the canvas counts: the desk's own bar also names the window in front at
+    // the top, and that one never pans.
+    let on_canvas = |session: &mut Session, name: &str| {
+        session
+            .shell_controls(name)
+            .into_iter()
+            .filter(|&(_, y, _, _)| y >= BAR_FOOT)
+            .collect::<Vec<_>>()
+    };
+    let in_view = |rect: (f64, f64, f64, f64)| {
+        let (x, y, w, h) = rect;
+        w > 0.0
+            && h > 0.0
+            && y >= 0.0
+            && y + h <= f64::from(common::HEIGHT)
+            && x >= 0.0
+            && x + w <= f64::from(common::WIDTH)
+    };
+    let conversation_in_view =
+        |session: &mut Session| on_canvas(session, &titled).into_iter().any(in_view);
+    // The reveal brought the conversation itself into view when it was placed.
+    until(
+        &mut session,
+        "the conversation's frame in view",
+        conversation_in_view,
+    );
+    let _ = conversation;
+
+    // Mail opened beside the conversation, as an agent does for "show me my mails".
+    session
+        .invoke(
+            "shell:arrangement",
+            "open",
+            json!({ "resource": inbox, "beside": notes[0] })
+                .as_object()
+                .expect("arguments"),
+        )
+        .expect("the open runs");
+    until(&mut session, "mail beside the conversation", |session| {
+        common::placed(session, &inbox) == 1
+    });
+    // What arrived stands in view, and so does the conversation it came from.
+    let mail_in_view = |session: &mut Session| {
+        let mail = common::window_name_of(session, &inbox);
+        on_canvas(session, &mail).into_iter().any(in_view)
+    };
+    until(&mut session, "mail's frame in view", mail_in_view);
+    assert!(
+        conversation_in_view(&mut session),
+        "the conversation stays in view when what opened beside it is shown: {:?} and {:?} \
+         against the display",
+        on_canvas(&mut session, &titled),
+        {
+            let mail = common::window_name_of(&session, &inbox);
+            on_canvas(&mut session, &mail)
+        }
+    );
+}
+
 /// The top bar lists the focused window's actions, and pressing one runs it: the window in front
 /// keeps one list of what it can do now, in the resource's own words (shell.md §4). The bar's
 /// button names the window; the list it opens is the app's own, filled by the host from what its
