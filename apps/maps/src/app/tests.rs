@@ -17,7 +17,7 @@ fn effects_answer_from_the_window_state() {
             app.effect_statuses().contains(&EffectStatus::unavailable(
                 MapsEffect::LOCATE,
                 "location_service_offline",
-                "The location service is unavailable in this session",
+                "Location is unavailable right now",
             )),
             "a capture or test map has no location service"
         );
