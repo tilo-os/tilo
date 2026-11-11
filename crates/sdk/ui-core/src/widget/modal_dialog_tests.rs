@@ -966,6 +966,33 @@ fn dialog_dismisses_and_invokes_actions_by_key_and_pointer() {
         assert_eq!(dismissed.get(), 4, "a painted host routes events too");
     }
 
+    // Case `a_sheet_that_takes_no_answer_from_beside_it`.
+    {
+        // A question somebody waits on: a press beside the card is swallowed by the scrim, as
+        // the sheet is modal, and answers nothing — it is no refusal.
+        let dismissed = Rc::new(Cell::new(0));
+        let flag = Rc::clone(&dismissed);
+        let mut d = ModalDialog::new("Title", TestContent)
+            .open(true)
+            .dismiss_on_scrim(false)
+            .on_dismiss(move || flag.set(flag.get() + 1));
+        lay_out(&mut d, WINDOW, &Theme::dark());
+        dispatch(&mut d, &cursor_at(Point::new(10.0, 10.0)));
+        assert!(dispatch(&mut d, &mouse_press()), "the scrim swallows it");
+        assert_eq!(
+            dismissed.get(),
+            0,
+            "a press beside the sheet answers nothing"
+        );
+        // A press outside the window entirely is no press on the sheet at all.
+        dispatch(&mut d, &cursor_at(Point::new(-20.0, -20.0)));
+        assert!(dispatch(&mut d, &mouse_press()));
+        assert_eq!(dismissed.get(), 0);
+        // Its own way out still works.
+        assert!(dispatch(&mut d, &named_key(NamedKey::Escape)));
+        assert_eq!(dismissed.get(), 1);
+    }
+
     // Case `pointer_and_enter_fire_the_primary_action`.
     {
         let fired = Rc::new(Cell::new(0usize));

@@ -199,7 +199,10 @@ pub(super) fn sheet(shown: &Shown, parts: &Parts) -> Element {
         sheet = sheet.primary_action(label, move || confirm.confirm());
     }
     // A press beside the sheet answers nothing: declining is Escape or
-    // the button that says so.
+    // the button that says so. The scrim still swallows it — the sheet is
+    // modal — but it is no answer, so a question somebody waits on is never
+    // refused by a press that missed.
+    let sheet = sheet.dismiss_on_scrim(false);
     Box::new(presented(Some(&parts.seat.presentation), sheet))
 }
 
