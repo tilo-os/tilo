@@ -749,6 +749,10 @@ fn an_answer_for_a_question_that_is_no_longer_showing_never_answers_the_next() {
 /// what it says: the buttons sit one gutter under the last line, as the
 /// title sits one gutter under the top.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one question read the way a person reads it, in one place"
+)]
 fn an_agents_question_says_who_wants_what_and_hugs_its_words() {
     use tilo_sheets::portal::AgentQuestion;
     let asked = AgentQuestion {
@@ -895,6 +899,64 @@ fn listed_facts(app: &mut HeadlessApp<PortalApp>) -> Vec<(String, String)> {
         .into_iter()
         .map(|(_, _, label, value)| (label, value))
         .collect()
+}
+
+/// A question about a page about to send something names the page it leaves
+/// from, and draws the picture of the filled page the host kept: what the
+/// person sees before they allow it.
+#[test]
+fn a_question_about_a_page_names_it_and_shows_its_picture() {
+    use tilo_sheets::portal::AgentQuestion;
+    let asked = AgentQuestion {
+        agent: "Jane Doe’s agent".into(),
+        action: "Send the form to https://consulate.example (POST)".into(),
+        resource: "browser.page".into(),
+        arguments: vec![("Name".into(), "Jane Doe".into())],
+        risk: "outside".into(),
+        workspace: "Applicant: Jane Doe".into(),
+        page: Some("https://consulate.example".into()),
+        picture: Some("tilo.content:5f2b".into()),
+        ..AgentQuestion::default()
+    };
+    let dialog = asked.dialog("request-1");
+    assert_eq!(
+        dialog.facts,
+        [
+            ("Page".to_owned(), "https://consulate.example".to_owned()),
+            ("Name".to_owned(), "Jane Doe".to_owned()),
+        ],
+        "the page it leaves from is the first thing the person weighs, and the          question's own arguments follow"
+    );
+    assert_eq!(
+        dialog.picture.as_deref(),
+        Some("tilo.content:5f2b"),
+        "and the filled page, by the address the host named it under"
+    );
+    // The sheet draws it: the card is the picture taller than the same
+    // question without one.
+    let card_height = |dialog: Dialog| {
+        let (mut app, _seat) = seated(dialog);
+        app.harness()
+            .a11y_nodes()
+            .into_iter()
+            .filter(|(_, node)| node.role() == ui::accesskit::Role::Dialog)
+            .find_map(|(_, node)| node.bounds())
+            .expect("the sheet is a dialog")
+            .height()
+    };
+    let with_picture = card_height(dialog);
+    let without = card_height(
+        AgentQuestion {
+            page: None,
+            picture: None,
+            ..asked
+        }
+        .dialog("request-2"),
+    );
+    assert!(
+        with_picture > without + 100.0,
+        "the picture is drawn in the card: {with_picture} against {without}"
+    );
 }
 
 /// An action with more arguments than a review lists: the first six rows,

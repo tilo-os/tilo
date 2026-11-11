@@ -597,7 +597,7 @@ fn published_holds(page: &CataloguePage) -> Vec<Held> {
                     .iter()
                     .find(|param| param.name == name)
                     .and_then(|param| param.choices.first())
-                    .map(|choice| choice.to_string())
+                    .map(ToString::to_string)
             };
             Some(Held {
                 id: stated("id")?.parse().ok()?,
@@ -873,11 +873,20 @@ mod tests {
         );
         if let Some(held) = held {
             spec = spec
-                .with_bound(vec![(
-                    "id".to_owned(),
-                    serde_json::Value::String(held.to_string()),
-                )])
-                .stating_bound("id", "The held request's id");
+                .with_bound(vec![
+                    ("id".to_owned(), serde_json::Value::String(held.to_string())),
+                    ("page".to_owned(), "https://orders.example".into()),
+                    ("kind".to_owned(), "submit".into()),
+                    ("method".to_owned(), "POST".into()),
+                    ("destination".to_owned(), "https://orders.example".into()),
+                    ("picture".to_owned(), "tilo.content:5f2b".into()),
+                ])
+                .stating_bound("id", "The held request's id")
+                .stating_bound("page", "The page it leaves from")
+                .stating_bound("kind", "What the page does")
+                .stating_bound("method", "The method it leaves with")
+                .stating_bound("destination", "Where it goes")
+                .stating_bound("picture", "The filled page, as content");
         }
         page.actions.push(spec);
         let action = tilo_actions::door::survey(&[page]).into_iter().next()?;
@@ -912,6 +921,20 @@ mod tests {
             "the person is told what leaves: {}",
             held[0].describing
         );
+        assert_eq!(
+            held[0].facts,
+            [
+                ("page".to_owned(), "https://orders.example".to_owned()),
+                ("kind".to_owned(), "submit".to_owned()),
+                ("method".to_owned(), "POST".to_owned()),
+                (
+                    "destination".to_owned(),
+                    "https://orders.example".to_owned()
+                ),
+                ("picture".to_owned(), "tilo.content:5f2b".to_owned()),
+            ],
+            "and every fact the window states about it"
+        );
     }
 
     /// The invocation reported for a hold names the window, the action and
@@ -920,7 +943,13 @@ mod tests {
     /// and needs nobody's word.
     #[test]
     fn a_reported_hold_names_the_one_request_it_answers() {
-        let request = answer(7, 42, "POST https://orders.example", &[], SEND_HELD);
+        let request = answer(
+            7,
+            42,
+            "POST https://orders.example",
+            &[("method".to_owned(), "POST".to_owned())],
+            SEND_HELD,
+        );
         assert_eq!(request.target.provider, "42");
         assert_eq!(request.target.address.resource, PAGE_RESOURCE);
         assert_eq!(request.target.address.action, SEND_HELD);
@@ -935,6 +964,11 @@ mod tests {
                 .and_then(|context| context.purpose.clone()),
             Some("POST https://orders.example".to_owned()),
             "the person is told what leaves"
+        );
+        assert_eq!(
+            tilo_actions::remote::browser::departure_facts(request.context.as_ref()),
+            [("method".to_owned(), "POST".to_owned())],
+            "and what the window stated about the page it leaves from"
         );
         let kept = keep(request);
         assert_eq!(kept.target.address.action, KEEP_HELD);

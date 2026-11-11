@@ -276,21 +276,23 @@ impl PageDeparture {
     /// departure that names no destination, reads as what it is.
     #[must_use]
     pub fn doing(&self) -> String {
-        let doing = match self.kind.as_str() {
-            "submit" => "send the form",
-            "navigate" => "leave for",
-            "request" => "send a request",
-            "download" => "download from",
-            "payment" => "take a payment to",
-            _ => "send a request",
+        let mut text = match self.kind.as_str() {
+            "submit" => "send the form".to_owned(),
+            "navigate" => "leave for".to_owned(),
+            "download" => "download from".to_owned(),
+            "payment" => "take a payment to".to_owned(),
+            // A request, and whatever a newer window names that this build
+            // does not know: it is a request either way.
+            _ => "send a request".to_owned(),
         };
-        let mut text = if self.destination.is_empty() {
-            doing.to_owned()
-        } else {
-            format!("{doing} to {}", self.destination)
-        };
+        if !self.destination.is_empty() {
+            text.push_str(" to ");
+            text.push_str(&self.destination);
+        }
         if !self.method.is_empty() {
-            text.push_str(&format!(" ({})", self.method));
+            text.push_str(" (");
+            text.push_str(&self.method);
+            text.push(')');
         }
         text
     }
@@ -428,5 +430,90 @@ mod tests {
         let mut stranger = signed;
         stranger.user_public_key = SigningKey::from_bytes(&[8; 32]).verifying_key().to_bytes();
         assert!(stranger.verify(now).is_err(), "and the root");
+    }
+
+    /// A departure reads as what the page is about to do, and a question that
+    /// names one says where it leaves from.
+    #[test]
+    fn a_departure_says_what_leaves_where_and_how() {
+        let departure = PageDeparture {
+            page: "https://consulate.example".into(),
+            kind: "submit".into(),
+            method: "POST".into(),
+            destination: "https://consulate.example".into(),
+            picture: Some("tilo.content:5f2b".into()),
+        };
+        assert_eq!(
+            departure.doing(),
+            "send the form to https://consulate.example (POST)",
+            "what leaves, where to, and how"
+        );
+        let question = PendingConfirmation {
+            action_label: departure.doing(),
+            page: Some(departure.clone()),
+            ..PendingConfirmation::default()
+        };
+        assert_eq!(
+            question.page_origin().as_deref(),
+            Some("https://consulate.example")
+        );
+        // A window that named no page of its own leaves from where it goes.
+        let elsewhere = PageDeparture {
+            page: String::new(),
+            ..departure
+        };
+        let question = PendingConfirmation {
+            page: Some(elsewhere),
+            ..question
+        };
+        assert_eq!(
+            question.page_origin().as_deref(),
+            Some("https://consulate.example")
+        );
+        assert_eq!(
+            PageDeparture::default().doing(),
+            "send a request",
+            "a departure this build knows nothing else of is still a request"
+        );
+    }
+
+    /// A question from a host that predates the page a departure leaves from
+    /// reads as one about no page, and one that names a page is read back as
+    /// it was written.
+    #[test]
+    fn a_question_reads_the_page_it_names_and_one_that_names_none() {
+        let older: PendingConfirmation = serde_json::from_value(serde_json::json!({
+            "id": serde_json::json!(vec![0u8; 32]),
+            "agent_id": "agent",
+            "agent_label": "Jane Doe's agent",
+            "run": "",
+            "action_label": "Send the form",
+            "resource_label": "browser.page",
+            "arguments": [],
+            "risk": "outside",
+            "kind": "",
+            "undoable": false,
+            "room": "ws",
+            "expires_at_ns": 7,
+        }))
+        .expect("a question without a page is one");
+        assert_eq!(older.page, None);
+        assert_eq!(older.page_origin(), None);
+
+        let departure = PageDeparture {
+            page: "https://visa.example".into(),
+            kind: "submit".into(),
+            method: "POST".into(),
+            destination: "https://visa.example".into(),
+            picture: None,
+        };
+        let written = serde_json::to_value(PendingConfirmation {
+            page: Some(departure.clone()),
+            ..older
+        })
+        .expect("the question encodes");
+        assert_eq!(written["page"]["method"], "POST");
+        let read: PendingConfirmation = serde_json::from_value(written).expect("and reads back");
+        assert_eq!(read.page, Some(departure));
     }
 }

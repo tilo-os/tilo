@@ -385,6 +385,22 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
         "the person is told where it goes: {}",
         send.type_mut().label
     );
+    // The departure itself is stated beside the id, so a host holding this
+    // window in a VM of the person's asks them what leaves, not a name for it.
+    let stated = |name: &str| {
+        send.params()
+            .iter()
+            .find(|param| param.name == name)
+            .and_then(|param| param.choices.first())
+            .map(ToString::to_string)
+    };
+    assert_eq!(stated("page").as_deref(), Some("https://shop.example"));
+    assert_eq!(stated("kind").as_deref(), Some("request"));
+    assert_eq!(stated("method").as_deref(), Some("POST"));
+    assert_eq!(
+        stated("destination").as_deref(),
+        Some("https://orders.example")
+    );
     let encoded = send
         .build_json(serde_json::json!({"id": "4"}).as_object().expect("an id"))
         .expect("the answer names the held request");
@@ -393,6 +409,43 @@ fn a_request_the_page_sends_on_its_own_is_published_and_answered() {
         .admit(answer, effect_operation(&encoded.payload))
         .expect("the answer is accepted");
     assert_eq!(held_answers(&engine), vec![(4, true)]);
+}
+
+/// A hold whose engine painted the filled page publishes that picture by its
+/// content address, so the person asked about it is shown what they allow.
+#[test]
+fn a_held_departure_names_the_picture_of_the_filled_page() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    let content = ui::content::ContentStore::memory();
+    widget.attach_content(content.clone());
+    let mut request = held_submit(4);
+    request.capture = Some(Arc::new(
+        ui::png::encode_rgba8(4, 4, &[200, 60, 60, 255].repeat(16)).expect("a png"),
+    ));
+    engine.hold(request);
+    widget.sync(&doc, &root);
+    let send = page_resource(&widget)
+        .actions
+        .into_iter()
+        .find(|action| action.id == "send-held-request")
+        .expect("the submission waits on the person");
+    let picture = send
+        .params()
+        .iter()
+        .find(|param| param.name == "picture")
+        .and_then(|param| param.choices.first())
+        .map(ToString::to_string)
+        .expect("the question names the picture of the filled page");
+    let hash = ui::tilo_actions::content_hash(&picture)
+        .expect("the picture is content, named by its hash");
+    let kept = content
+        .read(hash)
+        .expect("and kept where the person reads it");
+    assert!(
+        kept.starts_with(b"\x89PNG"),
+        "the bytes the window kept are the page's picture"
+    );
 }
 
 #[test]

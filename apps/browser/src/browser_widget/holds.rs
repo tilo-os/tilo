@@ -253,15 +253,6 @@ impl BrowserWidget {
         origin_of(&self.current_uri)
     }
 
-    /// `id`'s held request, as the person's question carries its departure:
-    /// the page it leaves from, what it does, its method and destination.
-    pub(crate) fn held_facts(&self, id: u32) -> Option<[(&'static str, String); 4]> {
-        self.holds
-            .waiting()
-            .find(|held| held.request.id == id)
-            .map(Held::facts)
-    }
-
     /// Send one held request on its way (`allow`) or drop it, and answer the
     /// invocation that waited for the release once the engine says it is over.
     pub(crate) fn answer_hold(

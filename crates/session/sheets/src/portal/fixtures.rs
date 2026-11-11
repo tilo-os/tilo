@@ -370,6 +370,12 @@ fn visa_question(run: &str, handle: &str) -> Dialog {
 /// The filled page the visa question shows, kept in a store of this
 /// process's own and named by its content address: a screenshot of the sheet
 /// draws a picture of a form the way a person's device draws the host's.
+#[allow(
+    clippy::arithmetic_side_effects,
+    clippy::indexing_slicing,
+    reason = "a capture fixture lays a fixed-sized form out in small, bounded pixel math"
+)]
+#[cfg(not(target_arch = "wasm32"))]
 pub(super) fn lend_filled_form() -> Option<String> {
     const WIDTH: u32 = 480;
     const HEIGHT: u32 = 270;
@@ -398,4 +404,12 @@ pub(super) fn lend_filled_form() -> Option<String> {
     let hash = store.put(&png).ok()?;
     ui::pictures::lend_content(Some(store));
     ui::tilo_actions::content_resource(&hash)
+}
+
+/// A page reads its pictures from its host, and a capture of this sheet is
+/// taken where the process keeps content: on a page there is no store to keep
+/// the fixture's own picture in, so the sheet draws none.
+#[cfg(target_arch = "wasm32")]
+pub(super) fn lend_filled_form() -> Option<String> {
+    None
 }
