@@ -95,6 +95,13 @@ pub fn serve<A: ResourceApp>() -> Option<i32> {
 
 /// [`serve`] once it is known to be asked: the document in, the entries out.
 fn ask<A: ResourceApp>() -> Result<(), String> {
+    // What the app's window reads its words in: an entry that says something in the person's
+    // language says it in that one, as the window's own would ("Draft: …").
+    if let Some(catalog) = A::catalog() {
+        catalog.ensure();
+    } else {
+        ui_core::i18n::I18nManager::register_widget_messages();
+    }
     let mut bytes = Vec::new();
     std::io::stdin()
         .lock()

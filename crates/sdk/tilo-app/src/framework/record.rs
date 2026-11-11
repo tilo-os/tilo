@@ -509,9 +509,15 @@ impl<'a> Records<'a> {
         self
     }
 
-    /// The app's record of `P` ([`RecordEnv::person`](super::RecordEnv::person)).
+    /// The app's own record of `P` ([`RecordEnv::person`](super::RecordEnv::person)): one per
+    /// kind in the workspace it is open in, each member's own there, opened with the window and
+    /// declared where the app declares its records, so a host that reads it without the window
+    /// ([`super::record_index`]) reads it by its kind.
     pub fn person<P: Resource>(&mut self) -> &mut Self {
         let Some(storage) = self.storage else {
+            // Declared, not opened: a host that reads the record without the
+            // window ([`super::record_index`]) reads it by its kind.
+            self.chains.push(tilo_resource::ResourceKind::of::<P>());
             return self;
         };
         let _ = storage.person::<P>();

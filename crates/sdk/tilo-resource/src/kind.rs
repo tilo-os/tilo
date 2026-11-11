@@ -39,6 +39,7 @@ use std::any::Any;
 use tilo_actions::{ActionRegistry, EncodedAction};
 
 use crate::model::{Doc, ModelError};
+use crate::reader::Demand;
 use crate::resource::{self, Place, Resource, SearchEntry};
 
 /// One resource type with its type erased: what [`Resource`] offers, reached
@@ -51,6 +52,9 @@ pub struct ResourceKind {
     app: Option<(&'static str, &'static str)>,
     version: u32,
     read: fn(&Doc) -> Result<Box<dyn Any>, ModelError>,
+    /// [`Self::read`] with what the resource's search entries quote read too
+    /// ([`Resource::search_demand`]).
+    read_for_search: fn(&Doc) -> Result<Box<dyn Any>, ModelError>,
     name: fn(&dyn Any) -> Option<String>,
     publish: fn(&str, &str, &dyn Any) -> Option<tilo_actions::ResourceSpec>,
     search: fn(&dyn Any) -> Option<Vec<SearchEntry>>,
@@ -181,6 +185,15 @@ fn read<R: Resource>(doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
     R::read(doc).map(|state| Box::new(state) as Box<dyn Any>)
 }
 
+/// [`read`] as a reader of the resource reads it when it reads nothing of it yet: its state, and
+/// the parts [`Resource::load`] reads for a demand that asks for none. What search derives says
+/// what a record holds, so it reads the record the way a window's reader does.
+fn read_for_search<R: Resource>(doc: &Doc) -> Result<Box<dyn Any>, ModelError> {
+    let mut state = R::read(doc)?;
+    R::load(&mut state, doc, &Demand::none())?;
+    Ok(Box::new(state) as Box<dyn Any>)
+}
+
 fn resource_label<R: Resource>(state: &dyn Any) -> Option<String> {
     state.downcast_ref::<R::State>().map(|_| R::label())
 }
@@ -289,6 +302,7 @@ impl ResourceKind {
             app: Some((R::APP_ID, R::LABEL)),
             version: R::VERSION,
             read: read::<R>,
+            read_for_search: read_for_search::<R>,
             name: resource_label::<R>,
             publish: publish::<R>,
             search: search::<R>,
@@ -330,6 +344,7 @@ impl ResourceKind {
             app: Some((app, label)),
             version: 0,
             read: unavailable,
+            read_for_search: unavailable,
             name: no_name,
             publish: no_publish,
             search: no_search,
@@ -564,7 +579,7 @@ impl ResourceKind {
     /// # Errors
     /// Returns [`ModelError`] when the document does not hold this resource.
     pub fn search(&self, doc: &Doc) -> Result<Vec<SearchEntry>, ModelError> {
-        let state = self.read(doc)?;
+        let state = (self.read_for_search)(doc)?;
         (self.search)(state.as_ref())
             .ok_or_else(|| ModelError::invalid(format!("{} state is another type", self.kind)))
     }

@@ -217,6 +217,10 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the workspace's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
+        // What the person is writing and has not sent: their own record in
+        // the workspace, so a window that shows Chat and a device that only
+        // reads its records find the drafts alike.
+        records.person::<crate::drafts::ChatDrafts>();
         // The workspace's emoji and its agents are Chat's: every app of the
         // workspace opens them, and their changes are decided against Chat's
         // surface.
