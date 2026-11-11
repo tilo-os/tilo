@@ -2960,13 +2960,17 @@ id_token = ["registry.tilo.so"]
 [[check]]
 name = "image-rpms-{arch}"
 run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms/{arch}"
-needs = ["os-assets", "rpm-package-set"]
+needs = ["os-assets", "rpm-package-set", "signing-tools"]
 optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 # No Git: the snapshot is dated by when it was resolved (rpms-build.sh), never by the commit, so
 # its key is the package set's and every OS layer above it is reused across commits that keep it.
+# It is not served from the cache either way — the job asks the registry and, unpublished, Fedora —
+# but once this package set is published the job verifies and copies the published snapshot (about
+# a minute) instead of resolving Fedora again, so an image rebuild after a code change does not pay
+# a resolution.
 outputs = ["/target/publish/rpms/{arch}/image.oci.tar", "/target/publish/rpms/{arch}/digest", "/target/publish/rpms/{arch}/epoch"]
 timeout_secs = 10800
 default = false
