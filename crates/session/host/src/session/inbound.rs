@@ -205,10 +205,7 @@ impl Task {
                 // content: it is kept for deciding, and what waited for it is
                 // decided at the top of the session loop.
                 let device = self.config.cert.device_public_key;
-                match self
-                    .surface_wants
-                    .piece(&device, frame, tilo_clock::unix_now_ms())
-                {
+                match self.surface_wants.piece(&device, frame, now) {
                     Some(arrived) => {
                         self.surfaces_arrived |=
                             crate::surfaces::keep(&arrived.hash, arrived.bytes);
