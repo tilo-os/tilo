@@ -244,11 +244,9 @@ fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
 }
 
 /// The change marks the rows of the window's lists draw, by the row they stand in.
-fn row_marks(
-    rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
-) -> Vec<tilo_ui_host::UiNode> {
+fn row_marks(rows: &[(String, tilo_ui_host::UiNode)]) -> Vec<tilo_ui_host::UiNode> {
     let mut out = Vec::new();
-    for row in rows.values() {
+    for (_, row) in rows {
         let mut marks = Vec::new();
         nodes(row, "ui.ChangeMark", &mut marks);
         out.extend(marks.into_iter().cloned());
@@ -1286,7 +1284,7 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
         // A tree's rows are built as the window shows them, so a note's menu stands in the row
         // the window built for it rather than in the tree the app sent.
         let mut labels = menu_labels(&tree);
-        for row in staged.rows().values() {
+        for (_, row) in &staged.rows() {
             labels.extend(menu_labels(row));
         }
         assert!(
@@ -2113,5 +2111,71 @@ fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() 
         band == 0 && held == measured,
         "the app's header row is the window's bar at every size: {band} with the window's own \
          bar, {held} of {measured} with the app's row as the bar"
+    );
+}
+
+/// What a row of a list says its item is: the title the row's own tree carries.
+fn row_title(node: &tilo_ui_host::UiNode) -> Option<String> {
+    if let Some(tilo_render_protocol::patch::Value::Text(title)) = node.props.get("title") {
+        return Some(title.clone());
+    }
+    node.children.iter().find_map(row_title)
+}
+
+/// A page the check stages over a list opens a row the list itself shows first, and the same
+/// row in every run: the list's own order, never the order a hash of the row keys happens to
+/// give. The check stages a scenario once at the smallest window and reads every size off that
+/// one window, so one row serves every size: shots of two runs are the same picture, and a
+/// finding that comes and goes is a finding about the app.
+#[test]
+fn a_list_opens_the_page_of_its_first_row_in_every_run() {
+    tilo_ui_host::i18n::ensure();
+    let packages = tasks_packages();
+    let task = packages
+        .0
+        .iter()
+        .find(|package| package.meta.app == "so.tilo.lang.tasks")
+        .and_then(|package| package.meta.types.iter().find(|ty| ty.name == "Task"))
+        .map(|ty| ty.id.clone())
+        .expect("the tasks app declares its task");
+    let first = super::layouts().first().copied().expect("a layout");
+    let size = (first.size.width, first.size.height);
+    let mut opened = Vec::new();
+    for run in 0..4 {
+        let mut staged = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "a busy week",
+            size,
+            first.theme(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        // The rows as the window lists them, and the page the run opens off them: the row it
+        // opens is the first one, by the title the row shows rather than by the id a staging
+        // gives its records.
+        let rows = staged.rows();
+        let named = staged.resources();
+        let picked = super::listed_of(&mut staged, &task).expect("a task to open a page of");
+        let at = rows
+            .iter()
+            .position(|(key, _)| key.ends_with(&picked.id))
+            .unwrap_or_else(|| panic!("the page opens a row the list shows, run {run}"));
+        assert_eq!(
+            at, 0,
+            "the page opens the row the list shows first, run {run}"
+        );
+        let listed = super::row_items(&rows, &named);
+        assert_eq!(
+            listed.first(),
+            Some(&picked),
+            "the row is the first of its type the list shows, run {run}"
+        );
+        opened.push(row_title(&rows[at].1).expect("the row says what its task is called"));
+    }
+    assert!(
+        opened.windows(2).all(|pair| pair[0] == pair[1]),
+        "every run opens the same task: {opened:?}"
     );
 }

@@ -1300,13 +1300,14 @@ fn on_layer(scenario: &str, root: Option<&str>) -> String {
 }
 
 /// The resources the rows of the window's lists show: a row is keyed by the view that draws it,
-/// which ends in the item it draws.
+/// which ends in the item it draws. The rows come as the window lists them, so the first of a
+/// type is the first row of that type a person meets.
 fn row_items(
-    rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
+    rows: &[(String, tilo_ui_host::UiNode)],
     resources: &[ResourceRef],
 ) -> Vec<ResourceRef> {
-    rows.keys()
-        .filter_map(|key| {
+    rows.iter()
+        .filter_map(|(key, _)| {
             resources
                 .iter()
                 .find(|resource| key.ends_with(&resource.id))
@@ -1323,6 +1324,15 @@ fn resource_of(listed: &[ResourceRef], named: &[ResourceRef], ty: &str) -> Optio
         .find(|resource| resource.ty == ty)
         .cloned()
         .or_else(|| named.iter().find(|resource| resource.ty == ty).cloned())
+}
+
+/// The resource [`resource_of`] picks for `ty` off `staged`'s window: the first row of that type
+/// the window's lists show, or else the first the window names. The same row in every process
+/// and at every size, so a page laid out here is the page another run lays out.
+fn listed_of(staged: &mut stage::Staged, ty: &str) -> Option<ResourceRef> {
+    let rows = staged.rows();
+    let named = staged.resources();
+    resource_of(&row_items(&rows, &named), &named, ty)
 }
 
 /// The views of `meta` the system shows on surfaces of its own: each action's proposal view,
@@ -1650,9 +1660,6 @@ impl AppCheck<'_> {
         // A page a person meets from a list is one of that list's own rows, so a view staged over
         // the list opens a resource the list holds where it holds one, and a resource of a type
         // the list does not show where it holds none.
-        let rows = staged.rows();
-        let named = staged.resources();
-        let listed = row_items(&rows, &named);
         for default in &self.meta.default_views {
             let Some(view) = self.meta.views.iter().find(|v| v.id == default.view) else {
                 continue;
@@ -1663,7 +1670,7 @@ impl AppCheck<'_> {
             {
                 continue;
             }
-            let Some(resource) = resource_of(&listed, &named, &default.ty) else {
+            let Some(resource) = listed_of(staged, &default.ty) else {
                 continue;
             };
             staged.open(resource.clone());
@@ -1690,7 +1697,7 @@ impl AppCheck<'_> {
             let Some(ty) = self.meta.types.iter().find(|t| t.name == param.ty) else {
                 continue;
             };
-            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
+            let Some(resource) = listed_of(staged, &ty.id) else {
                 continue;
             };
             // The window shows the item first, as a person's path does (a list's choice, a
@@ -1707,7 +1714,7 @@ impl AppCheck<'_> {
             if shows(&self.shown, &self.meta.app, &view.name) {
                 continue;
             }
-            let Some(resource) = resource_of(&listed, &named, &ty.id) else {
+            let Some(resource) = listed_of(staged, &ty.id) else {
                 continue;
             };
             // The window shows the item first, as a person's path does (a list's choice, a
@@ -2160,7 +2167,7 @@ impl AppCheck<'_> {
             declared.read(&composed);
         }
         let rows = staged.rows();
-        for row in rows.values() {
+        for (_, row) in &rows {
             self.note_shown_row(row);
             declared.read(row);
         }
@@ -2252,7 +2259,12 @@ impl AppCheck<'_> {
         for problem in &mut problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
-            if let Some(row) = problem.id.as_ref().and_then(|id| rows.get(id)) {
+            if let Some(row) = problem
+                .id
+                .as_ref()
+                .and_then(|id| rows.iter().find(|(key, _)| key == id))
+                .map(|(_, row)| row)
+            {
                 let mut inner = Vec::new();
                 row_keys(row, &mut inner);
                 inner.reverse();

@@ -649,19 +649,33 @@ impl Staged {
         self.window()?.composed().cloned()
     }
 
-    /// The trees of the rows the window's lists show, by row key: a list draws each row as one
-    /// widget keyed by the row, from the row view's nodes.
-    pub fn rows(&mut self) -> std::collections::HashMap<String, tilo_ui_host::UiNode> {
-        let mut out = std::collections::HashMap::new();
+    /// The trees of the rows the window's lists show, each with its key, in the order the window
+    /// lists them: the lists of the window's own lane first and the lists of every other lane
+    /// after them, each lane's by key, and each list's rows as its own model orders them. A row
+    /// taken off this is the row a person meets first, and the same row in every process and at
+    /// every size.
+    pub fn rows(&mut self) -> Vec<(String, tilo_ui_host::UiNode)> {
         let Some(window) = self.window() else {
-            return out;
+            return Vec::new();
         };
-        for list in window.lists() {
+        let mut lists: Vec<(bool, String)> = window
+            .lists()
+            .into_iter()
+            .map(|list| {
+                let elsewhere = window
+                    .rows_of(&list)
+                    .is_some_and(|rows| rows.borrow().lane() != tilo_ui_host::Lane::Root);
+                (elsewhere, list)
+            })
+            .collect();
+        lists.sort();
+        let mut out = Vec::new();
+        for (_, list) in lists {
             if let Some(rows) = window.rows_of(&list) {
                 let rows = rows.borrow();
-                for key in rows.rendered() {
+                for key in rows.in_order() {
                     if let Some(row) = rows.row(&key) {
-                        out.insert(key, row.clone());
+                        out.push((key, row.clone()));
                     }
                 }
             }

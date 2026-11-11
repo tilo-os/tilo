@@ -12,7 +12,7 @@
 //! one adapter, as the list's item component (`ui.ListItem`).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::ops::Range;
 use std::rc::Rc;
 
@@ -264,6 +264,33 @@ impl RemoteRows {
         keys
     }
 
+    /// The lane of the window whose view holds this list.
+    #[must_use]
+    pub fn lane(&self) -> Lane {
+        self.lane
+    }
+
+    /// The keys of the rows the list holds, in the order it lists them: the model's own order,
+    /// which the list draws, and a row it holds outside that order (one of a range it no longer
+    /// shows) after them, by key, so the order is the same in every process and at every size.
+    #[must_use]
+    pub fn in_order(&self) -> Vec<String> {
+        let mut keys: Vec<String> = (0..RowSource::len(self))
+            .filter_map(|index| RowSource::key_at(self, index))
+            .filter(|key| self.rows.contains_key(key))
+            .collect();
+        let listed: BTreeSet<&str> = keys.iter().map(String::as_str).collect();
+        let mut rest: Vec<String> = self
+            .rows
+            .keys()
+            .filter(|key| !listed.contains(key.as_str()))
+            .cloned()
+            .collect();
+        rest.sort();
+        keys.extend(rest);
+        keys
+    }
+
     /// The rendered row `key`, as the app sent it.
     #[must_use]
     pub fn row(&self, key: &str) -> Option<&UiNode> {
@@ -457,6 +484,38 @@ mod tests {
             changes.last(),
             Some(ListModelChange::RowsMoved { from: 2, to: 1, .. })
         ));
+    }
+
+    /// The rows a list holds are read in the order the list lists them, which is its model's
+    /// order — the keys a range arrived in — and never the order a hash of them happens to
+    /// give: what is read first is the row a person meets first, in this process and the next.
+    #[test]
+    fn the_rows_are_read_in_the_order_the_list_lists_them() {
+        let mut rows = rows();
+        let shown = vec!["v/c".to_owned(), "v/a".to_owned(), "v/b".to_owned()];
+        let rendered = shown
+            .iter()
+            .map(|key| UiNode::empty(&kind("ListItem"), key))
+            .collect();
+        rows.rows(3, 0, shown.clone(), rendered);
+        assert_eq!(rows.in_order(), shown, "the model's order, key for key");
+        // A row the list holds outside the order it names now — a row of a range it no longer
+        // shows, kept until the app answers for the next — comes after the rows it lists, by
+        // key, so it never stands in front of the first row.
+        rows.rows(
+            3,
+            0,
+            Vec::new(),
+            vec![
+                UiNode::empty(&kind("ListItem"), "v/z"),
+                UiNode::empty(&kind("ListItem"), "v/y"),
+            ],
+        );
+        assert_eq!(
+            rows.in_order(),
+            ["v/c", "v/a", "v/b", "v/y", "v/z"],
+            "the held rows follow the listed ones"
+        );
     }
 
     /// A row whose bound control changed is the row the list reads again; a row whose controls
