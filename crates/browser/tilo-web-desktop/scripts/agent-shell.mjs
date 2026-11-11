@@ -686,6 +686,20 @@ const firstAction = (text, wanted, unwanted = /delete|remove|clear|reset/i) =>
  * or waiting for the person to confirm it) is `pending`, not `ok`. */
 const verdict = answer => answer.failed ? 'failed' : /^pending\b/i.test(answer.text) ? 'pending' : 'ok';
 
+/** What the agent learns of an action the host answered as pending: a host that took longer than
+ * its admission wait says so with the invocation's id, and the agent asks `tilo_status` with it
+ * until it says how it went, as the answer tells it to. */
+async function settled(agent, answer) {
+  const deadline = Date.now() + 120000;
+  while (verdict(answer) === 'pending' && Date.now() < deadline) {
+    const id = (answer.text.match(/^pending (\S+):/i) ?? [])[1];
+    if (!id) break;
+    await sleep(1000);
+    answer = await agent.call('tilo_status', {invocation_id: id});
+  }
+  return answer;
+}
+
 /**
  * What the agent does next, discovered from the workspace as an agent would:
  * its apps, then each app's own actions. Required: writing in the note the
@@ -1658,7 +1672,7 @@ try {
               await shot(tab, combo, 'following-mid-edit', {read: showing,
                 expect: [new RegExp(`^${(steps.noteTitle ?? 'launch notes').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')]});
             }
-            const answer = await sending;
+            const answer = await settled(agent, await sending);
             step.answer = answer;
             log(`${combo}: agent ${step.label} -> ${verdict(answer)} ${answer.text.slice(0, 300)}`);
             // The person sees each change land before the agent makes the next: the page draws it
