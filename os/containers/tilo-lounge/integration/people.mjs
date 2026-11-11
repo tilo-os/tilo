@@ -1255,7 +1255,7 @@ try {
          composer.bounds.x1 ?? composer.bounds.x + composer.bounds.width,
          composer.bounds.y1 ?? composer.bounds.y + composer.bounds.height];
     await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
-    const textRow = (await namesOf(a.tab)).find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)/) ?? null;
+    const textRow = (await namesOf(a.tab)).find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)/.test(name)) ?? null;
     if (!textRow) failed('a right-click in a text field offers no text menu');
     report.contextMenu = textRow;
     console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
@@ -1264,7 +1264,12 @@ try {
     // Report a problem: the bar's own avatar, then the card's row.
     await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
     const reportRow = await choose(a.tab, /^Report a problem/);
-    if (!reportRow) failed('the profile card offers no Report a problem');
+    if (!reportRow) {
+      // The row is there once the page holds the Lounge's feedback channel:
+      // why it does not is in what the page said about feedback.
+      const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
+      failed(`the profile card offers no Report a problem: shown ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}; the page said of feedback: ${JSON.stringify(said)}`);
+    }
     // Picking what to report takes every event: nothing under the pointer
     // reacts to it, and the strip the desk shows stays where it was.
     await settle(a.tab, 2);
