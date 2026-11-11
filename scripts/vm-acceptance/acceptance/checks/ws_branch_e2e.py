@@ -756,7 +756,7 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
     ae.select_workspace(ctx, ws)
     if not app_rows(ctx, CHAT):
         open_by_id(ctx, CHAT)
-    rows = wait_until(lambda: chat_rows(ctx, "read") or None, 15, interval=1.0)
+    rows = wait_until(lambda: chat_rows(ctx, "read") or None, 30, interval=1.0)
     read = ae.invoke(ctx, rows[0]["provider"], rows[0]["id"], {}, name=f"chat-read-{label}") if rows else None
     listed = [r for r in ctx.vm.actions(text) if text in json.dumps(r)]
     shown = [t.get("name") for t in ctx.vm.targets() if text in str(t.get("name", ""))]
@@ -802,7 +802,10 @@ def post_chat(ctx, ws: dict, text: str) -> None:
         return
     # Chat offers a person no post of its own until the channel holds a message: they write in the
     # channel's composer and press Enter.
-    if not wait_until(lambda: any(t.get("name") == COMPOSER for t in ctx.vm.targets()) or None, 30, interval=1.0):
+    # Chat draws its own window, in software on a box without a GPU: its first frame, and the
+    # composer in it, can take a minute and more.
+    if not wait_until(lambda: any(t.get("name") == COMPOSER for t in ctx.vm.targets()) or None, TERMINAL_S,
+                      interval=2.0):
         said = ctx.vm.exec(
             f"sed 's/\\x1b\\[[0-9;]*m//g' \"{core.SESSION_LOG}\" | grep -ai 'chat' "
             "| grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 40 | cut -c1-300; "
@@ -825,7 +828,8 @@ def post_chat(ctx, ws: dict, text: str) -> None:
         said = crash + "\n" + said
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; it offers "
-                           f"{offered(ctx, CHAT)}; Chat's crash: {crash[-2000:]}; its drawing: {gpu[-2500:]}")
+                           f"{offered(ctx, CHAT)}; Chat's crash: {crash[-2000:]}; its drawing: {gpu[-2500:]}; "
+                           f"{app_evidence(ctx, CHAT)}")
     ae.press(ctx, COMPOSER)
     ctx.vm.input("type", text)
     ctx.vm.key("Return")
