@@ -62,3 +62,97 @@ fn a_text_answer_after_a_tool_call_ends_the_task_with_its_words() {
         "the words after the step are the reply"
     );
 }
+
+/// One provider-neutral turn cut off at the model's output limit: the words
+/// it wrote before it stopped, and `output_limit` as its stop reason.
+fn cut_off_turn(text: &str) -> Vec<TurnEvent> {
+    let response = serde_json::json!({
+        "message": {"role": "assistant", "content": [{"type": "text", "text": text}]},
+        "stop_reason": "output_limit"
+    });
+    vec![
+        TurnEvent::Neutral(agent_provider_config::protocol::StreamEvent::TextDelta {
+            text: text.into(),
+        }),
+        TurnEvent::Neutral(agent_provider_config::protocol::StreamEvent::Finished {
+            response: serde_json::from_value(response.clone()).unwrap(),
+        }),
+        TurnEvent::Finished(Ok(response.to_string())),
+    ]
+}
+
+/// An answer cut off at the model's output limit is continued, not failed:
+/// the model writes the first half, stops at its limit, and the loop asks it
+/// to go on from where it stopped. The finished turn is the answer the two
+/// halves join to, and the run ends complete.
+#[test]
+fn an_answer_cut_off_at_the_output_limit_is_continued_not_failed() {
+    let mut f = fixture(
+        "what is on my task list?",
+        World {
+            chat: Some("asked".into()),
+            ..World::default()
+        },
+        vec![
+            cut_off_turn("You have three things on your task list: "),
+            said_turn("bins, milk, and the boiler."),
+        ],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(bodies.len(), 2, "the cut-off answer was asked to continue");
+    let resumed = bodies[1].to_string();
+    assert!(
+        resumed.contains("You have three things on your task list: "),
+        "the continuation carries what the model already wrote: {resumed}"
+    );
+    assert!(
+        resumed.contains("cut off at the model's output limit"),
+        "and says why it is being asked to go on: {resumed}"
+    );
+    assert_eq!(
+        terminal(&f.sent.borrow()),
+        runtime_collab::TaskRunUpdate::Succeeded {
+            message: "You have three things on your task list: bins, milk, and the boiler.".into(),
+        },
+        "the joined answer ends the turn complete, never as a failure"
+    );
+    let recorded = recorded(&f.sent.borrow(), "record-work");
+    let last = recorded.last().expect("the turn was recorded");
+    assert_eq!(last["work"]["state"], "provider_complete");
+    assert_eq!(
+        last["say"],
+        serde_json::json!("You have three things on your task list: bins, milk, and the boiler.")
+    );
+}
+
+/// The output budget is the selected model's own declared limit, never a
+/// constant of the loop: a model whose list declares 30000 tokens one answer
+/// is asked for exactly that.
+#[test]
+fn the_requested_output_budget_is_the_models_declared_limit() {
+    let mut f = fixture(
+        "what is on my task list?",
+        World {
+            chat: Some("asked".into()),
+            ..World::default()
+        },
+        vec![said_turn("Nothing.")],
+    );
+    f.session.chooser = crate::model::Chooser::scripted_model(
+        Duration::from_secs(5),
+        agent_provider_config::ModelDescriptor {
+            max_output_tokens: Some(30_000),
+            context_window: Some(131_072),
+            ..agent_provider_config::ModelDescriptor::new("declares-its-limit")
+        },
+        Arc::new(Scripted(f.script.clone())),
+    );
+    f.session.run_task(&f.run).unwrap();
+    let bodies = f.script.bodies.lock().unwrap().clone();
+    assert_eq!(
+        bodies.last().expect("the model was asked")["max_output_tokens"],
+        serde_json::json!(30_000),
+        "the model's own declared output limit is what the agent asks for"
+    );
+}

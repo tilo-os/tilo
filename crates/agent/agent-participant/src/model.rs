@@ -241,6 +241,9 @@ pub trait PlanModel: Send {
 pub struct GatewayModel {
     turns: GatewayTurns,
     sees: bool,
+    /// The most tokens one answer may take, from the selected model's own
+    /// declared limit.
+    output_tokens: Option<u32>,
     timeout: std::time::Duration,
 }
 
@@ -253,6 +256,7 @@ impl GatewayModel {
     ) -> Self {
         Self {
             sees: selection.model.vision,
+            output_tokens: Some(selection.model.output_tokens()),
             turns: GatewayTurns::new(selection),
             timeout,
         }
@@ -292,6 +296,7 @@ impl PlanModel for GatewayModel {
                 catalogue,
                 most_steps,
                 sees,
+                output_tokens: self.output_tokens,
                 timeout: self.timeout,
             },
             read,

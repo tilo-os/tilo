@@ -114,6 +114,11 @@ pub(super) const DEPRECATED_TAG: &str = "tilo.deprecated:";
 /// model that corrects itself takes one of them; one that keeps calling the
 /// same way ends the task rather than looping.
 const MOST_MALFORMED_TURNS: usize = 2;
+/// How many times in a row a turn cut off at the model's output limit is
+/// continued from where it stopped before the run fails. Reasoning models
+/// spend part of their answer's budget thinking; an answer that keeps being
+/// cut off is the model's own, not the loop's to retry forever.
+const MOST_CONTINUATIONS: usize = 4;
 
 /// The error results answering `body`, the model's latest turn, when the loop
 /// refused its calls for their shape or arguments rather than for failing to
@@ -259,7 +264,12 @@ impl ActiveTurn {
         match event {
             TurnEvent::Neutral(event) => {
                 self.presentation.apply(&event);
-                if let Some(error) = &self.presentation.error {
+                // A cut-off answer is not a failed turn here: the final body
+                // still arrives, and the loop continues it from where it
+                // stopped. Every other failure ends the turn now.
+                if let Some(error) = &self.presentation.error
+                    && error.kind != agent_provider_config::protocol::ErrorKind::Truncated
+                {
                     self.finished = Some(Err(self.retained_failure(&Failure::model(error))));
                 }
             }
@@ -295,6 +305,14 @@ impl ActiveTurn {
     fn retained_failure(&self, failure: &Failure) -> Failure {
         failure.retained(&self.presentation.text, &self.presentation.reasoning)
     }
+}
+
+/// Whether `body` is a model turn the model itself cut off at its output
+/// limit: not a failed call, an answer that stopped early and is continued.
+fn is_output_limit(body: &str) -> bool {
+    serde_json::from_str::<agent_provider_config::protocol::ModelResponse>(body).is_ok_and(
+        |response| response.stop_reason == agent_provider_config::protocol::StopReason::OutputLimit,
+    )
 }
 
 /// The longest prefix of `text` within `max` bytes, cut on a character
@@ -395,6 +413,11 @@ pub(super) struct LoopState {
     /// bounded, so a model that keeps calling the same way ends the task
     /// rather than looping.
     malformed_turns: usize,
+    /// Continuations asked so far of answers the model cut off at its output
+    /// limit, in a row: a turn cut off is continued from where it stopped,
+    /// a bounded number of times, before the run fails with the clean
+    /// sentence. A turn that is not cut off resets it.
+    continuations: usize,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -585,6 +608,7 @@ impl LoopState {
             pictures: Vec::new(),
             programs: program_steps::ProgramWorld::default(),
             malformed_turns: 0,
+            continuations: 0,
         }
     }
 
@@ -1071,7 +1095,13 @@ impl Session {
             }
             Err(error) => return Ok(LoopEnd::Failed(Failure::said(error))),
         };
-        let mut context = compaction::Context::of(self.chooser.context_tokens());
+        // The answer's own room comes out of the context, so a model whose
+        // declared limit is small is compacted harder and one with a large
+        // limit is not made to overflow by its answer.
+        let mut context = compaction::Context::of_context(
+            self.chooser.context_tokens(),
+            self.chooser.output_tokens(),
+        );
         self.await_companions();
         let began = ui::time::now();
         self.chooser.begin_trace();
@@ -1140,6 +1170,9 @@ impl Session {
         } else {
             Conversation::new(protocol, &model, LOOP_SYSTEM, &first)
         };
+        if let Some(selection) = self.chooser.selection() {
+            conversation = conversation.budgeted_by(&selection.model);
+        }
         let mut turn = 0;
         loop {
             if state.turns.is_some_and(|turns| turn >= turns) {
@@ -1410,6 +1443,14 @@ impl Session {
                 active.ready.clear();
                 active.refused = None;
                 if let Some(Ok(body)) = &active.finished {
+                    if is_output_limit(body) {
+                        // A cut-off turn runs no call of its own: the loop
+                        // continues it from where it stopped below, never
+                        // dispatching a partial batch.
+                        active.completed = 0;
+                        validated = true;
+                        continue;
+                    }
                     match conversation.turn(body) {
                         Ok(turn) => {
                             active.completed = turn.calls.len();
@@ -1539,12 +1580,45 @@ impl Session {
             }
         };
         self.charge_turn(run, &body)?;
+        // A turn the model cut off at its output limit is not a failed plan:
+        // it is an answer that stopped early. Its text — what it wrote of the
+        // answer or of its calls — is kept, and the model is asked to go on
+        // from there, a bounded number of times. None of a cut-off turn's
+        // calls ran, so nothing is replayed.
+        if let Ok(response) =
+            serde_json::from_str::<agent_provider_config::protocol::ModelResponse>(&body)
+            && response.stop_reason == agent_provider_config::protocol::StopReason::OutputLimit
+        {
+            self.chooser
+                .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+            if state.continuations >= MOST_CONTINUATIONS {
+                // The model kept running into its output limit: the answer is
+                // the one a person already knows from any cut-off turn.
+                return Ok(Some(LoopEnd::Failed(Failure::model(
+                    &agent_provider_config::protocol::ModelError::new(
+                        agent_provider_config::protocol::ErrorKind::Truncated,
+                    ),
+                ))));
+            }
+            state.continuations += 1;
+            let written = crate::model::written_text(&response.message);
+            tracing::info!(
+                turn,
+                continuation = state.continuations,
+                written = written.len(),
+                "the model's answer was cut off at its output limit; continuing it"
+            );
+            conversation.continue_from(&written);
+            return Ok(None);
+        }
+        state.continuations = 0;
         let (assistant, calls, words) = match conversation.turn(&body) {
             Ok(crate::model::Turn {
                 assistant,
                 calls,
                 said,
             }) => {
+                conversation.continued();
                 // Debug capture (the launcher keeps the agent's stderr):
                 // each tool call with its arguments, truncated.
                 for call in &calls {
@@ -1558,6 +1632,10 @@ impl Session {
                 (assistant, calls, said)
             }
             Err(error) => {
+                // A turn that called tools right after an answer was cut off
+                // is not that answer's continuation: the joined text is the
+                // record, and the run carries on with a fresh answer.
+                conversation.continued();
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
                 if let Some(end) = state.finished_despite_failed_plan(&error) {

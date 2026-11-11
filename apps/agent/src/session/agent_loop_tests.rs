@@ -33,18 +33,25 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
     let mut f = fixture(
         "write hello",
         World::default(),
-        vec![vec![
-            TurnEvent::Neutral(StreamEvent::TextDelta {
-                text: "Partial answer".into(),
-            }),
-            TurnEvent::Neutral(StreamEvent::ReasoningDelta {
-                text: "Provider summary".into(),
-            }),
-            TurnEvent::Neutral(StreamEvent::Finished {
-                response: response.clone(),
-            }),
-            TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
-        ]],
+        // The model keeps running into its output limit: each turn is
+        // continued from where it stopped, a bounded number of times, and
+        // then the run fails with the clean sentence.
+        (0..=MOST_CONTINUATIONS)
+            .map(|_| {
+                vec![
+                    TurnEvent::Neutral(StreamEvent::TextDelta {
+                        text: "Partial answer".into(),
+                    }),
+                    TurnEvent::Neutral(StreamEvent::ReasoningDelta {
+                        text: "Provider summary".into(),
+                    }),
+                    TurnEvent::Neutral(StreamEvent::Finished {
+                        response: response.clone(),
+                    }),
+                    TurnEvent::Finished(Ok(serde_json::to_string(&response).unwrap())),
+                ]
+            })
+            .collect(),
     );
     f.session.chooser = Chooser::scripted(
         Duration::from_secs(5),
@@ -82,7 +89,9 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
     let final_snapshot = snapshots
         .last()
         .expect("production report carries typed output");
-    assert_eq!(final_snapshot.text, "Partial answer");
+    // Every turn of the model was cut off, so each one published its partial
+    // text as truncated; the person reads the same sentence as any failure.
+    assert!(final_snapshot.text.starts_with("Partial answer"));
     assert_eq!(final_snapshot.reasoning, "Provider summary");
     assert_eq!(
         final_snapshot.finish,
@@ -93,11 +102,17 @@ fn neutral_truncation_retains_output_without_dispatching_calls() {
             .unwrap()
             .contains("Do not write")
     );
-    assert!(
-        snapshots
-            .windows(2)
-            .all(|pair| pair[0].run == pair[1].run && pair[0].sequence < pair[1].sequence)
-    );
+    // Each turn is its own run of presentation, its sequence starting over;
+    // within one run the sequence only ever goes forward.
+    let mut last: std::collections::HashMap<&str, u64> = std::collections::HashMap::new();
+    for snapshot in &snapshots {
+        let previous = last.insert(snapshot.run.as_str(), snapshot.sequence);
+        assert!(
+            previous.is_none_or(|previous| previous < snapshot.sequence),
+            "a run's presentation sequence only goes forward: {}",
+            snapshot.run
+        );
+    }
 }
 
 #[test]
