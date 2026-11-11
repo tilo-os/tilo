@@ -1093,6 +1093,28 @@ impl Core {
         }
     }
 
+    /// The reference `target` names with its type filled in when it came by its id alone: the
+    /// record this runtime holds, else the reading another app published of it
+    /// ([`crate::foreign::Foreign::type_of`]). `None` for an address neither knows.
+    ///
+    /// `resource(id)` and an event a view carries (`drop(resource)`, what a drag other views
+    /// put down) read a resource by the address alone; both resolve it here, so one path names
+    /// the type however the resource reached this runtime.
+    pub(crate) fn resolve_ref(&self, target: &ResourceRef) -> Option<ResourceRef> {
+        let mut resolved = ResourceRef::clone(target);
+        if resolved.ty.is_empty() {
+            // A record this runtime holds, by the id it holds it by; a tilolang app's resource
+            // is held elsewhere, by the reading its app published of it, found below.
+            resolved.ty = self.stored_type(&resolved);
+        }
+        if resolved.ty.is_empty()
+            && let Some(ty) = self.foreign.borrow().type_of(&resolved.id_string())
+        {
+            resolved.ty = ty;
+        }
+        (!resolved.ty.is_empty()).then_some(resolved)
+    }
+
     /// `resource(id)`: the resource the store keeps under `id`, read as its own type; `.none`
     /// for text naming none this store holds. A place names what it shows by the id alone, so a
     /// shell reads that resource — its actions, its title — without knowing the type ahead, and
@@ -1102,19 +1124,9 @@ impl Core {
         if id.is_empty() {
             return self.ret_h(Value::none());
         }
-        let mut target = ResourceRef::parse_id(&id, String::new())
+        let target = ResourceRef::parse_id(&id, String::new())
             .ok_or_else(|| crate::engine::HostFail::Trap(format!("`{id}` is no resource id")))?;
-        if target.ty.is_empty() {
-            target.ty = self.stored_type(&target);
-        }
-        // Another app's resource is known here by the reading its app published of it, which
-        // names its type.
-        if target.ty.is_empty()
-            && let Some(ty) = self.foreign.borrow().type_of(&id)
-        {
-            target.ty = ty;
-        }
-        if target.ty.is_empty() {
+        let Some(target) = self.resolve_ref(&target) else {
             // Another app's resource whose reading has not come in yet: the view runs again
             // when a new one does.
             let key = crate::foreign::known_key();
@@ -1128,7 +1140,7 @@ impl Core {
             self.note_state_read(key, generation, &seen);
             // Gone, or not synced here yet: the place still stands, showing nothing.
             return self.ret_h(Value::none());
-        }
+        };
         let author = Some(self.module_of_frame()?);
         self.ret_h(Value::some(Value::Ref(RefValue {
             target: Rc::new(target),

@@ -46,7 +46,7 @@ use crate::publish::{COMMIT, HOST_RESOURCE};
 use crate::runtime::meta::{Meta, TypeMeta};
 use crate::runtime::{
     ActionRef, BindTarget, Binding, EditOutcome, InvokeOutcome, NameHost, OutsideSink, Patch,
-    Principal, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
+    Principal, RefValue, Resolution, ResourceRef, Suggestion, UiNode, Value, ViewInstance,
 };
 use crate::upgrade::Upgrade;
 use rows::ListRows;
@@ -1563,6 +1563,13 @@ impl Instance {
             return Ok(());
         };
         let value = value.and_then(wire::runtime_value);
+        // What a drag from another view carried reaches this view by its published address and
+        // nothing more (a chip dropped on a composer, a place's handle dropped on the canvas):
+        // its type is read here, from the record this workspace holds or the reading its app
+        // published, so the action the drop runs takes the resource it names. An address
+        // neither knows yet keeps what it arrived as, and an action taking it as any resource
+        // (`host.Resource`) still runs.
+        let value = value.map(|value| self.resolved(value));
         let wanting = view
             .borrow()
             .wanting_arguments(key, name, value.as_ref())
@@ -1586,6 +1593,20 @@ impl Instance {
             Ok(InvokeOutcome::Denied) => Err(Words::phrase("tilolang-ask-denied")),
             Err(error) => Err(Words::Plain(error.to_string())),
         }
+    }
+
+    /// `value` with every reference in it naming its type: a resource a drag from another view
+    /// carried reached this one by its published address, and its type is read from the
+    /// workspace's record, else from the reading its app published ([`Runtime::resolve_ref`]).
+    /// A resource that already names its type, and a value that holds none, is returned as it
+    /// is.
+    fn resolved(&self, value: Value) -> Value {
+        let Some(host) = self.host() else {
+            return value;
+        };
+        let resolve =
+            |target: &ResourceRef| -> Option<ResourceRef> { host.runtime().resolve_ref(target) };
+        resolved_value(value, &resolve)
     }
 
     /// Show the form of `aref`, which the control `key` of the view of `lane` ran and which
@@ -2650,6 +2671,48 @@ pub fn announced(binding: &Binding, field: impl FnOnce(&ResourceRef, &str) -> St
             target,
             field: name,
         } => field(target, name),
+    }
+}
+
+/// `value` with every reference in it resolved through `resolve`, which names the type a
+/// reference that arrived by its id alone belongs to: the resource a drop on a view carried,
+/// at every place a value holds one (a list a drop carries `[resource, at]`, a tuple). A
+/// reference already naming its type, and one `resolve` does not know, is left as it is, so a
+/// value never loses what it reached here with.
+fn resolved_value(value: Value, resolve: &dyn Fn(&ResourceRef) -> Option<ResourceRef>) -> Value {
+    match value {
+        Value::Ref(held) => {
+            // Only a reference that came by its id alone is read for its type: one that names it
+            // is what the view gave (and keeps its shared target), and one `resolve` does not
+            // know stays as it arrived, so what the event carried is never lost.
+            let Some(target) = held
+                .target
+                .ty
+                .is_empty()
+                .then(|| resolve(&held.target))
+                .flatten()
+            else {
+                return Value::Ref(held);
+            };
+            Value::Ref(RefValue {
+                target: Rc::new(target),
+                author: held.author,
+            })
+        }
+        Value::List(items) => Value::List(
+            items
+                .into_iter()
+                .map(|item| resolved_value(item, resolve))
+                .collect(),
+        ),
+        Value::Tuple(items) => Value::Tuple(
+            items
+                .into_iter()
+                .map(|item| resolved_value(item, resolve))
+                .collect(),
+        ),
+        Value::Opt(Some(inner)) => Value::Opt(Some(Box::new(resolved_value(*inner, resolve)))),
+        other => other,
     }
 }
 

@@ -218,3 +218,53 @@ fn a_press_on_a_scrolls_own_bar_still_drags_the_bar() {
     );
     drag_bus::end(None);
 }
+
+/// A source at the top of a column, a target under it: a press on the source carried down onto
+/// the target and let go there reports the drop the source carried, by the resource's address.
+/// The two are the pair a view composes — a place's handle over a composer, a chip over a
+/// canvas — and what the target reports is what any runtime's drop target takes, so this is the
+/// path a drop crosses from one view to another on.
+#[test]
+fn a_drop_onto_a_target_reports_the_resource_the_source_carried() {
+    let queue = crate::Intents::default();
+    let dropped =
+        crate::component::Event::View(crate::component::Intent::new(&queue, "target", "drop"));
+    let target = crate::widget::DropTarget::new(
+        "target",
+        Box::new(Spacer::fixed(120.0)) as Element,
+        dropped,
+    );
+    let source = DragSource::new(
+        "source",
+        Box::new(Spacer::fixed(40.0)) as Element,
+        "notes.pages:page_1",
+        "The page",
+    );
+    let mut laid = Laid::of(
+        crate::widget::arrange::Stack::stack()
+            .gap(crate::tokens::Rhythm::None)
+            .push_slot(crate::widget::arrange::Slot::new(Box::new(source)))
+            .push_slot(crate::widget::arrange::Slot::new(Box::new(target))),
+        300.0,
+        300.0,
+    );
+    // The source stands in the column's top 40px; the target from 40 to 160.
+    laid.drag((100.0, 20.0), (100.0, 120.0));
+    // The target takes a drop in its `update`, run by the frame after the release: the drop it
+    // was let go with is fired then, carrying the resource the source carried.
+    let doc = automerge::AutoCommit::new();
+    laid.widget.update(&doc, &automerge::ROOT);
+    let fired = queue.take();
+    drag_bus::end(None);
+    assert_eq!(
+        fired,
+        vec![crate::component::Fired {
+            key: "target".to_owned(),
+            event: "drop".to_owned(),
+            value: Some(crate::component::Value::Resource(
+                "notes.pages:page_1".to_owned()
+            )),
+        }],
+        "the drop carries the resource the drag let go with, by its address"
+    );
+}
