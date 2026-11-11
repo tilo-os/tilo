@@ -1208,7 +1208,7 @@ impl BrowserShell {
     /// What the desktop's layers asked of the page since it last looked.
     /// Ask the session for the pages of the windows other devices host that this desk shows, and
     /// stop reading the ones it stopped showing. Whether what it asks changed.
-    fn follow_pages(&mut self) -> bool {
+    fn follow_pages(&self) -> bool {
         let shared = &self.chrome.shared;
         match shared.peer {
             Some(peer) => crate::pages::follow(peer, &shared.workspace, &self.handle),

@@ -101,8 +101,8 @@ pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
 /// own tile answers that tab.
 pub(crate) fn tile(tab: u64, title: &str) -> Option<TileHost> {
     let stream = PAGES.with_borrow(|pages| {
-        let tile = pages.tiles.get(&tab)?;
-        Some(Rc::clone(&tile.stream))
+        let held = pages.tiles.get(&tab)?;
+        Some(Rc::clone(&held.stream))
     })?;
     let alt = if title.is_empty() {
         PAGES
