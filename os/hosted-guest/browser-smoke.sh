@@ -28,8 +28,6 @@ trace() {
         sed -e 's/^/  /' "$work/engine.log" >&2 2>/dev/null || true
         printf -- '--- session ---\n' >&2
         sed -e 's/^/  /' "$work/session.log" >&2 2>/dev/null || true
-        printf -- '--- identity ---\n' >&2
-        sed -e 's/^/  /' "$work/identity.log" >&2 2>/dev/null || true
     fi
     rm -rf "$work"
     return "$status"
@@ -75,9 +73,9 @@ exec 3>&-
 wait "$engine_pid" 2>/dev/null || true
 
 # ---- The session --------------------------------------------------------------
-# Through the script the guest agent runs, so the smoke proves that path too: a
-# device mints its own identity on first start, and this one has to, because
-# joining the workspace is what the session exists for.
+# Through the script the guest agent runs, so the smoke proves that path too.
+# Its identity is not proved here: a session is handed one by the relay at
+# every start, and the image holds none.
 printf 'TILO_SESSION_ARGS=\n' > "$work/session.env"
 chown tilo-browser:tilo-browser "$work/session.env"
 # Started directly, not through a function, so $! is the script itself, which
@@ -118,11 +116,3 @@ if kill -0 "$session_pid" 2>/dev/null; then
 fi
 wait "$session_pid" 2>/dev/null || true
 echo 'session: ends on SIGTERM'
-
-# The device the session made of this guest verifies the way a release gate
-# checks an installed machine.
-timeout 120 setpriv --reuid=tilo-browser --regid=tilo-browser --init-groups \
-    env HOME=/home/tilo-browser /usr/bin/tilo-session --verify-collaboration-identity \
-    > "$work/identity.log" 2>&1 || missing 'the session did not verify its identity within 120 s'
-grep -q 'identity verified' "$work/identity.log"
-echo 'identity: this guest is a device of its own'
