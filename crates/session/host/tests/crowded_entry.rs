@@ -216,8 +216,9 @@ fn wire_traced() -> bool {
     *TRACED.get_or_init(|| std::env::var_os("TILO_CROWD_WIRE").is_some())
 }
 
-/// Print the host's steps beside the wire, timed as it is: its timings by
-/// default, or what `TILO_CROWD_LOG` asks for (a tracing filter).
+/// Print the host's steps, beside the wire when it is traced, timed as it is:
+/// its timings by default, or what `TILO_CROWD_LOG` asks for (a tracing
+/// filter).
 fn trace_steps() {
     struct SinceOrigin;
     impl tracing_subscriber::fmt::time::FormatTime for SinceOrigin {
@@ -228,7 +229,7 @@ fn trace_steps() {
             write!(w, "STEP {:>9.1}", origin().elapsed().as_secs_f64() * 1000.0)
         }
     }
-    if !wire_traced() {
+    if !wire_traced() && std::env::var_os("TILO_CROWD_LOG").is_none() {
         return;
     }
     let filter =
