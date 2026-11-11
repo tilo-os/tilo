@@ -210,6 +210,49 @@ impl FrameHarness {
             .unwrap_or_default()
     }
 
+    /// What the window's header rows say, as the person reads them at the top of each column:
+    /// the names of the titles and controls standing in a column's header row, in the order the
+    /// window lays them out. A shell whose app declares no bar slots draws these rows as the
+    /// window's bar, so this is where its location and commands stand.
+    #[must_use]
+    pub fn header_row_names(&self) -> Vec<String> {
+        self.header_row_parts()
+            .into_iter()
+            .map(|(name, _)| name)
+            .collect()
+    }
+
+    /// Each named title and control in a column's header row, and where it stands.
+    fn header_row_parts(&self) -> Vec<(String, Rect)> {
+        fn visit(node: &super::InspectionNode, rows: &[Rect], parts: &mut Vec<(String, Rect)>) {
+            let [x, y, width, height] = node.rect;
+            let rect = Rect::new(x, y, x + width, y + height);
+            if rect.area() > 0.0
+                && rows.iter().any(|row| row.contains(rect.center()))
+                && let Some(name) = node
+                    .semantics
+                    .as_ref()
+                    .and_then(|access| access.name.as_deref())
+                    .filter(|name| !name.trim().is_empty())
+                && parts.last().map(|(last, _)| last.as_str()) != Some(name)
+            {
+                parts.push((name.to_owned(), rect));
+            }
+            for child in &node.children {
+                visit(child, rows, parts);
+            }
+        }
+        let rows: Vec<Rect> = self
+            .column_frames()
+            .into_iter()
+            .map(|frame| frame.header)
+            .filter(|header| header.area() > 0.0)
+            .collect();
+        let mut parts = Vec::new();
+        visit(&self.inspection().root, &rows, &mut parts);
+        parts
+    }
+
     /// Lay the whole window out at `viewport`, its bar included, under
     /// `theme`: the app's frame gets the part under the bar, as the desktop
     /// gives it one. The bar itself is laid out when it is drawn
@@ -467,9 +510,23 @@ impl FrameHarness {
     ///
     /// # Errors
     /// Says what the bar offers when no action is named `name`.
+    /// A window whose app declares no slots shows its commands in its shell's header row, which
+    /// is the window's bar there: the control named `name` in that row is clicked.
+    ///
+    /// # Errors
+    /// Says what the bar offers when no action is named `name`.
     pub fn press_window_action(&mut self, name: &str) -> Result<(), String> {
         let _running = self.running();
-        let toolbar = self.window_toolbar().unwrap_or_default();
+        let Some(toolbar) = self.window_toolbar() else {
+            let parts = self.header_row_parts();
+            let (_, rect) = parts.iter().find(|(part, _)| part == name).ok_or_else(|| {
+                let offered: Vec<&str> = parts.iter().map(|(part, _)| part.as_str()).collect();
+                format!("the window's header row has no `{name}`, only {offered:?}")
+            })?;
+            let at = rect.center();
+            self.click_at(at.x, at.y);
+            return Ok(());
+        };
         let actions = toolbar.leading.iter().chain(&toolbar.actions);
         let mut offered = Vec::new();
         let mut found = None;

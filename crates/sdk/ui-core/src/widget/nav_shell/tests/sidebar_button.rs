@@ -144,3 +144,53 @@ fn agreement_needs_the_bar_the_shell_and_the_frame() {
     assert_eq!(state(true, false, false).agreed(), None);
     assert_eq!(state(false, false, true).agreed(), None);
 }
+
+/// A narrow window the desktop's bar hosts, showing a page beside its places: the places' own
+/// screen holds the way back to the page, and the page holds the sidebar button in the row that
+/// is the window's bar, so the places are never a dead end — as where the app puts the button
+/// among its bar's slots. The same shell out of a desktop window drills from its places to the
+/// page and back, its places the first screen.
+#[test]
+fn a_hosted_narrow_windows_places_lead_back_to_the_page() {
+    let shell = || {
+        NavShell::new()
+            .content_kind(ContentKind::Page)
+            .sidebar(Probe::boxed("sidebar").0)
+            .content(Probe::boxed("content").0)
+    };
+    let mut h = harness(shell(), 400, 800, Theme::dark());
+    h.present_in_window_bar();
+    h.root_mut::<NavShell>().show(NavPane::Sidebar);
+    settle(&mut h, 400, 800);
+    assert!(h.row_holds_bar(), "the row is the window's bar");
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    let back = geometry(&h).back;
+    assert!(back.width() > 0.0, "the places' screen holds the way back");
+    h.click_at(back.center().x, back.center().y);
+    settle(&mut h, 400, 800);
+    assert_eq!(
+        h.root::<NavShell>().front_pane(),
+        NavPane::Content,
+        "Back goes forward to the page the places covered"
+    );
+    let toggle = geometry(&h).toggle;
+    assert!(
+        toggle.width() > 0.0,
+        "the page's row holds the sidebar button"
+    );
+    assert_eq!(geometry(&h).back, Rect::ZERO, "and no Back to nothing");
+    h.click_at(toggle.center().x, toggle.center().y);
+    settle(&mut h, 400, 800);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
+
+    let mut own = harness(shell(), 400, 800, Theme::dark());
+    own.root_mut::<NavShell>().show(NavPane::Sidebar);
+    settle(&mut own, 400, 800);
+    assert_eq!(own.root::<NavShell>().front_pane(), NavPane::Sidebar);
+    assert_eq!(
+        geometry(&own).back,
+        Rect::ZERO,
+        "out of a desktop window the places are the first screen"
+    );
+}

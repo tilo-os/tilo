@@ -476,14 +476,15 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         Vec::new()
     };
-    // The bar's toggle reaches the sidebar at every width. Back walks toward the screen the window
-    // opened on ([`back_home`]): a screen deeper than it goes one step back, and the sidebar's own
-    // screen, which stands in front of it, goes forward to it — the screen the toggle covered — so
-    // a phone is never left on the places with no way back to where the person was. A window on its
-    // opening screen is a place, left by the toggle, with no way back to nothing. A shell that
-    // declares the bar's slots has no toggle of its own, and a sidebar the bar's toggle reaches is
-    // no screen the push stack drills through.
-    let first = usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
+    // The window bar's toggle reaches the sidebar at every width: among the app's slots, or the
+    // shell's own in the header row that holds the bar. Back walks toward the screen the window opened on
+    // ([`back_home`]): a screen deeper than it goes one step back, and the sidebar's own screen,
+    // which stands in front of it, goes forward to it — the screen the toggle covered — so a phone
+    // is never left on the places with no way back to where the person was. A window on its
+    // opening screen is a place, left by the toggle, with no way back to nothing. A sidebar the
+    // toggle reaches is no screen the push stack drills through.
+    let first =
+        usize::from(inputs.toggle_reaches_places() && stack.first() == Some(&NavPane::Sidebar));
     let drills = stack.len().saturating_sub(first) > 1;
 
     // The header row holds a column's header only where the column stands at the window's top: a
@@ -961,7 +962,7 @@ fn list_pane(inputs: &Inputs, stack: &[NavPane]) -> Option<usize> {
 }
 
 /// The screen a new window opens on: its first list of items, else the first screen past the
-/// places where the bar's toggle reaches them (a conversation beside its channels: the places give
+/// places where the window bar's toggle reaches them (a conversation beside its channels: the places give
 /// way to the content they chose), else the first screen of the stack (Settings' list, a library
 /// of shortcuts).
 pub(super) fn opening_pane(inputs: &Inputs, stack: &[NavPane]) -> usize {
@@ -970,14 +971,14 @@ pub(super) fn opening_pane(inputs: &Inputs, stack: &[NavPane]) -> usize {
 
 /// The screen a narrow window's Back walks toward: the window's first list of items — the screen it
 /// opens on — else the first screen of the stack once the sidebar is no longer one of them, because
-/// a window whose sidebar the bar's toggle reaches opens on the screen after the places. A screen
+/// a window whose sidebar the window bar's toggle reaches opens on the screen after the places. A screen
 /// deeper than this one goes one step back; the sidebar's own screen, which stands before it, goes
 /// forward to it, so the places are never a dead end; and a screen at this one has nothing to go
 /// back to.
 pub(super) fn back_home(inputs: &Inputs, stack: &[NavPane]) -> usize {
     list_pane(inputs, stack).unwrap_or_else(|| {
         let past_places =
-            usize::from(inputs.toggle_in_bar && stack.first() == Some(&NavPane::Sidebar));
+            usize::from(inputs.toggle_reaches_places() && stack.first() == Some(&NavPane::Sidebar));
         past_places.min(stack.len().saturating_sub(1))
     })
 }
