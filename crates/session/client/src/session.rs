@@ -268,6 +268,7 @@ pub fn start_session(
         held_live: crate::held_live::HeldLive::new(),
         positions: BTreeMap::new(),
         opened_records: BTreeMap::new(),
+        answering: BTreeSet::new(),
         opened_routes: BTreeSet::new(),
         when_opened: BTreeSet::new(),
         barriers: Vec::new(),
@@ -419,6 +420,9 @@ struct Task {
     /// The on-demand records this page opened, by retained channel: opened
     /// again after every resubscription.
     opened_records: BTreeMap<[u8; 32], (u64, DocumentRoute)>,
+    /// The opened records whose host has not answered yet, by workspace: until
+    /// it does, what it sends of the workspace may be what its store kept.
+    answering: BTreeSet<(u64, [u8; 32])>,
     /// The routes this session was asked to open ([`Cmd::OpenRoute`]):
     /// in a workspace that sends records when opened, each is opened as a
     /// record too, so it arrives.
@@ -733,14 +737,7 @@ impl Task {
                 })
                 .is_ok();
         }
-        for (channel, (workspace_id, _)) in &self.opened_records {
-            sent_ok &= client
-                .send(Envelope::OpenRecord {
-                    workspace_id: *workspace_id,
-                    channel: *channel,
-                })
-                .is_ok();
-        }
+        sent_ok &= self.reopen_records(client);
         self.reports.change(|status| {
             for ready in status.workspaces.values_mut() {
                 *ready = false;
@@ -1544,14 +1541,7 @@ impl Task {
         for workspace_id in placing {
             sent_ok &= self.place(workspace_id, client);
         }
-        for (channel, (workspace_id, _)) in &self.opened_records {
-            sent_ok &= client
-                .send(Envelope::OpenRecord {
-                    workspace_id: *workspace_id,
-                    channel: *channel,
-                })
-                .is_ok();
-        }
+        sent_ok &= self.reopen_records(client);
         // What this page recorded while it was away is owed again, oldest
         // first: as much as the transport takes now, the rest as the host's
         // answers make room ([`Self::send_custody`]).

@@ -26,6 +26,7 @@ impl Task {
             self.open_channel(&route);
         }
         self.opened_records.insert(channel, (workspace_id, route));
+        self.answering.insert((workspace_id, channel));
         client.is_none_or(|client| {
             client
                 .send(Envelope::OpenRecord {
@@ -72,10 +73,48 @@ impl Task {
         }
     }
 
+    /// Open every record this session opened again on a new subscription.
+    /// Returns `false` when the session could not take the requests.
+    pub(super) fn reopen_records(&mut self, client: &RelayClient) -> bool {
+        let mut sent_ok = true;
+        for (channel, (workspace_id, _)) in &self.opened_records {
+            self.answering.insert((*workspace_id, *channel));
+            sent_ok &= client
+                .send(Envelope::OpenRecord {
+                    workspace_id: *workspace_id,
+                    channel: *channel,
+                })
+                .is_ok();
+        }
+        sent_ok
+    }
+
+    /// Whether the host may still be sending `workspace_id` what its store
+    /// kept: its replay, before the `Ready`, or the frames of a record this
+    /// session opened, before the host said it sent them all. The rest is
+    /// live, and decided as of now.
+    pub(super) fn sends_history(&self, workspace_id: u64) -> bool {
+        self.reports
+            .read(|status| status.workspaces.get(&workspace_id).copied())
+            != Some(true)
+            || self
+                .answering
+                .range((workspace_id, [0; 32])..=(workspace_id, [u8::MAX; 32]))
+                .next()
+                .is_some()
+    }
+
+    /// The host answered no open record of `workspace_id` more.
+    pub(super) fn opens_refused(&mut self, workspace_id: u64) {
+        self.answering
+            .retain(|(answering, _)| *answering != workspace_id);
+    }
+
     /// The host sent everything it holds of a record this page opened.
     pub(super) fn record_opened(&mut self, workspace_id: u64, channel: [u8; 32], frames: u32) {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
+        self.answering.remove(&(workspace_id, channel));
         if let Some((_, route)) = self.opened_records.get(&channel) {
             self.reports.emit(&crate::Event::RecordOpened {
                 ws: workspace_id,
