@@ -233,6 +233,9 @@ impl CertificationPolicy {
             // through a device's request.
             stand_in: false,
             server_key: false,
+            // Operating web pages in Browser is a key's, given by its person
+            // where they make it, never a device enrolled through a request.
+            browser_pages: false,
         }
     }
 
@@ -255,6 +258,7 @@ impl CertificationPolicy {
             )
             && (granted.foreign || !ceiling.foreign)
             && !granted.stand_in
+            && !granted.browser_pages
     }
 }
 

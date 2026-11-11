@@ -108,6 +108,21 @@ pub trait AppServingPlane: Send + Sync {
         None
     }
 
+    /// As [`Self::route`], with the certificate the relay's handshake
+    /// verified for `caller`'s device: what the plane may hold the caller to
+    /// beyond who it is — a key's own scope, say. A plane that needs only the
+    /// caller routes as before.
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<Routing> {
+        let _ = certificate;
+        self.route(workspace_id, caller, message)
+    }
+
     /// What device `from` answered `message` in `workspace_id`, on its way
     /// to the caller: the host only carries it, and a plane that handed the
     /// frame over may want to know how it went. The answer the plane gives
@@ -138,6 +153,13 @@ pub trait AppServingPlane: Send + Sync {
 pub enum Routing {
     /// The device of the workspace holding the window the frame addresses.
     Device([u8; 32]),
+    /// That device, handed `message` in place of the frame the caller sent:
+    /// what a plane that answers for the person hands over — the caller's own
+    /// action, carrying an answer the caller could not put there itself.
+    Replaced {
+        to: [u8; 32],
+        message: Box<RemoteActionMessage>,
+    },
     /// This plane answers the frame itself — the caller's typed refusal, or
     /// the answer to an invocation it holds — now or when it is ready.
     Answer(Pending<RemoteActionMessage>),

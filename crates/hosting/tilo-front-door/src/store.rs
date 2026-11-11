@@ -109,6 +109,11 @@ pub struct Grant {
     /// for a server key that lasts until revoked.
     #[serde(default)]
     pub expires_ms: Option<u64>,
+    /// The key may operate web pages in Browser without asking its person
+    /// each time: what its certificate carries, and what a key made before
+    /// the person could choose does not.
+    #[serde(default)]
+    pub browser_pages: bool,
     pub created_ms: u64,
     /// When a token of the grant last reached the door, in Unix
     /// milliseconds.
@@ -448,6 +453,7 @@ impl Store {
             scope: scope_of(key),
             kind: GrantKind::Agent,
             expires_ms: expiry_ms(key),
+            browser_pages: key.browser_pages(),
             created_ms: now_ms,
             last_used_ms: None,
             created_by: None,
@@ -647,6 +653,7 @@ impl Store {
             scope: scope_of(key),
             kind,
             expires_ms: expiry_ms(key),
+            browser_pages: key.browser_pages(),
             created_ms: now_ms,
             last_used_ms: None,
             created_by,

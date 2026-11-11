@@ -466,6 +466,18 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         self.browsers.as_ref()?.route(workspace_id, caller, message)
     }
 
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.browsers
+            .as_ref()?
+            .route_certified(workspace_id, caller, certificate, message)
+    }
+
     fn relayed(
         &self,
         workspace_id: u64,
@@ -517,6 +529,18 @@ impl crate::AppServingPlane for HostActionsPlane {
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
         self.browsers.as_ref()?.route(workspace_id, caller, message)
+    }
+
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &tilo_user_identity::DeviceCert,
+        message: &tilo_actions::remote::RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.browsers
+            .as_ref()?
+            .route_certified(workspace_id, caller, certificate, message)
     }
 
     fn relayed(

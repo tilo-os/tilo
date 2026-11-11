@@ -103,6 +103,10 @@ struct GrantAsk {
     /// When the grant expires, in Unix milliseconds; `None` for a server
     /// key that lasts until revoked.
     expires_ms: Option<u64>,
+    /// The key may operate web pages in Browser: navigate, fill, select,
+    /// click, press, scroll, point and drag in its workspace's Browser
+    /// without asking the person each time. Submitting a page still asks.
+    browser_pages: bool,
 }
 
 impl GrantAsk {
@@ -116,6 +120,7 @@ impl GrantAsk {
                     u64::try_from(grant_key::GRANT_LIFETIME.as_millis()).unwrap_or(0),
                 ),
             ),
+            browser_pages: false,
         }
     }
 }
@@ -467,6 +472,9 @@ impl Door {
             url.query_pairs_mut()
                 .append_pair("grant_kind", "server_key");
         }
+        if ask.grant.browser_pages {
+            url.query_pairs_mut().append_pair("grant_pages", "1");
+        }
         url.into()
     }
 
@@ -588,6 +596,7 @@ impl Door {
             cert,
             pending.grant.scope,
             pending.grant.server_key,
+            pending.grant.browser_pages,
             now_ns,
         )
         .map_err(|error| refused(&error.to_string()))

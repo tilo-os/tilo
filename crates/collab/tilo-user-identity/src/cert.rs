@@ -119,6 +119,9 @@ const EXTENDED_ISSUED: u8 = 16;
 /// The agent's grant is a person's server key (see
 /// [`DeviceCapabilities::server_key`]).
 const EXTENDED_SERVER_KEY: u8 = 32;
+/// The agent's grant may operate web pages in Browser (see
+/// [`DeviceCapabilities::browser_pages`]).
+const EXTENDED_BROWSER_PAGES: u8 = 64;
 const SCOPE_ALL: u8 = 0;
 const SCOPE_WORKSPACE: u8 = 1;
 
@@ -320,6 +323,14 @@ pub struct DeviceCapabilities {
     /// encoding, so a certificate cannot gain or lose it, and verifiers that
     /// predate it reject it.
     pub server_key: bool,
+
+    /// The key may operate web pages in Browser: navigate, fill, select,
+    /// click, press, scroll, point and drag on the pages of its workspaces'
+    /// Browser windows without asking the person each time. Submitting a
+    /// page, and every other action Browser holds for the person, still asks
+    /// them. Only an agent's grant carries it, it is part of the signed
+    /// encoding, and verifiers that predate it reject it.
+    pub browser_pages: bool,
 }
 
 /// The v1 JSON shape plus the optional foreign marker, omitted when false so
@@ -345,6 +356,8 @@ struct CapabilitiesJson {
     stand_in: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     server_key: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    browser_pages: bool,
 }
 
 impl Serialize for DeviceCapabilities {
@@ -360,6 +373,7 @@ impl Serialize for DeviceCapabilities {
                 agent: self.agent,
                 stand_in: self.stand_in,
                 server_key: self.server_key,
+                browser_pages: self.browser_pages,
             }
             .serialize(serializer);
         }
@@ -395,7 +409,8 @@ fn serialize_binary_capabilities<S: serde::Serializer>(
         | bit(capabilities.agent.is_some(), EXTENDED_AGENT)
         | bit(capabilities.stand_in, EXTENDED_STAND_IN)
         | bit(issued, EXTENDED_ISSUED)
-        | bit(capabilities.server_key, EXTENDED_SERVER_KEY);
+        | bit(capabilities.server_key, EXTENDED_SERVER_KEY)
+        | bit(capabilities.browser_pages, EXTENDED_BROWSER_PAGES);
     let extended_form = extended & !EXTENDED_FOREIGN != 0;
     let len = if extended_form {
         scope.len().saturating_add(6)
@@ -434,6 +449,7 @@ impl<'de> Deserialize<'de> for DeviceCapabilities {
                 agent: json.agent,
                 stand_in: json.stand_in,
                 server_key: json.server_key,
+                browser_pages: json.browser_pages,
             });
         }
         let BinaryCapabilitiesOf(capabilities, issued) =
@@ -496,7 +512,8 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                     | EXTENDED_AGENT
                     | EXTENDED_STAND_IN
                     | EXTENDED_ISSUED
-                    | EXTENDED_SERVER_KEY;
+                    | EXTENDED_SERVER_KEY
+                    | EXTENDED_BROWSER_PAGES;
                 if extended & !known != 0 || extended & !EXTENDED_FOREIGN == 0 {
                     return Err(A::Error::invalid_value(
                         serde::de::Unexpected::Unsigned(extended.into()),
@@ -553,6 +570,7 @@ impl<'de> serde::de::Visitor<'de> for BinaryCapabilities {
                 agent,
                 stand_in: extended & EXTENDED_STAND_IN != 0,
                 server_key: extended & EXTENDED_SERVER_KEY != 0,
+                browser_pages: extended & EXTENDED_BROWSER_PAGES != 0,
             },
             extended & EXTENDED_ISSUED != 0,
         ))
@@ -574,6 +592,7 @@ impl DeviceCapabilities {
             agent: None,
             stand_in: false,
             server_key: false,
+            browser_pages: false,
         }
     }
 
@@ -592,6 +611,7 @@ impl DeviceCapabilities {
             && self.agent == held.agent
             && self.stand_in == held.stand_in
             && self.server_key == held.server_key
+            && within(self.browser_pages, held.browser_pages)
     }
 
     /// The capabilities of an agent's grant reaching `scope`: nothing but
@@ -613,6 +633,15 @@ impl DeviceCapabilities {
             server_key: true,
             ..Self::agent_grant(AgentScope::AllWorkspaces)
         }
+    }
+
+    /// The same capabilities, operating web pages in Browser where `allowed`
+    /// (see [`Self::browser_pages`]): what a person ticking the box on a key
+    /// gives it, and what a key hands the keys it mints.
+    #[must_use]
+    pub const fn with_browser_pages(mut self, allowed: bool) -> Self {
+        self.browser_pages = allowed;
+        self
     }
 
     /// Whether these are an agent's grant's capabilities that hold: the
@@ -1185,19 +1214,26 @@ fn check_minted(cert: &DeviceCert, issuer: &DeviceCert) -> Result<(), DeviceCert
     });
     let one_workspace = match cert.capabilities.agent {
         Some(scope @ AgentScope::Workspace(_)) => {
-            cert.capabilities == DeviceCapabilities::agent_grant(scope)
+            cert.capabilities
+                == DeviceCapabilities::agent_grant(scope)
+                    .with_browser_pages(cert.capabilities.browser_pages)
         }
         _ => false,
     };
     let issuer_reaches_all = issuer.capabilities
         == DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
-        || issuer.capabilities == DeviceCapabilities::server_key_grant();
+            .with_browser_pages(issuer.capabilities.browser_pages)
+        || issuer.capabilities
+            == DeviceCapabilities::server_key_grant()
+                .with_browser_pages(issuer.capabilities.browser_pages);
+    let pages_within = !cert.capabilities.browser_pages || issuer.capabilities.browser_pages;
     if issuer_reaches_all
         && issuer.issuer.is_none()
         && issuer.user_public_key == cert.user_public_key
         && issuer_valid_then
         && ends_within
         && one_workspace
+        && pages_within
         && cert.device_public_key != issuer.device_public_key
         && cert.device_public_key != cert.user_public_key
     {
@@ -1261,7 +1297,8 @@ pub fn prepare_minted_grant(
         user_public_key: issuer.user_public_key,
         device_public_key: key,
         device_label: label.to_owned(),
-        capabilities: DeviceCapabilities::agent_grant(AgentScope::Workspace(workspace)),
+        capabilities: DeviceCapabilities::agent_grant(AgentScope::Workspace(workspace))
+            .with_browser_pages(issuer.capabilities.browser_pages),
         issued_at_ns,
         expires_at_ns: Some(expires_at_ns),
         signature: [0; 64],
@@ -1665,6 +1702,7 @@ mod tests {
                     agent: None,
                     stand_in: false,
                     server_key: false,
+                    browser_pages: false,
                 },
                 issued_at_ns: 1_000_000,
                 expires_at_ns: None,
@@ -2490,7 +2528,7 @@ mod tests {
         // A bit the decoder does not know is refused, as decoders before the
         // marker refuse the marker's.
         assert!(
-            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 64, 0, 0, 0, 0, 0])
+            postcard::from_bytes::<DeviceCapabilities>(&[3, EXTENDED_AGENT | 128, 0, 0, 0, 0, 0])
                 .is_err()
         );
         let lasting = [None, Some(1_000 + 10 * MAX_AGENT_GRANT_LIFETIME_NS)];
@@ -2546,6 +2584,62 @@ mod tests {
                 Err(DeviceCertError::InvalidAgentGrant)
             );
         }
+    }
+
+    /// A key that may operate web pages in Browser is one its person signed,
+    /// and a key minted from it keeps that and can be given no more.
+    #[test]
+    fn operating_web_pages_is_what_the_person_signed_and_a_mint_keeps() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[1; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let granted = |capabilities| {
+            let mut cert = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: key.verifying_key().to_bytes(),
+                device_label: "Jane Doe's agent".to_owned(),
+                capabilities,
+                issued_at_ns: 1_000,
+                expires_at_ns: Some(1_000 + MAX_AGENT_GRANT_LIFETIME_NS),
+                signature: [0; 64],
+                issuer: None,
+            };
+            sign_device_cert(&mut cert, &root).map(|()| cert)
+        };
+        let scope = AgentScope::Workspace([7; 16]);
+        let operating = granted(DeviceCapabilities::agent_grant(scope).with_browser_pages(true))
+            .expect("a person signs the key their agent acts with");
+        verify_device_cert_at(&operating, 2_000).unwrap();
+        assert!(operating.capabilities.browser_pages);
+        assert!(
+            !granted(DeviceCapabilities::agent_grant(scope))
+                .unwrap()
+                .capabilities
+                .browser_pages,
+            "a key not asked about operates no page"
+        );
+        // A device's capabilities never carry it: only a key's do.
+        assert!(
+            !DeviceCapabilities::member()
+                .with_browser_pages(false)
+                .browser_pages
+        );
+        // Minted from a key that operates pages, the mint keeps it.
+        let mine = granted(
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces).with_browser_pages(true),
+        )
+        .unwrap();
+        let mut minted = prepare_minted_grant(&mine, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        sign_device_cert(&mut minted, &key).unwrap();
+        verify_device_cert_at(&minted, 2_500).unwrap();
+        assert!(minted.capabilities.browser_pages);
+        // From one that does not, a mint cannot gain it.
+        let plain = granted(DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)).unwrap();
+        let mut gained = prepare_minted_grant(&plain, [12; 32], [7; 16], "Jane", 2_000, 3_000);
+        gained.capabilities.browser_pages = true;
+        assert_eq!(
+            sign_device_cert(&mut gained, &key),
+            Err(DeviceCertError::InvalidIssuer)
+        );
     }
 
     /// A server key that never expires mints keys for one workspace that

@@ -149,15 +149,20 @@ export class Keys {
    *
    * A key reaching all their workspaces lasts until revoked unless
    * `expiresIn` (seconds) says when it expires; one reaching a single
-   * workspace lasts at most 89 days. Throws `AskPending` with the link they
-   * approve it at; `await ask.wait()` answers the `Key` once they do.
+   * workspace lasts at most 89 days. `browserPages` (on unless you say no)
+   * lets the key operate web pages in its workspace's Browser — navigating,
+   * filling in, selecting and clicking — without asking the person each
+   * time; submitting a page still asks them. Throws `AskPending` with the
+   * link they approve it at; `await ask.wait()` answers the `Key` once they
+   * do.
    */
   create(
     name: string,
     workspace: string | Workspace | null = null,
     expiresIn: number | null = null,
+    browserPages = true,
   ): Promise<Key> {
-    return this.client.keyCreate(name, workspace, expiresIn);
+    return this.client.keyCreate(name, workspace, expiresIn, browserPages);
   }
 
   /** A key for one workspace, for an agent there; narrower than your own. */
@@ -209,6 +214,7 @@ export class Tilo {
     name: string | null = null,
     workspace: string | null = null,
     expiresIn: number | null = null,
+    browserPages = true,
   ): Promise<SignIn> {
     const body: Record<string, unknown> = {};
     if (name !== null) {
@@ -219,6 +225,9 @@ export class Tilo {
     }
     if (expiresIn !== null) {
       body.expires_in = expiresIn;
+    }
+    if (!browserPages) {
+      body.browser_pages = false;
     }
     const response = await this.transport.request("POST", "/keys/new", { body });
     const answer = await jsonOf(response);
@@ -348,6 +357,7 @@ export class Tilo {
     name: string,
     workspace: string | Workspace | null,
     expiresIn: number | null = null,
+    browserPages = true,
   ): Promise<Key> {
     const args: Record<string, unknown> = { name };
     if (workspace !== null) {
@@ -355,6 +365,9 @@ export class Tilo {
     }
     if (expiresIn !== null) {
       args.expires_in = expiresIn;
+    }
+    if (!browserPages) {
+      args.browser_pages = false;
     }
     try {
       await this.endpoint().call("tilo_do", { path: `${ACCOUNT}/keys#create`, args });

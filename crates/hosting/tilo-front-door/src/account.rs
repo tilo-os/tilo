@@ -235,6 +235,7 @@ const ACTIONS: [(&str, &str, &str, &str, &[Param]); 7] = [
             param("name", true, "Text"),
             param("workspace", false, "Text"),
             param("expires_in", false, "Integer"),
+            param("browser_pages", false, "Boolean"),
         ],
     ),
     (
@@ -295,6 +296,7 @@ pub(crate) fn grant_row(grant: &Grant) -> Value {
         },
         "created_at_ms": grant.created_ms,
         "created_by": grant.created_by,
+        "browser_pages": grant.browser_pages,
         "last_used_at_ms": grant.last_used_ms,
         "expires_at_ms": grant.expires_ms,
     })
@@ -564,16 +566,25 @@ impl Door {
             }
             "account/keys#list" => self.account_keys(grant),
             "account/keys#create" => {
-                let asked =
-                    crate::keys::expires_in_of(args.get("expires_in")).and_then(|expires_in| {
-                        self.ask_for_key(field("name"), field("workspace"), expires_in)
+                let asked = crate::keys::expires_in_of(args.get("expires_in"))
+                    .and_then(|expires_in| {
+                        crate::keys::browser_pages_of(args.get("browser_pages"))
+                            .map(|browser_pages| (expires_in, browser_pages))
+                    })
+                    .and_then(|(expires_in, browser_pages)| {
+                        self.ask_for_key(
+                            field("name"),
+                            field("workspace"),
+                            expires_in,
+                            browser_pages,
+                        )
                     });
                 match asked {
                     Ok((invocation, ask)) => Outcome::Pending { invocation, ask },
                     Err(why) => failed(
                         "invalid_arguments",
                         why,
-                        "pass args {name, workspace?, expires_in?}",
+                        "pass args {name, workspace?, expires_in?, browser_pages?}",
                     ),
                 }
             }
@@ -685,8 +696,9 @@ impl Door {
         name: Option<&str>,
         workspace: Option<&str>,
         expires_in: Option<u64>,
+        browser_pages: bool,
     ) -> Result<(String, String), &'static str> {
-        let (poll, ask) = self.request_key(name, workspace, expires_in)?;
+        let (poll, ask) = self.request_key(name, workspace, expires_in, browser_pages)?;
         Ok((format!("{KEY_INVOCATION}{poll}"), ask))
     }
 
@@ -818,6 +830,14 @@ fn mint_key(
             "ask the person for a new key",
         )
     })?;
-    GrantKey::new(minted_key, cert, AgentScope::Workspace(id), false, now_ns)
-        .map_err(|error| failed("forbidden", error.0, "ask the person for a new key"))
+    let browser_pages = cert.capabilities.browser_pages;
+    GrantKey::new(
+        minted_key,
+        cert,
+        AgentScope::Workspace(id),
+        false,
+        browser_pages,
+        now_ns,
+    )
+    .map_err(|error| failed("forbidden", error.0, "ask the person for a new key"))
 }

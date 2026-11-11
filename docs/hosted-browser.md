@@ -249,6 +249,23 @@ for, such as a page posting on its own, is published on the window as the wait
 it is, and answered from there. A person's own window holds none of this: what
 they click leaves as they click it.
 
+A key can carry the authority to operate the pages its workspaces' Browser
+holds without asking each time: the person ticks **Operate web pages in
+Browser** where they make the key (it is ticked unless they say no, and a key
+minted from a key keeps its answer), and the key's certificate carries it.
+Holding it, the relay answers for the person on the page actions that
+operating a page is — `navigate`, `fill-page`, `select-page`, `click-page`,
+`press-page`, `scroll-page`, `drag-page` and `pointer-path`/`pointer-page` —
+signing the same witness a person's own answer would, so the window runs one
+at once, as that key's agent, and counts it. A hold is untouched by it: the
+engine still stops the page where it was about to send something, answers
+that invocation that it needs the person, and only their own answer releases
+that one request, so a key that clicks a submit button still waits for them.
+It answers for nothing else either:
+`submit-page`, filling in a file or a password, and everything else Browser
+holds for the person still asks them, a key without the scope is asked about
+every page action, and revoking the key ends it with the key's certificate.
+
 The page action is counted once the window answers that it ran, so an
 action the person did not allow is never counted.
 

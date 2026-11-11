@@ -8,7 +8,7 @@
  * <web entry>/sign-in?audience=<the service's origin>&challenge=<64 hex>
  *   &return=<audience>/sign-in&pending=<its id>&client=<what it calls itself>
  *   &grant_key=<64 hex>&grant_scope=<all|a workspace id>&grant_expires=<unix ms>
- *   [&grant_kind=server_key]
+ *   [&grant_kind=server_key] [&grant_pages=1]
  * ```
  *
  * `grant_kind=server_key` asks for an API key the person creates for their
@@ -121,6 +121,9 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
   let grantScope = null;
   let grantExpiresMs = null;
   const grantServerKey = params.has('grant_kind');
+  // A key its person lets operate web pages in Browser carries it in the
+  // certificate this page has certified: only where a grant was asked for.
+  const grantPages = granted.length === 3 && params.get('grant_pages') === '1';
   if (grantServerKey && (granted.length < 3 || once('grant_kind') !== 'server_key')) {
     throw new SignInLinkError('This link asks for a grant Tilo cannot give.');
   }
@@ -157,6 +160,7 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
     grantScope,
     grantExpiresMs,
     grantServerKey,
+    grantPages,
   });
 }
 
@@ -166,13 +170,14 @@ export function readSignInRequest(search, {now = Date.now()} = {}) {
  * page's (tests fix it; the page leaves it to the browser).
  */
 export function requestWords(request, {locale = undefined, local = globalThis.localStorage} = {}) {
-  const {client, host, grantScope, grantExpiresMs} = request;
+  const {client, host, grantScope, grantExpiresMs, grantPages} = request;
   if (grantScope === null) {
     return {
       heading: `Sign in to ${host}?`,
       service: `Tilo in this browser will prove to ${host} that this is your device.`,
       reaches: null,
       until: null,
+      pages: null,
     };
   }
   return {
@@ -184,6 +189,9 @@ export function requestWords(request, {locale = undefined, local = globalThis.lo
     until: grantExpiresMs === null
       ? 'Until you revoke it'
       : new Date(grantExpiresMs).toLocaleDateString(locale, {year: 'numeric', month: 'long', day: 'numeric'}),
+    pages: grantPages
+      ? 'It navigates, fills in and clicks the page without asking you each time. Submitting still asks you.'
+      : 'It asks you before every page action.',
   };
 }
 
@@ -275,6 +283,7 @@ export async function signedAnswer(request, {identity, custody, runtime, scope =
       grantScope: scope,
       expiresAtMs: request.grantExpiresMs,
       serverKey: request.grantServerKey,
+      operateBrowserPages: request.grantPages,
     }),
   };
   // A device key kept as a sealed seed is opened for the one call that
@@ -296,6 +305,8 @@ const ELEMENT_IDS = {
   scopeRow: 'sign-in-scope-row',
   until: 'sign-in-until',
   untilRow: 'sign-in-until-row',
+  pages: 'sign-in-pages',
+  pagesRow: 'sign-in-pages-row',
   message: 'sign-in-message',
   actions: 'sign-in-actions',
   allow: 'sign-in-allow',
@@ -391,6 +402,8 @@ export async function startSignInPage({
   show('scopeRow', Boolean(choices));
   card.until.textContent = words.until ?? '';
   show('untilRow', words.until !== null);
+  card.pages.textContent = words.pages ?? '';
+  show('pagesRow', words.pages !== null);
   for (const name of ['allow', 'cancel']) card[name].textContent = name === 'allow' ? 'Allow' : 'Cancel';
   show('request');
   show('actions');

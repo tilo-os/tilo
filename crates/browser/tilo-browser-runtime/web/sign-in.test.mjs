@@ -43,7 +43,18 @@ test('a service’s link asks what the route answers', () => {
     grantScope: 'all',
     grantExpiresMs: NOW + 7 * DAY,
     grantServerKey: false,
+    grantPages: false,
   });
+});
+
+test('a key that may operate web pages in Browser says so, and only a grant carries it', () => {
+  const operating = read({grant_pages: '1'});
+  assert.equal(operating.grantPages, true);
+  assert.match(requestWords(operating).pages, /without asking you each time/);
+  assert.match(requestWords(operating).pages, /Submitting still asks you/);
+  assert.match(requestWords(read()).pages, /asks you before every page action/);
+  // Nothing that asks for no grant carries the flag.
+  assert.equal(read({grant_key: null, grant_scope: null, grant_expires: null, grant_pages: '1'}).grantPages, false);
 });
 
 test('a server key reaches all workspaces and lasts until revoked, or as long as the person chose', () => {
@@ -125,6 +136,7 @@ test('the card says who asks, through which service, what it reaches and until w
     service: 'Through door.example.',
     reaches: 'All your workspaces, and it may create new ones',
     until: untilText(NOW + 7 * DAY, 'en-GB'),
+    pages: 'It asks you before every page action.',
   });
   const one = requestWords(read({grant_scope: WORKSPACE}), {locale: 'en-GB'});
   assert.equal(one.reaches, `Only the workspace ${WORKSPACE}`);
@@ -134,6 +146,7 @@ test('the card says who asks, through which service, what it reaches and until w
     service: 'Tilo in this browser will prove to door.example that this is your device.',
     reaches: null,
     until: null,
+    pages: null,
   });
 });
 
@@ -178,7 +191,7 @@ class Element {
 }
 
 const NAMES = ['heading', 'request', 'service', 'reaches', 'reachesRow', 'scope', 'scopeRow', 'until', 'untilRow',
-  'message', 'actions', 'allow', 'cancel'];
+  'pages', 'pagesRow', 'message', 'actions', 'allow', 'cancel'];
 
 /** A store with the workspaces `entries` as this browser entered them, as
  * `rememberEntered` writes them. */
@@ -248,6 +261,7 @@ function page({
     service: elements.service.textContent,
     reaches: elements.reachesRow.hidden ? '' : elements.reaches.textContent,
     until: elements.untilRow.hidden ? '' : elements.until.textContent,
+    pages: elements.pagesRow.hidden ? '' : elements.pages.textContent,
     actions: elements.actions.hidden ? 'none' : 'offered',
     message: elements.message.textContent,
   })};
@@ -281,6 +295,7 @@ test('allow signs what the link asked for and posts it to the service', async ()
     grantScope: 'all',
     expiresAtMs: NOW + 7 * DAY,
     serverKey: false,
+    operateBrowserPages: false,
   });
   const custody = posted.find(entry => entry.custody)?.custody;
   assert.equal(custody.profile, `tilo-identity:${ROOT}@door.example`);

@@ -1815,6 +1815,34 @@ impl GovernedPlane {
     }
 }
 
+impl GovernedPlane {
+    /// Where a frame of `workspace_id`'s goes: this host's own governance
+    /// stays here, and what its embedder's apps place elsewhere (a Browser
+    /// window on a VM host) is theirs, with the caller's certificate where
+    /// one was verified.
+    fn route_certified_by(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        // Governance this host answers itself stays here; what its embedder's
+        // apps place elsewhere (a Browser window on a VM host) is theirs.
+        if let RemoteActionMessage::Invoke(request) = message
+            && (PROVIDERS.contains(&request.target.provider.as_str())
+                || self.governance.answers_own_account(&request.target))
+        {
+            return None;
+        }
+        let apps = self.apps.as_ref()?;
+        match certificate {
+            Some(certificate) => apps.route_certified(workspace_id, caller, certificate, message),
+            None => apps.route(workspace_id, caller, message),
+        }
+    }
+}
+
 impl AppServingPlane for GovernedPlane {
     fn answers(&self, caller: &Caller, message: &RemoteActionMessage) -> bool {
         self.governs(caller, message)
@@ -1877,15 +1905,17 @@ impl AppServingPlane for GovernedPlane {
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
-        // Governance this host answers itself stays here; what its embedder's
-        // apps place elsewhere (a Browser window on a VM host) is theirs.
-        if let RemoteActionMessage::Invoke(request) = message
-            && (PROVIDERS.contains(&request.target.provider.as_str())
-                || self.governance.answers_own_account(&request.target))
-        {
-            return None;
-        }
-        self.apps.as_ref()?.route(workspace_id, caller, message)
+        self.route_certified_by(workspace_id, caller, None, message)
+    }
+
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.route_certified_by(workspace_id, caller, Some(certificate), message)
     }
 
     fn relayed(

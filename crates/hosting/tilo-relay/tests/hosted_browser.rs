@@ -28,7 +28,8 @@ use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
 use tilo_relay::{AppServingPlane, Envelope, RelayClient};
 use tilo_relay_client::Approver;
 use tilo_user_identity::{
-    DeviceCapabilities, HostWitness, RevocationList, prepare_stand_in_cert, sign_device_cert,
+    AgentScope, DeviceCapabilities, DeviceCert, HostWitness, RevocationList, prepare_stand_in_cert,
+    sign_device_cert,
 };
 
 use crate::common::{
@@ -121,6 +122,17 @@ impl AppServingPlane for Routing {
         self.0.route(workspace_id, caller, message)
     }
 
+    fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<tilo_relay::app_serving::Routing> {
+        self.0
+            .route_certified(workspace_id, caller, certificate, message)
+    }
+
     fn relayed(
         &self,
         workspace_id: u64,
@@ -208,6 +220,30 @@ fn receipt_of(envelope: Envelope) -> InvocationReceipt {
     match RemoteActionFrame::decode(&frame).unwrap().message {
         RemoteActionMessage::Receipt(receipt) => receipt,
         other => panic!("an invocation is answered with a receipt: {other:?}"),
+    }
+}
+
+/// The receipt answering `invocation` of `caller`'s, past whatever answers an
+/// earlier one of its own arrived first.
+async fn receipt_for(caller: &RelayClient, invocation: InvocationId) -> InvocationReceipt {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let Envelope::RemoteAction { frame, .. } = next(caller, "caller").await else {
+            panic!("the caller is answered");
+        };
+        match RemoteActionFrame::decode(&frame).unwrap().message {
+            RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
+                return receipt;
+            }
+            // The state of an invocation that ended before it, which its
+            // caller may already have seen.
+            RemoteActionMessage::Update { .. } => {}
+            other => panic!("{invocation:?} is answered with a receipt: {other:?}"),
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{invocation:?} was never answered"
+        );
     }
 }
 
@@ -323,13 +359,25 @@ enum Asks {
     /// Submitting asks the person; reading and filling do not, as a page
     /// without their sign-ins lets an agent read and fill it.
     Submit,
+    /// Acting on the page asks the person: filling, selecting, clicking,
+    /// scrolling and submitting are outside effects, and only their answer —
+    /// or a key their person let operate the page — runs one.
+    Acting,
 }
 
 impl Asks {
     fn asks(self, action: &str) -> bool {
+        /// What only looks at the page.
+        const OBSERVES: [&str; 4] = [
+            "read-page",
+            "find-page-element",
+            "capture-page",
+            "wait-page-settled",
+        ];
         match self {
             Self::Never => false,
             Self::Submit => action == "submit-page",
+            Self::Acting => !OBSERVES.contains(&action),
         }
     }
 }
@@ -454,11 +502,7 @@ async fn fixture(meter: Arc<Counting>) -> Fixture {
 /// A fixture that gives a disconnected environment device `reconnect` to come
 /// back before its environment stops, and the person `answer_wait` to answer
 /// a page action's question.
-async fn fixture_with(
-    meter: Arc<Counting>,
-    reconnect: Duration,
-    answer_wait: Duration,
-) -> Fixture {
+async fn fixture_with(meter: Arc<Counting>, reconnect: Duration, answer_wait: Duration) -> Fixture {
     let user = TestUser::fresh("Ada");
     let host = user.enrol("home", DeviceCapabilities::host());
     let laptop = user.enrol("laptop", DeviceCapabilities::primary());
@@ -576,6 +620,28 @@ impl Fixture {
         )
         .await;
     }
+
+    /// A key the person made for an agent to act in their workspaces, which
+    /// the workspace lists. It reaches all of them: the relay admits a key to
+    /// the workspaces its certificate reaches and no other, which is where a
+    /// key for one workspace is held to it.
+    fn key(&self, browser_pages: bool) -> TestDevice {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[0x4b; 32]);
+        let now = tilo_clock::unix_now_ns();
+        let mut cert = DeviceCert {
+            user_public_key: self.user.user_pk,
+            device_public_key: sk.verifying_key().to_bytes(),
+            device_label: "Jane Doe's agent".into(),
+            capabilities: DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces)
+                .with_browser_pages(browser_pages),
+            issued_at_ns: now,
+            expires_at_ns: Some(now.saturating_add(7 * 24 * 60 * 60 * 1_000_000_000)),
+            signature: [0; 64],
+            issuer: None,
+        };
+        sign_device_cert(&mut cert, &self.user.user_sk).expect("the person's root certifies it");
+        TestDevice { sk, cert }
+    }
 }
 
 #[tokio::test]
@@ -614,6 +680,21 @@ async fn opening_browser_places_an_environment_whose_session_holds_the_window() 
     let again = fixture.browsers.place(WS_NAME, WS, "record-1").unwrap();
     assert_eq!(again, window);
     assert_eq!(fixture.environments.starts(), 1, "no second environment");
+}
+
+impl Fixture {
+    /// The workspace lists the window's device and `key`, as a host that
+    /// governs the workspace lists a key its person made for it.
+    async fn list_environment_and(&self, key: &TestDevice) {
+        let window = self.browsers.window(WS).unwrap().device;
+        admit_members(
+            &self.relay.relay,
+            WS,
+            &[key.device_pubkey(), window],
+            &self.relay.state_root,
+        )
+        .await;
+    }
 }
 
 #[tokio::test]
@@ -786,6 +867,152 @@ async fn an_agents_reads_and_fills_run_at_once_and_its_submit_is_put_to_the_pers
     assert!(
         !seen.lock().unwrap()[4].witnessed,
         "the agent carried no confirmation of its own"
+    );
+}
+
+/// A key whose person let it operate web pages fills, selects and clicks in
+/// the hosted Browser without anyone being asked; the submit the same key
+/// sends still asks them, because submitting is not operating the page.
+#[tokio::test]
+async fn a_keys_page_actions_run_at_once_where_its_person_let_it_operate_them() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let key = fixture.key(true);
+    fixture.list_environment_and(&key).await;
+    let material = fixture.environments.material();
+    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Acting).await;
+    let caller = subscribe(&fixture.relay.relay, &fixture.user, &key).await;
+    let (_endpoint, mut approver) = fixture.approving_device().await;
+
+    for action in ["navigate", "fill-page", "select-page", "click-page"] {
+        let id = InvocationId::new();
+        caller
+            .send(to_host(WS, fixture.home, frame(page(id, action))))
+            .unwrap();
+        let ran = receipt_for(&caller, id).await;
+        assert!(
+            matches!(ran.status, ReceiptStatus::Completed { .. }),
+            "{action} ran without asking: the page action was still a question ({ran:?})"
+        );
+        assert!(
+            approver.list_confirmations().await.unwrap().is_empty(),
+            "{action} asked the person, whose key may operate the page"
+        );
+    }
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        4,
+        "every page action that ran is counted, and once"
+    );
+    {
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 4);
+        assert!(
+            seen.iter().all(|handed| handed.from == key.device_pubkey()),
+            "the window ran them as the key's own agent"
+        );
+        assert!(
+            seen.iter().all(|handed| handed.witnessed),
+            "the host answered for the person, as their answer does"
+        );
+    }
+
+    // Submitting is not operating a page: it asks, whoever holds the key.
+    let id = InvocationId::new();
+    caller
+        .send(to_host(WS, fixture.home, frame(submit(id))))
+        .unwrap();
+    assert_eq!(
+        receipt_of(next(&caller, "caller").await).status,
+        ReceiptStatus::Accepted,
+        "the submit waits for the person"
+    );
+    let question = asked(&mut approver).await;
+    assert_eq!(question.action_label, "Submit the application");
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        4,
+        "a submit that waits for the person has run nothing"
+    );
+    approver
+        .answer(question.id, ConfirmationAnswer::AllowOnce)
+        .await
+        .expect("the person answers");
+    assert!(
+        matches!(
+            followed(&caller, fixture.home, id).await,
+            tilo_actions::InvocationUpdate::Succeeded { .. }
+        ),
+        "their answer runs the submit they were asked about"
+    );
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        5,
+        "the submit they allowed is counted once"
+    );
+}
+
+/// A key whose person did not let it operate web pages is asked about every
+/// action on the page, one at a time, and its submit too.
+#[tokio::test]
+async fn a_keys_page_actions_ask_first_where_it_may_not_operate_them() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let key = fixture.key(false);
+    fixture.list_environment_and(&key).await;
+    let material = fixture.environments.material();
+    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Acting).await;
+    let caller = subscribe(&fixture.relay.relay, &fixture.user, &key).await;
+    let (_endpoint, mut approver) = fixture.approving_device().await;
+
+    for action in ["fill-page", "select-page", "click-page"] {
+        let id = InvocationId::new();
+        caller
+            .send(to_host(WS, fixture.home, frame(page(id, action))))
+            .unwrap();
+        assert_eq!(
+            receipt_for(&caller, id).await.status,
+            ReceiptStatus::Accepted,
+            "{action} waits for the person"
+        );
+        let question = asked(&mut approver).await;
+        assert_eq!(
+            question.action_label, action,
+            "{action} is what they are asked about"
+        );
+        approver
+            .answer(question.id, ConfirmationAnswer::AllowOnce)
+            .await
+            .expect("the person answers");
+        assert!(
+            matches!(
+                followed(&caller, fixture.home, id).await,
+                tilo_actions::InvocationUpdate::Succeeded { .. }
+            ),
+            "{action} ran once they allowed it"
+        );
+    }
+    assert_eq!(
+        *fixture.meter.recorded.lock().unwrap(),
+        3,
+        "each allowed action is counted once"
+    );
+    assert!(
+        seen.lock()
+            .unwrap()
+            .iter()
+            .all(|handed| handed.from == key.device_pubkey()),
+        "the window ran them as the key's agent"
+    );
+    let id = InvocationId::new();
+    caller
+        .send(to_host(WS, fixture.home, frame(submit(id))))
+        .unwrap();
+    assert_eq!(
+        receipt_for(&caller, id).await.status,
+        ReceiptStatus::Accepted
+    );
+    assert_eq!(
+        asked(&mut approver).await.action_label,
+        "Submit the application"
     );
 }
 

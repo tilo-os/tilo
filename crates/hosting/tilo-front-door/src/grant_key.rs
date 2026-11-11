@@ -29,6 +29,7 @@ pub struct GrantKey {
     key: ed25519_dalek::SigningKey,
     cert: DeviceCert,
     scope: AgentScope,
+    browser_pages: bool,
 }
 
 impl std::fmt::Debug for GrantKey {
@@ -37,6 +38,7 @@ impl std::fmt::Debug for GrantKey {
             .field("device", &hex::encode(self.cert.device_public_key))
             .field("person", &hex::encode(self.cert.user_public_key))
             .field("scope", &self.cert.capabilities.agent)
+            .field("browser_pages", &self.browser_pages)
             .finish_non_exhaustive()
     }
 }
@@ -65,17 +67,21 @@ impl GrantKey {
     /// `key` with `cert`, which must certify it as an agent's grant that
     /// holds at `now_ns` and reaches no more than `asked`: what the person
     /// was asked to approve, or less of it where they chose so. It is a
-    /// server key exactly when one was asked for (`server_key`).
+    /// server key exactly when one was asked for (`server_key`), and lets
+    /// the key operate web pages in Browser only where the person was asked
+    /// for that (`browser_pages`).
     ///
     /// # Errors
     /// The certificate is for another key or reaches more than was asked, is
-    /// no grant, is a server key when none was asked for or the reverse, or
-    /// does not hold.
+    /// no grant, is a server key when none was asked for or the reverse,
+    /// operates web pages when the person was not asked for that, or does
+    /// not hold.
     pub fn new(
         key: ed25519_dalek::SigningKey,
         cert: DeviceCert,
         asked: AgentScope,
         server_key: bool,
+        browser_pages: bool,
         now_ns: u64,
     ) -> Result<Self, Refused> {
         if cert.device_public_key != key.verifying_key().to_bytes() {
@@ -88,6 +94,11 @@ impl GrantKey {
                 "a server key is certified only for an API key".into()
             }));
         }
+        if cert.capabilities.browser_pages && !browser_pages {
+            return Err(Refused(
+                "the certificate operates web pages, which the person was not asked for".into(),
+            ));
+        }
         let certified = cert
             .capabilities
             .agent
@@ -99,7 +110,12 @@ impl GrantKey {
         };
         tilo_user_identity::verify_device_cert_at(&cert, now_ns)
             .map_err(|error| Refused(format!("the certificate does not hold: {error}")))?;
-        Ok(Self { key, cert, scope })
+        Ok(Self {
+            key,
+            browser_pages: cert.capabilities.browser_pages,
+            cert,
+            scope,
+        })
     }
 
     /// A grant as the store keeps it: the key's 32 secret bytes and the
@@ -120,7 +136,15 @@ impl GrantKey {
             .agent
             .ok_or_else(|| Refused("a kept certificate is no grant".into()))?;
         let server_key = cert.capabilities.server_key;
-        Self::new(key, cert.clone(), scope, server_key, cert.issued_at_ns)
+        let browser_pages = cert.capabilities.browser_pages;
+        Self::new(
+            key,
+            cert.clone(),
+            scope,
+            server_key,
+            browser_pages,
+            cert.issued_at_ns,
+        )
     }
 
     /// The key's secret bytes, for the store only.
@@ -156,6 +180,12 @@ impl GrantKey {
     #[must_use]
     pub const fn scope(&self) -> AgentScope {
         self.scope
+    }
+
+    /// Whether the person let this key operate web pages in Browser.
+    #[must_use]
+    pub const fn browser_pages(&self) -> bool {
+        self.browser_pages
     }
 
     /// Whether the certificate still holds at `now_ns`.

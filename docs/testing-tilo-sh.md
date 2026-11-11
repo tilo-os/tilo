@@ -220,13 +220,11 @@ What it needs before it can hold:
   says exactly that.
 - **A person's answer to a page action.** A hosted window's page actions ask
   the person whose page it holds, and there is nobody at a window in a VM to
-  ask: the relay records that the window asks and answers the same invocation
-  again with `action_confirmation_required`, and only a caller that can send
-  the relay its own `Confirm` (an agent participant, or a device of the
-  person's) can carry their answer back. Until the relay asks the person's
-  approving devices itself, which is what
-  [`hosted-browser.md`](hosted-browser.md) says it does, step 12's first page
-  action is refused and the check says so.
+  ask: the relay puts the question to their approving devices itself
+  ([`hosted-browser.md`](hosted-browser.md)). Step 12 fills the test form
+  with the key it minted, which operates web pages in Browser and is not
+  asked about them, and its submit waits for the person, so the check needs
+  no approving device of its own for the filling.
 
 ## Entry-speed work
 

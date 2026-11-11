@@ -19,7 +19,9 @@ h1{font-size:1.35rem;line-height:1.3;margin:0 0 .5rem}p{margin:.5rem 0}.muted{co
 button,a.button{font:inherit;border-radius:9px;padding:.6rem 1.1rem;border:1px solid var(--line);background:transparent;color:var(--text);cursor:pointer;text-decoration:none;display:inline-block}
 button.primary,a.button.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
 button.danger{color:var(--danger)}code.key{display:block;word-break:break-all;padding:.75rem;border:1px solid var(--line);border-radius:9px;margin:.75rem 0;font-size:.9rem}
-form.new{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1.25rem}form.new input{flex:1;min-width:10rem}form.new input,form.new select{font:inherit;padding:.55rem .7rem;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--text)}h2{font-size:1.05rem;margin:1.5rem 0 0}ul.grants{list-style:none;padding:0;margin:1rem 0 0}ul.grants li{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:.75rem 0;border-top:1px solid var(--line)}
+form.new{display:flex;gap:.5rem;flex-wrap:wrap;margin-top:1.25rem}form.new input{flex:1;min-width:10rem}
+form.new label.browser-pages{display:flex;align-items:center;gap:.5rem;flex-basis:100%;font-size:.95rem}
+form.new label.browser-pages input{flex:none;min-width:0;margin:0}form.new span.muted{flex-basis:100%;margin-top:-.25rem}form.new input,form.new select{font:inherit;padding:.55rem .7rem;border:1px solid var(--line);border-radius:9px;background:var(--card);color:var(--text)}h2{font-size:1.05rem;margin:1.5rem 0 0}ul.grants{list-style:none;padding:0;margin:1rem 0 0}ul.grants li{display:flex;justify-content:space-between;align-items:center;gap:1rem;padding:.75rem 0;border-top:1px solid var(--line)}
 ";
 
 /// `text`, safe inside HTML text and attribute values.
@@ -103,6 +105,9 @@ pub fn grants(grants: &[Grant], csrf: &str) -> String {
                     let _ = write!(reach, " \u{b7} made by {}", name_of_grant(parent));
                 }
             }
+            if grant.browser_pages {
+                reach.push_str(" \u{b7} operates web pages in Browser");
+            }
             let mut use_line = grant
                 .last_used_ms
                 .map_or_else(|| "Never used".to_owned(), |ms| format!("Last used {}", date(ms)));
@@ -144,6 +149,10 @@ pub fn grants(grants: &[Grant], csrf: &str) -> String {
          <select name=\"expires_in\" aria-label=\"When the key expires\">\
          <option value=\"\" selected>Until revoked</option><option value=\"2592000\">30 days</option>\
          <option value=\"7776000\">90 days</option><option value=\"31536000\">1 year</option></select>\
+         <label class=\"browser-pages\"><input type=\"checkbox\" name=\"browser_pages\" value=\"on\" checked>\
+         Operate web pages in Browser</label>\
+         <span class=\"muted\">The key opens, fills in and clicks the page without asking you each\
+         time. Submitting still asks you.</span>\
          <button class=\"primary\">Create API key</button></form>",
         escape(csrf)
     );
@@ -158,11 +167,16 @@ pub fn grants(grants: &[Grant], csrf: &str) -> String {
 /// The key the person just approved, shown once.
 #[must_use]
 pub fn key_created(grant: &Grant, token: &str) -> String {
+    let pages = if grant.browser_pages {
+        " It operates web pages in Browser; submitting a page still asks you."
+    } else {
+        " It operates no web pages in Browser."
+    };
     let lasts = grant.expires_ms.map_or_else(
-        || "It works until you revoke it on your grants page.".to_owned(),
+        || format!("It works until you revoke it on your grants page.{pages}"),
         |ms| {
             format!(
-                "It works until {}, or until you revoke it on your grants page.",
+                "It works until {}, or until you revoke it on your grants page.{pages}",
                 date(ms)
             )
         },

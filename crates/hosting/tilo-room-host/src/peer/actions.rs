@@ -100,23 +100,17 @@ pub(super) async fn handle_remote_action(
         if let Some(plane) = session.app_serving
             && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
             && let Ok(caller) = session_caller(peer, session)
-            && let Some(route) = plane.route(workspace_id, &caller, &decoded.message)
+            && let Some(route) =
+                plane.route_certified(workspace_id, &caller, &peer.cert, &decoded.message)
         {
-            match route {
-                crate::app_serving::Routing::Device(holder) => {
-                    return hand_over(peer, session, &mut wr, workspace_id, version, holder, frame);
-                }
-                crate::app_serving::Routing::Answer(answer) => {
-                    return answered_by_plane(
-                        session,
-                        peer,
-                        workspace_id,
-                        version,
-                        &decoded,
-                        answer,
-                    );
-                }
-            }
+            return hand_routed(
+                peer,
+                session,
+                &mut wr,
+                (workspace_id, version),
+                (&decoded, frame),
+                route,
+            );
         }
         let standing = super::change_standing(peer, &wr);
         // Never hold the workspace across the plane: it may take its time.
@@ -179,6 +173,58 @@ fn answered_by_plane(
 /// Hand `frame` to the connected device `to` of the workspace, stamped with
 /// the authenticated `peer` as its sender: the relay routes what it forwards,
 /// and never runs it.
+/// Where a plane routed the frame of `decoded`'s — `frame`, as the caller
+/// wrote it — in `workspace_id`: handed to the device holding the window, as
+/// the caller wrote it or as the plane wrote it in the caller's place, or
+/// answered here.
+fn hand_routed(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    (workspace_id, version): (u64, u16),
+    (decoded, frame): (&tilo_actions::remote::RemoteActionFrame, Vec<u8>),
+    route: crate::app_serving::Routing,
+) -> Option<Envelope> {
+    match route {
+        crate::app_serving::Routing::Device(holder) => {
+            hand_over(peer, session, wr, workspace_id, version, holder, frame)
+        }
+        crate::app_serving::Routing::Replaced { to, message } => {
+            hand_over_replaced(peer, session, wr, (workspace_id, version), to, *message)
+        }
+        crate::app_serving::Routing::Answer(answer) => {
+            answered_by_plane(session, peer, workspace_id, version, decoded, answer)
+        }
+    }
+}
+
+/// [`hand_over`] of the frame `message` writes in place of the caller's: what
+/// a plane that answers for the person hands the window.
+///
+/// # Errors
+///
+/// Never: a frame that does not encode is refused as undeliverable.
+fn hand_over_replaced(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    (workspace_id, version): (u64, u16),
+    to: [u8; 32],
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> Option<Envelope> {
+    match tilo_actions::remote::RemoteActionFrame::new(message).encode() {
+        Ok(frame) => hand_over(peer, session, wr, workspace_id, version, to, frame),
+        Err(_) => Some(Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key: to,
+            reason: format!(
+                "{}: the host could not write the frame",
+                UnavailableReason::InvalidRequest.wire_token()
+            ),
+        }),
+    }
+}
+
 fn hand_over(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,

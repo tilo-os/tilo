@@ -32,7 +32,11 @@
 //!   the window that certified it accepts for its own person, running it
 //!   without asking again; nothing else is a confirmation there. Denied or
 //!   unanswered, it ends refused. A caller needs nothing beyond asking and
-//!   following what it asked for.
+//!   following what it asked for. A key its person let operate web pages
+//!   ([`DeviceCapabilities::browser_pages`]) is not asked about the page
+//!   actions that lets it take — [`OPERATING_ACTIONS`], never a submission —
+//!   and this host answers for them where their answer would have: the
+//!   window runs it once, as theirs, and counts it.
 //! - **Meter** ([`BrowserMeter`]): every page action is admitted for the
 //!   workspace's account before it is handed over, and counted once the
 //!   window answers that it ran. A refused one is answered with the host's
@@ -82,6 +86,22 @@ pub const APP: &str = "so.tilo.browser";
 /// The resource the window's page actions are actions of (`browser.page`);
 /// their provider names the window (`browser@42`).
 pub const PAGE_RESOURCE: &str = "browser.page";
+/// The page actions a key holding [`DeviceCapabilities::browser_pages`]
+/// runs without asking: navigating, filling and choosing in a page, clicking
+/// and pressing what it found, scrolling and pointing. Submitting the page,
+/// uploading the person's files into it, filling in a password, and whatever
+/// else Browser holds for the person are none of them.
+pub const OPERATING_ACTIONS: [&str; 9] = [
+    "navigate",
+    "fill-page",
+    "select-page",
+    "click-page",
+    "press-page",
+    "scroll-page",
+    "drag-page",
+    "pointer-path",
+    "pointer-page",
+];
 /// How long a device certified for a session lasts: as long as the session
 /// may run.
 pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
@@ -422,6 +442,34 @@ impl HostedBrowsers {
         caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
+        self.route_as(workspace_id, caller, None, message)
+    }
+
+    /// [`Self::route`], with the certificate the relay's handshake verified
+    /// for the caller's device: a key whose person let it operate web pages
+    /// ([`DeviceCapabilities::browser_pages`]) has its page actions of
+    /// [`OPERATING_ACTIONS`] answered for them here, as their own answer
+    /// answers a question. The window still decides: the caller's key reaches
+    /// no workspace it was not admitted to, and Browser still holds every
+    /// submission for the person.
+    #[must_use]
+    pub fn route_certified(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: &DeviceCert,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        self.route_as(workspace_id, caller, Some(certificate), message)
+    }
+
+    fn route_as(
+        &self,
+        workspace_id: u64,
+        caller: &Caller,
+        certificate: Option<&DeviceCert>,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
         let RemoteActionMessage::Invoke(request) = message else {
             return self.asked_after(caller, message);
         };
@@ -450,10 +498,46 @@ impl HostedBrowsers {
         if request.confirmation.is_none() && self.waits_for_the_person(request, device) {
             return Some(waiting(request.invocation));
         }
+        // A key whose person let it operate web pages needs no question about
+        // one: this host answers for them with the same witness their answer
+        // would have made, so the window runs it once and answers the caller
+        // itself.
+        let mut operated = None;
+        if request.confirmation.is_none()
+            && certificate.is_some_and(|certificate| operates(certificate, request))
+            && let (Some(&person), Some((_, key))) = (caller.user_public_key(), self.certifying())
+        {
+            let asked = Asked {
+                person,
+                window,
+                device,
+                request: request.clone(),
+                until_ns: tilo_clock::unix_now_ns()
+                    .saturating_add(answer_wait_ns(self.answer_wait)),
+            };
+            let mut run = request.clone();
+            match asked.confirmed(&Ok(ConfirmationAnswer::AllowOnce), &key) {
+                Ok(confirmed) => {
+                    confirmed.apply(&mut run);
+                    operated = Some(run);
+                }
+                Err(error) => return answered_with(message, error),
+            }
+        }
+        let request = operated.as_ref().unwrap_or(request);
         match self.meter.admit(&self.account) {
             Ok(()) => {
                 self.hand_over(workspace_id, caller.clone(), window, request);
-                Some(crate::app_serving::Routing::Device(window))
+                Some(match operated {
+                    // The window is handed the action with the person's
+                    // answer this host made for it, not the frame the caller
+                    // sent, which carries none.
+                    Some(operated) => crate::app_serving::Routing::Replaced {
+                        to: window,
+                        message: Box::new(RemoteActionMessage::Invoke(operated)),
+                    },
+                    None => crate::app_serving::Routing::Device(window),
+                })
             }
             Err(refusal) => answered_with(
                 message,
@@ -1077,6 +1161,18 @@ fn certified(stand_in: &DeviceCert, key: &SigningKey) -> Result<(DeviceCert, [u8
 #[must_use]
 pub fn page_action(target: &RemoteActionTarget, provider: &str) -> bool {
     target.provider == provider && logical_resource_id(&target.address.resource) == PAGE_RESOURCE
+}
+
+/// Whether `certificate` is a key its person let operate web pages in
+/// Browser, asking `request`, which is one of the actions that lets it take
+/// without asking them ([`OPERATING_ACTIONS`]). The key reaches only the
+/// workspaces it was admitted to, so what it may operate is what it is
+/// already in.
+#[must_use]
+pub fn operates(certificate: &DeviceCert, request: &InvokeRequest) -> bool {
+    certificate.capabilities.agent.is_some()
+        && certificate.capabilities.browser_pages
+        && OPERATING_ACTIONS.contains(&request.target.address.action.as_str())
 }
 
 /// One page action the person is asked about, and what their answer is
