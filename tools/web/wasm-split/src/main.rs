@@ -199,8 +199,9 @@ export function load(_module) { return Promise.resolve(); }
 "#;
 
 /// The loaders' common part. A loader fetches and compiles its module once
-/// (again after a failure), instantiates it against the start module's
-/// exports and those of the modules loaded before it, and reports through
+/// (again after a failure), beside the modules it needs rather than after
+/// them, instantiates it against the start module's exports and those of the
+/// modules loaded before it, and reports through
 /// the callback the Rust side passed: `table[callback](data, loaded)`.
 /// Compiling needs nothing from the start module, so `prefetch` can start it
 /// while the start module itself still downloads: the page does so for the
@@ -233,10 +234,15 @@ function loader(file, needs) {
   });
   let pending;
   const load = () => pending ??= (async () => {
+    // This module downloads and compiles while the code it needs loads:
+    // only instantiating it waits for that code's exports. Started after
+    // them, it was a round trip and a download more on every first load.
+    const own = compile();
+    own.catch(() => {});
     await Promise.all(needs.map(need => need.load()));
     const main = initSync(undefined);
     const imports = {env: {memory: main.memory}, __wasm_split: {...main, ...linked}};
-    const instance = await WebAssembly.instantiate(await compile(), imports);
+    const instance = await WebAssembly.instantiate(await own, imports);
     Object.assign(linked, instance.exports);
   })().catch(error => {
     pending = undefined;
@@ -249,7 +255,8 @@ function loader(file, needs) {
   // A failure is the load's to report: it compiles again.
   const prefetch = () => {
     const asked = needs.map(need => need.prefetch());
-    return Promise.all(asked).then(() => compile().then(() => true, () => false));
+    const own = compile().then(() => true, () => false);
+    return Promise.all(asked).then(() => own);
   };
   const exported = (callback, data) => {
     load().then(() => true, () => false).then(loaded => {
