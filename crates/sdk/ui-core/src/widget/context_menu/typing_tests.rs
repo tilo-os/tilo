@@ -247,3 +247,39 @@ fn a_menu_a_button_opened_takes_no_typing() {
         "a typed key is not its"
     );
 }
+
+/// Send pressed by assistive technology or an agent sends once and ends the box, as a press of the
+/// pointer does: nothing of the box stays drawn over the window after its message left.
+#[test]
+fn a_send_pressed_by_its_name_ends_the_box() {
+    crate::shared_selection::set_send_host_available(true);
+    let _ = crate::shared_selection::take_send_to();
+    let ran = Rc::new(RefCell::new(Vec::new()));
+    let mut menu = context_menu(&ran);
+    menu.set_about(Some(crate::shared_selection::SharedSelection::of_text(
+        "Report.pdf",
+    )));
+    menu.open_at([120.0, 80.0]);
+    menu.set_query("summarise this for Ana");
+    dispatch(&mut menu, &named_key(NamedKey::Enter));
+    crate::shared_selection::set_send_host_available(false);
+    assert!(menu.send_to_alone_open(), "the box took the menu's place");
+
+    let mut doc = automerge::AutoCommit::new();
+    assert!(Widget::perform_semantic_action(
+        &mut menu,
+        "send-to:send",
+        &crate::a11y::Action::Activate,
+        &mut crate::widget::Edits::lend(&mut doc),
+        &automerge::ROOT,
+    ));
+    assert_eq!(
+        crate::shared_selection::take_send_to().len(),
+        1,
+        "the message left, once"
+    );
+    assert!(
+        !menu.send_to_alone_open() && !menu.is_showing(),
+        "and the box went with it"
+    );
+}
