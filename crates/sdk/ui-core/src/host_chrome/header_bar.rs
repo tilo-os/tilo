@@ -631,7 +631,8 @@ mod tests {
         assert!(
             labels[2..]
                 .iter()
-                .all(|label| label.is_some_and(|label| label.contains(" · ")))
+                .all(|label| label.is_some_and(|label| label.contains(" by "))),
+            "a change names who made it: {labels:?}"
         );
         let newest = bar.menu.item_rect(2).unwrap().center();
         drop(bar);

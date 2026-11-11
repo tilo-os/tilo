@@ -6436,7 +6436,7 @@ fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
     assert!(
         recent
             .iter()
-            .all(|command| command.enabled && command.label.contains(" · "))
+            .all(|command| command.enabled && command.label.contains(" by "))
     );
     let entry = |command: &crate::host_chrome::model::HostCommand| {
         command.invocation().unwrap().arguments["entry"]

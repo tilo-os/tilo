@@ -352,7 +352,7 @@ impl<'a> AttachmentFace<'a> {
                 parts.extend(self.summary.unavailable_reason());
             }
         }
-        parts.join(" · ")
+        parts.join(", ")
     }
 
     /// Paint the meta line with its top-left at `origin`, wrapped at `width`.

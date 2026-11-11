@@ -144,7 +144,6 @@ qs-bluetooth-accessory = Bluetooth-Zubehör
 qs-bluetooth-disconnect = { $accessory } trennen, ohne es zu vergessen
 qs-bluetooth-move = { $accessory } verschieben
 qs-bluetooth-move-note = Das andere Gerät muss bereits damit gekoppelt sein
-qs-bluetooth-this-certified = Dieses Gerät
 qs-bluetooth-this-device = Dieses Gerät
 qs-clipboard-no-matches = Nichts passt zu „{ $query }“
 qs-clipboard-pin = Eintrag anheften

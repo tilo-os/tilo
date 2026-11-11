@@ -144,7 +144,6 @@ qs-bluetooth-accessory = Bluetooth accessory
 qs-bluetooth-disconnect = Disconnect { $accessory } without forgetting it
 qs-bluetooth-move = Move { $accessory }
 qs-bluetooth-move-note = The other device must already be paired with it
-qs-bluetooth-this-certified = This device
 qs-bluetooth-this-device = This device
 qs-clipboard-no-matches = Nothing matches “{ $query }”
 qs-clipboard-pin = Pin item

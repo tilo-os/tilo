@@ -97,7 +97,7 @@ pub(super) fn accessory(cx: &ViewCx<QuickSettings>, address: &str, parts: &Parts
                     let row = ListRow::new(format!("qs-accessory-to-{}", target.id), &target.label)
                         .icon(Icon::Monitor)
                         .secondary(t(if target.local {
-                            "qs-bluetooth-this-certified"
+                            "qs-bluetooth-this-device"
                         } else if target.online {
                             "qs-devices-online"
                         } else {
