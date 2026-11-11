@@ -327,7 +327,9 @@ where
         EndpointTrust::Fixed(HandshakeTrust::AnyCertifiedDevice),
         hello,
     )?;
+    let asking = crate::timing::start();
     let asked = doorway.ask(&hello.cert, entering).await;
+    crate::timing::event("entry.door_ask", asking, 0);
     let step = match &asked {
         Ok(Asked::Challenge { challenge, .. }) => EnterStep::Challenge {
             challenge: challenge.clone(),
@@ -348,6 +350,9 @@ where
             })?;
     }
     let asked = asked.map_err(HandshakeError::Refused)?;
+    // From the host's answer to the device's proof: a round trip, and the
+    // device's signing.
+    let proving = crate::timing::start();
     let ack2: HelloAck2 = decode("decode ack2", &read("read ack2", recv, max_frame).await?)?;
     let peer = pending.finish(&ack2)?;
     let (challenge, token) = match asked {
@@ -358,6 +363,7 @@ where
         "decode entry proof",
         &read("read entry proof", recv, max_frame).await?,
     )?;
+    crate::timing::event("entry.proof_wait", proving, 0);
     let entered = doorway
         .prove(challenge, token, proof.signature, &entering.name)
         .await;

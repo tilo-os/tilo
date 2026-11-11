@@ -78,6 +78,9 @@ tilo-actions = { path = "../../collab/actions", features = ["test-support"] }
 # helper threads reading it) takes the process to itself.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-automerge-isolate.workspace = true
+# The crowded entry's step trace (`TILO_CROWD_WIRE`): the host's timings
+# beside the wire's.
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 test-http = { path = "../../dev/test-http" }
 tilo-relay = { path = "../../hosting/tilo-relay", features = ["web", "test-support"] }
 # The fetch proxy's host side, as the page's test of it drives it.

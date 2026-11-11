@@ -139,12 +139,14 @@ impl Link {
                     relay_write,
                     round_trip / 2,
                     up.clone(),
+                    "up",
                 ));
                 tokio::spawn(Self::carry(
                     relay_read,
                     page_write,
                     round_trip / 2,
                     down.clone(),
+                    "down",
                 ));
             }
         });
@@ -161,6 +163,7 @@ impl Link {
         mut to: tokio::net::tcp::OwnedWriteHalf,
         delay: Duration,
         counted: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        way: &'static str,
     ) {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let (queue, mut due) =
@@ -180,6 +183,12 @@ impl Link {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
                     counted.fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
+                    if wire_traced() {
+                        eprintln!(
+                            "WIRE {:>9.1} {way:>4} {read}",
+                            origin().elapsed().as_secs_f64() * 1000.0
+                        );
+                    }
                     let at = tokio::time::Instant::now() + delay;
                     if queue.send((at, buffer[..read].to_vec())).is_err() {
                         break;
@@ -200,6 +209,44 @@ impl Link {
     }
 }
 
+/// Whether each chunk the link carries is printed, with when it was sent
+/// (`TILO_CROWD_WIRE=1`): the round trips of an entry, as the wire saw them.
+fn wire_traced() -> bool {
+    static TRACED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACED.get_or_init(|| std::env::var_os("TILO_CROWD_WIRE").is_some())
+}
+
+/// Print the host's steps beside the wire, timed as it is: its timings by
+/// default, or what `TILO_CROWD_LOG` asks for (a tracing filter).
+fn trace_steps() {
+    struct SinceOrigin;
+    impl tracing_subscriber::fmt::time::FormatTime for SinceOrigin {
+        fn format_time(
+            &self,
+            w: &mut tracing_subscriber::fmt::format::Writer<'_>,
+        ) -> std::fmt::Result {
+            write!(w, "STEP {:>9.1}", origin().elapsed().as_secs_f64() * 1000.0)
+        }
+    }
+    if !wire_traced() {
+        return;
+    }
+    let filter =
+        std::env::var("TILO_CROWD_LOG").unwrap_or_else(|_| "tilo_relay::timing=debug".into());
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(filter))
+        .with_timer(SinceOrigin)
+        .with_target(false)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
+/// The instant the wire trace counts from.
+fn origin() -> Instant {
+    static ORIGIN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    *ORIGIN.get_or_init(Instant::now)
+}
+
 fn env_usize(name: &str, default: usize) -> usize {
     std::env::var(name)
         .ok()
@@ -218,6 +265,7 @@ fn keyed(page: &PeerHandle, route: &DocumentRoute) -> bool {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_fresh_guest_enters_a_crowded_workspace() {
+    trace_steps();
     let members = env_usize("TILO_CROWD_MEMBERS", 300);
     let online = env_usize("TILO_CROWD_KEYED", 1);
     let record_bytes = env_usize("TILO_CROWD_BYTES", 3_500_000);
@@ -374,8 +422,9 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     eprintln!("keyed {online} member devices in {:?}", keyed_at.elapsed());
 
     // A fresh guest, first over a network that costs nothing, then over one
-    // whose every round trip takes `ROUND_TRIP`: the difference is how many
-    // round trips the guest waited through, one after another.
+    // whose every round trip takes `ROUND_TRIP`: the first is what the host and
+    // the page spend, the second adds every round trip the guest waits through
+    // one after another.
     let place = Place {
         https: &*https,
         host_cert: &host_device.cert,
@@ -394,19 +443,35 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     quick.report("no delay");
     let slow = guest_enters(&place, ROUND_TRIP).await;
     slow.report("round trip");
-    let waited = slow.shown.saturating_sub(quick.shown);
-    let round_trips = waited.as_secs_f64() / ROUND_TRIP.as_secs_f64();
+    let round_trips = slow.shown.saturating_sub(COMPUTE).as_secs_f64() / ROUND_TRIP.as_secs_f64();
     eprintln!(
-        "ENTRY round trips: {round_trips:.1} ({} HTTP requests); page received {} B, sent {} B",
+        "ENTRY shown at {:.0} ms with no delay, {:.0} ms at a {ROUND_TRIP:?} round trip: \
+         {round_trips:.1} round trips beside the compute allowance \
+         ({:.1} beside this run's own); {} HTTP requests; page received {} B, sent {} B",
+        quick.shown.as_secs_f64() * 1000.0,
+        slow.shown.as_secs_f64() * 1000.0,
+        slow.shown.saturating_sub(quick.shown).as_secs_f64() / ROUND_TRIP.as_secs_f64(),
         slow.http.len(),
         slow.received,
         slow.sent
     );
-    // The budget: a regression that adds a step in sequence, sends the whole
-    // workspace before the desktop, or asks the host again fails here.
+    // The budget: what the host and the page spend, and the round trips the
+    // guest waits through one after another. A regression that adds a step in
+    // sequence, sends the whole workspace before the desktop, asks the host
+    // again or makes either side slower fails here.
     assert!(
-        round_trips <= MAX_ROUND_TRIPS,
-        "a fresh guest waited {round_trips:.1} round trips for the desktop, more than {MAX_ROUND_TRIPS}"
+        quick.shown <= COMPUTE + KEY_RECHECK,
+        "a fresh guest's desktop showed after {:?} on a network that costs nothing, more than \
+         {:?}",
+        quick.shown,
+        COMPUTE + KEY_RECHECK
+    );
+    let allowed = COMPUTE + ROUND_TRIP.mul_f64(MAX_ROUND_TRIPS);
+    assert!(
+        slow.shown <= allowed,
+        "a fresh guest's desktop showed after {:?} at a {ROUND_TRIP:?} round trip, more than \
+         {MAX_ROUND_TRIPS} round trips beside {COMPUTE:?} of compute ({allowed:?})",
+        slow.shown
     );
     assert!(
         slow.http.len() <= MAX_REQUESTS,
@@ -499,18 +564,44 @@ struct Place<'a> {
 /// The network's round trip for the guest that counts them.
 const ROUND_TRIP: Duration = Duration::from_millis(400);
 
-/// How many round trips a fresh guest may wait, one after another, from its
-/// first request until its desktop shows: the host's certificate over HTTPS,
-/// the session's handshake through the packet relay, which carries the entry
-/// through the door with it, and the replay of the workspace's governance and
-/// desktop, which a new connection's congestion window takes several round
-/// trips to carry. The count is the slow entry's time less the quick one's,
-/// so host work that overlaps the slow entry's waits makes it read low: it
-/// read about 7 while the quick entry spent three seconds sending the
-/// members' records, which a public workspace now keeps for whoever opens
-/// them. Without that work it reads 12 to 14, though the slow entry's desktop
-/// shows sooner than before (about 6 s, from 6.5 s).
-const MAX_ROUND_TRIPS: f64 = 15.0;
+/// What the host and the page may spend on a fresh guest's entry, from its
+/// first request until its desktop shows: the door and the workspace
+/// admitting the guest (about 0.35 s for 300 members), the replay written,
+/// the page taking it in (0.35 to 0.5 s), the desktop's keys. The quick
+/// entry shows in 0.7 to 0.9 s on the builder.
+const COMPUTE: Duration = Duration::from_millis(1_300);
+
+/// What the quick entry may take beside [`COMPUTE`]: the host's channel
+/// service sometimes answers the guest's request for the desktop's keys on its
+/// once-a-second re-check rather than when the request arrives (a third of
+/// quick entries, 0.7 to 1 s later). The slow entry asks long after the host
+/// settled the guest's admission and is answered at once.
+const KEY_RECHECK: Duration = Duration::from_secs(1);
+
+/// How many round trips a fresh guest may wait, one after another, beside
+/// [`COMPUTE`]: the slow entry's desktop shows within this many of
+/// [`ROUND_TRIP`] plus that allowance.
+///
+/// The slow entry is not measured against the quick one, as it once was:
+/// host work that overlaps the slow entry's waits made the difference read
+/// low, and taking work off the host made it read high though the desktop
+/// showed sooner. Against a fixed allowance the count falls only as the
+/// visitor's wait does. It counts:
+///
+/// - the host's certificate over HTTPS: 1;
+/// - the packet relay's WebSocket upgrade, which brings the relay's
+///   challenge: 1 (a browser adds TCP's and TLS's own round trips here);
+/// - the session's QUIC handshake, its Initial right behind the answer to
+///   that challenge rather than a round trip later, after the relay's
+///   confirmation: 1;
+/// - the hello, whose answer carries the door's challenge, and the proof
+///   that admits the guest: 1.5;
+/// - the replay of governance and the desktop, about 0.45 MB, from a
+///   256 KiB initial window rather than QUIC's 14 KB, which took six: 1.5;
+/// - the desktop's keys, asked once the page took the replay in: 1.
+///
+/// Seven in all; at 400 ms the desktop shows in 3.9 to 4.15 s.
+const MAX_ROUND_TRIPS: f64 = 8.0;
 
 /// The HTTPS requests a fresh guest makes to enter: the host's certificate.
 /// The door, the workspace's challenge and the admission ride the session.
@@ -579,6 +670,12 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
         asked: std::sync::Mutex::default(),
     };
     let started = Instant::now();
+    if wire_traced() {
+        eprintln!(
+            "WIRE {:>9.1} guest begins, round trip {round_trip:?}",
+            origin().elapsed().as_secs_f64() * 1000.0
+        );
+    }
     let mut marks: Vec<(&'static str, Duration)> = Vec::new();
     let root = new_key();
     let key = new_key();
