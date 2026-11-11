@@ -97,35 +97,20 @@ fn pin_x(a: Arrangement, s: ArrangementStrip, p: ArrangementPlace) -> Int {
 /// inside, filling it, or the well its window shows in (shell.md §8). The toolbar stands
 /// outside it.
 ///
-/// The handle stands in the frame's own bar, beside the shell's controls: a `ui.DragSource`
-/// carrying the place's resource. Picked up there and let go over a composer, it attaches what
-/// the place shows to that draft (shell.md §8.1, "Dropping on the composer"); let go over the
-/// canvas, the map reports the drop and the place stands where it was let go. The body is never
-/// a source: a press inside it stays the app's, so what a place shows — a field, a row, a
-/// message — takes input as it always did.
+/// The place's bar is its handle: the frame carries the place's resource, so a press on the
+/// bar's empty area and a drag lifts the whole place. Picked up there and let go over a
+/// composer, it attaches what the place shows to that draft (shell.md §8.1, "Dropping on the
+/// composer"); let go over the canvas, the map reports the drop and the place stands where it
+/// was let go. The pin and close controls are buttons on that bar and take their presses; the
+/// body is never a source, so a press inside it stays the app's — a field, a row, a message
+/// takes input as it always did.
 view framed_place(a: Arrangement, p: ArrangementPlace) {
-    ui.WindowFrame(name: place_title(p), fill) {
+    ui.WindowFrame(name: place_title(p), carries: p.record, fill) {
         controls: {
             place_controls(a, p)
         }
         body: {
             place_content(p)
-        }
-    }
-}
-
-/// A place's handle: the slim bar a person picks the place up by, carrying the resource the
-/// place shows, by the address the place records. It stands over the body, its own strip, so a
-/// press inside the body stays the app's; its hand and the place's name say what it is. A place
-/// showing no record (a foreign window) has no handle: there is nothing to carry.
-view place_handle(p: ArrangementPlace) {
-    if p.record != "" {
-        ui.DragSource(p.record, title: place_title(p)) {
-            row(gap: .tight, align: .center, fill, padding: .tight) {
-                ui.Icon(.hand, size: .small)
-                ui.Text("Move place", role: .caption, secondary: true)
-                spacer
-            }
         }
     }
 }
