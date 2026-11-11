@@ -257,6 +257,36 @@ impl StatePeer {
             )),
         }
     }
+    /// Whether a cleartext write of `route` waits here: held for what it
+    /// builds on, or let go and not applied since. A write sealing the record
+    /// waits behind it ([`MissingPrerequisite::CausalDependencies`]).
+    pub(super) fn holds_cleartext_of(&self, route: &Route) -> bool {
+        let held = self.core.pending.iter().any(|(_, message, _)| {
+            matches!(message, NeighbourMsg::AppDocument { app_id, record_id, envelope, .. }
+                if *app_id == route.app && *record_id == route.record && envelope.encryption.is_none())
+        });
+        held || self
+            .missed
+            .behind
+            .iter()
+            .any(|((behind, author), earlier)| {
+                behind == route && !self.applied(route, *author, *earlier)
+            })
+    }
+    /// Whether `author`'s write `sequence` to `route` is applied here.
+    fn applied(&self, route: &Route, author: [u8; 32], sequence: u64) -> bool {
+        self.core
+            .documents
+            .get(route)
+            .and_then(|document| {
+                document
+                    .channel
+                    .last_seq_per_author
+                    .get(&collab_types::Ed25519PublicKey::from_bytes(author))
+                    .copied()
+            })
+            .is_some_and(|last| last >= sequence)
+    }
     /// Note what `input`, let go unapplied, waited for.
     pub(super) fn remember_missed(&mut self, input: &DroppedInput) {
         if matches!(input.reason, DropReason::Refused(_)) {
@@ -313,19 +343,7 @@ impl StatePeer {
     ) -> Option<u64> {
         let key = (route.clone(), author);
         let earlier = *self.missed.behind.get(&key)?;
-        let applied = self
-            .core
-            .documents
-            .get(route)
-            .and_then(|document| {
-                document
-                    .channel
-                    .last_seq_per_author
-                    .get(&collab_types::Ed25519PublicKey::from_bytes(author))
-                    .copied()
-            })
-            .is_some_and(|last| last >= earlier);
-        if applied {
+        if self.applied(route, author, earlier) {
             self.missed.behind.remove(&key);
             return None;
         }

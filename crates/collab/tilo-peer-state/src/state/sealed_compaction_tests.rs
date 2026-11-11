@@ -2000,3 +2000,71 @@ fn a_record_its_key_holder_seals_is_never_published_in_the_clear_again() {
     ));
     assert!(!host.seal_record(APP, "tab:2"));
 }
+
+/// A cleartext write held here for what it builds on came before the seal in
+/// the record's order: the seal waits behind it, so the record's base takes
+/// in every write made before it sealed, however they arrive.
+#[test]
+fn a_seal_waits_behind_the_cleartext_writes_held_before_it() {
+    let mut f = fixture();
+    let now = f.now;
+    let keys = f.keys();
+    let mut author = Author::new(&f.host);
+    // A write in the clear names its action, as a device's executor signs it.
+    let mut named = |key: &str, value: &str| {
+        let heads = author.0.get_heads();
+        author.0.put(ROOT, key, value).unwrap();
+        author.0.commit_edit("fixture", key);
+        DocumentMutation::Incremental(author.0.save_after(&heads))
+            .encode()
+            .unwrap()
+    };
+    let seq = next_seq(&f.host, &f.owner);
+    let first = message(signed(
+        &f.owner,
+        seq,
+        OpKind::Change,
+        named("first", "1"),
+        None,
+        now,
+    ));
+    let second = message(signed(
+        &f.owner,
+        seq.checked_add(1).unwrap(),
+        OpKind::Change,
+        named("second", "2"),
+        None,
+        now,
+    ));
+    let sealed = named("sealed", "yes");
+    let seal = write(&f.host, &f.other, &keys, &sealed, now);
+    // `second` waits for `first`, which arrives after the seal.
+    let report = f
+        .host
+        .receive_from_report(origin(&f.owner), second, now)
+        .unwrap();
+    assert!(matches!(report.primary(), InputDisposition::RetryLater(_)));
+    f.host
+        .receive_from_report(origin(&f.other), seal, now)
+        .unwrap();
+    f.host
+        .receive_from_report(origin(&f.owner), first, now)
+        .expect("a cleartext write before the seal is the record's base");
+    assert!(f.host.publication().is_sealed_record(APP, RECORD));
+    let opened = f
+        .host
+        .publication()
+        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
+        .unwrap()
+        .unwrap();
+    let read = AutoCommit::load(&opened.document).unwrap();
+    for (key, value) in [("first", "1"), ("second", "2"), ("sealed", "yes")] {
+        assert_eq!(
+            read.get(ROOT, key)
+                .unwrap()
+                .map(|(value, _)| value.to_string()),
+            Some(format!("\"{value}\"")),
+            "{key}"
+        );
+    }
+}

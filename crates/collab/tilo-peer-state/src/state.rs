@@ -2293,6 +2293,28 @@ impl StatePeer {
             return Err("a document compaction is only ever sealed".into());
         }
         let mutation = match payload {
+            // The write that seals the record waits behind the record's
+            // cleartext writes held here: they came before it in the record's
+            // order, so they are its base, decided before it seals.
+            collab_types::WholeDocumentPayload::Encrypted { .. }
+                if !candidate.encryption_required && self.holds_cleartext_of(&route) =>
+            {
+                return self.defer(
+                    source,
+                    NeighbourMsg::AppDocument {
+                        peer,
+                        app_id: route.app,
+                        cluster_id,
+                        record_id: route.record,
+                        envelope,
+                    },
+                    Held {
+                        retained_replay,
+                        prerequisite: MissingPrerequisite::CausalDependencies,
+                        now,
+                    },
+                );
+            }
             // A record's cleartext writes before it sealed are the base its
             // sealed writes are changes over, and arrive before them in the
             // order its host keeps it: a device that joins or returns takes
