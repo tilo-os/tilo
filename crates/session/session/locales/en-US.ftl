@@ -391,9 +391,6 @@ capture-target-region = An area of the desktop
 # The agent the session makes in a workspace that keeps none, when a person
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistant
-# The conversation a person asks in, made with Chat's own actions on the
-# first ask (shell.md §8.1).
-session-ask-conversation = Assistant
 
 desk-style-failed-app-name = Desk
 desk-style-failed-title = Your desk style could not be shown

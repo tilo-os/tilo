@@ -395,9 +395,6 @@ capture-target-region = Ein Bereich des Schreibtischs
 # The agent the session makes in a workspace that keeps none, when a person
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistent
-# The conversation a person asks in, made with Chat's own actions on the
-# first ask (shell.md §8.1).
-session-ask-conversation = Assistent
 
 desk-style-failed-app-name = Schreibtisch
 desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden

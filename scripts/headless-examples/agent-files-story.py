@@ -20,6 +20,10 @@ apps' published state or the desk, never off the agent's own reply.
            window's send box sends with
   quiet    do not disturb is turned on through the session's own action, and
            the desk holds it
+  ask      the person asks from the canvas: the question is their send to the
+           agent they keep, read back from Chat's messages as a message of
+           their direct conversation with it, and Chat opens that
+           conversation on the desk
 
 Usage:
   ./agent-files-story.py [--build] [--state DIR] [--shots DIR] [--remote-exec PREFIX]
@@ -43,6 +47,9 @@ APPS = "file-explorer chat settings"
 SEEDED = "draft.txt"
 RENAMED = "story.txt"
 BODY = "the agent's story\n"
+QUESTION = "what did you just rename?"
+# Chat's first part of a workspace's messages (`chat::parts::part(0)`).
+MESSAGES = "derived:part.0@derived:messages@derived:default@tab:0000000000000000"
 
 failures: list[str] = []
 
@@ -134,6 +141,24 @@ def put(agent: "ra.Agent", data: bytes) -> str:
     if not found:
         raise ra.Failed(f"no content reference: {finished}")
     return found.group()
+
+
+def asked_in(session: "ra.Session", text: str) -> str:
+    """The conversation the message saying `text` is in, as Chat's messages
+    read back through `record_read`; "" while no such message is there."""
+    answer = session.control({"op": "record_read", "app": "so.tilo.chat",
+                              "records": [MESSAGES], "wait_ms": 0}).get("answer") or {}
+
+    def found(value) -> str:
+        if isinstance(value, dict):
+            if value.get("text") == text and isinstance(value.get("channel"), str):
+                return value["channel"]
+            return next((hit for hit in map(found, value.values()) if hit), "")
+        if isinstance(value, list):
+            return next((hit for hit in map(found, value) if hit), "")
+        return ""
+
+    return found(answer)
 
 
 def main() -> int:
@@ -239,11 +264,33 @@ def main() -> int:
         session.snapshot(shots / "quiet.png")
         agent.close()
 
+        print("\n[ask] the person asks the agent they keep, from the canvas")
+        # The canvas entry's own action, as the person submits it.
+        session.invoke("so.tilo.session", "shell:arrangement\x1fplace-found",
+                       {"text": QUESTION, "x": 80, "y": 60})
+        try:
+            channel = ra.until("the question in Chat's messages",
+                               lambda: asked_in(session, QUESTION), 60, 0.25)
+        except ra.Failed:
+            channel = ""
+        check("the question lands in the person's direct conversation with the agent",
+              channel.startswith("direct:") and "agent:" in channel
+              and "person:" in channel, channel)
+        try:
+            opened = ra.until("Chat's window on the desk", lambda: any(
+                window.get("app_id") == ra.app_id("chat") for window in session.windows()),
+                30, 0.25)
+        except ra.Failed:
+            opened = False
+        check("Chat opens the conversation on the desk", bool(opened),
+              json.dumps(session.windows()))
+        session.snapshot(shots / "asked.png")
+
     print()
     if failures:
         print(f"FAILED: {len(failures)} check(s): {', '.join(failures)}")
         return 1
-    print("PASS: an agent renamed, shared and quieted by actions alone")
+    print("PASS: an agent renamed, shared and quieted by actions alone, and the person asked it")
     return 0
 
 

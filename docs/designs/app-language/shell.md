@@ -350,16 +350,13 @@ no run and no transcript; it places the channel like any resource.
 
 - **Asking from the canvas.** The canvas entry reads "Find something, or ask". Enter calls
   `session.place_found(text, x, y)`. When the text is a question (`answers::question::asks`)
-  or nothing matches it, the session asks instead of failing: it posts `text` as the person
-  into their ask conversation in the workspace (a Chat channel the agent is a member of,
-  made with Chat's own actions on the first ask, and the workspace's kept agent kept with
-  `WorkspaceAgents` when it has none), then places that channel at (x, y), or brings its
-  place forward when it already has one. Nothing here is new machinery: Chat's actions post
-  and create, and the arrangement's `place_at` places.
-- **The view.** The channel is placed with Chat's default channel view, a `#[view]` over
-  Chat's channel type (one-app-model.md §2), drawn by the host from described components:
-  messages, the composer, and each attachment drawn with its type's row view. The same view
-  is what Chat's own window shows; the canvas gets no second chat.
+  or nothing matches it, the session asks instead of failing: it sends `text` as the person
+  to the agent they keep in the workspace (a new one, kept with `WorkspaceAgents`, when they
+  keep none) through `session:send-to#send`, the one send a send-to box, an agent and a
+  script run. It lands in their direct conversation with the agent, and Chat opens that
+  conversation on the desk, started without a window first when it was not running.
+- **The view.** The conversation is Chat's own: the window Chat opens shows it with Chat's
+  views, so the canvas gets no second chat.
 - **Any action.** The agent's tools are the broker's catalogue. The session publishes its
   own actions there too (the arrangement's `place`, `place_at`, `open`; windows; notices),
   so an agent answering a person's turn can arrange the screen exactly as the REPL can. Each

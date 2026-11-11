@@ -432,15 +432,15 @@ fn text_typed_on_the_canvas_places_what_find_finds() {
 }
 
 // (4) A text nothing published matches is not dropped and not refused: it is a sentence to the
-// agent the workspace keeps, so the ask conversation stands where the person typed (shell.md §8.1,
-// "Asking from the canvas").
+// agent the workspace keeps, sent as a send-to box sends, and Chat opens the conversation it lands
+// in — nothing stands on the canvas for it (shell.md §8.1, "Asking from the canvas").
 #[test]
 fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
     let _settled = ui::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let before = arrangement(&session).places.len();
-    let placed = session
+    session
         .invoke(
             "shell:arrangement",
             "place-found",
@@ -449,11 +449,17 @@ fn text_that_finds_nothing_asks_the_kept_agent_instead_of_being_dropped() {
                 .expect("arguments"),
         )
         .expect("text that names nothing asks the agent");
-    let _ = placed;
+    let sent = common::wait_for(&mut session, "the ask to be sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.last().cloned())
+    });
+    assert_eq!(sent["text"], "nothing is called this", "{sent}");
     assert_eq!(
         arrangement(&session).places.len(),
-        before + 1,
-        "the ask conversation stands where they typed"
+        before,
+        "the ask stands no place of its own"
     );
 }
 

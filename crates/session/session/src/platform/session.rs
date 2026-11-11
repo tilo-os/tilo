@@ -361,16 +361,8 @@ impl Session {
                     .unwrap_or_default()
             })
         };
-        // What text that asks does (shell.md §8.1, "Asking from the canvas"):
-        // the session's own ask, which reads Chat's record, the workspace in
-        // front and its agents. It is answered here and reads what the
-        // session mounts further down, so it is late-bound the way the search
-        // is: the door holds the seam, and the closure looks the session up
-        // by the cell it was given at each call.
-        // The conversations this session's agents answer in, and the agents
-        // each workspace keeps, both read from Chat's record of them: made
-        // here, before the door, because what text that asks does reads them
-        // and the desk in front (shell.md §8.1, "Asking from the canvas").
+        // The conversations this session's agents answer in, and the agents each workspace keeps,
+        // both read from Chat's records of them.
         let records = crate::engine_records::EngineRecords::new(options.wake.handle());
         let conversations = Rc::new(crate::conversations::Conversations::new(
             records.clone(),
@@ -380,33 +372,49 @@ impl Session {
             records.clone(),
             options.wake.handle(),
         ));
+        // The one send every sender runs: a person's box, an agent, a script, and the canvas.
+        let sends = crate::send_to::Sends::default();
+        // What text that asks does (shell.md §8.1, "Asking from the canvas"): the person's send to
+        // the agent they keep in the workspace in front — a new one where they keep none — through
+        // `session:send-to#send`, so it lands in their conversation with it exactly as a send-to
+        // box's message does, and Chat opens it.
         let ask: crate::arrangement::Ask = {
             let handle = handle.clone();
             let person = options.person.clone();
-            let conversations = Rc::clone(&conversations);
             let agents = Rc::clone(&agents);
-            let catalog = arrangement.borrow().targets();
+            let sends = sends.clone();
             Rc::new(move |text: &str| {
-                let (workspace, policy) = handle.read(|tree| {
+                let Some((workspace, policy)) = handle.read(|tree| {
                     tree.active_workspace()
                         .map(|held| (held.id().to_string(), held.policy.clone()))
-                })?;
-                let agent = agents.keep_one(&workspace, &policy, &person)?;
-                let channel = conversations.ask(&person, &workspace, &policy, &agent, text)?;
-                // A channel the ask just made is a resource the arrangement may place the moment
-                // it is asked to: search has not read Chat's record yet, so the resource as Chat
-                // publishes it — its default `page` view among them — is put where the catalog is
-                // read from besides the door's own tree (`Catalog::remember_resource`), and the
-                // next read of the door's resources carries it like any other. The place shows the
-                // channel's page, drawn by Chat's own view, never the app's window.
-                catalog
-                    .borrow_mut()
-                    .remember_resource(&crate::conversations::channel_resource(
-                        channel.rsplit('/').next().unwrap_or_default(),
-                        &crate::i18n::t("session-ask-conversation"),
-                        false,
-                    ));
-                Some(channel)
+                }) else {
+                    return false;
+                };
+                let to = match agents.kept(&workspace, &policy, &person) {
+                    Some((id, name)) => ui::floating_surface::Recipient::found(
+                        ui::floating_surface::RecipientKind::Agent,
+                        id,
+                        name,
+                    ),
+                    None => ui::floating_surface::Recipient::new_agent(crate::i18n::t(
+                        "session-agent-name",
+                    )),
+                };
+                let arguments = serde_json::json!({
+                    "to": [to],
+                    "text": text,
+                    "workspace": workspace,
+                });
+                let serde_json::Value::Object(arguments) = arguments else {
+                    return false;
+                };
+                match sends.send(None, &arguments) {
+                    Ok(_) => true,
+                    Err(error) => {
+                        tracing::warn!(%error, "the canvas's ask was not sent");
+                        false
+                    }
+                }
             })
         };
         doors.add(Rc::new(RefCell::new(
@@ -1227,16 +1235,12 @@ impl Session {
                 Rc::clone(&commands),
                 Rc::clone(&controls_reading),
             )));
-        // Chat's conversations as a service, so a place that shows one draws Chat's own channel
-        // page from its reading: the canvas's ask places `chat.workspace/channels/<id>`, and the
-        // shell reads that reading here (one-app-model.md §2, shell.md §8.1).
+        // The turns' summonses, each offering Chat's own `record-work` to the agent answering it.
         services
             .borrow_mut()
-            .add(Box::new(crate::conversations::ChatViewService::new(
+            .add(Box::new(crate::conversations::TurnSummonses::new(
                 Rc::clone(&conversations),
             )));
-        // The one send every sender runs: a person's box, an agent, a script.
-        let sends = crate::send_to::Sends::default();
         services
             .borrow_mut()
             .add(Box::new(crate::send_to::SendToService::new(sends.clone())));
@@ -2092,16 +2096,6 @@ impl Session {
         &self,
     ) -> Option<std::sync::Arc<tilo_action_broker::collab_app_broker::AppBrokerState>> {
         self.action_plane.as_ref().and_then(Plane::agent_broker)
-    }
-
-    /// Chat's record of the workspace `workspace` as this session holds it: the
-    /// conversation a person asked in, and its messages. `None` where the
-    /// session holds no record of it yet. A test reads what a person's ask wrote
-    /// through the same open record the session holds, never by opening a second
-    /// writer on the same store.
-    #[must_use]
-    pub fn chat_of(&self, workspace: &str) -> Option<chat::Chat> {
-        self.shared.conversations.chat(workspace)
     }
 
     /// The session's copy of `record` of `app` in `workspace` as it is stored: what a test reads

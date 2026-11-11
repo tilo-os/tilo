@@ -87,18 +87,23 @@ pub(crate) struct Sends {
     sent: Rc<RefCell<Vec<Sent>>>,
 }
 
-/// The send action as a service: it takes each send, and the session's pass carries it out
-/// ([`Shared::deliver_sends`]), since a send makes agents and reaches Chat through the doors.
-pub(crate) struct SendToService {
-    sends: Sends,
+/// What [`RESOURCE`] publishes: the send.
+fn published() -> Vec<ResourceSpec> {
+    vec![offer::<SendToAction>(ResourceSpec::new(
+        RESOURCE,
+        KIND,
+        crate::i18n::t("send-to-resource"),
+    ))]
 }
 
-impl SendToService {
-    pub(crate) fn new(sends: Sends) -> Self {
-        Self { sends }
-    }
-
-    fn take(
+impl Sends {
+    /// Take a send with `arguments`, as `by` (the person sitting here without), for the session's
+    /// pass to carry out ([`Shared::deliver_sends`]): the one entry of `session:send-to#send`, for
+    /// the service and for the canvas asking the workspace's agent alike.
+    ///
+    /// # Errors
+    /// The arguments are not a send's, or the message has nothing to say or carry.
+    pub(crate) fn send(
         &self,
         by: Option<tilo_actions::ActionInvoker>,
         arguments: &Map<String, Value>,
@@ -109,14 +114,14 @@ impl SendToService {
             item,
             text,
             workspace,
-        } = decode::<SendToAction>(&self.resources(), RESOURCE, "send", arguments)?;
+        } = decode::<SendToAction>(&published(), RESOURCE, SEND, arguments)?;
         let attached = attached.unwrap_or_default();
         if text.trim().is_empty() && attached.is_empty() && item.is_none() {
             return Err(DoorError::InvalidArguments(
                 "a message needs words or something to carry".into(),
             ));
         }
-        self.sends.waiting.borrow_mut().push(Sending {
+        self.waiting.borrow_mut().push(Sending {
             by,
             to,
             attached,
@@ -128,13 +133,21 @@ impl SendToService {
     }
 }
 
+/// The send action as a service: it takes each send, and the session's pass carries it out
+/// ([`Shared::deliver_sends`]), since a send makes agents and reaches Chat through the doors.
+pub(crate) struct SendToService {
+    sends: Sends,
+}
+
+impl SendToService {
+    pub(crate) fn new(sends: Sends) -> Self {
+        Self { sends }
+    }
+}
+
 impl Service for SendToService {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<SendToAction>(ResourceSpec::new(
-            RESOURCE,
-            KIND,
-            crate::i18n::t("send-to-resource"),
-        ))]
+        published()
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -150,7 +163,7 @@ impl Service for SendToService {
         if resource != RESOURCE {
             return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
         }
-        self.take(None, arguments)
+        self.sends.send(None, arguments)
     }
 
     fn invoke_as(
@@ -163,7 +176,7 @@ impl Service for SendToService {
         if resource != RESOURCE {
             return Err(DoorError::Unknown(ActionAddress::new(resource, action)));
         }
-        self.take(Some(invoker.clone()), arguments)
+        self.sends.send(Some(invoker.clone()), arguments)
     }
 }
 
