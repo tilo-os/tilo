@@ -119,7 +119,7 @@ impl WorkspaceStore {
             let entry = entry?;
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
-                if !every_record && self.leaves_out_on_demand(&name)? {
+                if !every_record && self.leaves_out_on_demand(&name) {
                     continue;
                 }
                 // A confined device is replayed the lineages of its own
@@ -450,11 +450,11 @@ impl WorkspaceStore {
     /// The sort rank a capture gives the retained lineage `name`: its
     /// [`lineage_rank`], and the governance's place right after the
     /// certificates for a lineage that carries no record.
-    fn capture_rank(&self, name: &OsStr) -> Result<&'static str, StoreError> {
-        Ok(match lineage_rank(&name.to_string_lossy()) {
-            "3" if !self.carries_record(name)? => "1",
+    fn capture_rank(&self, name: &OsStr) -> &'static str {
+        match lineage_rank(&name.to_string_lossy()) {
+            "3" if !self.carries_record(name) => "1",
             rank => rank,
-        })
+        }
     }
 }
 
@@ -973,7 +973,10 @@ impl WorkspaceStore {
             }
             if build.outer.is_none() {
                 let dir = match (build.phase, &build.held) {
-                    (2, _) => self.root.join("retained/v2"),
+                    (2, _) => {
+                        self.classify_lineages()?;
+                        self.root.join("retained/v2")
+                    }
                     (_, Some(held)) if !build.held_listed => held.clone(),
                     _ => self.pending_dir_for(&build.device),
                 };
@@ -1050,7 +1053,7 @@ impl WorkspaceStore {
                 match build.phase {
                     2 if kind.is_dir() => {
                         let lineage = entry.path();
-                        let rank = self.capture_rank(&name)?;
+                        let rank = self.capture_rank(&name);
                         // `next_listed` stepped over the lineages a capture
                         // leaves out. Counted: lineages listed from memory
                         // and from their generation.

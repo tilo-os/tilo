@@ -281,36 +281,38 @@ impl WorkspaceStore {
             .collect()
     }
 
-    /// Whether a replay leaves the retained lineage `name` out: its record
-    /// is on-demand, or a part behind its chain's head. Every lineage of the
-    /// store is read for its record before the first answer, so a chain's
-    /// head is known whichever part a capture lists first. A lineage whose
-    /// channel is still unknown then (it holds no frame yet) is replayed.
-    pub(super) fn leaves_out_on_demand(&self, name: &OsStr) -> Result<bool, StoreError> {
-        let Some(channel) = lineage_channel(name) else {
-            return Ok(false);
-        };
-        if !self.classes().channels.contains_key(&channel) {
-            self.read_lineage_records()?;
-        }
-        Ok(matches!(
-            self.classes().reach(&channel),
-            Some(Reach::Opened(_) | Reach::ChainHead { .. })
-        ))
+    /// Read every retained lineage not read yet for its record, as a capture
+    /// does once before it lists them: nothing changes the lineages while a
+    /// capture lists them, since it lists in one owner operation, so its
+    /// answers ([`Self::leaves_out_on_demand`], [`Self::carries_record`]) need
+    /// no other read. Read again for every lineage it listed, a crowd's
+    /// captures each scanned the whole retained directory hundreds of times
+    /// while one lineage was still being retained, and newcomers queued
+    /// behind the owner for seconds.
+    pub(super) fn classify_lineages(&self) -> Result<(), StoreError> {
+        self.read_lineage_records()
     }
 
-    /// Whether the retained lineage `name` carries a record's frames: every
-    /// lineage of the store is read for its record first. A lineage of
+    /// Whether a replay leaves the retained lineage `name` out: its record
+    /// is on-demand, or a part behind its chain's head. Answered from the
+    /// lineages read so far ([`Self::classify_lineages`]), so a chain's head
+    /// is known whichever part a capture lists first. A lineage whose channel
+    /// is still unknown then (it holds no frame yet) is replayed.
+    pub(super) fn leaves_out_on_demand(&self, name: &OsStr) -> bool {
+        lineage_channel(name).is_some_and(|channel| {
+            matches!(
+                self.classes().reach(&channel),
+                Some(Reach::Opened(_) | Reach::ChainHead { .. })
+            )
+        })
+    }
+
+    /// Whether the retained lineage `name` carries a record's frames, of the
+    /// lineages read so far ([`Self::classify_lineages`]). A lineage of
     /// anything else — a device's certificate, the workspace's own document,
     /// a channel's governance — carries none.
-    pub(super) fn carries_record(&self, name: &OsStr) -> Result<bool, StoreError> {
-        let Some(channel) = lineage_channel(name) else {
-            return Ok(false);
-        };
-        if !self.classes().channels.contains_key(&channel) {
-            self.read_lineage_records()?;
-        }
-        Ok(self.classes().channels.contains_key(&channel))
+    pub(super) fn carries_record(&self, name: &OsStr) -> bool {
+        lineage_channel(name).is_some_and(|channel| self.classes().channels.contains_key(&channel))
     }
 
     /// Take `channel` to carry `app`'s `record`, as a frame retained on it
