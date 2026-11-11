@@ -38,7 +38,15 @@ pub(crate) struct CachedDocument {
     stored: Arc<OnceLock<Stored>>,
     /// The saved base the state this one was changed from was stored on.
     base: Option<Base>,
+    /// [`Self::security_basis`], with the revocations it was worked out
+    /// under.
+    security_basis: Arc<OnceLock<SecurityBasis>>,
 }
+/// A document state's security basis under the revocations named beside it.
+type SecurityBasis = (
+    Vec<tilo_user_identity::RevocationEntry>,
+    Result<[u8; 32], crate::workspace::media::MediaPolicyError>,
+);
 /// The redemption receipts device rows keep, by invitation.
 pub(crate) type Redemptions =
     std::collections::BTreeMap<[u8; 32], Vec<crate::state::RedemptionReceipt>>;
@@ -121,6 +129,7 @@ impl From<AutoCommit> for CachedDocument {
             earlier: None,
             stored: Arc::default(),
             base: None,
+            security_basis: Arc::default(),
         }
     }
 }
@@ -149,6 +158,7 @@ impl DerefMut for CachedDocument {
         self.since_checked = None;
         self.workspace_policy = Arc::default();
         self.redemptions = Arc::default();
+        self.security_basis = Arc::default();
         #[cfg(test)]
         if Arc::strong_count(&self.doc) > 1 {
             DETACHES.with(|count| count.set(count.get().saturating_add(1)));
@@ -246,6 +256,26 @@ impl CachedDocument {
         (earlier.policy.get()?.identities.get(key)? == bytes)
             .then(|| earlier.identities.get()?.get(key))
             .flatten()
+    }
+    /// The workspace's security basis under `revocations`
+    /// ([`crate::workspace::media::security_basis_of`]), worked out once per
+    /// document state: it reads every member's row, and a replica publishes
+    /// itself after each write it keeps, most of which leave the governance as
+    /// it was. Under revocations other than the ones it was first worked out
+    /// under, it is worked out again.
+    pub(crate) fn security_basis(
+        &self,
+        revocations: &[tilo_user_identity::RevocationEntry],
+    ) -> Result<[u8; 32], crate::workspace::media::MediaPolicyError> {
+        if let Some((under, basis)) = self.security_basis.get()
+            && under.as_slice() == revocations
+        {
+            return *basis;
+        }
+        crate::governance_work::security_basis_worked_out();
+        let basis = crate::workspace::media::security_basis_of(self, revocations);
+        let _ = self.security_basis.set((revocations.to_vec(), basis));
+        basis
     }
     /// Cache document data only. Membership, expiry, certificate and revocation
     /// decisions must still be evaluated against the caller's current inputs.

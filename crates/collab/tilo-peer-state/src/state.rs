@@ -1099,13 +1099,12 @@ impl StatePeer {
     /// The admitted workspace's security basis
     /// ([`workspace::media::security_basis`]) under this replica's
     /// revocations, reading the identity rows its governance state decoded
-    /// once; `None` while no workspace is admitted.
+    /// once, and worked out once for that state: every copy of this replica
+    /// that holds the same governance answers with it. `None` while no
+    /// workspace is admitted.
     pub fn security_basis(&self) -> Option<Result<[u8; 32], workspace::media::MediaPolicyError>> {
         let doc = self.core.workspace_doc.as_ref()?;
-        Some(workspace::media::security_basis_of(
-            doc,
-            &self.revocations(),
-        ))
+        Some(doc.security_basis(&self.revocations()))
     }
 
     /// Committed, admitted workspace only. Callers cannot mutate the admission owner.

@@ -433,3 +433,44 @@ fn a_newcomer_reads_each_members_identity_once_however_many_people() {
         "the governance is read as often among 300 people as among 30"
     );
 }
+
+/// A replica publishes itself after every write it keeps, and each
+/// publication compares its security basis with the last one's: the basis
+/// reads every member's row, and a record's write leaves the governance as it
+/// was. Copies of the replica holding the same governance work it out once,
+/// however many writes come; governance that changes is worked out again.
+#[test]
+fn a_records_writes_leave_the_security_basis_worked_out_once() {
+    const MESSAGES: usize = 10;
+    let (mut governor, mut replica, a, now) = governor_and_replica(MESSAGES);
+    let source = a.verifying_key().to_bytes();
+    let messages = governor
+        .publication_mut()
+        .signed_snapshots(&a, now)
+        .unwrap();
+    replica
+        .receive(source, governor.workspace_message(), now)
+        .unwrap();
+    let _ = crate::governance_work::take();
+    let basis = replica.security_basis().unwrap().unwrap();
+    for message in messages {
+        // As an owner publishes: a copy takes the write in and is compared
+        // with the replica before it.
+        let mut published = replica.clone();
+        let outcome = published.receive(source, message, now).unwrap();
+        assert!(outcome.changed && outcome.rejected == 0);
+        assert_eq!(published.security_basis().unwrap().unwrap(), basis);
+        assert_eq!(replica.security_basis().unwrap().unwrap(), basis);
+        replica = published;
+    }
+    assert_eq!(
+        crate::governance_work::take().security_bases,
+        1,
+        "the basis is worked out once for one governance state"
+    );
+    // Governance that changes is a new state, whose basis is worked out anew.
+    let receipts = publish_receipts(&mut governor, &[("invocation-0", b"{}")]);
+    replica.receive(source, receipts, now).unwrap();
+    replica.security_basis().unwrap().unwrap();
+    assert_eq!(crate::governance_work::take().security_bases, 1);
+}
