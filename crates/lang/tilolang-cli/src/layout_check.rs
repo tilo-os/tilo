@@ -2109,6 +2109,13 @@ impl AppCheck<'_> {
             &layout.theme(),
             min_target,
         ));
+        // A page's body keeps the room a control beside its heading leads it to only where the
+        // column has that room: a phone's screen starts it on the gutter.
+        problems.extend(audit::indented_bodies(
+            &inspection.root,
+            &layout.theme(),
+            min_target,
+        ));
         problems.extend(audit::clipped_text(
             staged.harness_mut().root_widget_mut(),
             self.text,

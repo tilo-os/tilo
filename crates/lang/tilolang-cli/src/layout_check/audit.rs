@@ -634,6 +634,87 @@ fn heading_rooms_in(
     }
 }
 
+/// The room a page's body keeps from the page's own gutter: the body of a page whose heading
+/// leads with a control stands one row lead in, under the text that control leads to — the
+/// control's cell and the gap after it. That width is only worth taking where the column it
+/// leaves is a column: a page on a phone's screen starts its body on the gutter, and only the
+/// heading keeps its control beside its title. A page's own sections are read to find it, since
+/// they are what the body stands of the page's own.
+pub fn indented_bodies(
+    root: &InspectionNode,
+    theme: &ui::Theme,
+    min_target: Option<f64>,
+) -> Vec<Problem> {
+    let target = min_target.unwrap_or_else(|| {
+        f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target())
+    });
+    let lead = target + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
+    let rem = f64::from(ui::widget::arrange::rem_of(theme));
+    let mut out = Vec::new();
+    let above = rect(root.rect);
+    indented_bodies_in(root, &mut Vec::new(), lead, rem, None, above, &mut out);
+    out
+}
+
+/// Whether a column `width` logical pixels wide, at `rem` pixels to the text size, is a phone's
+/// screen: narrower than the width class a column starts at.
+fn phone_screen(width: f64, rem: f64) -> bool {
+    let (_, column) = ui::widget::arrange::WidthClass::Compact.band();
+    width / rem < f64::from(column)
+}
+
+fn indented_bodies_in(
+    node: &InspectionNode,
+    keys: &mut Vec<String>,
+    lead: f64,
+    rem: f64,
+    page: Option<f64>,
+    above: Rect,
+    out: &mut Vec<Problem>,
+) {
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    let own = rect(node.rect);
+    // The gutter the page's content starts on: what its blocks stand at, the header that leads
+    // them included.
+    let gutter = if node.widget == PAGE {
+        node.children
+            .iter()
+            .map(|child| rect(child.rect))
+            .filter(|child| has_area(*child))
+            .map(|child| child.x0)
+            .reduce(f64::min)
+    } else {
+        page
+    };
+    // A block standing one lead in from the box that holds it, that box on the page's own
+    // gutter: what the page's body holds, not a cell a grid places far across the page.
+    if let (Some(gutter), "Section") = (gutter, node.widget.as_str())
+        && (own.x0 - above.x0 - lead).abs() <= 0.5
+        && above.x0 <= gutter + 0.5
+        && phone_screen(own.width(), rem)
+    {
+        out.push(Problem {
+            kind: Kind::IndentedBody,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+            detail: format!(
+                "it starts {:.0} px in from the page's gutter at x {gutter:.0}, {:.0} wide: a \
+                 page on a phone's screen starts its body on the gutter",
+                own.x0 - gutter,
+                own.width()
+            ),
+        });
+    }
+    let above = if has_area(own) { own } else { above };
+    for child in &node.children {
+        indented_bodies_in(child, keys, lead, rem, gutter, above, out);
+    }
+    if pushed {
+        keys.pop();
+    }
+}
+
 impl Walk<'_> {
     /// `parent`: the nearest box above with geometry. `clip`: what of the window the node can show in. `scroller`:
     /// which ways the box above lets content go on past it. `content`: the box is a scroll view's, holding

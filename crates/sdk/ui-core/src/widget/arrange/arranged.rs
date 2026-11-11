@@ -218,12 +218,12 @@ pub struct Arranged<L: Layout> {
     node: Option<NodeId>,
     resolved: Resolved,
     /// Leads this container reserves before its content: a document's body stands one lead
-    /// in, under the text its heading's control leads to. Kept only where the column it is
-    /// laid in has the room for it: on a phone's screen what it holds starts on the page's
-    /// gutter, and the words keep the width the indent would have taken.
+    /// in, under the text its heading's control leads to. Kept only where the column what it
+    /// holds is read in has the room for it: on a phone's screen what it holds starts on the
+    /// page's gutter, and the words keep the width the indent would have taken.
     lead: i16,
-    /// The width class of the column this container was last laid out in: what decides whether
-    /// the column has room for its lead.
+    /// The width class of the column what this container holds was last laid out in, its lead
+    /// taken out: what decides whether that column has room for the lead.
     column: Option<WidthClass>,
     /// How the person reaches the window, which sizes a lead.
     interaction: InteractionEnvironment,
@@ -655,7 +655,10 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         // A change of class is a change of style, solved again on the next pass.
         let mut room_changed = false;
         if self.lead > 0 {
-            let column = WidthClass::with_history(allocated.width / self.resolved.rem, self.column);
+            // What the column has left once the lead is reserved decides whether it is kept: the
+            // box less one lead, which does not change with the answer.
+            let room = (allocated.width - lead_width(self.lead, &self.resolved)).max(0.0);
+            let column = WidthClass::with_history(room / self.resolved.rem, self.column);
             room_changed = self.column != Some(column);
             self.column = Some(column);
         }

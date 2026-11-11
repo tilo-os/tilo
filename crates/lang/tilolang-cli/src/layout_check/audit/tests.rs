@@ -2394,6 +2394,52 @@ fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
     );
 }
 
+/// A page's body stands under the text a control beside its heading leads to only where the
+/// column has the room: on a phone's screen it starts on the gutter, and a section standing a
+/// control's width in is what a person sees the page lose on every line.
+#[test]
+fn a_page_on_a_phone_screen_starts_its_body_on_the_gutter() {
+    let theme = ui::Theme::dark();
+    let page = |width: f64, section_x: f64, section_width: f64| {
+        let mut page = node_of("Page", "page", [0.0, 56.0, width, 700.0]);
+        let mut stack = node_of("Stack", "blocks", [24.0, 80.0, width - 48.0, 600.0]);
+        stack.children.push(node_of(
+            "Section",
+            "section",
+            [section_x, 200.0, section_width, 85.0],
+        ));
+        page.children.push(stack);
+        page
+    };
+    // A control's cell and the gap after it, under a fine pointer.
+    let lead = 32.0 + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
+    let phone = indented_bodies(&page(390.0, 24.0 + lead, 302.0), &theme, None);
+    assert_eq!(phone.len(), 1, "{phone:?}");
+    assert_eq!(phone[0].kind, Kind::IndentedBody);
+    assert!(
+        phone[0].detail.contains("starts its body"),
+        "{}",
+        phone[0].detail
+    );
+    assert!(
+        indented_bodies(&page(390.0, 24.0, 342.0), &theme, None).is_empty(),
+        "a body on the gutter loses nothing"
+    );
+    assert!(
+        indented_bodies(&page(900.0, 24.0 + lead, 800.0), &theme, None).is_empty(),
+        "a column has the room the indent takes"
+    );
+    // A cell a grid places far across the page is no body indent, however narrow it is.
+    let mut wide = page(1280.0, 24.0, 1224.0);
+    wide.children[0]
+        .children
+        .push(node_of("Section", "cell", [869.0, 200.0, 371.0, 85.0]));
+    assert!(
+        indented_bodies(&wide, &theme, None).is_empty(),
+        "a grid's cell stands where its column does"
+    );
+}
+
 /// A presence name tag covers no word of the window, and one actor wears one tag.
 #[test]
 fn a_presence_tag_covers_no_word_and_one_actor_wears_one() {

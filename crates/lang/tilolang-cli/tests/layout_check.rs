@@ -149,7 +149,10 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::OfferedTwice
             | Kind::LineOffCentre
             | Kind::PresenceTag
-            | Kind::UnruledBody => "(no view)",
+            | Kind::UnruledBody
+            // No page of this fixture leads its heading with a control, and none stands on a
+            // phone's screen.
+            | Kind::IndentedBody => "(no view)",
         };
         assert_eq!(
             finding.view,

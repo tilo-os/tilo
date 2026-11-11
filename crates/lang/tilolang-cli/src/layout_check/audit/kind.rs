@@ -177,6 +177,11 @@ pub enum Kind {
     /// An action the window's bar offers that a button in the window offers again: a column's
     /// actions stand in its header row, and the bar holds only what is the window's.
     OfferedTwice,
+    /// A page's body standing a leading control's width in from the page's gutter while the
+    /// column it is read in is a phone's screen: the indent stands under the text a heading's
+    /// control leads to, and takes the control's cell out of every line the body has, where a
+    /// screen that narrow starts its body on the gutter and keeps the control beside the title.
+    IndentedBody,
 }
 
 impl Kind {
@@ -234,6 +239,7 @@ impl Kind {
             Self::LineOffCentre => "line-off-centre",
             Self::UnruledBody => "unruled-body",
             Self::OfferedTwice => "offered-twice",
+            Self::IndentedBody => "indented-body",
         }
     }
 }

@@ -173,7 +173,7 @@ fn a_container_that_keeps_a_padding_insets_what_it_holds() {
 
 /// A column without the room for a row lead keeps none: on a phone's screen what a document's
 /// body holds starts on the page's gutter, so the words keep the width a control's cell would
-/// take from every line, while the column it is read in is a column.
+/// take from every line, while the column what it holds is read in is a column.
 #[test]
 fn a_phone_screen_keeps_no_lead_where_a_column_does() {
     use super::units::COMPACT_BELOW;
@@ -181,13 +181,15 @@ fn a_phone_screen_keeps_no_lead_where_a_column_does() {
     let rem = f64::from(rem_of(&theme));
     let lead = f64::from(Resolved::of(&theme).lead());
     assert!(lead > 0.0);
-    // The narrowest a column stands: `WidthClass::Medium`, where a lead has room again.
+    // The narrowest a column what the lead holds stands at, and the widest box that leaves it
+    // below: `WidthClass::Medium`, where a lead has room again.
     let column = f64::from(COMPACT_BELOW) * rem;
     for (width, kept) in [
         (320.0, false),
         (390.0, false),
-        (column - 1.0, false),
-        (column, true),
+        (column, false),
+        (column + lead - 1.0, false),
+        (column + lead, true),
         (1280.0, true),
     ] {
         let mut body = Stack::stack().fill_width().push(boxed(100.0));
