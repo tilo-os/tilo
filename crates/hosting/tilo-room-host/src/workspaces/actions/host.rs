@@ -502,6 +502,15 @@ impl Workspaces {
         let list: PersonalList = args
             .object("list")?
             .ok_or_else(|| invalid("`list` is required"))?;
+        // A list is kept for a person who takes part here: one the site let
+        // in, or a member of a workspace here, whom an invitation brought.
+        // Anyone else holds nothing here to keep a list of.
+        let person = device.user_public_key;
+        if !self.inner.memberships.holds_any(&person)
+            && !self.let_in(&person, tilo_clock::unix_now_ns()).await
+        {
+            return Err(refused(&self.not_let_in().to_reason()));
+        }
         let kept = self
             .keep_personal(device, list)
             .map_err(|error| refused(&error))?;
@@ -672,6 +681,11 @@ impl Workspaces {
             self.summary(first).await.map_err(|error| refused(&error))?
         } else if !makes {
             return Err(refused(&NOT_YOUR_OWN));
+        } else if !self.let_in(&person, now).await {
+            // A new workspace is for a person the site let in. Anyone can
+            // make a root, so a certificate alone is nobody's way past the
+            // door: they hear the door's own refusal, with its wait list.
+            return Err(refused(&self.not_let_in().to_reason()));
         } else {
             // Another one: there is no bound on how many a person keeps.
             let name = name.unwrap_or(OWN_WORKSPACE_NAME);

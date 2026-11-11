@@ -116,7 +116,8 @@ pub struct PersistentArgs {
     /// work, name this port. Without it the machine picks one at each start.
     #[arg(long = "iroh-listen", value_name = "ADDRESS", requires = "persistent")]
     pub iroh_listen: Option<std::net::SocketAddr>,
-    /// Every host keeps workspaces of people's own (`room.create-own`), as
+    /// Every host keeps workspaces of people's own (`room.create-own`) for
+    /// the people this workspace's door or an invitation into it let in, as
     /// many of them as a person asks for, sharing this many gigabytes per
     /// person: 10 when the flag is not given.
     #[arg(
@@ -1423,6 +1424,9 @@ pub(crate) async fn run(
             })
             .map_err(|error| anyhow::anyhow!("read whose own workspaces are whose: {error}"))?;
         let workspace = governed_room(&workspaces, &shown, &id_file, &store, &root).await?;
+        // Its own workspaces are for the people this workspace's door, or an
+        // invitation into it, let in: never for anyone holding a root alone.
+        workspaces.admit_own_through(&workspace);
         // The certificate this host serves the workspace with: a build renamed
         // the host's own after a workspace was made with it, and the host took
         // the record's back (`Workspaces::serving_certificate`). Every governed

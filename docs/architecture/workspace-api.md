@@ -173,5 +173,16 @@ also make one; a minted grant, or one certified for one workspace directly,
 enters only its own and makes none. The relay asks for no parent and no site
 workspace first: a workspace's roster admits devices one by one, each by an
 invitation, and the grant's certificate chain is checked at that join and at
-every handshake after. Only a person the relay never let in (through its
-site's door, or an invitation) is refused a first workspace of their own.
+every handshake after.
+
+A workspace of one's own is for a person the site let in. The relay names its
+site's home workspace (`Workspaces::admit_own_through`), and makes a new
+workspace only for its own person, a member of the home workspace (its door or
+an invitation admitted them), a person an invitation into it still names, or a
+person who already keeps workspaces of their own there. Every key and agent of
+that person is the person, within its scope. Anyone else, a fresh root or any
+key it certified, is refused with the door's own refusal (`DoorRefused`, read
+back as `HostRefusal::door`), which offers the wait list when the door takes
+people by invitation. Entering a workspace a person was invited into stays
+theirs either way, and so does keeping their workspace list once they are a
+member of any workspace there.

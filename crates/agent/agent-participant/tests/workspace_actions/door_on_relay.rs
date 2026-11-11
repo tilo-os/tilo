@@ -143,8 +143,10 @@ pub async fn door_on_relay_limiting(
             "relay.tilo.test",
         ))
         .unwrap();
-    // The site's home workspace, whose door lets anyone in.
+    // The site's home workspace, whose door lets anyone in: the people it
+    // lets in make workspaces of their own here.
     let lobby = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&lobby));
     workspaces
         .publish(
             &lobby,
@@ -197,6 +199,22 @@ pub async fn approved_key(
     device: &Device,
     name: &str,
 ) -> String {
+    // The person approves on the site, where their page came in through its
+    // door: the site let them in.
+    on_relay
+        .hosted
+        .relay
+        .workspaces()
+        .unwrap()
+        .admit_listed(
+            &on_relay.lobby,
+            &tilo_relay_protocol::directory::DoorJoin {
+                user_public_key: hex::encode(root.verifying_key().to_bytes()),
+                display_name: device.cert.device_label.clone(),
+            },
+        )
+        .await
+        .unwrap();
     let door = &on_relay.door;
     let (status, asked) = json_of(
         door.dispatch(

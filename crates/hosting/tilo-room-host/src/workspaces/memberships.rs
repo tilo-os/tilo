@@ -87,6 +87,11 @@ impl Memberships {
             .is_some_and(|workspaces| workspaces.contains(workspace))
     }
 
+    /// Whether `person` is a member of any workspace here now.
+    pub(super) fn holds_any(&self, person: &[u8; 32]) -> bool {
+        self.by_person.read_recover().contains_key(person)
+    }
+
     /// The workspaces `person` is a member of, by their ids: whoever answers
     /// them in the order a person reads them sorts them.
     pub(super) fn of(&self, person: &[u8; 32]) -> Vec<String> {

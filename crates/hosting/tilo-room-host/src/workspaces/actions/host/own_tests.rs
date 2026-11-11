@@ -29,7 +29,7 @@ use tilo_user_identity::{
 use super::super::HostWorkspaceActions;
 use super::super::tests::{caller, settled};
 use crate::workspaces::tests::{governor, guest_device, test_host};
-use crate::workspaces::{OwnWorkspaceOffer, WaitListSecrets, Workspaces};
+use crate::workspaces::{IssueInvitationRequest, OwnWorkspaceOffer, WaitListSecrets, Workspaces};
 
 fn own_request(argument: Value) -> InvokeRequest {
     let mut request = super::super::tests::request("", CREATE_OWN_ROOM, argument);
@@ -60,6 +60,44 @@ async fn create_own(
     invoke(host, device, own_request(argument))
         .await
         .map(|value| serde_json::from_value(value).unwrap())
+}
+
+/// Name the home workspace whose people `workspaces` keeps workspaces of
+/// their own for, as a site's relay names its own: returns it.
+async fn home_of(workspaces: &Workspaces) -> String {
+    let home = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&home));
+    home
+}
+
+/// A host keeping workspaces of people's own for the people its home
+/// workspace lets in: returns the home.
+async fn open(workspaces: &Workspaces) -> String {
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    home_of(workspaces).await
+}
+
+/// Let `person` in as the site does for someone it invites: an invitation
+/// into `home` names them.
+async fn let_in(workspaces: &Workspaces, home: &str, person: [u8; 32]) -> Vec<u8> {
+    workspaces
+        .issue(
+            home,
+            workspaces.serving_certificate(),
+            IssueInvitationRequest {
+                request_id: rand::random(),
+                role: MemberRole::Viewer,
+                recipient_user_public_key: Some(person),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap()
+        .signed_invitation
 }
 
 async fn offered(host: &HostWorkspaceActions, device: &DeviceCert, caller: &Caller) -> Vec<String> {
@@ -122,9 +160,9 @@ async fn standing(
 #[tokio::test]
 #[expect(
     clippy::too_many_lines,
-    reason = "a stranger's own workspace from the offer through asking again"
+    reason = "a person's own workspace from the offer through asking again"
 )]
-async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
+async fn a_person_let_in_gets_a_workspace_of_their_own_and_administers_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
@@ -145,6 +183,8 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
             .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
             .unwrap()
     );
+    let home = home_of(workspaces).await;
+    let_in(workspaces, &home, guest.user_public_key).await;
     let mut offers = offered(&host, &guest, &caller(&guest)).await;
     offers.sort();
     assert_eq!(
@@ -237,6 +277,7 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
 
     // Someone else gets their own; the relay's own workspaces are no one's.
     let (_, stranger) = guest_device();
+    let_in(workspaces, &home, stranger.user_public_key).await;
     let theirs = create_own(&host, &stranger, json!({})).await.unwrap();
     assert_eq!(theirs.workspace.name, "My workspace");
     assert_ne!(theirs.workspace.workspace, created.workspace.workspace);
@@ -255,12 +296,11 @@ async fn a_person_may_keep_hundreds_of_workspaces_of_their_own_and_they_stay_qui
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces().clone();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(&workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
+    let_in(&workspaces, &home, guest.user_public_key).await;
     let mut made = Vec::new();
     let mut last = std::time::Duration::ZERO;
     for number in 0..HUNDREDS {
@@ -330,12 +370,11 @@ async fn the_account_read_lists_every_workspace_of_their_own_with_no_bound_on_ho
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces().clone();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(&workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
+    let_in(&workspaces, &home, guest.user_public_key).await;
     let first = create_own(&host, &guest, json!({"name": "Work"}))
         .await
         .unwrap();
@@ -387,10 +426,9 @@ async fn a_plan_sets_the_storage_a_persons_own_workspaces_keep() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces().clone();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(&workspaces).await;
     let (_, guest) = guest_device();
+    let_in(&workspaces, &home, guest.user_public_key).await;
     let plan = tilo_actions::remote::host_account::PlanOffer {
         id: "pro".into(),
         name: "Pro".into(),
@@ -431,12 +469,11 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces().clone();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(&workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let (_, guest) = guest_device();
+    let_in(&workspaces, &home, guest.user_public_key).await;
     let first = create_own(&host, &guest, json!({"name": "Work"}))
         .await
         .unwrap();
@@ -526,6 +563,7 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
     assert!(matches!(theirs.reason, Reason::StorageFull { .. }));
     // Another person's own workspace keeps its own budget whole.
     let (_, stranger) = guest_device();
+    let_in(&workspaces, &home, stranger.user_public_key).await;
     let other = create_own(&host, &stranger, json!({})).await.unwrap();
     assert_eq!(workspaces.storage_refusal(&other.workspace.workspace), None);
     relay.shutdown().await;
@@ -541,12 +579,11 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
     let now = tilo_clock::unix_now_ns();
     let grant_key = SigningKey::from_bytes(&rand::random());
     let grant = |scope| {
@@ -666,7 +703,9 @@ async fn a_full_workspace_of_ones_own_is_refused_and_the_account_says_so() {
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let other = workspaces.create("Lounge").await.unwrap();
+    assert!(workspaces.admit_own_through(&other.workspace));
     let (_, guest) = guest_device();
+    let_in(workspaces, &other.workspace, guest.user_public_key).await;
     let created = create_own(&host, &guest, json!({})).await.unwrap();
     let own = &created.workspace;
 
@@ -705,12 +744,11 @@ async fn a_server_key_reads_its_persons_account_and_an_agent_or_a_narrower_key_n
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
     let now = tilo_clock::unix_now_ns();
     let grant_key = SigningKey::from_bytes(&rand::random());
     let mut all = DeviceCert {
@@ -859,14 +897,13 @@ async fn a_server_key_invites_another_person_who_enters_with_a_key_of_their_own(
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
 
     // Ada's backend makes her workspace with her server key and enters it.
     let ada = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, ada.verifying_key().to_bytes()).await;
     let backend_key = SigningKey::from_bytes(&rand::random());
     let backend = certified(&ada, &backend_key, DeviceCapabilities::server_key_grant());
     let created = own_as_key(&host, &backend, json!({"name": "Applicant"})).await;
@@ -991,15 +1028,14 @@ async fn people_are_named_as_people_and_their_listing_names_what_they_were_invit
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
 
     // Ada's backend makes her workspace, enters it as her, and invites a
     // reviewer into it.
     let ada = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, ada.verifying_key().to_bytes()).await;
     let ada_person = ada.verifying_key().to_bytes();
     let backend_key = SigningKey::from_bytes(&rand::random());
     let backend = certified_as(
@@ -1151,13 +1187,12 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     let (key, owner) = governor();
     let relay = test_host(dir.path(), &key, &owner).await;
     let workspaces = relay.workspaces();
-    workspaces
-        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
-        .unwrap();
+    let home = open(workspaces).await;
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     // A person's server key makes a workspace for a customer, and keeps it.
     let root = SigningKey::from_bytes(&rand::random());
+    let_in(workspaces, &home, root.verifying_key().to_bytes()).await;
     let key = SigningKey::from_bytes(&rand::random());
     let server = certified(
         &root,
@@ -1282,7 +1317,9 @@ async fn gated_host() -> (
         .unwrap();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
-    let lounge = workspaces.create("Lounge").await.unwrap().workspace;
+    // The site's home workspace: its door, or an invitation into it, is the
+    // one way to workspaces of one's own here.
+    let lounge = home_of(&workspaces).await;
     workspaces
         .publish(
             &lounge,
@@ -1359,32 +1396,186 @@ async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
     );
 }
 
-/// A person let in makes a second and a third workspace of their own: the
-/// wait list is at the door, never in the way of someone already admitted.
+/// The wait list's refusal `result` carries: the door's own, offering the
+/// wait list it keeps, as the host refuses a person it never let in.
+fn waits(result: &Result<impl std::fmt::Debug, ActionHostError>) {
+    use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+    let Err(ActionHostError::Refused { reason }) = result else {
+        panic!("a person never let in is refused: {result:?}");
+    };
+    let door = DoorRefused::from_reason(reason)
+        .unwrap_or_else(|| panic!("the refusal is the door's: {reason}"));
+    assert_eq!(door.code, DoorRefusalCode::InvitationOnly, "{door:?}");
+    assert!(
+        door.wait_list && door.mail && door.contact.as_deref() == Some("hello@tilo.example"),
+        "the refusal offers the wait list: {door:?}"
+    );
+    assert!(door.error.contains("wait list"), "{}", door.error);
+}
+
+/// Anyone can make a root: a certificate it signed is no way past the door.
+/// A fresh root, a key of it and an agent's grant of it are each refused a
+/// workspace of their own with the door's refusal and its wait list, and the
+/// host keeps nothing for them: no workspace, no workspace list.
+#[tokio::test]
+async fn a_fresh_root_and_its_keys_are_refused_with_the_wait_list() {
+    let (host, workspaces, _, stranger, _state) = gated_host().await;
+    waits(&create_own(&host, &stranger, json!({})).await);
+    waits(&create_own(&host, &stranger, json!({"name": "Mine"})).await);
+    let root = SigningKey::from_bytes(&rand::random());
+    let grant = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    waits(
+        &settled(
+            host.as_host(&grant)
+                .invoke(&as_key(&grant), own_request(json!({"name": "Agent's"}))),
+        )
+        .await,
+    );
+    let server = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::server_key_grant(),
+    );
+    waits(
+        &settled(
+            host.as_host(&server)
+                .invoke(&as_key(&server), own_request(json!({}))),
+        )
+        .await,
+    );
+    let mut keep = own_request(json!({"list": {"workspaces": []}}));
+    keep.target.address.action = tilo_relay_session::workspaces::KEEP_PERSONAL.into();
+    waits(&invoke(&host, &stranger, keep).await);
+    for person in [stranger.user_public_key, root.verifying_key().to_bytes()] {
+        assert!(
+            workspaces.own_workspaces_of(&person).is_empty(),
+            "nothing is kept for a person never let in"
+        );
+    }
+}
+
+/// A person the site let in (the home workspace's invitation redeemed, as
+/// its door hands one) makes a second and a third workspace of their own:
+/// the wait list is at the door, never in the way of someone already in.
+/// Their agent's grant makes one too, within its scope; a key for one
+/// workspace makes none but enters its own. The stranger who only left an
+/// address keeps nothing.
 #[tokio::test]
 async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
-    let (host, workspaces, _, stranger, _state) = gated_host().await;
-    let (_, guest) = guest_device();
-    let first = create_own(&host, &guest, json!({"name": "Work"}))
+    let (host, workspaces, lounge, stranger, _state) = gated_host().await;
+    let root = SigningKey::from_bytes(&rand::random());
+    let person = root.verifying_key().to_bytes();
+    let page = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::member(),
+    );
+    let invitation = let_in(&workspaces, &lounge, person).await;
+    join_with(&workspaces, invitation, &page).await;
+    let first = create_own(&host, &page, json!({"name": "Work"}))
         .await
         .unwrap();
-    join(&workspaces, &first, &guest).await;
+    join(&workspaces, &first, &page).await;
     for name in ["Side project", "Third"] {
-        create_own(&host, &guest, json!({"name": name}))
+        create_own(&host, &page, json!({"name": name}))
             .await
             .unwrap_or_else(|error| panic!("{name}: {error:?}"));
     }
-    let mine = workspaces
-        .own()
-        .expect("this host keeps workspaces of people's own")
-        .of(&guest.user_public_key);
-    assert_eq!(mine.len(), 3, "three workspaces of their own: {mine:?}");
+    assert_eq!(workspaces.own_workspaces_of(&person).len(), 3);
+
+    // Their agent's grant, reaching all their workspaces, makes another.
+    let grant = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces),
+    );
+    let agents = own_as_key(&host, &grant, json!({"name": "Agent's"})).await;
+    assert_eq!(agents.workspace.name, "Agent's");
+    let mine = workspaces.own_workspaces_of(&person);
+    assert_eq!(mine.len(), 4, "the grant's is the person's own: {mine:?}");
+
+    // A key for one of them makes none, and enters that one.
+    let work: [u8; 16] = hex::decode(first.workspace.workspace.replace('-', ""))
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let narrow = certified(
+        &root,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::agent_grant(AgentScope::Workspace(work)),
+    );
+    let refused = settled(
+        host.as_host(&narrow)
+            .invoke(&as_key(&narrow), own_request(json!({"name": "Another"}))),
+    )
+    .await;
+    assert!(
+        matches!(&refused, Err(ActionHostError::Refused { reason }) if reason.contains(NOT_YOUR_OWN)),
+        "{refused:?}"
+    );
+    let entered = own_as_key(
+        &host,
+        &narrow,
+        json!({"room": first.workspace.workspace.clone()}),
+    )
+    .await;
+    assert_eq!(entered.workspace.workspace, first.workspace.workspace);
+    assert_eq!(workspaces.own_workspaces_of(&person).len(), 4);
+
     assert!(
         workspaces
-            .own()
-            .expect("this host keeps workspaces of people's own")
-            .of(&stranger.user_public_key)
+            .own_workspaces_of(&stranger.user_public_key)
             .is_empty(),
         "the stranger who only left an address keeps nothing here"
     );
+}
+
+/// Someone a person let in invited into their workspace enters it with any
+/// key of theirs, as before, though the site never let them in: entering
+/// what they were invited into is no workspace of their own.
+#[tokio::test]
+async fn an_invited_collaborator_enters_what_they_were_invited_into() {
+    let (host, workspaces, lounge, stranger, _state) = gated_host().await;
+    let (_, ada) = guest_device();
+    let invitation = let_in(&workspaces, &lounge, ada.user_public_key).await;
+    join_with(&workspaces, invitation, &ada).await;
+    let created = create_own(&host, &ada, json!({"name": "Shared"}))
+        .await
+        .unwrap();
+    join(&workspaces, &created, &ada).await;
+    let invitation = workspaces
+        .issue(
+            &created.workspace.workspace,
+            &ada,
+            IssueInvitationRequest {
+                request_id: rand::random(),
+                role: MemberRole::Editor,
+                recipient_user_public_key: Some(stranger.user_public_key),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap()
+        .signed_invitation;
+    join_with(&workspaces, invitation, &stranger).await;
+    let entered = create_own(
+        &host,
+        &stranger,
+        json!({"room": created.workspace.workspace.clone()}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(entered.workspace.workspace, created.workspace.workspace);
+    // Their workspace list is kept: they take part here.
+    let mut keep = own_request(json!({"list": {"workspaces": []}}));
+    keep.target.address.action = tilo_relay_session::workspaces::KEEP_PERSONAL.into();
+    invoke(&host, &stranger, keep).await.unwrap();
+    // A workspace of their own is still the door's to give.
+    waits(&create_own(&host, &stranger, json!({"name": "Mine"})).await);
 }

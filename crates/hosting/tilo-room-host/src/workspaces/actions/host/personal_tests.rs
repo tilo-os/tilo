@@ -95,6 +95,24 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
     let root = SigningKey::from_bytes(&rand::random());
+    // The site let the person in: an invitation into its home names them.
+    let home = workspaces.create("Lounge").await.unwrap().workspace;
+    assert!(workspaces.admit_own_through(&home));
+    workspaces
+        .issue(
+            &home,
+            workspaces.serving_certificate(),
+            crate::workspaces::IssueInvitationRequest {
+                request_id: rand::random(),
+                role: tilo_peer_state::join::MemberRole::Viewer,
+                recipient_user_public_key: Some(root.verifying_key().to_bytes()),
+                invitee_name: None,
+                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
     let desktop = key_of(&root, "studio", DeviceCapabilities::member());
     let agent = key_of(
         &root,
@@ -205,6 +223,17 @@ async fn a_persons_keys_read_the_list_their_devices_kept_with_the_workspaces_her
         DeviceCapabilities::member(),
     );
     assert!(read(&host, &stranger).await.workspaces.is_empty());
+    // Nor keeps one: the site never let them in, and nothing here is theirs.
+    assert!(
+        invoke(
+            &host,
+            &stranger,
+            KEEP_PERSONAL,
+            json!({"list": {"workspaces": []}})
+        )
+        .await
+        .is_err()
+    );
 
     // The list stays across a restart.
     relay.shutdown().await;

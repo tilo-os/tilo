@@ -260,6 +260,23 @@ impl DoorRefused {
         }
         self
     }
+
+    /// The refusal as a host action's refusal reason: its JSON, which
+    /// [`Self::from_reason`] reads back typed. A host refuses its own
+    /// operations this way when the person asking was never let in through
+    /// its site's door, so whoever asked hears the door's answer, wait list
+    /// included.
+    #[must_use]
+    pub fn to_reason(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| self.error.clone())
+    }
+
+    /// The door's refusal an action's refusal reason carries, when it carries
+    /// one ([`Self::to_reason`]).
+    #[must_use]
+    pub fn from_reason(reason: &str) -> Option<Self> {
+        serde_json::from_str(reason).ok()
+    }
 }
 
 /// The wait list a door keeps for a workspace that takes people by

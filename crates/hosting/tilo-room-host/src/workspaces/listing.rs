@@ -163,7 +163,7 @@ impl Listings {
 
     /// Whether `workspace`'s door admits only people invited or
     /// pre-admitted.
-    fn invites_only(&self, workspace: &str) -> bool {
+    pub(super) fn invites_only(&self, workspace: &str) -> bool {
         self.invitation_only.lock_recover().contains(workspace)
     }
 
@@ -387,7 +387,7 @@ impl Workspaces {
     /// spent: one from a member, or the one its door hands a person it lets
     /// in. Either is bound to them, so an invitation-only door still knows
     /// whom it let in when they come back to redeem it.
-    async fn invited(&self, workspace: &str, user: [u8; 32], now: u64) -> bool {
+    pub(super) async fn invited(&self, workspace: &str, user: [u8; 32], now: u64) -> bool {
         let Ok(state) = self.workspace(workspace).await else {
             return false;
         };

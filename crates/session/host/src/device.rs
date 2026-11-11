@@ -907,8 +907,18 @@ impl HostRefusal {
         }
     }
 
-    /// `reason` as the host said it, typed where it is a [`Refusal`]'s text.
+    /// `reason` as the host said it, typed where it is a [`Refusal`]'s text, or the refusal of
+    /// the site's door when the host turned away a person it never let in.
     fn said(code: &str, reason: &str) -> Self {
+        if let Some(door) = tilo_relay_protocol::directory::DoorRefused::from_reason(reason) {
+            return Self {
+                code: Self::NOT_ADMITTED.to_owned(),
+                message: door.error.clone(),
+                refusal: None,
+                retry_after_ms: None,
+                door: Some(door),
+            };
+        }
         let refusal = Refusal::from_reason(reason);
         Self {
             code: code.to_owned(),
@@ -1164,5 +1174,34 @@ mod tests {
         ));
         let admitted = HostRefusal::from(CertifyError::Denied("not in".into()));
         assert_eq!(admitted.code, HostRefusal::NOT_ADMITTED);
+    }
+
+    /// A host turning away a person its site never let in says it as the site's door does: the
+    /// refusal reads as not admitted, with the door's wait list for whoever shows it.
+    #[test]
+    fn a_host_refusing_a_person_never_let_in_answers_the_doors_refusal() {
+        use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+        let door = DoorRefused {
+            code: DoorRefusalCode::InvitationOnly,
+            error: "tilo.test takes people by invitation".into(),
+            wait_list: true,
+            contact: Some("hello@tilo.test".into()),
+            mail: true,
+        };
+        let refusal = HostRefusal::of(&ActionHostError::Refused {
+            reason: door.to_reason(),
+        });
+        assert_eq!(refusal.code, HostRefusal::NOT_ADMITTED);
+        assert_eq!(refusal.message, door.error);
+        assert_eq!(refusal.door.as_ref(), Some(&door));
+        assert!(matches!(
+            CertifyError::from(refusal),
+            CertifyError::Denied(why) if why == door.error
+        ));
+        // A host account's typed refusal is not the door's.
+        let plain = HostRefusal::of(&ActionHostError::Refused {
+            reason: "no such workspace".into(),
+        });
+        assert_eq!(plain.door, None);
     }
 }

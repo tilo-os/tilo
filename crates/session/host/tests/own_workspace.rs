@@ -93,6 +93,8 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
             .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
             .unwrap()
     );
+    // For the people the Lounge's door let in, as Bob's tab was.
+    assert!(workspaces.admit_own_through(&lounge.workspace));
 
     // The first time, the host makes it, and this device redeems the invitation: the workspace
     // admits this very key, and it is Bob's, not the Lounge. It is the one the tab named: a tab

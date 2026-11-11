@@ -63,8 +63,11 @@ pub enum HostOperation {
     /// this host, and invite them into it; or invite them again into a
     /// workspace they were invited into, at the role they hold there, so
     /// another device of theirs (a key of theirs) enters it as them.
-    /// Anyone's, on a host that keeps workspaces of people's own
+    /// Anyone's to ask, on a host that keeps workspaces of people's own
     /// (`crate::workspaces::OwnWorkspaceOffer`); the door says whether it does.
+    /// Making a new one is only for a person the site let in through its home
+    /// workspace, which the handler checks against the host's membership
+    /// records: anyone else hears the door's refusal and its wait list.
     CreateOwnWorkspace,
     /// Delete a workspace of the caller's own person here, with everything
     /// the host keeps of it; the host's person deletes any it governs. Which
@@ -74,7 +77,8 @@ pub enum HostOperation {
     /// all its person's workspaces, as for making one.
     DeleteOwnWorkspace,
     /// Keep the caller's person's workspace list here, as one of their own
-    /// devices holds it: anyone's for their own list, never an agent's grant.
+    /// devices holds it: anyone's for their own list once the site let them in
+    /// or they are a member of a workspace here, never an agent's grant.
     KeepPersonalList,
     /// Read the caller's person's workspace list: anyone's for their own
     /// list; an agent's grant reads what its scope reaches.
