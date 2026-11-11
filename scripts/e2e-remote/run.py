@@ -34,7 +34,10 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
    of step 5 is.
 9. The person's third device lists the second among their devices (`tilo_devices`), as the
    first does, so that `--device <name>` can name it there.
-10. C, another person's device, is refused at B's door.
+10. A person at another machine watches that tab: B's person shares the Browser's window with
+    the workspace from the desk, A asks to watch it, and A's desk holds the window's picture in
+    the tab that stood for it. A picture of each screen is kept.
+11. C, another person's device, is refused at B's door.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
 """
@@ -495,6 +498,8 @@ ip -o addr show dev "$dev"
             self.step("E13", "The person's third device lists the second among their devices "
                              "(tilo_devices)",
                       lambda res: self.third_lists_second(d, b, res), "E10")
+            self.step("E14", "A's person watches the Browser window B shares, in its tab on A's desk",
+                      lambda res: self.window_watched(a, b, res), "E10")
             self.step("E09", "A device of another person is refused at B's door",
                       lambda res: self.stranger(b, c, res), "E03")
         finally:
@@ -1057,6 +1062,83 @@ ip -o addr show dev "$dev"
         if not self.third_made:
             raise Failed("no third device was made")
         self.reachable(d, b, res)
+
+    def window_watched(self, a: Box, b: Box, res: Result) -> None:
+        """B's person shares the Browser's window with the workspace, as its window menu does, and
+        A, their other device, asks to watch it: A's desk then holds the window's picture in the
+        tab that stood for it. What a person reviewing the tab from another machine sees."""
+        def desk(box: Box) -> dict:
+            dump = box.vm.state()
+            return dump.get("state") or dump
+
+        def browser_window(state: dict) -> tuple:
+            for workspace in (state.get("workspace_tree") or {}).get("workspaces") or []:
+                for strip in workspace.get("strips") or []:
+                    for group in strip.get("window_groups") or []:
+                        for tab in group.get("tabs") or []:
+                            tile = tab.get("tile") or {}
+                            if any((tile.get(kind) or {}).get("app_id") == BROWSER
+                                   for kind in ("Foreign", "LocalApp")):
+                                return group.get("id"), tab.get("id")
+            return None, None
+
+        def row_of(box: Box, action: str, within: str) -> dict | None:
+            for row in self.rows(box, ""):
+                rid = str(row.get("id", ""))
+                if rid.split("\x1f")[-1] == action and within in rid + str(row.get("provider", "")):
+                    return row
+            return None
+
+        self.person_opens_browser(b, res)
+        on_b = desk(b)
+        group, tab = browser_window(on_b)
+        room = next((held.get("room") for held in on_b.get("held_workspaces") or []
+                     if held.get("room")), None)
+        res.facts.update(group=group, tab=tab, workspace=room)
+        if not group or not tab or not room:
+            raise Failed(f"B's desk does not hold the Browser's window in a workspace it shares: "
+                         f"group {group}, tab {tab}, workspace {room}")
+        share = self.find_row(b, "share-window", "share") or self.find_row(b, "share-window")
+        if share is None:
+            raise Failed("B's desk lists no share-window action")
+        res.facts["shared"] = b.vm.invoke(share["provider"], share["id"],
+                                          {"group": str(group), "on": True})
+        try:
+            watch = row_of(a, "watch", "window-share")
+            if watch is None:
+                res.facts["watch_rows"] = [str(row.get("id")) for row in self.rows(a, "")
+                                           if "share" in str(row.get("id"))][:40]
+                raise Failed("A's session lists no action to watch a shared window")
+            res.facts["watched"] = a.vm.invoke(watch["provider"], watch["id"],
+                                               {"tab": str(tab), "room": room})
+
+            def held_on_a() -> list:
+                return [row for row in self.rows(a, "")
+                        if "desktop.peer-surface" in str(row.get("id")) + str(row.get("provider"))]
+
+            rows = wait_until(held_on_a, 120, 2.0)
+            res.facts["peer_surface_rows"] = json.dumps(rows or [], ensure_ascii=False)[:1500]
+            viewers = desk(b).get("sharing")
+            res.facts["sharing_on_b"] = json.dumps(viewers, ensure_ascii=False)[:600]
+            for box in (a, b):
+                try:
+                    box.vm.shot(self.out / f"shot-watch-{box.letter}.png")
+                except VmError as exc:
+                    res.facts[f"shot_{box.letter}"] = str(exc)[:200]
+            if not rows:
+                res.facts["windows_on_a"] = a.vm.raw({"op": "windows"})
+                raise Failed("A's desk never held the window B shares: no shared window's "
+                             "resource is listed there")
+            if "Live" not in res.facts["peer_surface_rows"] and not viewers:
+                raise Failed("A's desk holds the shared window's tab and no picture of it came: "
+                             f"{res.facts['peer_surface_rows'][:400]}; B says of its viewers: "
+                             f"{res.facts['sharing_on_b'][:200]}")
+        finally:
+            # The share ends with the step: what follows finds B as it was.
+            try:
+                b.vm.invoke(share["provider"], share["id"], {"group": str(group), "on": False})
+            except VmError as exc:
+                res.facts["unshared"] = str(exc)[:200]
 
     def stranger(self, b: Box, c: Box, res: Result) -> None:
         # C runs beside B in the place of the person's other devices.
