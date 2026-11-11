@@ -253,6 +253,9 @@ pub(super) async fn subscribe(
         SubscribeReplayCompletion::Ready(handle) => handle,
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
     };
+    // Captured: whatever the replay waits on from here is its own page's
+    // network, which no other page's replay may wait behind.
+    ticket.authority.release_slot();
     session.metrics.inc_subscribes();
     Ok(Subscribed::Replaying((
         workspace_id,
