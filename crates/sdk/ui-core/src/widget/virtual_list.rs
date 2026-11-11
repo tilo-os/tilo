@@ -284,8 +284,8 @@ type ReorderValidator<M> =
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 use super::row_selection::selection_sink;
 pub use super::row_selection::{
-    PaintedRowLifts, RowBuild, RowContentBox, RowLift, RowSelection, RowSelectionSink,
-    row_content_box,
+    PaintedRowChevrons, PaintedRowLifts, RowBuild, RowChevron, RowContentBox, RowLift,
+    RowSelection, RowSelectionSink, row_content_box,
 };
 
 struct MountedRow<K> {
@@ -515,6 +515,9 @@ pub struct VirtualList<M: ListModel> {
     /// The selection lifts the last painted frame drew for its rows, and what those rows show
     /// ([`crate::widget::RowLift`]): an audit holds a lift to the row it selects.
     painted_lifts: Vec<crate::widget::RowLift>,
+    /// The chevrons the last painted frame drew for the rows of its tree, and the line of the row
+    /// each folds ([`crate::widget::RowChevron`]): an audit holds a chevron to its row's line.
+    painted_chevrons: Vec<crate::widget::virtual_list::RowChevron>,
     /// Whether a row with an item opens into it where it stands, or the item opens in front of
     /// the list ([`Self::in_place`]).
     in_place: bool,
@@ -744,6 +747,7 @@ impl<M: ListModel> VirtualList<M> {
             ),
             lift: f64::from(crate::tokens::Spacing::BASE.s2),
             painted_lifts: Vec::new(),
+            painted_chevrons: Vec::new(),
             in_place: true,
             row_line: f64::from(crate::tokens::Metrics::BASE.row_single),
             stance: RowStance::Bleed,
@@ -1737,6 +1741,12 @@ where
     }
 }
 
+impl<M: ListModel> crate::widget::virtual_list::PaintedRowChevrons for VirtualList<M> {
+    fn painted_row_chevrons(&self) -> Vec<crate::widget::virtual_list::RowChevron> {
+        self.painted_chevrons.clone()
+    }
+}
+
 impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
     fn painted_row_lifts(&self) -> Vec<crate::widget::RowLift> {
         self.painted_lifts.clone()
@@ -1748,7 +1758,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
-        dyn crate::widget::PaintedRowLifts
+        dyn crate::widget::PaintedRowLifts,
+        dyn crate::widget::virtual_list::PaintedRowChevrons
     );
 
     fn set_interaction_environment(

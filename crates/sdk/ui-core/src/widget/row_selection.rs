@@ -42,6 +42,25 @@ pub struct RowBuild {
     pub chevron_column: f32,
 }
 
+/// A chevron a list painted for one of its tree's rows, as it painted it: the box it takes and
+/// the row's own line it folds.
+///
+/// An audit holds the one to the other: a chevron that centres anywhere but the line it folds
+/// hangs off the words beside it, and a person reading down the tree loses the row it belongs to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct RowChevron {
+    /// The box the chevron was drawn in.
+    pub rect: Rect,
+    /// The row's own line: the box its words, its leading control and its lift stand in.
+    pub line: Rect,
+}
+
+/// A list that paints the chevrons of its tree says where it painted them.
+pub trait PaintedRowChevrons {
+    /// The chevrons the last painted frame drew, one for each row of its tree that shows one.
+    fn painted_row_chevrons(&self) -> Vec<RowChevron>;
+}
+
 /// A row that paints the selection the list holds for it, asked for through
 /// [`capability_mut`](crate::widget::capability::capability_mut): a view wraps the row it
 /// places in its swipe and its hover toolbar, and the list reaches the row through them.

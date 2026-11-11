@@ -26,6 +26,7 @@ impl<M: ListModel> VirtualList<M> {
         presence: &PresenceCtx,
     ) {
         self.painted_lifts.clear();
+        self.painted_chevrons.clear();
         self.corners = crate::widget::scrollbar::SurfaceCorners::seen(theme, transform);
         self.reduce_motion = theme.reduce_motion;
         if self.reduce_motion {
@@ -234,15 +235,21 @@ impl<M: ListModel> VirtualList<M> {
                 },
             );
             if let Some(marks) = tree.as_ref() {
-                let line = if open.as_ref() == Some(&row.key) && row_rect.height() > line_height {
-                    Rect::new(
-                        row_rect.x0,
-                        row_rect.y0,
-                        row_rect.x1,
-                        row_rect.y0 + line_height,
-                    )
+                // The chevron and the guides hang on the row's own box: the one its text, its
+                // leading control and the lift stand in. A finger's row takes a taller slot than
+                // its box (a collection row a touch can hit), so centring the chevron on the slot
+                // would drop it below the words it folds.
+                let shown = row.widget.get_rect();
+                let shown = if shown.height() > 0.0 {
+                    shown
                 } else {
                     row_rect
+                };
+                let line = Rect::new(row_rect.x0, shown.y0, row_rect.x1, shown.y1);
+                let line = if open.as_ref() == Some(&row.key) && line.height() > line_height {
+                    Rect::new(line.x0, line.y0, line.x1, line.y0 + line_height)
+                } else {
+                    line
                 };
                 if self.indent_guides {
                     chevrons.paint_guides(
@@ -258,6 +265,10 @@ impl<M: ListModel> VirtualList<M> {
                 // the rows, so its chevron reads folded.
                 let folded = marks.is_folded(&row.key) || open.as_ref() == Some(&row.key);
                 chevrons.paint(marks, scene, transform, theme, &row.key, line, folded);
+                if let Some(rect) = chevrons.rect(marks, theme, &row.key, line, folded) {
+                    self.painted_chevrons
+                        .push(crate::widget::virtual_list::RowChevron { rect: rect.0, line });
+                }
             }
             if clipped.is_some() {
                 scene.pop_layer();

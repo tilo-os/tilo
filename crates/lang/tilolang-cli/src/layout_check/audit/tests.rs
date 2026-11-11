@@ -1849,6 +1849,33 @@ fn a_lift_reaching_past_what_its_row_shows_is_a_selection_bleed() {
     assert_eq!(reach_past(empty), None, "no lift at all");
 }
 
+/// A chevron folds the words of its row, so it centres on the line they stand on: the step in
+/// front of them is the chevron's column, not a second baseline beside it.
+#[test]
+fn a_chevron_centres_on_the_line_of_the_row_it_folds() {
+    use super::text::chevron_off_line;
+    let chevron = |rect: [f64; 4], line: [f64; 4]| ui::widget::virtual_list::RowChevron {
+        rect: ui::kurbo::Rect::new(rect[0], rect[1], rect[2], rect[3]),
+        line: ui::kurbo::Rect::new(line[0], line[1], line[2], line[3]),
+    };
+    // A row's line, and the chevron in the step in front of its words.
+    let line = [46.0, 56.0, 366.0, 84.0];
+    assert_eq!(
+        chevron_off_line(chevron([24.0, 63.0, 46.0, 77.0], line)),
+        None,
+        "one line: the chevron and the words share a centre"
+    );
+    // A chevron riding the taller slot a finger's row takes: 10 px under the words.
+    let off = chevron_off_line(chevron([24.0, 73.0, 46.0, 87.0], line))
+        .expect("a chevron below its line");
+    assert!((off - 10.0).abs() < 0.5, "{off}");
+    // A row with no line of its own (nothing laid out) says nothing.
+    assert_eq!(
+        chevron_off_line(chevron([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0])),
+        None
+    );
+}
+
 /// The one main action a window declares stands in its bar as the primary button: a bar
 /// that shows it as every other action, behind its door, or not at all is what a person
 /// cannot tell from the rest of the row.

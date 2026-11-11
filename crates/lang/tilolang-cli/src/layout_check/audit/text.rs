@@ -82,6 +82,7 @@ fn measure_walk(
     measure_one(widget, keys, clip, text, out);
     cut_text(widget, keys, text, out);
     selection_lifts(widget, keys, out);
+    chevrons_on_their_lines(widget, keys, out);
     prompt_fits(widget, keys, out);
     let inner = widget
         .child_clip_rect()
@@ -217,6 +218,45 @@ fn selection_lifts(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>)
             ),
         });
     }
+}
+
+/// A chevron a list painted off the line of the row it folds: the box a tree's chevron takes holds
+/// the step in front of its row's words, so the two share one centre ([`ui::widget::virtual_list::RowChevron`]).
+/// A chevron riding a taller slot than its row — the room a finger's row takes, a row's own height
+/// under enlarged text — hangs under the words it folds.
+fn chevrons_on_their_lines(widget: &dyn Widget, keys: &[String], out: &mut Vec<Problem>) {
+    let Some(chevrons) = ui::widget::capability::capability::<
+        dyn ui::widget::virtual_list::PaintedRowChevrons,
+    >(widget)
+    .map(ui::widget::virtual_list::PaintedRowChevrons::painted_row_chevrons) else {
+        return;
+    };
+    for chevron in chevrons {
+        let Some(off) = chevron_off_line(chevron) else {
+            continue;
+        };
+        out.push(Problem {
+            kind: Kind::ChevronOffLine,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: widget.name().to_owned(),
+            id: widget.test_id().map(str::to_owned),
+            detail: format!(
+                "its chevron centres {off:.0} px off the line of the row it folds: {} against {}",
+                chevron.rect.center().y,
+                chevron.line.center().y
+            ),
+        });
+    }
+}
+
+/// How far a chevron's centre stands from its row's line centre, past the half pixel a layout on
+/// fractions of a pixel leaves.
+pub(super) fn chevron_off_line(chevron: ui::widget::virtual_list::RowChevron) -> Option<f64> {
+    if chevron.line.height() <= 0.0 {
+        return None;
+    }
+    let off = (chevron.rect.center().y - chevron.line.center().y).abs();
+    (off > 0.5).then_some(off)
 }
 
 /// A prompt a field painted wider than the line it prompts for: the text a person reads cut off

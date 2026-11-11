@@ -280,11 +280,23 @@ impl<M: ListModel> VirtualList<M> {
     /// The row's own line, where a row that grew into its item still starts: its chevron and
     /// the way back to the part of it on screen hang on the line, not beside the document the
     /// row opened into, which may run far below it.
+    ///
+    /// The line is the box the row's content stands in — the one its text, its leading control
+    /// and its lift share — across the slot the list gives it. A finger's row takes a taller slot
+    /// than its box, so the slot's own centre is not the line's.
     pub(super) fn line_box(&self, key: &M::Key, row: Rect) -> Rect {
-        if self.open.as_ref() == Some(key) && row.height() > self.row_line {
-            Rect::new(row.x0, row.y0, row.x1, row.y0 + self.row_line)
+        let own = self
+            .mounted
+            .iter()
+            .find(|mounted| &mounted.key == key)
+            .map(|mounted| mounted.widget.get_rect())
+            .filter(|own| own.height() > 0.0)
+            .unwrap_or(row);
+        let line = Rect::new(row.x0, own.y0, row.x1, own.y1);
+        if self.open.as_ref() == Some(key) && line.height() > self.row_line {
+            Rect::new(line.x0, line.y0, line.x1, line.y0 + self.row_line)
         } else {
-            row
+            line
         }
     }
 

@@ -152,6 +152,8 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::UnruledBody
             // No page of this fixture leads its heading with a control, and none stands on a
             // phone's screen.
+            // Its trees fold rows on the line those rows' words stand on.
+            | Kind::ChevronOffLine
             | Kind::IndentedBody => "(no view)",
         };
         assert_eq!(

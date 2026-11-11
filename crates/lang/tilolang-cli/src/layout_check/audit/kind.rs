@@ -31,6 +31,9 @@ pub enum Kind {
     DoubleSelection,
     /// A screen made for a narrow window holds its content nearer than a gutter to the edge.
     CrampedGutter,
+    /// A chevron folding a tree's row stands off the line of the row it folds: the words, the
+    /// leading control and the chevron of one row read as two lines.
+    ChevronOffLine,
     /// One screen offers the same way to add something several times: two add affordances in one
     /// list, or the same add label on two controls.
     SeveralAdds,
@@ -198,6 +201,7 @@ impl Kind {
             Self::RaggedColumns => "ragged-columns",
             Self::DoubleSelection => "double-selection",
             Self::CrampedGutter => "cramped-gutter",
+            Self::ChevronOffLine => "chevron-off-line",
             Self::SeveralAdds => "several-adds",
             Self::CodedName => "coded-name",
             Self::UnsharedVerb => "unshared-verb",
