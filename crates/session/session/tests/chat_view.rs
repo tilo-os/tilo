@@ -1053,3 +1053,128 @@ fn typing_in_the_ask_conversations_composer_posts_on_enter_and_draws_the_text_on
     });
     common::shot(&mut session, "ask-composer-second.png");
 }
+
+/// Post `count` messages into `channel` through its own `post`, the verb its composer's send
+/// runs, so the transcript is longer than any place the canvas gives it.
+fn post_many(session: &mut Session, channel: &str, count: usize) {
+    let item = session
+        .service_resources()
+        .into_iter()
+        .find(|spec| {
+            (spec.id.as_str().ends_with(&format!(":{channel}"))
+                || spec.id.as_str().ends_with(&format!("/channels/{channel}")))
+                && spec.actions.iter().any(|action| action.id == "post")
+        })
+        .map(|spec| spec.id.as_str().to_owned())
+        .unwrap_or_else(|| {
+            panic!(
+                "the channel offers post: {:?}",
+                session
+                    .service_resources()
+                    .into_iter()
+                    .map(|spec| spec.id.as_str().to_owned())
+                    .collect::<Vec<_>>()
+            )
+        });
+    for index in 0..count {
+        let mut arguments = Map::new();
+        arguments.insert("channel".to_owned(), json!(channel));
+        arguments.insert(
+            "text".to_owned(),
+            json!(format!("line {index:02} of the transcript")),
+        );
+        session
+            .invoke(&item, "post", &arguments)
+            .unwrap_or_else(|error| panic!("post {index}: {error:?}"));
+    }
+}
+
+/// A conversation forty messages long in a place 520 px tall — the height the system places a
+/// place at — keeps its page inside the place: the composer stands within the place's own
+/// frame, the transcript scrolls in the room above it, and the newest message is drawn.
+#[test]
+fn a_conversation_in_a_520_px_place_keeps_its_composer_in_the_place() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let mut session = session(root.path());
+    place_at(&mut session, CHANNEL, 720, 520);
+    common::until(&mut session, "the channel's page", |session| {
+        session.shell_says(MESSAGE)
+    });
+    post_many(&mut session, CHANNEL_ID, 40);
+    let newest = "line 39 of the transcript";
+    common::until(&mut session, "the newest message", |session| {
+        session.shell_says(newest)
+    });
+    // Where the place stands on the desk, as the shell lays it out: the frame's own box, the
+    // largest node named for the channel (the frame's group holds the page's heading of the
+    // same words inside it).
+    let (_, frame_y, _, frame_h) = session
+        .shell_text_bounds_all("#design-crit")
+        .into_iter()
+        .fold(None, |held: Option<(f64, f64, f64, f64)>, rect| {
+            Some(match held {
+                Some(best) if best.2 * best.3 >= rect.2 * rect.3 => best,
+                _ => rect,
+            })
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "the place stands on the desk: {:?}",
+                session.accessible_labels()
+            )
+        });
+    assert!(
+        (frame_h - 520.0).abs() <= 1.0,
+        "the place stands 520 tall: {frame_h}"
+    );
+    let (_, clip_y, _, clip_h) = session.shell_scroll_clip(newest).unwrap_or_else(|| {
+        panic!(
+            "the transcript draws through its scroll view: {:?}",
+            session.accessible_labels()
+        )
+    });
+    let (_, composer_y, _, composer_h) = session
+        .shell_text_bounds("Message #design-crit")
+        .unwrap_or_else(|| {
+            panic!(
+                "the page offers its composer: {:?}",
+                session.accessible_labels()
+            )
+        });
+    assert!(
+        clip_h > 0.0,
+        "the transcript keeps a room to scroll in: {clip_h}"
+    );
+    assert!(
+        clip_y + clip_h <= composer_y + 1.0,
+        "the transcript's room ends over the composer: {} vs {composer_y}",
+        clip_y + clip_h
+    );
+    assert!(
+        composer_y + composer_h <= frame_y + 520.0 + 1.0,
+        "the composer stands inside the place: it ends at {}, the place at {}",
+        composer_y + composer_h,
+        frame_y + 520.0
+    );
+    let (_, newest_y, _, newest_h) = session.shell_drawn_text_bounds(newest).unwrap_or_else(|| {
+        panic!(
+            "the newest message is drawn: {:?}",
+            session.accessible_labels()
+        )
+    });
+    assert!(
+        newest_y >= clip_y - 0.5 && newest_y + newest_h <= clip_y + clip_h + 0.5,
+        "the newest message is drawn in the transcript's room: {newest_y}..{}, the room \
+         {clip_y}..{}",
+        newest_y + newest_h,
+        clip_y + clip_h
+    );
+    // The transcript is longer than its room: it scrolls, rather than the page growing past the
+    // place.
+    assert!(
+        clip_h < 520.0,
+        "the transcript's room is less than the whole place: {clip_h}"
+    );
+    common::shot(&mut session, "place-520.png");
+}
