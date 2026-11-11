@@ -442,7 +442,10 @@ fn the_bell_opens_the_centre_and_the_readings_open_quick_settings() {
         "a press on the bell opens the notification centre"
     );
 
-    let readings = Point::new((bell.x1 + bar.tray_pill_rect.x1) / 2.0, bell.center().y);
+    let readings = Point::new(
+        f64::midpoint(bell.x1, bar.tray_pill_rect.x1),
+        bell.center().y,
+    );
     assert!(click(&mut bar, readings));
     assert_eq!(
         chrome.borrow().intents.as_slice(),
