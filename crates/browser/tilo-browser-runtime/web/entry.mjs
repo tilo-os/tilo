@@ -322,6 +322,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // link it did not use.
   const {damaged = null, ...named} = route;
   route = named;
+  // What a desktop's first frame needs beyond the runtime is fetched while
+  // the page is let in, not once the desktop mounts and lays out.
+  if (route.mode === 'desktop') deps.prefetchDesktop?.();
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which workspace it is getting into, under which entry,
   // and how its links read once the runtime is in, before admission.

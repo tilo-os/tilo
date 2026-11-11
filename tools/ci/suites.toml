@@ -598,7 +598,7 @@ name = "browser-runtime-web"
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. bundle-update runs the split modules' loader that wasm-split's
 # main.rs writes.
-inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
+inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/browser/tilo-web-desktop/src/lazy.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/app-bar.test.mjs",
   "crates/browser/tilo-browser-runtime/web/first-run.test.mjs",

@@ -157,6 +157,25 @@ export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import(
     if(typeof module==='string')(await load()).prefetch(module);
   })().catch(()=>{});
 }
+/** The modules split off the start module that every desktop's first layout
+ * asks for (tilo-web-desktop's `lazy.rs` says which, at each module): the
+ * action palette, which the first window to lay out asks for, and desktop
+ * search, which the desktop asks for as it first lays out. */
+export const FIRST_LAYOUT_MODULES=Object.freeze(['action_palette','desktop_search']);
+/** Get a desktop's first frame ready while the page is let in: the app
+ * listing (`apps.json`, a few kilobytes) now, and once the code the entry
+ * needs is in, the modules the desktop's first layout asks for, which are
+ * small. Left to the layout, each was a round trip, a download and a
+ * compile after the desktop mounted, before it could draw. A bundle that
+ * does not split them answers each from its start module. */
+export function prefetchDesktop({fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=peerCode}={}){
+  void applications(fetch).catch(()=>{});
+  void (async()=>{
+    await after();
+    const compiled=await load();
+    for(const name of FIRST_LAYOUT_MODULES)void compiled.prefetch(name)?.catch?.(()=>{});
+  })().catch(()=>{});
+}
 /** The name `apps.json` gives `app`, or `null`: what the bar over one app calls it. */
 export async function applicationName(app,{fetch=globalThis.fetch}={}){
   const listed=(await applications(fetch)).find(entry=>entry.id===app);

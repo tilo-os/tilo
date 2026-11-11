@@ -106,6 +106,36 @@ test('a page whose early compile failed has init fetch the module itself', async
   release();
 });
 
+test('a desktop’s first-layout modules are asked for once the entry’s code is in, the app listing at once', async () => {
+  const {release} = fixture();
+  const {prefetchDesktop, FIRST_LAYOUT_MODULES} = await loadHost();
+  release();
+  const steps = [];
+  let peerIn;
+  const after = () => new Promise(resolve => { peerIn = () => { steps.push('peer'); resolve(); }; });
+  const fetch = async url => { steps.push(`fetch ${String(url).split('/').pop()}`); return {ok: true, json: async () => ({applications: []})}; };
+  const load = async () => ({prefetch: name => { steps.push(`prefetch ${name}`); return Promise.resolve(true); }});
+  prefetchDesktop({fetch, load, after});
+  await settle();
+  assert.deepEqual(steps, ['fetch apps.json']);
+  peerIn();
+  await settle();
+  assert.deepEqual(steps, ['fetch apps.json', 'peer', ...FIRST_LAYOUT_MODULES.map(name => `prefetch ${name}`)]);
+});
+
+test('each first-layout module is one tilo-web-desktop splits off and says its first layout asks for', () => {
+  const {FIRST_LAYOUT_MODULES} = {FIRST_LAYOUT_MODULES: /FIRST_LAYOUT_MODULES=Object\.freeze\(\[([^\]]*)\]\)/
+    .exec(read('host.mjs'))[1].split(',').map(name => name.trim().replace(/'/g, ''))};
+  const lazy = readFileSync(new URL('../../tilo-web-desktop/src/lazy.rs', web), 'utf8');
+  assert.ok(FIRST_LAYOUT_MODULES.length > 0);
+  for (const name of FIRST_LAYOUT_MODULES) {
+    const at = lazy.indexOf(`module = "${name}"`);
+    assert.ok(at > 0, `${name} is a module lazy.rs splits off`);
+    const declared = lazy.slice(lazy.lastIndexOf('split_code!', at), at);
+    assert.match(declared, /first(ly)? lays? out|first window to lay out/, `lazy.rs says the first layout asks for ${name}`);
+  }
+});
+
 test('a split module downloads beside the shared code it needs, not after it', async () => {
   const source = readFileSync(new URL('../../../../tools/web/wasm-split/src/main.rs', web), 'utf8');
   const template = /const LOADER: &str = r#"([\s\S]*?)"#;/.exec(source)?.[1];

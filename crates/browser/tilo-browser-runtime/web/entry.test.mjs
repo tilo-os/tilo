@@ -529,6 +529,27 @@ test('the home workspace’s app in front is fetched once admitted, never before
   assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['door', 'closed']);
 });
 
+test('a desktop’s first-layout code is asked for before the door, the app’s only once admitted', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/', app: 'so.tilo.chat'};
+  const order = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtimeFake({...entering('door')}),
+    prefetchDesktop: () => order.push('prefetch desktop'),
+    prefetchApplication: app => order.push(`prefetch ${app}`),
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    enterViaHost: async () => { order.push('door'); return {workspace: 'r1'}; },
+  };
+  void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(order.slice(0, 3), ['prefetch desktop', 'door', 'prefetch so.tilo.chat']);
+});
+
 test('only a bare desktop entry under a home reopens the workspace the person last chose', () => {
   const home = {name: 'Lounge', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
   const chosen = {origin: 'https://acme.example', room: 'A'};

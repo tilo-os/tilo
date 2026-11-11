@@ -22,7 +22,7 @@ import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessag
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
 import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
-import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
+import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
@@ -925,6 +925,7 @@ export async function startEntryPage({mode}) {
     rendererUnavailable: () => renderer,
     onAdmitted: peer => { admitted = peer; letIn(peer); },
     prefetchApplication,
+    prefetchDesktop,
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {
