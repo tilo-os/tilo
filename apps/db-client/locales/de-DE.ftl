@@ -58,9 +58,6 @@ db-connections = Verbindungen
 
 ## Fenstertitel und Tabs
 
-db-tab-query-hint = SQL schreiben und gegen die offene Verbindung ausführen.
-db-tab-data-hint = Die Zeilen der ausgewählten Tabelle.
-db-tab-structure-hint = Spalten, Schlüssel und Indizes der ausgewählten Tabelle.
 
 ## Abfragebereich
 

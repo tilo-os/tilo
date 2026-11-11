@@ -113,20 +113,9 @@ toolbar-save = Save merged result
 toolbar-save-short = Save
 toolbar-saved = Save again
 toolbar-saved-short = Save
-toolbar-save-as = Save as…
 toolbar-folders = Folder list
 toolbar-compare-folders = Compare folders…
 toolbar-compare-folders-short = Folders
-
-## History
-history-title = Merged result
-history-originals = Original inputs are unavailable: base, ours and theirs were not recorded. Recorded choices are metadata only; historical change identity cannot be verified.
-history-session = Session label: { $label }
-history-choice = Recorded change { $change }: { $choice }
-history-output = Merged result
-history-none = No merged result was recorded in this version
-history-page-output = Merged result
-history-page-originals = Original inputs unavailable and recorded choices
 
 ## Opposite-only aligned source lines
 
