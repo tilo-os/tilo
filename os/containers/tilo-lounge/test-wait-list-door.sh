@@ -16,12 +16,16 @@ set -euo pipefail
 usage='usage: test-wait-list-door.sh BUNDLE WORK'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 bundle=${1:?$usage}
-work=${2:?$usage}
-rm -rf "$work"
-mkdir -p "$work"
+out=${2:?$usage}
+rm -rf "$out"
+mkdir -p "$out"
+# The run's own files stay out of the outputs: they are the whole bundle the
+# site serves. What is kept for people is the report, the screenshots and the
+# mails the door sent.
+work=$(mktemp -d)
 # shellcheck source=direct-lounge.sh
 . "$here/direct-lounge.sh"
-trap stop_lounge EXIT
+trap 'stop_lounge; rm -rf "$work"' EXIT
 
 # The mail the door sends goes to a sink this run keeps, never to a service.
 # Its address is fixed like the Lounge's own (direct-lounge.sh).
@@ -62,4 +66,8 @@ before_origin=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$work/site-before.log")
 
 node "$here/integration/wait-list-door.mjs" "$site_origin" "$work/mail" "$work/wait-list-door" "$before_origin" \
   || lounge_fail 'a stranger at the invitation-only door was not kept on its wait list'
+mkdir -p "$out/report" "$out/mail"
+cp -R "$work/wait-list-door/." "$out/report/"
+cp -R "$work/mail/." "$out/mail/" 2>/dev/null || true
+cp "$log" "$out/lounge.log" 2>/dev/null || true
 echo 'ok: a stranger saw the wait list, left an address, confirmed it from the mail, and stayed on the list'

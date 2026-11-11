@@ -261,7 +261,8 @@ impl WaitListDoor {
     /// The door's wait list, when the workspace takes people by invitation
     /// and keeps one (`settings.max` above zero): the addresses it keeps, the
     /// contact the operator named and the mail it sends from `settings.entry`
-    /// (its outbox under `directory`).
+    /// (its outbox under `directory`), naming the workspace `name` (`mail`
+    /// below).
     ///
     /// # Errors
     ///
@@ -270,6 +271,7 @@ impl WaitListDoor {
     pub fn open(
         workspaces: &Workspaces,
         workspace: &str,
+        name: &str,
         directory: &Path,
         settings: &WaitListSettings,
     ) -> anyhow::Result<Option<Self>> {
@@ -286,6 +288,7 @@ impl WaitListDoor {
                 Some(Self::mailing(
                     workspaces,
                     workspace,
+                    name,
                     mailer,
                     door,
                     templates,
@@ -315,6 +318,7 @@ impl WaitListDoor {
     fn mailing(
         workspaces: &Workspaces,
         workspace: &str,
+        name: &str,
         mailer: Arc<dyn mail::Mailer>,
         door: &str,
         templates: mail::Templates,
@@ -322,7 +326,7 @@ impl WaitListDoor {
         outbox: &Path,
     ) -> anyhow::Result<Arc<DoorMail>> {
         let mail = Arc::new(DoorMail::durable(
-            mailer, door, workspace, templates, local, outbox,
+            mailer, door, name, templates, local, outbox,
         )?);
         mail.set_eligibility(Arc::new({
             let workspaces = workspaces.clone();

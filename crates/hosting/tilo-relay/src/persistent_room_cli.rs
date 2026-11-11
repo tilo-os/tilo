@@ -1507,7 +1507,7 @@ pub(crate) async fn run(
             std::env::var_os("TILO_ROOMS_LOCAL").is_some(),
         )
         .context("read the door's mail settings")?;
-        let wait_list = door::WaitListDoor::open(&workspaces, &workspace, &state, &settings)
+        let wait_list = door::WaitListDoor::open(&workspaces, &workspace, &shown, &state, &settings)
             .context("open the door's wait list")?;
         let door = wait_list.map(std::sync::Arc::new);
         if let Some(door) = &door {
