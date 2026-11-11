@@ -5742,6 +5742,13 @@
           "name": "lists_actions",
           "doc": "The shell lists this window's actions where the person reaches them (the desktop bar's window menu): its header's actions that do not fit give way with no door of their own. Without it what does not fit goes behind the header's door.",
           "type": "bool"
+        },
+        {
+          "name": "carries",
+          "doc": "The resource the window's bar carries when a person picks it up, by its published address: a place on the canvas is dragged onto a composer, or back onto the canvas, by its own bar ([`ui.DragSource`](super::drag_source::DragSource), `shell.md` §8.1). Empty leaves the bar no source, as a foreign window's bar has nothing to carry.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "slots": [

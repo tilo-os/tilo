@@ -90,12 +90,15 @@ view desktop_frame(
 /// the frame tells the window's bar to keep its title and the shell's controls alone, the actions
 /// standing once in the desk's bar's menu.
 view frame_classic(a: Arrangement, p: ArrangementPlace, focused: Bool, lists: Bool) {
-    ui.WindowFrame(name: place_title(p), focused: focused, lists_actions: lists, fill) {
+    ui.WindowFrame(
+        name: place_title(p),
+        focused: focused,
+        lists_actions: lists,
+        carries: p.record,
+        fill,
+    ) {
         controls: {
-            row(gap: .tight, align: .center) {
-                place_handle(p)
-                frame_buttons(a, p)
-            }
+            frame_buttons(a, p)
         }
         body: {
             place_view(p, fill)
