@@ -1215,3 +1215,54 @@ emoji-picker-add-reaction = Add reaction
 quote-dismiss = Stop replying
 
 toast-reply-placeholder = Reply…
+
+## Window furniture and widget chrome, named where a screen reader reads it
+floating-window-move-hint = Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.
+widget-dialog-close = Close
+widget-dismiss = Dismiss
+widget-hand-to-agent = Hand to an agent
+widget-more = More
+widget-copy = Copy
+widget-hosted-applications = Hosted applications
+widget-searching = Searching…
+widget-search-results = Search results
+widget-loading = Loading
+widget-timeline-name = Timeline position
+widget-timeline-hint = Chronological collection. Arrow keys move, Page Up and Page Down move a screen, Home and End jump to the beginning or end; plus and minus change density.
+widget-timeline-jump = Jump to { $marker }
+widget-timeline-group = Chronological index
+widget-timeline-group-hint = Date-indexed scrollbar
+widget-shortcut-change = Change shortcut
+widget-shortcut-unavailable = That shortcut is unavailable. Activate to choose another.
+widget-chart-series = { $name } series
+widget-step-of = Step { $step } of { $total }
+widget-steps-count = { $count ->
+    [one] { $count } step
+   *[other] { $count } steps
+  }
+widget-page-of = Page { $page } of { $total }
+widget-preview-named = { $label } preview
+widget-type-to-confirm = Type { $phrase } to confirm
+widget-color-name = Colour
+widget-color-hex = Hex colour
+widget-crop-name = Crop page
+widget-crop-hint = From { $left }% across and { $top }% down to { $right }% across and { $bottom }% down
+widget-document-switch-blocked = Document switch blocked
+widget-qr-failed = Could not draw the QR code: { $error }
+media-volume = Volume
+media-position = Position
+media-more-controls = More controls
+media-play = Play
+media-pause = Pause
+media-previous = Previous track
+media-next = Next track
+media-mute = Mute
+media-unmute = Unmute
+media-like = Like
+media-unlike = Unlike
+media-lyrics = Lyrics
+media-shuffle = Shuffle
+media-repeat = Repeat
+media-repeat-one = Repeat one
+media-repeat-all = Repeat all
+media-queue = Queue

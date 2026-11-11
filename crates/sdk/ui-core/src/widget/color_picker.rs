@@ -188,7 +188,7 @@ impl ColorPicker {
     pub fn new(initial: Color) -> Self {
         let mut s = Self {
             dirty: true,
-            accessible_name: Some("Colour".to_owned()),
+            accessible_name: Some(crate::i18n::widget_format("widget-color-name", &[])),
             color: initial,
             on_change: None,
             local_state: None,
@@ -207,7 +207,7 @@ impl ColorPicker {
                 .control_size(crate::widget::ControlSize::Small)
                 .with_kind(TextInputKind::Code)
                 .with_id("color_picker.hex")
-                .with_accessible_name("Hex colour"),
+                .with_accessible_name(crate::i18n::widget_format("widget-color-hex", &[])),
             hex_input_rect: Rect::ZERO,
             #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,

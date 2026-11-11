@@ -1181,3 +1181,54 @@ emoji-picker-add-reaction = Reaktion hinzufügen
 quote-dismiss = Nicht mehr antworten
 
 toast-reply-placeholder = Antworten…
+
+## Window furniture and widget chrome, named where a screen reader reads it
+floating-window-move-hint = Bewegliches Fenster. Alt halten und mit den Pfeiltasten verschieben; mit Umschalt in größeren Schritten.
+widget-dialog-close = Schließen
+widget-dismiss = Ausblenden
+widget-hand-to-agent = An Agenten übergeben
+widget-more = Mehr
+widget-copy = Kopieren
+widget-hosted-applications = Gehostete Anwendungen
+widget-searching = Wird gesucht…
+widget-search-results = Suchergebnisse
+widget-loading = Wird geladen
+widget-timeline-name = Position im Zeitstrahl
+widget-timeline-hint = Chronologische Sammlung. Pfeiltasten bewegen, Bild auf und Bild ab bewegen einen Bildschirm, Pos1 und Ende springen zum Anfang oder Ende; Plus und Minus ändern die Dichte.
+widget-timeline-jump = Zu { $marker } springen
+widget-timeline-group = Chronologischer Index
+widget-timeline-group-hint = Nach Datum geordnete Bildlaufleiste
+widget-shortcut-change = Tastenkürzel ändern
+widget-shortcut-unavailable = Dieses Tastenkürzel ist nicht verfügbar. Aktivieren, um ein anderes zu wählen.
+widget-chart-series = { $name } Datenreihe
+widget-step-of = Schritt { $step } von { $total }
+widget-steps-count = { $count ->
+    [one] { $count } Schritt
+   *[other] { $count } Schritte
+  }
+widget-page-of = Seite { $page } von { $total }
+widget-preview-named = Vorschau von { $label }
+widget-type-to-confirm = Zum Bestätigen { $phrase } eingeben
+widget-color-name = Farbe
+widget-color-hex = Hex-Farbe
+widget-crop-name = Seite zuschneiden
+widget-crop-hint = Von { $left }% bis { $right }% in der Breite und { $top }% bis { $bottom }% in der Höhe
+widget-document-switch-blocked = Dokumentwechsel blockiert
+widget-qr-failed = QR-Code konnte nicht gezeichnet werden: { $error }
+media-volume = Lautstärke
+media-position = Position
+media-more-controls = Weitere Steuerungen
+media-play = Wiedergeben
+media-pause = Pausieren
+media-previous = Vorheriger Titel
+media-next = Nächster Titel
+media-mute = Stummschalten
+media-unmute = Ton einschalten
+media-like = Gefällt mir
+media-unlike = Gefällt mir nicht mehr
+media-lyrics = Songtext
+media-shuffle = Zufällige Wiedergabe
+media-repeat = Wiederholen
+media-repeat-one = Titel wiederholen
+media-repeat-all = Alle wiederholen
+media-queue = Warteschlange

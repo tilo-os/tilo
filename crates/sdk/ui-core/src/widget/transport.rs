@@ -48,15 +48,18 @@ impl TransportControl {
         }
     }
 
-    /// What the control does now: its accessible name and tooltip.
+    /// What the control does now, in the desktop's language: its accessible name and tooltip.
     #[must_use]
-    pub const fn name(self) -> &'static str {
-        match self {
-            Self::Previous => "Previous track",
-            Self::PlayPause { playing: true } => "Pause",
-            Self::PlayPause { playing: false } => "Play",
-            Self::Next => "Next track",
-        }
+    pub fn name(self) -> String {
+        crate::i18n::widget_format(
+            match self {
+                Self::Previous => "media-previous",
+                Self::PlayPause { playing: true } => "media-pause",
+                Self::PlayPause { playing: false } => "media-play",
+                Self::Next => "media-next",
+            },
+            &[],
+        )
     }
 
     /// Whether it is the transport's one prominent control.
@@ -266,7 +269,8 @@ mod tests {
     fn the_control_names_what_it_does_now() {
         assert_eq!(
             TransportControl::PlayPause { playing: true }.name(),
-            "Pause"
+            "Pause",
+            "the control names itself in the desktop's language"
         );
         assert_eq!(
             TransportControl::PlayPause { playing: false }.icon(),

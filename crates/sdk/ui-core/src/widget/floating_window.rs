@@ -1330,7 +1330,12 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         if self.closable {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(format!("Close {}", self.title))
+                    // A titled close reads the same for a window as for a tab: the shared message
+                    // names both, in the desktop's language.
+                    .with_name(crate::i18n::widget_format(
+                        "tab-close-named",
+                        &[("title", self.title.clone().into())],
+                    ))
                     .with_action_target("floating-window.close")
                     .with_bounds(self.close_rect()),
             );
@@ -1338,9 +1343,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         Some(
             AccessNode::new(role)
                 .with_name(&self.title)
-                .with_description(
-                    "Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.",
-                )
+                .with_description(crate::i18n::widget_format("floating-window-move-hint", &[]))
                 .with_bounds(self.rect)
                 .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_children(children),
@@ -2113,5 +2116,37 @@ mod tests {
         outside_click_is_swallowed_not_passed_through();
         inbox_content_press_forwards_to_content();
         modal_capture_reflects_open();
+    }
+
+    /// A German desktop names a floating window's close in German, and says what the window does
+    /// in German: both come from the catalogue, like every other window control.
+    #[test]
+    fn a_german_desktop_names_the_close_and_the_move_hint_in_german() {
+        use crate::i18n::I18nManager;
+        const EN: &str = include_str!("../../locales/en-US.ftl");
+        const DE: &str = include_str!("../../locales/de-DE.ftl");
+        I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]).unwrap();
+        let _settled = crate::motion::testing::settled();
+        let (mut w, _e) = laid_out(true);
+        w.closable = true;
+
+        let node = Widget::accessibility(&w).expect("open surface has semantics");
+        assert_eq!(node.name.as_deref(), Some("Compose"));
+        assert_eq!(
+            node.children[0].name.as_deref(),
+            Some("Compose schließen"),
+            "the close says what it closes, in the desktop's language"
+        );
+        assert_eq!(
+            node.description.as_deref(),
+            Some(
+                "Bewegliches Fenster. Alt halten und mit den Pfeiltasten verschieben; mit Umschalt in größeren Schritten."
+            ),
+            "the window says how it moves in German too"
+        );
+
+        // Back to the source copy: the manager is thread-local, and the window's other tests read
+        // it.
+        I18nManager::init("en-US");
     }
 }

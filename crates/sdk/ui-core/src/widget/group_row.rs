@@ -5059,7 +5059,12 @@ impl Widget for GroupRow {
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         use crate::a11y::{AccessNode, Role};
 
-        Some(AccessNode::new(Role::Group).with_name("Hosted applications"))
+        Some(
+            AccessNode::new(Role::Group).with_name(crate::i18n::widget_format(
+                "widget-hosted-applications",
+                &[],
+            )),
+        )
     }
 
     fn get_rect(&self) -> Rect {
