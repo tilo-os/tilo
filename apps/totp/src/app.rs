@@ -371,6 +371,9 @@ pub struct AuthenticatorApp {
     /// frame in [`Widget::sync`]. `None` when no picker is in flight — the app
     /// never draws its own picker (HIG §5).
     portal_rx: Option<ui::portal::ContentsChannel>,
+    /// The chosen QR image being read off the frame: its code, or why none
+    /// was read, drained once per frame as the chooser's answer is.
+    qr_rx: Option<std::sync::mpsc::Receiver<Result<String, String>>>,
 
     rect: Rect,
     /// The readable column the banner and rows stand in, from the last paint.
@@ -434,6 +437,7 @@ impl AuthenticatorApp {
             list: AccountList::new(),
             add_panel: AddAccountPanel::new(),
             portal_rx: None,
+            qr_rx: None,
             rect: Rect::ZERO,
             column: Rect::ZERO,
             banner_rect: Rect::ZERO,
@@ -832,16 +836,17 @@ impl AuthenticatorApp {
     /// toast, and clears the in-flight channel. Never blocks — a still
     /// pending picker leaves the channel installed for the next frame.
     fn drain_portal(&mut self) -> bool {
+        let read = self.drain_qr();
         let Some(rx) = self.portal_rx.as_ref() else {
-            return false;
+            return read;
         };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.portal_rx = None;
                 match outcome {
                     ContentsOutcome::Picked(files) => {
-                        if let Some(file) = files.first() {
-                            self.decode_qr_bytes(&file.bytes);
+                        if let Some(file) = files.into_iter().next() {
+                            self.decode_qr_bytes(file.bytes);
                         }
                     }
                     // A cancel is a no-op — the sheet is left as it was.
@@ -855,7 +860,7 @@ impl AuthenticatorApp {
                 }
             }
             // Still waiting on the host dialog, or the worker vanished.
-            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return read,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.portal_rx = None;
             }
@@ -863,10 +868,34 @@ impl AuthenticatorApp {
         true
     }
 
-    /// Decode a chosen QR image into the open add sheet, or surface why it
-    /// couldn't be read.
-    fn decode_qr_bytes(&mut self, bytes: &[u8]) {
-        match crate::qr::decode_image_bytes(bytes) {
+    /// Read a chosen QR image off the frame; [`Self::drain_qr`] puts what
+    /// it says into the open add sheet.
+    fn decode_qr_bytes(&mut self, bytes: Vec<u8>) {
+        let (answer, read) = std::sync::mpsc::channel();
+        let wake = ui::WakeHandle::new();
+        ui::rt::app().spawn_then(crate::qr::decode_image_bytes(bytes), move |code| {
+            let _ = answer.send(code);
+            wake.wake();
+        });
+        self.qr_rx = Some(read);
+    }
+
+    /// Put the code a chosen QR image held into the open add sheet, or
+    /// surface why it couldn't be read; whether one was read since the last
+    /// frame.
+    fn drain_qr(&mut self) -> bool {
+        let Some(read) = self.qr_rx.as_ref() else {
+            return false;
+        };
+        let code = match read.try_recv() {
+            Ok(code) => code,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the image was not read".to_owned())
+            }
+        };
+        self.qr_rx = None;
+        match code {
             Ok(uri) => {
                 self.add_panel.apply_uri(&uri);
                 self.state().toast("QR code read", ToastKind::Success);
@@ -877,6 +906,7 @@ impl AuthenticatorApp {
                     .toast(crate::i18n::t("totp-scan-unreadable"), ToastKind::Error);
             }
         }
+        true
     }
 
     /// Open the add sheet straight away. Used by captures (and any caller that
@@ -1920,6 +1950,12 @@ pub(crate) mod tests {
             .unwrap();
         assert!(app.update(&state.doc, &state.root), "the answer is news");
         assert!(app.portal_rx.is_none(), "the chooser is done");
+        // The image is read off the frame; a later frame says what it held.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while app.qr_rx.is_some() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            app.update(&state.doc, &state.root);
+        }
         assert_eq!(
             app.state().notice.with(Clone::clone),
             Some(Notice::Show(
@@ -1976,6 +2012,12 @@ pub(crate) mod tests {
                 app.portal_rx.is_none(),
                 "the portal channel clears after delivering"
             );
+            // The image is read off the frame; a later frame fills the sheet.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+            while app.qr_rx.is_some() && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                app.update(&state.doc, &state.root);
+            }
             let (issuer, label, secret) = app.add_panel.field_snapshot();
             assert_eq!(issuer, "Acme");
             assert_eq!(label, "bob@acme.io");
@@ -2009,8 +2051,10 @@ pub(crate) mod tests {
             let uri = "otpauth://totp/Acme:bob@acme.io?secret=JBSWY3DPEHPK3PXP&issuer=Acme";
             let path = std::env::temp_dir().join(format!("totp-qr-{}.png", uuid::Uuid::new_v4()));
             render_qr_png(uri, &path);
-            let decoded = crate::qr::decode_image_bytes(&std::fs::read(&path).unwrap())
-                .expect("decode a real QR png file");
+            let decoded =
+                ui::rt::block_on(crate::qr::decode_image_bytes(std::fs::read(&path).unwrap()))
+                    .expect("the runtime runs the read")
+                    .expect("decode a real QR png file");
             let mut panel = crate::add_panel::AddAccountPanel::new();
             panel.open();
             panel.apply_uri(&decoded);

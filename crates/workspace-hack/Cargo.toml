@@ -185,7 +185,6 @@ regex-syntax = { path = "../../vendor/regex-syntax" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
-rqrr = { version = "0.10" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
@@ -439,7 +438,6 @@ regex-syntax = { path = "../../vendor/regex-syntax" }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "form", "json", "rustls-no-provider"] }
 resvg = { version = "0.47" }
 ring = { version = "0.17" }
-rqrr = { version = "0.10" }
 rusqlite = { version = "0.41", default-features = false, features = ["bundled", "hooks"] }
 russh = { version = "0.63", default-features = false, features = ["flate2", "ring"] }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", features = ["fs", "mm"] }
@@ -543,6 +541,7 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
+rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 sysinfo = { version = "0.36" }
@@ -575,6 +574,7 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
+rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 sysinfo = { version = "0.36" }
@@ -606,6 +606,7 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
+rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 sysinfo = { version = "0.36" }
@@ -638,6 +639,7 @@ nix = { version = "0.31", features = ["fs", "ioctl", "mman", "mount", "poll", "p
 object = { version = "0.39", default-features = false, features = ["read", "std", "unaligned"] }
 ordered-float = { version = "5" }
 reqwest = { version = "0.13", default-features = false, features = ["brotli", "gzip"] }
+rqrr = { version = "0.10" }
 rustix-d585fab2519d2d1 = { package = "rustix", version = "0.38", default-features = false, features = ["event", "pipe", "process", "system", "thread"] }
 rustix-dff4ba8e3ae991db = { package = "rustix", version = "1", default-features = false, features = ["pty", "stdio"] }
 sysinfo = { version = "0.36" }

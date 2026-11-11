@@ -45,10 +45,12 @@ impl DecodedImage {
         if x >= self.width {
             return None;
         }
-        let index = (y as usize)
+        let start = (y as usize)
             .checked_mul(self.width as usize)?
-            .checked_add(x as usize)?;
-        self.pixels().nth(index)
+            .checked_add(x as usize)?
+            .checked_mul(4)?;
+        let pixel = self.rgba.get(start..start.checked_add(4)?)?;
+        <Rgba>::try_from(pixel).ok()
     }
 
     /// Whether any pixel is not fully opaque.
