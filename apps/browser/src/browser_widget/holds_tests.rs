@@ -512,7 +512,7 @@ fn a_forms_own_sending_held_for_the_person_leaves_once_when_they_allow() {
         needs_the_person(&asked),
         "sending the form waits for the person: {asked:?}"
     );
-    let sent = page_requests(&engine).len();
+    let asked_before = page_requests(&engine).len();
     // The person allowed it: the same invocation comes back.
     assert!(
         matches!(
@@ -532,7 +532,7 @@ fn a_forms_own_sending_held_for_the_person_leaves_once_when_they_allow() {
     widget.sync(&doc, &root);
     assert_eq!(
         page_requests(&engine).len(),
-        sent,
+        asked_before,
         "the form is not answered and sent a second time"
     );
     engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
