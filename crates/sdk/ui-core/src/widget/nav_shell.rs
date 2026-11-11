@@ -42,7 +42,6 @@ use crate::widget::{
 
 mod back;
 mod band;
-mod bar_resources;
 mod header_parts;
 mod inspector;
 mod layout;
@@ -504,26 +503,15 @@ struct Inputs {
     /// Room for the window's controls at the trailing end of the row, while
     /// the host merged the window's bar into it (a maximized window).
     window_controls: Option<f64>,
-    /// The app put its header in the window's bar
-    /// ([`NavShell::with_header_in_window_bar`]).
-    header_in_bar: bool,
     /// The window's bar shows the sidebar toggle among the app's slots
     /// ([`NavShell::set_sidebar_toggle_in_window_bar`]).
     toggle_in_bar: bool,
     /// The app's toolbar is its window bar's slots
     /// ([`NavShell::with_window_toolbar`]): the shell draws no header row.
     toolbar_in_bar: bool,
-    /// The shell declares the window bar's slots from its headers
-    /// ([`window_toolbar::ShellBar`]): it draws no header row.
-    shell_bar: bool,
-    /// The person reached for the window's bar.
-    bar_revealed: bool,
     /// The host lists the window's actions where the person reaches them; actions that do not fit
     /// give way with no other door.
     actions_listed: bool,
-    /// How far down the window's top edge the bar stands: below the
-    /// desktop's top bar while that is shown over the window.
-    bar_top: f64,
     titled: [bool; 4],
     actions: [usize; 4],
     leading: [bool; 4],
@@ -602,17 +590,13 @@ impl Default for Inputs {
             has_controls: false,
             history: None,
             window_controls: None,
-            header_in_bar: false,
             toggle_in_bar: false,
-            bar_revealed: false,
             actions_listed: false,
-            bar_top: 0.0,
             titled: [false; 4],
             actions: [0; 4],
             leading: [false; 4],
             content_back: false,
             toolbar_in_bar: false,
-            shell_bar: false,
             user_sidebar: None,
             adaptive: None,
             sidebar: FlapState::open_when_docked(),
@@ -683,17 +667,6 @@ impl Inputs {
         self.titled.get(i).copied().unwrap_or(false)
             || self.actions.get(i).copied().unwrap_or(0) > 0
             || self.leading.get(i).copied().unwrap_or(false)
-    }
-
-    /// The header row lives in the window's bar now: it stands over the
-    /// content, and only while the person reaches for the bar.
-    fn header_in_window_bar(&self) -> bool {
-        self.header_in_bar && self.window_controls.is_some()
-    }
-
-    /// The window bar shows the shell's own buttons and the app's actions.
-    fn slots_in_bar(&self) -> bool {
-        self.toolbar_in_bar || self.shell_bar
     }
 }
 
@@ -836,7 +809,6 @@ pub struct NavShell {
     /// The window's bar presents search for the window, so the headers carry no button of their own
     /// that opens the app's search.
     window_search: bool,
-    shell_bar: window_toolbar::ShellBar,
     /// Header actions put away while the host may still hold their nodes,
     /// dropped when the next build replaces the row.
     retired_actions: Vec<Element>,
@@ -974,7 +946,6 @@ impl NavShell {
             settling: false,
             built: false,
             window_search: false,
-            shell_bar: window_toolbar::ShellBar::default(),
             retired_actions: Vec::new(),
             structure_dirty: false,
             layout_dirty: true,
@@ -1575,10 +1546,8 @@ impl NavShell {
     /// Plan the parts from the slots, headers and columns as they are now (which columns and
     /// titles there are, how many actions each holds), marking nothing.
     fn refresh_slot_inputs(&self) {
-        let shell_bar = self.shell_bar_wanted();
         {
             let mut inputs = self.inputs.borrow_mut();
-            inputs.shell_bar = shell_bar;
             let has = |current: bool, pending: Option<&Staged>| match pending {
                 Some(next) => next.is_some(),
                 None => current,
@@ -1599,7 +1568,7 @@ impl NavShell {
             // search, which narrows the list through the same field: the
             // field keeps no band of its own while the bar presents it.
             inputs.has_filter =
-                self.filter.is_some() && !(inputs.slots_in_bar() && self.window_search);
+                self.filter.is_some() && !(inputs.toolbar_in_bar && self.window_search);
             for column in Column::ALL {
                 let header = at(&self.headers, column);
                 *at_mut(&mut inputs.titled, column) = header.title.is_shown();
@@ -2906,50 +2875,12 @@ impl NavShell {
                 f.draw(self.part_mut(part), &local);
             }
         }
-        self.paint_bar_ground(f, column, &local);
         for part in over {
             if self.built_has(part) && !self.part_hidden(part) {
                 f.draw(self.part_mut(part), &local);
             }
         }
         f.scene.pop_layer();
-    }
-
-    /// A header row in the window's bar stands over the column's content:
-    /// it brings its own ground, rule and a soft shadow on the content.
-    fn paint_bar_ground(&self, f: &mut Frame<'_>, column: Column, local: &Theme) {
-        let header = self.geometry.header(column);
-        let inputs = self.inputs.borrow();
-        // The sidebar's header stands at rest, and the window's bar comes over it while the
-        // person reaches for the bar: the bar's own ground is the bar's, so it is drawn over the
-        // sidebar only while the bar is out.
-        let over_sidebar = column == Column::Sidebar && !inputs.bar_revealed;
-        if !inputs.header_in_window_bar()
-            || over_sidebar
-            || header.width() <= 0.0
-            || header.height() <= 0.0
-            || self.geometry.floating(column)
-        {
-            return;
-        }
-        crate::surface::shadow(
-            f.scene,
-            f.transform,
-            header,
-            0.0,
-            &local.tokens.elevation.floating,
-        );
-        let region = match column {
-            Column::Sidebar => crate::surface::Region::Sidebar,
-            Column::Inspector => crate::surface::Region::Inspector,
-            Column::Overview | Column::Content => crate::surface::Region::Content,
-        };
-        crate::surface::region(f.scene, f.transform, header, region, local);
-        crate::chrome::HeaderRowFace::in_row(header, self.inputs.borrow().metrics.row).paint_rule(
-            f.scene,
-            f.transform,
-            local,
-        );
     }
 
     fn paint_part(&mut self, f: &mut Frame<'_>, part: Part) {
@@ -2972,11 +2903,7 @@ impl NavShell {
     fn paint_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme, g: &NavGeometry) {
         for column in [Column::Overview, Column::Content, Column::Inspector] {
             let header = g.header(column);
-            // A row in the window's bar paints its rule with its ground.
-            if header == Rect::ZERO
-                || g.floating(column)
-                || self.inputs.borrow().header_in_window_bar()
-            {
+            if header == Rect::ZERO || g.floating(column) {
                 continue;
             }
             let local = self.column_theme(theme, Some(column));
@@ -3129,15 +3056,12 @@ impl Widget for NavShell {
         self.follow_navigation();
         self.for_each_owned_mut(|child| child.sync(state, path));
         self.sync_filter();
-        self.sync_shell_bar();
         self.publish_notice();
     }
 
     fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
-        self.run_shell_bar_events(edits, path);
         // A command chosen from a header's menu by assistive technology has no pointer event to
-        // carry it, so the settle pass runs it as it runs a header button pressed in the window
-        // bar.
+        // carry it, so the settle pass runs it.
         self.take_more_choices(edits, path);
         // Settling is the data pass: a column a narrow window put away
         // still takes its writes and feeds the column on screen.
@@ -3830,6 +3754,16 @@ fn is_app_search(action: &dyn Widget) -> bool {
 /// field does, so the page keeps the name a screen reader reads.
 fn page_title_shown(body: &dyn Widget, region: Rect) -> Option<TitleShown> {
     fn walk(widget: &dyn Widget, clip: Rect) -> Option<TitleShown> {
+        // A row of a list is one item among others, never the page: an item opened in place
+        // among its list's rows titles that item, and the column keeps its own title.
+        if widget.accessibility().is_some_and(|access| {
+            matches!(
+                access.role,
+                crate::a11y::Role::ListItem | crate::a11y::Role::Row | crate::a11y::Role::TreeItem
+            )
+        }) {
+            return None;
+        }
         let clip = widget
             .child_clip_rect()
             .map_or(clip, |child_clip| clip.intersect(child_clip));
@@ -3879,6 +3813,12 @@ fn same_words(a: &str, b: &str) -> bool {
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a pushed-away
 /// screen) still belong to the window: custody, invocations and availability reach every part the
 /// shell owns.
+// The shell answers for itself: its content's own resources and operations are the content's,
+// reached as the tree is walked, never taken for the shell's.
+impl crate::resources::PublishesResources for NavShell {}
+
+impl crate::widget::ResourceOperations for NavShell {}
+
 impl crate::widget::controls::ActionControls for NavShell {
     fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         crate::widget::controls::children_action_control_bindings(self)
@@ -4162,19 +4102,6 @@ impl NavShell {
         }
         if pointer {
             let p = self.last_cursor;
-            // A header row in the window's bar stands over the content: over
-            // the row, the pointer is the header's, never the content's under it.
-            if self.inputs.borrow().header_in_window_bar()
-                && self.geometry.header_height > 0.0
-                && self.geometry.window_row.contains(p)
-            {
-                order.retain(|(part, _)| {
-                    !matches!(
-                        part,
-                        Part::Body(_) | Part::Rail | Part::Filter | Part::Controls
-                    )
-                });
-            }
             // Over an open drawer, the pointer is the drawer's alone: what
             // it does not take never falls through to the content under it.
             if let Some(column) = self.geometry.open_drawer()

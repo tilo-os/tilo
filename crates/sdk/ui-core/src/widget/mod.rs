@@ -1666,26 +1666,6 @@ pub trait Widget {
         None
     }
 
-    /// This control as an action of the window's bar, sent back as `id`
-    /// ([`crate::window_toolbar::ToolbarAction`]): a button's icon and name.
-    /// `None` for anything that is not a button.
-    fn window_slot(&self, _id: String) -> Option<crate::window_toolbar::ToolbarAction> {
-        None
-    }
-
-    /// Whether this control opens a panel where it stands, which the window's bar has no place
-    /// to hang: a header holding one keeps its row rather than moving it into the bar.
-    fn window_slot_barrier(&self) -> bool {
-        false
-    }
-
-    /// Choose the row `id` of a menu this control opens in the window's bar
-    /// ([`Self::window_slot`] named the rows): the bar shows the menu, and the row the person
-    /// chose comes back by the id it was given. `false` for a control that opens no menu.
-    fn window_choose(&mut self, _id: &str) -> bool {
-        false
-    }
-
     /// Downcast to the concrete widget, for hosts and tests that reach a
     /// known widget through `dyn Widget`. Default `None` (a widget may borrow
     /// and so not be `'static`); a widget opts in with `Some(self)`, and a
@@ -3263,9 +3243,9 @@ pub use nav_shell::{
     NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WindowBarLink,
 };
 pub use window_header::{
-    HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
-    SidebarFrame, StatusAction, WindowBar, WindowBarSlot, WindowHeader, WindowHistory,
-    WindowStatus, merged_row_holds_search, merged_row_width, merged_row_width_in,
+    ColumnFrame, HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
+    StatusAction, WindowBar, WindowBarSlot, WindowHeader, WindowHistory, WindowStatus,
+    merged_row_holds_search, merged_row_width, merged_row_width_in,
 };
 mod nav_list;
 pub use nav_list::{

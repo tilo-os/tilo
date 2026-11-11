@@ -1189,14 +1189,6 @@ pub fn workspace() -> Option<String> {
     window().and_then(|window| window.workspace())
 }
 
-/// Which window this module's calls act on now: the one a host lent the app
-/// it is running, or `None` for the process's own window.
-pub(crate) fn current_window() -> Option<usize> {
-    window()
-        .as_ref()
-        .map(crate::hosted_window::HostedWindow::identity)
-}
-
 /// Declare the window's slots (`None`: none). Cheap when nothing changed.
 pub fn declare(toolbar: Option<WindowToolbar>) {
     if let Some(window) = window() {
@@ -1223,17 +1215,6 @@ pub(crate) fn declaration(toolbar: WindowToolbar) -> WindowToolbar {
         notice: None,
         reactions: None,
         ..toolbar.bounded()
-    }
-}
-
-/// Take the slots back, as [`declare`] with `None` does, unless the thread
-/// is ending and they are gone already (a widget dropped with its thread).
-pub(crate) fn retract() {
-    let changed = DECLARED
-        .try_with(|declared| declared.borrow_mut().take().is_some())
-        .unwrap_or(false);
-    if changed {
-        let _ = REVISION.try_with(|revision| revision.set(revision.get().wrapping_add(1)));
     }
 }
 

@@ -153,8 +153,6 @@ impl FrameHarness {
     fn window_bar_offer(&self) -> WindowBar {
         WindowBar {
             controls_width: crate::widget::merged_row_width_in(f64::from(self.viewport.0)),
-            revealed: self.bar_revealed,
-            top_inset: 0.0,
             lists_actions: false,
         }
     }
@@ -201,34 +199,14 @@ impl FrameHarness {
         self.window_bar
     }
 
-    /// Where the sidebar's column stands and the header row it draws at its top, with the window
-    /// laid out as it stands at rest: the bar hidden over the window's top edge, as a maximized
-    /// window's is until the person reaches for it. `None` while the window shows no sidebar.
-    /// The window is laid out again as the caller left it.
-    ///
-    /// # Errors
-    /// As [`Self::relayout_themed`].
-    pub fn sidebar_at_rest(
-        &mut self,
-        viewport: (u32, u32),
-        theme: crate::theme::Theme,
-    ) -> Result<Option<crate::widget::SidebarFrame>, crate::widget::WidgetLayoutError> {
-        let revealed = self.bar_revealed;
-        if revealed {
-            self.present_window_bar(false);
-        }
-        let laid_out = self.relayout_themed(self.content_viewport(viewport), theme.clone());
-        let at_rest = if laid_out.is_ok() {
-            crate::widget::window_header::root_header_row(self.root.as_ref())
-                .and_then(crate::widget::WindowHeader::sidebar_frame)
-        } else {
-            None
-        };
-        if revealed {
-            self.present_window_bar(true);
-            self.relayout_themed(self.content_viewport(viewport), theme)?;
-        }
-        laid_out.map(|()| at_rest)
+    /// Where each column of the window stands and the header row it draws at its top, as the
+    /// frame was laid out last. A column's header stands at every time, the bar out or at rest,
+    /// so this is what the person reads at the top of each column before reaching for the bar.
+    #[must_use]
+    pub fn column_frames(&self) -> Vec<crate::widget::ColumnFrame> {
+        crate::widget::window_header::root_header_row(self.root.as_ref())
+            .map(crate::widget::WindowHeader::column_frames)
+            .unwrap_or_default()
     }
 
     /// Lay the whole window out at `viewport`, its bar included, under
@@ -1071,10 +1049,9 @@ mod tests {
         crate::window_toolbar::declare(None);
     }
 
-    /// A header row that cannot stand as slots (it opens a popover, as a window's catch-up
-    /// does) is the window's bar: the row fills the window, its title and the window's controls
-    /// stand in it, and no second row stacks above. A row that can stand as slots leaves the
-    /// bar the band above the frame, and draws no row.
+    /// A shell's header row is the window's bar, whatever it holds — a popover, as a window's
+    /// catch-up opens, or plain buttons: the row fills the window, its title and the window's
+    /// controls stand in it, and no second row stacks above.
     #[test]
     fn a_header_row_that_keeps_a_popover_is_the_window_bar() {
         let _hosted = HostedReset;
@@ -1104,18 +1081,20 @@ mod tests {
             "the row is the bar, not a second one under it"
         );
 
-        // A row of a button stands as the bar's slots: the bar keeps its band and the frame
-        // draws no row of its own.
+        // A row of plain buttons is the bar all the same: its buttons stand in the row, never
+        // again as the bar's slots.
         let mut plain = harness_of(Box::new(row(vec![Box::new(crate::widget::Button::new(
             "action", "New",
         ))])));
         plain.present_in_window_bar();
-        assert!(!plain.row_holds_bar());
-        assert!(
-            plain.frame_extent((800, 600)).0 > 0.0,
-            "the frame stands under the window's bar"
-        );
+        assert!(plain.row_holds_bar());
+        assert_eq!(plain.frame_extent((800, 600)).0, 0.0);
         assert_eq!(plain.window_header_row_height(), 0.0);
+        assert_eq!(
+            plain.window_toolbar(),
+            None,
+            "the bar declares none of its buttons"
+        );
     }
 
     /// A root that draws no header row of its own — a desk of windows — offers each window its

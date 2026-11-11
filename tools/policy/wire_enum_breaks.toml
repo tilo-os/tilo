@@ -197,3 +197,8 @@ reason = "puts the wait-list requests back at the places they kept when retired:
 file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
 enum = "WorkspacesReply"
 reason = "the answers to those requests, live on the same session and kept nowhere, so the retired placeholder takes the meaning its position always had"
+
+[[break]]
+file = "crates/lang/tilolang-cli/src/layout_check/audit/kind.rs"
+enum = "Kind"
+reason = "a layout check's finding kinds are written only into the report of the run that found them and read back by nobody: `sidebar-header-on-reveal` becomes `header-on-reveal`, now held for every column, beside the new `offered-twice`"

@@ -69,6 +69,8 @@ pub struct NavGeometry {
     /// The content edges of a centred page column (its leading and trailing
     /// text edge), where the content is one ([`NavShell::with_page_column`]).
     pub(super) page_edges: Option<(f64, f64)>,
+    /// The sidebar stands narrow enough to read as a rail of icons, which draws no header row.
+    pub(super) sidebar_rail: bool,
 }
 
 impl NavGeometry {
@@ -494,18 +496,16 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         || inputs.history.is_some()
         || inputs.window_controls.is_some()
         || (!inputs.toggle_in_bar && (inputs.content_back || drills));
-    let needs_header = !inputs.slots_in_bar()
+    let needs_header = !inputs.toolbar_in_bar
         && (shell_row
             || Column::ALL
                 .iter()
                 .any(|c| in_row(*c) && inputs.header_wanted(*c)));
-    // A header in the window's bar stands over the content and only while
-    // the person reaches for the bar; the columns' bodies start at the top.
-    let in_bar = inputs.header_in_window_bar();
-    // The sidebar's header is the app's own navigation — the words that name its places and the
-    // buttons that add to them — never the window's: it stands at the window's top at rest, and
-    // the bar comes over it while the person reaches for the bar, whichever column's rows the
-    // bar carries. A rail of icons says what it holds by its icons, so it has none.
+    // Each column's header is the app's own — its title and the buttons that act on what it shows
+    // — never the window's: it stands at the top of its column at every time, and the window's
+    // controls come into the room the row keeps for them. The sidebar's stands even where the
+    // app declares its toolbar in the window's bar. A rail of icons says what it holds by its
+    // icons, so it has none.
     let sidebar_reads_as_rail = match g.sidebar {
         SidebarPlacement::Docked => inputs.sidebar_reads_as_rail(sw),
         SidebarPlacement::Screen => inputs.sidebar_reads_as_rail(w),
@@ -514,59 +514,36 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     let sidebar_row = inputs.has_sidebar
         && !sidebar_reads_as_rail
-        && (inputs.header_wanted(Column::Sidebar) || (shell_row && !inputs.slots_in_bar()));
+        && (inputs.header_wanted(Column::Sidebar) || (shell_row && !inputs.toolbar_in_bar));
     let sidebar_hh = if sidebar_row { m.header.min(h) } else { 0.0 };
     let rows = |column: Column| match column {
         // The shell's own buttons stand in the sidebar's row, which the bar never takes.
         Column::Sidebar => sidebar_row,
         _ => shell_row || inputs.header_wanted(column),
     };
-    // A drawer's own header, as tall as the row and hidden with it.
-    let drawer_hh = if in_bar && !inputs.bar_revealed {
-        0.0
-    } else {
-        m.header.min(h)
-    };
+    g.sidebar_rail = inputs.has_sidebar && sidebar_reads_as_rail;
+    // A drawer's own header, as tall as the row.
+    let drawer_hh = m.header.min(h);
     let row_h = if needs_header { m.header.min(h) } else { 0.0 };
-    g.header_height = if in_bar && !inputs.bar_revealed {
-        0.0
-    } else {
-        row_h
+    g.header_height = row_h;
+    let hh = row_h;
+    // A column's header row, and the top its body starts at: every column's row is as tall as
+    // the others and stands at the window's top, so the titles read on one line.
+    let row_of = |column: Column| match column {
+        _ if !rows(column) => 0.0,
+        Column::Sidebar => sidebar_hh,
+        _ => hh,
     };
-    let hh = g.header_height;
-    let bt = if in_bar { 0.0 } else { hh };
-    let bt_of = |column: Column| {
-        if !rows(column) {
-            0.0
-        } else if column == Column::Sidebar {
-            sidebar_hh
-        } else {
-            bt
-        }
-    };
-    // A header in the window's bar stands below whatever overlays the
-    // window's top edge (the desktop's top bar while it shows).
-    let top = if in_bar {
-        inputs.bar_top.clamp(0.0, (h - row_h).max(0.0))
-    } else {
-        0.0
-    };
-    // A column's header and the top its body starts at. The sidebar's stands at the window's own
-    // top, where its body then starts.
     let header_of = |col: Rect, column: Column| {
-        let (row, y) = if column == Column::Sidebar {
-            (sidebar_hh, 0.0)
-        } else {
-            (hh, top)
-        };
-        if row > 0.0 && col.width() > 0.0 && rows(column) {
-            Rect::new(col.x0, col.y0 + y, col.x1, col.y0 + y + row)
+        let row = row_of(column);
+        if row > 0.0 && col.width() > 0.0 {
+            Rect::new(col.x0, col.y0, col.x1, col.y0 + row)
         } else {
             Rect::ZERO
         }
     };
     // A floating drawer stands under the header row, `s2` in.
-    let drawer_top = if hh > 0.0 { top + hh + m.gap } else { m.gap };
+    let drawer_top = if hh > 0.0 { hh + m.gap } else { m.gap };
     let drawer_bottom = (h - m.gap).max(drawer_top);
 
     // While a docked sidebar or inspector slides, the columns beside it keep the width they have
@@ -602,7 +579,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 g.sidebar_column = Rect::new(0.0, 0.0, docked_now, h);
                 // The body keeps its width and slides under the edge, so its
                 // rows never reflow while it collapses.
-                sidebar_body = Rect::new(docked_now - sw, bt_of(Column::Sidebar), docked_now, h);
+                sidebar_body = Rect::new(docked_now - sw, row_of(Column::Sidebar), docked_now, h);
                 sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
             }
         }
@@ -627,7 +604,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 // rows keeping their own insets inside it. Set in from the edges, the page it
                 // covers would show at the sides.
                 g.sidebar_column = Rect::new(x, 0.0, x + w, h);
-                sidebar_body = Rect::new(x, bt_of(Column::Sidebar), x + w, h);
+                sidebar_body = Rect::new(x, row_of(Column::Sidebar), x + w, h);
                 sidebar_header = header_of(g.sidebar_column, Column::Sidebar);
             }
         }
@@ -674,7 +651,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 g.inspector_column = Rect::new(w - inspector_now, 0.0, w, h);
                 inspector_body = Rect::new(
                     w - inspector_now,
-                    bt_of(Column::Inspector),
+                    row_of(Column::Inspector),
                     w - inspector_now + iw,
                     h,
                 );
@@ -711,7 +688,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     ];
     let body_of = |col: Rect, column: Column| {
         if col.width() > 0.0 {
-            Rect::new(col.x0, col.y0 + bt_of(column), col.x1, col.y1)
+            Rect::new(col.x0, col.y0 + row_of(column), col.x1, col.y1)
         } else {
             Rect::ZERO
         }
@@ -723,7 +700,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         inspector_body,
     ];
     if g.rail.width() > 0.0 {
-        g.rail = Rect::new(g.rail.x0, bt, g.rail.x1, g.rail.y1);
+        g.rail = Rect::new(g.rail.x0, hh, g.rail.x1, g.rail.y1);
     }
     keep_clear(&mut g, h);
     g.page_edges = inputs
@@ -770,7 +747,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         NavPane::Content => Column::Content,
     };
     let push_back = drills && front > opening_pane(&stack, inputs.kind, first);
-    let window_row = Rect::new(0.0, top, w, top + hh);
+    let window_row = Rect::new(0.0, 0.0, w, hh);
     let back_column = if push_back {
         Some(front_column)
     } else if inputs.content_back && g.content_column.width() > 0.0 {
@@ -809,7 +786,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         );
     }
     if let Some(column) = back_column
-        && inputs.slots_in_bar()
+        && inputs.toolbar_in_bar
     {
         // Back is the window bar's, beside its toggle ([`NavShell::window_toolbar`]).
         g.back_column = Some(column);
@@ -841,9 +818,9 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     if let Some(width) = inputs.window_controls
         && row_h > 0.0
     {
-        g.window_row = Rect::new(0.0, top, w, top + row_h);
+        g.window_row = Rect::new(0.0, 0.0, w, row_h);
         let x1 = (w - m.inset).max(0.0);
-        g.window_controls = Rect::new((x1 - width).max(0.0), top, x1, top + row_h);
+        g.window_controls = Rect::new((x1 - width).max(0.0), 0.0, x1, row_h);
     }
     // Where a column's trailing shell buttons count from: its header's end,
     // or before the window's controls in the header that reaches them.
@@ -925,7 +902,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         let x = g.sidebar_column.x1;
         g.resize_handle = Rect::new(
             x - m.resize_grip,
-            bt_of(Column::Sidebar),
+            row_of(Column::Sidebar),
             x + m.resize_grip,
             h,
         );

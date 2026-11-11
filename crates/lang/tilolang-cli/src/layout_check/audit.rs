@@ -8,7 +8,7 @@ mod kind;
 mod text;
 mod words;
 
-pub use bar::{bar, bar_primary, sidebar_header_at_rest, stacked_header_rows};
+pub use bar::{bar, bar_primary, column_headers_at_rest, offered_twice, stacked_header_rows};
 pub use kind::Kind;
 pub use text::clipped_text;
 use text::header_row_problem;

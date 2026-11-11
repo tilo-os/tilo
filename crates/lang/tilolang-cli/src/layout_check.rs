@@ -550,22 +550,46 @@ fn stage_person_locale(locale: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether the window's view declares a sidebar header: the words that name its places, or the
-/// buttons that add to them. The sidebar's header stands in the sidebar at rest, never in the
-/// window's bar alone.
-fn declares_sidebar_header(shell: &tilo_ui_host::UiNode) -> bool {
-    let named = match shell.props.get("sidebar_title") {
-        Some(tilo_render_protocol::patch::Value::Text(title)) => !title.trim().is_empty(),
-        Some(_) => true,
-        None => false,
-    };
-    named
-        || shell.children.iter().any(|child| {
-            child.kind == "slot"
-                && child.props.get("name")
-                    == Some(&tilo_render_protocol::patch::Value::text("sidebar_actions"))
-                && !child.children.is_empty()
-        })
+/// The columns whose header the window's view declares: a title that names what the column
+/// shows, or buttons that act on it. Each stands in its column's own header row at every time,
+/// never in the window's bar alone.
+fn declared_headers(shell: &tilo_ui_host::UiNode) -> Vec<&'static str> {
+    use tilo_render_protocol::patch::Value;
+    [
+        ("sidebar", "sidebar_title", "sidebar_actions"),
+        ("overview", "overview_title", "overview_actions"),
+        ("content", "title", "actions"),
+    ]
+    .into_iter()
+    .filter(|(_, title, actions)| {
+        let named = match shell.props.get(*title) {
+            Some(Value::Text(title)) => !title.trim().is_empty(),
+            Some(_) => true,
+            None => false,
+        };
+        named
+            || shell.children.iter().any(|child| {
+                child.kind == "slot"
+                    && child.props.get("name") == Some(&Value::text(*actions))
+                    && !child.children.is_empty()
+            })
+    })
+    .map(|(column, ..)| column)
+    .collect()
+}
+
+/// The names of the buttons the window draws where the person reaches them.
+fn button_names(node: &ui::headless::InspectionNode, viewport: (u32, u32), out: &mut Vec<String>) {
+    if let Some(access) = &node.semantics
+        && access.role == ui::a11y::Role::Button
+        && reachable(node, viewport)
+        && let Some(name) = access.name.as_ref().filter(|name| !name.is_empty())
+    {
+        out.push(name.clone());
+    }
+    for child in &node.children {
+        button_names(child, viewport, out);
+    }
 }
 
 /// The words the window showed from a catalogue in a language other than the one it speaks,
@@ -2023,7 +2047,7 @@ impl AppCheck<'_> {
         if self.dump == Some(viewport) {
             self.dump_frame(staged, layout, label, &bar, &inspection)?;
         }
-        let problems = self.problems(staged, layout, &inspection, &bar)?;
+        let problems = self.problems(staged, layout, &inspection, &bar);
         self.gather_all(problems, layout, label);
         self.work.add(staged.take_work());
         Ok(())
@@ -2057,7 +2081,7 @@ impl AppCheck<'_> {
         layout: Layout,
         inspection: &ui::headless::InspectionSnapshot,
         bar: &ui::window_toolbar::BarLayout,
-    ) -> Result<Vec<audit::Problem>, String> {
+    ) -> Vec<audit::Problem> {
         let viewport = (layout.size.width, layout.size.height);
         self.note_shown(&inspection.root);
         // A view that ran but drew nothing has no widget; what the app sent still names it. What
@@ -2133,26 +2157,22 @@ impl AppCheck<'_> {
                 bar,
             ));
         }
-        // The sidebar's header row stands at rest, as the app's own navigation: what names its
-        // places and offers what adds to them is on the window at every time, never only once
-        // the window's bar is out. Read at one text and display scale per size: the row stands
-        // or does not by the width the sidebar has.
-        let names_its_sidebar = staged
-            .composed()
-            .is_some_and(|composed| declares_sidebar_header(&composed));
-        let as_shipped =
-            (layout.display_scale - 1.0).abs() < 1e-6 && (layout.text_scale - 1.0).abs() < 1e-6;
-        if one_window && as_shipped {
-            let stands = staged
-                .harness_mut()
-                .sidebar_at_rest(viewport, layout.theme())
-                .map_err(|error| {
-                    format!(
-                        "{}: the window at rest did not lay out: {error}",
-                        self.dir.display(),
-                    )
-                })?;
-            problems.extend(audit::sidebar_header_at_rest(names_its_sidebar, stands));
+        // Each column's header row stands at rest, as the app's own: what names a column and
+        // acts on what it shows is on the window at every time, never only once the window's bar
+        // is out, and the bar never offers one of those actions again.
+        if one_window {
+            let declared = staged
+                .composed()
+                .map(|composed| declared_headers(&composed))
+                .unwrap_or_default();
+            problems.extend(audit::column_headers_at_rest(
+                &declared,
+                &staged.harness().column_frames(),
+                f64::from(viewport.0),
+            ));
+            let mut buttons = Vec::new();
+            button_names(&inspection.root, viewport, &mut buttons);
+            problems.extend(audit::offered_twice(bar, &buttons));
         }
         for problem in &mut problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
@@ -2166,7 +2186,7 @@ impl AppCheck<'_> {
                 problem.id = None;
             }
         }
-        Ok(problems)
+        problems
     }
 
     /// Gather each problem as `label` staged it.

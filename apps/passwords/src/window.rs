@@ -259,7 +259,6 @@ impl PasswordsWindow {
         let shell = NavShell::new()
             .content_kind(ui::widget::ContentKind::Page)
             .with_id("passwords.shell")
-            .with_header_in_window_bar()
             .sidebar(Box::new(sidebar(&core, &requests)))
             .overview(Box::new(ListPane::new(&core, &requests)))
             .overview_header(title.clone(), Self::overview_actions(&requests));

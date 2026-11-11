@@ -1954,8 +1954,6 @@ fn the_window_bar_merges_into_the_header_row() {
         h.root_mut::<NavShell>()
             .set_window_bar(Some(crate::widget::WindowBar {
                 controls_width: width,
-                revealed: false,
-                top_inset: 0.0,
                 lists_actions: false,
             })),
         "a header row takes the window's bar"
@@ -1979,7 +1977,6 @@ fn the_window_bar_merges_into_the_header_row() {
         .window_bar_slot()
         .expect("the row reports its slot");
     assert_eq!(slot.controls, g.window_controls);
-    assert!(!slot.hides_with_bar);
     assert_eq!(
         child_rect(&h, "content").map(|r| r.y0),
         Some(g.header_height),
@@ -1996,102 +1993,6 @@ fn the_window_bar_merges_into_the_header_row() {
         "the history chip keeps the gutter the title starts at"
     );
     assert!(h.root::<NavShell>().window_bar_slot().is_none());
-}
-
-/// An app that puts its header in the window's bar gives the whole window to
-/// its content while maximized; the header comes back, over the content and
-/// with the window's controls in its row, when the person reaches for the
-/// bar, and the row is then the header's, never the content's under it.
-#[test]
-fn a_header_in_the_window_bar_hides_until_reached_for() {
-    let theme = Theme::dark();
-    let width = crate::widget::merged_row_width();
-    let (content, content_events) = Probe::boxed("content");
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(content)
-        .sidebar_header("Notes", Vec::new())
-        .content_header("", Vec::new())
-        .with_header_in_window_bar();
-    let mut h = harness(shell, 1280, 800, theme);
-    let bar = |revealed| {
-        Some(crate::widget::WindowBar {
-            controls_width: width,
-            revealed,
-            top_inset: 0.0,
-            lists_actions: false,
-        })
-    };
-
-    // Tiled: an ordinary header above the content.
-    settle(&mut h, 1280, 800);
-    let tiled = geometry(&h);
-    assert!(tiled.header_height > 0.0);
-    assert_eq!(
-        child_rect(&h, "content").map(|r| r.y0),
-        Some(tiled.header_height)
-    );
-
-    // Maximized, at rest: no header, the content from the top.
-    h.root_mut::<NavShell>().set_window_bar(bar(false));
-    settle(&mut h, 1280, 800);
-    let g = geometry(&h);
-    assert_eq!(g.header_height, 0.0, "the header hides with the bar");
-    assert_eq!(child_rect(&h, "content").map(|r| r.y0), Some(0.0));
-    assert_eq!(g.toggle, Rect::ZERO, "no header buttons at rest");
-    let slot = h
-        .root::<NavShell>()
-        .window_bar_slot()
-        .expect("where the bar will stand");
-    assert!(slot.hides_with_bar);
-    assert_eq!(slot.row.height(), tiled.header_height);
-    let before = content_events.get();
-    h.click_at(700.0, 10.0);
-    let hidden_delta = content_events.get() - before;
-    assert!(
-        hidden_delta >= 3,
-        "at rest the top of the window is the content's"
-    );
-
-    // Reached for: the header over the content, the controls in its row.
-    h.root_mut::<NavShell>().set_window_bar(bar(true));
-    settle(&mut h, 1280, 800);
-    let g = geometry(&h);
-    assert_eq!(g.header_height, tiled.header_height);
-    assert_eq!(
-        child_rect(&h, "content").map(|r| r.y0),
-        Some(0.0),
-        "the content does not move: the header stands over it"
-    );
-    assert!(g.toggle.width() > 0.0, "the header's buttons are back");
-    assert!(g.window_controls.width() > 0.0);
-    assert!(g.window_controls.y1 <= g.header_height);
-    let before = content_events.get();
-    h.click_at(700.0, 10.0);
-    let shown_delta = content_events.get() - before;
-    assert!(
-        shown_delta < hidden_delta,
-        "a press on the shown bar never reaches the content under it \
-         ({shown_delta} vs {hidden_delta} events)"
-    );
-    // The desktop's top bar shown over the window's top edge: the bar
-    // stacks below it instead of hiding under it.
-    h.root_mut::<NavShell>()
-        .set_window_bar(Some(crate::widget::WindowBar {
-            controls_width: width,
-            revealed: true,
-            top_inset: 36.0,
-            lists_actions: false,
-        }));
-    settle(&mut h, 1280, 800);
-    let g = geometry(&h);
-    assert_eq!(g.window_row.y0, 36.0);
-    assert_eq!(g.window_controls.y0, 36.0);
-    assert!(
-        g.toggle.y0 >= 36.0,
-        "the header's buttons move down with it"
-    );
-    assert_eq!(child_rect(&h, "content").map(|r| r.y0), Some(0.0));
 }
 
 fn has_child(h: &FrameHarness, id: &str) -> bool {
@@ -2131,7 +2032,6 @@ fn a_phone_wide_bar_keeps_the_windows_controls_and_gives_the_rest_to_the_app() {
     let slot = crate::widget::WindowBarSlot {
         row: Rect::new(0.0, 0.0, phone, f64::from(m.header_height)),
         controls: Rect::new(phone - kept, 0.0, phone, f64::from(m.header_height)),
-        hides_with_bar: false,
     };
     let furniture = crate::widget::window_header::RowFurniture::of(slot);
     assert!(
@@ -2163,8 +2063,6 @@ fn a_phone_wide_bar_keeps_the_windows_controls_and_gives_the_rest_to_the_app() {
         h.root_mut::<NavShell>()
             .set_window_bar(Some(crate::widget::WindowBar {
                 controls_width: kept,
-                revealed: true,
-                top_inset: 0.0,
                 lists_actions: false,
             }))
     );
@@ -2465,109 +2363,6 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
         h.root::<NavShell>().front_pane(),
         front,
         "the bar's Back pops the pane in front"
-    );
-}
-
-/// A header the bar cannot show (a fill of the app's own beside the title)
-/// keeps its row under the bar, and the shell declares nothing; a window
-/// where another part declares the slots keeps its row too.
-#[test]
-fn a_header_the_bar_cannot_show_keeps_its_row() {
-    use crate::window_toolbar::{WindowToolbar, declare, declared};
-    let shell = mail_shell().content_header_leading(Box::new(Text::new("Path")));
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    h.present_in_window_bar();
-    settle(&mut h, 1280, 800);
-    assert!(geometry(&h).header_height > 0.0);
-    assert_eq!(declared(), None);
-    drop(h);
-
-    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-    h.present_in_window_bar();
-    settle(&mut h, 1280, 800);
-    assert_eq!(geometry(&h).header_height, 0.0);
-    let app = WindowToolbar {
-        sidebar: Some(false),
-        ..WindowToolbar::default()
-    };
-    declare(Some(app.clone()));
-    settle(&mut h, 1280, 800);
-    assert!(
-        geometry(&h).header_height > 0.0,
-        "the shell steps aside for the app's own slots"
-    );
-    assert_eq!(
-        declared(),
-        Some(app.bounded()),
-        "and leaves them as declared"
-    );
-}
-
-/// A host that runs several apps on one thread (the browser desktop) shows
-/// each in a window of its own: every window's shell declares that window's
-/// slots, and one declaring never makes another step aside, keep a header
-/// row under its bar and leave its old slots there.
-#[test]
-fn each_window_on_one_thread_keeps_its_own_shells_slots() {
-    use crate::hosted_window::HostedWindow;
-    use crate::window_toolbar::enter;
-    let windows = [HostedWindow::new(), HostedWindow::new()];
-    let mut harnesses: Vec<FrameHarness> = windows
-        .iter()
-        .map(|window| {
-            let _scope = enter(Some(window));
-            let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-            h.present_in_window_bar();
-            settle(&mut h, 1280, 800);
-            h
-        })
-        .collect();
-    for _ in 0..2 {
-        for (window, h) in windows.iter().zip(&mut harnesses) {
-            let _scope = enter(Some(window));
-            settle(h, 1280, 800);
-        }
-    }
-    for (i, (window, h)) in windows.iter().zip(&harnesses).enumerate() {
-        assert!(
-            window.declared().is_some(),
-            "window {i}'s shell declares its slots"
-        );
-        assert_eq!(
-            geometry(h).header_height,
-            0.0,
-            "window {i} draws no header row under its bar"
-        );
-    }
-}
-
-/// A window's app built anew (its code arrived, its tile was rebuilt) after
-/// the one before was let go outside that window: the new shell declares
-/// the window's slots, and the bar shows none of the old shell's.
-#[test]
-fn a_shell_built_anew_in_its_window_takes_the_bar_over() {
-    use crate::hosted_window::HostedWindow;
-    use crate::window_toolbar::enter;
-    let window = HostedWindow::new();
-    let first = {
-        let _scope = enter(Some(&window));
-        let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-        h.present_in_window_bar();
-        settle(&mut h, 1280, 800);
-        h
-    };
-    assert!(window.declared().is_some(), "the first shell declares");
-    drop(first);
-    let _scope = enter(Some(&window));
-    let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
-    h.present_in_window_bar();
-    settle(&mut h, 1280, 800);
-    settle(&mut h, 1280, 800);
-    assert!(window.declared().is_some(), "the new shell declares");
-    assert_eq!(
-        geometry(&h).header_height,
-        0.0,
-        "the new shell draws no header row under its bar"
     );
 }
 

@@ -394,8 +394,6 @@ impl WindowFrame {
         }
         let bar = WindowBar {
             controls_width: self.controls_width + m.inset,
-            revealed: true,
-            top_inset: 0.0,
             lists_actions: self.lists_actions,
         };
         self.merged = self.body_mut().is_some_and(|body| {

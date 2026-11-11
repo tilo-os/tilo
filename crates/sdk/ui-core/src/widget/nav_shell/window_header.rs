@@ -12,7 +12,7 @@ impl WindowHeader for NavShell {
             if presents {
                 self.drop_app_search();
             }
-            if self.inputs.borrow().slots_in_bar() {
+            if self.inputs.borrow().toolbar_in_bar {
                 self.slots_changed();
                 self.structure_dirty = true;
                 self.invalidate();
@@ -56,20 +56,12 @@ impl WindowHeader for NavShell {
 
     fn set_window_bar(&mut self, bar: Option<crate::widget::WindowBar>) -> bool {
         let controls = bar.map(|bar| bar.controls_width);
-        let revealed = bar.is_some_and(|bar| bar.revealed);
-        let top = bar.map_or(0.0, |bar| bar.top_inset);
         let listed = bar.is_some_and(|bar| bar.lists_actions);
         let relayout = {
             let mut inputs = self.inputs.borrow_mut();
-            let relayout = inputs.window_controls != controls
-                || inputs.actions_listed != listed
-                || (inputs.header_in_bar
-                    && (inputs.bar_revealed != revealed
-                        || (inputs.bar_top - top).abs() > f64::EPSILON));
+            let relayout = inputs.window_controls != controls || inputs.actions_listed != listed;
             inputs.window_controls = controls;
-            inputs.bar_revealed = revealed;
             inputs.actions_listed = listed;
-            inputs.bar_top = top;
             relayout
         };
         if relayout {
@@ -85,23 +77,27 @@ impl WindowHeader for NavShell {
         self.geometry.header_height
     }
 
-    fn sidebar_frame(&self) -> Option<crate::widget::window_header::SidebarFrame> {
+    fn column_frames(&self) -> Vec<crate::widget::ColumnFrame> {
         let g = &self.geometry;
-        let column = g.sidebar_column;
-        (column.width() > 0.0 && column.height() > 0.0).then(|| {
-            crate::widget::window_header::SidebarFrame {
-                column,
-                header: g.sidebar_header(),
-            }
-        })
+        super::Column::ALL
+            .into_iter()
+            .filter_map(|column| {
+                let rect = g.column(column);
+                (rect.width() > 0.0 && rect.height() > 0.0).then(|| crate::widget::ColumnFrame {
+                    key: column.key(),
+                    column: rect,
+                    header: g.header(column),
+                    rail: column == super::Column::Sidebar && g.sidebar_rail,
+                })
+            })
+            .collect()
     }
 
     fn window_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
         let g = &self.geometry;
-        (g.window_controls.width() > 0.0).then(|| crate::widget::WindowBarSlot {
+        (g.window_controls.width() > 0.0).then_some(crate::widget::WindowBarSlot {
             row: g.window_row,
             controls: g.window_controls,
-            hides_with_bar: self.inputs.borrow().header_in_bar,
         })
     }
 }

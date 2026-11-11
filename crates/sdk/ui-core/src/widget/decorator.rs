@@ -483,8 +483,6 @@ decorator_trait! {
         /// is the inner widget's: a bar docked under a pane around a page still finds the page.
         fn readable_column() -> Option<crate::widget::arrange::Length>;
         fn test_id() -> Option<&str>;
-        fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
-        fn window_slot_barrier() -> bool;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
@@ -561,7 +559,6 @@ decorator_trait! {
     }
 
     mut {
-        fn window_choose(id: &str) -> bool;
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);

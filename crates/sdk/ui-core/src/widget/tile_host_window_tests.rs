@@ -171,7 +171,7 @@ impl Widget for WindowProbe {
     ) -> Result<(), crate::bound_dispatch::BoundDispatchError> {
         self.reached_in
             .borrow_mut()
-            .push(crate::window_toolbar::current_window());
+            .push(crate::window_toolbar::window().map(|window| window.identity()));
         Ok(())
     }
     fn name(&self) -> &'static str {
@@ -215,7 +215,7 @@ fn a_wake_or_callback_runs_in_the_apps_own_window() {
     .unwrap();
     assert_eq!(*reached_in.borrow(), [Some(window.identity())]);
     assert_eq!(
-        crate::window_toolbar::current_window(),
+        crate::window_toolbar::window().map(|window| window.identity()),
         None,
         "the window stops being current once the visit returns"
     );

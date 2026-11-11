@@ -712,10 +712,11 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
         "at its trailing end: {held:?} in {content:?}"
     );
 
-    // A header row that stands as the window's bar's slots draws none of its own: the window
+    // An app that declares its toolbar in the window's bar draws no row of its own: the window
     // keeps its bar, and its content stands under it.
     let (mut plain, _window) = shell_window(
         crate::widget::NavShell::new()
+            .with_window_toolbar()
             .content(Box::new(crate::widget::Text::new("Body")))
             .content_header(
                 "Design",
@@ -968,14 +969,15 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
     );
 }
 
-/// A window whose row stands as the bar's slots keeps the same functions, so a person gets one
-/// answer either way: the search and the window's controls stand at the bar's trailing end, and
-/// the bar's ground moves the window.
+/// A window whose app declares its toolbar in the bar keeps the same functions as one whose row
+/// holds the bar, so a person gets one answer either way: the search and the window's controls
+/// stand at the bar's trailing end, and the bar's ground moves the window.
 #[test]
 fn a_row_standing_as_slots_keeps_the_windows_functions() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
+            .with_window_toolbar()
             .content(Box::new(crate::widget::Text::new("Body")))
             .content_header(
                 "Design",
@@ -1558,6 +1560,7 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
+            .with_window_toolbar()
             .content(Box::new(crate::widget::Text::new("Body")))
             .content_header(
                 "Design",

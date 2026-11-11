@@ -837,10 +837,6 @@ impl Widget for DeclaredPopoverButton {
         "PopoverButton"
     }
 
-    fn window_slot_barrier(&self) -> bool {
-        true
-    }
-
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
         self.pair.accessibility()
     }

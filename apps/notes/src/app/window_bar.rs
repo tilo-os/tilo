@@ -178,10 +178,10 @@ mod tests {
             .expect("the notes surface")
     }
 
-    /// A window shows one bar. The bar holds the note's controls, so the row the window's
-    /// controls stand in is that bar — drawn by the note's own shell at the window's top, never
-    /// a second row under a bar above it — and the note starts inside it, at the window's top.
-    /// Only a docked page tree keeps its header, which holds its title (New note is the bar's).
+    /// A window shows one bar. The row the window's controls stand in is the note's own shell's,
+    /// drawn at the window's top, never a second row under a bar above it, and it stands at rest
+    /// too: the note starts right under it. Only a docked page tree keeps its header, which
+    /// holds its title (New note is the bar's).
     #[test]
     fn a_note_starts_right_under_the_window_bar() {
         let gutter = f64::from(ui::theme::Theme::dark().tokens.spacing.rhythm.group);
@@ -190,9 +190,9 @@ mod tests {
                 let mut notes = notes_at(scenario, (width, 800));
                 let (tree, header, body) = tops(&mut notes);
                 assert!(
-                    body.abs() < 1e-9,
-                    "{scenario} at {width} px: the note's view starts at the window's top, at \
-                     {body}"
+                    (body - header.1).abs() < 1e-9,
+                    "{scenario} at {width} px: the note's view starts right under the row, at \
+                     {body} under {header:?}"
                 );
                 assert!(
                     notes.harness().frame_extent((width, 800)).0.abs() < 1e-9,
@@ -213,8 +213,8 @@ mod tests {
                 if scenario != "first_note" {
                     let title = title_top(&mut notes);
                     assert!(
-                        (title - gutter).abs() < 0.5,
-                        "{scenario} at {width} px: the title stands one gutter under the bar, at {title}"
+                        (title - body - gutter).abs() < 0.5,
+                        "{scenario} at {width} px: the title stands one gutter under the row, at {title}"
                     );
                 }
             }

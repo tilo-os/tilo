@@ -1557,37 +1557,85 @@ fn a_header_row_under_the_bar_is_a_second_row() {
     );
 }
 
-/// A sidebar says what its places are, and offers what adds to them, in a row of its own at the
+/// Every column says what it shows, and offers what acts on it, in a row of its own at the
 /// window's top at every time: a window that declares that row and draws none at rest loses it
 /// until the person reaches for the window's bar.
 #[test]
-fn a_sidebar_declares_its_header_and_draws_it_at_rest() {
-    let frame = |header: Rect| {
-        Some(ui::widget::SidebarFrame {
-            column: Rect::new(0.0, 0.0, 220.0, 800.0),
-            header,
-        })
+fn a_column_declares_its_header_and_draws_it_at_rest() {
+    let frame = |key: &'static str, x0: f64, header: Rect| ui::widget::ColumnFrame {
+        key,
+        column: Rect::new(x0, 0.0, x0 + 400.0, 800.0),
+        header,
+        rail: false,
     };
-    let row = Rect::new(0.0, 0.0, 220.0, 44.0);
+    let row = |x0: f64| Rect::new(x0, 0.0, x0 + 400.0, 44.0);
+    let at_rest = |declared: &[&str], frames: &[ui::widget::ColumnFrame]| {
+        super::column_headers_at_rest(declared, frames, 1280.0)
+    };
     assert!(
-        super::sidebar_header_at_rest(false, frame(Rect::ZERO)).is_empty(),
-        "a sidebar the app gives no header is the app's own, drawn or not"
+        at_rest(&[], &[frame("overview", 220.0, Rect::ZERO)]).is_empty(),
+        "a column the app gives no header is the app's own, drawn or not"
     );
     assert!(
-        super::sidebar_header_at_rest(true, None).is_empty(),
-        "a sidebar the person put away stands nowhere, so it draws no row"
+        at_rest(&["overview"], &[frame("overview", 220.0, row(220.0))]).is_empty(),
+        "the row that names the column stands at rest"
     );
     assert!(
-        super::sidebar_header_at_rest(true, frame(row)).is_empty(),
-        "the row that names the sidebar stands at rest"
+        at_rest(&["content"], &[frame("content", 1280.0, Rect::ZERO)]).is_empty(),
+        "a pushed screen behind the one in front is not on the window"
     );
-    let found = super::sidebar_header_at_rest(true, frame(Rect::ZERO));
+    let rail = ui::widget::ColumnFrame {
+        rail: true,
+        ..frame("sidebar", 0.0, Rect::ZERO)
+    };
+    assert!(
+        at_rest(&["sidebar"], &[rail]).is_empty(),
+        "a rail says what it holds by its icons"
+    );
+    let found = at_rest(
+        &["sidebar", "overview"],
+        &[
+            frame("sidebar", 0.0, row(0.0)),
+            frame("overview", 400.0, Rect::ZERO),
+        ],
+    );
     assert_eq!(found.len(), 1, "a declared header that only the bar shows");
-    assert_eq!(found[0].kind, Kind::SidebarHeaderOnReveal);
+    assert_eq!(found[0].kind, Kind::HeaderOnReveal);
     assert!(
-        found[0].detail.contains("220px"),
-        "the finding says how wide the sidebar stands: {}",
+        found[0].detail.contains("overview") && found[0].detail.contains("400px"),
+        "the finding names the column and how wide it stands: {}",
         found[0].detail
+    );
+}
+
+/// An action stands once: in its column's header row, never again in the window's bar.
+#[test]
+fn an_action_the_window_offers_is_never_offered_again_by_its_bar() {
+    let control = |name: &str, furniture: bool| ui::window_toolbar::BarControl {
+        name: name.to_owned(),
+        furniture,
+        ..ui::window_toolbar::BarControl::new("action", format!("bar.{name}"), Rect::ZERO)
+    };
+    let layout = ui::window_toolbar::BarLayout {
+        spare: 0.0,
+        controls: vec![
+            control("Compose", false),
+            control("Close", true),
+            ui::window_toolbar::BarControl {
+                name: "Close".to_owned(),
+                ..ui::window_toolbar::BarControl::new("close", "window-control-close", Rect::ZERO)
+            },
+        ],
+        labels: Vec::new(),
+    };
+    let buttons = vec!["Compose".to_owned(), "Close".to_owned()];
+    let found = super::offered_twice(&layout, &buttons);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::OfferedTwice);
+    assert!(found[0].detail.contains("Compose"));
+    assert!(
+        super::offered_twice(&layout, &["Reply".to_owned()]).is_empty(),
+        "an action the window offers nowhere else stands in the bar alone"
     );
 }
 

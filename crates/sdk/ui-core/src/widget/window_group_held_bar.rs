@@ -67,8 +67,6 @@ impl WindowGroup {
         let app = app as &mut dyn Widget;
         let bar = hands_its_bar.then(|| crate::widget::WindowBar {
             controls_width: crate::widget::window_header::merged_row_width_in(self.rect.width()),
-            revealed: true,
-            top_inset: 0.0,
             lists_actions: false,
         });
         crate::widget::window_header::offer_window_bar(app, bar);

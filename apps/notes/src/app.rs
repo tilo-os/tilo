@@ -718,7 +718,6 @@ impl NotesApp {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Document)
             .with_id("notes-shell")
-            .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))
             .content(Box::new(columns.content.slot()))
             .sidebar_header(

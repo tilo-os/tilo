@@ -9,41 +9,73 @@ use super::{EPSILON, Kind, Problem, SHELL};
 /// the app's.
 const BAR: &str = "WindowBar";
 
-/// What is wrong with the window's sidebar as it stands at rest: whether the row that names its
-/// places and offers what adds to them is there, or only stands once the window's bar is out.
-/// A sidebar's header is the app's own navigation — the app declares it, and the window's bar
-/// comes over it while the person reaches for the window's top edge — so it is on the window at
-/// every time. A window that declares a sidebar header and draws none at rest loses it until the
-/// bar comes, and the top of the sidebar starts straight with its rows.
+/// What is wrong with the window's columns as they stand at rest: a column whose header the app
+/// declares — the words that name what it shows and the buttons that act on it — that draws no
+/// header row at its top. A column's header is the app's own and stands at every time; a window
+/// that draws it only while its bar is out starts the column straight with its rows, and nothing
+/// names it or adds to it until the person reaches for the window's top edge.
 ///
-/// A sidebar that stands narrow enough to read as a rail says what it holds by its icons, and a
-/// sidebar the person put away stands nowhere: neither draws a row, and neither is this.
-pub fn sidebar_header_at_rest(
-    declares: bool,
-    stands: Option<ui::widget::SidebarFrame>,
+/// `declared` names the columns (`sidebar`, `overview`, `content`) whose header the app declares;
+/// `frames` are the columns the window lays out. A column standing off the window (a pushed screen
+/// behind the one in front) is not on it, and a sidebar narrow enough to read as a rail of icons
+/// says what it holds by them: neither is judged.
+pub fn column_headers_at_rest(
+    declared: &[&str],
+    frames: &[ui::widget::ColumnFrame],
+    width: f64,
 ) -> Vec<Problem> {
-    if !declares {
-        return Vec::new();
-    }
-    let Some(frame) = stands else {
-        return Vec::new();
-    };
-    if frame.header.height() > EPSILON {
-        return Vec::new();
-    }
-    vec![Problem {
-        kind: Kind::SidebarHeaderOnReveal,
-        keys: Vec::new(),
-        widget: SHELL.to_owned(),
-        id: None,
-        detail: format!(
-            "the sidebar's header row — the words that name its places and the buttons that add \
-             to them — stands only while the window's bar is out: at rest the sidebar's {:.0}px \
-             wide column starts straight with its rows, so nothing there says what it holds \
-             until the person reaches for the window's top edge",
-            frame.column.width(),
-        ),
-    }]
+    frames
+        .iter()
+        .filter(|frame| declared.contains(&frame.key) && !frame.rail)
+        .filter(|frame| frame.column.x1 > EPSILON && frame.column.x0 < width - EPSILON)
+        .filter(|frame| frame.header.height() <= EPSILON)
+        .map(|frame| Problem {
+            kind: Kind::HeaderOnReveal,
+            keys: Vec::new(),
+            widget: SHELL.to_owned(),
+            id: None,
+            detail: format!(
+                "the {} column's header row — the words that name what it shows and the buttons \
+                 that act on it — does not stand at rest: the {:.0}px wide column starts straight \
+                 with its rows, so nothing there says what it holds until the person reaches for \
+                 the window's top edge",
+                frame.key,
+                frame.column.width(),
+            ),
+        })
+        .collect()
+}
+
+/// What is wrong with the window's bar against the window's own header rows: an action the bar
+/// offers that a button standing in the window offers too, by the same name. A column's header
+/// row is where its actions stand, and the bar holds only what is the window's, so a person
+/// finds each action once.
+///
+/// `buttons` are the names of the buttons the window draws where the person reaches them.
+pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String]) -> Vec<Problem> {
+    layout
+        .controls
+        .iter()
+        // The app's own slots: the window's furniture, navigation and controls are the window's.
+        .filter(|control| {
+            !control.furniture
+                && matches!(control.slot, "leading" | "views" | "views-menu" | "action")
+                && !control.name.is_empty()
+        })
+        .filter(|control| buttons.contains(&control.name))
+        .map(|control| Problem {
+            kind: Kind::OfferedTwice,
+            keys: Vec::new(),
+            widget: BAR.to_owned(),
+            id: Some(control.id.clone()),
+            detail: format!(
+                "the bar offers \"{}\" and the window offers it again as a button of its own: a \
+                 column's actions stand in its header row, and the bar holds only what is the \
+                 window's",
+                control.name,
+            ),
+        })
+        .collect()
 }
 
 /// What is wrong with one window's bar as it lays itself out across the window: a control it

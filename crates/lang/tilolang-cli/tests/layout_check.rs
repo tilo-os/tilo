@@ -140,12 +140,13 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // beside the page it opens.
             | Kind::CrowdedHeading
             | Kind::DetailRowNotChosen
-            // No window in this fixture declares a sidebar header over a sidebar that draws none,
-            // no field of it stands one band tall with its line off that band's middle (a field
-            // centres its own line), and no agent or peer is drawn in it, so no presence tag
-            // stands anywhere. No window in it holds writing either, so no section of a page
-            // stands under the writing it holds.
-            | Kind::SidebarHeaderOnReveal
+            // No window in this fixture declares a column header over a column that draws none or
+            // offers an action in its bar and its own row both, no field of it stands one band
+            // tall with its line off that band's middle (a field centres its own line), and no
+            // agent or peer is drawn in it, so no presence tag stands anywhere. No window in it
+            // holds writing either, so no section of a page stands under the writing it holds.
+            | Kind::HeaderOnReveal
+            | Kind::OfferedTwice
             | Kind::LineOffCentre
             | Kind::PresenceTag
             | Kind::UnruledBody => "(no view)",

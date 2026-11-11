@@ -155,11 +155,11 @@ pub enum Kind {
     /// A list standing beside the page it opens that highlights another row than the one the page
     /// shows: the tree says where the person is, and the page says it somewhere else.
     DetailRowNotChosen,
-    /// A sidebar whose header row — the words that name its places and the buttons that add to
-    /// them — stands only while the window's bar is out: at rest the sidebar starts straight
-    /// with its rows, so what names it and adds to it is off the window until the person reaches
-    /// for the bar. The sidebar's header is the app's own navigation and stands at every time.
-    SidebarHeaderOnReveal,
+    /// A column whose header row — the words that name what it shows and the buttons that act on
+    /// it — stands only while the window's bar is out: at rest the column starts straight with
+    /// its rows, so what names it and acts on it is off the window until the person reaches for
+    /// the bar. A column's header is the app's own and stands at every time.
+    HeaderOnReveal,
     /// A name tag presence draws — who is there, what an agent is doing — over a word of the
     /// window, or a second tag for one actor: the word is lost, and one actor reads as two.
     PresenceTag,
@@ -174,6 +174,9 @@ pub enum Kind {
     /// like the writing's own headings and stands no further from it than they stand from each
     /// other, so what the page says of itself is read as another line of what was written.
     UnruledBody,
+    /// An action the window's bar offers that a button in the window offers again: a column's
+    /// actions stand in its header row, and the bar holds only what is the window's.
+    OfferedTwice,
 }
 
 impl Kind {
@@ -226,10 +229,11 @@ impl Kind {
             Self::OrphanedRow => "orphaned-row",
             Self::CrowdedHeading => "crowded-heading",
             Self::DetailRowNotChosen => "detail-row-not-chosen",
-            Self::SidebarHeaderOnReveal => "sidebar-header-on-reveal",
+            Self::HeaderOnReveal => "header-on-reveal",
             Self::PresenceTag => "presence-tag",
             Self::LineOffCentre => "line-off-centre",
             Self::UnruledBody => "unruled-body",
+            Self::OfferedTwice => "offered-twice",
         }
     }
 }
