@@ -5388,14 +5388,15 @@ impl BrowserWidget {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
         const MATERIALIZED_LIMIT: usize = 100;
+        // The page is named by its site, not its title. A title arrives while
+        // the page loads and a page's script changes it at will, and a person
+        // asked about an action here is shown this name: it has to be the same
+        // when they answer, or what they allowed is refused as another action.
+        let site = window_bar::site_label(&self.current_uri);
         let mut page = ResourceSpec::new(
             "browser.page",
             "browser.page",
-            if self.title.is_empty() {
-                "Web page"
-            } else {
-                &self.title
-            },
+            if site.is_empty() { "Web page" } else { &site },
         );
         if self.person_bookmarks.is_some()
             && !self.current_uri.trim().is_empty()

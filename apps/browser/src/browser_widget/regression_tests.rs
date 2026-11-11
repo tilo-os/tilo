@@ -334,6 +334,50 @@ fn a_jump_within_the_page_keeps_find_and_reader_view() {
     assert!(widget.title.is_empty());
 }
 
+/// A person asked about an action on the page is shown the page's name, and
+/// what they allow is that action only while the name stands: the name is
+/// the published resource's label, which a question keeps and the answer is
+/// checked against. A title arrives while the page loads and a page's script
+/// changes it at will, so an agent's navigation asked about on a loading
+/// page was refused once the person allowed it. The page is named by its
+/// site: the name stands through both, and another site is another name.
+#[test]
+fn the_page_keeps_its_name_while_its_title_changes() {
+    let engine = TestEngine::new();
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+    let named = |widget: &BrowserWidget| {
+        widget
+            .published()
+            .children
+            .iter()
+            .find(|row| row.id.0 == "browser.page")
+            .expect("the page is published")
+            .label
+            .clone()
+    };
+    assert_eq!(named(&widget), "Web page", "a page with no address yet");
+
+    engine.push_event(WebViewEvent::UriChanged(
+        "https://www.shop.test/cart".into(),
+    ));
+    widget.apply_engine_events();
+    assert!(widget.title.is_empty(), "the page is still loading");
+    assert_eq!(named(&widget), "shop.test");
+
+    engine.push_event(WebViewEvent::TitleChanged("Your cart".into()));
+    widget.apply_engine_events();
+    assert_eq!(widget.title, "Your cart");
+    assert_eq!(named(&widget), "shop.test", "the title arrived");
+
+    engine.push_event(WebViewEvent::TitleChanged("(1) Your cart".into()));
+    widget.apply_engine_events();
+    assert_eq!(named(&widget), "shop.test", "the page retitled itself");
+
+    engine.push_event(WebViewEvent::UriChanged("https://pay.test/checkout".into()));
+    widget.apply_engine_events();
+    assert_eq!(named(&widget), "pay.test", "another site is another page");
+}
+
 #[test]
 fn an_engine_download_is_kept_where_the_library_search_and_agents_read() {
     let engine = TestEngine::new();
