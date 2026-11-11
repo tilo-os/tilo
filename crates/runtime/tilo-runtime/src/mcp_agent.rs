@@ -1129,6 +1129,17 @@ struct Resolved {
     revision: String,
 }
 
+/// Whether `page` is what an app answers when its directory cannot be read now
+/// (`collaboration::action_directory::unavailable_page`): it stopped at a limit with nothing
+/// read, names no revision and offers nothing to continue from.
+fn cannot_be_read_now(page: &tilo_actions::remote::CataloguePage) -> bool {
+    page.budget_exhausted
+        && !page.exhausted
+        && page.revision.is_empty()
+        && page.rows.is_empty()
+        && page.next_cursor.is_empty()
+}
+
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     /// One directory level: the resources under `parent` and their actions,
     /// over as many pages as a bounded read takes.
@@ -1189,6 +1200,17 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     return Err(
                         "the app's directory kept changing while it was read; try again".into(),
                     );
+                }
+                // An app that cannot read its directory right now, as while another actor's
+                // action is being applied, answers a page with no revision, no rows and
+                // nowhere to go on from. That is not a level with nothing in it: it is read
+                // again as a directory that moved on is, for as long as an action is waited
+                // for.
+                if cannot_be_read_now(&page) {
+                    if deadline.is_some_and(|deadline| tokio::time::Instant::now() < deadline) {
+                        continue 'snapshot;
+                    }
+                    return Err("the app cannot list what it has right now; try again".into());
                 }
                 rows.extend(page.rows);
                 read_at.clone_from(&page.revision);
