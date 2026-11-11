@@ -1716,9 +1716,14 @@ impl Widget for EmojiPicker {
     }
 
     fn needs_redraw(&self) -> bool {
+        // A closed picker paints nothing: what it owes is the frame that takes it down, and
+        // neither its field nor what its grid is built from shows until it opens again, which
+        // rebuilds the grid.
         self.dirty
-            || (self.search.needs_redraw() || self.search.needs_animation_frame())
-            || Self::sources() != self.built_from
+            || (self.open
+                && (self.search.needs_redraw()
+                    || self.search.needs_animation_frame()
+                    || Self::sources() != self.built_from))
     }
 
     fn mark_drawn(&mut self) {

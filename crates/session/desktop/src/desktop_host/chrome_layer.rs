@@ -2320,8 +2320,9 @@ impl Widget for DesktopChrome {
         if self.emoji.is_open() {
             self.emoji.advance_scroll();
             ui::Widget::draw(&mut self.emoji, scene, transform, text, theme, presence);
-            self.emoji.mark_drawn();
         }
+        // Drawn or not, the picker is as this frame shows it: one that closed is gone from it.
+        self.emoji.mark_drawn();
         // The desktop's own hints, above the windows and the bar they point at: the person learns
         // each control once, where it is done.
         self.hints_painted_before = self.hints.painted_rect();
