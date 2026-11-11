@@ -829,6 +829,16 @@ impl Session {
                     as std::sync::Arc<dyn crate::platform::apps::Apps>),
                 handle: handle.clone(),
                 sync: sync.clone(),
+                // Who is here as the bar's faces are drawn from them: the plane's.
+                here: {
+                    let sync = sync.clone();
+                    let notes = std::sync::Arc::clone(&notes);
+                    Rc::new(move |tree: &mut tilo_desktop_model::DesktopTree| {
+                        if let Some(sync) = &sync {
+                            sync.show(tree, &notes.records(), &|_: &str| None);
+                        }
+                    })
+                },
                 intents: Rc::clone(&intents),
                 invitable: Rc::clone(&invitable),
             },

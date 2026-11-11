@@ -23,6 +23,7 @@ use tilo_desktop::launchpad::LaunchpadAppAction;
 use tilo_desktop::profile_card::{
     OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
+use tilo_desktop_model::DesktopTree;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
 use tilo_session_core::door::{Look, Published};
@@ -506,6 +507,11 @@ pub struct Given {
     pub handle: DesktopHandle,
     /// Who is here, when this session takes part in the collaboration plane.
     pub sync: Option<Rc<crate::sync::Client>>,
+    /// Who is here, written into a copy of the desk's tree as its collaborators: what the bar's
+    /// faces are drawn from, so the roster they open lists the same people. A host that hears
+    /// some of them on a track of its own (the runs a workspace's host speaks for) writes them
+    /// in here as it does for the bar.
+    pub here: Rc<dyn Fn(&mut DesktopTree)>,
     /// Where the chrome takes the intents the roster raises.
     pub intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether the person may invite someone into the workspace in front.
@@ -533,6 +539,7 @@ pub fn mount(
         drawn: Cell::new(0),
         seated: given.seated,
         sync: given.sync,
+        here: given.here,
         notes: given.notes,
         apps: given.apps,
         intents: given.intents,
@@ -588,6 +595,9 @@ struct Panel {
     /// names the root key they are here by.
     seated: String,
     sync: Option<Rc<crate::sync::Client>>,
+    /// Who is here, written into the desk's collaborators as the bar's faces read them
+    /// ([`Given::here`]).
+    here: Rc<dyn Fn(&mut DesktopTree)>,
     /// What each window of the desk shows, by its tab: where a person's record stands, so the
     /// roster places them in the window they work in.
     notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
@@ -902,12 +912,9 @@ impl Panel {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
-        let app_name = |_: &str| None;
         let records = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
-        if let Some(sync) = &self.sync {
-            sync.show(&mut tree, &records, &app_name);
-        }
+        (self.here)(&mut tree);
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
         let workspace = tree
             .active_workspace()

@@ -384,6 +384,12 @@ fn mount_people(
             ),
             handle: handle.clone(),
             sync: peer.and_then(crate::peer_sync::client),
+            // Who is here as the bar's faces are drawn from them: the page's own roster, which
+            // also holds the runs the workspace's host speaks for on a track of its own.
+            here: {
+                let chrome = Rc::clone(chrome);
+                Rc::new(move |tree: &mut DesktopTree| chrome.place_people(tree))
+            },
             intents: Rc::clone(intents),
             invitable,
         },
