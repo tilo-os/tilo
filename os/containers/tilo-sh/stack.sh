@@ -73,7 +73,7 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
 
 Natively: the programs are t's lounge-gate build (the release's code and
 opt-level without its whole-program link) in ./target/lounge-gate, built by
-t, or by rcargo with TILO_SH_CARGO=rcargo; Caddy is
+t, or by the cargo drop-in TILO_SH_CARGO names; Caddy is
 the one on PATH, else a pinned release fetched once. The relay and the door
 trust the local Caddy's CA through the fixed bundle path Tilo's programs read,
 which bwrap (bubblewrap) puts in front of this machine's own for those
@@ -417,8 +417,8 @@ find_enroll() {
   if [[ -n ${TILO_SH_TILO_ENROLL:-} ]]; then printf '%s' "$TILO_SH_TILO_ENROLL"; return; fi
   local candidate=${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-enroll
   if [[ ! -x $candidate ]]; then
-    say 'building tilo-enroll (rcargo build -p tilo-relay --bin tilo-enroll)'
-    (cd "$repo" && rcargo build -p tilo-relay --bin tilo-enroll >&2) \
+    say 'building tilo-enroll (cargo.sh build -p tilo-relay --bin tilo-enroll)'
+    (cd "$repo" && "$here/cargo.sh" build -p tilo-relay --bin tilo-enroll >&2) \
       || die 'could not build tilo-enroll; or set TILO_SH_TILO_ENROLL'
   fi
   printf '%s' "$candidate"
@@ -437,7 +437,7 @@ find_tilo() {
   for candidate in "$repo/target/release/tilo" "$repo/target/debug/tilo"; do
     [[ -x $candidate ]] && { printf '%s' "$candidate"; return; }
   done
-  die 'no tilo command: set TILO_SH_TILO_BIN, or build one (rcargo build -p tilo-cli --bin tilo)'
+  die 'no tilo command: set TILO_SH_TILO_BIN, or build one (os/containers/tilo-sh/cargo.sh build -p tilo-cli --bin tilo)'
 }
 
 # The Python SDK as this checkout has it: uv with its lock where uv is, else
@@ -464,8 +464,8 @@ seed() {
   mkdir -p "$out"
   local seeder=${TILO_SH_SEEDER:-$repo/target/debug/examples/seed-lounge}
   if [[ ! -x $seeder ]]; then
-    say 'building the seeder (rcargo build -p tilo-agent-participant --example seed-lounge)'
-    (cd "$repo" && rcargo build -p tilo-agent-participant --example seed-lounge >&2) \
+    say 'building the seeder (cargo.sh build -p tilo-agent-participant --example seed-lounge)'
+    (cd "$repo" && "$here/cargo.sh" build -p tilo-agent-participant --example seed-lounge >&2) \
       || die 'could not build the seeder; or set TILO_SH_SEEDER'
   fi
   local members
@@ -584,10 +584,10 @@ build_programs() {
   (cd "$repo" && "$here/cargo.sh" build --profile "$profile" --features tilo-relay/agents \
     -p tilo-relay -p discord-worker -p tilo-front-door -p fake-discord -p tilo-cli \
     --bin tilo-relay --bin discord-worker --bin tilo-front-door --bin fake-discord --bin tilo >&2) \
-    || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO=rcargo builds on rcargo's builder"
+    || die "the build failed (above); if it built but did not bring the programs back, TILO_SH_CARGO names another cargo drop-in to build with"
   local program
   for program in tilo-relay discord-worker tilo-front-door fake-discord tilo; do
-    [[ -x $programs/$program ]] || die "the build left no $programs/$program; TILO_SH_CARGO=rcargo builds on rcargo's builder instead"
+    [[ -x $programs/$program ]] || die "the build left no $programs/$program; TILO_SH_CARGO names another cargo drop-in to build with"
   done
   say "programs built ($((SECONDS - began))s)"
 }

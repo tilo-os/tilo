@@ -10,7 +10,7 @@ both, and `stack.sh help` covers the commands.
 | File | What it is |
 | --- | --- |
 | `stack.sh` | the one command: `up`, `restart`, `env`, `status`, `logs`, `browser`, `check`, `down` |
-| `cargo.sh` | how the native stack compiles: `t build` (or rcargo with `TILO_SH_CARGO=rcargo`), also the cargo the web bundle's build script gets |
+| `cargo.sh` | how the native stack compiles: `t build` (or the cargo drop-in `TILO_SH_CARGO` names), also the cargo the web bundle's build script gets |
 | `Caddyfile` | production's relay routing (tilo/infra `apps/tilo-sh-relay/Caddyfile`) on loopback ports |
 | `check.sh` | the visa flow and a fresh visitor's timed entry against the stack |
 | `check-in-vm.sh` | `t test tilo-sh-local`: `check.sh` on the images, as an unprivileged user in a micro-VM, rootless as on a developer's machine |

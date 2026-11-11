@@ -1,6 +1,6 @@
 # Testing tilo.sh on your machine
 
-tilo.sh is tested on a developer's machine (or the rcargo builder) before any
+tilo.sh is tested on a developer's machine (or a remote build machine) before any
 release. It is never tested on the deployed site. One command starts the
 whole product from your checkout. It uses the same entrypoints, Caddyfiles
 and environment variables as production:
@@ -139,9 +139,11 @@ build) shows a service's log.
 
 ## Other builds
 
-`TILO_SH_CARGO=rcargo` builds the programs and the bundle's WebAssembly on
-rcargo's builder instead of with `t build`, for when `t` cannot bring a
-build back to your machine.
+`TILO_SH_CARGO=<command>` builds the programs and the bundle's WebAssembly
+with that cargo drop-in (run as `<command> build ARGS…`) instead of with
+`t build`, for when `t` cannot bring a build back to your machine. It must
+leave what it builds in `./target` as cargo would, the bundle's
+`<target>/<profile>/<package>.wasm` included.
 
 `TILO_SH_BUNDLE` names a desktop bundle built elsewhere
 (`build.sh OUT --bundle desktop`) for the native stack to serve instead of
