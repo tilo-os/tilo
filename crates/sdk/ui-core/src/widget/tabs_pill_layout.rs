@@ -8,7 +8,6 @@
 
 use super::{
     ACTION_HIT_INSET_Y, CHIP_CLUSTER_W, CHIP_PITCH, CLOSE_HIT_PX, MAX_CHIP_REACH, PILL_GAP,
-    PILL_SQUEEZE_FLOOR_PX,
 };
 use vello::kurbo::Rect;
 
@@ -17,11 +16,18 @@ use vello::kurbo::Rect;
 /// pills that can give up space do it first:
 ///
 /// 1. Everything fits — hand back the natural widths untouched.
-/// 2. Shrink unpinned pills proportionally, no further than
-///    [`PILL_SQUEEZE_FLOOR_PX`] (pinned pills are already at their minimum).
-/// 3. Still over: scale every pill, pinned included. Ugly, but a legible
-///    sliver beats a pill painted across its neighbour.
-pub(super) fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> Vec<f64> {
+/// 2. Shrink the pills above their floor (`floors`, each no wider than the pill's natural width;
+///    a pinned pill's is its own width) together, in proportion to what each has above it, and
+///    none past it: a pill that reaches its floor stands there while the rest give the remainder.
+/// 3. The floors alone are over: the `firm` pills (the tab in front, whose × must stay) keep
+///    their floor and the rest scale into what is left; past that, every pill scales. Ugly,
+///    but a narrow glyph beats a pill painted across its neighbour.
+pub(super) fn fit_pill_widths(
+    natural: &[f64],
+    floors: &[f64],
+    firm: &[bool],
+    avail: f64,
+) -> Vec<f64> {
     let n = natural.len();
     if n == 0 {
         return Vec::new();
@@ -30,44 +36,66 @@ pub(super) fn fit_pill_widths(natural: &[f64], pinned: &[bool], avail: f64) -> V
     if avail <= 0.0 {
         return natural.to_vec();
     }
-    // `n >= 1` from the `n == 0` check above, so `n - 1` cannot underflow; tab
-    // counts stay far below `u32::MAX`, so the `f64` conversion is exact.
-    let gap_count = u32::try_from(n.saturating_sub(1)).unwrap_or(u32::MAX);
-    let gaps = PILL_GAP * f64::from(gap_count);
-    let budget = (avail - gaps).max(0.0);
+    let budget = (avail - row_gaps(n)).max(0.0);
     let total: f64 = natural.iter().sum();
     if total <= budget {
         return natural.to_vec();
     }
-
-    let mut out = natural.to_vec();
-    let pinned_total: f64 = natural
-        .iter()
-        .zip(pinned)
-        .filter(|(_, p)| **p)
-        .map(|(w, _)| *w)
-        .sum();
-    let flexible_total = total - pinned_total;
-    if flexible_total > 0.0 {
-        let flexible_budget = (budget - pinned_total).max(0.0);
-        let scale = (flexible_budget / flexible_total).clamp(0.0, 1.0);
-        for (w, is_pinned) in out.iter_mut().zip(pinned) {
-            if !*is_pinned {
-                *w = (*w * scale).max(PILL_SQUEEZE_FLOOR_PX);
-            }
-        }
+    let floor_of = |i: usize| {
+        floors
+            .get(i)
+            .copied()
+            .unwrap_or(0.0)
+            .min(natural.get(i).copied().unwrap_or(0.0))
+    };
+    let floor_total: f64 = (0..n).map(floor_of).sum();
+    if floor_total <= budget {
+        // What each pill can give is what it has above its floor, and they give it in the same
+        // proportion: the row lands on the budget exactly, every pill at or above its floor.
+        let slack = total - floor_total;
+        let keep = if slack > 0.0 {
+            ((budget - floor_total) / slack).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        return natural
+            .iter()
+            .enumerate()
+            .map(|(i, &w)| {
+                let floor = floor_of(i);
+                floor + (w - floor) * keep
+            })
+            .collect();
     }
-
-    // The floor above can still push the row over budget; uniform scale is
-    // the only remaining lever, and is guaranteed to land inside `avail`.
-    let squeezed: f64 = out.iter().sum();
-    if squeezed > budget && squeezed > 0.0 {
-        let scale = budget / squeezed;
-        for w in &mut out {
-            *w *= scale;
-        }
+    let is_firm = |i: usize| firm.get(i).copied().unwrap_or(false);
+    let firm_total: f64 = (0..n).filter(|&i| is_firm(i)).map(floor_of).sum();
+    let rest_total = floor_total - firm_total;
+    if firm_total < budget && rest_total > 0.0 {
+        let scale = (budget - firm_total) / rest_total;
+        return (0..n)
+            .map(|i| {
+                if is_firm(i) {
+                    floor_of(i)
+                } else {
+                    floor_of(i) * scale
+                }
+            })
+            .collect();
     }
-    out
+    // Uniform scale is the only remaining lever, and is guaranteed to land inside `avail`.
+    let scale = if floor_total > 0.0 {
+        budget / floor_total
+    } else {
+        0.0
+    };
+    (0..n).map(|i| floor_of(i) * scale).collect()
+}
+
+/// The gaps between `n` pills.
+pub(super) fn row_gaps(n: usize) -> f64 {
+    // Tab counts stay far below `u32::MAX`, so the `f64` conversion is exact.
+    let gap_count = u32::try_from(n.saturating_sub(1)).unwrap_or(u32::MAX);
+    PILL_GAP * f64::from(gap_count)
 }
 
 /// Chip rects (close, maximize, search) for a pill of rect `r` whose reveal

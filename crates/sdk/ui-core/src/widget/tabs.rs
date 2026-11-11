@@ -2434,15 +2434,38 @@ impl TabBar {
             || pressed
             || self.keyboard_focus && t.id == self.active_id
         {
-            // With the maximize chip withheld there is nothing above `Close` to open into, and
-            // reserving its width would push the title around for nothing.
-            if self.show_maximize {
-                Reveal::Full
-            } else {
-                Reveal::Close
-            }
+            self.open_reveal()
         } else {
             self.resting_reveal(i)
+        }
+    }
+
+    /// How far a pill opens under the pointer: its whole cluster, or only its close where the
+    /// maximize chip is withheld — a window's bar, whose own controls maximize it — since there
+    /// is nothing above `Close` to open into, and reserving its width would push the title
+    /// around for nothing.
+    fn open_reveal(&self) -> Reveal {
+        if self.show_maximize {
+            Reveal::Full
+        } else {
+            Reveal::Close
+        }
+    }
+
+    /// The narrowest pill `i` stands at in a row too short for every title: its glyph as a
+    /// target a person can press, and on the active tab its × as well — a tab that cannot be
+    /// read or closed is no tab. A pinned pill stands at its own width.
+    fn squeeze_floor(&self, i: usize) -> f64 {
+        let Some(t) = self.tabs.get(i) else {
+            return 0.0;
+        };
+        if self.icon_only(t.id) {
+            return PINNED_W;
+        }
+        let lead = PILL_PAD_X + self.leading_zone(i);
+        match self.resting_reveal(i) {
+            Reveal::None => lead.max(CLOSE_HIT_PX),
+            reveal => lead + reveal.reserve(),
         }
     }
 
@@ -4202,7 +4225,7 @@ impl Widget for TabBar {
         self.mark_rects.resize(self.tabs.len(), Rect::ZERO);
 
         self.settle_hover_intent();
-        let (visual_order, widths, grow) = self.compute_pill_layout();
+        let (visual_order, widths, grow, at_least) = self.compute_pill_layout();
 
         let gap = PILL_GAP;
         let close_w = CLOSE_W;
@@ -4236,10 +4259,23 @@ impl Widget for TabBar {
             let effective = if is_pinned {
                 0.0
             } else {
-                let protect = self.shaped_title_width(i).min(MIN_TITLE_PX);
-                let afford = (r.width() - PILL_PAD_X - self.leading_zone(i) - protect).max(0.0);
+                // A pill gives up its chips before the last characters of its title, except
+                // where the row stands at its least, its tabs down to their glyphs: the tab in
+                // front keeps its × there — its floor holds the room for it.
+                let resting = self.resting_reveal(i);
+                let kept = if resting == Reveal::Close && at_least {
+                    resting.reserve()
+                } else {
+                    0.0
+                };
+                let room = (r.width() - PILL_PAD_X - self.leading_zone(i)).max(0.0);
+                let protect = self
+                    .shaped_title_width(i)
+                    .min(MIN_TITLE_PX)
+                    .min((room - kept).max(0.0));
+                let afford = (room - protect).max(0.0);
                 let grow_px = grow.get(slot).copied().unwrap_or(0.0);
-                (self.resting_reveal(i).reserve() + grow_px).min(afford)
+                (resting.reserve() + grow_px).min(afford)
             };
             let (close, max_rect, search_rect) = chip_rects(
                 r,
@@ -4915,9 +4951,10 @@ impl TabBar {
 
     /// Visual-slot ordering (pinned first) plus each slot's fitted width and
     /// in-flight reveal growth — the inputs `apply_layout`'s placement loop turns
-    /// into rects. Split out so `apply_layout` itself stays inside the
+    /// into rects — and whether the row stands at its least, its tabs down to their
+    /// glyphs. Split out so `apply_layout` itself stays inside the
     /// `too_many_lines` budget.
-    fn compute_pill_layout(&mut self) -> (Vec<usize>, Vec<f64>, Vec<f64>) {
+    fn compute_pill_layout(&mut self) -> (Vec<usize>, Vec<f64>, Vec<f64>, bool) {
         self.touch();
         // The only place the reveal curve advances, so rects and paint stay in step.
         let live: HashSet<u64> = self.tabs.iter().map(|t| t.id).collect();
@@ -4952,20 +4989,59 @@ impl TabBar {
             .iter()
             .map(|&i| self.natural_pill_width(i, self.resting_reveal(i).reserve()))
             .collect();
-        // The widest pill's opening: a pill with History opens one chip wider.
+        // The widest a pill grows past its resting width as it opens: a pill with History opens
+        // one chip wider, and a window's bar opens its tabs only as far as their close — keeping
+        // back the whole cluster there squeezed a narrow window's tabs to slivers.
         let headroom = visual_order
             .iter()
             .zip(&pinned_flags)
             .filter(|(_, pinned)| !**pinned)
-            .map(|(&i, _)| self.reserve_of(i, Reveal::Full) - Reveal::None.reserve())
+            .map(|(&i, _)| {
+                if self.solo() || !self.closable {
+                    return 0.0;
+                }
+                (self.reserve_of(i, self.open_reveal()) - self.resting_reveal(i).reserve()).max(0.0)
+            })
             .fold(0.0, f64::max);
         let row = self.pill_row();
         let laid_out = row.width() > 0.0;
-        let plus = if self.new_tab {
-            NEW_TAB_CHIP_PX + PILL_GAP
+        // How narrow each pill may get before the row gives up something else: a comfortable
+        // floor that keeps a fragment of every title (and the tab in front's × beside its own),
+        // else a pill's glyph and the tab in front's ×.
+        let comfortable: Vec<f64> = visual_order
+            .iter()
+            .zip(&resting)
+            .map(|(&i, &w)| {
+                let fragment = if self.resting_reveal(i) == Reveal::None {
+                    0.0
+                } else {
+                    MIN_TITLE_PX
+                };
+                w.min((self.squeeze_floor(i) + fragment).max(PILL_SQUEEZE_FLOOR_PX))
+            })
+            .collect();
+        let least: Vec<f64> = visual_order
+            .iter()
+            .zip(&resting)
+            .map(|(&i, &w)| w.min(self.squeeze_floor(i)))
+            .collect();
+        let gaps = pill_layout::row_gaps(visual_order.len());
+        let fits =
+            |floors: &[f64], beside: f64| floors.iter().sum::<f64>() + gaps + beside <= row.width();
+        let plus_w = NEW_TAB_CHIP_PX + PILL_GAP;
+        // The "+" keeps its place beside the tabs while they still stand at their least; past
+        // that the tabs come first, and the "+" stands only where the row has room left over.
+        let plus = if self.new_tab && (self.solo() || fits(&least, plus_w)) {
+            plus_w
         } else {
             0.0
         };
+        let at_least = !fits(&comfortable, plus);
+        let floors = if at_least { least } else { comfortable };
+        // A pill opening under the pointer grows into what the row has left once every pill
+        // stands at its floor, never into a neighbour's floor.
+        let headroom =
+            headroom.min((row.width() - floors.iter().sum::<f64>() - gaps - plus).max(0.0));
         let fit_avail = if laid_out && self.solo() {
             // A window's title opens no chips; what it has of a "+" stands
             // beside it.
@@ -4975,7 +5051,11 @@ impl TabBar {
         } else {
             row.width()
         };
-        let base = fit_pill_widths(&resting, &pinned_flags, fit_avail);
+        let firm: Vec<bool> = visual_order
+            .iter()
+            .map(|&i| self.resting_reveal(i) != Reveal::None)
+            .collect();
+        let base = fit_pill_widths(&resting, &floors, &firm, fit_avail);
         // Growth beyond resting, scaled down together if two pills are briefly
         // part-open mid-handover so the total can't outrun the one-pill headroom.
         let mut grow: Vec<f64> = visual_order
@@ -4993,7 +5073,12 @@ impl TabBar {
             }
         }
         let widths: Vec<f64> = base.iter().zip(grow.iter()).map(|(b, g)| b + g).collect();
-        (visual_order, widths, grow)
+        (
+            visual_order,
+            widths,
+            grow,
+            at_least && laid_out && !self.solo(),
+        )
     }
 
     /// One row of tab pills, each springing from its previous layout rect and

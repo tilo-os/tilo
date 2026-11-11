@@ -178,3 +178,6 @@ mod perf_interaction;
 
 #[path = "notion_import.rs"]
 mod notion_import;
+
+#[path = "desk_window_controls.rs"]
+mod desk_window_controls;
