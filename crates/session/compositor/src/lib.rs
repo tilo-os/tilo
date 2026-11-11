@@ -515,7 +515,7 @@ impl Compositor {
         mut arrived: impl FnMut(&mut Self),
     ) -> Result<(), Error> {
         while let Some(due) = self.frame_deadline() {
-            let wait = due.saturating_duration_since(std::time::Instant::now());
+            let wait = due.saturating_duration_since(tilo_clock::now());
             if wait.is_zero() {
                 break;
             }
@@ -538,7 +538,8 @@ impl Compositor {
     /// How long a loop may wait for clients, devices and its own work before the next frame is due;
     /// `None` when nothing is due, and it waits for an event.
     pub fn next_wait(&self) -> Option<Duration> {
-        let now = std::time::Instant::now();
+        // The deadlines are on the displays' clock, so the time they are counted from is too.
+        let now = tilo_clock::now();
         let backend = self.frame_deadline();
         // A running visual alert fades frame by frame.
         let alert = a11y::flashing(&self.data.state, now)
