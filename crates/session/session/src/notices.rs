@@ -364,7 +364,10 @@ pub fn codec_notice(
             0,
             t("codec-installed"),
             if after.mesa == MesaState::Waiting {
-                t("codec-installed-mesa-waiting")
+                t_args(
+                    "codec-installed-mesa-waiting",
+                    &[("applies", applies().into())],
+                )
             } else {
                 applies()
             },
