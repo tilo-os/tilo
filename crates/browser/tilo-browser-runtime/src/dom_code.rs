@@ -75,6 +75,7 @@ impl DomPresent for Presenter {
         args.push(&JsValue::from_str(&meta.to_string()));
         args.push(&JsValue::from_str(&encoded.ops));
         args.push(&new_fonts(&encoded.fonts));
+        args.push(&new_images(&encoded.images));
         if let Err(error) = frame.present.apply(&JsValue::NULL, &args) {
             web_sys::console::error_1(&error);
         }
@@ -102,6 +103,21 @@ fn new_fonts(fonts: &[tilo_cpu_raster::dom::NewFont]) -> js_sys::Array {
         entry.push(&JsValue::from(font.index));
         entry.push(&JsValue::from(font.ascent));
         entry.push(&JsValue::from(font.descent));
+        list.push(&entry);
+    }
+    list
+}
+
+/// The images a frame names for the first time, as the page keeps them:
+/// `[id, width, height, straight RGBA bytes]` each.
+fn new_images(images: &[tilo_cpu_raster::dom::NewImage]) -> js_sys::Array {
+    let list = js_sys::Array::new();
+    for image in images {
+        let entry = js_sys::Array::new();
+        entry.push(&JsValue::from(image.id));
+        entry.push(&JsValue::from(image.width));
+        entry.push(&JsValue::from(image.height));
+        entry.push(&js_sys::Uint8ClampedArray::from(image.rgba.as_slice()).into());
         list.push(&entry);
     }
     list

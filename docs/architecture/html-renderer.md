@@ -82,6 +82,14 @@ transparent, as the input surface. Nothing changes for a mount without
    `prefers-color-scheme` while the person has chosen neither in their
    settings, and changes with it.
 
+6. **Images and gradients.** An image is handed to the page once, as its
+   pixels under an id, and shown as a `<canvas>` placed by the image's own
+   matrix and clipped to what the scene draws it into; both sides forget an
+   image no frame showed for a while. A linear, radial (one centre) or sweep
+   gradient filling a box becomes the CSS gradient that paints the same
+   pixels, laid out against the box. A gradient on a path, a stroke or text
+   still shows its first stop.
+
 Everything that only an HTML mount runs is reached through `DOM_CODE`
 (`ui::lazy_code!`): drawing the frame, the toolkit's keying code (the
 `ui::scene_parts::Keyer` it installs; the draw paths carry only the check
@@ -141,24 +149,31 @@ Against the targets:
   scrollbar are the same. The phone figure is higher only because its text
   is set at three device pixels per point, so more of each glyph is edge.
 - **Accessibility:** no painted text is exposed to assistive technology (0
-  of 46 text elements). 14 semantic elements live inside their widget's
-  painted element; the other 517 are in the mirror's layer, because their
-  widgets are not drawn through a keyed path yet (next steps).
+  of 47 text elements). With every widget keyed, 523 semantic elements live
+  inside their widget's painted element and 7 are left in the mirror's
+  layer (before: 14 and 517).
+- **With every widget keyed** (one run on the same builder): typing p50 /
+  p90 19.2 / 32.9 ms at 1280 px and 12.0 / 43.4 ms at 390 px; wheel p50 /
+  p90 16.6 / 59.5 ms at 1280 px and 5.4 / 40.6 ms at 390 px (before: 21.2
+  ms p50). The 1280 px frame holds 241 elements (before: 118), since every
+  widget has one; a scroll frame writes 112 properties and creates 19
+  elements at the median (before: 103 and 13). The 1280 px wheel median is
+  one frame above the previous runs' 2.6 – 4.9 ms with the same work per
+  frame; it needs a run on a quiet machine. Pixel parity with the canvas
+  is unchanged (1.1 – 1.2 % at 1280 px, 4.5 % at 390 px).
 - **Light and dark** follow the emulated `prefers-color-scheme` in the
   HTML runs with no Tilo setting given.
-- **Size with `dom` off:** the desktop bundle's start module (as the
-  `sdk-web-size` check builds it, `tools/web/html-renderer/size.sh`) is
-  31,062,993 bytes against 31,011,973 for the main it is based on, built on
-  the same builder: 51 KB, 0.16 %, larger. The functions in it grew by 24 KB
-  before optimising; the rest is static data the splitter places
-  differently from build to build (an earlier build of nearly the same code
-  measured 25 KB over main). What grew: the mount's dispatch and the page
-  exports (8.5 KB), the encoder's walk over marks and text runs, which the
-  canvas path's CPU rasterizer shares (2.6 KB), glyph-run text (1.8 KB),
-  the draw paths' keyed check (1.8 KB) and marks in the encoding (1.3 KB).
-  The keying code, the encoder, the presenter and the HTML frame path are a
-  module of their own (`dom_presenter`, 45 KB), fetched only by a page that
-  asks for `dom: true`.
+- **Size with `dom` off:** keying every widget leaves the desktop bundle's
+  start module (as the `sdk-web-size` check builds it,
+  `tools/web/html-renderer/size.sh`) at 20,295,058 bytes against 20,281,659
+  for the main it is based on, built on the same builder: 13 KB, 0.07 %,
+  larger, with no module among those that grew most. A first version that
+  made every child a trait object grew it by 35 – 67 KB: a type that was
+  never a trait object got a vtable, which brings all of its `Widget`
+  methods in. A child held by value is now drawn through one generic,
+  never-inlined method per type. The keying code, the encoder, the
+  presenter and the HTML frame path stay in their own module
+  (`dom_presenter`), fetched only by a page that asks for `dom: true`.
 
 ## Next steps, with what this stage learned
 
@@ -170,25 +185,35 @@ Against the targets:
   `draw_child_at`) shifts the keys of the children after it, which is
   correct but rewrites more; and calls inside a macro's expansion are not
   always linted, so the decorator's forwarding draw is allowed by name.
-- **Touch scrolling.** Wheels scroll natively. A touch drag does not yet:
-  the transparent canvas above the HTML layer takes every pointer, and a
-  touch sequence cannot be handed to another element once it began. The
-  fix is to make the HTML layer the hit target and forward to the runtime
-  what the page does not handle itself, which the selection and `<input>`
-  work below needs too.
-- **Canvas islands.** Images are still placeholders and gradients show
-  their first stop. A widget that declares itself a picture, or a subtree
-  with too many ops, should become one `<canvas>` rasterized by
-  `tilo-cpu-raster` (or WebGPU when present); images `<img>` or
-  `ImageBitmap` from the image store; gradients CSS gradients.
+- **The HTML layer as the hit target (on branch
+  `html-renderer-hit-target`, not on main).** The layer takes every pointer
+  and forwards what the page does not handle to the canvas
+  (`web/dom-input.mjs`): wheels and touches over a scroll container stay
+  native, presses go to the runtime with the press's own focus change and
+  selection prevented, and the host keeps the focus while the person holds
+  a native selection. What it showed in the harness:
+  - a touch drag over the note pans its container natively (280 px for a
+    260 px drag, momentum included), which the canvas path cannot;
+  - but the 390 px run opened the note in a different state than the
+    canvas (title selected for editing instead of saved), so a tap reaches
+    the app differently under touch emulation, and wheel p50 rose to 40–44
+    ms in runs that shared the builder with a full build (not yet
+    re-measured on a quiet machine);
+  - a semantic element hosted in the painted layer must never take focus:
+    the press's default focus change put it there, and re-hosting it during
+    a frame blurred it inside a runtime callback.
+  The native selection after typing still comes back empty in both modes.
+  Fix the tap and re-measure before it lands.
+- **Canvas islands.** Images and box gradients are done (above). A
+  widget that declares itself a picture, or a subtree with too many ops,
+  should still become one `<canvas>` rasterized by `tilo-cpu-raster` (or
+  WebGPU when present); gradients on paths and text still show their first
+  stop.
 - **Real `<input>` with autofill and passkeys.** With painted and semantic
   elements now one node per widget, a single-line field's semantic element
   can become the visible field at the widget's rect. It needs an autofill
   purpose on text-input semantics and the field's text left out of the
   scene.
-- **The selection focus fix.** A native selection after typing still comes
-  back empty; the host takes focus back into its hidden editor. That and
-  the layer becoming the hit target belong together.
 - **Paragraph grouping.** Lines are still one element each. The keys now
   give each block one element, so its lines can become one text element
   with forced breaks.

@@ -53,6 +53,19 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
     }
   }
 
+  // The images frames named, by id: each a canvas holding its pixels, which
+  // every element showing it draws from.
+  const images = new Map();
+  function registerImages(list) {
+    for (const [image, width, height, rgba] of list) {
+      const source = document.createElement('canvas');
+      source.width = width; source.height = height;
+      source.getContext('2d').putImageData(new ImageData(rgba, width, height), 0, 0);
+      source.tiloUsed = stats.frames;
+      images.set(image, source);
+    }
+  }
+
   function element(key, tag, svg) {
     let node = previous.get(key);
     if (!node || node.tiloTag !== tag) {
@@ -102,11 +115,12 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
     }, {passive: true});
   }
 
-  function present(metaJson, opsJson, newFonts) {
+  function present(metaJson, opsJson, newFonts, newImages = []) {
     const started = performance.now();
     const meta = JSON.parse(metaJson);
     const ops = JSON.parse(opsJson);
     registerFonts(newFonts);
+    registerImages(newImages);
     if (meta.theme) for (const [name, value] of Object.entries(meta.theme)) layer.style.setProperty(name, value);
     const regions = new Map((meta.scrolls ?? []).map(scroll => [scroll.key, scroll]));
     const next = new Map();
@@ -167,11 +181,26 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
         // it rather than the box behind it.
         set(node, 'pointer-events', 'none');
       } else if (kind === 'i') {
-        const [, x, y, w, h] = op;
+        const [, x, y, w, h, image, a, b, c, d, e, f, alpha] = op;
         node = element(id, 'div');
         place(node, x, y, w, h, top.origin);
-        set(node, 'background', 'repeating-linear-gradient(45deg,#8882 0 6px,#8884 6px 12px)');
+        set(node, 'overflow', 'hidden');
         set(node, 'pointer-events', 'none');
+        const source = images.get(image);
+        if (source) source.tiloUsed = stats.frames;
+        set(node, 'background', source ? 'none' : 'repeating-linear-gradient(45deg,#8882 0 6px,#8884 6px 12px)');
+        let picture = node.firstChild;
+        if (source) {
+          // The image at its own size, drawn once, placed by its matrix.
+          if (!picture) { picture = document.createElement('canvas'); picture.tiloProps = {}; picture.style.position = 'absolute'; picture.style.left = '0'; picture.style.top = '0'; picture.style.transformOrigin = '0 0'; node.append(picture); }
+          if (picture.tiloImage !== image) {
+            picture.tiloImage = image;
+            picture.width = source.width; picture.height = source.height;
+            picture.getContext('2d').drawImage(source, 0, 0);
+          }
+          set(picture, 'transform', `matrix(${a},${b},${c},${d},${e - x},${f - y})`);
+          set(picture, 'opacity', String(alpha ?? 1));
+        } else if (picture) picture.remove();
       } else if (kind === 'p') {
         const [, x, y, w, h, d, fill, stroke, width, evenOdd] = op;
         node = element(id, 'svg', true);
@@ -279,6 +308,9 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
         }
       }
     }
+    // An image no frame showed for a while goes; the runtime hands it over
+    // again, under a new id, if it comes back.
+    for (const [image, source] of images) if (stats.frames - (source.tiloUsed ?? stats.frames) >= 600) images.delete(image);
     previous = next;
     widgets = nextWidgets;
     scrollers = nextScrollers;

@@ -50,3 +50,39 @@ fn keys_come_out_around_their_draws() {
     );
     assert_eq!(ops[2][1].as_f64(), Some(20.0));
 }
+
+/// An image goes to the page once, as straight RGBA under an id; every
+/// frame after names it by that id, placed by its matrix.
+#[test]
+fn an_image_is_handed_over_once_and_named_by_its_id() {
+    use std::sync::Arc;
+    use vello::peniko::{Blob, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
+    // Two pixels: opaque red, and half-transparent white premultiplied.
+    let image = ImageData {
+        data: Blob::new(Arc::new(vec![255, 0, 0, 255, 128, 128, 128, 128])),
+        format: ImageFormat::Rgba8,
+        alpha_type: ImageAlphaType::AlphaPremultiplied,
+        width: 2,
+        height: 1,
+    };
+    let mut scene = Scene::new();
+    scene.draw_image(
+        &ImageBrush::new(image),
+        Affine::translate((10.0, 20.0)) * Affine::scale(4.0),
+    );
+    let mut encoder = DomEncoder::new();
+    let first = encoder.encode(scene.encoding());
+    let ops: Vec<serde_json::Value> = serde_json::from_str(&first.ops).unwrap();
+    let image_op = ops.iter().find(|op| op[0] == "i").expect("an image op");
+    assert_eq!(first.images.len(), 1);
+    let given = &first.images[0];
+    assert_eq!((given.width, given.height), (2, 1));
+    assert_eq!(given.rgba, vec![255, 0, 0, 255, 255, 255, 255, 128]);
+    assert_eq!(image_op[5].as_u64(), Some(u64::from(given.id)));
+    // The image-to-device matrix: scaled by four, at 10, 20.
+    let matrix: Vec<f64> = (6..12).map(|i| image_op[i].as_f64().unwrap()).collect();
+    assert_eq!(matrix, vec![4.0, 0.0, 0.0, 4.0, 10.0, 20.0]);
+    let again = encoder.encode(scene.encoding());
+    assert!(again.images.is_empty(), "the page has it already");
+    assert!(again.ops.contains(&format!(",{},", given.id)));
+}
