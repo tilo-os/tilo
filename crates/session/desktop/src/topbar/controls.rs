@@ -72,8 +72,8 @@ impl TopBarChrome {
             Self::CONTROL_QUICK_SETTINGS => self.tray_hit_rect,
             Self::CONTROL_PROFILE => self.own_avatar_rect,
             Self::CONTROL_INVITE => self.invite_rect,
-            // The people button opens everyone here; the faces beside it each open one person, so
-            // they are not this control.
+            // Who is here, as one control: the faces (each opening its person in the panel, the
+            // badge everyone), or the people button where no face had room.
             Self::CONTROL_COLLABORATORS => {
                 let people = if self.people_button_rect.is_zero_area() {
                     self.avatar_stack_rect

@@ -33,6 +33,8 @@ pub struct State {
     pub arrived: Option<ArrivalNotice>,
     /// Unread counts per verified application id, as an application's own icon shows them.
     pub app_badges: HashMap<String, u32>,
+    /// The machine's readings the status cluster shows: none, as a page's bar has.
+    pub status: SystemStatus,
 }
 impl State {
     pub fn publish_activity_glance(
@@ -73,6 +75,7 @@ impl FixtureChrome {
             notifications_only: false,
             arrived: None,
             app_badges: HashMap::default(),
+            status: SystemStatus::default(),
         })))
     }
     pub fn borrow(&self) -> Ref<'_, State> {
@@ -103,6 +106,7 @@ impl DesktopChromeSource for FixtureChrome {
             notification_badge: state.notification_badge,
             notifications_only: state.notifications_only,
             arrived: state.arrived.clone(),
+            status: state.status.clone(),
             ..Default::default()
         }
     }

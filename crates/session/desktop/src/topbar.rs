@@ -695,17 +695,13 @@ impl TopBarChrome {
         let transform = Affine::IDENTITY;
         // The status cluster paints the pill and its glyphs in one pass.
         let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        // s3 matches the pad_x used when this pill was sized and placed in `draw_tray_pill_body`;
-        // the gap before the avatar is s4 (16) where the bar has room, and the bar's own control
-        // gap (s2) on a phone, whose middle lane (the clock, or the banner of following someone)
-        // the people beside it must keep that same gap from.
-        let before_tray = if self.phone_wide() {
-            theme.tokens.spacing.s2
-        } else {
-            theme.tokens.spacing.s4
-        };
-        let stack_right_x =
-            self.rect.x1 - f64::from(theme.tokens.spacing.s3) - tray_w - f64::from(before_tray);
+        // s3 matches the pad_x used when this pill was sized and placed in `draw_tray_pill_body`.
+        // Every control on the right stands the bar's one control gap (s2) from the next, so the
+        // group reads as one row with even spacing at every width.
+        let stack_right_x = self.rect.x1
+            - f64::from(theme.tokens.spacing.s3)
+            - tray_w
+            - f64::from(theme.tokens.spacing.s2);
         let stack_right_x = self.draw_own_avatar(
             scene,
             transform,
@@ -956,6 +952,16 @@ impl TopBarChrome {
         self.chrome.as_ref()
     }
 
+    /// Who this person is, as their own avatar names them (the root key it wears): a host whose
+    /// roster lists them too never shows them a second time among the others.
+    fn own_identity(&self) -> Option<String> {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| chrome.snapshot().own)
+            .map(|own| own.identity)
+            .filter(|identity| !identity.is_empty())
+    }
+
     pub fn sync_from_tree(&mut self, tree: &DesktopTree) {
         self.workspace_total = tree.workspaces.len().max(1);
         let active_ws = tree.workspaces.iter().find(|w| w.slot == tree.active);
@@ -977,8 +983,13 @@ impl TopBarChrome {
         // An invited-but-not-arrived peer doesn't count as present. This person is their own avatar
         // beside the stack, never a face in it, and so are their other devices.
         let local = self.explicit_local_user.as_deref();
+        let own_identity = self.own_identity();
         let present = |c: &&tilo_desktop_model::Collaborator| {
-            c.id != "me" && Some(c.id.as_str()) != local && !c.invited && !c.own_device
+            c.id != "me"
+                && Some(c.id.as_str()) != local
+                && Some(c.id.as_str()) != own_identity.as_deref()
+                && !c.invited
+                && !c.own_device
         };
         self.collaborator_initials.clear();
         self.collaborator_names.clear();
@@ -1854,6 +1865,9 @@ mod fixture;
 
 #[cfg(test)]
 mod narrow_tests;
+
+#[cfg(test)]
+mod shot_tests;
 
 /// A digest of what someone's presence says they are doing: where they are, what they say, their
 /// availability and call. Its change is what makes them the one who did something last.

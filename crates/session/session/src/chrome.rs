@@ -530,7 +530,7 @@ impl ChromeSource for SessionChrome {
         // The bar's own avatar is the same face their card shows: one name, one identity, one
         // colour, read where the card reads it.
         let (name, identity) = crate::people::own_face(&own, &self.person);
-        let (red, green, blue) = crate::people::own_rgb(&identity);
+        let (red, green, blue) = crate::people::own_live_rgb(self.sync.as_deref(), &identity);
         OwnChip {
             // The name they go by, and the root key the picture they chose hangs on: the id is
             // never shown as their name.

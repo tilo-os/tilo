@@ -180,7 +180,7 @@ impl TopBarChrome {
             self.media_indicator_rect,
             tokens.colors.surfaces.base,
         );
-        self.media_indicator_rect.x0 - f64::from(tokens.spacing.s3)
+        self.media_indicator_rect.x0 - f64::from(tokens.spacing.s2)
     }
 
     /// Pulled at the top of [`Widget::draw`], not pushed by `update` , so a just-dropped battery

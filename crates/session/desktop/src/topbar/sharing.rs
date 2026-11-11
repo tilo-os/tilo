@@ -350,9 +350,10 @@ impl TopBarChrome {
             .collect()
     }
 
-    /// The person's own avatar, ending at `right_x` , in their colour with their initials; returns
-    /// where the controls before it end. It opens their profile card, so it is set apart from the
-    /// others' stack.
+    /// The person's own avatar, ending at `right_x` : their face as everyone here sees it, drawn by
+    /// the one face painter the others' faces use ([`ui::presence::FaceStack::BAR`]), so it has
+    /// the same size, the same ring in their colour and the same initials. It opens their own
+    /// menu. Returns where the controls before it end.
     pub(super) fn draw_own_avatar(
         &mut self,
         scene: &mut Scene,
@@ -366,23 +367,17 @@ impl TopBarChrome {
             self.own_avatar_rect = Rect::ZERO;
             return right_x;
         };
-        let side = BAR_CONTROL_PX;
-        let chip = Rect::new(
-            right_x - side,
-            center_y - side / 2.0,
-            right_x,
-            center_y + side / 2.0,
-        );
         let (r, g, b) = own.rgb;
-        ui::widget::AvatarFace::new(&own.name, &own.identity)
-            .presence(Color::from_rgb8(r, g, b))
-            .ringed_on(theme.tokens.colors.surfaces.base)
-            .paint(
-                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
-                chip,
-            );
-        self.own_avatar_rect = chip;
-        chip.x0 - f64::from(theme.tokens.spacing.s3)
+        let face = ui::presence::Face::new(&own.name, &own.identity, Color::from_rgb8(r, g, b));
+        let stack = ui::presence::FaceStack::BAR;
+        let (rects, _) = stack.paint(
+            &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            (right_x, center_y),
+            (&[face], 0),
+            theme.tokens.colors.surfaces.base,
+        );
+        self.own_avatar_rect = rects.first().copied().unwrap_or(Rect::ZERO);
+        right_x - stack.width_of(1, 0) - f64::from(theme.tokens.spacing.s2)
     }
 
     /// Paint an explicit, persistent disclosure beside the roster. An eye plus a count is retained
@@ -431,7 +426,7 @@ impl TopBarChrome {
             self.sharing_indicator_rect,
             tokens.colors.surfaces.base,
         );
-        self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s3)
+        self.sharing_indicator_rect.x0 - f64::from(tokens.spacing.s2)
     }
 
     /// A quiet offer to continue the tab another of this person's devices just moved to, left of

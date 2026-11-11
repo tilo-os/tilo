@@ -352,12 +352,13 @@ impl TopBarChrome {
         }
     }
 
-    /// A phone-wide bar's one face, ending at `right_x` beside the people button: the person who
-    /// did something last, agents included, so someone who arrives, comes back or starts working
-    /// is on the bar the moment they do. Everyone else here is the "+N" the people button wears.
-    /// The one this view follows is not drawn twice: the banner's face is theirs. The face keeps
-    /// the bar's gap from the banner's lane and from the workspace's name; the clock yields to it
-    /// (`center_yield`), and where even one face has no room the people button counts it too.
+    /// A phone-wide bar's one face, ending at `right_x` : the person who did something last,
+    /// agents included, so someone who arrives, comes back or starts working is on the bar the
+    /// moment they do. Everyone else here is the stack's own "+N" badge beside that face. The one
+    /// this view follows is not drawn twice: the banner's face is theirs. The stack keeps the
+    /// bar's gap from the banner's lane and from the workspace's name; the clock yields to it
+    /// (`center_yield`). With no room for the face it keeps the badge alone, counting everyone,
+    /// and with no room for that the people button stands for who is here.
     fn draw_phone_face(
         &mut self,
         scene: &mut Scene,
@@ -377,26 +378,35 @@ impl TopBarChrome {
             .collaborator_ids
             .len()
             .saturating_sub(usize::from(self.following));
-        let width = stack.width_of(1, 0);
-        let shown: Vec<usize> = self
-            .latest_active
-            .filter(|_| right_x - width >= left)
-            .into_iter()
-            .collect();
+        let room = right_x - left;
+        let latest: Vec<usize> = self.latest_active.into_iter().collect();
+        let past_latest = others.saturating_sub(latest.len());
+        let (shown, more) = if stack.width_of(latest.len(), past_latest) <= room {
+            (latest, past_latest)
+        } else if others > 0 && stack.width_of(0, others) <= room {
+            (Vec::new(), others)
+        } else {
+            (Vec::new(), 0)
+        };
         self.faces_shown = shown.len();
-        self.collaborator_overflow = others.saturating_sub(shown.len());
+        self.collaborator_overflow = if shown.is_empty() && more == 0 {
+            others
+        } else {
+            more
+        };
         let faces: Vec<ui::presence::Face<'_>> =
             shown.iter().map(|&i| self.face_of(i, theme)).collect();
         let (rects, _) = stack.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             (right_x, center_y),
-            (&faces, 0),
+            (&faces, more),
             theme.tokens.colors.surfaces.base,
         );
         drop(faces);
         self.face_rects = rects;
+        let width = stack.width_of(shown.len(), more);
         self.shown_faces = shown;
-        if self.shown_faces.is_empty() {
+        if width <= 0.0 {
             return Rect::ZERO;
         }
         Rect::new(
@@ -407,9 +417,10 @@ impl TopBarChrome {
         )
     }
 
-    /// The "+N" a phone-wide bar's people button wears for everyone here past the one face beside
-    /// it: a small neutral count on its corner, which takes none of the bar's width, so nobody
-    /// here goes uncounted however narrow the bar. Its words are the badge's own node.
+    /// The "+N" the people button wears where it stands for who is here (no room for a face or
+    /// the stack's own badge): a small neutral count on its corner, which takes none of the bar's
+    /// width, so nobody here goes uncounted however narrow the bar. Its words are the badge's own
+    /// node.
     fn draw_people_count(
         &mut self,
         scene: &mut Scene,
@@ -419,7 +430,7 @@ impl TopBarChrome {
     ) {
         self.people_count_rect = Rect::ZERO;
         let button = self.people_button_rect;
-        if !self.phone_wide() || self.collaborator_overflow == 0 || button.is_zero_area() {
+        if self.collaborator_overflow == 0 || button.is_zero_area() {
             return;
         }
         let label = format!("+{}", self.collaborator_overflow.min(99));
@@ -479,7 +490,9 @@ impl TopBarChrome {
     }
 
     /// The people cluster, right to left from `right_x` : the invite button, the watching count,
-    /// the people button, then the faces. Returns its left edge, where the controls before it end.
+    /// then the others' faces. The faces open who is here themselves, so the people button stands
+    /// only where someone is here and not even the "+N" badge has room. Returns its left edge,
+    /// where the controls before it end.
     pub(super) fn draw_people_cluster(
         &mut self,
         scene: &mut Scene,
@@ -498,23 +511,26 @@ impl TopBarChrome {
         } else {
             watching.x0 - gap
         };
-        // Anyone here, or watching, can be shown all together: the button that does it stands
-        // beside the faces whatever else is there.
-        let anyone = !self.collaborator_initials.is_empty()
-            || self.collaborator_overflow > 0
-            || !watching.is_zero_area();
-        let right_x = if anyone {
-            self.draw_people_button(scene, transform, theme, text_renderer, center_y, right_x)
-        } else {
-            self.people_button_rect = Rect::ZERO;
-            right_x
-        };
+        self.people_button_rect = Rect::ZERO;
         self.avatar_stack_rect =
             self.draw_avatar_chips(scene, transform, theme, text_renderer, center_y, right_x);
+        // Someone is here but the bar had no room for their face or the count: the people button
+        // is who is here then.
+        if self.avatar_stack_rect.is_zero_area() && !self.collaborator_ids.is_empty() {
+            self.collaborator_overflow = self
+                .collaborator_ids
+                .len()
+                .saturating_sub(usize::from(self.following && self.phone_wide()));
+            self.draw_people_button(scene, transform, theme, text_renderer, center_y, right_x);
+        }
         self.draw_people_count(scene, transform, theme, text_renderer);
-        // The watching count is part of the people button: it opens who is here too.
-        if !watching.is_zero_area() && !self.people_button_rect.is_zero_area() {
-            self.people_button_rect = self.people_button_rect.union(watching);
+        // The watching count opens who is here too.
+        if !watching.is_zero_area() {
+            self.people_button_rect = if self.people_button_rect.is_zero_area() {
+                watching
+            } else {
+                self.people_button_rect.union(watching)
+            };
         }
         [
             self.avatar_stack_rect,
@@ -620,45 +636,65 @@ mod tests {
         assert!(bar.people_button_rect().x1 <= bar.invite_rect().x0);
     }
 
-    /// With few people here, every face opens a card: the people button beside them is how the
-    /// whole panel (and its pin) is reached by pointer, and the bar names it so to a reader.
+    /// The faces are who is here: each opens the panel at its person, so no second people
+    /// button stands beside them, and the panel opens from the faces.
     #[test]
-    fn the_people_button_opens_everyone_beside_faces_that_open_cards() {
+    fn the_faces_open_who_is_here_without_a_second_button() {
         let tree = desk(&[("ada", "Ada Lovelace")]);
         let (mut bar, chrome) = bar_over(&tree, true);
-        let button = bar.people_button_rect();
-        assert!(!button.is_zero_area(), "shown beside one face");
-        let face = bar.face_rect("ada").expect("Ada's face");
-        assert!(face.x1 <= button.x0, "faces, then the people button");
         assert!(
-            button.x1 <= bar.invite_rect().x0,
-            "then the seat the next person takes"
+            bar.people_button_rect().is_zero_area(),
+            "no people button beside a face"
+        );
+        let face = bar.face_rect("ada").expect("Ada's face");
+        assert!(
+            face.x1 <= bar.invite_rect().x0,
+            "the faces, then the seat the next person takes"
         );
         assert!(press(&mut bar, face.center()));
         assert_eq!(
             chrome.borrow().intents.last(),
             Some(&ChromeIntent::ShowPerson("ada".into()))
         );
-        assert!(press(&mut bar, button.center()));
         assert_eq!(
-            chrome.borrow().intents.last(),
-            Some(&ChromeIntent::ToggleCollaborators)
-        );
-        assert_eq!(bar.collaborators_rect(), button, "the panel opens from it");
-        let node = ui::widget::Widget::accessibility(&bar).expect("bar semantics");
-        assert!(
-            node.children.iter().any(|child| {
-                child.bounds.is_some_and(|b| (b.x0 - button.x0).abs() < 0.5)
-                    && child.name.as_deref()
-                        == Some(super::super::t("topbar-show-collaborators").as_str())
-            }),
-            "a reader finds it by its name"
+            bar.collaborators_rect(),
+            bar.avatar_stack_rect,
+            "the panel opens from the faces"
         );
 
         let (bar, _) = bar_over(&desk(&[]), true);
         assert!(
-            bar.people_button_rect().is_zero_area(),
-            "nobody else here: nothing to show"
+            bar.people_button_rect().is_zero_area() && bar.avatar_stack_rect.is_zero_area(),
+            "nobody else here: only the invite"
+        );
+    }
+
+    /// This person appears once on their bar: their avatar at the far right, never also among
+    /// the faces, however the host lists them; and it is drawn as the faces are, at their size.
+    #[test]
+    fn this_person_appears_once_drawn_as_everyone_is() {
+        let tree = desk(&[("ada", "Ada Lovelace"), ("me-root", "Jo Doe")]);
+        let chrome = FixtureChrome::new(tree.clone());
+        chrome.borrow_mut().own = Some(crate::chrome::OwnChip {
+            name: "Jo Doe".into(),
+            rgb: (247, 133, 125),
+            identity: "me-root".into(),
+        });
+        let mut bar = TopBarChrome::from_tree(&tree).with_chrome(chrome);
+        bar.sync_from_tree(&tree);
+        super::super::tests::lay_out_and_draw(&mut bar, 1600.0);
+        assert!(bar.face_rect("me-root").is_none(), "not among the others");
+        assert_eq!(bar.collaborator_ids, vec!["ada".to_owned()]);
+        let own = bar.own_avatar_rect();
+        assert!(!own.is_zero_area(), "their own avatar stands");
+        let ada = bar.face_rect("ada").expect("Ada's face");
+        assert!(
+            (own.width() - ada.width()).abs() < 0.01 && (own.height() - ada.height()).abs() < 0.01,
+            "one size for every face: {own:?} and {ada:?}"
+        );
+        assert!(
+            bar.right_side_x() < own.x0 && own.x1 <= bar.tray_pill_rect().x0,
+            "their avatar stands right of who is here, before the notifications"
         );
     }
 
@@ -759,9 +795,9 @@ mod tests {
     }
 
     /// The phone's bar has room for one face, and it is whoever did something last: an agent
-    /// that starts working (or comes back) is on the bar beside the people button at once, as its
-    /// client's square face, and everyone else here is the "+N" on that button. The invite waits
-    /// in the panel, and nothing stands on the clock or the workspace's name.
+    /// that starts working (or comes back) is on the bar at once, as its client's square face,
+    /// and everyone else here is the stack's "+N" beside it. The invite waits in the panel, and
+    /// nothing stands on the clock or the workspace's name.
     #[test]
     fn a_phone_bar_shows_whoever_did_something_last() {
         let theme = Theme::default();
@@ -792,29 +828,19 @@ mod tests {
                 "the agent that just did something is the face at {width}"
             );
             let face = bar.face_rect("cc").expect("the agent's face");
-            let people = bar.people_button_rect();
             assert!(
-                !people.is_zero_area(),
-                "the people button stands at {width}"
-            );
-            assert!(
-                face.x1 <= people.x0 && people.x0 - face.x1 <= gap,
-                "the face stands beside the people button at {width}: {face:?} {people:?}"
+                bar.people_button_rect().is_zero_area(),
+                "no people button beside the face at {width}"
             );
             assert_eq!(bar.collaborator_overflow(), 1, "Ada is counted at {width}");
+            let stack = bar.avatar_stack_rect;
             assert!(
-                !bar.people_count_rect.is_zero_area(),
-                "the people button wears the +1 at {width}"
+                stack.x1 > face.x1 + 1.0,
+                "the +1 stands in the stack beside the face at {width}: {stack:?} {face:?}"
             );
             assert!(
-                bar.people_count_rect.y0 >= bar.bar_rect().y0,
-                "the count stays inside the bar at {width}: {:?}",
-                bar.people_count_rect
-            );
-            assert!(
-                bar.people_count_rect.x1 < bar.own_avatar_rect.x0,
-                "and clear of the avatar after it at {width}: {:?}",
-                bar.people_count_rect
+                stack.x1 < bar.own_avatar_rect.x0,
+                "and clear of the avatar after it at {width}: {stack:?}"
             );
             assert!(
                 bar.invite_rect().is_zero_area(),
@@ -838,7 +864,7 @@ mod tests {
                 Some(ChromeIntent::ShowPerson("cc".into()))
             );
             assert_eq!(
-                bar.people_intent_at(bar.people_count_rect.center()),
+                bar.people_intent_at(Point::new(stack.x1 - 4.0, stack.center().y)),
                 Some(ChromeIntent::ToggleCollaborators)
             );
 
@@ -931,14 +957,11 @@ mod tests {
             );
             assert!(!stop.is_zero_area(), "and Stop at {width}: {chip:?}");
             let people = bar.control_rect(TopBarChrome::CONTROL_COLLABORATORS);
-            assert!(
-                !people.is_zero_area(),
-                "the people button stands at {width}"
-            );
+            assert!(!people.is_zero_area(), "who is here stands at {width}");
             let mut beside: Vec<(&str, Rect)> = vec![
                 ("the workspace's name", bar.ws_pill_rect),
-                ("the people button", people),
-                ("the count on it", bar.people_count_rect),
+                ("who is here", people),
+                ("the count on the people button", bar.people_count_rect),
                 ("the invite button", bar.invite_rect),
                 ("the notifications", bar.tray_hit_rect),
             ];

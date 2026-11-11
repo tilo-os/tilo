@@ -721,8 +721,8 @@ mod tests {
                 ("own avatar", bar.own_avatar_rect),
             ];
             assert!(
-                !bar.people_button_rect.is_zero_area(),
-                "{viewport:?}: who is here has its button"
+                !bar.collaborators_rect().is_zero_area(),
+                "{viewport:?}: who is here stands on the bar"
             );
             // The clock and the bar's right side stand apart: the faces that do not fit join the
             // badge, and the clock moves left of the buttons, or aside.

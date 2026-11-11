@@ -1079,6 +1079,11 @@ fn names(text: &str, name: &str) -> bool {
     !name.is_empty() && text.windows(name.len()).any(|run| run == name.as_slice())
 }
 
+/// `rgb` as the `#rrggbb` a roster row's colour is written in.
+fn hex_of((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 /// `people` as the active workspace's collaborators, for the bar's avatars: read from a copy of the
 /// tree, never written to the workspace's document.
 pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], following: Option<&str>) {
@@ -1106,6 +1111,9 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
                 followed == person.id || person.devices.iter().any(|device| device.id == followed)
             });
             known.active_tab = person.tab;
+            // The colour everyone here draws them in, as their pointer wears it: one colour per
+            // person on every face of them, whatever an older row said.
+            known.cursor_color = Some(hex_of(person.rgb));
             known.in_app.clone_from(&person.focus_app);
             known.availability = Some(person.availability.id().to_owned());
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
@@ -1125,7 +1133,6 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
             }
             continue;
         }
-        let (r, g, b) = ui::presence::user_color(&person.id);
         let follows = following.is_some_and(|followed| {
             followed == person.id || person.devices.iter().any(|device| device.id == followed)
         });
@@ -1135,9 +1142,10 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
             name: person.label.clone(),
             active_tab: person.tab,
             in_app: person.focus_app.clone(),
-            // The colour their pointer is drawn in on this desk, so a face, a pill and a caret for
-            // one person all wear the one colour.
-            cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            // The colour their pointer is drawn in on this desk (`HereState::colors`, settled over
+            // everyone here), so a face, a pill and a caret for one person all wear the one colour,
+            // and their face on the bar matches the one their own bar shows them.
+            cursor_color: Some(hex_of(person.rgb)),
             role_id: person.agent.then(|| "agent".to_owned()),
             availability: Some(person.availability.id().to_owned()),
             call: person.call.as_ref().map(ui::CallPresence::encode),
@@ -2285,11 +2293,10 @@ mod tests {
             .find(|c| c.id == "bot")
             .expect("overlaid");
         assert_eq!(bot.role_id.as_deref(), Some("agent"));
-        let (r, g, b) = ui::presence::user_color("bot");
         assert_eq!(
             bot.cursor_color.as_deref(),
-            Some(format!("#{r:02x}{g:02x}{b:02x}").as_str()),
-            "the colour their pointer is drawn in"
+            Some("#010203"),
+            "the colour everyone here draws them in, as their pointer wears it"
         );
         overlay_collaborators(&mut tree, &people, None);
         assert_eq!(

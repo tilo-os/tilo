@@ -79,6 +79,15 @@ pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
     ui::presence::identity_rgb(hue)
 }
 
+/// The colour this person's own avatar and card wear: in a live room, the one everyone here draws
+/// them in (`HereState::own_rgb`, settled over the whole room and published on their pointer), so
+/// they see themselves in the colour everyone else sees; with no room settled yet, [`own_rgb`].
+pub(crate) fn own_live_rgb(sync: Option<&crate::sync::Client>, identity: &str) -> (u8, u8, u8) {
+    sync.and_then(|sync| sync.here().borrow().own_rgb())
+        .filter(|rgb| *rgb != ui::presence::UNSETTLED_RGB)
+        .unwrap_or_else(|| own_rgb(identity))
+}
+
 /// This person as their own surfaces show them: the name they go by here, and the identity their
 /// face's letters and colour come from — the root key they are here by, else the id this device
 /// sits as. The bar's own avatar and their own card both read it here, so one person wears one
@@ -752,7 +761,7 @@ impl Panel {
         // The identity's key is the person's on every device: the card shows it short, with Copy,
         // and the roster looks every face up by it.
         let key = own.user.clone();
-        let (red, green, blue) = own_rgb(&identity);
+        let (red, green, blue) = own_live_rgb(self.sync.as_deref(), &identity);
         ProfileModel {
             name,
             identity,
