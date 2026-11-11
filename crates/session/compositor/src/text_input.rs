@@ -462,7 +462,11 @@ impl State {
     /// person types into may live in either.
     fn window_geometry(&self, surface: &WlSurface) -> Option<Rectangle<i32, Logical>> {
         for window in self.space.elements() {
-            let toplevel = window.toplevel()?;
+            // An X11 window has no Wayland toplevel and holds no field of these: the windows after
+            // it are still looked through.
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
             let rect = self.space.element_geometry(window)?;
             if toplevel.wl_surface() == surface {
                 return Some(rect);

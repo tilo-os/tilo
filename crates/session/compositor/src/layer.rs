@@ -163,6 +163,13 @@ impl Layers {
         self.index_of(surface).is_some()
     }
 
+    /// Whether `surface` is (part of) a layer surface the session shows now.
+    pub(crate) fn shows_surface(&self, surface: &WlSurface) -> bool {
+        self.index_of(surface)
+            .and_then(|index| self.surfaces.get(index))
+            .is_some_and(|placed| self.visible(placed))
+    }
+
     /// The layer surfaces on `output` that `want` takes, bottom first.
     fn on<'a>(
         &'a self,
@@ -197,10 +204,12 @@ impl Layers {
                 if !rect.to_f64().contains(point) {
                     return None;
                 }
-                let local = point - rect.loc.to_f64();
+                // The tree is walked from where the surface stands, so the point stays in the
+                // layout's coordinates: a surface away from the output's corner is hit where it
+                // is drawn.
                 let (surface, offset) = under_from_surface_tree(
                     placed.surface.wl_surface(),
-                    local,
+                    point,
                     rect.loc,
                     WindowSurfaceType::ALL,
                 )?;
