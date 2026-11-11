@@ -849,8 +849,7 @@ impl WindowShares {
             .into_iter()
             .map(|(identifier, _, _)| identifier)
             .collect();
-        let waiting = std::mem::take(&mut self.starting);
-        for mut start in waiting {
+        for mut start in std::mem::take(&mut self.starting) {
             if !shareable.contains(&start.window) {
                 // The window closed before it could be shared: the workspace stops naming it as
                 // shared.
@@ -866,32 +865,14 @@ impl WindowShares {
                 self.starting.push(start);
                 continue;
             };
-            // A window whose app draws its page hands that page over: no picture of it is captured
-            // or encoded here, and the members showing it read the workspace's live plane.
+            // A window whose app draws its page hands that page over rather than a picture of it.
             if pages.borrow().streamed(start.tab, &start.workspace) {
-                let (width, height) = compositor
-                    .shareable_window_rect(&start.window)
-                    .map_or((0, 0), |(_, _, width, height)| {
-                        (width.unsigned_abs(), height.unsigned_abs())
-                    });
-                self.pages.insert(
-                    start.tab,
-                    Paged {
-                        tab: start.tab,
-                        window: start.window,
-                        app_id: start.app_id,
-                        workspace: start.workspace,
-                        ws,
-                        width,
-                        height,
-                        announced: BTreeSet::new(),
-                    },
-                );
+                self.pages
+                    .insert(start.tab, page_of(compositor, &start, ws));
                 self.changed();
                 continue;
             }
-            let target = Target::window(start.window.clone());
-            let picture = match compositor.read_back(&target) {
+            let picture = match compositor.read_back(&Target::window(start.window.clone())) {
                 Ok(picture) => picture,
                 Err(error) => {
                     start.waiting_for = error.to_string();
@@ -1796,6 +1777,24 @@ impl WindowShares {
             controlled: hosted.controlled,
         });
         self.changed();
+    }
+}
+
+/// The page of a window whose app draws it: the members showing it read the workspace's live
+/// plane, so no picture of it is captured or encoded here.
+fn page_of(compositor: &Compositor, start: &Starting, ws: WorkspaceId) -> Paged {
+    let (_, _, width, height) = compositor
+        .shareable_window_rect(&start.window)
+        .unwrap_or_default();
+    Paged {
+        tab: start.tab,
+        window: start.window.clone(),
+        app_id: start.app_id.clone(),
+        workspace: start.workspace.clone(),
+        ws,
+        width: width.unsigned_abs(),
+        height: height.unsigned_abs(),
+        announced: BTreeSet::new(),
     }
 }
 
