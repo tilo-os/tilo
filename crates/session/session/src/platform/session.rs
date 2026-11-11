@@ -371,7 +371,7 @@ impl Session {
         // each workspace keeps, both read from Chat's record of them: made
         // here, before the door, because what text that asks does reads them
         // and the desk in front (shell.md §8.1, "Asking from the canvas").
-        let records = crate::engine_records::EngineRecords::new();
+        let records = crate::engine_records::EngineRecords::new(options.wake.handle());
         let conversations = Rc::new(crate::conversations::Conversations::new(
             records.clone(),
             options.wake.handle(),
@@ -595,7 +595,11 @@ impl Session {
         // The records the session itself writes are the workspaces' own, and its writes reach this
         // device's apps as a member's do.
         if let Some(engine) = &engine {
-            records.attach(std::sync::Arc::clone(engine), Some(peer_documents));
+            records.attach(
+                std::sync::Arc::clone(engine),
+                &changes,
+                Some(peer_documents),
+            );
         }
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
@@ -2072,6 +2076,13 @@ impl Session {
     #[must_use]
     pub fn chat_of(&self, workspace: &str) -> Option<chat::Chat> {
         self.shared.conversations.chat(workspace)
+    }
+
+    /// The session's copy of `record` of `app` in `workspace` as it is stored: what a test reads
+    /// back of Chat's records the session itself writes (its agents, its emoji).
+    #[must_use]
+    pub fn stored_record(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
+        self.shared.records.stored(app, workspace, record)
     }
 
     /// What the windows ask of the workspace's activity and follow, as this

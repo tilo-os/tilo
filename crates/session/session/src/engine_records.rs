@@ -9,9 +9,9 @@
 //! copy of its own is kept beside the workspace's.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, HashMap};
-use std::rc::Rc;
-use std::sync::Arc;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::{Rc, Weak};
+use std::sync::{Arc, mpsc};
 
 use collab_types::DocumentMutation;
 use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
@@ -39,8 +39,19 @@ struct Inner {
     stores: RefCell<BTreeMap<(String, String), RecordStore>>,
     /// Each record's replication with the engine, by workspace, app and wire record.
     replicas: RefCell<HashMap<(String, String, String), Replica>>,
-    /// The engine's revision at the last read: a pass that finds it unmoved reads nothing.
-    read_at: Cell<Option<u64>>,
+    /// The workspaces whose records moved in the engine, told as each one does.
+    moved: RefCell<Option<mpsc::Receiver<String>>>,
+    /// The stores, by workspace and app, the session wrote to since their changes were last
+    /// written into the engine.
+    written: RefCell<BTreeSet<(String, String)>>,
+    /// The stores, by workspace and app, holding a record the engine has that this device cannot
+    /// read yet (its channel's keys are on their way): read again on the next pass.
+    unread: RefCell<BTreeSet<(String, String)>>,
+    /// Set while the engine's copy of a record is kept in the store: no write of the session's.
+    keeping: Cell<bool>,
+    /// Wakes the session's loop when the session wrote to a record, so the write reaches the
+    /// engine on the next pass.
+    wake: tilo_service::Wake,
 }
 
 /// One record as the engine and this copy hold it.
@@ -51,31 +62,64 @@ struct Replica {
 }
 
 impl EngineRecords {
-    pub(crate) fn new() -> Self {
-        let store = Rc::new(MemoryStore::new());
-        Self(Rc::new(Inner {
-            owners: RecordOwners::with_store(
-                Rc::clone(&store) as Rc<dyn durable_store::DurableStore>
-            ),
-            store,
-            engine: RefCell::default(),
-            apps: RefCell::default(),
-            stores: RefCell::default(),
-            replicas: RefCell::default(),
-            read_at: Cell::default(),
+    /// Empty copies, waking the session's loop through `wake` when the session wrote to one.
+    pub(crate) fn new(wake: tilo_service::Wake) -> Self {
+        Self(Rc::new_cyclic(|inner: &Weak<Inner>| {
+            // Every write the records' store takes is noted as it lands, and is the store's at once:
+            // what the session wrote reaches the engine on the pass it wakes.
+            let store = Rc::new(MemoryStore::queued());
+            let wrote = Weak::clone(inner);
+            store.set_write_hook(Some(Rc::new(move || {
+                if let Some(inner) = wrote.upgrade() {
+                    inner.wrote();
+                }
+            })));
+            Inner {
+                owners: RecordOwners::with_store(
+                    Rc::clone(&store) as Rc<dyn durable_store::DurableStore>
+                ),
+                store,
+                engine: RefCell::default(),
+                apps: RefCell::default(),
+                stores: RefCell::default(),
+                replicas: RefCell::default(),
+                moved: RefCell::default(),
+                written: RefCell::default(),
+                unread: RefCell::default(),
+                keeping: Cell::default(),
+                wake,
+            }
         }))
     }
 
-    /// Keep the records in `engine` , handing what the session writes to this device's apps
-    /// through `apps` .
-    pub(crate) fn attach(&self, engine: Arc<Engine>, apps: Option<crate::sync::PeerDocuments>) {
+    /// Keep the records in `engine` , reading them again whenever `changes` says a workspace's
+    /// records moved, and handing what the session writes to this device's apps through `apps` .
+    pub(crate) fn attach(
+        &self,
+        engine: Arc<Engine>,
+        changes: &crate::platform::records::Changes,
+        apps: Option<crate::sync::PeerDocuments>,
+    ) {
         *self.0.engine.borrow_mut() = Some(engine);
         *self.0.apps.borrow_mut() = apps;
-        self.0.read_at.set(None);
+        *self.0.moved.borrow_mut() = Some(changes.reader());
+        self.0.write(true);
         let opened: Vec<(String, String)> = self.0.stores.borrow().keys().cloned().collect();
         for (workspace, app) in opened {
             self.0.read(&workspace, &app);
         }
+    }
+
+    /// What the session's copy of `record` of `app` in `workspace` holds as stored: the record a
+    /// test reads back, as the session's own readers do.
+    pub(crate) fn stored(&self, app: &str, workspace: &str, record: &str) -> Option<Vec<u8>> {
+        let id = RecordId::parse(record)?;
+        self.0
+            .store
+            .read(&StorageKey::record(app, workspace, id.storage_key()))
+            .ok()
+            .flatten()
+            .map(|stored| stored.bytes)
     }
 
     /// The records of `workspace` , opened as `author` .
@@ -85,26 +129,62 @@ impl EngineRecords {
         WorkspaceRecords::new(author, move |app| inner.store_of(&workspace, app))
     }
 
-    /// Write what the session changed into the engine, then take in what the engine holds that
-    /// the session's copies lack.
+    /// Take in what moved in the engine in the workspaces the session's copies hold, and what it
+    /// could not read yet, then write into it what the session wrote since: nothing to do while
+    /// nothing moved.
     pub(crate) fn replicate(&self) {
-        self.0.write();
-        let Some(engine) = self.0.engine.borrow().clone() else {
-            return;
-        };
-        let revision = engine.owner().revision();
-        if self.0.read_at.get() == Some(revision) {
-            return;
-        }
-        self.0.read_at.set(Some(revision));
-        let opened: Vec<(String, String)> = self.0.stores.borrow().keys().cloned().collect();
-        for (workspace, app) in opened {
+        let moved: BTreeSet<String> = self
+            .0
+            .moved
+            .borrow()
+            .as_ref()
+            .map(|moved| moved.try_iter().collect())
+            .unwrap_or_default();
+        let mut due = std::mem::take(&mut *self.0.unread.borrow_mut());
+        due.extend(
+            self.0
+                .stores
+                .borrow()
+                .keys()
+                .filter(|(workspace, _)| moved.contains(workspace))
+                .cloned(),
+        );
+        for (workspace, app) in due {
             self.0.read(&workspace, &app);
         }
+        self.0.write(false);
+    }
+}
+
+impl Drop for Inner {
+    /// What the session changed and no pass wrote yet still reaches the workspace.
+    fn drop(&mut self) {
+        self.write(true);
     }
 }
 
 impl Inner {
+    /// The session wrote to the records' store: note which, and wake the loop to write it on.
+    fn wrote(&self) {
+        let mut noted = false;
+        for write in self.store.drain() {
+            let _ = self.store.acknowledge(write.revision, Ok(()));
+            if self.keeping.get() {
+                continue;
+            }
+            if let StorageKey::Record {
+                package, workspace, ..
+            }
+            | StorageKey::WorkspaceIndex { package, workspace } = write.key
+            {
+                noted |= self.written.borrow_mut().insert((workspace, package));
+            }
+        }
+        if noted {
+            (self.wake)();
+        }
+    }
+
     /// The store `app` keeps its records of `workspace` in, holding what the engine does from the
     /// first time it is asked for.
     fn store_of(
@@ -160,7 +240,15 @@ impl Inner {
                     replica.revision = Some(revision);
                     bytes
                 }
-                Ok(None) => continue,
+                Ok(None) => {
+                    // Never read and still nothing to read: the keys to open it are on their way.
+                    if known.is_none() {
+                        self.unread
+                            .borrow_mut()
+                            .insert((workspace.to_owned(), app.to_owned()));
+                    }
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(%error, %workspace, %app, %record, "a record is not read");
                     continue;
@@ -170,22 +258,19 @@ impl Inner {
                 .open_records()
                 .into_iter()
                 .find(|checkout| checkout.id.route() == record);
-            let taken = match open {
-                Some(checkout) => self
-                    .replicas
+            let taken = if let Some(checkout) = open {
+                self.replicas
                     .borrow_mut()
                     .get_mut(&key)
-                    .map(|replica| {
+                    .map_or(Ok(()), |replica| {
                         replica
                             .sync
                             .merge(&store, &checkout, DocumentMutation::Snapshot(bytes))
                             .map(|_| ())
                     })
-                    .unwrap_or(Ok(())),
-                None => {
-                    kept = true;
-                    self.keep(workspace, app, &record, bytes)
-                }
+            } else {
+                kept = true;
+                self.keep(workspace, app, &record, bytes)
             };
             if let Err(error) = taken {
                 tracing::warn!(%error, %workspace, %app, %record, "a record is not taken in");
@@ -209,22 +294,28 @@ impl Inner {
             .read(&key)
             .map_err(|error| error.to_string())?
             .and_then(|stored| stored.writer);
-        self.store
-            .write(&key, WriteOp::Replace(bytes), writer.as_deref())
-            .map(|_| ())
-            .map_err(|error| error.to_string())
+        // What the engine gave is no write of the session's to give back.
+        self.keeping.set(true);
+        let kept = self
+            .store
+            .write(&key, WriteOp::Replace(bytes), writer.as_deref());
+        self.keeping.set(false);
+        kept.map(|_| ()).map_err(|error| error.to_string())
     }
 
-    /// Write what the session changed in each open record into the engine, and hand each write to
-    /// this device's apps.
-    fn write(&self) {
+    /// Write what the session changed in the open records of the stores it wrote to — of every
+    /// store, `all` — into the engine, and hand each write to this device's apps.
+    fn write(&self, all: bool) {
         let Some(engine) = self.engine.borrow().clone() else {
             return;
         };
+        let written = std::mem::take(&mut *self.written.borrow_mut());
+        let mut unwritten = BTreeSet::new();
         let stores: Vec<((String, String), RecordStore)> = self
             .stores
             .borrow()
             .iter()
+            .filter(|(key, _)| all || written.contains(*key))
             .map(|(key, store)| (key.clone(), store.clone()))
             .collect();
         for ((workspace, app), store) in stores {
@@ -238,6 +329,7 @@ impl Inner {
                 // A record the engine holds is written once its copy was read here: one this copy
                 // never read is founded by this write, never over what the workspace holds.
                 if !replicas.contains_key(&key) && engine.holds_record(&workspace, &app, &record) {
+                    unwritten.insert((workspace.clone(), app.clone()));
                     continue;
                 }
                 let replica = replicas.entry(key).or_insert_with(|| Replica {
@@ -257,8 +349,23 @@ impl Inner {
                     DocumentMutation::Snapshot(bytes) => (bytes, true),
                     DocumentMutation::Incremental(bytes) => (bytes, false),
                 };
-                let Some(sealed) = sealing(&engine, room, &app, &record) else {
-                    continue;
+                // In the clear where this device commits the workspace's documents, else under the
+                // record channel's keys, once it holds them.
+                let sealed = if engine.commits_documents(room) {
+                    None
+                } else {
+                    match engine.seal_keys(room, &app, &record) {
+                        Ok(SealKeys::Here(keys)) => Some(keys),
+                        Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => {
+                            unwritten.insert((workspace.clone(), app.clone()));
+                            continue;
+                        }
+                        Err(error) => {
+                            tracing::warn!(%error, %workspace, %app, %record, "a record is not written");
+                            unwritten.insert((workspace.clone(), app.clone()));
+                            continue;
+                        }
+                    }
                 };
                 match engine.write_record(
                     room,
@@ -281,32 +388,13 @@ impl Inner {
                     }
                     Err(error) => {
                         tracing::warn!(%error, %workspace, %app, %record, "the workspace took no write");
+                        unwritten.insert((workspace.clone(), app.clone()));
                     }
                 }
             }
         }
-    }
-}
-
-/// How this device seals a write of `record` : `Some(None)` in the clear, where the workspace's
-/// device commits its documents, `Some(Some(keys))` under the record channel's keys, and `None`
-/// while it holds no keys to seal with.
-fn sealing(
-    engine: &Engine,
-    room: WorkspaceId,
-    app: &str,
-    record: &str,
-) -> Option<Option<channel_crypto::ChannelContentKeys>> {
-    if engine.commits_documents(room) {
-        return Some(None);
-    }
-    match engine.seal_keys(room, app, record) {
-        Ok(SealKeys::Here(keys)) => Some(Some(keys)),
-        Ok(SealKeys::Waiting | SealKeys::NoSecretStore) => None,
-        Err(error) => {
-            tracing::warn!(%error, %room, %app, %record, "a record is not written");
-            None
-        }
+        // What the workspace did not take yet is written again on the next pass.
+        self.written.borrow_mut().extend(unwritten);
     }
 }
 

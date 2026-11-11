@@ -10,7 +10,7 @@ pub use reach::{Linked, OwnHost, Reach};
 
 use super::publication::SealRecord;
 use crate::direct::DirectSync;
-use crate::owner::{NativeWorkspaceOwner, WorkspaceId, took_in};
+use crate::owner::{AppWrite, NativeWorkspaceOwner, WorkspaceId, took_in};
 use crate::{Reseal, join::TransportHint};
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -382,21 +382,6 @@ impl Scope {
             },
         )
     }
-}
-
-/// Another device's app write the owner took in for this device's apps.
-#[derive(Clone)]
-pub struct AppWrite {
-    /// The writer's peer handle, as the write names it.
-    pub peer: u64,
-    pub app_id: String,
-    pub cluster_id: String,
-    pub record_id: String,
-    /// The author's standing in the workspace.
-    pub author: tilo_action_policy::Standing,
-    /// Whether the host replayed it from what it retains.
-    pub replayed: bool,
-    pub envelope: collab_types::SignedOp,
 }
 
 /// The app write a frame carries, for this device's apps: `None` for anything

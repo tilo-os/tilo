@@ -298,8 +298,8 @@ impl crate::Shared {
     /// device's to run: it starts each one's process, which answers the turns the broker delivers
     /// it.
     pub(crate) fn feed_agents(&self) {
-        // What the workspaces' records hold since the last pass, and what this session wrote into
-        // them, before anything here reads them.
+        // What moved in the workspaces' records, and what this session wrote into them, before
+        // anything here reads them.
         self.records.replicate();
         let workspaces: Vec<(String, tilo_action_policy::WorkspacePolicy)> =
             self.handle.read(|tree| {

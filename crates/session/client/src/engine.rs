@@ -710,7 +710,6 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, a founding write finds the record held already, or the
     /// workspace refused the write.
-    #[cfg(target_os = "linux")]
     pub fn write_record(
         &self,
         workspace: WorkspaceId,
@@ -718,7 +717,7 @@ impl Engine {
         changes: &[u8],
         founding: bool,
         sealed: Option<&channel_crypto::ChannelContentKeys>,
-    ) -> Result<tilo_peer_state::owner::session::AppWrite, String> {
+    ) -> Result<tilo_peer_state::owner::AppWrite, String> {
         use tilo_broker_core::custody::OwnerCustody as _;
         let key = self.identity.signing_key()?;
         let device = self.identity.device_cert.device_public_key;
@@ -781,7 +780,7 @@ impl Engine {
                 else {
                     return Err("a record's write is not a document write".to_owned());
                 };
-                written = Some(tilo_peer_state::owner::session::AppWrite {
+                written = Some(tilo_peer_state::owner::AppWrite {
                     peer: writer,
                     app_id: app.to_owned(),
                     cluster_id: workspace.to_string(),
