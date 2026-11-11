@@ -364,6 +364,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
   // Whether this window holds what its page sends (departures.h).
   bool HoldsPage() const { return holds_; }
+  // What this tab's record is told of something its page was held from
+  // sending: that it waits for the person, or how that ended (departures.h).
+  void NoteHold(const tilo::HoldNote& note) {
+    if(!page_automation_) return;
+    if(note.began) page_automation_->HoldBegan(note.action,note.method,note.origin,note.file);
+    else page_automation_->HoldEnded(note.action,note.actor,note.method,note.origin,note.file);
+  }
   // A window an agent operates (holds_): a request the page makes of its own
   // that leaves with data is paused here, and answered by the app. A
   // navigation is held where Chromium starts it (HoldsNavigation), and every
@@ -2209,9 +2216,15 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
       found->second->browser_->GetHost()->StartDownload(d->GetString("url"));
     return;
   }
-  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"));return; }
+  // Who answered what a window held for the person, as the app says: an
+  // actor by the name its page actions carry, and `expired` for why when
+  // nobody did and the app dropped it at its own deadline. An app that says
+  // neither answers as the person at the window. The tab's record keeps it.
+  const auto answerer=[&]{return d->GetType("actor")==VTYPE_STRING?d->GetString("actor").ToString():std::string();};
+  const auto unanswered=[&]{return d->GetType("reason")==VTYPE_STRING && d->GetString("reason")=="expired";};
+  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"),answerer(),unanswered());return; }
   // The app answered a request the page held: it leaves now, or not at all.
-  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow")); return; }
+  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow"),answerer(),unanswered()); return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   if(op=="download_cancel_all") {downloads->CancelAll();return;}
   if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
@@ -2338,8 +2351,10 @@ class App final : public CefApp,public CefBrowserProcessHandler {
     }
     ApplyPrivacyDefaults(shared_context);
     StartExtensionTabs();
+    // A hold is set down in the record of the tab whose page it stopped.
+    const tilo::NoteHold note_hold=[](int tab,const tilo::HoldNote& note){auto found=clients.find(tab);if(found!=clients.end())found->second->NoteHold(note);};
     departures=std::make_shared<tilo::Departures>(
-      [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);});
+      [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},note_hold);
     downloads=new tilo::Downloads(
       downloads_directory,
       [](const std::string& name,CefRefPtr<CefDictionaryValue> fields){::Event(name,fields);},
@@ -2349,7 +2364,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       [](int id,bool busy){download_owners.SetBusy(id,busy);PublishDownloadRuntime();},
       [](int id){DownloadOwnerIdle(id);},
       []{PublishDownloadRuntime();},
-      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->HoldsPage();});
+      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->HoldsPage();},note_hold);
     CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
@@ -2496,10 +2511,15 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
     return (scheme=="https" || scheme=="http") && !CefString(&parts.host).empty();
   }
   if(op=="clear_on_exit") return type("enabled",VTYPE_BOOL);
-  if(op=="permission_decision" || op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  // Who answered what a window held, when the app says: an actor by the name
+  // a page action carries, and why.
+  auto answered=[&]{return (!d->HasKey("actor") || (type("actor",VTYPE_STRING) && !d->GetString("actor").empty() && d->GetString("actor").length()<=64)) &&
+    (!d->HasKey("reason") || (type("reason",VTYPE_STRING) && d->GetString("reason").length()<=32));};
+  if(op=="permission_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
   if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
   if(op=="hold_departures") return no_payload();
-  if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
+  if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
   if(op=="js_dialog_reply") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL) && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=64*1024));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;
   if(op=="find") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("text",VTYPE_STRING) && d->GetString("text").length()<=4096 && type("forward",VTYPE_BOOL) && type("next",VTYPE_BOOL);

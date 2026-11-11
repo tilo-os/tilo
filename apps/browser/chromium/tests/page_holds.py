@@ -7,8 +7,14 @@ navigation or request with a method of its own, a download. The page stays as
 it was filled and nothing leaves; an allow sends exactly what was filled in,
 and a denial leaves the page as it is. A window nobody told to hold sends what
 is clicked.
+
+The tab's record says what was held and how it ended: whose action reached it,
+who let it leave or kept the page as it is, as the app says with its answer,
+and what was dropped with nobody answering. Nothing of what was about to leave
+is in it.
 """
 import http.server
+import json
 import re
 import threading
 import time
@@ -36,6 +42,13 @@ SCRIPT = b'''<!doctype html><title>Script departures</title>
 <form id="f" method="post" action="/received"><input name="q" value="typed"></form>
 '''
 
+AUTO = b'''<!doctype html><title>Posts on its own</title>
+<p id="state">Ready</p>
+<script>
+addEventListener('load', () => setTimeout(() => fetch('/collect', {method: 'POST', body: 'card=4000056655665556'}), 400))
+</script>
+'''
+
 DOWNLOAD = b'''<!doctype html><title>Files</title>
 <a id="receipt" href="/receipt.txt" download>Receipt</a>
 '''
@@ -46,6 +59,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         '/': (FORM, 'text/html'),
         '/received': (RECEIVED, 'text/html'),
         '/script': (SCRIPT, 'text/html'),
+        '/auto': (AUTO, 'text/html'),
         '/download.html': (DOWNLOAD, 'text/html'),
         '/collect': (b'collected', 'text/plain'),
         '/receipt.txt': (b'receipt\n', 'application/octet-stream'),
@@ -141,9 +155,30 @@ class PageHolds(unittest.TestCase):
     def held(self, host):
         return host.until(lambda e: e['event'] == 'held')
 
-    def answer(self, host, held, allow):
-        host.send(op='hold_answer', tab=held['tab'], id=held['id'], allow=allow)
+    def answer(self, host, held, allow, **who):
+        """Answer `held` as the app does. `who` is what it says of the answer:
+        the `actor` that gave it, and for `reason` that it `expired`."""
+        host.send(op='hold_answer', tab=held['tab'], id=held['id'], allow=allow, **who)
         host.until(lambda e: e['event'] == 'held_closed' and e['id'] == held['id'])
+
+    def heard(self, host, match):
+        """The first event `match` names, whether it came while the test
+        waited for something else or is still to come."""
+        return next((e for e in host.seen if match(e)), None) or host.until(match)
+
+    def set_down(self, host, action):
+        """The entry the host says it set down in the tab's record for a
+        hold, of its own accord: the one whose `action` is `action`."""
+        return self.heard(host, lambda e: e['event'] == 'page_record'
+                          and e['entry'].get('how') == 'hold' and e['entry'].get('action') == action)['entry']
+
+    def record(self, host):
+        """The tab's record as its engine lists it."""
+        return self.page(host, 'ledger', since=0)['data']['entries']
+
+    def told(self, host):
+        """Everything the host said of the tab's record, as one text."""
+        return json.dumps(self.record(host)) + json.dumps([e for e in host.seen if e['event'] == 'page_record'])
 
     def test_a_clicked_submit_waits_for_the_person_and_sends_what_was_filled(self):
         host = self.open('/')
@@ -200,6 +235,85 @@ class PageHolds(unittest.TestCase):
         host.send(op='download_decision', tab=1, id=prompt['id'], allow=True)
         host.until(lambda e: e['event'] == 'download' and e['id'] == prompt['id']
                    and e['state'] == 'complete', timeout=90)
+
+    def test_a_held_submission_is_set_down_with_whose_action_reached_it_and_who_let_it_leave(self):
+        # A reviewer reads in the tab's record that the submission waited for
+        # the person, whose action reached it and who let it leave.
+        host = self.open('/')
+        button = self.ref(host, 'button "Submit application"')
+        PageHolds.requests += 1
+        host.send(op='page', request_id=PageHolds.requests, action='click', element=button, actor='ada')
+        held = self.heard(host, lambda e: e['event'] == 'held')
+        hold = self.set_down(host, 'submit')
+        self.assertEqual((hold['how'], hold['actor'], hold['ok']), ('hold', 'ada', True), hold)
+        # The page it was held on, where it would go and how: no more.
+        self.assertEqual((hold['url'], hold['to_url'], hold['message']),
+                         (self.url + '/', self.url, 'POST ' + self.url), hold)
+        # It takes its place after the action whose run reached it.
+        entries = self.record(host)
+        self.assertEqual([(e['seq'], e.get('how'), e['action'], e['actor']) for e in entries],
+                         [(1, None, 'click', 'ada'), (2, 'hold', 'submit', 'ada')])
+        self.assertEqual(entries[1], hold)
+        # The engine cannot know who answers: the app says, and it is set down.
+        self.answer(host, held, True, actor='rev')
+        allowed = self.set_down(host, 'allow')
+        self.assertEqual((allowed['seq'], allowed['how'], allowed['actor'], allowed['ok']), (3, 'hold', 'rev', True), allowed)
+        self.assertEqual((allowed['to_url'], allowed['message']), (self.url, 'POST ' + self.url), allowed)
+        host.until(lambda e: e['event'] == 'title' and e['title'] == 'Application received')
+        self.assertEqual([e['action'] for e in self.record(host)], ['click', 'submit', 'allow'])
+        # What the form held left with the submission and is nowhere in the
+        # record: no field's value, and not the password.
+        told = self.told(host)
+        for text in ('Ada Lovelace', 'Netherlands', 'hunter2'):
+            self.assertNotIn(text, told)
+
+    def test_a_page_kept_as_it_is_is_set_down_as_the_persons_when_the_app_names_nobody(self):
+        # An app that says nothing of who answered answers as the person at
+        # the window, as every app did before the record kept holds.
+        host = self.open('/')
+        self.click(host, 'button "Submit application"')
+        held = self.heard(host, lambda e: e['event'] == 'held')
+        self.answer(host, held, False)
+        kept = self.set_down(host, 'keep')
+        self.assertEqual((kept['how'], kept['actor'], kept['to_url']), ('hold', '', self.url), kept)
+        self.assertEqual([(e.get('how'), e['action'], e['actor']) for e in self.record(host)],
+                         [(None, 'click', ''), ('hold', 'submit', ''), ('hold', 'keep', '')])
+        host.settle(1.0)
+        self.assertEqual(host.latest_title(), 'Application')
+
+    def test_what_a_page_sends_on_its_own_and_nobody_answers_is_set_down_as_dropped(self):
+        # No action reached this request: the page sent it on its own, and
+        # the hold is nobody's. The app drops it at its own deadline and
+        # says that nobody answered.
+        host = self.open('/auto')
+        held = self.heard(host, lambda e: e['event'] == 'held')
+        self.assertEqual((held['kind'], held['method']), ('request', 'POST'), held)
+        began = self.set_down(host, 'request')
+        self.assertEqual((began['seq'], began['actor'], began['url'], began['to_url'], began['message']),
+                         (1, '', self.url + '/auto', self.url, 'POST ' + self.url), began)
+        self.answer(host, held, False, reason='expired')
+        dropped = self.set_down(host, 'drop')
+        self.assertEqual((dropped['seq'], dropped['how'], dropped['actor'], dropped['message']),
+                         (2, 'hold', '', 'POST ' + self.url), dropped)
+        self.assertEqual([e['action'] for e in self.record(host)], ['request', 'drop'])
+        # The body the page was about to send is in no part of the record.
+        told = self.told(host)
+        for text in ('4000056655665556', 'card='):
+            self.assertNotIn(text, told)
+
+    def test_a_held_download_is_set_down_with_its_file_and_who_answered(self):
+        host = self.open('/download.html')
+        self.click(host, 'link "Receipt"')
+        prompt = self.heard(host, lambda e: e['event'] == 'download_prompt')
+        began = self.set_down(host, 'download')
+        self.assertEqual((began['how'], began['actor'], began['to_url'], began['message']),
+                         ('hold', '', self.url, 'receipt.txt, ' + self.url), began)
+        host.send(op='download_decision', tab=1, id=prompt['id'], allow=False, actor='rev')
+        kept = self.set_down(host, 'keep')
+        self.assertEqual((kept['actor'], kept['to_url'], kept['message']),
+                         ('rev', self.url, 'receipt.txt, ' + self.url), kept)
+        self.assertEqual([(e.get('how'), e['action']) for e in self.record(host)],
+                         [(None, 'click'), ('hold', 'download'), ('hold', 'keep')])
 
     def test_a_window_nobody_told_to_hold_sends_what_is_clicked(self):
         host = self.open('/', hold=False)

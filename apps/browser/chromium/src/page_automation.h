@@ -149,6 +149,24 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     Finish(Failure("cancelled","The action was cancelled before the page answered it, so whether "
       "it took effect is unknown; read the page again to see what it did"));
   }
+  // A window an agent operates held something its page was about to send
+  // (departures.h): a form submission, a request with data, a download. The
+  // tab's record says so, as it says what a person typed: no action made the
+  // entry, so it has `how: "hold"`, the kind of what waits as its `action`,
+  // where it would go as `to_url` and its method there (of a download the
+  // file it would save) as its message. It is the actor's whose action was
+  // running when the page reached it, and nobody's when the page sent it on
+  // its own.
+  void HoldBegan(const std::string& kind,const std::string& method,const std::string& origin,const std::string& file) {
+    NoteHold(kind,pending_ && pending_->seq?pending_->actor:std::string(),method,origin,file);
+  }
+  // A held departure ended, and the record says how: it was let leave
+  // (`allow`), the page was kept as it is (`keep`), or it was dropped with
+  // nobody answering (`drop`). `actor` is who answered, as the app says:
+  // nobody's name for the person at the window.
+  void HoldEnded(const std::string& how,const std::string& actor,const std::string& method,const std::string& origin,const std::string& file) {
+    NoteHold(how,actor,method,origin,file);
+  }
   // What was done in this tab, in the order it was done, after the place
   // `since` names: who asked, what they asked for, what it acted on and how
   // it ended. It reads nothing of the page, so it answers at once whatever
@@ -2989,9 +3007,28 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     NoteFrame(document,note,entry);
     if(note->GetType("secret")==VTYPE_BOOL && note->GetBool("secret")) entry->SetBool("secret",true);
     else if(note->GetType("text")==VTYPE_STRING) entry->SetString("text",Word(note,"text",kMaxLedgerText));
-    // An entry takes its place when it is set down: one that comes while an
-    // action runs waits for that action's own, which was given its place
-    // when it began.
+    SetDownInTurn(entry);
+  }
+  // What the record says of a hold: `action` names what was held or how it
+  // ended, and the message what the person was asked about, by its method
+  // and where it would go, and of a download by the file it would save.
+  // Nothing of what it carries is known here, so none of it is set down.
+  void NoteHold(const std::string& action,const std::string& actor,const std::string& method,const std::string& origin,const std::string& file) {
+    if(!browser_) return;
+    auto entry=CefDictionaryValue::Create();
+    entry->SetDouble("time_ms",NowMs());entry->SetString("actor",Clip(actor,kMaxActorBytes));entry->SetString("how","hold");
+    entry->SetString("action",action);entry->SetBool("ok",true);
+    std::string said=file.empty()?method:Clip(file,kMaxHeldFile);
+    if(!said.empty() && !origin.empty()) said+=file.empty()?" ":", ";
+    entry->SetString("message",Clip(said+origin,kMaxLedgerText));
+    entry->SetString("url",browser_->GetMainFrame()->GetURL());
+    if(!origin.empty()) entry->SetString("to_url",origin);
+    SetDownInTurn(entry);
+  }
+  // An entry no action made takes its place when it is set down: one that
+  // comes while an action runs waits for that action's own, which was given
+  // its place when it began.
+  void SetDownInTurn(CefRefPtr<CefDictionaryValue> entry) {
     if(pending_ && pending_->seq) { if(held_.size()<kMaxHeld) held_.push_back(entry);return; }
     SetDown(entry);
   }
@@ -3089,7 +3126,8 @@ class PageAutomation final : public CefDevToolsMessageObserver {
       ledger_.push_back(entry);
       if(ledger_.size()>kMaxLedger) { ledger_.pop_front();++ledger_dropped_; }
       fields->SetDouble("seq",static_cast<double>(pending_->seq));
-      // What a person typed while the action ran takes its place after it.
+      // What a person typed while the action ran, and what the page was
+      // held from sending meanwhile, takes its place after it.
       SetDownHeld();
     }
     if(asked->GetType("actor")!=VTYPE_STRING) return;
@@ -3177,6 +3215,9 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   uint64_t acted_seq_=0,ledger_dropped_=0;
   std::map<std::string,uint64_t> seen_;
   static constexpr size_t kMaxLedger=1000,kMaxLedgerRead=200,kMaxOthers=8,kMaxActors=64,kMaxLedgerText=200;
+  // The most of an answering actor's name and of a held download's file
+  // name the record keeps.
+  static constexpr size_t kMaxActorBytes=256,kMaxHeldFile=120;
   // What the page's own world calls to tell this side something (`Noted`),
   // whether the page's inspector has been told of it, and the bounds a
   // renderer's notes are held to: the size of one, how many in a while, how

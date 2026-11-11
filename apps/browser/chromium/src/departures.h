@@ -8,6 +8,10 @@
 // allow continues it exactly once, and anything else drops it. A person's own
 // window never holds anything, so this is only ever used by a window opened
 // for an agent (docs/hosted-browser.md).
+//
+// The tab's record says what was held and how it ended (HoldNote): a reviewer
+// reads that a submission waited for the person, who let it leave, or that the
+// page was kept as it is.
 #include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
 #include "include/cef_callback.h"
@@ -44,6 +48,27 @@ inline bool Submission(const CefRefPtr<CefRequest>& request) {
 inline bool WebAddress(const std::string& url) {
   return url.compare(0,7,"http://")==0 || url.compare(0,8,"https://")==0;
 }
+// What the tab's record is told of a hold (PageAutomation::HoldBegan and
+// HoldEnded): that something the page was about to send waits for the person,
+// or how that ended. It names what the person is asked about, its method and
+// where it would go, and of a download the file it would save, and never what
+// it carries: no request's body and nothing a form's fields hold.
+struct HoldNote {
+  // What the record names it by: the kind of what was held (`submit`,
+  // `request`, `download`), or how a held one ended (`allow`, `keep`, `drop`).
+  std::string action;
+  // Whether it says that a hold began.
+  bool began=false;
+  // Who ended it, as the app says: the name the tab keeps that actor's
+  // actions under, and nobody's for the person at the window and for a hold
+  // nobody answered. A hold that begins is the running action's actor's.
+  std::string actor;
+  std::string method,origin,file;
+};
+using NoteHold=std::function<void(int,const HoldNote&)>;
+// How an answer ends a hold, as the record names it: let leave, kept by
+// whoever answered, or dropped because nobody did.
+inline const char* HoldEnding(bool allow,bool expired) { return allow?"allow":expired?"drop":"keep"; }
 // One request held before it leaves.
 struct Departure {
   int tab=0;
@@ -65,7 +90,7 @@ struct Departure {
 class Departures final {
  public:
   using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
-  explicit Departures(Emit emit):emit_(std::move(emit)) {}
+  explicit Departures(Emit emit,NoteHold note=nullptr):emit_(std::move(emit)),note_(std::move(note)) {}
   // Hold `departure` under a fresh id, telling the app what is about to leave
   // and where. Returns the id the answer names.
   int Hold(Departure departure) {
@@ -75,8 +100,9 @@ class Departures final {
     fields->SetString("kind",departure.kind);
     fields->SetString("method",departure.method);
     fields->SetString("origin",departure.origin);
-    held_[id]=std::move(departure);
     emit_("held",fields);
+    Note(departure,departure.kind,true,{});
+    held_[id]=std::move(departure);
     return id;
   }
   // Whether a navigation about to start is one the person already allowed,
@@ -95,11 +121,15 @@ class Departures final {
   }
   // The app answered `id`: let it leave exactly once when `allow`, and drop
   // it otherwise. An id that is not held is a command that came too late.
-  void Answer(int id,bool allow) {
+  // `actor` is who answered, as the app says, and `expired` that nobody did
+  // and the app dropped it at its own deadline: the tab's record says which.
+  // An app that says neither answers as the person at the window.
+  void Answer(int id,bool allow,const std::string& actor={},bool expired=false) {
     auto found=held_.find(id);
     if(found==held_.end()) return;
     Departure departure=std::move(found->second);
     held_.erase(found);
+    Note(departure,HoldEnding(allow,expired),false,actor);
     Closed(departure.tab,id);
     // Not allowed: a paused load is cancelled, and a navigation never started.
     if(!allow) { if(departure.load) departure.load->Cancel(); return; }
@@ -121,17 +151,23 @@ class Departures final {
       if(found==held_.end()) continue;
       Departure departure=std::move(found->second);
       held_.erase(found);
+      Note(departure,HoldEnding(false,true),false,{});
       Closed(tab,id);
       if(departure.load) departure.load->Cancel();
     }
   }
  private:
+  void Note(const Departure& departure,const char* action,bool began,const std::string& actor) {
+    if(!note_) return;
+    note_(departure.tab,HoldNote{action,began,actor,departure.method,departure.origin,{}});
+  }
   void Closed(int tab,int id) {
     auto fields=CefDictionaryValue::Create();
     fields->SetInt("tab",tab);fields->SetInt("id",id);
     emit_("held_closed",fields);
   }
   Emit emit_;
+  NoteHold note_;
   std::map<int,Departure> held_;
   // A navigation the person allowed, issued again, and not yet seen.
   struct Allowance {int tab;std::string method,url;std::chrono::steady_clock::time_point until;};

@@ -606,6 +606,28 @@ may act and passes the name of the invoker it admitted.
   entry, so the host says it: the event `page_record`, with `tab`, `seq` and
   the `entry` as `ledger` lists it. A named actor's next answer lists it
   among `others`.
+- **What a window held is in the record.** A tab told `hold_departures` holds
+  what its page is about to send until the app answers: a form submission or
+  a request with data (`held`, answered by `hold_answer`) and a download
+  (`download_prompt`, answered by `download_decision`). The record says so in
+  two entries no action made, both with `how: "hold"` and `ok: true`. The
+  first is set down when it is held: its `action` is what waits (`submit`,
+  `request`, `download`), its `actor` that of the operating action running
+  then (empty when the page sent it on its own), `url` the page, `to_url` the
+  origin it would go to, and `message` its method and that origin
+  (`POST https://visa.example`), or of a download the file's name (at most
+  120 bytes) and the origin. The second is set down when it ends, with the
+  same `to_url` and `message`: its `action` is `allow`, `keep` or `drop`. The
+  host cannot know who answered, so `hold_answer` and `download_decision` may
+  say: `actor`, a name as a page action carries one, and `reason`, which is
+  `expired` when nobody answered and the app dropped it at its own deadline.
+  A refusal with that reason is set down as `drop`. An answer that says
+  neither is the person's at the window, `allow` or `keep` with an empty
+  `actor`, which is how an app that knows of neither field is read. Neither
+  entry carries a request's body, a field's value or a secret. Each takes the
+  next `seq` when it is set down, after the action that is running, and is
+  told by `page_record` as direct input is. A tab that closes with something
+  held sets nothing more down: its record ends with it.
 - **The engine says when the page changes itself.** The event `page_changed`
   tells whoever reviews a page that something other than an action's own edit
   changed what a field holds or what a form asks, so nobody reads the page
