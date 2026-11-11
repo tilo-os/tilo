@@ -7,6 +7,7 @@ use super::{
 use tilo_actions::remote::ViewResourceQuery;
 use tilo_agent_participant::ReplicaActor;
 use tilo_peer_state::join::MemberRole;
+use tilo_session_client::Outbox;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
@@ -80,14 +81,11 @@ async fn remote_encrypted_chat_primary_is_discoverable_after_host_restart() {
     );
     publisher
         .peer
-        .publish(route.clone(), &source.take_mutation().unwrap())
+        .write(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
     let part_route = part_route(&workspace.workspace, &part);
     for (_, mutation) in source.take_record_mutations() {
-        publisher
-            .peer
-            .publish(part_route.clone(), &mutation)
-            .unwrap();
+        publisher.peer.write(part_route.clone(), &mutation).unwrap();
     }
     publisher.peer.barrier().unwrap().recv().unwrap().unwrap();
     let retained = hosted

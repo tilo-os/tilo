@@ -11,6 +11,33 @@ use crate::host_core::{HostCore as _, KeyHost as _};
 use taffy::NodeId;
 
 impl FrameHarness {
+    /// Whether the surface this tree draws holds the keyboard, as
+    /// [`Self::set_keyboard_held`] last said: its fields paint carets only while it does.
+    #[must_use]
+    pub const fn keyboard_held(&self) -> bool {
+        self.keyboard_held
+    }
+
+    /// Say whether the surface this tree draws holds the keyboard. A surface that
+    /// lost it keeps its fields' text and selection and paints no caret until it
+    /// has it back. Returns whether that changed, so a host redraws the frame the
+    /// caret was in.
+    pub fn set_keyboard_held(&mut self, held: bool) -> bool {
+        if self.keyboard_held == held {
+            return false;
+        }
+        self.keyboard_held = held;
+        self.invalidate_local();
+        self.root.release_scene_cache();
+        if let Some(palette) = self.action_palette.as_deref_mut() {
+            palette.release_scene_cache();
+        }
+        if let Some(history) = self.history.as_deref_mut() {
+            history.release_scene_cache();
+        }
+        true
+    }
+
     /// Whether embedded History and a History holding saved focus leave a
     /// node free to take focus, for asking of every node in one pass: each
     /// History's subtrees are walked once, not once per node.

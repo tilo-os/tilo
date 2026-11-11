@@ -5,7 +5,7 @@ import {CustodyError} from './device-custody.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
 // Which way in, and the next one when a way fails, are the runtime's rules
-// (tilo-session-host's `way_in`, tested there). These tests hold the page to
+// (tilo-session-client's `way_in`, tested there). These tests hold the page to
 // taking the way it is answered, and to telling the runtime what it knows.
 
 const room = {kind: 'room', host: 'https://ada.tilo.cloud', room: '6f1c2b9e-0d4a-4c1e-9b7a-2f3d1e5c8a90'};
@@ -78,7 +78,7 @@ test('the person’s own desktop needs no peer', async () => {
 
 test('the own desktop of a stranger under a home taking people by invitation is that home’s door', async () => {
   // Going to /me directly: the home's door answers, as at the bare entry,
-  // and its refusal is what the page shows.
+  // and its refusal (the wait list) is what the page shows.
   const turnedAway = Object.assign(new Error('Commons needs an invitation'), {code: 'invitation-only'});
   const asked = [];
   const {calls, deps} = doors({

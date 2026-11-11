@@ -13,6 +13,7 @@ use tilo_actions::remote::{
 use tilo_agent_participant::workspace_actions::{
     ViewReadPolicy, WorkspaceMember, WorkspaceRecordsLink,
 };
+use tilo_session_client::Outbox;
 use ui::permissions::Role;
 
 const NOTES: &str = "so.tilo.notes";

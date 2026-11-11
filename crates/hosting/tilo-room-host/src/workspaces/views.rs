@@ -221,7 +221,7 @@ fn replay_source(
             tilo_peer_state::document_frame::content_key_reader(keys),
         );
     }
-    let mut reassembly = tilo_peer_state::document_frame::Reassembly::default();
+    let mut transfers = tilo_peer_state::document_frame::Transfers::default();
     let mut doc = automerge::AutoCommit::new();
     let mut bytes = 0usize;
     let mut found = false;
@@ -259,11 +259,11 @@ fn replay_source(
         )
         .map_err(|error| error.to_string())?
         .ok_or("source frame missing")?;
-        if let Some(frame) = reassembly
-            .accept(frame)
-            .map_err(|error| error.to_string())?
-        {
-            let mutation = frame.mutation().ok_or("source mutation missing")?;
+        let plaintext = frame
+            .decrypted_payload
+            .as_deref()
+            .unwrap_or(&frame.envelope.payload);
+        if let Some(mutation) = transfers.take(frame.author, plaintext)? {
             let (collab_types::DocumentMutation::Snapshot(change)
             | collab_types::DocumentMutation::Incremental(change)) = mutation;
             tilo_automerge::ApplyIncoming::load_incoming(&mut doc, &change)
@@ -271,7 +271,7 @@ fn replay_source(
             found = true;
         }
     }
-    if !found || reassembly.buffered_bytes() != 0 || !doc.get_missing_deps(&[]).is_empty() {
+    if !found || !transfers.is_empty() || !doc.get_missing_deps(&[]).is_empty() {
         return Err("existing source is not completely retained".into());
     }
     Ok(doc.save())

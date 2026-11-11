@@ -944,38 +944,35 @@ mod tests {
         app.harness().present_in_window_bar();
         settle(&mut app);
 
-        let bar = ui::window_toolbar::declared().expect("the window declares its slots");
         assert_eq!(
-            bar.location.map(|location| location.label).as_deref(),
-            Some("Accounts")
+            ui::window_toolbar::declared(),
+            None,
+            "the bar holds only what is the window's"
         );
-        let actions: Vec<&str> = bar
-            .actions
-            .iter()
-            .map(|action| action.name.as_str())
-            .collect();
-        assert_eq!(
-            actions,
-            ["Add account"],
-            "the bar's search is the only search"
-        );
+        let row = app.harness().header_row_names();
+        for word in ["Accounts", "Add account"] {
+            assert!(
+                row.iter().any(|name| name == word),
+                "{word} stands in the header row, which is the window's bar: {row:?}"
+            );
+        }
         let listed = names(&mut app);
-        assert!(
-            !listed
+        assert_eq!(
+            listed
                 .iter()
-                .any(|(role, name)| role == "Button" && name == "Add account"),
-            "the window draws no header of its own: {listed:?}"
+                .filter(|(role, name)| role == "Button" && name == "Add account")
+                .count(),
+            1,
+            "the window offers Add account once: {listed:?}"
         );
 
-        let add = bar.actions[0].id.clone();
-        app.harness()
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: add });
+        app.harness().press_window_action("Add account").unwrap();
         settle(&mut app);
         assert!(
             names(&mut app)
                 .iter()
                 .any(|(role, name)| role == "Dialog" && name == "Add account"),
-            "the bar's Add account opens the sheet"
+            "the row's Add account opens the sheet"
         );
     }
 

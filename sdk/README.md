@@ -6,10 +6,15 @@ the same resources, actions, permissions, history and undo. There is no
 second API. The design is `docs/developers/sdk.md` and the wire is
 `docs/developers/sdk-wire.md`.
 
-- `python/`: the `tilo` package (`AsyncTilo` and the sync `Tilo`). uv project,
+- `python/`: the `tilo-sdk` package (`AsyncTilo` and the sync `Tilo`), imported as `tilo`. uv project,
   Python 3.11 or newer, `httpx` for HTTP.
-- `typescript/`: the `@tilo/sdk` package, Promise-only. bun project, ESM,
+- `typescript/`: the `tilo-sdk` package, Promise-only. bun project, ESM,
   `fetch`.
+
+```sh
+uv add tilo-sdk          # Python:        from tilo import Tilo
+bun add tilo-sdk         # TypeScript:    import { Tilo } from "tilo-sdk"
+```
 
 Both answer the same surface, `snake_case` in Python and `camelCase` in
 TypeScript: `workspaces.list/create/delete`, `keys.list/create/mint/revoke`,

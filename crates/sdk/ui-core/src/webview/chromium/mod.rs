@@ -78,6 +78,10 @@ struct Shared {
     dialogs_can: AtomicBool,
     dialogs_asked: AtomicBool,
     dialogs_told: AtomicBool,
+    /// Whether this tab holds what its page sends, and whether the host was
+    /// told: a window an agent operates holds every departure.
+    holds_asked: AtomicBool,
+    holds_told: AtomicBool,
     clipboard: page_clipboard::Sharing,
     /// Popups the page opened, not yet taken.
     popups: Mutex<VecDeque<super::Popup>>,
@@ -636,6 +640,8 @@ impl UnavailableEngine {
                 dialogs_can: AtomicBool::default(),
                 dialogs_asked: AtomicBool::default(),
                 dialogs_told: AtomicBool::default(),
+                holds_asked: AtomicBool::default(),
+                holds_told: AtomicBool::default(),
                 clipboard: page_clipboard::Sharing::default(),
                 popups: Mutex::default(),
                 unadopted: Mutex::default(),
@@ -1469,6 +1475,23 @@ impl ChromiumEngine {
         }
     }
 
+    /// Tell the host this tab holds what its page sends, once it asked.
+    fn tell_holds(&self) {
+        let shared = &self.shared;
+        if !shared.holds_asked.load(Ordering::Acquire)
+            || shared.holds_told.swap(true, Ordering::AcqRel)
+        {
+            return;
+        }
+        if self
+            .tx
+            .push(json!({"op":"hold_departures","tab":self.tab}))
+            .is_err()
+        {
+            shared.holds_told.store(false, Ordering::Release);
+        }
+    }
+
     fn tell_clipboard(&self) {
         (self.shared.clipboard).tell(|mut command| {
             command["tab"] = json!(self.tab);
@@ -1639,6 +1662,11 @@ impl WebViewEngine for ChromiumEngine {
     fn accept_page_dialogs(&self) {
         self.shared.dialogs_asked.store(true, Ordering::Release);
         self.tell_dialogs();
+    }
+
+    fn hold_departures(&self) {
+        self.shared.holds_asked.store(true, Ordering::Release);
+        self.tell_holds();
     }
 
     fn share_clipboard(&self) {
@@ -2258,6 +2286,7 @@ fn command_within_limits(command: &WebViewCommand) -> bool {
         }
         WebViewCommand::PermissionDecision { id, .. }
         | WebViewCommand::PermissionDismissed { id }
+        | WebViewCommand::AnswerHeldRequest { id, .. }
         | WebViewCommand::DownloadDecision { id, .. }
         | WebViewCommand::CancelNativeDownload { id }
         | WebViewCommand::RetryDownload { id } => *id > 0 && i32::try_from(*id).is_ok(),
@@ -2444,6 +2473,19 @@ fn decode_event(value: &Value) -> Option<WebViewEvent> {
         },
         "js_dialog" => WebViewEvent::PageDialog(decode_page_dialog(value)?),
         "js_dialog_closed" => WebViewEvent::PageDialogClosed {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+        },
+        "held" => WebViewEvent::HeldRequest(super::hold::HeldRequest {
+            id: u32::try_from(value["id"].as_u64()?).ok()?,
+            kind: super::hold::HeldKind::parse(value["kind"].as_str()?)?,
+            method: value["method"].as_str().unwrap_or_default().into(),
+            origin: value["origin"].as_str().unwrap_or_default().into(),
+            capture: value["png"]
+                .as_str()
+                .and_then(|png| decode_base64_bounded(png, super::hold::MAX_HELD_CAPTURE))
+                .map(Arc::new),
+        }),
+        "held_closed" => WebViewEvent::HeldRequestClosed {
             id: u32::try_from(value["id"].as_u64()?).ok()?,
         },
         "context_menu" => WebViewEvent::ContextMenu {
@@ -2807,6 +2849,9 @@ fn encode_command(command: WebViewCommand) -> Option<Value> {
             Some(text) => json!({"op":"js_dialog_reply","id":id,"accept":accept,"text":text}),
             None => json!({"op":"js_dialog_reply","id":id,"accept":accept}),
         },
+        WebViewCommand::AnswerHeldRequest { id, allow } => {
+            json!({"op":"hold_answer","id":id,"allow":allow})
+        }
         WebViewCommand::StopFinding => json!({"op":"stop_find"}),
         WebViewCommand::SetZoomLevel(level) => json!({"op":"zoom","level":level}),
         WebViewCommand::ReportDocumentSize(enabled) => {

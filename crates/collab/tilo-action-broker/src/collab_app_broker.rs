@@ -86,8 +86,8 @@ mod workspace_checkpoints;
 mod workspace_memberships;
 pub use crate::services::LaunchScope;
 pub use committed_document::{
-    AwaitingHistory, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, RecordRead,
+    AwaitingRecord, ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead,
+    NativeDocumentReadContext, NativeDocumentReads, RecordRead,
 };
 use durable_local_invocation::DurableContext;
 pub(crate) use invocation_journal::{DurableInvocation, admission_request_digest};
@@ -1307,6 +1307,12 @@ mod policy_context;
 mod published_service;
 
 impl AppBrokerState {
+    /// The hosts of the workspaces this device takes part in but does not
+    /// host, as the session gave them.
+    pub(crate) fn hosted_workspaces(&self) -> Option<Arc<dyn crate::services::HostedWorkspaces>> {
+        self.services.hosted_workspaces.clone()
+    }
+
     /// Attach the authority a harness admits its devices under, when it
     /// has one; a broker takes one authority, from wherever it comes.
     fn attach_certificate_authority(
@@ -3186,41 +3192,56 @@ impl AppBrokerState {
     async fn commit_owner_request(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        record_kind: Option<String>,
     ) -> Result<(), BrokerError> {
-        // Dropping the waiting RPC cannot convert an admitted effect into a
-        // refusal or leave the standalone capability apparently healthy.
-        struct Waiting<'a> {
-            failure: &'a Mutex<Option<String>>,
-            complete: bool,
-        }
-        impl Drop for Waiting<'_> {
-            fn drop(&mut self) {
-                if !self.complete
-                    && let Ok(mut failure) = self.failure.lock()
-                {
-                    failure
-                        .get_or_insert_with(|| "owner commit interrupted; outcome unknown".into());
-                }
-            }
-        }
         self.owner_health().map_err(BrokerError::failed)?;
-        let mut waiting = Waiting {
-            failure: &self.owner_commit_failure,
-            complete: false,
-        };
-        let result = self.publisher.commit_owner(request, record_kind).await;
-        waiting.complete = true;
-        match result {
-            Ok(_) => Ok(()),
-            Err(reason) => {
-                // The owner answered: retain its actual refusal/failure for
-                // later clients instead of labeling this as a dropped RPC.
-                if let Ok(mut failure) = self.owner_commit_failure.lock() {
-                    failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
-                }
-                Err(BrokerError::failed(reason))
+        let waiting = OwnerWait::on(&self.owner_commit_failure);
+        let result = self.publisher.commit_owner(request, None).await;
+        waiting.answered();
+        result.map(drop).map_err(|reason| {
+            // The owner answered: retain its actual refusal/failure for
+            // later clients instead of labeling this as a dropped RPC.
+            self.retain_owner_failure(&reason);
+            BrokerError::failed(reason)
+        })
+    }
+
+    /// Commit a document write of this device through the owner: the signed
+    /// write as the record took it. A write the owner refuses is its writer's alone: it
+    /// is answered the refusal and takes the write back out, and nothing else
+    /// waits on it. An answer that does not prove the write leaves the owner
+    /// unknown, as a dropped wait does.
+    async fn commit_owner_document(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> Result<SignedOp, BrokerError> {
+        self.owner_health().map_err(BrokerError::failed)?;
+        let waiting = OwnerWait::on(&self.owner_commit_failure);
+        let answered = self
+            .publisher
+            .commit_owner_document(request.clone(), record_kind)
+            .await;
+        waiting.answered();
+        let (committed, receipt) = answered.map_err(BrokerError::failed)?;
+        receipt
+            .validate_local_document(&request, &committed)
+            .map_err(|reason| {
+                self.retain_owner_failure(&reason);
+                BrokerError::failed(reason)
+            })?;
+        match committed.operation {
+            tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } => {
+                Ok(*envelope)
             }
+            _ => Err(BrokerError::failed(
+                "the owner committed no document".into(),
+            )),
+        }
+    }
+
+    fn retain_owner_failure(&self, reason: &str) {
+        if let Ok(mut failure) = self.owner_commit_failure.lock() {
+            failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
         }
     }
 
@@ -3289,7 +3310,7 @@ impl AppBrokerState {
                 .map_err(BrokerError::failed)?;
             durable.wait().await.map_err(BrokerError::failed)?;
         }
-        self.commit_owner_request(request, None).await
+        self.commit_owner_request(request).await
     }
 
     /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
@@ -3710,6 +3731,20 @@ impl AppBrokerState {
             ))
         }));
         result
+    }
+
+    /// `action` on `resource` as connection `peer` publishes it now.
+    pub(super) fn offered_by(
+        &self,
+        peer: u64,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&peer)?
+            .action_projection(resource, action)
     }
 
     /// Resolve against the current selected source, independently of the
@@ -5764,8 +5799,10 @@ impl AppBrokerState {
     }
 
     /// A receiver that sees every later published-surface change; what it
-    /// has seen so far counts as seen.
-    pub(crate) fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+    /// has seen so far counts as seen. What a session holding a window reads
+    /// to notice the app publishing what it now offers — a page holding a
+    /// request that nothing has answered yet — without asking again.
+    pub fn surface_changes(&self) -> tokio::sync::watch::Receiver<u64> {
         self.surface_changes.subscribe()
     }
 
@@ -6160,6 +6197,13 @@ impl AppBrokerState {
         target: runtime_collab::TaskAction<'_>,
         (provenance, confirmed): (Option<&LocalProvenance>, (bool, Option<&str>)),
     ) -> Result<StagedJob, String> {
+        // The action as its window publishes it now: one mounted anew as the
+        // window settled carries it under a new alias.
+        let current = self.published_now(target);
+        let target = runtime_collab::TaskAction {
+            resource: current.as_deref().unwrap_or(target.resource),
+            ..target
+        };
         let runtime_collab::TaskAction {
             peer_id: target_peer,
             provider: _,
@@ -6172,12 +6216,8 @@ impl AppBrokerState {
             return Err("the task was cancelled; no further action may start".into());
         }
         let (surface, descriptor) = self
-            .surfaces
-            .lock()
-            .map_err(|_| "task action surface unavailable")?
-            .get(&target_peer)
-            .filter(|surface| surface.route.cluster_id == run.cluster_id)
-            .and_then(|surface| surface.action_projection(resource, action))
+            .offered_by(target_peer, resource, action)
+            .filter(|(surface, _)| surface.route.cluster_id == run.cluster_id)
             .ok_or("the task action is no longer published in this workspace")?;
         self.admit_task_action(
             &run,
@@ -7188,13 +7228,21 @@ impl AppBrokerState {
                 let people = people
                     .into_iter()
                     .map(|person| {
-                        let name = workspace
-                            .collaborators
-                            .iter()
-                            .find(|row| row.id == person)
-                            .map_or_else(|| person.clone(), |row| row.name.clone());
+                        let row = workspace.collaborators.iter().find(|row| row.id == person);
+                        let name = row.map_or_else(|| person.clone(), |row| row.name.clone());
+                        // The colour presence draws them in: the one they
+                        // chose, or the one their identity derives, so an app
+                        // paints a person as their desk and everyone else's
+                        // does. No word of them yet, and they are painted in
+                        // what their id derives, as everywhere.
+                        let colour = row
+                            .and_then(|row| row.cursor_color.as_deref())
+                            .and_then(ui::presence::parse_hex_color)
+                            .and_then(|(red, green, blue)| {
+                                ui::tokens::PresenceHue::nearest_to_srgb(red, green, blue)
+                            });
                         let joined = workspace.policy.joined_at(&person);
-                        (person, name, joined)
+                        (person, name, colour, joined)
                     })
                     .collect::<Vec<_>>();
                 Ok::<_, &str>((agents, people))
@@ -7213,18 +7261,18 @@ impl AppBrokerState {
                 is_self: true,
                 joined_at: people
                     .iter()
-                    .find(|(person, _, _)| *person == admitted.principal_id)
-                    .and_then(|(_, _, joined)| *joined),
+                    .find(|(person, _, _, _)| *person == admitted.principal_id)
+                    .and_then(|(_, _, _, joined)| *joined),
             });
         }
-        for (person, name, joined_at) in people {
+        for (person, name, colour, joined_at) in people {
             if admitted.agent_id.is_none() && person == admitted.principal_id {
                 continue;
             }
             collaborators.push(ui::collaboration::Collaborator {
                 id: person,
                 name,
-                colour: None,
+                colour,
                 is_agent: false,
                 is_self: false,
                 joined_at,
@@ -8338,11 +8386,13 @@ impl<'a> DirectoryQuestion<'a> {
             // under the caller's ordinary resource policy, not owner UI.
             // That exception requires a known View kind: a tag alone cannot
             // disclose resource-only metadata with an unknown governing kind.
+            // Another read of the record (`review-restore`) discloses it the
+            // same way.
             private_view: (operation == Some(tilo_actions::OperationKind::View)
                 || operation.is_none())
                 && !contract.is_participant_view()
                 && !(operation == Some(tilo_actions::OperationKind::View)
-                    && contract.reads_document()),
+                    && contract.reads_record()),
         }
     }
 
@@ -8823,6 +8873,38 @@ impl AppBrokerState {
         let personal = self.services.personal.as_ref()?;
         (personal.read(tilo_peer_state::PersonalStore::store_key) == route.cluster_id)
             .then_some(personal)
+    }
+}
+
+/// An owner commit being waited for: dropping the wait before the owner
+/// answered cannot convert an admitted effect into a refusal or leave the
+/// standalone capability apparently healthy, so the owner's outcome is unknown
+/// from then on.
+struct OwnerWait<'a> {
+    failure: &'a Mutex<Option<String>>,
+    answered: bool,
+}
+
+impl<'a> OwnerWait<'a> {
+    const fn on(failure: &'a Mutex<Option<String>>) -> Self {
+        Self {
+            failure,
+            answered: false,
+        }
+    }
+
+    fn answered(mut self) {
+        self.answered = true;
+    }
+}
+
+impl Drop for OwnerWait<'_> {
+    fn drop(&mut self) {
+        if !self.answered
+            && let Ok(mut failure) = self.failure.lock()
+        {
+            failure.get_or_insert_with(|| "owner commit interrupted; outcome unknown".into());
+        }
     }
 }
 
@@ -13840,8 +13922,39 @@ pub mod tests {
         }
     }
 
+    /// A window mounting a component anew publishes its resource under a new
+    /// alias: an action named on the old one is found on the one it is on now,
+    /// unless it is withdrawn or two aliases of the resource carry it.
+    #[test]
+    fn a_task_action_is_found_under_the_alias_its_window_publishes_now() {
+        let alias = |component: &str| {
+            format!(
+                "{}host:{component}:{}",
+                tilo_actions::BOUND_RESOURCE_PREFIX,
+                hex::encode("composer")
+            )
+        };
+        let (before, now) = (alias("1"), alias("2"));
+        let mut surface = catalogue_surface(4, "workspace", &now);
+        assert_eq!(surface.current_resource(&now, "open"), Some(now.as_str()));
+        assert_eq!(
+            surface.current_resource(&before, "open"),
+            Some(now.as_str())
+        );
+        assert_eq!(surface.current_resource(&before, "close"), None);
+        assert_eq!(surface.current_resource("composer", "open"), None);
+        let mut twice = surface.actions[0].clone();
+        twice.resource = alias("3");
+        surface.actions.push(twice);
+        assert_eq!(surface.current_resource(&before, "open"), None);
+    }
+
     #[cfg(test)]
-    fn catalogue_surface(peer_id: u64, cluster: &str, resource: &str) -> PublishedSurface {
+    pub(super) fn catalogue_surface(
+        peer_id: u64,
+        cluster: &str,
+        resource: &str,
+    ) -> PublishedSurface {
         PublishedSurface {
             peer_id,
             app_id: "so.tilo.files".into(),

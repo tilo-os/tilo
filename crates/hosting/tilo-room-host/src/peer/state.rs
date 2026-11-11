@@ -21,6 +21,10 @@ pub(crate) struct StateSession {
     pub(crate) live: Arc<std::sync::atomic::AtomicBool>,
     pub(super) replay: Option<Arc<ReplayCatchup>>,
     pub(super) lag: Option<Arc<Lag>>,
+    /// The device only follows its channel groups
+    /// ([`Envelope::ChannelReader`]): no device's request to be admitted to
+    /// one reaches it.
+    pub(super) channel_reader: bool,
 }
 impl StateSession {
     /// A live session of `peer` whose deliveries go nowhere.
@@ -32,6 +36,7 @@ impl StateSession {
             live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             replay: None,
             lag: None,
+            channel_reader: false,
         }
     }
     /// A live delivery to workspace `workspace_id` did not fit this session's
@@ -197,8 +202,8 @@ impl StateSource {
     /// Whether `channel` is inside what this source may write: everything for
     /// a member, its own record for a browser environment's device.
     fn write_reaches(&self, channel: Option<[u8; 32]>) -> bool {
-        crate::environment::scope_of(&self.environments, &self.peer.device_public_key)
-            .is_none_or(|scope| scope.reaches(channel))
+        crate::environment::environment_of(&self.environments, &self.peer.device_public_key)
+            .is_none_or(|environment| environment.reaches(channel))
     }
     fn authorized_for(
         &self,
@@ -823,8 +828,8 @@ pub(super) fn refused_reason(
     op: WorkspaceOperation,
     channel: Option<[u8; 32]>,
 ) -> &'static str {
-    let outside = crate::environment::scope_of(trust.environments, &peer.device_public_key)
-        .filter(|scope| !scope.reaches(channel))
+    let outside = crate::environment::environment_of(trust.environments, &peer.device_public_key)
+        .filter(|environment| !environment.reaches(channel))
         .map(|_| workspace_access::DenyReason::OutOfEnvironmentScope.reason());
     match workspace_access::decide(runtime, trust, peer, op) {
         workspace_access::Decision::Deny(reason) => reason.reason(),

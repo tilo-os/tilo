@@ -12,21 +12,29 @@
 
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_client::{Cmd, Outbox};
 
-use super::{COMMIT_WAIT, Needs, Worker, bytes_of, change_digest, is_part};
+use super::{COMMIT_WAIT, Needs, Worker, is_part};
 
-/// The record's whole document, from the changes of `route` in `log`.
+/// The record at `route` as the session's replica holds it, and whether the
+/// replica holds it at all.
 fn document(
-    log: &[(DocumentRoute, super::Change)],
+    peer: &tilo_session_client::Link,
     route: &DocumentRoute,
-) -> automerge::AutoCommit {
-    let mut doc = automerge::AutoCommit::new();
-    for (_, (_, bytes)) in log.iter().filter(|(changed, _)| changed == route) {
-        if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut doc, bytes) {
-            tracing::warn!(record = %route.record, %error, "workspace actions: a change does not load");
-        }
+) -> (automerge::AutoCommit, bool) {
+    match peer
+        .engine()
+        .record(&route.cluster_id, &route.app_id, &route.record)
+    {
+        Ok(Some(bytes)) => (
+            automerge::AutoCommit::load(&bytes).unwrap_or_else(|error| {
+                tracing::warn!(record = %route.record, %error, "workspace actions: a record does not load");
+                automerge::AutoCommit::new()
+            }),
+            true,
+        ),
+        _ => (automerge::AutoCommit::new(), false),
     }
-    doc
 }
 
 impl Worker {
@@ -38,25 +46,32 @@ impl Worker {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
+        if !self.workspaces.contains_key(&workspace_id) {
+            return Err("the workspace was not joined".into());
+        }
+        // A record the host starts — a chain's first part, a report — has a
+        // channel of its own. The host device opens it and hands the session
+        // its keys, as it does for a record it opens, so the first change
+        // goes out sealed instead of waiting for keys nobody offers.
+        if self.channels_opened.insert(route.clone())
+            && let Some(keys) = self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.host_keys(route, false))
+        {
+            let keys = keys?;
+            self.workspaces
+                .get_mut(&workspace_id)
+                .ok_or("the workspace was not joined")?
+                .peer
+                .send(Cmd::InstallChannelKeys(route.clone(), keys))?;
+        }
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)
             .ok_or("the workspace was not joined")?;
-        workspace.peer.publish(route.clone(), mutation)?;
-        let bytes = bytes_of(mutation);
-        let digest = change_digest(&self.member.endpoint.host_cert.device_public_key, &bytes);
-        workspace.log.push((route.clone(), (digest, bytes)));
-        if let Some(mounted) = self.mounted.get_mut(route) {
-            mounted.seen.insert(digest);
-        } else if let Some(holder) = self.beside.get(route)
-            && let Some(mounted) = self.mounted.get_mut(holder)
-        {
-            mounted
-                .parts
-                .entry(route.clone())
-                .or_default()
-                .insert(digest);
-        }
+        workspace.peer.write(route.clone(), mutation)?;
         // The workspace holds the record by its index naming it, as a
         // window opening the record names it there.
         self.index_record(workspace_id, route);
@@ -90,12 +105,12 @@ impl Worker {
     /// workspace, when the index names it.
     pub(super) fn record_name(&self, workspace_id: u64, route: &DocumentRoute) -> Option<String> {
         let workspace = self.workspaces.get(&workspace_id)?;
-        let checkout = ui::record::identity(&document(&workspace.log, route))?;
+        let checkout = ui::record::identity(&document(&workspace.peer, route).0)?;
         let index = DocumentRoute {
             record: String::new(),
             ..route.clone()
         };
-        ui::record::index::name_of(&document(&workspace.log, &index), &checkout.id)
+        ui::record::index::name_of(&document(&workspace.peer, &index).0, &checkout.id)
     }
 
     /// Name the record at `route` in its app's index of the workspace,
@@ -127,7 +142,7 @@ impl Worker {
                 .workspaces
                 .get(&workspace_id)
                 .ok_or("the workspace was not joined")?;
-            document(&workspace.log, route)
+            document(&workspace.peer, route).0
         };
         let Some(checkout) = ui::record::identity(&record) else {
             return Ok(());
@@ -154,7 +169,7 @@ impl Worker {
         {
             workspace
                 .peer
-                .install_channel_keys(index_route.clone(), keys?)?;
+                .send(Cmd::InstallChannelKeys(index_route.clone(), keys?))?;
         }
         workspace
             .wait_for(
@@ -166,7 +181,7 @@ impl Worker {
                 link.as_deref(),
             )
             .map_err(|error| error.to_string())?;
-        let mut index = document(&workspace.log, &index_route);
+        let (mut index, held) = document(&workspace.peer, &index_route);
         let _ = index.save();
         let named = ui::record::index::reference(&mut index, &checkout.id, &checkout.kind);
         let renamed = name.is_some()
@@ -178,10 +193,16 @@ impl Worker {
         if change.is_empty() {
             return Ok(());
         }
-        self.commit(
-            workspace_id,
-            &index_route,
-            &DocumentMutation::Incremental(change),
-        )
+        // An index the workspace holds nothing of yet starts as the whole
+        // record: a reader holding none of it reads it from that, where a
+        // change alone would wait for a base no one sends.
+        let mutation = if held {
+            DocumentMutation::Incremental(change)
+        } else {
+            DocumentMutation::Snapshot(index.save())
+        };
+        // Durably: the next name is written over this one, read back from the
+        // session's replica.
+        self.commit_durably(workspace_id, &index_route, &mutation)
     }
 }

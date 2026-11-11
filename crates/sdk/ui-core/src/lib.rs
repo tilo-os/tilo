@@ -154,6 +154,8 @@ pub mod auth_backdrop;
 pub mod backdrop;
 pub mod call_pictures;
 pub mod caps_lock;
+/// Who the keyboard belongs to, which is who paints a caret.
+pub mod caret_owner;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
@@ -443,6 +445,9 @@ pub use local_state::{
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
+/// The one image codec: sniff, decode, encode and transform pixels, with the
+/// browser's own codecs on the web. Apps decode and encode only through it.
+pub use tilo_image_codec as image_codec;
 // What a session lends the windows it draws its content addresses with: a process that draws no
 // native window (`native` off) holds none.
 #[cfg(feature = "native")]
@@ -616,8 +621,6 @@ pub use widget::ParticipantPresence;
 
 pub mod application;
 pub mod application_view;
-#[cfg(not(target_arch = "wasm32"))]
-pub mod host_worker;
 pub mod invocation_scope;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native_scenario;

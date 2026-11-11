@@ -672,6 +672,14 @@ pub enum Envelope {
         #[serde(with = "serde_bytes")]
         signature: [u8; 64],
     },
+
+    /// This session's device only follows the channel groups it is in: it
+    /// never admits another device to one, as a page does. The host then
+    /// sends it no device's request to be admitted, which only a device that
+    /// admits others acts on; a newcomer to a workspace of hundreds would
+    /// download one per member. Said once, before the session subscribes,
+    /// and it stays for the session.
+    ChannelReader,
 }
 
 impl Envelope {
@@ -732,6 +740,7 @@ impl Envelope {
             Self::AgentRunStopped => "AgentRunStopped",
             Self::Entered(_) => "Entered",
             Self::HostSaid { .. } => "HostSaid",
+            Self::ChannelReader => "ChannelReader",
         }
     }
 
@@ -792,6 +801,7 @@ impl Envelope {
             | Self::AgentRunAnswer { .. }
             | Self::AgentRunStopped
             | Self::Entered(_)
+            | Self::ChannelReader
             | Self::FetchGrant { .. } => None,
         }
     }

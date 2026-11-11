@@ -8,10 +8,11 @@ use tilo_desktop_model::{
     DesktopTree, Strip, StripId, TabId, Workspace, WorkspaceId, WorkspaceSlot,
 };
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, Destination};
-use tilo_desktop_surface::{DesktopHandle, HostActionSource};
+use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
@@ -127,6 +128,9 @@ pub struct DesktopChrome {
     /// The desk's search palette, over the windows the desk draws: it is the one surface here that
     /// must cover a window in front, so the chrome draws it rather than the desk under them.
     search: SearchOverlay,
+    /// The desk's notifications, over its windows for the same reason: the centre, and the banners
+    /// where the host shows none of its own. `None` on a desk without notifications.
+    notices: Option<NotificationLayer>,
     /// Alt+Tab's panel, as the desk's walk last said what it shows.
     switcher: Switcher,
     /// The desktop's control hints, what this frame shows them, and the person's record as the
@@ -218,6 +222,7 @@ impl DesktopChrome {
         mac: bool,
     ) -> Self {
         let search = SearchOverlay::new(handle.clone());
+        let notices = handle.notifications().map(NotificationLayer::new);
         Self {
             bar,
             compact: Vec::new(),
@@ -256,6 +261,7 @@ impl DesktopChrome {
             answered: None,
             output: None,
             search,
+            notices,
             switcher: Switcher::default(),
             hints: ControlHints::new(ui::control_hints::Learned::default()),
             hints_frame: HintFrame::default(),
@@ -358,8 +364,11 @@ impl DesktopChrome {
             .map(HintsFeed::search_keys)
             .unwrap_or_default();
         let avatar = self.bar.own_avatar_rect();
+        let row = self.handle.hint_places();
+        let over = row.over.clone();
         HintFrame {
-            row: self.handle.hint_places(),
+            row,
+            over,
             area,
             search_keys,
             avatar: (!avatar.is_zero_area()).then_some(avatar),
@@ -447,13 +456,20 @@ impl DesktopChrome {
             .stands(Slot::WorkspaceMenu, self.workspace_menu.panel_rect());
         self.overlays
             .stands(Slot::TiloMenu, self.tilo_menu.menu_rect());
+        let centre = self.notices.as_ref().and_then(NotificationLayer::panel);
+        self.overlays.stands(Slot::Centre, centre);
+        self.overlays
+            .stands(Slot::WorkspaceName, self.bar.workspace_name_rect());
         for (slot, open) in [
             (Slot::Emoji, self.emoji.is_open()),
             (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
+            // The name typed in the bar holds the keyboard until Enter or Escape ends it.
+            (Slot::WorkspaceName, self.bar.renaming_workspace()),
             (Slot::TiloMenu, self.tilo_menu.is_open()),
             (Slot::Overview, self.overview.is_open()),
             (Slot::Strips, self.navigator.takes_keys()),
             (Slot::Search, self.search.is_open()),
+            (Slot::Centre, centre.is_some()),
         ] {
             // The stack took it down — a press outside it, another surface opening — and the widget
             // has yet to follow: what it still shows is the state being left behind, not an opening
@@ -493,6 +509,10 @@ impl DesktopChrome {
             self.workspace_menu.close();
             self.overlays.close(Slot::WorkspaceMenu);
         }
+        if self.bar.renaming_workspace() && !self.overlays.is_open(Slot::WorkspaceName) {
+            self.bar.cancel_workspace_rename();
+            self.overlays.close(Slot::WorkspaceName);
+        }
         if self.tilo_menu.is_menu_open() && !self.overlays.is_open(Slot::TiloMenu) {
             self.tilo_menu.toggle(Rect::ZERO, self.rect);
             self.overlays.close(Slot::TiloMenu);
@@ -504,6 +524,55 @@ impl DesktopChrome {
         if self.search.is_open() && !self.overlays.is_open(Slot::Search) {
             self.search.close();
             self.overlays.close(Slot::Search);
+        }
+        if let Some(notices) = self.notices.as_mut()
+            && notices.center_open()
+            && !self.overlays.is_open(Slot::Centre)
+        {
+            notices.set_center_open(false);
+            self.overlays.close(Slot::Centre);
+        }
+    }
+
+    /// Open or close the notification centre as the person last asked (the bell, a chord, a
+    /// verb), and stand it where the stack places it: under the bar's trailing end, as quick
+    /// settings stands. Whether it opened or closed.
+    fn follow_notices(&mut self) -> bool {
+        let fallback =
+            crate::overlays::place_on(self.rect, Slot::Centre.anchor(), Slot::Centre.size())
+                .map(|standing| standing.room);
+        let place = self
+            .overlays
+            .place(Slot::Centre)
+            .map(|standing| standing.room)
+            .or(fallback);
+        let Some(notices) = self.notices.as_mut() else {
+            return false;
+        };
+        if place.is_some() {
+            notices.set_place(place);
+        }
+        let asked = notices.notifications().take_centre_ask();
+        if let Some(open) = asked {
+            notices.set_center_open(open);
+        }
+        asked.is_some()
+    }
+
+    /// The notifications take what they cover, the keyboard while the centre is up, and the press
+    /// that dismisses it.
+    fn notices_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>, node: Option<NodeId>) {
+        if let (false, Some(layer), Some(node)) = (*ctx.handled, self.notices.as_mut(), node) {
+            layer.handle_event(event, &mut ctx.reborrow(ctx.path, node));
+        }
+    }
+
+    /// The node the notifications were laid out at among the chrome's children after search, and
+    /// the other displays' bars after it.
+    fn notices_node(laid_out: bool, rest: &[NodeId]) -> (Option<NodeId>, &[NodeId]) {
+        match (laid_out, rest) {
+            (true, [node, compact @ ..]) => (Some(*node), compact),
+            _ => (None, rest),
         }
     }
 
@@ -768,6 +837,13 @@ impl DesktopChrome {
                 }
             }
             ChromeIntent::ToggleOverview => self.toggle_overview(),
+            // The bell in the status cluster: the centre it counts is this layer's to open and
+            // close, where quick settings is the session's.
+            ChromeIntent::ToggleNotifications => {
+                if let Some(notices) = self.notices.as_ref() {
+                    notices.notifications().ask_centre(!notices.center_open());
+                }
+            }
             ChromeIntent::RenameWorkspace { name } => self.rename_workspace(name),
             ChromeIntent::LeaveWorkspace => {
                 if let Err(refusal) = self.leave_workspace(None) {
@@ -1032,6 +1108,7 @@ impl DesktopChrome {
             OverviewPick::RenameStrip { strip: id, name } => Some(ChromeEffect::Rename {
                 strip: Some(id.0.to_string()),
                 name: name.clone(),
+                tab: None,
                 group: None,
                 workspace: None,
             }),
@@ -1070,7 +1147,7 @@ impl DesktopChrome {
                 None
             }
             OverviewPick::AboutTilo => {
-                self.tilo_menu.show_about();
+                self.tilo_menu.set_about_open(true);
                 None
             }
             OverviewPick::Feedback => {
@@ -1840,6 +1917,14 @@ impl DesktopChrome {
                 }
                 ChromeIntent::ToggleTiloMenu
             }
+            // The About sheet, as the menu's own entry and the overview's About show it.
+            ChromeEffect::About { open } => {
+                let open = open.unwrap_or(!self.tilo_menu.is_about_open());
+                if self.tilo_menu.is_about_open() != open {
+                    self.tilo_menu.set_about_open(open);
+                }
+                return Ok(true);
+            }
             ChromeEffect::QuickSettings => ChromeIntent::ToggleQuickSettings,
             ChromeEffect::WorkspaceMenu => ChromeIntent::ToggleWorkspaceMenu { at: None },
             ChromeEffect::SwitchWorkspace {
@@ -2110,6 +2195,10 @@ impl Widget for DesktopChrome {
         }
         changed |= self.emoji.needs_redraw() || self.emoji.needs_animation_frame();
         changed |= self.search.update(state, path);
+        changed |= self.follow_notices();
+        if let Some(notices) = self.notices.as_mut() {
+            changed |= notices.update(state, path);
+        }
         changed |= self.switcher.needs_redraw();
         self.observe_navigation();
         self.publish_overlays();
@@ -2156,6 +2245,9 @@ impl Widget for DesktopChrome {
         let workspace_menu = self.workspace_menu.build_layout(taffy, theme, map);
         let search = self.search.build_layout(taffy, theme, map);
         let mut kids = vec![bar, content, overview, tilo_menu, workspace_menu, search];
+        if let Some(notices) = self.notices.as_mut() {
+            kids.push(notices.build_layout(taffy, theme, map));
+        }
         // Every other display's bar stands over its own display's top
         // edge, laid out across the desk: it takes no room in the column,
         // its place carrying it where its display is.
@@ -2200,6 +2292,10 @@ impl Widget for DesktopChrome {
         self.workspace_menu
             .apply_layout(taffy, *workspace_menu, inner);
         self.search.apply_layout(taffy, *search, inner);
+        let (notices, compact) = Self::notices_node(self.notices.is_some(), compact);
+        if let (Some(layer), Some(node)) = (self.notices.as_mut(), notices) {
+            layer.apply_layout(taffy, node, inner);
+        }
         for (bar, node) in self.compact.iter_mut().zip(compact) {
             bar.apply_layout(taffy, *node, inner);
         }
@@ -2223,21 +2319,34 @@ impl Widget for DesktopChrome {
             theme,
             ui::time::now(),
         );
-        self.overview.draw(scene, transform, text, theme, presence);
+        self.overview
+            .draw_child(scene, transform, text, theme, presence);
         for bar in &mut self.compact {
             if bar.presence() != TopBarPresence::Hidden {
-                bar.draw(scene, transform, text, theme, presence);
+                bar.draw_child(scene, transform, text, theme, presence);
             }
         }
         // Last, so what the bar opens below its band stays above the rest.
-        self.bar.draw(scene, transform, text, theme, presence);
+        self.bar.draw_child(scene, transform, text, theme, presence);
+        // The centre hangs under the bar's trailing end, over the windows.
+        if let Some(notices) = self.notices.as_mut() {
+            notices.draw_child(scene, transform, text, theme, presence);
+        }
         // Above all of it: the emoji picker is modal, the one thing the person works with until it
         // closes.
         if self.emoji.is_open() {
             self.emoji.advance_scroll();
-            ui::Widget::draw(&mut self.emoji, scene, transform, text, theme, presence);
-            self.emoji.mark_drawn();
+            ui::widget::DrawChild::draw_child(
+                &mut self.emoji,
+                scene,
+                transform,
+                text,
+                theme,
+                presence,
+            );
         }
+        // Drawn or not, the picker is as this frame shows it: one that closed is gone from it.
+        self.emoji.mark_drawn();
         // The desktop's own hints, above the windows and the bar they point at: the person learns
         // each control once, where it is done.
         self.hints_painted_before = self.hints.painted_rect();
@@ -2258,7 +2367,8 @@ impl Widget for DesktopChrome {
             .draw(&self.identify_displays, scene, transform, text, theme);
         // Topmost: the search palette dims what it stands over, a window in front included, and the
         // card over it.
-        self.search.draw(scene, transform, text, theme, presence);
+        self.search
+            .draw_child(scene, transform, text, theme, presence);
         // Above even search: Alt+Tab's panel, which is the walk the person is in the middle of and
         // the only thing a press reaches while it is up.
         let host = self.working_display().unwrap_or(self.rect);
@@ -2332,6 +2442,8 @@ impl Widget for DesktopChrome {
             self.tilo_menu
                 .handle_event(event, &mut ctx.reborrow(ctx.path, *tilo_menu));
         }
+        let (notices, compact) = Self::notices_node(self.notices.is_some(), compact);
+        self.notices_event(event, ctx, notices);
         if *ctx.handled {
             self.publish_overlays();
             return;
@@ -2383,6 +2495,7 @@ impl Widget for DesktopChrome {
             &self.workspace_menu,
             &self.search,
         ];
+        children.extend(self.notices.iter().map(|layer| layer as &dyn Widget));
         children.extend(self.compact.iter().map(|bar| bar as &dyn Widget));
         children
     }
@@ -2477,6 +2590,11 @@ impl Widget for DesktopChrome {
             &mut self.workspace_menu,
             &mut self.search,
         ];
+        children.extend(
+            self.notices
+                .iter_mut()
+                .map(|layer| layer as &mut dyn Widget),
+        );
         children.extend(self.compact.iter_mut().map(|bar| bar as &mut dyn Widget));
         children
     }
@@ -2533,6 +2651,7 @@ impl Widget for DesktopChrome {
             &self.search,
         ]
         .into_iter()
+        .chain(self.notices.iter().map(|layer| layer as &dyn Widget))
         .chain(self.compact.iter().map(|bar| bar as &dyn Widget))
         .filter_map(wake_deadline)
         .chain(

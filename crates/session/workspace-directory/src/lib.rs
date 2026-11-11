@@ -10,9 +10,9 @@
 //! [`Store::take`]), and answers with what the sites said
 //! ([`Store::answered`]) — never on the caller's loop.
 //!
-//! Joining one asks its door to admit a person ([`join`]) and verifies the
-//! invitation the door answers with for them: the workspace that invitation
-//! grants, and nothing the directory claims, is the workspace joined.
+//! Joining one enters it through its door ([`through_door`]), on the session
+//! the device opens with the door's host; a pasted invitation is verified for
+//! the person, and the workspace it grants is the workspace joined.
 //!
 //! Everything network-facing runs over [`tilo_net::Client`]: the desktop's
 //! connection pool, or a page's `fetch`. The person a join is made as, the
@@ -30,8 +30,9 @@ use tilo_relay_protocol::directory::{Activity, DirectoryEntry, DirectoryPage};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 
 pub use client::{
-    Granted, Person, SiteEntry, SiteWorkspace, client, fetch_directory, invited_workspace, join,
-    read_site, sealed_invitation, shelve, site_entry, verify_invitation, web_origin,
+    Granted, Person, SiteEntry, SiteWorkspace, Way, client, door_workspace, fetch_directory,
+    invited_workspace, read_site, sealed_invitation, shelve, site_entry, through_door,
+    verify_invitation, web_origin,
 };
 pub use store::{Joined, Shelved, Store, Wake};
 pub use view::Held;

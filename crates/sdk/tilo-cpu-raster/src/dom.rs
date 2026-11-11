@@ -22,7 +22,7 @@
 //! | `"cp"` | x, y, w, h, SVG clip path relative to x/y, opacity |
 //! | `"g"` | opacity (a group without a clip) |
 //! | `"s"` | x, y, w, h, radius, blur, colour (a shadow) |
-//! | `"i"` | x, y, w, h (an image, shown as a placeholder) |
+//! | `"i"` | x, y, w, h (the bounds it is clipped to), image id (or null), the image-to-device matrix a b c d e f, alpha |
 //! | `"e"` | end of the innermost clip or group |
 //! | `"k"` | key (16 hex digits), x, y, scale: what follows belongs to the widget the key names, which stands at x, y |
 //! | `"ke"` | end of the innermost key |
@@ -36,7 +36,7 @@ use std::fmt::Write as _;
 
 use skrifa::{FontRef, MetadataProvider, Tag};
 use vello_cpu::kurbo::{Affine, BezPath, PathEl, Point, Rect, Shape};
-use vello_cpu::peniko::{Fill, FontData};
+use vello_cpu::peniko::{Extend, Fill, FontData, Gradient, GradientKind};
 use vello_encoding::{Encoding, MarkKind};
 
 use crate::Stats;
@@ -56,10 +56,33 @@ pub struct NewFont {
     pub descent: f32,
 }
 
+/// An image the page has not been given yet: its pixels, straight (not
+/// premultiplied) RGBA, row by row, under the id its `"i"` operations name.
+pub struct NewImage {
+    pub id: u32,
+    pub width: u16,
+    pub height: u16,
+    pub rgba: Vec<u8>,
+}
+
+/// An image the page holds ([`DomEncoder::image_id`]).
+struct Shown {
+    pixmap: std::sync::Weak<vello_cpu::Pixmap>,
+    id: u32,
+    last: u64,
+}
+
+/// How many frames an image no frame showed is taken to be still on the
+/// page. The page's presenter keeps one for 600 (`web/dom-present.mjs`), so
+/// an image is handed over again before the page could have dropped it.
+const IMAGE_FRAMES: u64 = 500;
+
 /// What one [`DomEncoder::encode`] produced.
 pub struct DomFrame {
     pub ops: String,
     pub fonts: Vec<NewFont>,
+    /// Images the operations name for the first time.
+    pub images: Vec<NewImage>,
     pub texts: usize,
     pub draws: usize,
 }
@@ -80,12 +103,69 @@ pub struct DomEncoder {
     glyphs: GlyphCache,
     images: ImageCache,
     fonts: HashMap<(u64, u32), FontInfo>,
+    /// The page's id of each image it was given, by the pixmap's address,
+    /// with the pixmap held weakly so an address reused by a later image is
+    /// not taken for it, and the frame that last showed it.
+    shown: HashMap<usize, Shown>,
+    next_image: u32,
+    frame: u64,
 }
 
 impl DomEncoder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The page's id for `pixmap`, handing its pixels over the first time.
+    fn image_id(
+        shown: &mut HashMap<usize, Shown>,
+        next: &mut u32,
+        frame: u64,
+        pixmap: &std::sync::Arc<vello_cpu::Pixmap>,
+        images: &mut Vec<NewImage>,
+    ) -> u32 {
+        let address = std::sync::Arc::as_ptr(pixmap) as usize;
+        if let Some(held) = shown.get_mut(&address)
+            && held
+                .pixmap
+                .upgrade()
+                .is_some_and(|held| std::sync::Arc::ptr_eq(&held, pixmap))
+        {
+            held.last = frame;
+            return held.id;
+        }
+        let id = *next;
+        *next = next.wrapping_add(1);
+        shown.insert(
+            address,
+            Shown {
+                pixmap: std::sync::Arc::downgrade(pixmap),
+                id,
+                last: frame,
+            },
+        );
+        // A page's image data is straight alpha; the pixmap's premultiplied.
+        let mut rgba = pixmap.data_as_u8_slice().to_vec();
+        for pixel in rgba.chunks_exact_mut(4) {
+            if let [r, g, b, a] = pixel
+                && *a != 0
+                && *a != 255
+            {
+                let alpha = u16::from(*a);
+                for channel in [r, g, b] {
+                    *channel = u8::try_from((u16::from(*channel) * 255 + alpha / 2) / alpha)
+                        .unwrap_or(u8::MAX);
+                }
+            }
+        }
+        images.push(NewImage {
+            id,
+            width: pixmap.width(),
+            height: pixmap.height(),
+            rgba,
+        });
+        id
     }
 
     pub fn encode(&mut self, encoding: &Encoding) -> DomFrame {
@@ -96,6 +176,12 @@ impl DomEncoder {
         let mut marks = self.list.marks.iter().peekable();
         let mut out = String::with_capacity(self.list.ops.len() * 64);
         let mut fonts = Vec::new();
+        let mut images = Vec::new();
+        self.frame = self.frame.wrapping_add(1);
+        let frame = self.frame;
+        self.shown.retain(|_, held| {
+            held.pixmap.strong_count() > 0 && frame.saturating_sub(held.last) < IMAGE_FRAMES
+        });
         let mut texts = 0;
         out.push('[');
         let mut first = true;
@@ -119,7 +205,22 @@ impl DomEncoder {
                 } => {
                     let path = self.list.path(*path);
                     sep(&mut out);
-                    draw(&mut out, path, *transform, style, brush);
+                    if let Brush::Image(image, placed) = brush {
+                        let rect = transform.transform_rect_bbox(path.bounding_box());
+                        let id = match &image.image {
+                            vello_cpu::ImageSource::Pixmap(pixmap) => Some(Self::image_id(
+                                &mut self.shown,
+                                &mut self.next_image,
+                                self.frame,
+                                pixmap,
+                                &mut images,
+                            )),
+                            _ => None,
+                        };
+                        image_op(&mut out, rect, id, *placed, image.sampler.alpha);
+                    } else {
+                        draw(&mut out, path, *transform, style, brush);
+                    }
                 }
                 Op::Glyphs {
                     glyphs,
@@ -268,6 +369,7 @@ impl DomEncoder {
         DomFrame {
             ops: out,
             fonts,
+            images,
             texts,
             draws: self.list.ops.len(),
         }
@@ -289,22 +391,27 @@ fn mark(out: &mut String, kind: MarkKind) {
     }
 }
 
+/// An image drawn into `rect` (device pixels), the path's bounds: the page
+/// shows image `id` placed by `placed` (image pixels to device pixels) and
+/// clipped to the rect, at `alpha`. An image the page cannot be given (one
+/// the scene names only by a handle) has no id and shows as a placeholder.
+fn image_op(out: &mut String, rect: Rect, id: Option<u32>, placed: Affine, alpha: f32) {
+    let [a, b, c, d, e, f] = placed.as_coeffs();
+    let id = id.map_or_else(|| "null".to_owned(), |id| id.to_string());
+    let _ = write!(
+        out,
+        "[\"i\",{:.2},{:.2},{:.2},{:.2},{id},{a:.6},{b:.6},{c:.6},{d:.6},{e:.3},{f:.3},{alpha:.3}]",
+        rect.x0,
+        rect.y0,
+        rect.width(),
+        rect.height()
+    );
+}
+
 fn draw(out: &mut String, path: &BezPath, transform: Affine, style: &Style, brush: &Brush) {
-    if let Brush::Image(_, _) = brush {
-        let rect = transform.transform_rect_bbox(path.bounding_box());
-        let _ = write!(
-            out,
-            "[\"i\",{:.2},{:.2},{:.2},{:.2}]",
-            rect.x0,
-            rect.y0,
-            rect.width(),
-            rect.height()
-        );
-        return;
-    }
     if let Some((rect, radius)) = box_shape(path, transform) {
         let (fill, stroke, width) = match style {
-            Style::Fill(_) => (css_brush(brush), String::new(), 0.0),
+            Style::Fill(_) => (css_fill(brush, rect), String::new(), 0.0),
             Style::Stroke(stroke) => {
                 let scale = transform.determinant().abs().sqrt();
                 (String::new(), css_brush(brush), stroke.width * scale)
@@ -460,8 +567,97 @@ fn css(color: vello_cpu::color::AlphaColor<vello_cpu::color::Srgb>) -> String {
     )
 }
 
-/// A solid colour as CSS; a gradient as its first stop, which the prototype
-/// does not translate yet.
+/// The background of a box filling `rect` (device pixels) with `brush`: a
+/// gradient as the CSS gradient that paints the same pixels, laid out
+/// against the box; anything else as [`css_brush`].
+fn css_fill(brush: &Brush, rect: Rect) -> String {
+    if let Brush::Gradient(gradient, transform) = brush
+        && let Some(css) = css_gradient(gradient, *transform, rect)
+    {
+        return css;
+    }
+    css_brush(brush)
+}
+
+/// A gradient as CSS for a box at `rect`, or `None` for one CSS cannot show
+/// (a two-point radial gradient whose circles do not share a centre).
+fn css_gradient(gradient: &Gradient, transform: Affine, rect: Rect) -> Option<String> {
+    let repeat = !matches!(gradient.extend, Extend::Pad);
+    let stops = |position: &dyn Fn(f32) -> String| {
+        let mut out = String::new();
+        for stop in gradient.stops.iter() {
+            let color = css(stop.color.to_alpha_color::<vello_cpu::color::Srgb>());
+            let _ = write!(out, ",{color} {}", position(stop.offset));
+        }
+        out
+    };
+    let prefix = if repeat { "repeating-" } else { "" };
+    match &gradient.kind {
+        GradientKind::Linear(line) => {
+            // The ends are in device pixels already (`decode`).
+            let (start, end) = (transform * line.start, transform * line.end);
+            let d = end - start;
+            let length = d.hypot();
+            if length < 1e-6 {
+                return None;
+            }
+            let u = d / length;
+            // CSS runs the gradient through the box's centre, as long as the
+            // box is along its angle; map each stop onto that line.
+            let span = (rect.width() * u.x).abs() + (rect.height() * u.y).abs();
+            if span < 1e-6 {
+                return None;
+            }
+            let from = rect.center() - u * (span / 2.0);
+            let t0 = (from - start).dot(d) / (length * length);
+            let angle = u.x.atan2(-u.y).to_degrees();
+            let at =
+                |offset: f32| format!("{:.3}%", (f64::from(offset) - t0) * length / span * 100.0);
+            Some(format!(
+                "{prefix}linear-gradient({angle:.3}deg{})",
+                stops(&at)
+            ))
+        }
+        GradientKind::Radial(radial) => {
+            if (radial.start_center - radial.end_center).hypot() > 1e-3 {
+                return None;
+            }
+            let centre = transform * radial.end_center;
+            let scale = transform.determinant().abs().sqrt();
+            let (r0, r1) = (f64::from(radial.start_radius), f64::from(radial.end_radius));
+            let at = |offset: f32| format!("{:.3}px", (r0 + f64::from(offset) * (r1 - r0)) * scale);
+            Some(format!(
+                "{prefix}radial-gradient(circle {:.3}px at {:.3}px {:.3}px{})",
+                (r1 * scale).max(0.0),
+                centre.x - rect.x0,
+                centre.y - rect.y0,
+                stops(&at)
+            ))
+        }
+        GradientKind::Sweep(sweep) => {
+            let centre = transform * sweep.center;
+            let [a, b, ..] = transform.as_coeffs();
+            let turn = b.atan2(a).to_degrees();
+            let (start, end) = (
+                f64::from(sweep.start_angle).to_degrees(),
+                f64::from(sweep.end_angle).to_degrees(),
+            );
+            // CSS measures from the top, clockwise; peniko from +x, clockwise
+            // with y down.
+            let at = |offset: f32| format!("{:.3}deg", f64::from(offset) * (end - start));
+            Some(format!(
+                "{prefix}conic-gradient(from {:.3}deg at {:.3}px {:.3}px{})",
+                start + turn + 90.0,
+                centre.x - rect.x0,
+                centre.y - rect.y0,
+                stops(&at)
+            ))
+        }
+    }
+}
+
+/// A solid colour as CSS; a gradient as its first stop, where it colours a
+/// stroke, a path or text.
 fn css_brush(brush: &Brush) -> String {
     match brush {
         Brush::Solid(color) => css(*color),
@@ -521,5 +717,39 @@ fn font_info(font: &FontData) -> FontInfo {
         ascent,
         descent,
         axes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vello_cpu::color::palette::css::{BLACK, WHITE};
+
+    #[test]
+    fn a_linear_gradient_across_a_box_is_the_same_css_gradient() {
+        let rect = Rect::new(10.0, 20.0, 110.0, 70.0);
+        // Left edge to right edge: CSS's own line for 90deg.
+        let gradient = Gradient::new_linear((10.0, 20.0), (110.0, 20.0)).with_stops([BLACK, WHITE]);
+        assert_eq!(
+            css_gradient(&gradient, Affine::IDENTITY, rect).unwrap(),
+            "linear-gradient(90.000deg,rgba(0,0,0,1.000) 0.000%,rgba(255,255,255,1.000) 100.000%)"
+        );
+        // From the box's centre to its bottom edge: the stops land half way
+        // down CSS's line, which runs top to bottom.
+        let gradient = Gradient::new_linear((60.0, 45.0), (60.0, 70.0)).with_stops([BLACK, WHITE]);
+        assert_eq!(
+            css_gradient(&gradient, Affine::IDENTITY, rect).unwrap(),
+            "linear-gradient(180.000deg,rgba(0,0,0,1.000) 50.000%,rgba(255,255,255,1.000) 100.000%)"
+        );
+    }
+
+    #[test]
+    fn a_radial_gradient_is_a_circle_at_its_centre_in_the_box() {
+        let rect = Rect::new(0.0, 0.0, 40.0, 40.0);
+        let gradient = Gradient::new_radial((20.0, 20.0), 10.0).with_stops([BLACK, WHITE]);
+        assert_eq!(
+            css_gradient(&gradient, Affine::translate((5.0, 5.0)), rect).unwrap(),
+            "radial-gradient(circle 10.000px at 25.000px 25.000px,rgba(0,0,0,1.000) 0.000px,rgba(255,255,255,1.000) 10.000px)"
+        );
     }
 }

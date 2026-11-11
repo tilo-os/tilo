@@ -7,7 +7,8 @@ compose="$root/compose.yaml"
 readme="$root/README.md"
 entrypoint="$root/tilo-agent-mcp"
 containerfile="$root/Containerfile"
-dockerignore="$root/Containerfile.dockerignore"
+build="$root/../../../tools/ci/publish/agent-host-build.sh"
+binaries="$root/../../../tools/ci/publish/server-binaries.sh"
 arch_doc="$root/../../../docs/architecture/agent-host.md"
 relay_readme="$root/../tilo-relay/README.md"
 
@@ -15,7 +16,7 @@ fail() { echo "tilo-agent-host contract: FAIL: $*" >&2; exit 1; }
 need() { grep -Fq -- "$2" "$1" || fail "$(basename "$1") lacks: $2"; }
 forbid() { if grep -Fq -- "$2" "$1"; then fail "$(basename "$1") must not contain: $2"; fi; }
 
-for path in "$compose" "$readme" "$entrypoint" "$containerfile" "$dockerignore" "$arch_doc" "$relay_readme"; do
+for path in "$compose" "$readme" "$entrypoint" "$containerfile" "$build" "$binaries" "$arch_doc" "$relay_readme"; do
   [ -f "$path" ] || fail "missing ${path#"$root/../../../"}"
 done
 
@@ -48,17 +49,25 @@ need "$entrypoint" "TILO_RUNTIME_MCP_HTTP"
 need "$entrypoint" "tilo-runtime --profile"
 need "$entrypoint" "127.0.0.1"
 
-# Image builds runtime + enroll only (no compositor).
-need "$containerfile" "cargo build --locked --release -p tilo-runtime -p tilo-relay"
-need "$containerfile" "--bin tilo-runtime --bin tilo-enroll"
+# Image builds runtime + enroll only (no compositor), from programs t built: nothing in the image
+# compiles.
+need "$containerfile" "COPY bin/tilo-runtime /usr/bin/tilo-runtime"
+need "$containerfile" "COPY bin/tilo-enroll /usr/libexec/tilo/tilo-enroll"
+forbid "$containerfile" "cargo build"
+forbid "$containerfile" "--mount=type=cache"
+forbid "$containerfile" "sccache"
 need "$containerfile" 'ENTRYPOINT ["/usr/bin/tilo-agent-mcp"]'
 need "$containerfile" "tilo-agent-mcp"
 forbid "$containerfile" "wayland"
 forbid "$containerfile" "compositor"
 
-for excluded in .git .forgejo target os/output; do
-  grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"
-done
+# One check builds them, its own so the relay image's key does not move with the runtime's crates.
+need "$binaries" "packages=(-p tilo-runtime -p tilo-relay --bin tilo-runtime --bin tilo-enroll)"
+need "$binaries" "bins=(tilo-runtime tilo-enroll)"
+need "$build" 'for bin in tilo-runtime tilo-enroll; do'
+need "$build" 'cp "$binaries/tilo-runtime" "$binaries/tilo-enroll" "$context/bin/"'
+need "$build" 'cp os/containers/tilo-agent-host/tilo-agent-mcp "$context/os/containers/tilo-agent-host/"'
+need "$build" '--build-arg "RPMS_REF=$rpms_ref"'
 
 # Entrypoint is executable in the tree.
 [ -x "$entrypoint" ] || fail "tilo-agent-mcp is not executable"

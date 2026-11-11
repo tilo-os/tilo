@@ -150,7 +150,7 @@ impl Site {
                 .expect("the site's device is in its workspace");
             (relay, workspaces, workspace)
         });
-        let door = door_responder(&runtime, &workspaces, &workspace, name);
+        let door = door_responder(&workspace, name);
         let entry = format!("{}/", door.url());
         Self {
             runtime,
@@ -205,9 +205,9 @@ impl Site {
             .expect("the workspace is published");
     }
 
-    /// Admit `person` at the site's door, as the person themselves asks it:
-    /// the HTTP POST their own join makes, answered by the site's door with an
-    /// invitation only they can redeem.
+    /// Admit `person` at the site's door, as their own entry through it asks
+    /// it, and answer the invitation the door lets them in with: one only
+    /// they can redeem.
     ///
     /// # Panics
     ///
@@ -225,30 +225,19 @@ impl Site {
     ///
     /// What the door said, when it says no.
     pub fn try_admit(&self, person: [u8; 32]) -> Result<Invitation, String> {
-        let client = tilo_net::http::blocking_client()
-            .connect_timeout(Duration::from_secs(10))
-            .build()
-            .expect("a client for the site");
-        let answer = client
-            .post(format!("{}{}join", self.entry, door_path(&self.workspace)))
-            .json(&json!({
-                "userPublicKey": hex::encode(person),
-                "displayName": "Someone",
-            }))
-            .send()
-            .expect("the site's door answers");
-        let status = answer.status();
-        let bytes = answer.bytes().expect("the door's answer");
-        if !status.is_success() {
-            let refusal = serde_json::from_slice::<Value>(&bytes)
-                .ok()
-                .and_then(|refusal| refusal["error"].as_str().map(str::to_owned))
-                .unwrap_or_else(|| String::from_utf8_lossy(&bytes).into_owned());
-            return Err(refusal);
-        }
-        let answer: tilo_relay_protocol::directory::DoorAnswer =
-            serde_json::from_slice(&bytes).expect("a door's answer");
-        Ok(answer.invitation)
+        let (issued, _token) = self
+            .runtime
+            .block_on(self.workspaces.admit_listed(
+                &self.workspace,
+                &DoorJoin {
+                    user_public_key: hex::encode(person),
+                    display_name: "Someone".to_owned(),
+                },
+            ))
+            .map_err(|refusal| refusal.to_string())?;
+        Ok(tilo_workspace_join::encode_invitation_text(
+            &issued.signed_invitation,
+        ))
     }
 
     /// Make `person` one of the workspace's `role` , as its owner does: a moderator invites and
@@ -741,24 +730,15 @@ fn share_the_fleet(person: &Person, devices: &[&Device]) {
     }
 }
 
-/// The door a site serves: its entry, the directory of what it lists, and the door of the workspace
-/// it governs, which admits a person the workspace is public to — the same handlers the production
-/// door answers with (`tilo_relay::web`).
-fn door_responder(
-    runtime: &tokio::runtime::Runtime,
-    workspaces: &tilo_relay::workspaces::Workspaces,
-    workspace: &str,
-    name: &str,
-) -> Responder {
+/// What a site serves: its entry and the directory of what it lists. The door itself is the
+/// workspace's host's, which a device enters through on its session with the host
+/// ([`Site::admit`] asks it as that entry does).
+fn door_responder(workspace: &str, name: &str) -> Responder {
     let origin = Arc::new(Mutex::new(String::new()));
     let served_origin = Arc::clone(&origin);
-    let workspaces = workspaces.clone();
     let workspace_answered = workspace.to_owned();
     let listed = workspace.to_owned();
     let page_name = name.to_owned();
-    let door = workspace.to_owned();
-    let behind = format!("/directory/{workspace}/join");
-    let answer = runtime.handle().clone();
     let responder = Responder::handle(move |request| {
         let json = |body: String| {
             Some(
@@ -774,7 +754,7 @@ fn door_responder(
                     "home": {
                         "name": page_name,
                         "host": { "origin": served_origin.lock().expect("the site's origin").clone() },
-                        "admission": "door/",
+                        "admission": format!("door/directory/{workspace_answered}/"),
                     },
                 })
                 .to_string(),
@@ -796,38 +776,6 @@ fn door_responder(
                     }] })
                     .to_string(),
                 )
-            }
-            ("POST", asked) if asked == behind || asked == "/door/join" => {
-                let Ok(join) = serde_json::from_slice::<DoorJoin>(&request.body) else {
-                    return Some(Reply::status(400));
-                };
-                let admitted = answer.block_on(
-                    workspaces.admit_listed(&door, &join),
-                );
-                match admitted {
-                    Ok((issued, token)) => json(
-                        json!({
-                            "invitation": tilo_workspace_join::encode_invitation_text(
-                                &issued.signed_invitation
-                            ),
-                            "admissionToken": token,
-                        })
-                        .to_string(),
-                    ),
-                    Err(tilo_relay::workspaces::DoorRefusal::Full { retry_after_secs }) => Some(
-                        Reply::status(503).header("retry-after", &retry_after_secs.to_string()),
-                    ),
-                    Err(
-                        refusal @ (tilo_relay::workspaces::DoorRefusal::Refused(_)
-                        | tilo_relay::workspaces::DoorRefusal::Banned
-                        | tilo_relay::workspaces::DoorRefusal::Removed
-                        | tilo_relay::workspaces::DoorRefusal::InvitationOnly),
-                    ) => Some(
-                        Reply::status(403)
-                            .header("content-type", "application/json")
-                            .body(json!({ "error": refusal.to_string() }).to_string()),
-                    ),
-                }
             }
             _ => Some(Reply::status(404)),
         }

@@ -32,7 +32,7 @@ use crate::model::{
     Attendee, Calendar, Event, InviteStatus, Palette, Project, RemoteCopy, Removal, Upload, key,
 };
 
-ui::embedded_catalog!(pub(crate) fn, ["en-US"]);
+ui::embedded_catalog!(pub(crate) fn, ["de-DE", "en-US"]);
 
 /// The most items one import or one task delete takes.
 pub(crate) const MAX_ITEMS_PER_ACTION: usize = 4096;
@@ -896,6 +896,12 @@ pub(crate) fn notes_path(id: crate::model::Id) -> tilo_resource::Path<Calendar, 
     Calendar::paths().notes.key(id.to_string())
 }
 
+/// The resource the notes of the event or task `id` are published as, beside
+/// the calendar.
+pub(crate) fn notes_resource_id(id: &crate::model::Id) -> String {
+    tilo_resource::child_resource_id::<Calendar>(&format!("notes:{id}"))
+}
+
 /// The dispatcher of the notes of the event or task `id`: each edit of
 /// them is the calendar's field edit at their path.
 pub(crate) fn notes_dispatcher(
@@ -903,15 +909,12 @@ pub(crate) fn notes_dispatcher(
     id: crate::model::Id,
 ) -> Dispatcher<RichText> {
     let notes = notes_path(id);
-    calendar.child::<RichText>(
-        &tilo_resource::child_resource_id::<Calendar>(&format!("notes:{id}")),
-        move |op| tilo_resource::Stamped {
-            operation: CalendarAction::FieldEdit(notes.edit(tilo_resource::EditOp::Rich {
-                rich: serde_json::to_value(&op).unwrap_or_default(),
-            })),
-            now_ms: 0,
-        },
-    )
+    calendar.child::<RichText>(&notes_resource_id(&id), move |op| tilo_resource::Stamped {
+        operation: CalendarAction::FieldEdit(notes.edit(tilo_resource::EditOp::Rich {
+            rich: serde_json::to_value(&op).unwrap_or_default(),
+        })),
+        now_ms: 0,
+    })
 }
 
 /// The calendar's work outside its document: talking to the servers of the
@@ -1456,5 +1459,25 @@ mod agent_disclosure_tests {
         {
             panic!("{failures}");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("calendar-view-month"), "Monat");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("calendar-view-month"), "Month");
     }
 }

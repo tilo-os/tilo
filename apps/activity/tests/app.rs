@@ -71,6 +71,9 @@ fn every_scenario_shows_its_place_built_from_components() {
         for target in targets {
             assert!(shows(&mut app, target), "{scenario} shows {target}");
         }
+        // Facts are parts of a row, never joined with a glyph: where the
+        // person left off names its app and its time apart.
+        assert!(!says(&mut app, "·"), "{scenario} joins facts with a dot");
     }
 }
 
@@ -281,22 +284,36 @@ fn a_view_asked_for_outside_opens_that_place() {
     read(&requests, wire::FOCUSED);
 }
 
-/// Whether the window bar offers "Mark as viewed" as an action to take.
+/// Whether the window offers "Mark as viewed" as an action to take: its button stands in the
+/// header row of the column it acts on, the window's bar hosting the window or not.
 fn mark_viewed_offered(scenario: &str) -> bool {
+    fn find(node: &ui::headless::InspectionNode) -> Option<&ui::headless::InspectionNode> {
+        if node.test_id.as_deref() == Some("activity-mark-viewed") {
+            return Some(node);
+        }
+        node.children.iter().find_map(find)
+    }
     let mut app = TestApp::<App>::capture(Some(scenario)).expect("capture");
     app.harness().present_in_window_bar();
     let _ = app.harness().poll_frame();
     let _ = app.harness().poll_frame();
-    let bar = ui::window_toolbar::declared().expect("the shell declares the window's slots");
-    let mark = bar
-        .actions
-        .iter()
-        .find(|action| action.id == "activity-mark-viewed")
-        .expect("the bar holds Mark as viewed");
-    mark.enabled
+    assert!(
+        ui::window_toolbar::declared().is_none(),
+        "the bar holds only what is the window's"
+    );
+    let inspection = app.harness().inspection();
+    let mark = find(&inspection.root).expect("the header row holds Mark as viewed");
+    assert!(
+        mark.rect[2] > 0.0,
+        "Mark as viewed stands where it is reached"
+    );
+    !mark
+        .semantics
+        .as_ref()
+        .is_some_and(|access| access.state.disabled)
 }
 
-/// The bar's Mark as viewed acts while there is something new, and is
+/// Mark as viewed acts while there is something new, and is
 /// disabled once What's new is caught up.
 #[test]
 fn mark_as_viewed_is_offered_only_while_there_is_something_new() {

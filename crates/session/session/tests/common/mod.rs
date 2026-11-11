@@ -244,14 +244,19 @@ pub fn on_screen_at(
     width: i32,
     height: i32,
 ) -> Option<(f64, f64, f64, f64)> {
-    session.shell_control(name).filter(|&(x, y, w, h)| {
-        w > 0.0
-            && h > 0.0
-            && x + w > 0.0
-            && y + h > 0.0
-            && x < f64::from(width)
-            && y < f64::from(height)
-    })
+    session
+        .shell_control(name)
+        .filter(|&rect| on_display(rect, width, height))
+}
+
+/// Whether any of the rectangle `(x, y, w, h)` stands on a display `width` by `height`.
+pub fn on_display((x, y, w, h): (f64, f64, f64, f64), width: i32, height: i32) -> bool {
+    w > 0.0
+        && h > 0.0
+        && x + w > 0.0
+        && y + h > 0.0
+        && x < f64::from(width)
+        && y < f64::from(height)
 }
 
 /// Press the shell's control named `name` on the standard display with the pointer, as the person
@@ -263,25 +268,35 @@ pub fn press(session: &mut Session, name: &str) {
 /// Press the shell's control named `name` on a display `width` by `height` with the pointer, as the
 /// person does.
 pub fn press_at(session: &mut Session, name: &str, width: i32, height: i32) {
+    press_where(session, &format!("the shell's {name}"), |session| {
+        on_screen_at(session, name, width, height)
+    });
+}
+
+/// Press with the pointer, as the person does, the control `find` answers where it stands: one a
+/// name alone does not single out, so the test says which of the controls by that name it means (a
+/// window's menu is named for its window, as its frame is). `what` names it when it never stands.
+#[track_caller]
+pub fn press_where(
+    session: &mut Session,
+    what: &str,
+    find: impl Fn(&Session) -> Option<(f64, f64, f64, f64)>,
+) {
     // The press lands where the control is drawn once it stood still across two frames. A surface
     // still arriving moves its controls from one frame to the next, and a press aimed at a place a
     // control has left misses it: the person waits for the menu to be there, and so does the test.
-    let (x, y, w, h) = wait_for(
-        session,
-        format!("the shell's {name} to stand still"),
-        |session| {
-            let mut place = on_screen_at(session, name, width, height)?;
-            for _ in 0..2 {
-                session.step(Duration::from_millis(16)).expect("step");
-                let next = on_screen_at(session, name, width, height)?;
-                if next != place {
-                    return None;
-                }
-                place = next;
+    let (x, y, w, h) = wait_for(session, format!("{what} to stand still"), |session| {
+        let mut place = find(session)?;
+        for _ in 0..2 {
+            session.step(Duration::from_millis(16)).expect("step");
+            let next = find(session)?;
+            if next != place {
+                return None;
             }
-            Some(place)
-        },
-    );
+            place = next;
+        }
+        Some(place)
+    });
     let (x, y) = (x + w / 2.0, y + h / 2.0);
     session
         .compositor()
@@ -402,8 +417,14 @@ pub fn show_preset(session: &mut Session, preset: &str) {
 /// and a note in it for each of `titles`, made through the app's own actions: their ids, in
 /// order.
 pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
+    notebook_of(PERSON, titles)
+}
+
+/// [`notebook`] as kept by `person`, whom the notes are theirs and every step of it is theirs:
+/// the id a session acts as on a device that has an identity of its own.
+pub fn notebook_of(person: &str, titles: &[&str]) -> (RecordService, Vec<String>) {
     let mut record = tilo_resource::Doc::new();
-    let host = Host::new(&record, Principal::new(PERSON), || None).unwrap();
+    let host = Host::new(&record, Principal::new(person), || None).unwrap();
     host.load_builtin(
         include_str!("../../../../../apps/tl/discussion/app.tl"),
         include_str!("../../../../../apps/tl/discussion/app.ids"),
@@ -420,13 +441,13 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
         let action = &committed.action;
         let context =
             ui::tilo_actions::ActionContext::for_resource("workspace", &action.kind, &action.kind)
-                .with_invoker(ui::tilo_actions::ActionInvoker::actor(PERSON));
+                .with_invoker(ui::tilo_actions::ActionInvoker::actor(person));
         host.with_schemas(|| {
             ui::tilo_actions::apply_local_with_context(
                 &mut record,
                 action,
                 action.encode().unwrap(),
-                Some(PERSON.as_bytes()),
+                Some(person.as_bytes()),
                 context,
             )
         })
@@ -444,7 +465,7 @@ pub fn notebook(titles: &[&str]) -> (RecordService, Vec<String>) {
             .id
             .clone()
     };
-    let mut service = RecordService::new(record, host, PERSON);
+    let mut service = RecordService::new(record, host, person);
     let book = service
         .resources()
         .into_iter()

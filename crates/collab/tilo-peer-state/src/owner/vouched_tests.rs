@@ -158,3 +158,58 @@ fn a_member_introduces_itself_and_an_unlisted_device_does_not() {
         "the workspace's roster lists who it admits"
     );
 }
+
+/// A durable receipt is the workspace host's assertion: its generation counts the
+/// workspace's commits, and it names the exact coverage that generation made
+/// durable. A member's catch-up publishes its snapshots alone — each device's own
+/// generation is a private count, so two devices stamping the same workspace's
+/// receipts would leave every member with a set no other member can merge, and
+/// their link would end refusing the other's state.
+#[test]
+fn a_members_catch_up_leaves_the_workspaces_durable_receipts_to_its_host() {
+    let held = vouched();
+    let receipts = |held: &Vouched| {
+        held.owner
+            .with_current(held.workspace, |view| {
+                let workspace = view
+                    .peer()
+                    .admitted_workspace()
+                    .ok_or("the workspace's governance is missing")?;
+                crate::durability::entries(workspace)
+            })
+            .expect("the workspace's durable receipts")
+    };
+    let before = receipts(&held);
+    assert!(
+        !before.is_empty(),
+        "the workspace's host published its receipts"
+    );
+    let generation = held
+        .owner
+        .with_current(held.workspace, |view| Ok(view.generation()))
+        .expect("the workspace's record");
+    let messages = held
+        .owner
+        .commit_bootstrap(
+            held.workspace,
+            &crate::owner::testing::member_key(),
+            held.now,
+        )
+        .expect("the member publishes its snapshots");
+    assert!(
+        !messages.is_empty(),
+        "the member's catch-up carries its snapshots"
+    );
+    assert_eq!(
+        receipts(&held),
+        before,
+        "a member's catch-up leaves the workspace's durable receipts to its host"
+    );
+    assert!(
+        held.owner
+            .with_current(held.workspace, |view| Ok(view.generation()))
+            .expect("the workspace's record")
+            > generation,
+        "the member's catch-up is still its own commit"
+    );
+}

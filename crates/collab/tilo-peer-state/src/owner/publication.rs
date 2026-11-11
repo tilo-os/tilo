@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use web_time::SystemTime;
 
 /// A key holder sealing a record's merged history — `seal(app, record,
@@ -18,6 +18,9 @@ pub type SealRecord<'a> =
     dyn FnMut(&str, &str, &[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
 
 pub(crate) const MAX_ENTRIES: usize = 64;
+/// What a commit is refused with while this device's custody holds as many writes as it
+/// keeps: it may commit again once the host answered some of them.
+pub const CUSTODY_FULL: &str = "native outgoing capacity exceeded; existing edits retained";
 pub(crate) const MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_VISIBLE_ENTRIES: usize = MAX_ENTRIES + 1;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -39,6 +42,38 @@ pub(crate) struct StoredPublication {
     pub(crate) projection: Vec<StoredOutgoing>,
     #[serde(default, deserialize_with = "read_entries")]
     governance: Vec<StoredOutgoing>,
+    /// What the workspace's relay host answered to this device's writes, per record.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    answered: Vec<AnsweredRecord>,
+}
+/// The relay host's answers to this device's writes to one record, kept with the custody they
+/// left.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct AnsweredRecord {
+    app: String,
+    record: String,
+    durable: u64,
+    refused: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_order: Option<u64>,
+}
+/// What a workspace's relay host answered to one of this device's writes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostAnswer {
+    /// Kept durably, at this place in the host's order.
+    Durable(u64),
+    /// Refused: it never becomes durable.
+    Refused,
+}
+/// This device's writes to one record: those still in its custody, and what the workspace's
+/// relay host answered to the others.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecordWrites {
+    pub pending: usize,
+    pub durable: u64,
+    pub refused: u64,
+    /// The host's order of the latest write it kept.
+    pub last_order: Option<u64>,
 }
 impl Default for StoredPublication {
     fn default() -> Self {
@@ -49,6 +84,7 @@ impl Default for StoredPublication {
             entries: Vec::new(),
             projection: Vec::new(),
             governance: Vec::new(),
+            answered: Vec::new(),
         }
     }
 }
@@ -463,7 +499,7 @@ fn reserve(view: &record::StoredWorkspace, bytes: &[u8]) -> Result<(), String> {
             .checked_add(bytes.len())
             .is_none_or(|size| size > MAX_BYTES)
     {
-        return Err("native outgoing capacity exceeded; existing edits retained".into());
+        return Err(CUSTODY_FULL.into());
     }
     Ok(())
 }
@@ -719,7 +755,7 @@ pub(crate) fn append_local(
     view: &mut record::StoredWorkspace,
     bytes: Vec<u8>,
 ) -> Result<(), String> {
-    if view.device != view.workspace_host {
+    if !view.hosted_here() {
         return append(view, bytes);
     }
     // The workspace's own device is its keeper: what it admits is already
@@ -926,6 +962,38 @@ pub(crate) fn exact_replay_unchanged(
     Ok(true)
 }
 
+impl StoredPublication {
+    /// Count `answer` toward the writes to `app`'s `record`.
+    fn answer(&mut self, app: &str, record: &str, answer: HostAnswer) {
+        if !self
+            .answered
+            .iter()
+            .any(|held| held.app == app && held.record == record)
+        {
+            self.answered.push(AnsweredRecord {
+                app: app.to_owned(),
+                record: record.to_owned(),
+                durable: 0,
+                refused: 0,
+                last_order: None,
+            });
+        }
+        let Some(held) = self
+            .answered
+            .iter_mut()
+            .find(|held| held.app == app && held.record == record)
+        else {
+            return;
+        };
+        match answer {
+            HostAnswer::Durable(order) => {
+                held.durable = held.durable.saturating_add(1);
+                held.last_order = Some(order);
+            }
+            HostAnswer::Refused => held.refused = held.refused.saturating_add(1),
+        }
+    }
+}
 pub(crate) fn retire(live: &StatePeer, view: &mut record::StoredWorkspace) -> Result<bool, String> {
     let publication = state_of(view)?;
     let mut remove = BTreeSet::new();
@@ -979,6 +1047,17 @@ impl NativeWorkspaceOwner {
             )
         })
     }
+    /// How many more writes, and how many more bytes of them, this device's
+    /// outgoing custody of `workspace` takes before it is full.
+    pub fn custody_room(&self, workspace: WorkspaceId) -> Result<(usize, usize), String> {
+        self.with_current(workspace, |view| {
+            let publication = state(view)?;
+            Ok((
+                MAX_ENTRIES.saturating_sub(publication.entries.len()),
+                MAX_BYTES.saturating_sub(bounds(publication)?),
+            ))
+        })
+    }
     /// How many of this device's committed writes to `workspace` are still in
     /// its outgoing custody: not yet admitted by the workspace's governor.
     pub fn unadmitted_writes(&self, workspace: WorkspaceId) -> Result<usize, String> {
@@ -991,6 +1070,54 @@ impl NativeWorkspaceOwner {
         now: SystemTime,
     ) -> Result<NativeOutgoingStatus, String> {
         self.with_current(workspace, |view| status(view, now))
+    }
+    /// The workspace's governance and a signed snapshot of each record, for a
+    /// link's catch-up of `workspace`, committed as this device's write. The
+    /// snapshots are signed with `key`, this device's key, and take numbers
+    /// of its own sequence: signed in the live replica alone, they left the
+    /// durable view behind it, and the device's next commit, numbered from
+    /// that view, took a number a snapshot already held. Committed, they are
+    /// as durable as the replica, and a restart reuses no number a member
+    /// already holds.
+    ///
+    /// A durable receipt is the governor's assertion about the workspace, and
+    /// its generation is the workspace's: only a device that hosts this
+    /// workspace writes one, as its own commits do elsewhere
+    /// ([`super::effect_receipt`]). Every other device of the workspace's
+    /// person publishes the snapshots alone: their generations are each
+    /// device's own count, and two of them stamping the same receipts would
+    /// leave every member with a receipt no other member can merge.
+    ///
+    /// # Errors
+    /// The workspace is not held here, `key` is not this device's, or the
+    /// commit failed.
+    pub fn commit_bootstrap(
+        &self,
+        workspace: WorkspaceId,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<Vec<NeighbourMsg>, String> {
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        if key.verifying_key().to_bytes() != candidate.device().device_public_key {
+            return Err("native bootstrap signer differs from selected device".into());
+        }
+        let (messages, stored) = candidate.change(|live, stored| {
+            let generation = stored
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            let messages = if stored.hosted_here() {
+                live.publication_mut()
+                    .durable_bootstrap_messages(key, now, generation)?
+            } else {
+                live.publication_mut().bootstrap_messages(key, now)?
+            };
+            stored.generation = generation;
+            Ok(messages)
+        })?;
+        self.publish_record(workspace, &candidate, stored, None)?;
+        Ok(messages)
     }
     /// Retire every retained frame the workspace has refused or a durable
     /// receipt names, and commit the retirement.
@@ -1011,6 +1138,102 @@ impl NativeWorkspaceOwner {
             .checked_add(1)
             .ok_or("native owner generation exhausted")?;
         self.publish_record(workspace, &candidate, record, None)
+    }
+    /// Retire the custody entries `answers` names, which the workspace's relay host answered:
+    /// a relay host acknowledges each commit, durable or refused, rather than receipting it in
+    /// the workspace's governance, and an answered entry is never sent again. Each answer
+    /// counts toward its record's [`RecordWrites`], and a refused write leaves this device's
+    /// replica as well: the workspace never holds it, so neither does this device.
+    ///
+    /// # Errors
+    /// The workspace is not held here, or the retirement could not be committed.
+    pub fn retire_answered(
+        &self,
+        workspace: WorkspaceId,
+        answers: &BTreeMap<[u8; 32], HostAnswer>,
+    ) -> Result<(), String> {
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let (changed, mut record) = candidate.change(|live, record| {
+            let publication = record.publication.as_mut().ok_or("publication absent")?;
+            let (answered, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut publication.entries)
+                .into_iter()
+                .partition(|entry| answers.contains_key(&entry.id));
+            publication.entries = kept;
+            if answered.is_empty() {
+                return Ok(false);
+            }
+            for entry in answered {
+                // ignored-failure: custody holds governance entries too, which belong to no record
+                let Ok(NeighbourMsg::AppDocument {
+                    app_id,
+                    record_id,
+                    envelope,
+                    ..
+                }) = postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
+                else {
+                    continue;
+                };
+                let answer = answers
+                    .get(&entry.id)
+                    .copied()
+                    .unwrap_or(HostAnswer::Refused);
+                if answer == HostAnswer::Refused {
+                    live.withdraw_local_document(&app_id, &record_id, &envelope)?;
+                }
+                publication.answer(&app_id, &record_id, answer);
+            }
+            publication.revision = publication
+                .revision
+                .checked_add(1)
+                .ok_or("native publication revision exhausted")?;
+            Ok(true)
+        })?;
+        if !changed {
+            return Ok(());
+        }
+        record.generation = record
+            .generation
+            .checked_add(1)
+            .ok_or("native owner generation exhausted")?;
+        self.publish_record(workspace, &candidate, record, None)
+    }
+    /// This device's writes to each record of `workspace` it wrote, by app and record: those
+    /// in its custody, and the relay host's answers to the others.
+    pub fn record_writes(
+        &self,
+        workspace: WorkspaceId,
+    ) -> BTreeMap<(String, String), RecordWrites> {
+        self.with_current(workspace, |view| {
+            let publication = state(view)?;
+            let mut writes: BTreeMap<(String, String), RecordWrites> = publication
+                .answered
+                .iter()
+                .map(|answered| {
+                    (
+                        (answered.app.clone(), answered.record.clone()),
+                        RecordWrites {
+                            pending: 0,
+                            durable: answered.durable,
+                            refused: answered.refused,
+                            last_order: answered.last_order,
+                        },
+                    )
+                })
+                .collect();
+            for entry in &publication.entries {
+                // ignored-failure: custody holds governance entries too, which belong to no record
+                if let Ok(NeighbourMsg::AppDocument {
+                    app_id, record_id, ..
+                }) = postcard::from_bytes::<NeighbourMsg>(&entry.bytes)
+                {
+                    let writes = writes.entry((app_id, record_id)).or_default();
+                    writes.pending = writes.pending.saturating_add(1);
+                }
+            }
+            Ok(writes)
+        })
+        .unwrap_or_default()
     }
     /// Renew this device's sealed writes that expired in custody before the
     /// governor retired them, through `reseal`, the channels' key holder

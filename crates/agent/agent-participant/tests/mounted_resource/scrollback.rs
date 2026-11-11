@@ -13,6 +13,7 @@ use super::super::{Browser, CatalogueQuery, DeviceCapabilities, Duration, Path, 
 use super::super::{common, enrol, record_provider, start_browser};
 use tilo_agent_participant::ReplicaActor;
 use tilo_peer_state::join::MemberRole;
+use tilo_session_client::Outbox;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -175,7 +176,7 @@ pub async fn run(bundle: &str) {
     };
     native
         .peer
-        .publish(route.clone(), &source.take_mutation().unwrap())
+        .write(route.clone(), &source.take_mutation().unwrap())
         .unwrap();
     let mut handed = Vec::new();
     for (changed, mutation) in source.take_record_mutations() {
@@ -186,7 +187,7 @@ pub async fn run(bundle: &str) {
         }
         native
             .peer
-            .publish(part_route(&workspace.workspace, &changed), &mutation)
+            .write(part_route(&workspace.workspace, &changed), &mutation)
             .unwrap();
         handed.push(part);
     }
@@ -198,10 +199,10 @@ pub async fn run(bundle: &str) {
         loop {
             match barrier.try_recv() {
                 Ok(result) => break result.unwrap(),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                Err(tilo_session_client::TryRecvError::Empty) => {
                     tokio::time::sleep(Duration::from_millis(20)).await;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err(tilo_session_client::TryRecvError::Disconnected) => {
                     panic!("durability barrier closed before acknowledgement");
                 }
             }

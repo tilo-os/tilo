@@ -111,6 +111,9 @@ const snapshot = async tab => {
     state: (() => { const s = globalThis.tiloMount?.state() ?? null;
       return s && {arrival: s.arrival ?? null, entry: s.entry ?? null, door: s.door ?? null,
         phase: s.phase ?? null, frames: s.frames ?? 0, searchOpen: !!s.searchOpen,
+        // Frames the GPU left unreported since it last reported one: what a
+        // page that stopped drawing while it stayed alive says.
+        gpuStalls: s.gpuStalls ?? 0,
         title: document.title}; })(),
     windows: safe(() => globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.map(entry => entry.label) ?? []),
     people: safe(() => globalThis.tiloMount?.people?.() ?? null),
@@ -499,7 +502,7 @@ const callOn = async tab => JSON.parse(await tab.evaluate('JSON.stringify(global
 // screen (set up with an agent, or skip to one's own desktop), which these
 // people have been past already, so their page opens the Lounge itself.
 const returning = tab => tab.send('Page.addScriptToEvaluateOnNewDocument',
-  {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"});
+  {source: "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}"});
 const anotherBrowser = async () => {
   const launched = await launch({args: browserArgs});
   browsers.push(launched);
@@ -1076,13 +1079,12 @@ try {
     const shown = found.find(([x0, y0, x1, y1]) => x0 >= 0 && y0 >= 0 && x1 <= r.width && y1 <= r.height);
     return JSON.stringify(shown ? {bounds: shown} : null);
   })()`).then(JSON.parse);
-  // Right-click a window's bar and choose the menu's strip row: what the row
-  // was, and whether the window filled the strip before and after. The menu
-  // acts on the window whose bar it was opened from, and the desk says only
-  // of the focused window whether it fills the strip: the window is focused
-  // first, by a press in its body below the bar.
-  const fillFromMenu = async (what, bar) => {
-    const was = (await nav(a.tab))?.maximized;
+  // Right-click a window's bar and choose the menu's strip row: the row it
+  // offered. The menu acts on the window whose bar it was opened from, and its
+  // strip row says that window's state ("Fill the strip" while it does not,
+  // "Give the strip back" while it does), so the row offered the second time
+  // says whether the first choice did anything.
+  const stripRow = async (what, bar) => {
     await rightClick(a.tab, bar.x, bar.y);
     // The menu is the frame after the click's, and a busy desk draws a few a
     // second: its rows are read until they are there.
@@ -1094,21 +1096,29 @@ try {
       failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
     }
     await settle(a.tab, 1);
-    const now = (await nav(a.tab))?.maximized;
-    if (now === was) failed(`${what}: the window menu's row changed nothing: ${JSON.stringify({row, was, bar})}`);
-    return {row, was, now};
+    // A row the click took closes the menu: still standing somewhere on the page, the click
+    // never reached it. A closed menu keeps naming its rows, standing nowhere.
+    await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await settle(a.tab, 1);
+    let open = false;
+    for (const name of ['Fill the strip', 'Give the strip back']) {
+      const node = JSON.parse(await find(a.tab, name));
+      const b = node?.bounds;
+      if (b && (b.x1 ?? b.x + b.width) > (b.x0 ?? b.x) && (b.y1 ?? b.y + b.height) > (b.y0 ?? b.y)) open = true;
+    }
+    return {row, open};
   };
   const desk = await centreOf(a.tab);
   const barRow = await shownRow('Maximize') ?? await shownRow('Close');
   if (!barRow) failed(`no window bar on screen to open the window menu from: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
   const [bx0, by0, bx1, by1] = barRow.bounds;
   const bar = {x: desk.corner.x + (bx0 + bx1) / 2, y: desk.corner.y + (by0 + by1) / 2};
-  await click(a.tab, bar.x, desk.y);
-  await settle(a.tab, 2);
-  const filled = await fillFromMenu('the window menu', bar);
-  const given = await fillFromMenu('the window menu again', bar);
+  const first = await stripRow('the window menu', bar);
+  const second = await stripRow('the window menu again', bar);
+  const [filled, given] = [first.row, second.row];
+  if (given === filled) failed(`the window menu's "${filled}" changed nothing: the menu offered it again ${JSON.stringify({bar, openAfterClick: first.open})}`);
   report.windowMenu = {filled, given};
-  console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled.row}, then ${given.row})`);
+  console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled}, then ${given})`);
 
   // Every app the Lounge offers opens from the launcher's search.
   const offered = (await nav(a.tab))?.applications ?? [];
@@ -1130,6 +1140,19 @@ try {
     await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 180_000);
+    // The entry is published in the pass that draws the window, and that
+    // frame reaches the page when the GPU has room for it, which on a busy
+    // software rasteriser is seconds later: the open is measured on that
+    // frame, so it is waited for, and one that never comes is said below.
+    for (const deadline = Date.now() + 60_000; Date.now() < deadline;) {
+      const drawn = await a.tab.evaluate(`(() => {
+        const watch = globalThis.__tiloOpen;
+        watch?.read?.();
+        return !watch || watch.shownAt !== null;
+      })()`).catch(() => false);
+      if (drawn) break;
+      await sleep(250);
+    }
     const marks = await openMarks(a.tab);
     // An open the page's own clock never saw begun or never saw end is not a
     // fast one: it is no reading, and the gate says so instead of counting a
@@ -1244,17 +1267,43 @@ try {
       : [composer.bounds.x0 ?? composer.bounds.x, composer.bounds.y0 ?? composer.bounds.y,
          composer.bounds.x1 ?? composer.bounds.x + composer.bounds.width,
          composer.bounds.y1 ?? composer.bounds.y + composer.bounds.height];
+    // The menu's rows are the ones the right-click brought: a window's own
+    // control named like one (a calculator's "Copy expression") was there
+    // before it and is no text menu.
+    const shownBefore = new Set(await namesOf(a.tab));
     await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
-    const textRow = (await namesOf(a.tab)).find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)/) ?? null;
+    let textRow = null;
+    for (const deadline = Date.now() + 15_000; !textRow && Date.now() < deadline;) {
+      textRow = (await namesOf(a.tab))
+        .find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)\b/.test(name) && !shownBefore.has(name)) ?? null;
+      if (!textRow) await sleep(250);
+    }
     if (!textRow) failed('a right-click in a text field offers no text menu');
     report.contextMenu = textRow;
     console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
     await key(a.tab, 'Escape');
 
-    // Report a problem: the bar's own avatar, then the card's row.
-    await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
+    // Report a problem: the bar's own avatar, then the card's row. After a
+    // while here the bar asks about the person beside their avatar, and while
+    // that question waits the avatar opens it rather than their card: a
+    // person puts it off, as the question offers, and opens their card then.
+    const avatar = async () => {
+      await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
+      await settle(a.tab, 2);
+    };
+    await avatar();
+    if ((await namesOf(a.tab)).includes('Not now')) {
+      await press(a.tab, 'Not now');
+      await settle(a.tab, 2);
+      await avatar();
+    }
     const reportRow = await choose(a.tab, /^Report a problem/);
-    if (!reportRow) failed('the profile card offers no Report a problem');
+    if (!reportRow) {
+      // The row is there once the page holds the Lounge's feedback channel:
+      // why it does not is in what the page said about feedback.
+      const said = (a.tab.log ?? []).filter(line => /feedback/i.test(line)).slice(-10);
+      failed(`the profile card offers no Report a problem: shown ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}; the page said of feedback: ${JSON.stringify(said)}`);
+    }
     // Picking what to report takes every event: nothing under the pointer
     // reacts to it, and the strip the desk shows stays where it was.
     await settle(a.tab, 2);

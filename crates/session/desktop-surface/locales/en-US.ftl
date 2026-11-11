@@ -50,21 +50,6 @@ topbar-arrived-more = { $name } and { $count ->
     [one] one other
    *[other] { $count } others
 } are here
-topbar-clock-resume = Resume
-topbar-clock-pause = Pause
-topbar-clock-lap = Lap
-topbar-clock-add-minute = +1 min
-topbar-clock-close-stopwatch = Close floating stopwatch
-topbar-clock-close-timer = Close floating timer
-topbar-clock-floating-stopwatch = Floating stopwatch
-topbar-clock-floating-timer = Floating timer
-topbar-clock-floating-description = Drag to reposition. With a keyboard, hold Alt and use the arrow keys; hold Shift for larger steps.
-topbar-clock-stopwatch = Stopwatch
-topbar-clock-timer = Timer
-topbar-clock-paused = Paused
-topbar-clock-running = Running
-topbar-clock-record-lap = Record lap
-topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation
@@ -225,7 +210,6 @@ activity-pane-timeline = Timeline
 activity-pane-browse = Browse
 activity-pane-details = Details
 activity-resume-heading = Where you left off
-activity-resume-context = { $app } · { $when }
 activity-resume-button = Resume
 activity-pending-edits = Waiting for current edits to finish
 activity-catch-up-quiet = { $workspace } · Nothing new needs your attention
@@ -1063,8 +1047,7 @@ overview-presence-many = { $count } people are here
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Welcome to Tilo
 browser-welcome-subtitle = Your team's shared computer. Everything you make is saved as you go and end-to-end encrypted.
-browser-welcome-hint = Arrow keys move, Enter opens, Ctrl+K finds any app
-browser-welcome-hint-mac = Arrow keys move, Enter opens, ⌘K finds any app
+browser-welcome-hint = Arrow keys move, Enter opens
 
 # The workspace overview every desktop shows
 overview-title = Workspace overview
@@ -1103,6 +1086,7 @@ overview-tilo-host-provider = Hosting provider
 overview-tilo-manage-billing = Manage billing
 overview-tilo-agent-everywhere = All your workspaces
 overview-tilo-agent-everywhere-lower = all your workspaces
+overview-tilo-agent-browser-pages = Operates web pages in Browser
 overview-tilo-agent-working = { $runs ->
         [one] Working now
        *[other] { $runs } runs now
@@ -1424,6 +1408,7 @@ desktop-display-name = Display { $number }
 # What a person can do to one window, from its own menu.
 window-menu-reveal = Go to this window
 window-menu-rename = Name this window…
+window-tab-name = Window name
 window-menu-full-screen = Full screen
 window-menu-exit-full-screen = Exit full screen
 window-menu-maximize = Fill the strip

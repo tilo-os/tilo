@@ -1187,7 +1187,7 @@ fn asking_for_workspace(line: &[u8], workspace: &str) -> Option<Vec<u8>> {
 
 /// Relay this process's stdin to `stream` and `stream` to its stdout; the
 /// client's `initialize` asks for `workspace`, when it names one.
-fn bridge_stdio(mut stream: UnixStream, workspace: Option<&str>) -> io::Result<()> {
+pub(crate) fn bridge_stdio(mut stream: UnixStream, workspace: Option<&str>) -> io::Result<()> {
     let mut writer = stream.try_clone()?;
     let workspace = workspace.map(str::to_owned);
     std::thread::Builder::new()

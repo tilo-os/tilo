@@ -2,6 +2,7 @@
 mod admit;
 mod adopt;
 pub mod base;
+pub(crate) mod layout;
 pub mod media;
 pub mod membership;
 pub(crate) mod policy;
@@ -16,7 +17,7 @@ pub use admit::{
 };
 pub use adopt::adopt_workspace;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
-pub use rows::{GovernanceRow, changed_rows, governance_rows};
+pub use rows::{GovernanceRow, changed_rows, changed_rows_by, governance_rows};
 pub use saved_shortcut::{proven_saver, sign_saved_shortcut, workspace_revocations};
 use std::collections::BTreeMap;
 use tilo_automerge::ReadTyped as _;
@@ -42,12 +43,15 @@ pub struct WorkspaceGovernance {
     pub sandbox: BTreeMap<String, Vec<u8>>,
     /// `peers.*`: self-asserted display names keyed by device key.
     pub peers: BTreeMap<String, String>,
-    /// `peer_identities_v1.*`: JSON `GovernedIdentity` blobs keyed by device key.
+    /// `peer_identities_v1.*`: postcard `GovernedIdentity` rows keyed by device key.
     pub identities: BTreeMap<String, Vec<u8>>,
     /// The governed checkpoint coverage bytes.
     pub coverage: Option<Vec<u8>>,
     /// `invitation_receipts_v1.*`: every redemption receipt, keyed by invite id.
     pub invitation_receipts: BTreeMap<String, Vec<Vec<u8>>>,
+    /// `invitation_parts_v1.*`: the runs of signed invitations receipts
+    /// share, keyed by their digest ([`crate::state::invitation_ledger`]).
+    pub invitation_parts: BTreeMap<String, Vec<Vec<u8>>>,
     /// The governed media policy, by value.
     pub media: media::MediaGovernanceValue,
 }
@@ -63,12 +67,29 @@ impl WorkspaceGovernance {
             identities: BTreeMap::new(),
             coverage: None,
             invitation_receipts: BTreeMap::new(),
+            invitation_parts: BTreeMap::new(),
             media: media::MediaGovernanceValue::Absent,
         }
     }
 }
 #[cfg(test)]
 thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+/// The workspace's authority as `doc`'s rows record it
+/// ([`tilo_desktop_model::projection::workspace_policy_of`]), read as
+/// [`policy::read`] reads them: from the last states read, with what the
+/// changes since wrote read again, or whole (and counted so,
+/// [`crate::governance_work`]).
+#[must_use]
+pub fn policy_of(doc: &AutoCommit, workspace: &str) -> tilo_action_policy::WorkspacePolicy {
+    let policy = policy::read(doc).workspace_policy(workspace);
+    #[cfg(test)]
+    assert_eq!(
+        policy,
+        tilo_desktop_model::projection::workspace_policy_of(doc, workspace),
+        "the governance reading gives the workspace's authority its rows record"
+    );
+    policy
+}
 pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     let Some(doc) = doc else {
         return WorkspaceGovernance::absent();
@@ -106,6 +127,7 @@ pub fn governance_of(doc: Option<&AutoCommit>) -> WorkspaceGovernance {
     debug_assert!(result.is_ok());
     governance.coverage = crate::coverage::governed_bytes(doc);
     governance.invitation_receipts = invitation_receipts(doc).unwrap_or_default();
+    governance.invitation_parts = crate::state::invitation_ledger::parts(doc).unwrap_or_default();
     governance.media = media::governed_value(Some(doc));
     governance
 }
@@ -121,8 +143,9 @@ pub struct IdentityRow {
 }
 
 /// Decode one [`WorkspaceGovernance::identities`] row exactly as admission does.
-pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
-    let identity: crate::state::GovernedIdentity = serde_json::from_slice(bytes)?;
+pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, String> {
+    let identity =
+        crate::state::GovernedIdentity::decode(bytes).map_err(|error| error.to_string())?;
     Ok(IdentityRow {
         device_cert: identity.device_cert,
         revocations: identity.revocations,
@@ -131,11 +154,40 @@ pub fn identity_row(bytes: &[u8]) -> Result<IdentityRow, serde_json::Error> {
 
 /// The redemption receipts `doc` records, by invite id: every receipt it has
 /// seen under one invitation, as the ledger holds them.
+/// The receipts kept under `key`, one invitation's id, in every receipt
+/// ledger the document holds: [`invitation_receipts`] of one invitation,
+/// without reading anyone else's.
+pub(crate) fn invitation_receipts_of(doc: &AutoCommit, key: &str) -> Result<Vec<Vec<u8>>, String> {
+    let mut receipts = Vec::new();
+    for (value, ledger) in doc
+        .get_all(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
+        .map_err(|error| error.to_string())?
+    {
+        if !matches!(value, Value::Object(automerge::ObjType::Map)) {
+            return Err("governed invitation receipt ledger is not a map".to_string());
+        }
+        for (value, _) in doc
+            .get_all(&ledger, key)
+            .map_err(|error| error.to_string())?
+        {
+            match value {
+                Value::Scalar(value) => match value.as_ref() {
+                    ScalarValue::Bytes(bytes) => receipts.push(bytes.clone()),
+                    _ => return Err("governed invitation receipt is not bytes".to_string()),
+                },
+                Value::Object(_) => {
+                    return Err("governed invitation receipt is not bytes".to_string());
+                }
+            }
+        }
+    }
+    Ok(receipts)
+}
 pub(crate) fn invitation_receipts(
     doc: &AutoCommit,
 ) -> Result<BTreeMap<String, Vec<Vec<u8>>>, String> {
     let ledgers = doc
-        .get_all(ROOT, "invitation_receipts_v1")
+        .get_all(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
         .map_err(|error| error.to_string())?
         .into_iter()
         .map(|(value, object)| match value {
@@ -165,7 +217,9 @@ pub(crate) fn invitation_receipts(
 }
 
 /// Whether every redemption `before` records is still in `after`, byte for
-/// byte, under the invitation it redeemed.
+/// byte, under the invitation it redeemed, and every invitation part it
+/// keeps is still kept: a receipt is checked on the invitation its parts
+/// put back together.
 ///
 /// An invitation admits one person: whoever redeems it writes its receipt, and
 /// that receipt is the workspace's record from then on. A batch may redeem an
@@ -173,20 +227,30 @@ pub(crate) fn invitation_receipts(
 ///
 /// A ledger this build cannot read is not evidence of either: it keeps nothing.
 pub(crate) fn redemptions_kept(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
+    use crate::state::invitation_ledger::parts;
     let Some(before) = before else {
         return true;
     };
+    let (Ok(held_parts), Ok(written_parts)) = (parts(before), parts(after)) else {
+        return false;
+    };
+    let parts_kept = held_parts.iter().all(|(key, held)| {
+        written_parts
+            .get(key)
+            .is_some_and(|written| held.iter().all(|value| written.contains(value)))
+    });
     let (Ok(before), Ok(after)) = (invitation_receipts(before), invitation_receipts(after)) else {
         return false;
     };
     // An invitation the workspace redeemed keeps exactly its receipts; one it
     // never redeemed may be redeemed now.
-    before.iter().all(|(invite, held)| {
-        after.get(invite).is_some_and(|written| {
-            held.iter().all(|value| written.contains(value))
-                && written.iter().all(|value| held.contains(value))
+    parts_kept
+        && before.iter().all(|(invite, held)| {
+            after.get(invite).is_some_and(|written| {
+                held.iter().all(|value| written.contains(value))
+                    && written.iter().all(|value| held.contains(value))
+            })
         })
-    })
 }
 
 /// Every bot of the workspace `doc` governs, by name: each installed bot that
@@ -201,7 +265,7 @@ pub fn workspace_bots_of(doc: &AutoCommit) -> Vec<tilo_desktop_model::WorkspaceB
         .identities
         .values()
         // ignored-failure: a row that does not decode names no bot, per this reader's contract
-        .filter_map(|bytes| serde_json::from_slice::<crate::state::GovernedIdentity>(bytes).ok())
+        .filter_map(|bytes| crate::state::GovernedIdentity::decode(bytes).ok())
         .filter_map(|identity| {
             let row = identity.delegate?;
             if row.withdrawn_at_ns.is_some() {
@@ -267,7 +331,7 @@ pub fn extract_governed_fields(
     let workspace = text("room").unwrap_or_default();
     (
         text("name"),
-        tilo_desktop_model::projection::workspace_policy_of(candidate, &workspace),
+        crate::workspace::policy_of(candidate, &workspace),
     )
 }
 /// Parse the complete batch and apply to a disposable candidate, never the owner.
@@ -284,10 +348,17 @@ pub fn sent_change(mut change: automerge::Change) -> Vec<u8> {
 }
 
 pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
+    candidate_on(before.cloned().unwrap_or_else(AutoCommit::new), changes)
+}
+
+/// [`candidate`] built on `candidate`, taken rather than copied.
+///
+/// # Errors
+/// As [`candidate`].
+pub fn candidate_on(mut candidate: AutoCommit, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
     // Each entry is one complete change chunk; their concatenation is ordinary
     // storage, admitted like any other untrusted document mutation.
     let storage = changes.concat();
-    let mut candidate = before.cloned().unwrap_or_else(AutoCommit::new);
     candidate.reset_diff_cursor();
     if storage.is_empty() {
         return Ok(candidate);

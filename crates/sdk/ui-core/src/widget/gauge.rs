@@ -608,7 +608,6 @@ impl Widget for ProgressRing {
             self.dirty = true;
         }
         self.rect = rect;
-        self.layout_dirty = false;
     }
 
     fn draw(
@@ -663,6 +662,10 @@ impl Widget for ProgressRing {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 }
 

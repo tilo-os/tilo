@@ -78,6 +78,7 @@ pub(crate) fn visit_governance_entries<R: WorkspaceRead, E>(
     read: &R,
     mut visitor: impl for<'a> FnMut(GovernanceEntry<'a>) -> Result<(), E>,
 ) -> Result<(), ReadError<E>> {
+    crate::governance_work::governance_read();
     let root = read.root();
     let owner = read.visit_property(&root, "owner", Selection::Winner, |value| {
         if let WorkspaceValue::Str(value) = value {

@@ -1,5 +1,5 @@
 use super::*;
-use crate::owner::application_record::tests::{Fixture, fixture};
+use crate::owner::fixture::{Fixture, fixture};
 use crate::owner::testing::record_on_disk;
 use tilo_actions::{ActionContext, ActionFacet, EffectReceiptStatus, InvocationId};
 use tilo_user_identity::DeviceCert;

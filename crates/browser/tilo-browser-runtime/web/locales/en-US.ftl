@@ -21,6 +21,7 @@ arrival-joke-do-not-turn-off = Please do not turn off your browser.
 arrival-joke-clippy = Clippy is not coming back.
 arrival-joke-new-computer = Getting your new computer ready…
 arrival-joke-off-and-on = Have you tried turning it off and on again?
+arrival-joke-fax = Warming up the fax machine…
 
 ## Together
 arrival-joke-teaching-apps = Teaching apps to behave…
@@ -32,6 +33,7 @@ arrival-joke-counting-cursors = Counting cursors…
 arrival-joke-herding-agents = Herding agents…
 arrival-joke-end-to-end = Encrypting end to end, and the middle too…
 arrival-joke-catching-up = Catching up…
+arrival-joke-form-a38 = Applying for form A38…
 
 ## The Lounge
 arrival-site-cushions = Fluffing the Lounge cushions…
@@ -44,6 +46,7 @@ arrival-joke-free-beer = Free as in free beer (and freedom, too)
 arrival-joke-fomo = Fighting FOMO…
 arrival-joke-taking-our-time = Taking our time…
 arrival-joke-shy-gpu = Warming up the GPU (it’s shy)…
+arrival-joke-recycling = Sorting the recycling…
 
 ## Tips
 # Shown dim before each tip; jokes have none.
@@ -99,12 +102,39 @@ arrival-invite-link = Invite link
 arrival-invite-placeholder = Paste an invite link
 arrival-invite-open = Open
 arrival-invite-not-a-link = That isn’t an invite link. Paste the whole link you were sent.
+arrival-door-wait-heading = Sorry, Tilo is invite-only right now
+arrival-door-wait-body = It’s an early alpha. Leave your email and we’ll send you an invite when there’s room.
+arrival-wait-email = Email
+arrival-wait-placeholder = you@example.com
+arrival-wait-join = Join the wait list
+arrival-wait-inbox = Check your inbox: we sent a link to { $email } to confirm.
+arrival-wait-again-prompt = Didn’t get it?
+arrival-wait-again = Send it again
+arrival-wait-again-sent = Asked again. We send at most one link an hour, so check your spam folder too.
+arrival-wait-listed = You’re on the list ({ $email })
+arrival-wait-confirmed = You’re on the list.
+arrival-wait-invited = You’re invited: the link is in your inbox.
+arrival-wait-invited-no-mail = You’re invited: whoever invited you sends you the link.
+arrival-wait-expired = That link no longer works. Leave your address again.
+arrival-wait-change = Changed your mind?
+arrival-wait-leave = Take me off the list
+arrival-wait-left = You’re off the list.
+arrival-wait-leave-too-many = Too many tries from your network just now. Try again later.
+arrival-wait-privacy = We only use your email to send you an invite.
+arrival-wait-privacy-mail = We email you a link to confirm, then your invite. Nothing else.
+arrival-wait-no-mail = No email is sent from here: whoever invites you sends you the link.
+arrival-wait-contact = Questions or removal: { $contact }
+arrival-wait-invalid = That doesn’t look like an email address.
+arrival-wait-too-many = Too many sign-ups from your network just now. Try again later.
+arrival-wait-full = The wait list is full for now. Please try again in a few days.
+arrival-wait-failed = That didn’t go through. Try again in a moment.
 arrival-sign-in-ask = Already have a Tilo identity?
 arrival-sign-in = Sign in
-arrival-sign-in-not-member = You’re signed in, but this identity isn’t in { $workspace } yet. Ask someone in it for an invite.
+arrival-sign-in-not-member = You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.
 arrival-sign-in-not-member-unnamed = You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.
 arrival-sign-in-unknown = That passkey doesn’t open a Tilo identity this site knows. Use one you made on Tilo, or open Tilo where you already use it.
 arrival-sign-in-failed = Signing in didn’t work in this browser. Try again, or open Tilo where you already use it.
+arrival-invite-toggle = Have an invite link?
 arrival-door-own = Or try Tilo on your own
 arrival-failed-cooling-down = { $workspace } is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.
 arrival-failed-cooling-down-unnamed = This workspace is not letting anyone in from your network for now, because someone here was removed from it. Ask someone in it for an invitation, or try again tomorrow.

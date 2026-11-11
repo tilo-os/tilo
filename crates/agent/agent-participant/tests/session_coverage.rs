@@ -28,14 +28,14 @@ mod common;
 // again), whose changes are admitted through the Automerge isolate.
 tilo_agent_participant::app_worker!();
 tilo_automerge_isolate::test_worker!();
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 
-use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Event, Outbox};
 
 use common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
@@ -51,8 +51,7 @@ use tilo_agent_participant::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_session_host::PeerEvent;
-use tilo_session_host::session_actions::Heard;
+use tilo_session_core::remote::Heard;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
@@ -85,19 +84,18 @@ impl Driveable for Agent<'_> {
 /// Send `message` from the browser to the agent's device and wait for the
 /// agent's answer, pumping the agent meanwhile.
 async fn ask(
-    browser: &tilo_session_host::PeerHandle,
-    events: &tilo_session_host::PeerEvents,
+    browser: &tilo_session_client::Link,
+    events: &tilo_session_client::Events,
     agent: &mut AgentParticipant,
     agent_key: [u8; 32],
     message: RemoteActionMessage,
-    documents: &mut Vec<tilo_peer_state::document_frame::OpenedDocument>,
 ) -> RemoteActionMessage {
     browser
-        .send_remote_action(
+        .send(Cmd::RemoteAction(
             workspace(),
             agent_key,
             RemoteActionFrame::new(message).encode().unwrap(),
-        )
+        ))
         .unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -108,14 +106,13 @@ async fn ask(
         let mut answer = None;
         for event in events.drain() {
             match event {
-                PeerEvent::Remote(Heard::Action { from, frame, .. }) if from == agent_key => {
+                Event::Remote(Heard::Action { from, frame, .. }) if from == agent_key => {
                     answer
                         .get_or_insert_with(|| RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                PeerEvent::Remote(Heard::Undeliverable { reason, .. }) => {
+                Event::Remote(Heard::Undeliverable { reason, .. }) => {
                     panic!("undeliverable: {reason}")
                 }
-                PeerEvent::Document(document) => documents.push(*document),
                 _ => {}
             }
         }
@@ -167,6 +164,32 @@ fn page(
     )
     .unwrap();
     body(&app)
+}
+
+/// What the browser's replica holds of `route`, saved.
+fn held(browser: &tilo_session_client::Link, route: &DocumentRoute) -> Option<Vec<Vec<u8>>> {
+    browser
+        .engine()
+        .record(&route.cluster_id, &route.app_id, &route.record)
+        .ok()
+        .flatten()
+        .map(|bytes| vec![bytes])
+}
+
+/// Take the browser's events: every write that landed is one of `writers`'.
+fn only_written_by(events: &tilo_session_client::Events, writers: &[[u8; 32]]) {
+    for event in events.drain() {
+        if let Event::Landed {
+            author: Some(author),
+            ..
+        } = event
+        {
+            assert!(
+                writers.contains(&author),
+                "only the agent and the workspace's host write here"
+            );
+        }
+    }
 }
 
 /// The session a task runs in: a laptop's root, the host's own device and the
@@ -265,7 +288,13 @@ async fn every_web_app_over_the_session() {
     })
     .await;
 
-    let mut received: BTreeMap<DocumentRoute, Vec<Vec<u8>>> = BTreeMap::new();
+    // The governed workspace's host takes part too: it checkpoints what the
+    // agent wrote.
+    let writers = [
+        agent_key,
+        host_device.cert.device_public_key,
+        browser.engine().identity().device_cert.device_public_key,
+    ];
     let mut table = String::from("| App | Edit | Browser merged agent's change |\n|---|---|---|\n");
     let mut failures = Vec::new();
     for definition in catalogue.iter() {
@@ -289,29 +318,9 @@ async fn every_web_app_over_the_session() {
         let deadline = tilo_test_env::hang_deadline();
         let merged = loop {
             agent.pump();
-            for event in browser_events.drain() {
-                if let PeerEvent::Document(document) = event {
-                    // The governed workspace's host takes part too: it checkpoints
-                    // what the agent wrote.
-                    assert!(
-                        document.author == agent_key
-                            || document.author == host_device.cert.device_public_key,
-                        "only the agent and the workspace's host write here"
-                    );
-                    if let Some(
-                        collab_types::DocumentMutation::Snapshot(bytes)
-                        | collab_types::DocumentMutation::Incremental(bytes),
-                    ) = document.mutation()
-                    {
-                        received
-                            .entry(document.route.clone())
-                            .or_default()
-                            .push(bytes);
-                    }
-                }
-            }
-            if let Some(changes) = received.get(&route)
-                && page(&catalogue, &route, changes) == expected
+            only_written_by(&browser_events, &writers);
+            if let Some(changes) = held(&browser, &route)
+                && page(&catalogue, &route, &changes) == expected
             {
                 break true;
             }
@@ -321,9 +330,7 @@ async fn every_web_app_over_the_session() {
             tokio::time::sleep(Duration::from_millis(20)).await;
         };
         if !merged {
-            let seen = received
-                .get(&route)
-                .map(|changes| page(&catalogue, &route, changes));
+            let seen = held(&browser, &route).map(|changes| page(&catalogue, &route, &changes));
             note(
                 &mut failures,
                 format!(
@@ -350,7 +357,18 @@ async fn every_web_app_over_the_session() {
         agent
             .known_records()
             .into_iter()
-            .chain(received.keys().cloned())
+            .chain(
+                browser
+                    .engine()
+                    .records(WORKSPACE)
+                    .unwrap()
+                    .into_iter()
+                    .map(|(app_id, record)| DocumentRoute {
+                        app_id,
+                        cluster_id: WORKSPACE.to_owned(),
+                        record,
+                    }),
+            )
             .find(|route| route.app_id == app)
             .unwrap()
     };
@@ -367,25 +385,13 @@ async fn every_web_app_over_the_session() {
             control.info().tasks
         );
         agent.pump();
-        for event in browser_events.drain() {
-            if let PeerEvent::Document(document) = event
-                && let Some(
-                    collab_types::DocumentMutation::Snapshot(bytes)
-                    | collab_types::DocumentMutation::Incremental(bytes),
-                ) = document.mutation()
-            {
-                received
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push(bytes);
-            }
-        }
+        only_written_by(&browser_events, &writers);
         let done = control.info().tasks.last().is_some_and(|task| {
             task.state != TaskState::Running && task.state != TaskState::Queued
         });
         if done
-            && received.get(&notes).is_some_and(|changes| {
-                page(&catalogue, &notes, changes).contains("said in plain words")
+            && held(&browser, &notes).is_some_and(|changes| {
+                page(&catalogue, &notes, &changes).contains("said in plain words")
             })
         {
             break;
@@ -398,7 +404,6 @@ async fn every_web_app_over_the_session() {
 
     // actionsV1 for apps: the browser drives the agent's open records with
     // the remote-action frames it uses for everything else.
-    let mut documents = Vec::new();
     let RemoteActionMessage::CatalogueResponse {
         correlation: 7,
         result: Ok(offered),
@@ -415,7 +420,6 @@ async fn every_web_app_over_the_session() {
                 ..CatalogueQuery::default()
             },
         },
-        &mut documents,
     )
     .await
     else {
@@ -450,7 +454,6 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(request.clone()),
-        &mut documents,
     )
     .await
     else {
@@ -467,25 +470,10 @@ async fn every_web_app_over_the_session() {
             "the actionsV1 edit never reached the browser"
         );
         agent.pump();
-        for event in browser_events.drain() {
-            if let PeerEvent::Document(document) = event {
-                documents.push(*document);
-            }
-        }
-        for document in std::mem::take(&mut documents) {
-            if let Some(
-                collab_types::DocumentMutation::Snapshot(bytes)
-                | collab_types::DocumentMutation::Incremental(bytes),
-            ) = document.mutation()
-            {
-                received
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push(bytes);
-            }
-        }
-        if page(&catalogue, &scratchpad, &received[&scratchpad]).contains("Invoked over actionsV1")
-        {
+        only_written_by(&browser_events, &writers);
+        if held(&browser, &scratchpad).is_some_and(|changes| {
+            page(&catalogue, &scratchpad, &changes).contains("Invoked over actionsV1")
+        }) {
             break;
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
@@ -498,7 +486,6 @@ async fn every_web_app_over_the_session() {
         &mut agent,
         agent_key,
         RemoteActionMessage::Invoke(request.clone()),
-        &mut documents,
     )
     .await
     else {
@@ -515,7 +502,6 @@ async fn every_web_app_over_the_session() {
             argument: InvokeArgument::None,
             ..request
         }),
-        &mut documents,
     )
     .await
     else {
@@ -544,7 +530,6 @@ async fn every_web_app_over_the_session() {
             wait_ms: None,
             appearance: None,
         }),
-        &mut documents,
     )
     .await
     else {
@@ -578,7 +563,6 @@ async fn every_web_app_over_the_session() {
             wait_ms: None,
             appearance: None,
         }),
-        &mut documents,
     )
     .await
     else {
@@ -2473,6 +2457,11 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
 /// The id under which the planning request `body` offers `action`
 /// (`<resource>#<action>`).
 fn offered(body: &str, action: &str) -> String {
+    offered_on(body, "", action)
+}
+
+/// The id of the operation `action` offered in `body` whose id names `on`.
+fn offered_on(body: &str, on: &str, action: &str) -> String {
     let request: serde_json::Value = serde_json::from_str(body).unwrap();
     let text: String = request["messages"]
         .as_array()
@@ -2496,7 +2485,9 @@ fn offered(body: &str, action: &str) -> String {
                 .rev()
                 .find(|(_, c)| !in_id(*c))
                 .map_or(0, |(i, c)| i + c.len_utf8());
-            text.get(start..end).map(str::to_owned)
+            text.get(start..end)
+                .filter(|id| id.contains(on))
+                .map(str::to_owned)
         })
         .unwrap_or_else(|| panic!("{action} is offered: {text}"))
 }

@@ -499,9 +499,43 @@ impl Core {
     }
 
     /// `Map<T>.keys()` and `Map<T>.get(key)` on a map the code holds as a value (one
-    /// `json.decode<Map<T>>` read, or a `json.Value` object's fields), as against the map a
-    /// record's field is.
+    /// `json.decode<Map<T>>` read, a `json.Value` object's fields, or the `Map<T>()` a function
+    /// fills), as against the map a record's field is — and the writes that fill one, which
+    /// every holder of the map reads, the caller of the function included.
     pub(crate) fn map_value_import(&self, imp: Imp, a: &Args<'_>) -> HResult<Option<Wasm>> {
+        if imp == Imp::MapNew {
+            return self.ret_h(Value::Map(Vec::new()));
+        }
+        if imp == Imp::MapPutValue || imp == Imp::MapRemoveValue {
+            let key = Value::Text(self.text(a.h(1)?)?);
+            let value = if imp == Imp::MapPutValue {
+                Some(self.val(a.h(2)?)?)
+            } else {
+                None
+            };
+            let mut frames = self.frames.borrow_mut();
+            match frames.get_mut(a.h(0)?)? {
+                Value::Map(entries) => {
+                    let at = entries
+                        .iter()
+                        .position(|(held, _)| held.as_text() == key.as_text());
+                    match (at, value) {
+                        (Some(at), Some(value)) => {
+                            if let Some(held) = entries.get_mut(at) {
+                                held.1 = value;
+                            }
+                        }
+                        (Some(at), None) => {
+                            entries.remove(at);
+                        }
+                        (None, Some(value)) => entries.push((key, value)),
+                        (None, None) => {}
+                    }
+                }
+                other => return trap(format!("expected a map, got {}", other.kind_name())),
+            }
+            return ret_void();
+        }
         let Value::Map(entries) = self.val(a.h(0)?)? else {
             return trap("expected a map");
         };

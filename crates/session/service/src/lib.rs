@@ -87,6 +87,24 @@ pub trait Service {
         self.invoke(resource, action, arguments)
     }
 
+    /// [`Self::invoke_as`] as a step of the run `run` (an agent's run, a task's): what the change
+    /// makes is that run's, which History groups and an undo of the run takes back whole. The
+    /// default runs it as [`Self::invoke_as`], for a service that keeps no history of its own.
+    ///
+    /// # Errors
+    /// The door's refusal.
+    fn invoke_in_run(
+        &mut self,
+        invoker: &tilo_actions::ActionInvoker,
+        run: &tilo_actions::WorkGroup,
+        resource: &str,
+        action: &str,
+        arguments: &Map<String, Value>,
+    ) -> Result<Started, DoorError> {
+        let _ = run;
+        self.invoke_as(invoker, resource, action, arguments)
+    }
+
     /// Take in what landed from the device since the last call. Whether a
     /// reading changed.
     fn poll(&mut self) -> bool {
@@ -147,6 +165,14 @@ pub trait Service {
     /// Every record [`Self::record`] answers, each with the app it is of: what a connection the
     /// session admits reads by the app.
     fn records(&self) -> Vec<Record> {
+        Vec::new()
+    }
+
+    /// The records this service keeps, as the workspace's activity reads them: each app's record
+    /// with the document it lives in. A record no app's process holds still shows its steps in
+    /// History and takes one of its runs back through its own history, so the activity lists and
+    /// undoes those runs as it does a running app's.
+    fn history_records(&self) -> Vec<HistoryRecord> {
         Vec::new()
     }
 
@@ -233,6 +259,22 @@ pub struct Record {
     /// embedded: what a task's host loads to run a program that reads the record by the app's
     /// own package.
     pub packages: Vec<std::sync::Arc<[u8]>>,
+}
+
+/// One record a service keeps, as the workspace's activity reads its history: the app whose
+/// record it is, the kind it is, and the document it lives in.
+///
+/// One document may hold several apps' records (the session's own workspace record holds a root
+/// per package it runs), so `kind` says which of them this entry is: the activity keeps the steps
+/// whose resource is of that kind, and none of the others.
+pub struct HistoryRecord {
+    /// The app whose record it is, as its package names it (`so.tilo.lang.notes`).
+    pub app: String,
+    /// The record's kind, as its app publishes it (`tl.so.tilo.lang.notes.Notebook`): what tells
+    /// this app's steps in a document from another's.
+    pub kind: String,
+    /// The document, as it stands: what the activity's history reads.
+    pub document: tilo_resource::Doc,
 }
 
 /// `resource` offering every action of the vocabulary `E`.
@@ -394,6 +436,16 @@ impl Services {
             .collect()
     }
 
+    /// Every record the services keep, as the activity's history reads it; see
+    /// [`Service::history_records`].
+    #[must_use]
+    pub fn history_records(&self) -> Vec<HistoryRecord> {
+        self.started
+            .iter()
+            .flat_map(|service| service.history_records())
+            .collect()
+    }
+
     /// Publish the package `share` names, which the session runs itself (the shell), with the
     /// apps' records: offered to every service, the one keeping those records takes it.
     ///
@@ -424,13 +476,15 @@ impl Services {
     }
 
     /// [`Self::invoke`] as `invoker` (an agent, a script): what the change it makes is
-    /// attributed to. The service's own door decides whether the caller may.
+    /// attributed to, as a step of the run `run` when it is one of a run's
+    /// ([`Service::invoke_in_run`]). The service's own door decides whether the caller may.
     ///
     /// # Errors
     /// The service's refusal.
     pub fn invoke_as(
         &mut self,
         invoker: &tilo_actions::ActionInvoker,
+        run: Option<&tilo_actions::WorkGroup>,
         resource: &str,
         action: &str,
         arguments: &Map<String, Value>,
@@ -446,8 +500,11 @@ impl Services {
         let started = self
             .started
             .get_mut(index)
-            .ok_or_else(|| DoorError::Unknown(address.clone()))?
-            .invoke_as(invoker, resource, action, arguments);
+            .ok_or_else(|| DoorError::Unknown(address.clone()))?;
+        let started = match run {
+            Some(run) => started.invoke_in_run(invoker, run, resource, action, arguments),
+            None => started.invoke_as(invoker, resource, action, arguments),
+        };
         if let Some(stirred) = self.stirred.get_mut(index) {
             *stirred = true;
         }

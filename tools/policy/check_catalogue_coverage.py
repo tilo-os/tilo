@@ -15,8 +15,12 @@ A locale may add messages of its own: the arrival screen's German jokes are
 written for German speakers and have no English source. Those are not drift —
 they are listed in [`LOCALE_ONLY`], and the source needs nothing.
 
-  check_catalogue_coverage.py            fail on every drifted key
-  check_catalogue_coverage.py --list     print them, `unit locale key`, and pass
+A key a catalogue defines twice is not drift either: Fluent keeps one message
+per key, so the second one breaks the whole file at load. It fails here, in
+every mode, because no listing of keys should hide it.
+
+  check_catalogue_coverage.py            fail on every drifted or repeated key
+  check_catalogue_coverage.py --list     print the drift, `unit locale key`, and pass
 """
 
 from __future__ import annotations
@@ -59,6 +63,24 @@ def unit_of(root: Path, catalogue: Path) -> str:
 def keys_of(catalogue: Path) -> dict[str, int]:
     """The message and attribute keys `catalogue` defines, each by its line."""
     return {message.key: message.line for message in messages(catalogue.read_text())}
+
+
+def duplicated(root: Path) -> list[tuple[Path, str, int, int]]:
+    """Per (catalogue, key, first line, repeated line), the keys it defines twice.
+
+    Fluent holds one message per key: a second definition is a parse failure for
+    everything that loads the catalogue, so it is not a word to translate but a
+    broken file. Indexing the entries by key, as the rest of this check does,
+    would read only the last and pass."""
+    found = []
+    for catalogue in catalogues(root):
+        first: dict[str, int] = {}
+        for message in messages(catalogue.read_text()):
+            if message.key in first:
+                found.append((catalogue, message.key, first[message.key], message.line))
+            else:
+                first[message.key] = message.line
+    return found
 
 
 def untranslated(root: Path) -> list[tuple[str, str, Path, str, int]]:
@@ -110,6 +132,7 @@ def main(argv: list[str]) -> int:
         return 2
     missing = untranslated(ROOT)
     extra = unnamed(ROOT)
+    twice = duplicated(ROOT)
     listing = argv[1:] == ["--list"]
     for unit, locale, _, key, line in missing:
         if listing:
@@ -121,6 +144,13 @@ def main(argv: list[str]) -> int:
             print(unit, locale, key)
         else:
             print(f"{unit}/locales/{locale}.ftl:{line}: {key} has no {SOURCE_LOCALE} text")
+    for catalogue, key, first, line in twice:
+        print(f"{named(ROOT, catalogue)}:{line}: {key} is defined again; line {first} "
+              "already defines it", file=sys.stderr)
+    if twice:
+        print(f"{len(twice)} keys are defined twice; a catalogue holds one message per key",
+              file=sys.stderr)
+        return 1
     if listing:
         return 0
     if missing or extra:

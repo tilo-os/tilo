@@ -25,6 +25,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::app::ExpandOutcome;
 use crate::draw::{self, CodeRow};
 use crate::model::{self, Snippet, SnippetId};
+use ui::widget::DrawChild;
 
 /// The most preview rows (wrapped lines) the dialog shows; a longer body
 /// ends in an ellipsis row.
@@ -217,7 +218,7 @@ impl ExpandModal {
             field.input.apply_layout_external(rect);
             field
                 .input
-                .draw(scene, t, text, &ink, &ui::presence::PresenceCtx::empty());
+                .draw_child(scene, t, text, &ink, &ui::presence::PresenceCtx::empty());
             self.geometry.fields.push(rect);
             y = row.y1 + f64::from(rhythm.sibling);
         }

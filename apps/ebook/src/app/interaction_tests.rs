@@ -10,6 +10,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::presence::PresenceCtx;
 use ui::testing::Dispatch;
 use ui::time::Duration;
+use ui::widget::DrawChild;
 use ui::widget::Edits;
 
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
@@ -201,7 +202,7 @@ fn library_controls_and_actions_are_discoverable_and_accessible() {
             action: Action::NextPage,
         }];
         app.refresh_hover_tooltip();
-        assert_eq!(Widget::tooltip(&app), Some("Next page"));
+        assert_eq!(Widget::tooltip(&app).as_deref(), Some("Next page"));
 
         // A swallowed modal background never pretends to be a real control.
         app.hits = vec![Hit {
@@ -435,7 +436,7 @@ fn reader_controls_are_accessible_and_live() {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -645,7 +646,7 @@ fn draw_settled(
 ) {
     tilo_test_env::wait_until("the reader's chapter to be laid out", || {
         scene.reset();
-        app.draw(scene, Affine::IDENTITY, tr, theme, presence);
+        app.draw_child(scene, Affine::IDENTITY, tr, theme, presence);
         app.view != View::Reader || !app.layout_pending()
     });
 }
@@ -731,13 +732,9 @@ fn render_scene(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64) -> Sce
     app.resolve_drawers();
     let theme = Theme::dark();
     let presence = PresenceCtx::empty();
-    // Only the checked-in fonts: pixels drawn with whatever the host happens to
+    // Only the shipped fonts: pixels drawn with whatever the host happens to
     // have installed would make every committed baseline machine-specific.
-    let catalog = ui::font_catalog::FontCatalog::controlled_fixture(
-        ui::font_catalog::checkout_root(),
-        "en-US",
-    );
-    let mut tr = TextRenderer::with_font_catalog(&catalog).expect("checked-in font catalog");
+    let mut tr = ui::font_catalog::fixture_renderer();
     let mut scene = Scene::new();
     draw_settled(app, &mut scene, &mut tr, &theme, &presence);
     scene
@@ -5101,7 +5098,7 @@ fn frame_at_text_scale(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64,
     let mut tr = TextRenderer::new();
     tr.set_text_scale(scale);
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
 fn hit_rect(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Rect> {
@@ -5187,7 +5184,7 @@ fn selection_controls_dock_above_the_prose_without_moving_it() {
         app.rect = Rect::new(0.0, 0.0, width, 810.0);
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
-        app.draw(
+        app.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
@@ -5388,4 +5385,56 @@ fn the_empty_library_keeps_saying_why_an_open_failed() {
             .is_ok()
     );
     assert_eq!(app.open_failure, None, "another import clears it");
+}
+
+/// An agent rewrites a note through the note's own resource: the composer
+/// publishes the note's text at its own address, and an action there applies
+/// as the library's field edit.
+#[test]
+fn an_agent_edits_a_notes_text_through_its_own_resource() {
+    use ui::framework::testing::TestApp;
+
+    const BOOK: &str = "book:0123456789abcdef0123456789abcdef";
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<crate::resource::EbookShell>::new().unwrap();
+    app.invoke(crate::resource::shelve(&crate::model::LibraryEntry {
+        id: BOOK.into(),
+        title: "Annotated".into(),
+        ..crate::model::LibraryEntry::default()
+    }))
+    .unwrap();
+    app.call(
+        "add-note",
+        serde_json::json!({
+            "passage": {
+                "book": BOOK, "chapter": 0, "block": 2, "start": 0, "end": 4,
+                "excerpt": "door",
+            },
+            "color": "yellow",
+            "text": "Remember this",
+        }),
+    )
+    .unwrap();
+    let id = app.state().annotations_for(BOOK)[0].id;
+    app.with_widget(move |app: &mut BooksApp| {
+        let dispatch = app.dispatch.clone();
+        app.note_composer.open(id, Some(&dispatch));
+    })
+    .unwrap();
+    app.harness().relayout();
+    app.invoke_child::<tilo_document::RichText>(
+        &crate::resource::note_text_resource_id(id),
+        ui::tilo_resource::Invoke::apply(&tilo_document::RichTextAction::ReplaceBody {
+            markdown: "Rewritten".into(),
+        })
+        .unwrap(),
+    )
+    .expect("the note's text is published at its own address");
+    let note = app
+        .state()
+        .annotations_for(BOOK)
+        .into_iter()
+        .find(|annotation| annotation.id == id)
+        .expect("the note");
+    assert_eq!(note.note, "Rewritten");
 }

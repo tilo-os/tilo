@@ -16,6 +16,7 @@ use ui::a11y::{AccessNode, Role};
 use ui::tilo_resource::{Invoke, Replica};
 use ui::time::Duration;
 use ui::tokens::colors::ON_FILL_MIN_CONTRAST;
+use ui::widget::DrawChild;
 use vello::kurbo::Point;
 
 fn target(app: &ContactsApp, id: &str) -> Rect {
@@ -1021,7 +1022,7 @@ fn drive_frame_with_theme(app: &mut ContactsApp, w: u32, h: u32, theme: &Theme) 
     app.apply_layout(&taffy, child, Point::ORIGIN);
 
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     // Encoding the scene is enough to exercise every draw path; the
     // GPU blit is covered by the `--shots` harness.
     let _ = &scene;

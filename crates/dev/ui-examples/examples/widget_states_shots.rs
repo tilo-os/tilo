@@ -53,6 +53,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::time::Duration;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 use tilo_ui::widget::toggle_group::{Segment, SegmentedStyle};
 use tilo_ui::widget::toolbar::Orientation;
@@ -868,7 +869,7 @@ fn stamp(canvas: &mut Canvas<'_>, cell: Rect, widget: &mut dyn Widget, st: St, f
     }
     let presence = PresenceCtx::default();
     let previous = presence.push_viewport(page);
-    widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+    widget.draw_child(scene, Affine::IDENTITY, tr, theme, &presence);
     presence.pop_viewport(previous);
 }
 

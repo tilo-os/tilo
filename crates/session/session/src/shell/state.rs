@@ -270,9 +270,6 @@ struct Surface {
     slot: &'static str,
     role: &'static str,
     anchor: String,
-    modality: &'static str,
-    owner: String,
-    lifecycle: &'static str,
     size: Extent,
     /// Where the host places it, for a surface whose anchor and size settle a rect. A surface its
     /// own view places has none.
@@ -531,18 +528,15 @@ impl Service for ShellService {
                         slot: entry.slot.as_str(),
                         role: entry.role.as_str(),
                         anchor: entry.anchor.as_str(),
-                        modality: entry.modality.as_str(),
-                        owner: entry.owner.as_str(),
-                        lifecycle: entry.lifecycle.as_str(),
                         size: Extent {
                             width: entry.size.width,
                             height: entry.size.height,
                         },
-                        place: entry.place.map(|place| Area {
-                            x: place.x0,
-                            y: place.y0,
-                            w: place.width(),
-                            h: place.height(),
+                        place: entry.place.map(|standing| Area {
+                            x: standing.room.x0,
+                            y: standing.room.y0,
+                            w: standing.room.width(),
+                            h: standing.room.height(),
                         }),
                     })
                     .collect(),

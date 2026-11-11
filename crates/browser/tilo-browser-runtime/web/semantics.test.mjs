@@ -852,3 +852,68 @@ test('the mirror rewrites only the elements of nodes a patch changed',()=>{
   const find=(element,label)=>element.getAttribute?.('aria-label')===label?element:element.children.map(child=>find(child,label)).find(Boolean);
   assert.equal(find(root,'Message').dataset.tiloFocused,'true','focus stays on the composer');
 });
+
+test('a field that only moved is left alone: its scroll is not read and its value and selection not set again',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const tree=(y,value='Paragraph one',focus=3)=>({root:{path:'note',semantics:{semantic_key:'block',role:'MultilineTextInput',value,text_selection:{anchor:focus,focus},bounds:{x0:0,y0:y,x1:400,y1:y+40}}}});
+  bridge.update(tree(100));
+  const field=root.children[0];
+  // Reading a field's scroll makes the browser lay the page out first; set
+  // again, its value or selection makes it do so once more. A scroll moves
+  // every field on screen, so each of these is a layout per field per frame.
+  let touched=0;
+  const watch=name=>{let held=field[name];Object.defineProperty(field,name,{get(){touched++;return held;},set(v){touched++;held=v;},configurable:true});};
+  for(const name of ['scrollLeft','scrollTop','value'])watch(name);
+  const setSelectionRange=field.setSelectionRange.bind(field);field.setSelectionRange=(...a)=>{touched++;setSelectionRange(...a);};
+  for(let y=90;y>0;y-=10)bridge.update(tree(y));
+  const reads=touched;
+  assert.equal(field.style.top,'10px','the field follows where it is drawn');
+  // Reading `value` to compare is no layout; only scroll and writes are.
+  assert.ok(reads<=9,`a moved field was touched ${reads} times across 9 moves`);
+  touched=0;
+  bridge.update(tree(10,'Paragraph one!',3));
+  assert.equal(field.value,'Paragraph one!','a new value is still shown');
+  bridge.update(tree(10,'Paragraph one!',5));
+  assert.deepEqual([field.selectionStart,field.selectionEnd],[5,5],'a new selection is still set');
+});
+
+test('a moved field with the same text and selection does not count its text again',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const tree=(y,focus=3,value='Paragraph one: words')=>({root:{path:'note',semantics:{semantic_key:'block',role:'MultilineTextInput',value,text_selection:{anchor:focus,focus},bounds:{x0:0,y0:y,x1:400,y1:y+40}}}});
+  bridge.update(tree(100));
+  // Turning the tree's byte offsets into the field's characters walks the
+  // text grapheme by grapheme: once per field per update while a view
+  // scrolls was most of what the mirror cost.
+  const segment=Intl.Segmenter.prototype.segment;let walks=0;
+  Intl.Segmenter.prototype.segment=function(...a){walks++;return segment.apply(this,a);};
+  try{
+    for(let y=90;y>0;y-=10)bridge.update(tree(y));
+    assert.equal(walks,0,'only moved: nothing counted');
+    bridge.update(tree(10,5));
+    assert.ok(walks>0,'a new selection is counted');
+    assert.deepEqual([root.children[0].selectionStart,root.children[0].selectionEnd],[5,5]);
+  }finally{Intl.Segmenter.prototype.segment=segment;}
+});
+test('a node that only moved keeps its attributes and its key',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const tree=y=>({root:{path:'note',semantics:{semantic_key:'list',role:'List',name:'Blocks',children:[0,1,2].map(i=>({role:'ListItem',name:`Block ${i}`,value:`Line ${i}`,state:{focusable:true,selected:i===1},bounds:{x0:0,y0:y+i*40,x1:400,y1:y+i*40+40}}))}}});
+  bridge.update(tree(100));
+  const items=root.children[0].children;
+  assert.equal(items[1].getAttribute('aria-selected'),'true');
+  // A scroll moves every node on screen and changes nothing else: what the
+  // mirror writes for each is where it is, not what it says again.
+  const writes=[];const set=Element.prototype.setAttribute,unset=Element.prototype.removeAttribute;
+  Element.prototype.setAttribute=function(name,value){writes.push(name);return set.call(this,name,value);};
+  Element.prototype.removeAttribute=function(name){writes.push(name);return unset.call(this,name);};
+  const keys=items.map(item=>item.tiloState.key);
+  try{
+    for(let y=90;y>0;y-=10)bridge.update(tree(y));
+    assert.deepEqual(writes,[],'only moved: no attribute written');
+    assert.equal(items[2].style.top,'90px','still placed where it is drawn');
+    assert.ok(items.every((item,i)=>item.tiloState.key===keys[i]&&root.children[0].children[i]===item),'the same elements under the same keys');
+    const moved=tree(10);moved.root.semantics.children[2].name='Block two';
+    bridge.update(moved);
+    assert.deepEqual(writes.includes('aria-label'),true,'a changed name is written');
+    assert.equal(items[2].getAttribute('aria-label'),'Block two');
+  }finally{Element.prototype.setAttribute=set;Element.prototype.removeAttribute=unset;}
+});

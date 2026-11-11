@@ -21,6 +21,7 @@ use ui::framework::{EffectAnswer, EffectCx, Effected, Live};
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::{
@@ -597,13 +598,13 @@ impl Widget for BrowserWindow {
         presence: &PresenceCtx,
     ) {
         if self.layout_immersive == Some(true) {
-            self.page.draw(scene, transform, tr, theme, presence);
+            self.page.draw_child(scene, transform, tr, theme, presence);
             return;
         }
         if let Some(panel) = self.exit_panel.as_mut() {
-            panel.draw(scene, transform, tr, theme, presence);
+            panel.draw_child(scene, transform, tr, theme, presence);
         }
-        self.page.draw(scene, transform, tr, theme, presence);
+        self.page.draw_child(scene, transform, tr, theme, presence);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.repaint = true;
@@ -741,7 +742,10 @@ impl Widget for BrowserWindow {
     }
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Group).with_name("Browser"))
+        Some(
+            AccessNode::new(Role::Group)
+                .with_name(crate::resource::CATALOG.t("browser-window-name")),
+        )
     }
     fn take_structure_dirty(&mut self) -> bool {
         let dirty = std::mem::take(&mut self.dirty);

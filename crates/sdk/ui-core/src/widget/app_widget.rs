@@ -316,6 +316,7 @@ pub struct WindowPublication {
 mod component_adapter {
     use super::{AppHostIntent, AppWidget, IconDescriptor, Widget};
     use crate::application::AppComponent;
+    use crate::widget::DrawChild;
     use crate::widget::{
         ActionDirectoryResourcePage, Affine, AppKind, AudiencePresentationProvider,
         AudiencePresentationWidgetExt, AutoCommit, CaptureMode, CompleteContentProvider,
@@ -702,7 +703,7 @@ mod component_adapter {
             }
             let permissions = binding.permissions.borrow().clone();
             presence.with_permissions(permissions, || {
-                root.draw(scene, transform, text_renderer, theme, presence);
+                root.draw_child(scene, transform, text_renderer, theme, presence);
             });
             let _ = crate::widget::layout::lay_out_detached(root, live, theme, text_renderer);
             if let Some(offset) = offset {
@@ -1008,7 +1009,7 @@ mod component_adapter {
             // The component's own authority, not whatever its container holds.
             let permissions = binding.permissions.borrow().clone();
             presence.with_permissions(permissions, || {
-                root.draw(scene, transform, text_renderer, theme, presence);
+                root.draw_child(scene, transform, text_renderer, theme, presence);
             });
         }
         fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -1071,7 +1072,7 @@ mod component_adapter {
         fn cursor_shape(&self, point: vello::kurbo::Point) -> Option<winit::window::CursorIcon> {
             self.in_root(|root| root.cursor_shape(point)).flatten()
         }
-        fn tooltip(&self) -> Option<&str> {
+        fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
             self.in_root(|root| root.tooltip()).flatten()
         }
         fn set_focus(&mut self, focused: bool) {

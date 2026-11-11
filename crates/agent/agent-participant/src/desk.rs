@@ -151,6 +151,19 @@ fn salt_of(author: &str) -> u16 {
     tilo_desktop_model::ids::device_salt(u16::try_from(folded).unwrap_or(1))
 }
 
+/// What publishes `change`, a change of the workspace's desk: the change alone where the
+/// workspace `holds` a desk, the whole desk where it holds none yet, since a record starts whole.
+pub(crate) fn desk_mutation(holds: bool, change: Vec<u8>) -> collab_types::DocumentMutation {
+    if holds {
+        return collab_types::DocumentMutation::Incremental(change);
+    }
+    let mut desk = AutoCommit::new();
+    if let Err(error) = tilo_automerge::ApplyIncoming::load_incoming(&mut desk, &change) {
+        tracing::warn!(%error, "agent: a new desk did not take its first view");
+    }
+    collab_types::DocumentMutation::Snapshot(desk.save())
+}
+
 #[cfg(test)]
 mod tests {
 

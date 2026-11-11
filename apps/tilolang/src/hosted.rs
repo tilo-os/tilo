@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex};
 use tilo_render_protocol::channel::Channel;
 use tilo_render_protocol::patch::unix::ChannelTransport;
 use tilo_ui_host::AppWindow;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath, Widget};
 
 /// The variable the launcher sets for a window whose instance a tilolang host runs.
@@ -456,7 +457,7 @@ impl ui::widget::Decorator for HostedWindow {
             }
         }
         self.content_mut()
-            .draw(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn take_structure_dirty(&mut self) -> bool {

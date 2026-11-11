@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 36
+version = 41
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -26,6 +26,7 @@ sources = [
     "crates/collab/actions/src/record_sync.rs",
     "crates/collab/neighbour-wire/src/retention.rs",
     "crates/collab/neighbour-wire/src/unit_chain.rs",
+    "crates/collab/neighbour-wire/src/content.rs",
     "crates/collab/tilo-user-identity/src/cert.rs",
     "crates/collab/collab-types/src/channel.rs",
     "crates/hosting/tilo-relay-protocol/src/voice.rs",
@@ -45,7 +46,7 @@ sources = [
     "crates/collab/collab-types/src/peer.rs",
     "crates/collab/collab-types/src/presence/shell.rs",
 ]
-roots = ["Hello", "HelloAck", "HelloAck2", "EnterStep", "EnterProof", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "PlaneFrame", "State"]
+roots = ["Hello", "HelloAck", "HelloAck2", "EnvelopeV2", "NeighbourMsg", "DeviceAction", "SignedDeviceAction", "PlaneFrame", "State"]
 
 [opaque]
 Uuid = "uuid::Uuid: 16 bytes"
@@ -148,6 +149,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DeviceAction.workspace" = "#0 String"
 "DeviceCapabilities" = "struct"
 "DeviceCapabilities.agent" = "#6 Option<AgentScope>"
+"DeviceCapabilities.browser_pages" = "#9 bool"
 "DeviceCapabilities.can_act_as_host" = "#2 bool"
 "DeviceCapabilities.can_administer_devices" = "#5 bool"
 "DeviceCapabilities.can_admit_devices" = "#1 bool"
@@ -181,7 +183,10 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "DoorRefusalCode::removed" = "#1 unit"
 "DoorRefused" = "struct"
 "DoorRefused.code" = "#0 DoorRefusalCode"
+"DoorRefused.contact" = "#3 Option<String>"
 "DoorRefused.error" = "#1 String"
+"DoorRefused.mail" = "#4 bool"
+"DoorRefused.waitList" = "#2 bool"
 "Ed25519PublicKey" = "tuple([u8; 32]) transparent"
 "EncryptionMetadata" = "struct"
 "EncryptionMetadata.channel" = "#1 ChannelId"
@@ -191,20 +196,15 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "EncryptionScheme::ContentKey" = "#1 struct"
 "EncryptionScheme::ContentKey.retention" = "#0 ContentRetention"
 "EncryptionScheme::MlsApplication" = "#0 unit"
-"EnterProof" = "struct"
-"EnterProof.signature" = "#0 [u8; 64] with=serde_bytes"
 "EnterRefusal" = "enum external"
 "EnterRefusal::Door" = "#0 struct"
 "EnterRefusal::Door.refused" = "#0 DoorRefused"
 "EnterRefusal::Door.retry_after_secs" = "#1 Option<u64>"
 "EnterRefusal::Workspace" = "#1 tuple(String)"
-"EnterStep" = "enum external"
-"EnterStep::Challenge" = "#0 struct"
-"EnterStep::Challenge.challenge" = "#0 Vec<u8> with=serde_bytes"
-"EnterStep::In" = "#1 unit"
-"EnterStep::Refused" = "#2 tuple(EnterRefusal)"
 "Entered" = "enum external"
 "Entered::Admitted" = "#0 struct"
+"Entered::Admitted.desktop_scope" = "#4 Option<ChannelId>"
+"Entered::Admitted.host" = "#5 Option<Vec<u8>> with=serde_bytes"
 "Entered::Admitted.name" = "#2 String"
 "Entered::Admitted.role" = "#3 WorkspaceRole"
 "Entered::Admitted.workspace" = "#0 String"
@@ -213,7 +213,12 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Entering" = "struct"
 "Entering.name" = "#1 String"
 "Entering.request_id" = "#2 [u8; 32]"
+"Entering.through" = "#3 Through"
 "Entering.workspace" = "#0 String"
+"Entry" = "struct"
+"Entry.access" = "#1 Option<MlsAccessRequestV1>"
+"Entry.entering" = "#0 Entering"
+"Entry.proof" = "#2 [u8; 64] with=serde_bytes"
 "Envelope" = "enum external"
 "Envelope::AgentRun" = "#45 struct"
 "Envelope::AgentRun.label" = "#1 String"
@@ -222,6 +227,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Envelope::AgentRunAnswer.refusal" = "#1 Option<String>"
 "Envelope::AgentRunAnswer.request_id" = "#0 u64"
 "Envelope::AgentRunStopped" = "#47 unit"
+"Envelope::ChannelReader" = "#50 unit"
 "Envelope::Commit" = "#13 struct"
 "Envelope::Commit.author_device_public_key" = "#2 [u8; 32]"
 "Envelope::Commit.authored_at_ns" = "#3 u64"
@@ -417,7 +423,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "Hello" = "struct"
 "Hello.cert" = "#1 DeviceCert"
 "Hello.client_nonce" = "#2 [u8; 32]"
-"Hello.entering" = "#3 Option<Entering>"
+"Hello.entering" = "#3 Option<Entry>"
 "Hello.protocol" = "#0 u32"
 "HelloAck" = "struct"
 "HelloAck.cert" = "#1 DeviceCert"
@@ -551,6 +557,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "NeighbourMsg::RecordContentWant.app_id" = "#1 String"
 "NeighbourMsg::RecordContentWant.cluster_id" = "#2 String"
 "NeighbourMsg::RecordContentWant.hash" = "#3 String"
+"NeighbourMsg::RecordContentWant.have" = "#4 Vec<Span>"
 "NeighbourMsg::RecordContentWant.requester" = "#0 PeerId"
 "NeighbourMsg::RemoteAction" = "#18 struct"
 "NeighbourMsg::RemoteAction.frame" = "#0 Vec<u8>"
@@ -788,6 +795,9 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SignedWire.action" = "#1 Vec<u8> with=serde_bytes"
 "SignedWire.issued_at_ns" = "#0 u64"
 "SignedWire.signature" = "#2 [u8; 64] with=serde_bytes"
+"Span" = "struct"
+"Span.len" = "#1 u64"
+"Span.offset" = "#0 u64"
 "State" = "struct"
 "State.app_installed" = "#3 bool"
 "State.critical_battery" = "#6 bool"
@@ -809,6 +819,11 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "SurfaceView.height" = "#2 u32"
 "SurfaceView.tab" = "#0 u64"
 "SurfaceView.width" = "#1 u32"
+"Through" = "enum external"
+"Through::Door" = "#0 unit"
+"Through::Invitation" = "#1 struct"
+"Through::Invitation.invitation" = "#0 Vec<u8> with=serde_bytes"
+"Through::Invitation.token" = "#1 Option<Vec<u8>> with=serde_bytes"
 "TransferCharacteristics" = "enum external"
 "TransferCharacteristics::arib-std-b67" = "#2 unit"
 "TransferCharacteristics::bt709" = "#0 unit"

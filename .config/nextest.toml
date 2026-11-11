@@ -91,12 +91,12 @@ setup = "lounge-siblings"
 # feature `agents` that gives it the `room` subcommand.
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-host) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-client) and binary(lounge_fresh_page)"
 setup = "lounge-siblings"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-host) and binary(lounge_fresh_page)"
+filter = "package(tilo-session-client) and binary(lounge_fresh_page)"
 setup = "lounge-siblings"
 
 # The browser peer's page tests drive the page's own modules in headless
@@ -110,12 +110,12 @@ command = ["bash", "tools/build-page-bundle.sh"]
 
 [[profile.default.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-host) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))"
 setup = "page-bundle"
 
 [[profile.ci.scripts]]
 platform = { host = 'cfg(target_os = "linux")' }
-filter = "package(tilo-session-host) and (binary(passkey_root) or binary(node_workspace))"
+filter = "package(tilo-session-client) and (binary(passkey_root) or binary(node_workspace))"
 setup = "page-bundle"
 
 # Chat's acceptance drives the app itself, as a desktop starts it: the app, the
@@ -169,14 +169,17 @@ test-group = "gpu-golden"
 
 # What a person's interactions at 10k tasks cost, printed on a pass too: the
 # reading against the targets it is held to, so a drift toward them shows in
-# every CI log before a run crosses one. Seeding ten thousand tasks and driving
-# a window over them takes minutes on a machine busy with other work, so its
-# hang bound is the ci profile's eight: a slow run reports the table rather than
-# a termination.
+# every run's log before a run crosses one. The test's name carries the module
+# it is written in (`cost`), which the filter has to name: a `test(=…)` names
+# the whole test, so the table was never printed. A profile's overrides are its
+# own, so the run the CI makes reads it under `ci` below.
 [[profile.default.overrides]]
-filter = 'package(tilolang-app) and binary(hosted) and test(=what_the_interactions_a_person_feels_cost)'
+filter = 'package(tilolang-app) and binary(hosted) and test(=cost::what_the_interactions_a_person_feels_cost)'
 success-output = "final"
-slow-timeout = { period = "60s", terminate-after = 8 }
+
+[[profile.ci.overrides]]
+filter = 'package(tilolang-app) and binary(hosted) and test(=cost::what_the_interactions_a_person_feels_cost)'
+success-output = "final"
 
 [[profile.default.overrides]]
 filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or test(wayland_test::))'
@@ -252,7 +255,7 @@ slow-timeout = { period = "30s", terminate-after = 40 }
 # Megabytes of fsynced commits: these take the runner's disk and CPUs, so
 # they run alone rather than slowing every test beside them.
 [[profile.default.overrides]]
-filter = 'package(tilo-session-host) and binary(compaction)'
+filter = 'package(tilo-session-client) and binary(compaction)'
 threads-required = "num-cpus"
 
 [[profile.default.overrides]]

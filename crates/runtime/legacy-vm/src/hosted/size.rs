@@ -4,15 +4,8 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-/// A hosted VM's machine and disk. For a Linux VM the disk is persistent:
-/// it outlives every suspend and stop, and only deleting the VM frees it.
-///
-/// [`Self::Browser`] is the one size that is not a Linux VM: it boots the
-/// browser guest image instead (a host boots one image per size class), it
-/// is never snapshotted, and what it writes is deleted when it stops. It is
-/// asked for with [`Request::BrowserOpen`](super::control::Request) by the
-/// relay, never by a shell, and it is chosen so that the placer and the
-/// memory budget weigh it like any other VM.
+/// A hosted VM's machine and disk. The disk is persistent: it outlives
+/// every suspend and stop, and only deleting the VM frees it.
 #[derive(
     Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
 )]
@@ -27,26 +20,15 @@ pub enum VmSize {
     Large,
     /// 16 vCPU, 32 GiB, 250 GiB disk.
     Xlarge,
-    /// A browser environment: 2 vCPU, 2 GiB, 8 GiB disk, kept for nothing.
-    Browser,
 }
 
 impl VmSize {
-    pub const ALL: [Self; 5] = [
-        Self::Small,
-        Self::Default,
-        Self::Large,
-        Self::Xlarge,
-        Self::Browser,
-    ];
-
-    /// The sizes a Linux VM is asked for in: every size but the browser's.
-    pub const LINUX: [Self; 4] = [Self::Small, Self::Default, Self::Large, Self::Xlarge];
+    pub const ALL: [Self; 4] = [Self::Small, Self::Default, Self::Large, Self::Xlarge];
 
     #[must_use]
     pub const fn vcpus(self) -> u32 {
         match self {
-            Self::Small | Self::Browser => 2,
+            Self::Small => 2,
             Self::Default => 4,
             Self::Large => 8,
             Self::Xlarge => 16,
@@ -57,7 +39,6 @@ impl VmSize {
     pub const fn memory_mib(self) -> u64 {
         match self {
             Self::Small => 4 * 1024,
-            Self::Browser => 2 * 1024,
             Self::Default => 8 * 1024,
             Self::Large => 16 * 1024,
             Self::Xlarge => 32 * 1024,
@@ -68,7 +49,6 @@ impl VmSize {
     pub const fn disk_gib(self) -> u64 {
         match self {
             Self::Small | Self::Default => 50,
-            Self::Browser => 8,
             Self::Large => 110,
             Self::Xlarge => 250,
         }
@@ -86,7 +66,6 @@ impl VmSize {
             Self::Default => "default",
             Self::Large => "large",
             Self::Xlarge => "xlarge",
-            Self::Browser => "browser",
         }
     }
 
@@ -138,10 +117,8 @@ mod tests {
                 ("default", 4, 8192, 50),
                 ("large", 8, 16384, 110),
                 ("xlarge", 16, 32768, 250),
-                ("browser", 2, 2048, 8),
             ]
         );
-        assert_eq!(VmSize::LINUX.len() + 1, VmSize::ALL.len());
         for size in VmSize::ALL {
             assert_eq!(VmSize::parse(size.as_str()), Some(size));
             let json = serde_json::to_string(&size).unwrap();

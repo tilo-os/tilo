@@ -116,6 +116,7 @@ pub fn inspect(
     }
     listed_detail(&titled, root, &mut Vec::new(), &mut out);
     gutter(root, f64::from(viewport.0), &mut Vec::new(), &mut out);
+    fields(root, &mut Vec::new(), &mut out);
     out
 }
 
@@ -1114,6 +1115,52 @@ fn one_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+// --- the line a field stands in ------------------------------------------------------------------
+
+/// A field whose one line of text stands toward the top of the control it is typed into: the
+/// band around the line grew — a phone's target, a row stretching the field to the face of the
+/// button beside it — while the line stayed where a field with no room over it puts it, so a
+/// person reads the placeholder or the words floating over empty room, and the caret away from
+/// the middle of the box their finger pressed. A field holding one line stands it in the middle
+/// of the band; one whose text wraps, and one given lines of its own (a note's box), starts at
+/// its inset and grows down, and is no line off centre.
+fn fields(node: &InspectionNode, keys: &mut Vec<String>, out: &mut Vec<Problem>) {
+    if let Some(LayoutInfo::Text(text)) = node.layout
+        && matches!(role(node), Some(Role::TextInput | Role::MultilineTextInput))
+        && text.rows <= 1
+        && text.lines == 0
+        && !text.document
+    {
+        let field = rect(node);
+        let line = f64::from(text.line);
+        // Only a band's room is a band's: a field stretched to fill a pane starts its text at the
+        // inset, where it grows, and is no line off centre.
+        if field.height() > line + 2.0 * SLACK && field.height() <= f64::from(text.band) + SLACK {
+            let above = f64::from(text.top) - field.y0;
+            let under = field.y1 - (f64::from(text.top) + line);
+            if (above - under).abs() > SLACK {
+                push(
+                    out,
+                    Kind::LineOffCentre,
+                    node,
+                    keys,
+                    format!(
+                        "its one line stands {above:.0} px under the field's top and {under:.0} px \
+                         over its foot: the line a field holds stands in the middle of it"
+                    ),
+                );
+            }
+        }
+    }
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    for child in &node.children {
+        fields(child, keys, out);
+    }
+    if pushed {
+        keys.pop();
+    }
+}
+
 // --- the gutter a narrow window keeps -----------------------------------------------------------
 
 /// A window too narrow for a page's own gutters keeps one gutter at its edge, so content never
@@ -1637,6 +1684,77 @@ mod tests {
             found(Kind::UnchosenPlace, &shell(true), (1280, 800)).is_empty(),
             "a chosen place says where the person is"
         );
+    }
+
+    /// A field's one line stands in the middle of the band it is typed into: a band grown to a
+    /// finger's target centres it, a line left at the top does not, and wrapped text, a box given
+    /// rows and a document's page start at the inset.
+    #[test]
+    fn a_field_holding_one_line_stands_it_in_the_middle_of_the_band() {
+        fn field(
+            id: &str,
+            at: [f64; 4],
+            top: f64,
+            line: f64,
+            rows: u32,
+            lines: u32,
+        ) -> InspectionNode {
+            let mut field = node("TextInput", id, at, Some(Role::TextInput));
+            field.layout = Some(LayoutInfo::Text(ui::widget::TextLayout {
+                top: f64_to_f32(top),
+                line: f64_to_f32(line),
+                rows,
+                lines,
+                // A field stands one band tall as it is read here, whatever room it was given.
+                band: f64_to_f32(at[3]),
+                document: false,
+            }));
+            field
+        }
+        /// The field in a band `band` tall: the room a single-line field of its size keeps.
+        fn in_band(mut field: InspectionNode, band: f64) -> InspectionNode {
+            if let Some(LayoutInfo::Text(text)) = &mut field.layout {
+                text.band = f64_to_f32(band);
+            }
+            field
+        }
+        // A composer in a phone's window: the band grew to the target a finger needs, and its one
+        // line stands in the middle of it.
+        let centred = field("comment", [100.0, 20.0, 240.0, 48.0], 34.9, 18.2, 1, 0);
+        assert!(
+            found(Kind::LineOffCentre, &centred, (390, 844)).is_empty(),
+            "{:?}",
+            found(Kind::LineOffCentre, &centred, (390, 844))
+        );
+        // The same field with its line at the top: the words float over empty room, and the
+        // caret stands away from the middle of the box a finger pressed.
+        let pinned = field("comment", [100.0, 20.0, 240.0, 48.0], 28.0, 18.2, 1, 0);
+        let problems = found(Kind::LineOffCentre, &pinned, (390, 844));
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        // Text that wrapped starts at its inset and grows down, as a document does.
+        let wrapped = field("comment", [100.0, 20.0, 240.0, 60.0], 28.0, 18.2, 2, 0);
+        assert!(found(Kind::LineOffCentre, &wrapped, (390, 844)).is_empty());
+        // A box given rows of its own (a note's six) starts at its inset, one line or not.
+        let note = in_band(
+            field("notes", [0.0, 0.0, 240.0, 126.0], 6.0, 18.2, 1, 6),
+            32.0,
+        );
+        assert!(found(Kind::LineOffCentre, &note, (1280, 800)).is_empty());
+        // A field stretched to fill a pane keeps its line at its inset: the room is the pane's.
+        let filled = in_band(
+            field("composer", [0.0, 0.0, 320.0, 200.0], 8.0, 18.2, 1, 0),
+            48.0,
+        );
+        assert!(found(Kind::LineOffCentre, &filled, (1280, 800)).is_empty());
+        // A document's own page starts at its inset however tall the page stands.
+        let mut page = field("body", [0.0, 0.0, 320.0, 400.0], 8.0, 18.2, 1, 0);
+        if let Some(LayoutInfo::Text(text)) = &mut page.layout {
+            text.document = true;
+        }
+        assert!(found(Kind::LineOffCentre, &page, (1280, 800)).is_empty());
+        // A single-line field centres its band already, and stands one line tall.
+        let single = field("search", [0.0, 0.0, 240.0, 32.0], 6.9, 18.2, 1, 0);
+        assert!(found(Kind::LineOffCentre, &single, (1280, 800)).is_empty());
     }
 
     /// A window too narrow for a page's gutters keeps one at its edge: content eight pixels from

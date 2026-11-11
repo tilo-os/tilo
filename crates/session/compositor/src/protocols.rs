@@ -128,6 +128,10 @@ impl State {
                 .unwrap_or(node)
         });
         self.render_node = render;
+        crate::uploads::offer_gpu_frames(
+            render.and_then(|render| render.dev_path()).as_deref(),
+            &formats,
+        );
         let feedback = render.and_then(|render| {
             DmabufFeedbackBuilder::new(render.dev_id(), formats.iter().copied())
                 .build()

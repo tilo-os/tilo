@@ -102,6 +102,7 @@ fn scope_of(workspace: Option<&str>) -> Result<AgentScope, &'static str> {
 fn key_grant(
     scope: AgentScope,
     expires_in: Option<u64>,
+    browser_pages: bool,
     now: u64,
 ) -> Result<crate::GrantAsk, &'static str> {
     if expires_in == Some(0) {
@@ -113,6 +114,7 @@ fn key_grant(
             scope,
             server_key: true,
             expires_ms: chosen,
+            browser_pages,
         });
     }
     let bounded = crate::GrantAsk::bounded(scope, now);
@@ -123,9 +125,23 @@ fn key_grant(
         ),
         (Some(chosen), _) => Ok(crate::GrantAsk {
             expires_ms: Some(chosen),
+            browser_pages,
             ..bounded
         }),
-        (None, _) => Ok(bounded),
+        _ => Ok(crate::GrantAsk {
+            browser_pages,
+            ..bounded
+        }),
+    }
+}
+
+/// `browser_pages` as a request names it: absent (the person lets the key
+/// operate web pages, as a key made here does), or yes or no.
+pub(crate) fn browser_pages_of(asked: Option<&Value>) -> Result<bool, &'static str> {
+    match asked {
+        None | Some(Value::Null) => Ok(true),
+        Some(Value::Bool(allowed)) => Ok(*allowed),
+        Some(_) => Err("`browser_pages` is true or false"),
     }
 }
 
@@ -184,9 +200,10 @@ impl Door {
         name: Option<&str>,
         workspace: Option<&str>,
         expires_in: Option<u64>,
+        browser_pages: bool,
     ) -> Result<(String, String), &'static str> {
         let name = name_of(name)?;
-        let grant = key_grant(scope_of(workspace)?, expires_in, now_ms())?;
+        let grant = key_grant(scope_of(workspace)?, expires_in, browser_pages, now_ms())?;
         let poll = store::secret(32).map_err(|_| "no randomness is available; try again")?;
         let (id, _) = self.key_sign_in(name, grant, Some(store::digest(&poll)))?;
         Ok((poll, format!("{}{APPROVE_PREFIX}{id}", self.config.issuer)))
@@ -225,7 +242,13 @@ impl Door {
         let asked: Value = serde_json::from_slice(body).unwrap_or_default();
         let field = |name: &str| asked.get(name).and_then(Value::as_str);
         let requested = expires_in_of(asked.get("expires_in"))
-            .and_then(|expires_in| self.request_key(field("name"), field("workspace"), expires_in));
+            .and_then(|expires_in| {
+                browser_pages_of(asked.get("browser_pages"))
+                    .map(|browser_pages| (expires_in, browser_pages))
+            })
+            .and_then(|(expires_in, browser_pages)| {
+                self.request_key(field("name"), field("workspace"), expires_in, browser_pages)
+            });
         match requested {
             Ok((poll, approve_url)) => json_reply(
                 StatusCode::CREATED,
@@ -241,7 +264,8 @@ impl Door {
                 "invalid_request",
                 why,
                 "send {\"name\": \"…\"}, \"workspace\": \"<id>\" for a key reaching one workspace, \
-                 and \"expires_in\": <seconds> for a key that expires",
+                 \"expires_in\": <seconds> for a key that expires, and \"browser_pages\": false \
+                 for a key that may not operate web pages in Browser",
             ),
         }
     }
@@ -336,10 +360,12 @@ impl Door {
                 .parse::<u64>()
                 .map_err(|_| "`expires_in` is a number of seconds above zero")
         });
+        let browser_pages = field("browser_pages").is_some();
         let asked = name_of(field("name")).and_then(|name| {
             let grant = key_grant(
                 scope_of(field("workspace"))?,
                 expires_in.transpose()?,
+                browser_pages,
                 now_ms(),
             )?;
             Ok((name, grant))

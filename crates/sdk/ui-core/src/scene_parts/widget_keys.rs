@@ -113,7 +113,10 @@ thread_local! {
     static KEYER: std::cell::Cell<Option<Keyer>> = const { std::cell::Cell::new(None) };
     static OPEN: RefCell<Vec<Open>> = const { RefCell::new(Vec::new()) };
     /// The widgets at the root of the frame keyed so far.
-    static ROOTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// By the scene they draw into and their type: a widget drawn at the
+    /// root of another scene (a measuring pass, a drag's picture), or one
+    /// of another type, does not renumber the frame's own.
+    static ROOTS: RefCell<HashMap<(usize, &'static str), usize>> = RefCell::new(HashMap::new());
     /// The scroll regions keyed widgets drew, by key: kept across frames,
     /// since a frame that replays a cached subtree draws no widget in it
     /// again ([`retain_shown`]).
@@ -132,7 +135,7 @@ pub fn begin_frame() {
 }
 
 fn begin_frame_keys() {
-    ROOTS.with(|roots| roots.set(0));
+    ROOTS.with_borrow_mut(HashMap::clear);
     OPEN.with_borrow_mut(Vec::clear);
 }
 
@@ -242,6 +245,11 @@ fn begin_described(
     index: Option<usize>,
     transform: Affine,
 ) {
+    let scene_id = std::ptr::from_ref(&*scene) as usize;
+    // A scene that holds no key yet starts its roots' count again: one
+    // drawn into, reset and drawn into again in a frame (a layout that
+    // settled on the second pass) numbers its roots as once.
+    let fresh = scene.encoding().resources.marks.is_empty();
     let (key, ancestors) = OPEN.with_borrow_mut(|open| {
         let (parent, slot) = match open.last_mut() {
             Some(parent) => {
@@ -249,9 +257,13 @@ fn begin_described(
                 parent.children = slot.saturating_add(1);
                 (parent.key, slot)
             }
-            None => ROOTS.with(|roots| {
-                let slot = index.unwrap_or(roots.get());
-                roots.set(slot.saturating_add(1));
+            None => ROOTS.with_borrow_mut(|roots| {
+                if fresh {
+                    roots.retain(|(drawn_into, _), _| *drawn_into != scene_id);
+                }
+                let count = roots.entry((scene_id, widget.identity.1)).or_default();
+                let slot = index.unwrap_or(*count);
+                *count = slot.saturating_add(1);
                 (0, slot)
             }),
         };
@@ -316,9 +328,11 @@ pub fn skip_widget() {
 }
 
 fn skip_keys() {
-    OPEN.with_borrow_mut(|open| match open.last_mut() {
-        Some(parent) => parent.children = parent.children.saturating_add(1),
-        None => ROOTS.with(|roots| roots.set(roots.get().saturating_add(1))),
+    // A root left undrawn renumbers nothing: roots count by type.
+    OPEN.with_borrow_mut(|open| {
+        if let Some(parent) = open.last_mut() {
+            parent.children = parent.children.saturating_add(1);
+        }
     });
 }
 

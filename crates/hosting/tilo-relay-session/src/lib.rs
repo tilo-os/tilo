@@ -43,7 +43,7 @@ mod transport {
 }
 
 pub use antientropy::{SyncError, apply_sync_response, heads_wire, reconcile, send_sync_request};
-pub use client::{ClientCredentials, ClientError, RelayClient};
+pub use client::{ClientCredentials, ClientError, Entrance, Entry, RelayClient};
 #[cfg(not(target_arch = "wasm32"))]
 pub use coedit::retention_metadata;
 pub use coedit::{AttributedPresence, CoeditError, CoeditPayload, Inbound, RelayCoeditSession};

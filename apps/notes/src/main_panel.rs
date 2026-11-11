@@ -34,6 +34,7 @@
 //! ```
 
 use std::collections::HashMap;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -1158,6 +1159,40 @@ impl MainPanel {
         true
     }
 
+    /// PageUp and PageDown while the caret is in the note page its body, as
+    /// on any page: a paragraph has no page of its own to move through, so
+    /// they reached nothing and the note never moved. The caret stays where
+    /// it is; typing brings the view back to it. With Shift they extend the
+    /// selection, the editor's.
+    fn page_while_writing(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let direction = match key.logical_key {
+            Key::Named(NamedKey::PageDown) => 1.0,
+            Key::Named(NamedKey::PageUp) => -1.0,
+            _ => return false,
+        };
+        if *ctx.handled
+            || !self.editor.is_focused()
+            || !ctx.modifiers.state().is_empty()
+            || self.scroll_thumb().is_none()
+        {
+            return false;
+        }
+        if key.state == ElementState::Pressed {
+            let page = self.scroll_metrics().viewport * ui::widget::scrollbar::PAGE_FRACTION;
+            self.set_scroll_offset(self.scroll_y + direction * page);
+            self.dirty = true;
+        }
+        *ctx.handled = true;
+        true
+    }
+
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
         if self.scroll_thumb().is_none() {
             self.scrollbar.release();
@@ -2144,8 +2179,13 @@ impl Widget for MainPanel {
             // Its own part: naming the note repaints the title, not the page.
             self.title_label.apply_layout_external(self.title_rect);
             let mut title_scene = Scene::new();
-            self.title_label
-                .draw(&mut title_scene, transform, text_renderer, theme, presence);
+            self.title_label.draw_child(
+                &mut title_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
             let pinned = Rect::new(
@@ -2195,7 +2235,7 @@ impl Widget for MainPanel {
             let mut outside = scene.clone();
             if let Some(header) = self.header.built_mut() {
                 let mut header_scene = Scene::new();
-                header.draw(&mut header_scene, transform, text_renderer, theme, presence);
+                header.draw_child(&mut header_scene, transform, text_renderer, theme, presence);
                 scene.append(&header_scene, None);
                 let rect = header.get_rect();
                 parts.push(ui::widget::paint_damage::PaintPart::new(
@@ -2210,7 +2250,7 @@ impl Widget for MainPanel {
             }
             let mut editor_scene = Scene::new();
             self.editor
-                .draw(&mut editor_scene, transform, text_renderer, theme, presence);
+                .draw_child(&mut editor_scene, transform, text_renderer, theme, presence);
             let pointer_chrome = self.editor.editor().pointer_chrome();
             if let Some(body) = &mut self.body_drawing {
                 body.pointer_chrome = pointer_chrome;
@@ -2396,6 +2436,9 @@ impl Widget for MainPanel {
         }
 
         if self.handle_scrollbar_event(event, ctx.handled) {
+            return;
+        }
+        if self.page_while_writing(event, ctx) {
             return;
         }
 

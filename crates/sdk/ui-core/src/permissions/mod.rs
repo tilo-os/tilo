@@ -412,7 +412,9 @@ impl PermissionContext {
 
     #[must_use]
     pub fn with_grant(mut self, grant: policy::Grant) -> Self {
-        Arc::make_mut(&mut self.standing).policy.grants.push(grant);
+        Arc::make_mut(&mut Arc::make_mut(&mut self.standing).policy)
+            .grants
+            .push(grant);
         self
     }
 
@@ -509,7 +511,9 @@ impl PermissionContext {
         }
         let role = if writable { Role::Editor } else { Role::Viewer };
         let mut standing = (*self.standing).clone();
-        standing.policy.members.insert(person.clone(), role);
+        Arc::make_mut(&mut standing.policy)
+            .members
+            .insert(person.clone(), role);
         let mut next = self.clone();
         next.standing = Arc::new(standing);
         Some(next)
@@ -717,7 +721,7 @@ impl PermissionContext {
             return std::borrow::Cow::Borrowed(held);
         }
         let mut standing = held.clone();
-        standing.policy.grants.retain(keep);
+        Arc::make_mut(&mut standing.policy).grants.retain(keep);
         for bound in &mut standing.bounds {
             bound.grants.retain(keep);
         }
@@ -1469,14 +1473,16 @@ mod tests {
         {
             let mut ctx = PermissionContext::member("u_editor", Role::Editor);
             let mut standing = ctx.standing().clone();
-            standing.policy.grants.push(policy::Grant::new(
-                "terminal-read-only",
-                policy::Subject::Role(Role::Editor),
-                TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
-                policy::KindSet::UNDOABLE,
-                Answer::Deny,
-                policy::Subject::person("owner"),
-            ));
+            Arc::make_mut(&mut standing.policy)
+                .grants
+                .push(policy::Grant::new(
+                    "terminal-read-only",
+                    policy::Subject::Role(Role::Editor),
+                    TreePath::workspace(LOCAL_WORKSPACE).app(AppKind::Terminal.app_id()),
+                    policy::KindSet::UNDOABLE,
+                    Answer::Deny,
+                    policy::Subject::person("owner"),
+                ));
             ctx = ctx.with_standing(standing);
             assert!(!ctx.check(&PermissionScope::app_kind(
                 AppKind::Terminal,

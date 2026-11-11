@@ -8,21 +8,52 @@
 # a deployment changes how the door runs without a new image. It keeps its
 # clients and grants in one file on a volume and writes nothing else, so the
 # container runs as a non-root user on a read-only root filesystem.
+#
+# Nothing here compiles: t builds the door (tools/ci/publish/server-binaries.sh,
+# the check front-door-binaries) and this build lays the binary out with the
+# base and the packages it runs against, from the same frozen snapshot and
+# mirrored base as the relay (tools/ci/publish/front-door-build.sh).
 
-FROM docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
+# ---- Frozen RPM repo (cross-time reproducibility) ---------------------------
+# The package set every Tilo server image installs from, as
+# tools/ci/publish/front-door-build.sh resolves it. Declared before the first
+# FROM so it is global rather than scoped to the preceding stage.
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
 
-WORKDIR /workspace
-COPY . .
+# ---- Runtime -----------------------------------------------------------------
+# Fedora's minimal base, the same runtime base as the relay: a C library, the
+# certificates, and the door, with no package manager to run in its place. Pinned
+# by digest on registry.fedoraproject.org, which keeps superseded digests;
+# quay.io prunes them, so a pin there stops resolving.
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475
 
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/workspace/target,sharing=locked \
-    cargo build --locked --release -p tilo-front-door --bin tilo-front-door \
-    && install -D -m 0755 target/release/tilo-front-door /out/tilo-front-door \
-    && install -d -m 0700 -o 65532 -g 65532 /out/state
-
-# Distroless: a C library and the certificates, nothing to run in place of the
-# door, and the nonroot user (65532) as the image's own user.
-FROM gcr.io/distroless/cc-debian12:nonroot@sha256:9dac0a79194e45a7da0158a9c6da57b217585af0786db3845d1f0ec1a0dd182f AS runtime
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
+# Runtime dependency: CA roots for the hosts the door dials, which Tilo's
+# binaries read from one fixed path (crates/system/tilo-native-certs). The door
+# speaks rustls, not the system OpenSSL ABI. BusyBox is statically linked, so it
+# remains usable after removing the package manager, coreutils, and their
+# otherwise inherited OpenSSL dependency closure.
+# Minimal bases can contain the CA package without its generated bundle; an
+# already-installed package will not rerun its installation scriptlet. Extract
+# the same server-auth anchors as update-ca-trust before removing its tools.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
+        ca-certificates busybox \
+    && P11_KIT_NO_USER_CONFIG=1 /usr/bin/trust extract --format=pem-bundle \
+        --filter=ca-anchors --overwrite --comment --purpose server-auth /ca-bundle.crt \
+    && /usr/bin/busybox grep -q '^-----BEGIN CERTIFICATE-----$' /ca-bundle.crt \
+    && microdnf remove -y --setopt=protected_packages= openssl-libs coreutils dnf5 \
+    && /usr/bin/busybox mkdir -p /etc/pki/ca-trust/extracted/pem \
+    && /usr/bin/busybox mv /ca-bundle.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+    && /usr/bin/busybox test -s /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem \
+    && /usr/bin/busybox mkdir -p /state \
+    && /usr/bin/busybox chown 65532:65532 /state \
+    && /usr/bin/busybox chmod 0700 /state \
+    && ! /usr/bin/busybox find / -xdev \
+        \( -name 'libssl.so*' -o -name 'libcrypto.so*' -o -name openssl \) \
+        -print -quit | /usr/bin/busybox grep -q .
 
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Tilo front door" \
@@ -30,13 +61,7 @@ LABEL org.opencontainers.image.title="Tilo front door" \
       org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
 
-COPY --from=builder --chown=65532:65532 /out/tilo-front-door /usr/local/bin/tilo-front-door
-# Tilo's binaries read the trust bundle from one fixed path
-# (crates/system/tilo-native-certs), which distroless does not carry; the door
-# verifies the hosts it dials against it.
-COPY --from=builder --chown=65532:65532 /etc/ssl/certs/ca-certificates.crt /etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem
-# The volume the deployment mounts; the owner admits a run without one.
-COPY --from=builder --chown=65532:65532 /out/state/ /state/
+COPY --chown=65532:65532 bin/tilo-front-door /usr/local/bin/tilo-front-door
 
 USER 65532:65532
 # The clients and grants, and nothing else: a read-only root filesystem needs

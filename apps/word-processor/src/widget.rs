@@ -19,6 +19,7 @@ use winit::event::Modifiers;
 use tilo_doc::model::Region;
 use tilo_doc::paging::PageFlow;
 use tilo_doc::snapshot::{BlockView, NoteView};
+use ui::PresenceCtx;
 use ui::gesture::DragSelect;
 use ui::richtext::RichTextLayout;
 use ui::text_edit::EditCore;
@@ -190,9 +191,9 @@ struct ChromeColors {
     paper_tint: Color,
     /// Hairline on the sheet (placeholder edges, image-handle contrast).
     paper_edge: Color,
-    /// The paper sheet: the raised surface of a light theme, and the
-    /// canonical light sheet ([`PAPER_DEFAULT`]) under a dark one, so the
-    /// dark-authored document ink always reads.
+    /// The paper sheet: never darker than the window behind it in a light
+    /// theme, and the canonical light sheet ([`PAPER_DEFAULT`]) under a dark
+    /// one, so the dark-authored document ink always reads.
     paper: Color,
     /// The sheet's lift off the desk behind it.
     paper_elevation: ui::tokens::Shadow,
@@ -202,11 +203,20 @@ impl ChromeColors {
     /// Map the [`Theme`] onto the page's palette.
     fn for_theme(theme: &Theme) -> Self {
         let c = &theme.tokens.colors;
-        let paper = if luminance(c.surfaces.raised) >= 0.85 {
-            c.surfaces.raised
-        } else {
-            PAPER_DEFAULT
-        };
+        // A light theme's raised tier is often a well, recessed below the
+        // window ground; paper on it reads grey, as if disabled. The page is
+        // the lightest of that tier, the window ground and the canonical
+        // sheet, so it never sinks below the desk it lies on.
+        let paper = [c.surfaces.raised, c.surfaces.content, PAPER_DEFAULT]
+            .into_iter()
+            .filter(|colour| luminance(*colour) >= 0.85)
+            .fold(PAPER_DEFAULT, |lightest, colour| {
+                if luminance(colour) > luminance(lightest) {
+                    colour
+                } else {
+                    lightest
+                }
+            });
         let non_text = ui::tokens::colors::NON_TEXT_MIN_CONTRAST;
         let paper_accent = c.ink_on(paper, c.intent.you, non_text);
         let on_paper = theme.on_surface(paper);
@@ -2363,6 +2373,8 @@ struct PageContentInput<'a> {
     multi_selection: bool,
     spell_by_block: &'a HashMap<String, Vec<(usize, usize)>>,
     note_numbers: &'a HashMap<String, usize>,
+    /// Who is here, whose colours the review marks wear.
+    presence: &'a PresenceCtx,
 }
 
 struct NotesSpellcheckInput<'a> {

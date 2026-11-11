@@ -17,6 +17,7 @@ import {fetchPersonProfile,followPhotos,photoPixels} from './profile-photos.mjs'
 import {createPresentedSource} from './panorama.mjs';
 import {createSemanticPresentation} from './semantic-presentation.mjs';
 import {createDomPresenter} from './dom-present.mjs';
+import {createDomInput} from './dom-input.mjs';
 export {createPanorama} from './panorama.mjs';
 import {createNativeCatalogueBridge, invokeMembershipAction} from './native-catalogue.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
@@ -68,7 +69,17 @@ const mark=name=>{try{performance.mark(`tilo:${name}`);}catch{}};
 mark('module');
 const fontLoader=createFontLoader({baseURL:import.meta.url});
 const fonts=retryableMemo(()=>fontLoader.startup());
-const ready=retryableMemo(()=>init());
+// The entry page started compiling the start module as it parsed its head
+// (compile.inline.js), while it downloaded and the page's modules loaded:
+// init takes that, once. A page without it, or whose compile failed, has
+// init fetch and compile the module itself, as a retry after a failure does.
+let startModule=globalThis.__tiloStartModule;
+const ready=retryableMemo(async()=>{
+  const early=startModule;startModule=undefined;
+  const module=early&&await early.catch(()=>null);
+  mark('compiled');
+  return init(module?{module_or_path:module}:undefined);
+});
 // Streaming compile starts on import, while the page connects; a failure retries on mount.
 void ready().catch(()=>{});
 // So do the fonts a mount waits for: fetched beside the module, not after the page joined.
@@ -82,14 +93,20 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
 /** The certified peer's code — its crypto, transport and the workspaces'
  * replication — is a module of its own in the desktop bundle (`lazy_exports!`
  * in tilo-web-desktop), which nothing before a workspace's door needs. It is
- * fetched as soon as the start module is in, and every door waits for it.
+ * fetched and compiled as soon as this module runs, beside the start
+ * module's compile, and every door waits for it.
  * The bindgen glue of a split bundle imports `__wasm_split.js` itself, so it
  * is here once the start module is; a bundle without one has the peer in
  * its start module. */
 const peerCode=retryableMemo(async()=>{
-  await ready();
   const split=await import('./pkg/__wasm_split.js').catch(()=>null);
+  // Downloading and compiling it needs nothing of the start module: it runs
+  // while the start module compiles, and only its instantiation waits.
+  void split?.prefetch('peer');
+  await ready();
+  mark('runtime');
   await split?.load('peer');
+  mark('peer');
 });
 void peerCode().catch(()=>{});
 /** The wasm runtime module, once loaded with the peer's code (its codec and
@@ -138,6 +155,25 @@ export function prefetchApplication(app,{fetch=globalThis.fetch,load=()=>import(
     const [modules]=await Promise.all([listing,after()]);
     const module=modules.find(entry=>entry.id===app)?.module;
     if(typeof module==='string')(await load()).prefetch(module);
+  })().catch(()=>{});
+}
+/** The modules split off the start module that every desktop's first layout
+ * asks for (tilo-web-desktop's `lazy.rs` says which, at each module): the
+ * action palette, which the first window to lay out asks for, and desktop
+ * search, which the desktop asks for as it first lays out. */
+export const FIRST_LAYOUT_MODULES=Object.freeze(['action_palette','desktop_search']);
+/** Get a desktop's first frame ready while the page is let in: the app
+ * listing (`apps.json`, a few kilobytes) now, and once the code the entry
+ * needs is in, the modules the desktop's first layout asks for, which are
+ * small. Left to the layout, each was a round trip, a download and a
+ * compile after the desktop mounted, before it could draw. A bundle that
+ * does not split them answers each from its start module. */
+export function prefetchDesktop({fetch=globalThis.fetch,load=()=>import('./pkg/__wasm_split.js'),after=peerCode}={}){
+  void applications(fetch).catch(()=>{});
+  void (async()=>{
+    await after();
+    const compiled=await load();
+    for(const name of FIRST_LAYOUT_MODULES)void compiled.prefetch(name)?.catch?.(()=>{});
   })().catch(()=>{});
 }
 /** The name `apps.json` gives `app`, or `null`: what the bar over one app calls it. */
@@ -208,21 +244,25 @@ export async function mountDesktop(target,options={}) {
   const status=createHostStatus(commandStatus);
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
   // Shown as HTML (`dom: true`): the frames are built as elements in a layer
-  // under the canvas, which stays the input surface but shows nothing. A
-  // wheel over one of the layer's scroll containers scrolls it natively
-  // (below); `selectText(true)` lets the pointer through to the layer, where
-  // the browser's own text selection works on the real text.
-  let domPresenter;
+  // over the canvas, which shows nothing and stays where winit listens. The
+  // layer is the hit target: the browser scrolls, pans and selects what it
+  // can natively, and the rest goes on to the canvas (dom-input.mjs).
+  // `selectText(true)` keeps every pointer on the page, for native text
+  // selection alone.
+  let domPresenter,domInput,selectOnly=false;
   if(options.dom){
     const domLayer=document.createElement('div');domLayer.className='tilo-dom';
-    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;';
-    canvas.style.cssText+='position:absolute;inset:0;opacity:0;';
-    surface.prepend(domLayer);
+    domLayer.style.cssText='position:absolute;inset:0;overflow:hidden;contain:strict;user-select:text;-webkit-user-select:text;touch-action:none;';
+    canvas.style.cssText+='position:absolute;inset:0;opacity:0;pointer-events:none;';
+    canvas.after(domLayer);
     domPresenter=createDomPresenter(domLayer,{onFrame:options.onDomFrame,onScroll:(key,offset)=>{
       if(id===undefined||closed)return;
       try{runtime.dom_scrolled(id,key,offset);}catch(error){report({domScroll:String(error)});}
     }});
-    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{canvas.style.pointerEvents=on?'none':'';}};
+    domInput=createDomInput({layer:domLayer,canvas,scrollerAt:domPresenter.scrollerAt,native:()=>selectOnly||!active()});
+    // The semantic mirror leaves the focus alone while the person selects.
+    domPresenter.host.holdsSelection=domInput.holdsSelection;
+    globalThis.__tiloDom={stats:domPresenter.stats,layer:domLayer,selectText:on=>{selectOnly=on;}};
   }
   const fillScreen=createScreenFill(surface,{canvas,observe:globalThis.ResizeObserver});
   let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,lastState,readyResolve,readyReject,persistenceFailed=false;
@@ -256,7 +296,7 @@ export async function mountDesktop(target,options={}) {
   delete config.onInvite;
   // What only this page can do for the person (keeping their identity): offered in desktop search and on banners.
   delete config.hostActions;delete config.onHostAction;
-  // The workspace directory's door granted this person a workspace: only the page joins with it.
+  // The person chose a workspace in the workspace directory: only the page enters it.
   delete config.onJoinGranted;
   let unsubscribeDesktopCommits;
   let here,livePlace=null,livePointer=null;
@@ -295,18 +335,11 @@ export async function mountDesktop(target,options={}) {
     blur:owner=>{inputScope.capture();if(active())semanticKeys?.blur(owner);},
   },inputScope,domPresenter?.host);
   const listeners=new AbortController();const on=(node,type,fn,opts={})=>node.addEventListener(type,fn,{...opts,signal:listeners.signal});
-  // A wheel over a scroll container of the HTML layer moves that container,
-  // as on any page: the browser shows the move at once, and the widget hears
-  // of it through the container's scroll (`dom_scrolled`). Anything else is
-  // the canvas's, which hands it to the runtime.
-  if(domPresenter)on(surface,'wheel',event=>{
-    if(event.ctrlKey||!active())return;
-    const dy=event.deltaMode===1?event.deltaY*40:event.deltaMode===2?event.deltaY*surface.clientHeight:event.deltaY;
-    const scroller=dy&&domPresenter.scrollerAt(event.clientX,event.clientY,dy);
-    if(!scroller)return;
-    event.preventDefault();event.stopPropagation();
-    scroller.scrollTop+=dy;
-  },{capture:true,passive:false});
+  // A person holding a selection of the HTML layer's text keeps it: the
+  // copy shortcut is the browser's, which copies it.
+  if(domInput)on(surface,'keydown',event=>{
+    if((event.ctrlKey||event.metaKey)&&!event.altKey&&event.key.toLowerCase()==='c'&&domInput.holdsSelection())event.stopPropagation();
+  },{capture:true});
   if(globalThis.ResizeObserver){const resized=new ResizeObserver(([entry])=>{canvasCssSize=[entry.contentRect.width,entry.contentRect.height];placeSemantics();});resized.observe(canvas);listeners.signal.addEventListener('abort',()=>resized.disconnect());}
   const editorListeners=[];
   function onEditor(type,fn,opts={}){
@@ -369,7 +402,7 @@ export async function mountDesktop(target,options={}) {
       delete state.semanticsPatch;
     }
     nativeCatalogue.pump();
-    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke==='string')/* The person takes an agent's grant back: the root this tab holds revokes its device. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The directory's door let this person into a workspace: the page joins with the invitation it granted. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
+    for(const request of state.hostRequests??[]){if(typeof request?.copy==='string')void writeClipboard(request.copy).then(()=>report({clipboard:'copied'}),error=>report({clipboard:'failed',clipboardError:String(error?.message??error)}));else if(request?.action)options.onHostAction?.(request.action);else if(typeof request?.named==='string')options.onHostAction?.('set-name',request.named);else if(request?.status)options.onHostAction?.('set-status',{...request.status,keep:true});else if(Array.isArray(request?.linked))options.onHostAction?.('set-linked',{accounts:request.linked,keep:true});else if(typeof request?.revoke==='string')/* The person takes an agent's grant back: the root this tab holds revokes its device. */options.onHostAction?.('revoke-device',request.revoke);else if(request?.joined)/* The person chose a workspace in the directory: the page enters it through its door, or with a pasted link's invitation. */options.onJoinGranted?.(request.joined);else if(typeof request?.open==='string'){/* Signing in elsewhere (Connect Discord) leaves the page for that site, which sends the person back. */if(/^https?:\/\//.test(request.open))location.assign(request.open);}}
     if('focusPresence' in state)liveLayer()?.publishPresence({selection:state.focusPresence});
     if('livePlace' in state){livePlace=state.livePlace;liveLayer()?.publishPresence({focus:livePlace?.focus??null,place:livePlace?.place??null,layout:livePlace?.layout??null});}
     // This person's latest wave, which the one it is for shows once.
@@ -415,10 +448,11 @@ export async function mountDesktop(target,options={}) {
     if(ime){
       editor.style.left=`${ime.x}px`;editor.style.top=`${ime.y}px`;editor.style.height=`${Math.max(1,ime.height)}px`;
       applyEditorHints(editor,ime.hints);
-      if(document.activeElement===canvas)editor.focus({preventScroll:true});
+      // A native selection of the HTML layer's text would go with the focus.
+      if(document.activeElement===canvas&&!domInput?.holdsSelection())editor.focus({preventScroll:true});
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
     observeLocalActivation();
-    if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}
+    if(state.phase==='presented'){readyResolve();persistAfterFrame();void loadAssets();}
   }
   const assets=createAssetRecovery({active,report,
     retry:()=>false,
@@ -469,7 +503,14 @@ export async function mountDesktop(target,options={}) {
   // something has anything to save. One persist runs at a time: a request
   // arriving while it runs marks `again`, and one more runs after it, so a
   // burst of frames costs one round trip instead of a task per frame.
-  let persisting=null,persistAgain=false;
+  let persisting=null,persistAgain=false,persistQueued=false;
+  // A frame's status asks in the task after it: storing what the frame
+  // wrote waits a moment for the frame, never the frame for the store.
+  function persistAfterFrame(){
+    if(persistQueued)return;
+    persistQueued=true;
+    setTimeout(()=>{persistQueued=false;void persist().catch(()=>{});},0);
+  }
   function persist(){
     if(!active()||!storage||persistenceFailed)return Promise.resolve();
     if(persisting){persistAgain=true;return persisting;}
@@ -754,7 +795,7 @@ export async function mountDesktop(target,options={}) {
       // Name the workspace's people by the id their actions record (`[{id, name}]`), for a page that knows who it admitted.
       setPeople:people=>{if(active())runtime.set_people(id,JSON.stringify(people));},
 
-      durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),
+      durableState:()=>storage?.hydrate(),failNextWrite:()=>{storage.lease.abortNext=true;},recover:()=>runtime.recover(id),loseGpu:()=>runtime.lose_gpu(id),
       semantic:(...args)=>runtime.semantic(id,...args),
       publications:()=>JSON.parse(runtime.component_publications(id)),
       actions:(resource,{window}={})=>JSON.parse(runtime.component_actions(id,resource??undefined,window)),

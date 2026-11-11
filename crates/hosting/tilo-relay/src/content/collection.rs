@@ -521,7 +521,8 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     #[allow(
         clippy::significant_drop_tightening,
-        reason = "the host serves for the whole scenario"
+        clippy::too_many_lines,
+        reason = "one story: the draft, the attachment the device keeps, and the host's copy going"
     )]
     async fn an_attachment_a_draft_named_comes_back_from_the_device_that_uploaded_it() {
         const APP: &str = "so.tilo.chat";
@@ -602,6 +603,7 @@ mod tests {
             app_id: APP.into(),
             cluster_id: workspace.clone(),
             hash: hash.clone(),
+            have: Vec::new(),
         })
         .unwrap();
         assert!(
@@ -624,7 +626,7 @@ mod tests {
         );
         let arrived = pieces
             .iter()
-            .find_map(|piece| asked.piece(&host_device, piece))
+            .find_map(|piece| asked.piece(&host_device, piece, tilo_clock::unix_now_ms()))
             .expect("the device's answer is whole and hashes to what was asked");
         assert_eq!(
             arrived.bytes, attachment,

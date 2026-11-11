@@ -2,7 +2,7 @@
 
 use vello::kurbo::{Point, Rect};
 
-use super::{NEW_TAB, TabBar};
+use super::{TabBar, new_tab_name};
 
 impl TabBar {
     /// Every button in the bar names its outcome: the slots' buttons and
@@ -37,7 +37,7 @@ impl TabBar {
         }
         // The strip's own door: its glyph needs no words in the row, and the tip names it.
         if self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(point) {
-            return Some((self.new_tab_rect, NEW_TAB.to_owned()));
+            return Some((self.new_tab_rect, new_tab_name()));
         }
         if self.history_action.area() > 0.0 && self.history_action.contains(point) {
             return Some((
@@ -46,22 +46,14 @@ impl TabBar {
             ));
         }
         let control = self.controls.hit(point)?;
-        let (rect, key) = match control {
-            crate::widget::window_controls::WindowControl::Maximize => (
-                self.controls.maximize,
-                if self.maximized {
-                    "host-window-restore"
-                } else {
-                    "host-window-maximize"
-                },
-            ),
-            crate::widget::window_controls::WindowControl::Close => {
-                (self.controls.close, "host-window-close")
-            }
-            crate::widget::window_controls::WindowControl::Minimize => {
-                (self.controls.minimize, "host-window-minimize")
-            }
+        let rect = match control {
+            crate::widget::window_controls::WindowControl::Maximize => self.controls.maximize,
+            crate::widget::window_controls::WindowControl::Close => self.controls.close,
+            crate::widget::window_controls::WindowControl::Minimize => self.controls.minimize,
         };
-        Some((rect, crate::i18n::I18nManager::lookup_plain(key)))
+        Some((
+            rect,
+            crate::i18n::I18nManager::lookup_plain(control.name_key(self.resize)),
+        ))
     }
 }

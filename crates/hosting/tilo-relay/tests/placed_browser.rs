@@ -1,8 +1,8 @@
-//! A workspace's browser environment opens on the VM host that runs the
-//! workspace's VMs: the relay asks the placer which host, waits while none has
-//! room, then asks that host's member device over the device plane to start
-//! the environment, handing it what the session joins the workspace with. The
-//! member starts it on the hosted-VM service beside it.
+//! A workspace's Browser opens in the workspace's VM: the relay asks the placer
+//! which host runs that VM, waits while none has room, then asks that host's
+//! member device over the device plane to open Browser, handing it what the
+//! session joins the workspace with. The member asks the hosted-VM service
+//! beside it to start the session in the VM.
 
 #![allow(
     clippy::significant_drop_tightening,
@@ -43,7 +43,7 @@ fn address_of(endpoint: &iroh::Endpoint) -> String {
     format!("127.0.0.1:{}", socket.port())
 }
 
-/// A hosted-VM service that opens the first browser environment asked for and
+/// A hosted-VM service that opens the first browser session asked for and
 /// attaches to it after, and what it was asked.
 fn hosted_service(dir: &std::path::Path) -> (std::path::PathBuf, Arc<Opened>) {
     let socket = dir.join("hosted.sock");
@@ -63,6 +63,7 @@ fn hosted_service(dir: &std::path::Path) -> (std::path::PathBuf, Arc<Opened>) {
                             workspace,
                             account,
                             material,
+                            ..
                         },
                 } => {
                     counted
@@ -77,7 +78,7 @@ fn hosted_service(dir: &std::path::Path) -> (std::path::PathBuf, Arc<Opened>) {
                     }
                 }
                 Request::StopBrowser { .. } => Reply::Done,
-                other => panic!("a browser environment's service is asked about it: {other:?}"),
+                other => panic!("Browser's service is asked about it: {other:?}"),
             };
             let _ = control::FRAMING.write_value(&mut stream, &reply);
         }
@@ -101,8 +102,8 @@ fn placer() -> (String, Arc<AtomicUsize>) {
             };
             assert_eq!(
                 (vm.environment.as_str(), vm.size),
-                ("browser", legacy_vm::hosted::size::VmSize::Browser),
-                "the relay places the workspace's browser environment as its own"
+                ("default", legacy_vm::hosted::size::VmSize::Small),
+                "the relay places Browser in the workspace's VM, where its shells run"
             );
             let reply = if counted.fetch_add(1, Ordering::SeqCst) == 0 {
                 Reply::Busy(legacy_vm::hosted::service::BUSY.into())
@@ -117,8 +118,8 @@ fn placer() -> (String, Arc<AtomicUsize>) {
     (address, asked)
 }
 
-/// A workspace whose VM host runs its browser environments, and the relay's
-/// placed browsers asking it.
+/// A workspace whose VM host runs its VM, and the relay's placed browsers
+/// asking it.
 struct Placed {
     workspace: String,
     browsers: PlacedBrowsers,
@@ -143,7 +144,7 @@ async fn placed() -> Placed {
         .unwrap()
         .workspace;
 
-    // The member serves the workspace's browser environments on the
+    // The member serves the workspace's Browser on the
     // hosted-VM service this process runs for it.
     let service = tempfile::tempdir().unwrap();
     let (socket, asked) = hosted_service(service.path());
@@ -200,23 +201,19 @@ async fn a_workspace_opens_browser_where_its_vm_host_is() {
         tokio::task::block_in_place(|| placed.browsers.open(&workspace, "{\"record\":\"atlas\"}"))
             .unwrap();
     assert_eq!(opened.host, VM_HOST);
-    assert_eq!(
-        opened.opened_ms,
-        Some(900),
-        "the environment was opened for it"
-    );
+    assert_eq!(opened.opened_ms, Some(900), "Browser was opened for it");
     assert_eq!(
         opened.provider, "42",
         "and the window it holds names the provider page actions go to"
     );
 
-    // Opening again attaches to the environment already serving it.
+    // Opening again attaches to the session already running.
     let browsers = &placed.browsers;
     let again = tokio::task::block_in_place(|| browsers.open(&workspace, "{\"record\":\"atlas\"}"));
     assert_eq!(
         again.unwrap().opened_ms,
         None,
-        "the workspace's own environment is attached to, not opened again"
+        "the running session is attached to, not opened again"
     );
     let opens = placed.asked.opens.lock().unwrap().clone();
     assert_eq!(placed.asked.times.load(Ordering::SeqCst), 2);

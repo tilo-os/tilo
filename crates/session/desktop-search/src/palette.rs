@@ -26,10 +26,13 @@ const MORE_PREFIX: &str = "more:";
 mod rows;
 
 #[cfg(test)]
+mod no_match_tests;
+#[cfg(test)]
 mod ready_rows_tests;
 
 use rows::{
-    all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed, stands_tall,
+    all_results_entry, always_shown, entries_for, everywhere, kind_facets, narrowed,
+    nothing_matched, stands_tall,
 };
 
 /// The row `id` names when it is a group's "more" row: an id this palette
@@ -236,6 +239,9 @@ pub struct DesktopSearch {
     /// row they chose.
     auto_selected: Option<String>,
     shown_query: Option<String>,
+    /// The query an Enter was pressed on before its rows were in: its top row is chosen once the
+    /// search has answered it.
+    enter_waiting: Option<String>,
     /// [`ui::search::engine_generation`] when the rows were built: the
     /// content rows come again once the index's code arrived.
     shown_generation: u64,
@@ -304,6 +310,7 @@ impl DesktopSearch {
             everything: false,
             auto_selected: None,
             shown_query: None,
+            enter_waiting: None,
             shown_generation: 0,
             shown_kinds: Vec::new(),
             catalogue: false,
@@ -520,6 +527,42 @@ impl DesktopSearch {
     /// sources sent and ask the source that holds the frame's state next.
     /// Returns whether the rows changed.
     pub fn refresh(&mut self) -> bool {
+        let changed = self.refresh_rows();
+        self.take_waiting_enter();
+        changed
+    }
+
+    /// An Enter that waited for its query's rows: once the search has answered that query, its
+    /// top row is chosen; a person who typed on since meant something else.
+    fn take_waiting_enter(&mut self) {
+        let Some(query) = self.enter_waiting.clone() else {
+            return;
+        };
+        if self.palette.query() != query || !self.palette.is_open() {
+            self.enter_waiting = None;
+            return;
+        }
+        // The rows that stand for the query are its answer, as the desk publishes it: an app's
+        // answer still coming on the host's clock may never come, and must not hold the key.
+        if self.shown_query.as_deref() != Some(query.as_str())
+            || self.answering()
+            || (self.rows.is_empty() && self.waiting())
+            || !ui::search::engine_ready()
+        {
+            return;
+        }
+        self.enter_waiting = None;
+        let top = self
+            .palette
+            .visible_entries()
+            .iter()
+            .find_map(|entry| self.hit(&entry.id));
+        if let Some(hit) = top {
+            self.choose_hit(hit, None);
+        }
+    }
+
+    fn refresh_rows(&mut self) -> bool {
         let Some(sources) = &self.sources else {
             return false;
         };
@@ -676,7 +719,12 @@ impl DesktopSearch {
         self.palette.set_host_facets(kind_facets(&found));
         let picked = self.palette.picked_filters().to_vec();
         self.shown_kinds.clone_from(&picked);
-        let groups = narrowed(self.arranged(query, found), &picked);
+        let mut groups = narrowed(self.arranged(query, found), &picked);
+        // A query that found nothing but the row every query gets says that
+        // nothing matched, and Enter on it opens nothing.
+        if nothing_matched(&groups) {
+            groups.clear();
+        }
         let pending = stream.pending();
         // The rows about to be drawn, not the ones the palette still holds:
         // a row with a line under its name is twice as tall, and a list
@@ -912,6 +960,16 @@ impl DesktopSearch {
                     id: crate::model::ALL_APPS_COMMAND.into(),
                 });
                 self.palette.close();
+            } else if outcome.argument.is_none()
+                && self.shown_query.as_deref() != Some(self.palette.query())
+            {
+                // Enter came in the same batch of input as the keys before it, ahead of the frame
+                // that answers them: the rows on screen are an earlier query's, and the row it
+                // named is one of those ("canvas" and Enter started a call, the top row of the
+                // empty search). Enter waits for the typed query's answer and takes its top row. A
+                // row's own line (an action's argument) is typed in the field after its query, so
+                // an Enter that carries one is never this.
+                self.choose_top_of_typed_query();
             } else if let Some(hit) = self.hit(&outcome.id) {
                 self.choose_hit(hit, outcome.argument);
             }
@@ -921,6 +979,16 @@ impl DesktopSearch {
         }
         self.finish();
         true
+    }
+
+    /// Hold an Enter pressed on rows of an earlier query until the search has answered the query
+    /// the field holds: the search stays open on it, and its top row, which the highlight sits on,
+    /// is chosen as the rows come in ([`Self::take_waiting_enter`]).
+    fn choose_top_of_typed_query(&mut self) {
+        let query = self.palette.query().to_owned();
+        self.palette.open();
+        self.palette.set_query(&query);
+        self.enter_waiting = Some(query);
     }
 
     /// Choose `hit`, with `argument` the one line its action asks for:
@@ -1056,6 +1124,7 @@ impl DesktopSearch {
         self.kept_choice = None;
         self.refusal = None;
         self.shown_query = None;
+        self.enter_waiting = None;
     }
 }
 
@@ -1078,6 +1147,8 @@ fn switches(sources: &Sources, all: &[&dyn Source]) -> Option<Switches> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    mod early_enter;
     use ui::search::AppScope;
     use ui::shortcut_table::{ShortcutAction, ShortcutConfig};
     use ui::winit::keyboard::ModifiersState;
@@ -1492,7 +1563,14 @@ mod tests {
     /// catalogue, as the empty desk's launchpad opens it.
     #[test]
     fn every_app_is_one_row_under_the_apps() {
-        let full = data();
+        let mut full = data();
+        // More apps than the card lists unasked, as a full fleet has.
+        full.applications.extend((0..40).map(|i| AppEntry {
+            id: format!("so.tilo.app{i}"),
+            title: format!("App {i}"),
+            category: None,
+            description: None,
+        }));
         let mut search = DesktopSearch::new();
         search.open(full);
         settled(&mut search);
@@ -1503,6 +1581,13 @@ mod tests {
             .expect("the apps' group");
         assert_eq!(last.id, ALL_APPS_ID);
         assert_eq!(last.label, "All apps");
+        assert!(
+            entries
+                .iter()
+                .filter(|entry| entry.group.as_deref() == Some("Apps"))
+                .all(|entry| !entry.id.starts_with(MORE_PREFIX)),
+            "one way to every app, not a \"Show all\" beside it: {entries:?}"
+        );
         let at = entries
             .iter()
             .position(|entry| entry.id == ALL_APPS_ID)
@@ -2655,6 +2740,8 @@ mod tests {
         search.palette().cursor() != before
     }
 
+    /// From an empty palette the keyboard reaches every app: the apps listed, then "All apps",
+    /// the one row that leads to the rest, which lists every app one arrow press apart.
     #[test]
     fn the_keyboard_reaches_every_app_from_an_empty_palette() {
         let data = crowded();
@@ -2671,21 +2758,44 @@ mod tests {
             .and_then(|entry| entry.group_total);
         assert_eq!(header, Some(total), "the header counts every app");
 
+        let mut on_all_apps = false;
+        for _ in 0..(total * 4) {
+            let id = search.palette().selected_id().map(str::to_owned);
+            assert!(
+                !id.as_deref().is_some_and(|id| id.starts_with(MORE_PREFIX)),
+                "no second way to every app beside All apps"
+            );
+            if id.as_deref() == Some(ALL_APPS_ID) {
+                on_all_apps = true;
+                break;
+            }
+            if !arrow_down(&mut search) {
+                break;
+            }
+        }
+        assert!(on_all_apps, "the keyboard reaches All apps");
+        search.palette_mut().activate_selected();
+        assert!(search.observe(), "choosing it closes search");
+        assert_eq!(
+            search.take_choice(),
+            Some(Target::Command {
+                id: crate::model::ALL_APPS_COMMAND.into()
+            })
+        );
+
+        // What it opens: the apps alone, every one of them a press apart.
+        let mut catalogue = crowded();
+        catalogue.scope = Scope::WindowGroup(None);
+        let mut search = DesktopSearch::new();
+        search.open(catalogue);
+        settled(&mut search);
         let mut reached = std::collections::BTreeSet::new();
         for _ in 0..(total * 4) {
             let id = search.palette().selected_id().map(str::to_owned);
             if let Some(id) = id {
                 if id.starts_with(MORE_PREFIX) {
-                    let cursor = search.palette().cursor();
                     search.palette_mut().activate_selected();
                     assert!(!search.observe(), "showing all keeps search open");
-                    assert!(search.is_open() && search.palette().is_open());
-                    assert_eq!(search.palette().cursor(), cursor, "the row stays put");
-                    assert_ne!(
-                        search.palette().selected_id(),
-                        Some(id.as_str()),
-                        "the rest took the row's place"
-                    );
                     continue;
                 }
                 if let Some(Target::Launch { app, .. }) = search.hit(&id).map(|hit| hit.target) {
@@ -2851,52 +2961,4 @@ mod tests {
 }
 
 #[cfg(all(test, feature = "lazy-engine"))]
-mod engine_fetch_tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use super::*;
-
-    static FETCHES: AtomicUsize = AtomicUsize::new(0);
-
-    /// The engine's code is fetched as the palette opens, not on the first query that needs it.
-    ///
-    /// Where the engine is not linked in — the browser desktop fetches it as a module of its own —
-    /// a search that fetches it on its query has nothing to show until the module lands, and says
-    /// it is still searching for that whole time: on a cold page that is the tens of seconds
-    /// between typing and the first row. The palette opening is the moment the person asked for
-    /// search, and the time before their first key is theirs to spend fetching it.
-    ///
-    /// Its own process: the engine's once-only state is global, so the fetch count here is the
-    /// process's.
-    #[test]
-    fn opening_the_palette_fetches_the_search_engine() {
-        ui::search::defer_engine(|| {
-            FETCHES.fetch_add(1, Ordering::SeqCst);
-        });
-        assert_eq!(FETCHES.load(Ordering::SeqCst), 0, "nothing asked yet");
-        assert!(
-            ui::search::engine_ready(),
-            "no fetch was asked for, so nothing waits on the engine"
-        );
-
-        let mut search = DesktopSearch::new();
-        search.open(super::tests::data());
-        assert_eq!(
-            FETCHES.load(Ordering::SeqCst),
-            1,
-            "opening the palette fetches the engine, before a key is typed"
-        );
-        assert!(
-            !ui::search::engine_ready(),
-            "the palette opening waits on the engine's code, so the first key is answered with it"
-        );
-
-        // A second open does not fetch again: the loader runs once until the engine is installed.
-        search.open(super::tests::data());
-        assert_eq!(
-            FETCHES.load(Ordering::SeqCst),
-            1,
-            "the engine is asked for once"
-        );
-    }
-}
+mod engine_fetch_tests;

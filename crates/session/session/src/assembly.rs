@@ -77,6 +77,10 @@ pub(crate) struct Shared {
     /// the clipboard opened to paste, the page Escape goes back from — waiting
     /// for its app to be up.
     pub(crate) panel_asks: Rc<RefCell<Vec<&'static str>>>,
+    /// The clipboard panel a key asked for at the caret, waiting for the field it was pressed in
+    /// to commit the caret its last key moved: `None` when nothing waits. The instant is when the
+    /// wait gives up and places the panel at the caret the desk has.
+    pub(crate) pending_paste: Cell<Option<std::time::Instant>>,
     /// The ask the panel goes back on, while it has not answered whether it
     /// had anywhere to go back to: Escape closes the panel only from its main
     /// page, and the panel says which page that is.
@@ -119,6 +123,9 @@ pub(crate) struct Shared {
     pub(crate) readings: crate::status::Shared,
     /// The system services, reached for their readings.
     pub(crate) services: Rc<RefCell<tilo_service::Services>>,
+    /// The sends the session's send action took, which the pass carries out.
+    #[cfg(target_os = "linux")]
+    pub(crate) sends: crate::send_to::Sends,
     /// The services the session serves its apps itself.
     #[cfg(target_os = "linux")]
     pub(crate) table: crate::doors::Doors,
@@ -140,6 +147,10 @@ pub(crate) struct Shared {
     /// admits an agent's session on.
     #[cfg(target_os = "linux")]
     pub(crate) agents: std::rc::Rc<crate::agents::Agents>,
+    /// The workspaces' records the session reads and writes itself — Chat's agents, emoji and
+    /// conversations — as the workspace holds them: replicated with the engine as either moves.
+    #[cfg(target_os = "linux")]
+    pub(crate) records: crate::engine_records::EngineRecords,
     /// The agents the person admitted at its agent door, as the desk and the bar show them.
     #[cfg(target_os = "linux")]
     pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,
@@ -221,7 +232,7 @@ pub(crate) struct Shared {
     /// The workspace the host started this session to join.
     #[cfg(target_os = "linux")]
     pub(crate) boot_join: RefCell<crate::boot_join::BootJoin>,
-    /// The browser environment this session runs in, when a host started it for one: the workspace
+    /// The workspace's Browser this session holds, when a host started it for one: the workspace
     /// it joins, the record whose window it opens, and what it reports of it
     /// ([`crate::hosted_browser::HostedBrowser`]).
     #[cfg(target_os = "linux")]
@@ -517,12 +528,16 @@ pub struct Session {
     /// so one that keeps exiting is given up on rather than started for ever.
     #[cfg(target_os = "linux")]
     pub(crate) keyboard_starts: u32,
-    /// Where quick settings' app stands, and how often it was started at
-    /// that place: one that keeps exiting is given up on.
+    /// Whether quick settings' app runs, and how often it was started: one
+    /// that keeps exiting is given up on until the panel is opened anew.
     #[cfg(target_os = "linux")]
     pub(crate) quick_settings_run: crate::quick_settings::Run,
     #[cfg(target_os = "linux")]
     pub(crate) quick_settings_starts: u32,
+    /// Whether quick settings, opened for its controls, is still to take the keyboard once its
+    /// surface stands: the person works it from the keys that opened it.
+    #[cfg(target_os = "linux")]
+    pub(crate) quick_settings_keyboard: crate::quick_settings::PanelKeys,
     /// The portal's link to the loop, while the portal serves.
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<crate::portal_link::SessionLink>,

@@ -31,7 +31,7 @@ use crate::model::{
     Progress, Settings, annotation_key, default_fonts, default_schemes,
 };
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
 
 /// How many books the published library carries as places; the rest are
 /// resolved one by one when addressed.
@@ -920,6 +920,12 @@ pub(crate) fn note_text(id: Uuid) -> tilo_resource::Path<Ebook, tilo_document::R
     Ebook::paths().annotations.item(&annotation_key(id)).text
 }
 
+/// The resource the text of the note or comment `id` is published as, beside
+/// the library.
+pub(crate) fn note_text_resource_id(id: Uuid) -> String {
+    tilo_resource::child_resource_id::<Ebook>(&format!("note:{id}"))
+}
+
 /// The dispatcher the editor of the note or comment `id` writes through:
 /// each of its edits is the library's field edit of the note's text.
 pub(crate) fn note_text_dispatcher(
@@ -927,15 +933,14 @@ pub(crate) fn note_text_dispatcher(
     id: Uuid,
 ) -> ui::framework::Dispatcher<tilo_document::RichText> {
     let text = note_text(id);
-    library.child::<tilo_document::RichText>(
-        &tilo_resource::child_resource_id::<Ebook>(&format!("note:{id}")),
-        move |op| tilo_resource::Stamped {
+    library.child::<tilo_document::RichText>(&note_text_resource_id(id), move |op| {
+        tilo_resource::Stamped {
             operation: EbookAction::FieldEdit(text.edit(tilo_resource::EditOp::Rich {
                 rich: serde_json::to_value(&op).unwrap_or_default(),
             })),
             now_ms: 0,
-        },
-    )
+        }
+    })
 }
 
 /// How an annotation is named: its note, else the passage it marks, on
@@ -1395,5 +1400,25 @@ mod agent_disclosure_tests {
         {
             panic!("{failures}");
         }
+    }
+}
+
+/// German is one of the languages the app ships, and it reads in German: the
+/// copy comes from `locales/de-DE.ftl`, never from the English source
+/// catalogue beside it.
+#[cfg(test)]
+mod german_window {
+    #[test]
+    fn a_german_window_reads_the_catalogue() {
+        let catalog = &super::CATALOG;
+        assert!(
+            catalog.languages().contains(&"de-DE"),
+            "the app ships German among {:?}",
+            catalog.languages()
+        );
+        catalog.set_locale("de-DE");
+        assert_eq!(catalog.t("ebook-library"), "Bücher");
+        catalog.set_locale("en-US");
+        assert_eq!(catalog.t("ebook-library"), "Books");
     }
 }

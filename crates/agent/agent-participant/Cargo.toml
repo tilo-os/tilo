@@ -80,12 +80,13 @@ word-processor = { path = "../../../apps/word-processor" }
 # does not build without `live`) but idle: a worker holds no account and
 # reaches no network.
 mail = { path = "../../../apps/mail" }
-# The certified relay session (iroh for a host-side agent) and its live
-# plane; the same code a browser page runs.
-tilo-session-host = { path = "../../session/host", features = ["toolkit"] }
-# The participant's client: the board of who is here and the agent's own word on it, as every host
-# keeps them.
-tilo-session-client = { path = "../../session/client" }
+# The participant's client: the certified relay session (iroh for a host-side agent) with its live
+# plane, the same code a browser page runs, and the board of who is here and the agent's own word
+# on it.
+tilo-session-client = { path = "../../session/client", features = ["toolkit"] }
+# The identity layer's device side: the host an agent's session dials, and the signer it holds.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
+tilo-session-core = { path = "../../session/core" }
 # A device on the plane is named by its endpoint id.
 iroh.workspace = true
 iroh-base.workspace = true
@@ -159,6 +160,9 @@ tilo-broker-core = { path = "../../collab/broker-core" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The demo workspace and the helpers that write a chat as its people would.
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
+# Text a test lays out uses the pinned catalog, never the fonts the machine
+# running it has installed.
+ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 tilo-crypto = { path = "../../system/tilo-crypto", features = ["tls-fixture"] }
 accounts = { path = "../../system/accounts", features = ["person"] }
 tempfile.workspace = true
@@ -167,13 +171,12 @@ tilo-relay = { path = "../../hosting/tilo-relay", features = ["agents", "test-su
 # The MCP front door, driven through its HTTP routes against the relay.
 tilo-front-door = { path = "../../hosting/tilo-front-door" }
 test-http = { path = "../../dev/test-http" }
-tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # Opens an invitation's link as a page does, from the site's shelf.
 tilo-workspace-directory = { path = "../../session/workspace-directory" }
 # The MCP projection `tilo mcp` serves, driven over a device's session.
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 iroh.workspace = true
-# tilo-session-host's test support (its host fixture), included by path.
+# The session client's test support (its host fixture), included by path.
 tilo-net = { path = "../../platform/tilo-net" }
 hyper = { version = "1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
@@ -195,7 +198,7 @@ tilo-desktop-search = { path = "../../session/desktop-search" }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 
 [package.metadata.cargo-machete]
-# Used by tilo-session-host's test support, which the tests include by path.
+# Used by the session client's test support, which the tests include by path.
 ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-net", "tokio-rustls"]
 
 [lints]

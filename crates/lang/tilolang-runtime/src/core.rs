@@ -401,24 +401,25 @@ impl Core {
             InvocationPush, Invoke, Invoker, IsError, IsSome, JsonDecode, JsonEncode, JsonParse,
             Keep, Lenses, Links, ListAvg, ListEnd, ListGetF, ListGetH, ListGetI, ListIndexOf,
             ListLen, ListNew, ListPrevious, ListPushF, ListPushH, ListPushI, ListReverse,
-            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapPut,
-            MapRemove, MapSetAdd, MapSetRemove, MatchGroup, Me, Members, Mentions, MetaOf,
-            MissingV, ModelCall, NoneV, Notify, Now, OfType, Outside, OutsideAt, Phrase,
-            PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed, PrincipalRole, Print,
-            PrintRows, ProposalNote, Query, QueueBlock, RandomChoice, RandomFloat, RandomId,
-            RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF, RecSetH, RecSetI, RefEq,
-            RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH, ResGetI, ResSetF, ResSetH,
-            ResSetI, ResTextSet, ResourceRef, RichEmpty, RichFromMarkdown, RichNew, RichPart,
-            RichTime, RunChanges, SeenBy, SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit,
-            SpaceF, SpaceI, Speakers, StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains,
-            StrEndsWith, StrEq, StrFind, StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace,
-            StrSlice, StrSplit, StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest,
-            Take, TimeClock, TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke,
-            TupleGetF, TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction,
-            UiActions, UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH,
-            UiPropI, UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions,
-            Viewer, WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus,
-            WebStatusText, WebText, Withdraw, Word, WorkspaceMembers,
+            ListSortByKey, ListSumF, ListSumI, MapGetH, MapGetValue, MapKeys, MapKeysValue, MapNew,
+            MapPut, MapPutValue, MapRemove, MapRemoveValue, MapSetAdd, MapSetRemove, MatchGroup,
+            Me, Members, Mentions, MetaOf, MissingV, ModelCall, NoneV, Notify, Now, OfType,
+            Outside, OutsideAt, Phrase, PrincipalEq, PrincipalKind, PrincipalName, PrincipalNamed,
+            PrincipalRole, Print, PrintRows, ProposalNote, Query, QueueBlock, RandomChoice,
+            RandomFloat, RandomId, RandomInt, RandomShuffle, ReadText, ReadWith, RecNew, RecSetF,
+            RecSetH, RecSetI, RefEq, RefId, RefIs, RefLit, ResAddF, ResAddI, ResGetF, ResGetH,
+            ResGetI, ResSetF, ResSetH, ResSetI, ResTextSet, ResourceRef, RichEmbed, RichEmpty,
+            RichFromMarkdown, RichMarkdown, RichNew, RichPart, RichTime, RunChanges, SeenBy,
+            SetAdd, SetRemove, Single, SomeF, SomeH, SomeI, SortLit, SpaceF, SpaceI, Speakers,
+            StateAt, StateGet, Steps, StrCmp, StrConcat, StrContains, StrEndsWith, StrEq, StrFind,
+            StrJoin, StrLen, StrLit, StrLower, StrMatches, StrReplace, StrSlice, StrSplit,
+            StrStartsWith, StrToInt, StrTrim, StrUpper, StrWords, Suggest, Take, TimeClock,
+            TimeDay, TimeOfDay, TimeParse, TimeShift, TimeSpan, Today, TryInvoke, TupleGetF,
+            TupleGetH, TupleGetI, TupleNew, TupleSetF, TupleSetH, TupleSetI, UiAction, UiActions,
+            UiAnchor, UiBind, UiBindState, UiChild, UiNode, UiOn, UiPropF, UiPropH, UiPropI,
+            UiPropPic, Unseen, UnwrapF, UnwrapH, UnwrapI, ValueEq, VersionEnd, Versions, Viewer,
+            WallClock, WebBody, WebGet, WebHeaders, WebOk, WebPost, WebStatus, WebStatusText,
+            WebText, Withdraw, Word, WorkspaceMembers,
         };
         match imp {
             StrLit | StrConcat | StrEq | StrLen | StrWords | IntToStr | StrToInt | FloatToStr
@@ -452,16 +453,16 @@ impl Core {
             RandomInt | RandomFloat | RandomChoice | RandomShuffle | RandomId => {
                 self.random_import(imp, a)
             }
-            RichNew | RichPart | RichEmpty | RichTime | RichFromMarkdown => {
-                self.rich_import(imp, a)
-            }
+            RichNew | RichPart | RichEmpty | RichTime | RichFromMarkdown | RichMarkdown
+            | RichEmbed => self.rich_import(imp, a),
             EnumNew | EnumSetI | EnumSetF | EnumSetH | EnumIs | EnumGetI | EnumGetF | EnumGetH
             | ValueEq => self.enum_import(imp, a),
             ResGetI | ResGetF | ResGetH | ResSetI | ResSetF | ResSetH | ResAddI | ResAddF
             | ResTextSet | CollInsert | CollRemove | CollMove | CollMoveTo | CollMoveAmong
             | SetAdd | SetRemove | MapPut | MapRemove | MapSetAdd | MapSetRemove | MapGetH
-            | MapGetValue | MapKeys | MapKeysValue | RecNew | RecSetI | RecSetF | RecSetH
-            | RefLit | RefEq | RefIs | RefId | ResourceRef => self.resource_import(imp, a),
+            | MapGetValue | MapKeys | MapKeysValue | MapNew | MapPutValue | MapRemoveValue
+            | RecNew | RecSetI | RecSetF | RecSetH | RefLit | RefEq | RefIs | RefId
+            | ResourceRef => self.resource_import(imp, a),
             ActRef | Invoke | TryInvoke | Suggest | ProposalNote | CallFn | IsError | Outside
             | OutsideAt | Withdraw | ModelCall | Notify | Invoker | PrincipalEq | PrincipalName
             | QueueBlock | Now | TimeShift | PrincipalNamed | AgentNamed | InvocationPush

@@ -10,7 +10,10 @@
 
 use std::rc::Rc;
 
-use tilo_quick_settings::host::{FixtureHost, Lent};
+mod common;
+
+use common::{click, drawn_on_each_other, has, hosted_at, target};
+use tilo_quick_settings::host::FixtureHost;
 use tilo_quick_settings::{
     Page, QsEffect, QsSection, QuickSettings, QuickSettingsApp, RowPart, scenarios,
 };
@@ -26,16 +29,13 @@ fn staged(scenario: &str) -> HeadlessApp<QuickSettingsApp> {
 /// The panel on a desktop: the scenario's readings, and the host it records
 /// what it is asked to do on.
 fn hosted(scenario: &str) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
-    let host = Rc::new(FixtureHost::new(scenarios::readings(Some(scenario))));
-    let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
-    let mut app =
-        HeadlessApp::<QuickSettingsApp>::for_person_with_lent("person", Lent(lent)).unwrap();
-    for invoke in scenarios::actions(Some(scenario)) {
-        app.invoke(invoke).unwrap();
-    }
-    app.harness().resize(VIEWPORT).unwrap();
-    app.settle();
-    (app, host)
+    hosted_at(scenario, VIEWPORT, 1.0)
+}
+
+/// The size the panel asks its window to be.
+fn wanted(app: &mut HeadlessApp<QuickSettingsApp>) -> (f64, f64) {
+    ui::widget::preferred_window_size(app.harness().root_widget())
+        .expect("the panel says how big its window is")
 }
 
 /// The panel's own surface: the card fills the window the desk gives a
@@ -44,30 +44,11 @@ fn card(app: &mut HeadlessApp<QuickSettingsApp>) -> Rect {
     target(app, "BoundComponent[0]/ResourceApp[0]")
 }
 
-fn target(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> Rect {
-    let targets = app.harness().targets();
-    *targets.get(name).unwrap_or_else(|| {
-        let mut names: Vec<&String> = targets.keys().collect();
-        names.sort();
-        panic!("no target named {name}; there are {names:?}")
-    })
-}
-
-/// Press `name` as a person does, and let the panel answer.
-fn click(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) {
-    app.harness().click_named(name).unwrap();
-    app.settle();
-}
-
 /// Press a tile's chevron, at the tile's trailing end.
 fn open_details(app: &mut HeadlessApp<QuickSettingsApp>, tile: &str) {
     let rect = target(app, tile);
     app.harness().click_at(rect.x1 - 8.0, rect.center().y);
     app.settle();
-}
-
-fn has(app: &mut HeadlessApp<QuickSettingsApp>, name: &str) -> bool {
-    app.harness().targets().contains_key(name)
 }
 
 #[test]
@@ -619,12 +600,26 @@ fn typing_the_password_and_pressing_connect_joins_with_it() {
     );
 }
 
+/// Opened to paste, the pane's search has the keys: what is typed narrows the copies and Enter
+/// pastes the first that matches; a copy pressed is pasted.
 #[test]
 fn opened_to_paste_the_panel_is_the_clipboard_alone_and_typing_searches_it() {
     let (mut app, host) = hosted("paste");
     assert!(!has(&mut app, "qs-volume"), "no controls while pasting");
+    for footer in [
+        "qs-account",
+        "qs-edit",
+        "qs-settings",
+        "qs-lock",
+        "qs-power",
+    ] {
+        assert!(
+            !has(&mut app, footer),
+            "the clipboard has no footer to reach past it: {footer}"
+        );
+    }
+    assert!(has(&mut app, "qs-clipboard-search"));
     assert!(has(&mut app, "qs-copy-a1") && has(&mut app, "qs-copy-c3"));
-    app.harness().click_named("qs-clipboard-search").unwrap();
     app.harness().type_text("grocery");
     app.settle();
     assert!(has(&mut app, "qs-copy-c3"));
@@ -632,8 +627,11 @@ fn opened_to_paste_the_panel_is_the_clipboard_alone_and_typing_searches_it() {
         !has(&mut app, "qs-copy-a1"),
         "a copy that does not match goes"
     );
+    app.harness().key("Enter");
+    app.settle();
     click(&mut app, "qs-copy-c3");
-    assert_eq!(host.ran(), [QsEffect::PasteCopy { copy: "c3".into() }]);
+    let pasted = QsEffect::PasteCopy { copy: "c3".into() };
+    assert_eq!(host.ran(), [pasted.clone(), pasted]);
 }
 
 #[test]
@@ -821,7 +819,7 @@ fn arranging_hides_adds_and_moves_controls_but_never_wifi() {
     );
     app.effect(&QsEffect::MoveControl {
         control: "bluetooth".into(),
-        to: 0,
+        before: Some("wifi".into()),
     })
     .unwrap();
     app.settle();
@@ -885,7 +883,7 @@ fn ctrl_up_and_down_move_the_focused_control_and_it_keeps_the_keyboard() {
         host.ran(),
         [QsEffect::MoveControl {
             control: "bluetooth".into(),
-            to: 0,
+            before: Some("wifi".into()),
         }]
     );
     let bluetooth = target(&mut app, "qs-edit-bluetooth");
@@ -907,7 +905,7 @@ fn ctrl_up_and_down_move_the_focused_control_and_it_keeps_the_keyboard() {
         host.ran().last(),
         Some(&QsEffect::MoveControl {
             control: "bluetooth".into(),
-            to: 1,
+            before: Some("vpn".into()),
         })
     );
     let bluetooth = target(&mut app, "qs-edit-bluetooth");
@@ -945,7 +943,7 @@ fn a_control_dragged_part_way_waits_for_the_release_and_lands_there() {
         host.ran(),
         [QsEffect::MoveControl {
             control: "bluetooth".into(),
-            to: 2,
+            before: Some("do_not_disturb".into()),
         }],
         "let go past the next control, it lands after it"
     );
@@ -969,6 +967,12 @@ fn back_closes_a_section_leaves_a_page_and_finishes_arranging() {
     assert!(
         !panel.showing().goes_back(),
         "Back closes a panel opened to paste"
+    );
+    let pasting = panel.clone();
+    panel.back();
+    assert_eq!(
+        panel, pasting,
+        "Back has nothing to go back to, so the first Escape closes it"
     );
 }
 
@@ -1161,6 +1165,10 @@ fn every_page_stands_in_the_panels_footprint_or_scrolls_inside_it() {
             (window.height() - 760.0).abs() < 1.0 && (window.width() - 380.0).abs() < 1.0,
             "{scenario} fills the panel's window: {window:?}"
         );
+        // Opened to paste, the panel is the clipboard alone: it has no footer to keep.
+        if *scenario == "paste" {
+            continue;
+        }
         let footer = target(&mut app, "qs-power");
         assert!(
             footer.y1 <= window.y1 + 0.5 && footer.y1 > window.y1 - 40.0,
@@ -1214,5 +1222,177 @@ fn a_page_change_keeps_the_panels_edges() {
     assert!(
         section_first.y0 >= wifi.y0,
         "and its controls start where the page under it did: {section_first:?} against {wifi:?}"
+    );
+}
+
+/// The panel is as tall as the page it shows, inside the room the desk gives a popover: in a
+/// window of that height its page fits without scrolling, the footer on the card's bottom edge,
+/// and it asks for no other.
+#[test]
+fn the_panel_is_as_tall_as_the_page_it_shows() {
+    use tilo_quick_settings::resource::{PANEL_HEIGHT, PANEL_WIDTH};
+    let _settled = ui::motion::testing::settled();
+    let room = (PANEL_WIDTH, PANEL_HEIGHT);
+    let mut heights = Vec::new();
+    for scenario in ["bluetooth", "battery", "vpn"] {
+        let (mut app, _) = hosted_at(scenario, room, 1.0);
+        let (width, height) = wanted(&mut app);
+        assert!(
+            (width - f64::from(PANEL_WIDTH)).abs() < 0.5,
+            "{scenario}: as wide as it was given: {width}"
+        );
+        assert!(
+            height < f64::from(PANEL_HEIGHT) && height > 100.0,
+            "{scenario}: no empty room under its page: {height}"
+        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a whole number of logical pixels"
+        )]
+        app.harness().resize((PANEL_WIDTH, height as u32)).unwrap();
+        app.settle();
+        let (_, again) = wanted(&mut app);
+        assert!(
+            (again - height).abs() < 0.5,
+            "{scenario}: at that height its page fits, and it asks for nothing else: {again}"
+        );
+        let card = card(&mut app);
+        let footer = target(&mut app, "qs-power");
+        assert!(
+            (card.height() - height).abs() < 1.0,
+            "{scenario}: the card is the window: {card:?}"
+        );
+        assert!(
+            footer.y1 <= card.y1 && card.y1 - footer.y1 < 24.0,
+            "{scenario}: the footer stands on its bottom edge: {footer:?} {card:?}"
+        );
+        heights.push(height);
+    }
+    assert!(
+        heights
+            .windows(2)
+            .any(|pair| (pair[0] - pair[1]).abs() > 1.0),
+        "each page is as tall as it is: {heights:?}"
+    );
+}
+
+/// A radio's page has the radio's switch in its header, beside the title: Bluetooth that is off
+/// is turned on where its devices are listed.
+#[test]
+fn a_radios_page_turns_the_radio_on_and_off_from_its_header() {
+    for tile in ["qs-tile-wifi", "qs-tile-bluetooth", "qs-tile-vpn"] {
+        let (mut app, host) = hosted("controls");
+        open_details(&mut app, tile);
+        let title = target(&mut app, "qs-page-title");
+        let switch = target(&mut app, "qs-section-switch");
+        assert!(
+            switch.x0 > title.x1 && (switch.center().y - title.center().y).abs() < 6.0,
+            "{tile}: the switch stands in the header, after the title: {switch:?} {title:?}"
+        );
+        click(&mut app, "qs-section-switch");
+        let ran = host.ran();
+        assert!(
+            matches!(
+                (tile, ran.as_slice()),
+                ("qs-tile-wifi", [QsEffect::SetWifi { on: false }])
+                    | ("qs-tile-bluetooth", [QsEffect::SetBluetooth { on: false }])
+                    | ("qs-tile-vpn", [QsEffect::SetVpn { .. }])
+            ),
+            "{tile}: the switch turns its radio: {ran:?}"
+        );
+    }
+}
+
+/// The window the panel asks for, in whole pixels.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    reason = "a panel's window, far inside u32"
+)]
+fn fitted(app: &mut HeadlessApp<QuickSettingsApp>) -> (u32, u32) {
+    let (width, height) = wanted(app);
+    (width.round() as u32, height.round() as u32)
+}
+
+/// No page draws two words or two controls in one place, at the panel's footprint or fitted to
+/// its page.
+#[test]
+fn no_page_draws_one_thing_on_another() {
+    let _settled = ui::motion::testing::settled();
+    for scenario in scenarios::NAMES {
+        let (mut app, _) = hosted_at(scenario, (380, 640), 1.0);
+        let found = drawn_on_each_other(&mut app);
+        assert!(found.is_empty(), "{scenario}: {found:#?}");
+        let fitted = fitted(&mut app);
+        app.harness().resize(fitted).unwrap();
+        app.settle();
+        let found = drawn_on_each_other(&mut app);
+        assert!(
+            found.is_empty(),
+            "{scenario}, fitted {fitted:?}: {found:#?}"
+        );
+    }
+}
+
+/// Opened to paste, the pane grows with the copies the history reads into it after it stood up:
+/// a copy that arrives takes a row of its own, and Clear history stands under the last one.
+#[test]
+fn copies_arriving_under_an_open_pane_each_take_a_row() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("paste");
+    let all = scenarios::readings(Some("paste")).clipboard.rows;
+    host.update(|state| {
+        state.clipboard.rows.truncate(1);
+        state.clipboard.total = 1;
+    });
+    app.settle();
+    for shown in 1..=all.len() {
+        let rows = all[..shown].to_vec();
+        host.update(move |state| {
+            state.clipboard.total = rows.len();
+            state.clipboard.rows = rows;
+        });
+        app.settle();
+        let fitted = fitted(&mut app);
+        app.harness().resize(fitted).unwrap();
+        app.settle();
+        let found = drawn_on_each_other(&mut app);
+        assert!(
+            found.is_empty(),
+            "{shown} copies, fitted {fitted:?}: {found:#?}"
+        );
+        let last = target(&mut app, &format!("qs-copy-{}", all[shown - 1].key));
+        let clear = target(&mut app, "qs-clipboard-clear");
+        assert!(
+            clear.y0 >= last.y1 - 0.5,
+            "{shown} copies: Clear history {clear:?} stands under the last copy {last:?}"
+        );
+        assert!(
+            clear.y1 <= f64::from(fitted.1) + 0.5,
+            "{shown} copies: Clear history {clear:?} is inside the fitted pane {fitted:?}"
+        );
+    }
+}
+
+/// Opened to paste, Tab reaches the copies and the arrows walk them: Enter pastes the one reached.
+#[test]
+fn opened_to_paste_tab_and_the_arrows_reach_the_copies() {
+    let _settled = ui::motion::testing::settled();
+    let (mut app, host) = hosted("paste");
+    app.harness().key("Tab");
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(host.ran(), [QsEffect::PasteCopy { copy: "a1".into() }]);
+
+    let (mut app, host) = hosted("paste");
+    app.harness().key("Tab");
+    app.harness().key("ArrowDown");
+    app.harness().key("Enter");
+    app.settle();
+    assert_eq!(
+        host.ran(),
+        [QsEffect::PasteCopy { copy: "b2".into() }],
+        "the arrows walk the copies"
     );
 }

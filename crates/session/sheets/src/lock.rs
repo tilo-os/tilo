@@ -38,6 +38,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::Seat as _;
 use crate::presentation::Presentation;
 use crate::t;
+use ui::widget::DrawChild;
 
 /// The app the session mounts the lock screen as.
 pub const APP_ID: &str = "so.tilo.lock";
@@ -202,8 +203,10 @@ pub struct Shown {
     pub clock: String,
     /// The date under it.
     pub date: String,
-    /// Whose session this is.
+    /// Whose session this is: the name they go by.
     pub person: String,
+    /// The colour their face wears, as their own avatar on the bar wears it.
+    pub hue: Option<ui::tokens::PresenceHue>,
     /// Why the last password did not unlock.
     pub error: Option<String>,
     /// The password is being checked.
@@ -295,6 +298,10 @@ pub struct LockSeat {
     /// Where the app reaching the session is opened, handed the local its
     /// view draws.
     reaching: Rc<RefCell<Option<Reach>>>,
+    /// The displays the screen stands on, in its own coordinates, the first
+    /// the one the person looks at: told by a session that draws the lock
+    /// over all of them at once.
+    displays: Rc<RefCell<Vec<Rect>>>,
     /// The app was handed its local: reaching the session is done once.
     reached: Rc<Cell<bool>>,
     /// The screen was told it may go: it says so once.
@@ -317,9 +324,40 @@ impl crate::Seat for LockSeat {
     fn presentation(&self) -> &Presentation {
         &self.presentation
     }
+
+    fn covers(&self, displays: Vec<Rect>) {
+        if *self.displays.borrow() != displays {
+            *self.displays.borrow_mut() = displays;
+            self.presentation.wake();
+        }
+    }
 }
 
 impl LockSeat {
+    /// The screens the lock is drawn on within `bounds`: each display it was
+    /// told it covers, else `bounds` itself. The first takes the prompt.
+    fn screens(&self, bounds: Rect) -> Vec<Rect> {
+        let displays = self.displays.borrow();
+        if displays.is_empty() {
+            return vec![bounds];
+        }
+        // The prompt goes where the person's eye starts: the display first in
+        // reading order, left to right and top to bottom.
+        let mut screens: Vec<Rect> = displays
+            .iter()
+            .map(|display| {
+                Rect::new(
+                    display.x0 + bounds.x0,
+                    display.y0 + bounds.y0,
+                    display.x1 + bounds.x0,
+                    display.y1 + bounds.y0,
+                )
+            })
+            .collect();
+        screens.sort_by(|a, b| a.y0.total_cmp(&b.y0).then(a.x0.total_cmp(&b.x0)));
+        screens
+    }
+
     /// Show `shown`, when it is not what shows already.
     pub fn show(&self, shown: Shown) {
         if self.shown() == shown {
@@ -399,6 +437,13 @@ impl LockSeat {
             return;
         }
         self.ask(LockEffect::Dissolved);
+    }
+
+    /// Whether the person has typed into the password field: what they type
+    /// stays in the one field it went into.
+    #[must_use]
+    pub fn holds_typing(&self) -> bool {
+        self.secret.lock().is_ok_and(|held| !held.is_empty())
     }
 
     /// What the password field holds, for the view to build the field with
@@ -576,6 +621,7 @@ fn staged_shown(name: &str) -> Shown {
         clock: "10:42".to_owned(),
         date: ui::format::day_heading(ui::clock::today(), false),
         person: "Ada Lovelace".to_owned(),
+        hue: None,
         error: None,
         checking: false,
         caps_lock: false,
@@ -688,17 +734,24 @@ fn screen(
     }
 
     let status = status_row(cx, shown);
+    let screens = seat.clone();
     Box::new(
-        Manual::new(|layout| {
+        Manual::new(move |layout| {
             let available = layout.available();
-            let area = Rect::new(
-                0.0,
-                0.0,
-                f64::from(available.width),
-                f64::from(available.height),
-            );
+            // The screen the person looks at: the whole surface, or the first
+            // display of the several it stands over.
+            let area = screens
+                .screens(Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(available.width),
+                    f64::from(available.height),
+                ))
+                .first()
+                .copied()
+                .unwrap_or_default();
             let edge = Spacing::BASE.s6;
-            let widest = (available.width - edge * 2.0).max(edge);
+            let widest = (ui::num::f32_of_f64(area.width()) - edge * 2.0).max(edge);
             // What the device says first: the block is kept clear of it.
             let footer = layout.measure(
                 1,
@@ -726,7 +779,7 @@ fn screen(
                 .max(0.0);
             // A little above the middle: the block reads as one thing, and
             // what sits under the hand is the field rather than the clock.
-            let centre = Point::new(area.center().x, area.height() * 0.46);
+            let centre = Point::new(area.center().x, area.y0 + area.height() * 0.46);
             layout.place(0, Rect::from_center_size(centre, (width, height)))?;
             layout.place(
                 1,
@@ -848,7 +901,11 @@ fn person(shown: &Shown) -> Option<Element> {
     if name.is_empty() {
         return None;
     }
-    let avatar = Avatar::person(name.to_owned(), name.to_owned()).size(AvatarSize::Hero);
+    let mut avatar = Avatar::person(name.to_owned(), name.to_owned()).size(AvatarSize::Hero);
+    if let Some(hue) = shown.hue {
+        let (red, green, blue) = ui::presence::identity_rgb(hue);
+        avatar = avatar.with_presence(ui::peniko::Color::from_rgb8(red, green, blue));
+    }
     let heading = Text::new(name)
         .with_id("lock-person")
         .with_role(TextRole::LargeTitle)
@@ -968,7 +1025,7 @@ impl ui::widget::Decorator for Shaken {
         )]
         let moved = transform * ui::advanced::Affine::translate((dx, 0.0));
         self.inner
-            .draw(scene, moved, text_renderer, theme, presence);
+            .draw_child(scene, moved, text_renderer, theme, presence);
     }
 }
 
@@ -1012,7 +1069,7 @@ impl ui::widget::Decorator for Faded {
             &ui::vello::kurbo::RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
         );
         self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         scene.pop_layer();
     }
 }
@@ -1195,11 +1252,16 @@ impl Stage {
     /// screen has finished dissolving.
     fn advance(&mut self, now: ui::time::Instant, motion: EffectiveMotion) {
         let shown = self.seat.shown();
-        // A screen drawn is a screen up: asking for its arrival every paint
-        // is a no-op while it is, and is what brings it back with its motion
-        // the next time the session locks.
+        // A screen drawn is a screen up, whole from its first frame: a locked
+        // session never shows the person a screen still on its way in. It
+        // leaves with its motion once a password unlocked it.
         let open = !shown.unlocking;
-        self.presence.show(open, Appear::SPEC, motion, WATCHED, now);
+        if open {
+            self.presence.snap(true);
+        } else {
+            self.presence
+                .show(false, Appear::SPEC, motion, WATCHED, now);
+        }
         self.ask_until();
         if shown.error != self.seen_error {
             if shown.error.is_some() {
@@ -1513,13 +1575,17 @@ impl ui::widget::Decorator for Stage {
         let motion = theme.motion();
         self.advance(now, motion);
         let bounds = self.content.get_rect();
-        ui::auth_backdrop::draw(
-            scene,
-            theme,
-            transform,
-            bounds,
-            ui::auth_backdrop::STILL_SECONDS,
-        );
+        let screens = self.seat.screens(bounds);
+        for screen in &screens {
+            ui::auth_backdrop::draw(
+                scene,
+                theme,
+                transform,
+                *screen,
+                ui::auth_backdrop::STILL_SECONDS,
+            );
+        }
+        let screen = screens.first().copied().unwrap_or(bounds);
         let quiet = self.blank.get(now).clamp(0.0, 1.0);
         // The field is where the person is: the screen comes up about it and
         // goes down about it, rather than about its own middle. The refusal
@@ -1538,12 +1604,12 @@ impl ui::widget::Decorator for Stage {
         let showed = self.seat.shown().keyboard;
         let (key_height, gap) = key_metrics(theme);
         let keyboard = self.keyboard.get();
-        let place = keyboard_rect(theme, keyboard, bounds);
+        let place = keyboard_rect(theme, keyboard, screen);
         self.keyboard_place.set((place, key_height, gap));
         let submits = self.submits();
         let content = &mut self.content;
         pose.paint(scene, placement, bounds, |scene, xform| {
-            content.draw(scene, xform, text_renderer, theme, presence);
+            content.draw_child(scene, xform, text_renderer, theme, presence);
             if showed {
                 keyboard.paint(
                     scene,

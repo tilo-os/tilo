@@ -31,6 +31,9 @@ pub enum Kind {
     DoubleSelection,
     /// A screen made for a narrow window holds its content nearer than a gutter to the edge.
     CrampedGutter,
+    /// A chevron folding a tree's row stands off the line of the row it folds: the words, the
+    /// leading control and the chevron of one row read as two lines.
+    ChevronOffLine,
     /// One screen offers the same way to add something several times: two add affordances in one
     /// list, or the same add label on two controls.
     SeveralAdds,
@@ -155,59 +158,36 @@ pub enum Kind {
     /// A list standing beside the page it opens that highlights another row than the one the page
     /// shows: the tree says where the person is, and the page says it somewhere else.
     DetailRowNotChosen,
+    /// A column whose header row — the words that name what it shows and the buttons that act on
+    /// it — stands only while the window's bar is out: at rest the column starts straight with
+    /// its rows, so what names it and acts on it is off the window until the person reaches for
+    /// the bar. A column's header is the app's own and stands at every time.
+    HeaderOnReveal,
+    /// A name tag presence draws — who is there, what an agent is doing — over a word of the
+    /// window, or a second tag for one actor: the word is lost, and one actor reads as two.
+    PresenceTag,
+    /// A field holding one line of text, standing it above the middle of the control a person
+    /// types into: the band around the line grew (a phone's target) while the line stayed at the
+    /// top, so the words float over empty room instead of standing where the field puts the
+    /// caret. One line stands in the middle of a field that tall; text that wraps, a box given
+    /// lines of its own and a document's page start at their inset.
+    LineOffCentre,
+    /// A page's own sections — what links here, the discussion, its history — standing straight
+    /// under the writing the page holds, with no rule between them: a section's heading is set
+    /// like the writing's own headings and stands no further from it than they stand from each
+    /// other, so what the page says of itself is read as another line of what was written.
+    UnruledBody,
+    /// An action the window's bar offers that a button in the window offers again: a column's
+    /// actions stand in its header row, and the bar holds only what is the window's.
+    OfferedTwice,
+    /// A page's body standing a leading control's width in from the page's gutter while the
+    /// column it is read in is a phone's screen: the indent stands under the text a heading's
+    /// control leads to, and takes the control's cell out of every line the body has, where a
+    /// screen that narrow starts its body on the gutter and keeps the control beside the title.
+    IndentedBody,
 }
 
 impl Kind {
-    pub const ALL: [Self; 47] = [
-        Self::Overflow,
-        Self::ClippedText,
-        Self::Overlap,
-        Self::SmallHitTarget,
-        Self::ScrollsSideways,
-        Self::LostContent,
-        Self::OffPixel,
-        Self::BareRow,
-        Self::RaggedColumns,
-        Self::DoubleSelection,
-        Self::CrampedGutter,
-        Self::SeveralAdds,
-        Self::CodedName,
-        Self::UnsharedVerb,
-        Self::NestedCard,
-        Self::LoneDoor,
-        Self::EmptyHeading,
-        Self::ZeroCount,
-        Self::RepeatedCount,
-        Self::PastWindow,
-        Self::TitleClippedWithRoom,
-        Self::MixedLanguage,
-        Self::OpenOutsideList,
-        Self::EmptySurface,
-        Self::RepeatedPageTitle,
-        Self::DoubleNavigation,
-        Self::FirstLevelIndent,
-        Self::DuplicateBarControl,
-        Self::IconOnlyBarAction,
-        Self::PlaceholderPane,
-        Self::SelectionBleed,
-        Self::StackedHeaderRows,
-        Self::UnchosenPlace,
-        Self::NestedScroller,
-        Self::RepeatedRowTitle,
-        Self::PageInPage,
-        Self::UnmarkedBarPrimary,
-        Self::TextOnText,
-        Self::DockedColumn,
-        Self::RoundedOnEdge,
-        Self::CrampedCard,
-        Self::ContentBesideSidebar,
-        Self::ItemShownTwice,
-        Self::HeadingRoom,
-        Self::OrphanedRow,
-        Self::CrowdedHeading,
-        Self::DetailRowNotChosen,
-    ];
-
     pub fn name(self) -> &'static str {
         match self {
             Self::Overflow => "overflow",
@@ -221,6 +201,7 @@ impl Kind {
             Self::RaggedColumns => "ragged-columns",
             Self::DoubleSelection => "double-selection",
             Self::CrampedGutter => "cramped-gutter",
+            Self::ChevronOffLine => "chevron-off-line",
             Self::SeveralAdds => "several-adds",
             Self::CodedName => "coded-name",
             Self::UnsharedVerb => "unshared-verb",
@@ -257,6 +238,12 @@ impl Kind {
             Self::OrphanedRow => "orphaned-row",
             Self::CrowdedHeading => "crowded-heading",
             Self::DetailRowNotChosen => "detail-row-not-chosen",
+            Self::HeaderOnReveal => "header-on-reveal",
+            Self::PresenceTag => "presence-tag",
+            Self::LineOffCentre => "line-off-centre",
+            Self::UnruledBody => "unruled-body",
+            Self::OfferedTwice => "offered-twice",
+            Self::IndentedBody => "indented-body",
         }
     }
 }

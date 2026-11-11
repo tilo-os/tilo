@@ -24,8 +24,8 @@
 //!   route out: it terminates the VM's TCP and UDP and opens a socket of
 //!   the host's for each. It forwards nothing inwards and maps no host
 //!   loopback, unless the relay is on the host's own loopback: then it maps
-//!   [`HOST_LOOPBACK`] there, so a browser environment reaches a local
-//!   stack. Nothing is routed or address-translated on the host, so the host needs no
+//!   [`HOST_LOOPBACK`] there, so a workspace's browser session reaches a
+//!   local stack. Nothing is routed or address-translated on the host, so the host needs no
 //!   forwarding, no `iptables` rules of its own, and in Kubernetes the pod's
 //!   network policy applies to VM traffic as to the pod's own.
 //! - **A bridge filter** ([`tilo_egress::nft::GuestFilter`]) on `br0`: ARP
@@ -34,11 +34,11 @@
 //!   `169.254.169.254`), loopback, multicast and reserved networks, Azure's
 //!   platform address `168.63.129.16`, and whatever the host adds
 //!   ([`blocked_networks`]), are dropped. IPv6 is off.
-//! - **One endpoint besides the internet** ([`Endpoint`]): a browser
-//!   environment's session joins its workspace through the relay, which is
-//!   a cluster-internal address on a hosted stack, so that VM is given
-//!   exactly the relay's address and port to reach and nothing else of the
-//!   host's. A Linux VM is given none.
+//! - **One endpoint besides the internet** ([`Endpoint`]): the browser
+//!   session in a workspace's VM joins its workspace through the relay,
+//!   which is a cluster-internal address on a hosted stack, so every VM is
+//!   given exactly the relay's address and port to reach and nothing else
+//!   of the host's.
 //! - **Bandwidth limits** in Firecracker's own rate limiters on the
 //!   VM's network device, per direction ([`interface_json`]).
 //!
@@ -107,9 +107,9 @@ pub fn blocked_networks(extra: &[(Ipv4Addr, u8)]) -> Vec<(Ipv4Addr, u8)> {
     all
 }
 
-/// The one destination a VM reaches besides the internet: the relay a
-/// browser environment's session joins its workspace through, as the host
-/// reaches it. The relay's device plane is QUIC over UDP; TCP is allowed
+/// The one destination a VM reaches besides the internet: the relay the
+/// browser session in it joins its workspace through, as the host reaches
+/// it. The relay's device plane is QUIC over UDP; TCP is allowed
 /// too, since the port is the relay's either way.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Hash)]
 pub struct Endpoint {
@@ -413,7 +413,7 @@ mod tests {
 
     #[cfg(target_os = "linux")]
     #[test]
-    fn a_browser_environments_vm_is_allowed_the_address_it_dials_the_relay_at() {
+    fn a_vm_is_allowed_the_address_its_browser_session_dials_the_relay_at() {
         let relay = Endpoint::parse("10.0.0.9:7704").unwrap();
         let filter = guest_filter(&[], Some(relay));
         assert_eq!(filter.endpoint, Some((relay.address, relay.port)));

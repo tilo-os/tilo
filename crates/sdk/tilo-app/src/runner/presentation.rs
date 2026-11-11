@@ -11,6 +11,7 @@ use ui_core::vello::{
     kurbo::{Affine, Rect},
     peniko::Color,
 };
+use ui_core::widget::DrawChild;
 use ui_core::{Theme, automerge::AutoCommit, text_render::TextRenderer};
 
 pub(crate) type DrawPast = fn(AutoCommit, Rect, &mut Scene, Affine, &Theme) -> Result<(), String>;
@@ -148,7 +149,7 @@ impl Presentation {
                 None,
                 &rect,
             );
-            content.draw(&mut scene, transform, text, &theme, &PresenceCtx::empty());
+            content.draw_child(&mut scene, transform, text, &theme, &PresenceCtx::empty());
             revision(doc)
         };
         // On the GPU, only a frame that kept all of its geometry; without an

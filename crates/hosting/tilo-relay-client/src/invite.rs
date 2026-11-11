@@ -1,17 +1,16 @@
 //! Joining a workspace another host governs, from a page with no session
-//! there (`/join`; see [`tilo_relay_protocol::workspaces`]).
+//! there: the device the page enters with.
 //!
 //! The joining person is not a user of that host: their page holds its own
 //! user root and certifies the device itself ([`guest_certificate`]). The host
 //! admits it through the workspace's governed roster as the invitation's own
-//! grant admits it, never as one of the host user's devices.
+//! grant admits it, never as one of the host user's devices; the redemption
+//! is an entry on the device's session ([`tilo_relay_protocol::entering`]).
 
 use crate::signer::DeviceSigner;
-use tilo_relay_protocol::workspaces::{JoinChallengeView, JoinReply, JoinStep, join_proof_digest};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, device_cert_signing_digest};
 
 use crate::error::LinkError;
-use crate::https::{self, HttpClient};
 
 /// The page's own certificate for its device, signed by the person's own
 /// root `root`: a member device named `label`, with no expiry.
@@ -47,108 +46,4 @@ pub async fn guest_certificate(
     tilo_user_identity::verify_device_cert(&cert)
         .map_err(|error| LinkError::Sign(error.to_string()))?;
     Ok(cert)
-}
-
-/// Ask to join with `invitation` as the device `cert` signed by `signer`,
-/// named `name` to the workspace's owner: redeem it, check the host's challenge
-/// names exactly this invitation, device and request, and answer it.
-/// Resolves to [`JoinReply::Admitted`] — an invitation admits by the grant of
-/// whoever issued it — or to the host's refusal.
-pub async fn ask_to_join(
-    client: &dyn HttpClient,
-    invitation: &[u8],
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    request_id: [u8; 32],
-    name: &str,
-) -> Result<JoinReply, LinkError> {
-    ask(client, invitation, cert, signer, request_id, name, None).await
-}
-
-/// [`ask_to_join`] with the one-time `token` of the owner's pre-admission
-/// for the invitation: the host admits the device at once
-/// ([`JoinReply::Admitted`]) instead of having it wait for the owner.
-///
-/// # Errors
-///
-/// As [`ask_to_join`].
-pub async fn ask_to_join_pre_admitted(
-    client: &dyn HttpClient,
-    invitation: &[u8],
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    request_id: [u8; 32],
-    name: &str,
-    token: &[u8],
-) -> Result<JoinReply, LinkError> {
-    ask(
-        client,
-        invitation,
-        cert,
-        signer,
-        request_id,
-        name,
-        Some(token.to_vec()),
-    )
-    .await
-}
-
-async fn ask(
-    client: &dyn HttpClient,
-    invitation: &[u8],
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    request_id: [u8; 32],
-    name: &str,
-    token: Option<Vec<u8>>,
-) -> Result<JoinReply, LinkError> {
-    if signer.device_public_key() != cert.device_public_key {
-        return Err(LinkError::Sign(
-            "the signer is not the certified device".into(),
-        ));
-    }
-    let asked = https::join(
-        client,
-        &JoinStep::Ask {
-            invitation: invitation.to_vec(),
-            device_cert: cert.clone(),
-            request_id,
-        },
-    )
-    .await?;
-    let challenge = match asked {
-        JoinReply::Challenge { challenge } => challenge,
-        other => return Ok(other),
-    };
-    let view: JoinChallengeView = postcard::from_bytes(&challenge)
-        .map_err(|error| LinkError::Malformed(error.to_string()))?;
-    if view.signed_invitation != invitation
-        || view.user_public_key != cert.user_public_key
-        || view.device_public_key != cert.device_public_key
-        || view.request_id != request_id
-        || postcard::to_allocvec(&view).ok().as_deref() != Some(challenge.as_slice())
-    {
-        return Err(LinkError::Malformed(
-            "the host's join challenge names another request".into(),
-        ));
-    }
-    let signature = signer
-        .sign(join_proof_digest(&challenge).to_vec())
-        .await
-        .map_err(|error| LinkError::Sign(error.0))?;
-    let name = name.to_owned();
-    let step = match token {
-        None => JoinStep::Prove {
-            challenge,
-            signature,
-            name,
-        },
-        Some(token) => JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name,
-            token,
-        },
-    };
-    https::join(client, &step).await
 }

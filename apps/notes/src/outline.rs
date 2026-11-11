@@ -19,6 +19,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::main_panel::MainPanel;
+use ui::widget::DrawChild;
 
 /// One heading in the open note.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -193,7 +194,7 @@ impl Widget for NotesOutline {
         presence: &PresenceCtx,
     ) {
         self.list
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

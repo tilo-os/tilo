@@ -125,6 +125,7 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
             apps: None,
             handle,
             sync: None,
+            here: Rc::new(|_: &mut DesktopTree| {}),
             intents: Rc::default(),
             invitable: Rc::new(Cell::new(false)),
         },
@@ -147,4 +148,102 @@ fn keep_on_screen_and_put_back_take_the_pointer_at_twice_the_scale() {
         people.borrow().shown.borrow().pinned.is_none(),
         "the press on Put back in the bar, where it is said to stand, took it off the desk"
     );
+}
+
+/// The roster lists whoever the bar's faces are drawn from: on a page, an agent's run the
+/// workspace's host speaks for is heard on a track of its own and is in the desk's collaborators
+/// only as the page writes them in, and the roster lists it with its Follow.
+#[test]
+fn the_roster_lists_who_the_bar_shows() {
+    let _settled = ui::motion::testing::settled();
+    let (people, mut frame) = agent_here().expect("the roster places its layer");
+    people.borrow().toggle();
+    settle(&mut frame);
+    let listed = labels(&frame);
+    assert!(
+        listed.iter().any(|label| label == "Follow Claude Code"),
+        "the roster lists the agent the bar shows: {listed:?}"
+    );
+}
+
+/// A press on someone's face opens their card where the roster stands; a second press on the same
+/// face, their card standing, brings everyone here in its place. The bar has no people button while
+/// it shows a face, so this is how a pointer reaches the roster.
+#[test]
+fn a_face_pressed_again_brings_everyone_here() {
+    let _settled = ui::motion::testing::settled();
+    let (people, mut frame) = agent_here().expect("the roster places its layer");
+    let card = |labels: &[String]| labels.iter().any(|label| label == "Claude Code’s profile");
+    people.borrow().show_person("run");
+    settle(&mut frame);
+    let shown = labels(&frame);
+    assert!(
+        card(&shown),
+        "the first press opens the agent's card: {shown:?}"
+    );
+
+    people.borrow().show_person("run");
+    settle(&mut frame);
+    let shown = labels(&frame);
+    assert!(!card(&shown), "the second press closes the card: {shown:?}");
+    assert!(
+        shown.iter().any(|label| label == "Follow Claude Code"),
+        "and everyone here stands in its place: {shown:?}"
+    );
+    assert!(people.borrow().is_open());
+}
+
+/// A desk whose page writes an agent in as here, as it does for the bar, and its roster's layer.
+fn agent_here() -> Option<(Rc<RefCell<People>>, ui::headless::FrameHarness)> {
+    let here = WorkspaceId::new();
+    let desk = Workspace::in_workspace(WorkspaceSlot::of_workspace(here), here, "Desk");
+    let (_desk, handle) = DesktopSurface::new(
+        DesktopTree {
+            active: desk.slot,
+            workspaces: vec![desk],
+            ..DesktopTree::default()
+        },
+        7,
+        Box::new(Blank),
+    );
+    let mut placed = Placed::default();
+    let people = mount(
+        &mut placed,
+        Given {
+            scale: 1.0,
+            seated: "Quinten".into(),
+            notes: Rc::new(BTreeMap::new),
+            apps: None,
+            handle,
+            // A card is read from the session's model of the person.
+            sync: Some(Rc::new(crate::sync::Client::untethered(
+                iroh::SecretKey::from_bytes(&[0x51; 32]).public(),
+                crate::sync::OwnPresence::default(),
+            ))),
+            here: Rc::new(|tree: &mut DesktopTree| {
+                if let Some(workspace) = tree.workspaces.first_mut() {
+                    workspace.collaborators = vec![Collaborator {
+                        id: "run".to_owned(),
+                        name: "Claude Code".to_owned(),
+                        role_id: Some("agent".to_owned()),
+                        ..Collaborator::default()
+                    }];
+                }
+            }),
+            intents: Rc::default(),
+            invitable: Rc::new(Cell::new(false)),
+        },
+    );
+    let panel = placed.0.take()?;
+    let frame = ui::headless::FrameHarness::new(ui::State::new(), panel, (1280, 800));
+    Some((people, frame))
+}
+
+fn labels(frame: &ui::headless::FrameHarness) -> Vec<String> {
+    frame
+        .a11y_tree_update()
+        .nodes
+        .iter()
+        .filter_map(|(_, node)| node.label().map(str::to_owned))
+        .collect()
 }

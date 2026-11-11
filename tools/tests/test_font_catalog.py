@@ -218,7 +218,8 @@ class CacheLockTest(unittest.TestCase):
             def prepare():
                 barrier.wait()
                 try:
-                    roots.append(fc.prepared_root(FONTS, "fixtures", cache=cache))
+                    # CI prepares fonts offline; this test is the fetch itself.
+                    roots.append(fc.prepared_root(FONTS, "fixtures", cache=cache, offline=False))
                 except Exception as error:  # the other thread's failure is the test's
                     failures.append(error)
 

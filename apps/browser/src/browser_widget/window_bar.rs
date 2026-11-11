@@ -433,6 +433,7 @@ impl BrowserWidget {
             go_name: t("browser-go"),
             segments: Vec::new(),
             image: self.favicon_png.clone().map(|png| ToolbarImage { png }),
+            avatar: None,
             suggestions: self.bar_suggestions(),
             choices: Vec::new(),
             anchor: None,
@@ -452,9 +453,9 @@ impl BrowserWidget {
     }
 
     /// Tell the window's bar the slots, when what they are made from
-    /// changed.
+    /// changed, or the window they are declared on did.
     pub(super) fn declare_window_toolbar(&mut self) {
-        let inputs = self.bar_inputs();
+        let inputs = (ui::window_toolbar::current_window(), self.bar_inputs());
         if self.declared_bar.as_ref() != Some(&inputs) {
             ui::window_toolbar::declare(Some(self.window_toolbar()));
             self.declared_bar = Some(inputs);
@@ -535,14 +536,16 @@ impl BrowserWidget {
                 }
             },
             // The bar's own search and History control are run by the
-            // framework on the app's widgets, never handed to its slots.
+            // framework on the app's widgets, and whether the window floats
+            // is the framework's to keep: neither is handed to its slots.
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
             | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
-            | ToolbarEvent::History => return,
+            | ToolbarEvent::History
+            | ToolbarEvent::Floating { .. } => return,
         }
         self.structure_dirty = true;
     }

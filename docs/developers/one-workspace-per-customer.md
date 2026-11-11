@@ -38,7 +38,7 @@ by mistake.
 
 ```python
 from pathlib import Path
-from tilo import Tilo                      # uv add tilo  (TypeScript: @tilo/sdk)
+from tilo import Tilo                      # uv add tilo-sdk  (TypeScript: bun add tilo-sdk)
 
 tilo = Tilo()                              # the key in TILO_API_KEY
 for applicant in ["Jane Doe", "Amir Haddad", "Li Wei"]:   # one per customer, no limit

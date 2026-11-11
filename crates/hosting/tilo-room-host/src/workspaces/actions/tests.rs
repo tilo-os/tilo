@@ -8,7 +8,6 @@
     reason = "the relay and workspace handles a test binds are shared handles it keeps until the test ends; dropping one earlier closes the host it drives and releases no lock"
 )]
 
-use ed25519_dalek::Signer as _;
 use serde_json::{Map, Value, json};
 use tilo_action_policy::{Answer, Grant, KindSet, Subject, roles, roles::governance};
 use tilo_actions::InvocationId;
@@ -18,7 +17,7 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_PROVIDER,
 };
 use tilo_peer_state::join::MemberRole;
-use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+use tilo_relay_protocol::workspaces::JoinReply;
 use tilo_user_identity::DeviceCert;
 
 use super::{CANCEL_INVITATION, GovernedPlane, HostWorkspaceActions, INVITATIONS, MEMBERS};
@@ -70,24 +69,14 @@ pub(super) async fn admit_device(
         .await
         .unwrap();
     let (key, cert) = guest_device();
-    let JoinReply::Challenge { challenge } = workspaces
-        .page_join(JoinStep::Ask {
-            invitation: issued.signed_invitation,
-            device_cert: cert.clone(),
-            request_id: rand::random(),
-        })
-        .await
-    else {
-        panic!("no challenge");
-    };
-    let signature = key.sign(&join_proof_digest(&challenge)).to_bytes();
     let reply = workspaces
-        .page_join(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: format!("Person {seed}"),
-            token: token.to_vec(),
-        })
+        .admit_proven(
+            issued.signed_invitation,
+            cert.clone(),
+            rand::random(),
+            &format!("Person {seed}"),
+            Some(token.as_slice()),
+        )
         .await;
     assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
     (key, cert)

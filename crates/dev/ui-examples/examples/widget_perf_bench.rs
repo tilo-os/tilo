@@ -31,6 +31,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
 use tilo_ui::widget::{
@@ -236,7 +237,7 @@ impl Bench {
 
         let t_draw = tilo_ui::time::now();
         scene.reset();
-        root.draw(scene, Affine::IDENTITY, text_renderer, theme, presence);
+        root.draw_child(scene, Affine::IDENTITY, text_renderer, theme, presence);
         times.draw_us = t_draw.elapsed().as_micros();
 
         let t_render = tilo_ui::time::now();

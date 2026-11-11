@@ -2,6 +2,7 @@
 //! copy across newlines, wrapping at Unicode line breaks, navigation by visual
 //! line, and the binding that survives a controlled field.
 use super::super::*;
+use super::draw_to_populate;
 use super::drive;
 use super::ml_input;
 use super::mods;
@@ -426,4 +427,117 @@ fn controlled_local_input_opt_outs_survive_draw_without_dictionary_work() {
     assert!(input.autocorrection_preview_key.is_none());
     assert!(input.autocorrection_preview.is_none());
     assert_eq!(input.text, "teh mispeled words");
+}
+
+/// The height the field stands at when a layout measures it in `width`.
+fn measured_height(ti: &mut TextInput, theme: &Theme, width: f32) -> f32 {
+    let mut taffy = TaffyTree::<()>::new();
+    let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
+        std::collections::HashMap::new();
+    let node = ti.build_layout(&mut taffy, theme, &mut node_map);
+    let mut tr = TextRenderer::new();
+    tr.set_text_scale(theme.text_scale);
+    let size = Widget::measure(
+        ti,
+        taffy::Size {
+            width: Some(width),
+            height: None,
+        },
+        taffy::Size {
+            width: taffy::AvailableSpace::Definite(width),
+            height: taffy::AvailableSpace::MaxContent,
+        },
+        &mut tr,
+    );
+    match taffy.style(node).unwrap().size.height.into_option() {
+        Some(fixed) => fixed,
+        None => size.height,
+    }
+}
+
+#[test]
+fn a_wrapping_field_holding_one_line_centres_it_in_the_band_it_stands_in() {
+    // Motion reads at its end: this test checks the resting frame.
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::dark();
+    let inset = 8.0;
+    // Case `a_composer_in_a_phone_band_centres_its_one_line`.
+    {
+        // The band grows to the target a finger reaches, though the field needs one line.
+        let mut composer = TextInput::local().multiline(true);
+        composer.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+        let height = measured_height(&mut composer, &theme, 320.0);
+        assert!(
+            height >= 48.0,
+            "a composer in a phone's window stands at the touch target: {height}"
+        );
+        composer.apply_layout_external(Rect::new(0.0, 0.0, 320.0, f64::from(height)));
+        draw_to_populate(&mut composer);
+        let (top, shaped_line) = composer.text_band();
+        assert!(
+            (top - (f64::from(height) - shaped_line) / 2.0).abs() < 0.5,
+            "the line is centred in the band: {top} in {height}, a line of {shaped_line}"
+        );
+        assert!(
+            (top - inset).abs() > 1.0,
+            "it is centred rather than pinned to the top: {top}"
+        );
+        let caret = composer.caret_rect(&theme, 0);
+        assert!(
+            (caret.y0 - top).abs() < 0.5 && (caret.height() - shaped_line).abs() < 1.0,
+            "the caret stands on that line: {caret:?}"
+        );
+    }
+
+    // Case `a_field_stretched_to_fill_a_pane_keeps_its_line_at_the_inset`.
+    {
+        // Room past the band is the pane's, not the line's: the text begins where it grows and
+        // fills down, as a document does.
+        let mut filled = TextInput::local().multiline(true);
+        filled.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 240.0));
+        draw_to_populate(&mut filled);
+        let (top, _) = filled.text_band();
+        assert!(
+            (top - 8.0).abs() < 0.5,
+            "the line starts at the field's inset: {top}"
+        );
+    }
+
+    // Case `wrapped_text_starts_at_the_inset`.
+    {
+        let mut wrapped = TextInput::local().multiline(true).with_initial_value(
+            "A sentence with enough words in it that it wraps in a narrow field.",
+        );
+        wrapped.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 48.0));
+        draw_to_populate(&mut wrapped);
+        let (top, _) = wrapped.text_band();
+        assert!(
+            (top - 8.0).abs() < 0.5,
+            "wrapped text starts at the inset and grows down: {top}"
+        );
+    }
+
+    // Case `a_field_given_lines_of_its_own_starts_at_the_inset`.
+    {
+        let mut notes = TextInput::local().multiline(true).with_min_lines(4);
+        notes.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 200.0));
+        draw_to_populate(&mut notes);
+        let (top, _) = notes.text_band();
+        assert!(
+            (top - 8.0).abs() < 0.5,
+            "a box given lines keeps its text at the inset: {top}"
+        );
+    }
+
+    // Case `a_document_page_starts_at_the_inset`.
+    {
+        let mut page = TextInput::local().multiline(true).with_plain_chrome();
+        page.apply_layout_external(Rect::new(0.0, 0.0, 320.0, 400.0));
+        draw_to_populate(&mut page);
+        let (top, _) = page.text_band();
+        assert!(
+            (top - 8.0).abs() < 0.5,
+            "a page's own text starts at the inset however tall the page stands: {top}"
+        );
+    }
 }

@@ -28,6 +28,7 @@ use tilo_ui::State;
 use tilo_ui::bound_dispatch::BoundNodeMap;
 use tilo_ui::headless::FrameHarness;
 use tilo_ui::presence::PresenceCtx;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{Scrollable, TextInput, Widget};
 use tilo_ui::{TextRenderer, TextRole, Theme};
 use vello::Scene;
@@ -272,7 +273,7 @@ impl Retained {
             f64::from(VIEWPORT.0),
             f64::from(VIEWPORT.1),
         ));
-        self.root.draw(
+        self.root.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut self.text,

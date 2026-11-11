@@ -73,8 +73,7 @@ pub struct Config {
     /// The door's own origin, as agents reach it (`https://mcp.tilo.sh`): the
     /// OAuth issuer and the protected resource. No trailing slash.
     pub issuer: String,
-    /// The person's Tilo on the web, which signs them in to the door; its
-    /// `entry.json` names the door to the site's home workspace on the relay.
+    /// The person's Tilo on the web, which signs them in to the door.
     pub web_entry: String,
     /// The public origin of the relay the person's workspaces live on
     /// (`https://eu1.tilo.sh`).
@@ -104,6 +103,10 @@ struct GrantAsk {
     /// When the grant expires, in Unix milliseconds; `None` for a server
     /// key that lasts until revoked.
     expires_ms: Option<u64>,
+    /// The key may operate web pages in Browser: navigate, fill, select,
+    /// click, press, scroll, point and drag in its workspace's Browser
+    /// without asking the person each time. Submitting a page still asks.
+    browser_pages: bool,
 }
 
 impl GrantAsk {
@@ -117,6 +120,7 @@ impl GrantAsk {
                     u64::try_from(grant_key::GRANT_LIFETIME.as_millis()).unwrap_or(0),
                 ),
             ),
+            browser_pages: false,
         }
     }
 }
@@ -180,7 +184,7 @@ impl Door {
         let sign_in_entry = url::Url::parse(&format!("{web_entry}/sign-in"))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
-            relay: Arc::new(Relay::new(&http, &config.relay, &web_entry)),
+            relay: Arc::new(Relay::new(&http, &config.relay)),
             http,
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
@@ -468,6 +472,9 @@ impl Door {
             url.query_pairs_mut()
                 .append_pair("grant_kind", "server_key");
         }
+        if ask.grant.browser_pages {
+            url.query_pairs_mut().append_pair("grant_pages", "1");
+        }
         url.into()
     }
 
@@ -589,6 +596,7 @@ impl Door {
             cert,
             pending.grant.scope,
             pending.grant.server_key,
+            pending.grant.browser_pages,
             now_ns,
         )
         .map_err(|error| refused(&error.to_string()))
@@ -998,28 +1006,12 @@ impl Door {
             .connection(&grant.id, &key)
             .await
             .map_err(|error| error.to_string())?;
-        let parent = match grant.parent() {
-            Some(parent) => {
-                let parent_key = self
-                    .store
-                    .grant(parent)
-                    .and_then(|parent| parent.key())
-                    .ok_or("the key that minted this key was revoked")?;
-                Some(
-                    self.connection(parent, &parent_key)
-                        .await
-                        .map_err(|error| error.to_string())?,
-                )
-            }
-            None => None,
-        };
         Ok(Session::new(
             grant.id.clone(),
             scope,
             label,
             Arc::clone(&self.relay),
             connection,
-            parent,
             Arc::downgrade(self),
         ))
     }

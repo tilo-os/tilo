@@ -27,6 +27,21 @@ use tilo_clock::Instant;
 /// one.
 pub const RECHECK_INTERVAL: Duration = Duration::from_secs(1);
 
+/// The instant, since the Unix epoch, at which a pass that read the wall
+/// clock as `now` (whole seconds, as every [`crate::ChannelDirectory`] is
+/// asked) judges a workspace's policy: the last instant of that second.
+///
+/// The workspace admits a device at the instant it does, so a device whose
+/// certificate was issued, or whose person was admitted, earlier in the same
+/// second is already one the workspace holds. Judged at the second's start,
+/// it was not yet, and a fresh visitor waited for the next second and the
+/// re-check after it (up to two seconds) before its Welcome was committed.
+/// What ends within the second counts as ended, never later than it does.
+#[must_use]
+pub const fn policy_instant(now: u64) -> Duration {
+    Duration::new(now, 999_999_999)
+}
+
 /// The last re-check and what the next waits for.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PolicySchedule {
@@ -166,6 +181,16 @@ mod tests {
         schedule.checked(start, 3, true);
         assert_eq!(schedule.due(start, 3), Some(after(start, RECHECK_INTERVAL)));
         assert!(!schedule.waits_for_change(3));
+    }
+
+    #[test]
+    fn a_pass_judges_policy_at_the_last_instant_of_its_second() {
+        // A certificate issued a quarter second into the second a pass reads
+        // is already valid to it; nothing of the next second is.
+        let issued = Duration::new(100, 250_000_000);
+        assert!(super::policy_instant(100) >= issued);
+        assert!(super::policy_instant(100) < Duration::from_secs(101));
+        assert_eq!(super::policy_instant(0), Duration::new(0, 999_999_999));
     }
 
     #[test]

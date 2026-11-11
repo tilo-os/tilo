@@ -377,6 +377,7 @@ impl Window {
                     held |= match *name {
                         "ctrl" => ModifiersState::CONTROL,
                         "shift" => ModifiersState::SHIFT,
+                        "alt" => ModifiersState::ALT,
                         other => panic!("no modifier {other}"),
                     };
                 }
@@ -1227,92 +1228,43 @@ fn who_edited_a_page_reads_as_the_name_the_window_knows_them_by_never_their_key(
     );
 }
 
-/// The desktop's bar over the live window, as the shell runs it: the window declares its slots
-/// there, and what the person does with them reaches the window on its shell-ui connection,
-/// naming the input the shell had sent the window by then.
-struct Bar {
-    shell: std::os::unix::net::UnixStream,
+/// The person presses New note in the header row of the live window, which the desktop hosts.
+fn press_new_note(session: &mut Session) {
+    let plus = session.new_note_button();
+    session.window.click_at(plus.0, plus.1);
 }
 
-impl Bar {
-    /// The bar over `session`'s live window, which the desktop hosts.
-    fn over(session: &mut Session) -> Self {
-        let (shell, app) = std::os::unix::net::UnixStream::pair().unwrap();
-        let Window::Live(window) = &mut session.window else {
-            panic!("the bar is over the live window");
-        };
-        window.test_floating_service_connection(
-            ui::floating_surface::FloatingSurfaceServiceClient::from_test_stream(app).unwrap(),
-        );
-        Self { shell }
-    }
-
-    /// The person presses the bar's slot `name` after the input with the serial `after`; the
-    /// window reads it at once, before the input it has not handled yet.
-    fn press(&mut self, session: &mut Session, name: &str, after: u32) {
-        use std::io::Write as _;
-        let id = ui::window_toolbar::declared()
-            .expect("the window declares its bar's slots")
-            .actions
-            .iter()
-            .find(|action| action.name == name)
-            .unwrap_or_else(|| panic!("the bar has {name:?}"))
-            .id
-            .clone();
-        let mut frame = serde_json::to_vec(
-            &ui::floating_surface::FloatingSurfaceHostMessage::ToolbarEvent {
-                event: ui::window_toolbar::ToolbarEvent::Action { id },
-                after_input: Some(after),
-            },
-        )
-        .unwrap();
-        frame.push(b'\n');
-        self.shell.write_all(&frame).unwrap();
-        let Window::Live(window) = &mut session.window else {
-            panic!("the bar is over the live window");
-        };
-        window.test_pump_floating_service();
-    }
-}
-
-/// The serial the next `count` input events end at.
-fn input_after(count: u32) -> u32 {
-    INPUT.with(std::cell::Cell::get).wrapping_add(count)
-}
-
-/// The person types in a note's body, presses "+" in the window's bar and types the new
-/// note's title, quicker than the window reads its input: the press reaches the window before
-/// the keys typed before it. It runs where the person made it, after those keys and before the
-/// ones after it, so each lands where it was typed.
+/// The person types in a note's body, presses New note in its column's header row and types
+/// the new note's title, quicker than the window reads its input: each key lands where it was
+/// typed, the ones before the press in the old note and the ones after it in the new note's
+/// title.
 #[test]
-fn a_bar_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_where_the_keyboard_was_follows_into_what_it_opens()
+fn a_new_note_press_runs_between_the_keys_before_and_after_it_and_typing_after_it_where_the_keyboard_was_follows_into_what_it_opens()
  {
     ui::window_toolbar::set_hosted(true);
     let mut session = Session::live_notes();
-    bar_press_between_the_keys(&mut session);
+    press_between_the_keys(&mut session);
 }
 
 #[test]
-fn a_bar_press_runs_between_the_keys_before_and_after_it_from_a_rich_body_too() {
+fn a_new_note_press_runs_between_the_keys_before_and_after_it_from_a_rich_body_too() {
     ui::window_toolbar::set_hosted(true);
     let mut session = Session::live_rich();
-    bar_press_between_the_keys(&mut session);
+    press_between_the_keys(&mut session);
 }
 
-/// The person types in a note's body, presses "+" in the bar and types the new note's title:
-/// the keys typed after the press are the new note's title, wherever the keyboard was.
-fn bar_press_between_the_keys(session: &mut Session) {
-    let mut bar = Bar::over(session);
-    bar.press(session, "New note", input_after(0));
+/// The person types in a note's body, presses New note and types the new note's title: the
+/// keys typed after the press are the new note's title, wherever the keyboard was.
+fn press_between_the_keys(session: &mut Session) {
+    press_new_note(session);
     session.settle();
     session.window.type_text("First");
     session.settle();
     let body = session.body();
     session.window.click_at(body.0, body.1);
     session.settle();
-    // "Body" is eight key events; the press comes after them, and reaches the window first.
-    bar.press(session, "New note", input_after(8));
     session.window.type_text("Body");
+    press_new_note(session);
     session.window.type_text("Echo");
     session.settle();
     let mut titles = session.titles();
@@ -1342,11 +1294,11 @@ fn open_note(session: &mut Session) -> (String, String) {
     (title, body_text(session))
 }
 
-/// With the keyboard in a note's body, "+" in the window's bar, run by the window before the
-/// next keys reach it, and the new note's title typed: the keys go to the new note's title,
-/// never its body, round after round.
+/// With the keyboard in a note's body, New note pressed in the header row, run by the host
+/// while the next keys reach the window, and the new note's title typed: the keys go to the new
+/// note's title, never its body, round after round.
 #[test]
-fn after_a_bar_press_the_window_ran_from_the_body_typing_goes_to_the_new_notes_title() {
+fn after_a_new_note_press_from_the_body_typing_goes_to_the_new_notes_title() {
     ui::window_toolbar::set_hosted(true);
     for notebook in 0..4 {
         typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
@@ -1357,7 +1309,7 @@ fn after_a_bar_press_the_window_ran_from_the_body_typing_goes_to_the_new_notes_t
 }
 
 #[test]
-fn after_a_bar_press_from_a_rich_body_typing_goes_to_the_new_notes_title() {
+fn after_a_new_note_press_from_a_rich_body_typing_goes_to_the_new_notes_title() {
     ui::window_toolbar::set_hosted(true);
     for notebook in 0..4 {
         typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
@@ -1371,7 +1323,6 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
     mut session: Session,
     notebook: usize,
 ) {
-    let mut bar = Bar::over(&mut session);
     for round in 0..6 {
         if round % 2 == 1 {
             let body = session.body();
@@ -1380,7 +1331,7 @@ fn typing_after_a_press_from_the_body_goes_to_the_new_notes_title(
             session.window.type_text("Text");
             session.settle();
         }
-        bar.press(&mut session, "New note", input_after(0));
+        press_new_note(&mut session);
         // The press reaches the host, which runs it and answers, before the window's next
         // frame: the keys come first.
         if round % 3 == 2 {
@@ -1803,6 +1754,109 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
         other => panic!("a rich body: {other:?}"),
     };
     assert_eq!(kinds, ["heading", "list_item"]);
+}
+
+/// The blocks of the open note's body as the window holds them: each paragraph's kind and text.
+fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
+    match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => rich
+            .blocks
+            .iter()
+            .map(|block| (block.kind.clone(), block.text.clone()))
+            .collect(),
+        other => panic!("a rich body: {other:?}"),
+    }
+}
+
+/// The level a block of the open note's body carries, when it is a heading.
+fn heading_level(session: &mut Session, block: usize) -> Option<i64> {
+    match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => match rich.blocks.get(block)?.attrs.get("level") {
+            Some(tilo_render_protocol::patch::rich::Attr::Int(level)) => Some(*level),
+            _ => None,
+        },
+        other => panic!("a rich body: {other:?}"),
+    }
+}
+
+/// A heading typed as `## ` at the start of a line is a heading of that level with no marker
+/// left, and Ctrl+Z brings the marker back: what the person typed last is one step of theirs,
+/// kept in the record.
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back() {
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("##");
+    session.settle();
+    session.window.type_text(" ");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), String::new())],
+        "the marker became the line's kind, and is no text of its own"
+    );
+    assert_eq!(
+        heading_level(&mut session, 0),
+        Some(2),
+        "two hashes make a second-level heading"
+    );
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "##".to_owned())],
+        "Ctrl+Z takes back the promotion alone: the words typed before it stay"
+    );
+}
+
+#[test]
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back_in_the_live_window() {
+    a_typed_heading_prefix_is_a_heading_undo_puts_back();
+}
+
+#[test]
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back_in_the_frame_harness() {
+    let mut session = Session::rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("##");
+    session.settle();
+    session.window.type_text(" ");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), String::new())]
+    );
+    assert_eq!(heading_level(&mut session, 0), Some(2));
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "##".to_owned())]
+    );
+}
+
+/// The format menu's Ctrl+Alt+2 makes the line the person is in a heading, over writing that is
+/// already there, and Ctrl+Alt+0 makes it body text again: the record keeps the line's kind,
+/// and its words are never moved.
+#[test]
+fn the_heading_chord_makes_the_line_a_heading_and_body_text_again() {
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("Plan");
+    session.settle();
+    session.window.chord(&["ctrl", "alt"], "2");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), "Plan".to_owned())]
+    );
+    assert_eq!(heading_level(&mut session, 0), Some(2));
+    session.window.chord(&["ctrl", "alt"], "0");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "Plan".to_owned())],
+        "Ctrl+Alt+0 is the way back to body text"
+    );
 }
 
 /// The document editor as captured, when shots are asked for with `TILO_RICHBODY_SHOTS`: a

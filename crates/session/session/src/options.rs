@@ -74,10 +74,10 @@ pub struct Options {
     /// once (the first use of this device, or the recovery of its identity), or the wait for the
     /// clock to admit this device's certificate.
     pub setup: Option<BeforeDesk>,
-    /// The browser environment this session runs in, when a host started it for one: the device,
+    /// The workspace's Browser this session holds, when a host started it for one: the device,
     /// workspace and record it was handed, and what it reports of the window it holds
     /// ([`crate::hosted_browser::HostedBrowser`]). A session a person starts has none, and does
-    /// nothing an environment's session is spared.
+    /// nothing a hosted Browser's session is spared.
     #[cfg(target_os = "linux")]
     pub hosted_browser: Option<crate::hosted_browser::HostedBrowser>,
     /// Carries out what the person chose in the power menu (log out,

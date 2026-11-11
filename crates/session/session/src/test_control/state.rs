@@ -141,6 +141,25 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
             "lock_screen_drawn": desk.lock_screen_drawn,
             "in_transition": false,
             "overlays": open,
+            // Where the person types, which a surface a key opens stands beside, and where the
+            // stack placed each surface that is up: `[x0, y0, x1, y1]`.
+            "caret": desk.overlays.caret().map(|at| [at.x0, at.y0, at.x1, at.y1]),
+            "places": Slot::ALL
+                .into_iter()
+                .filter_map(|slot| {
+                    let at = desk.overlays.place(slot)?.room;
+                    Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
+                })
+                .collect::<serde_json::Map<_, _>>(),
+            // Where each surface that is up stands as its app drew it: a panel that fits its
+            // content is shorter than the room the stack gave it.
+            "surfaces": Slot::ALL
+                .into_iter()
+                .filter_map(|slot| {
+                    let at = desk.overlays.surface(slot)?;
+                    Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
+                })
+                .collect::<serde_json::Map<_, _>>(),
             // Whether freed heap is still to be handed back to the kernel
             // (a close asked for a trim), and how many trims have run.
             "heap_trim": {
@@ -197,6 +216,7 @@ pub(super) fn window_rows(
                         "app_id": app_id,
                         "title": tab.title,
                         "active": group_active && group.active_tab == tab.id,
+                        "floating": workspace.arrangement.float_of(group.id).is_some(),
                         "rect": rect,
                     }));
                 }

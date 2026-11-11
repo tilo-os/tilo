@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "@tilo/sdk";
-import type * as tilo from "@tilo/sdk";
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
 
 /** Poker table — `so.tilo.poker.table`. */
 export interface Table extends tilo.Resource {

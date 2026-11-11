@@ -43,7 +43,11 @@ sits in it — `.sidebar_header(title, actions)`, `.overview_header(..)`,
 unified toolbar: a `Heading` title in sentence case after the shell's
 leading button, the column's actions at its trailing end, and one hairline
 under the content columns. An app never draws a band of its own above a
-column. The title starts at the content gutter (`rhythm.group`) or after
+column. Each column's header is the app's own — the words that name what
+the column shows and the buttons that act on it — and stands at the top of
+its column at every time, every row at the same height and baseline: the
+window's bar never takes a column's title or buttons, and never shows a
+second copy of them. The title starts at the content gutter (`rhythm.group`) or after
 the shell's leading button; an optional count follows it as a quiet
 `Caption.numeric` pill; the actions start after the title's measured
 width. Where they do not fit, labelled buttons show their icons alone,
@@ -111,6 +115,14 @@ email client's accounts + folders.
     narrowing a docked window keeps the person's place (they land on the
     page they were on, Back goes to the list), and widening docks again
     with the same page open. Choosing a destination pushes the content.
+    Back walks toward the screen the window opens on: a screen deeper than
+    it goes one step back, and the **places** themselves, which stand in
+    front of it, take Back to the screen they covered — the leading chip of
+    their header row, or the window's bar's Back where the app declares its
+    toolbar there — with the toggle standing aside for it, so a phone is
+    never left on the places with no way to the list they came from. Esc
+    and the system's back gesture take the same steps (and the gesture puts
+    a floating drawer away too).
   - **A floating drawer** only for a *content-primary* app
     (`ContentKind::Document`: a document or editor whose sidebar is an
     occasional outline or list of documents) too narrow to dock. It opens
@@ -491,9 +503,10 @@ completeness does not exempt a screen from these requirements.
   (`widget::top_edge_reveal`). A Tilo app's header row takes the bar in as
   **one bar**: the window's controls stand at the row's trailing end in room
   the row keeps for them (`WindowHeader::set_window_bar`), never stacked
-  above or painted over the app's controls. An app may put its header *in*
-  the bar (`NavShell::with_header_in_window_bar`): maximized, the header
-  then hides with the bar and comes back over the content with it.
+  above or painted over the app's controls. The row stands at rest too:
+  maximized, the window's controls come into the room it keeps for them when
+  the person reaches for the bar, and no column's title or buttons wait on
+  that reach.
 - **The window's controls are a group of their own.** History, Full screen
   and Close stand at the bar's trailing edge, `rhythm.group` apart from the
   app's controls and the window's search before them; space parts the two

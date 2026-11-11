@@ -481,11 +481,13 @@ unsafe fn solve_widget_layout(
     // Intrinsic content can change without changing a Taffy style or topology.
     // Invalidate the measured node itself: marking only the root leaves cached
     // descendant heights intact and clips paragraphs as they wrap while typing.
+    let mut asked: Vec<NodeId> = Vec::new();
     for &node in nodes.keys() {
         // SAFETY: use the same admission/lifetime checks as measurement below.
         let needs_measure =
             unsafe { sweep.layout(node, |widget| widget.layout_needs_measure()) }.unwrap_or(false);
         if needs_measure {
+            asked.push(node);
             taffy.mark_dirty(node)?;
         }
     }
@@ -598,6 +600,16 @@ unsafe fn solve_widget_layout(
         }
         drop(sweep);
         if !changed {
+            // The solve has read every size that asked for one, so the
+            // requests are met here rather than by a draw that may never
+            // come: a widget placed and not drawn (a shut overflow door's
+            // controls, a row a scroll hides) would otherwise ask again on
+            // every frame after, and re-measure its path to the root.
+            let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
+            for node in std::mem::take(&mut asked) {
+                // SAFETY: the caller's exact live-tree ownership contract.
+                let _ = unsafe { sweep.layout(node, |widget| widget.layout_measured()) };
+            }
             return Ok(());
         }
     }
@@ -2066,6 +2078,68 @@ mod tests {
                 });
             }
         }
+    }
+
+    /// A widget the solver measures answers its request there, whether or not
+    /// a frame draws it. A label in a container nobody shows this frame (a
+    /// shut door's, a folded pane's) has no draw to clear it: one change of
+    /// its text kept it, and its path to the root, re-measuring every frame
+    /// after.
+    #[test]
+    fn a_label_laid_out_and_never_drawn_answers_its_measure() {
+        use crate::widget::{Column, Text};
+        let mut root = Column::new().push(Box::new(Text::new("Label").with_id("label")));
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let tree_root = root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        // SAFETY: the tree, its widgets and both maps live to the end of the
+        // test, and nothing else lays them out beside it.
+        unsafe {
+            bindings.rebuild(&root, &tree, tree_root, &nodes);
+        }
+        let available = Size {
+            width: AvailableSpace::Definite(400.0),
+            height: AvailableSpace::Definite(300.0),
+        };
+        // What a host does for a frame: solve the sizes, place the boxes.
+        let lay_out = |root: &mut Column, tree: &mut TaffyTree<()>| {
+            let mut text = crate::font_catalog::fixture_renderer();
+            // SAFETY: as above.
+            unsafe {
+                compute_widget_layout(tree, tree_root, available, &nodes, &bindings, &mut text)
+                    .expect("solves");
+            }
+            root.apply_layout(tree, tree_root, Point::ZERO);
+        };
+        lay_out(&mut root, &mut tree);
+        let with_label = |root: &mut Column, ask: &mut dyn FnMut(&mut Text)| {
+            let label = root
+                .children_mut()
+                .into_iter()
+                .find_map(|child| child.as_any_mut()?.downcast_mut::<Text>())
+                .expect("the label is the column's child");
+            ask(label);
+        };
+        with_label(&mut root, &mut |label| {
+            assert!(!label.layout_needs_measure(), "placed once, it rests");
+        });
+
+        // Its text takes more lines than the room it has: it asks to be
+        // measured again, and the frame that answers is one that lays it out
+        // and never draws it.
+        with_label(&mut root, &mut |label| {
+            label.set_lines(Some(2));
+            assert!(label.layout_needs_measure(), "the label asks for its size");
+        });
+        lay_out(&mut root, &mut tree);
+        with_label(&mut root, &mut |label| {
+            assert!(
+                !label.layout_needs_measure(),
+                "a label the solver measured asks for no second measure, drawn or not"
+            );
+            assert!(!label.is_layout_dirty(), "and its path stays clean");
+        });
     }
 }
 

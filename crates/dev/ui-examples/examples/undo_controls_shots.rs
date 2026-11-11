@@ -32,6 +32,7 @@ use tilo_ui::permissions::UserId;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{Row, UndoButton, Widget};
 
 const WIDTH: u32 = 300;
@@ -172,7 +173,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
 
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    row.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    row.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, HEIGHT);
     r.render_png(&scene, theme.tokens.colors.surfaces.content, out);

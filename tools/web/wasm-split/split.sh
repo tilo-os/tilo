@@ -42,11 +42,20 @@ for line in sys.stdin:
             and message.get("executable"):
         print(message["executable"])' | tail -n 1)
 [[ -x $splitter ]] || { echo 'wasm-split was not built' >&2; exit 2; }
+# Run a copy of the tool this script made, never the shared build's own file.
+# Another build in the same target directory, or the compiler cache placing a
+# hit, may hold that file open for writing as this one starts it: Linux then
+# refuses to run it ("Text file busy"), and the bundle fails. Both replace the
+# file by renaming a whole one into place, so a copy is always whole, and
+# nothing but this script ever opens it.
+tool_copy=$pkg/.wasm-split.$$
+bindgened=$pkg/.bindgened.wasm
+trap 'rm -f "$tool_copy" "$bindgened"' EXIT
+cp -- "$splitter" "$tool_copy"
 if [[ $original == --unsplit ]]; then
-  exec "$splitter" --unsplit "$pkg/tilo_browser_runtime_bg.wasm" "$pkg"
+  "$tool_copy" --unsplit "$pkg/tilo_browser_runtime_bg.wasm" "$pkg"
+  exit
 fi
 # Beside the output, not in /tmp: the module is large and /tmp may be memory.
-bindgened=$pkg/.bindgened.wasm
-trap 'rm -f "$bindgened"' EXIT
 mv "$pkg/tilo_browser_runtime_bg.wasm" "$bindgened"
-"$splitter" "$original" "$bindgened" "$pkg" tilo_browser_runtime
+"$tool_copy" "$original" "$bindgened" "$pkg" tilo_browser_runtime

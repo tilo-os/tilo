@@ -88,6 +88,12 @@ impl std::fmt::Debug for Session {
 }
 
 impl Session {
+    /// A session a [`Listener`] accepted.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn from_backend(inner: backend::Session) -> Self {
+        Self { inner }
+    }
+
     /// Open a bidirectional stream.
     ///
     /// # Errors
@@ -389,3 +395,58 @@ impl RecvStream {
         Ok(all)
     }
 }
+
+/// A stream as tokio's byte stream, so length-framed protocols run on it as
+/// on any socket.
+impl tokio::io::AsyncWrite for SendStream {
+    fn poll_write(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        web_transport_trait::poll::SendStream::poll_write(&mut *self, cx, buf)
+            .map_err(std::io::Error::other)
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(
+        mut self: std::pin::Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(
+            web_transport_trait::poll::SendStream::finish(&mut *self)
+                .map_err(std::io::Error::other),
+        )
+    }
+}
+
+impl tokio::io::AsyncRead for RecvStream {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        let unfilled = buf.initialize_unfilled();
+        match web_transport_trait::poll::RecvStream::poll_read(&mut *self, cx, unfilled) {
+            std::task::Poll::Ready(Ok(Some(read))) => {
+                buf.advance(read);
+                std::task::Poll::Ready(Ok(()))
+            }
+            // The peer finished the stream: no bytes is the end.
+            std::task::Poll::Ready(Ok(None)) => std::task::Poll::Ready(Ok(())),
+            std::task::Poll::Ready(Err(error)) => {
+                std::task::Poll::Ready(Err(std::io::Error::other(error)))
+            }
+            std::task::Poll::Pending => std::task::Poll::Pending,
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub use crate::native::webtransport::{Answer, Listener};

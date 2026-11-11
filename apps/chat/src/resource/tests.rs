@@ -403,13 +403,6 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
         serde_json::to_value(message.resource().unwrap()).unwrap(),
         reference
     );
-    let target = item("messages", &message.id);
-    let result = app
-        .call_on(&target, "read-message", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
-    assert_eq!(result["attachments"][0]["at"], reference);
-    assert_eq!(result["author"], message.author);
     app.set_role(ui::permissions::Role::Viewer);
     assert!(
         app.call_on(
@@ -420,14 +413,6 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
         .is_err()
     );
     assert_eq!(messages(&mut app).len(), 1);
-    let read = app
-        .call_on(&target, "read-message", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        read["attachments"][0]["at"], reference,
-        "viewers can inspect an address, with no grant to its target"
-    );
 }
 
 #[test]
@@ -615,7 +600,6 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
         "mark-read",
         "move-channel",
         "delete-channel",
-        "read-messages",
         "read-feedback-destination",
     ] {
         assert!(
@@ -648,12 +632,11 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
     for id in ["join-call", "leave-call", "mute", "unmute", "call-status"] {
         assert!(lounge.iter().any(|action| action == id), "{id}: {lounge:?}");
     }
-    // `read-workspace` reads the chat of the workspace the window is already
-    // in; every other action that names a workspace would be Chat making one.
+    // An action that names a workspace would be Chat making one.
     let named = root
         .iter()
         .map(String::as_str)
-        .filter(|action| action.contains("workspace") && *action != "read-workspace");
+        .filter(|action| action.contains("workspace"));
     assert!(
         named.count() == 0,
         "Chat runs in a workspace and makes none: {root:?}"
@@ -1151,5 +1134,24 @@ fn a_past_version_reads_and_shows_its_channel() {
     assert!(
         texts.iter().any(|text| text.contains("kumquat-parade")),
         "{texts:?}"
+    );
+}
+
+/// A window too narrow for the channels beside the conversation opens on the conversation: it is
+/// the window's content, and the channels give way to it behind the bar's toggle.
+#[test]
+fn a_narrow_window_opens_on_the_conversation() {
+    let mut app = TestApp::<ChatShell>::capture_at(None, (600, 800)).unwrap();
+    app.settle();
+    let front = app.with_widget::<ui::widget::NavShell, _>(|shell| {
+        (shell.geometry().sidebar, shell.front_pane())
+    });
+    assert_eq!(
+        front,
+        Some((
+            ui::widget::SidebarPlacement::Screen,
+            ui::widget::NavPane::Content
+        )),
+        "the conversation is in front, the channels behind the toggle"
     );
 }

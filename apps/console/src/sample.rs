@@ -338,6 +338,7 @@ fn the_door() -> door::Door {
                     name: CLAUDE_RUN.to_owned(),
                     started_ms: minutes_ago_ms(14),
                 }],
+                browser_pages: true,
             },
             door::Grant {
                 id: "grant:codex".to_owned(),
@@ -349,6 +350,7 @@ fn the_door() -> door::Door {
                 granted_ms: minutes_ago_ms(3 * 24 * 60),
                 last_ms: Some(minutes_ago_ms(80)),
                 runs: Vec::new(),
+                browser_pages: false,
             },
         ],
         workspaces: vec![

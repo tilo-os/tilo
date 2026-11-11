@@ -20,6 +20,7 @@
 use automerge::{AutoCommit, ObjId};
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -72,6 +73,9 @@ mod form_actions;
 #[cfg(test)]
 mod form_actions_tests;
 mod forms_read;
+mod holds;
+#[cfg(test)]
+mod holds_tests;
 mod http_fallback;
 mod library;
 #[cfg(test)]
@@ -532,6 +536,8 @@ pub struct BrowserWidget {
     /// The page shows its article in reader view.
     reader_view: bool,
     title: String,
+    /// What the window is called when no page names it, in the desktop's language.
+    window_name: String,
     favicon: Option<vello::peniko::ImageData>,
     /// The favicon as the engine sent it, for the window's bar
     /// (`ui::window_toolbar::ToolbarImage`).
@@ -553,8 +559,10 @@ pub struct BrowserWidget {
     /// load-finished.
     current_uri: String,
     /// What the window's bar slots were last declared from
-    /// (`window_bar::BarInputs`), so an unchanged frame declares nothing.
-    declared_bar: Option<window_bar::BarInputs>,
+    /// (`window_bar::BarInputs`), and the window they were declared on
+    /// ([`ui::window_toolbar::current_window`]), so an unchanged frame declares
+    /// nothing and a window that shows the app later gets them.
+    declared_bar: Option<(Option<u64>, window_bar::BarInputs)>,
     /// The press that selected the whole address: its release is the
     /// address bar's too, so the selection it made stays.
     swallow_address_release: bool,
@@ -698,6 +706,9 @@ pub struct BrowserWidget {
     /// The review of the page in front, while it stands in the page's
     /// place, and what the engine last answered about the page.
     page_review: page_review_view::PageReview,
+    /// What the page is not allowed to send yet: the person answers each
+    /// request before it leaves ([`holds`]).
+    holds: holds::Holds,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1454,6 +1465,11 @@ impl BrowserWidget {
         let settings_presentation = SettingsPresentation::from_settings(&settings);
         let search_index = crate::search_provider::BrowserSearchIndex::default();
         search_index.sync_all(&history, &downloads);
+        // A window opened for an agent browses as a visitor, and nothing it
+        // reaches leaves without the person's answer.
+        if browsing_mode.holds_departures() {
+            engine.hold_departures();
+        }
         Self {
             rect: Rect::ZERO,
             engine,
@@ -1516,6 +1532,7 @@ impl BrowserWidget {
             loading_started: None,
             reader_view: false,
             title: String::new(),
+            window_name: crate::resource::CATALOG.t("browser-window-name"),
             favicon: None,
             favicon_png: None,
             bar_query: None,
@@ -1606,6 +1623,7 @@ impl BrowserWidget {
             forms: crate::page_forms::PageForms::default(),
             forms_read: forms_read::FormsRead::default(),
             page_review: page_review_view::PageReview::default(),
+            holds: holds::Holds::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -2065,6 +2083,9 @@ impl BrowserWidget {
             }
             BrowserOperation::ReadDownload { .. } | BrowserOperation::AnswerDownload { .. } => {
                 return Err("downloads read and answered through their resource action".into());
+            }
+            BrowserOperation::AnswerHeldRequest { .. } => {
+                return Err("a held request is answered through its resource action".into());
             }
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
@@ -3108,6 +3129,18 @@ impl BrowserWidget {
                 | WebViewEvent::DownloadUpdated { .. }
                 | WebViewEvent::DownloadRuntime { .. }
                 | WebViewEvent::ExtensionDownloadOpen { .. }) => {
+                    // In a window an agent operates, a download the page
+                    // starts waits for the person like every other departure:
+                    // the hold asks, so no prompt of the window's own is put
+                    // beside it.
+                    if let WebViewEvent::NativeDownloadRequested { id, url, name } = &event
+                        && self.browsing_mode.holds_departures()
+                    {
+                        self.hold_download(*id, url, name);
+                        self.keep_native_download(&event);
+                        self.structure_dirty = true;
+                        continue;
+                    }
                     self.keep_native_download(&event);
                     self.capabilities.apply(event);
                     self.structure_dirty = true;
@@ -3368,6 +3401,8 @@ impl BrowserWidget {
                         self.settle_page_operation_on_question();
                     }
                 }
+                WebViewEvent::HeldRequest(request) => self.hold_asked(&request),
+                WebViewEvent::HeldRequestClosed { id } => self.held_closed(id),
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
                 | WebViewEvent::DownloadFinished { .. }
@@ -4451,7 +4486,7 @@ impl Widget for BrowserWidget {
             ui::paint::fill_rect(scene, transform, rect, theme.tokens.colors.overlay_medium);
         }
         if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.paint_side_panel_edge(scene, transform, theme);
         // One hairline under the toolbar row separates it from the page;
@@ -4512,9 +4547,9 @@ impl Widget for BrowserWidget {
 
         self.page_menu
             .menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.back_menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if let Some(dialog) = self.page_dialogs.widget_mut() {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
         }
@@ -4942,7 +4977,7 @@ impl Widget for BrowserWidget {
                 .collect();
             return (!nodes.is_empty()).then(|| {
                 AccessNode::new(Role::Group)
-                    .with_name("Browser")
+                    .with_name(crate::resource::CATALOG.t("browser-window-name"))
                     .with_children(nodes)
             });
         }
@@ -5318,6 +5353,24 @@ impl BrowserWidget {
         // whoever reads the page answers it there, next to the page's other
         // buttons, and never has to find the prompt in the chrome.
         page.actions.extend(self.capabilities.permission_answers());
+        // A request the page started on its own waits on the person: whoever
+        // may ask the page answers it here, by the id it holds, and nothing
+        // leaves until they do. The id is stated on the action, so a caller
+        // that is not the person at this window — the host holding a window
+        // in a VM of theirs — answers that one departure among several.
+        for held in self.holds.waiting() {
+            let id = held.request.id.to_string();
+            let mut send = E::SendHeldRequest { id: id.clone() }
+                .bound()
+                .stating_bound("id", "The held request's id");
+            send.type_mut().label = format!("Let it leave: {}", held.describing());
+            page.actions.push(send);
+            let mut keep = E::KeepHeldRequest { id }
+                .bound()
+                .stating_bound("id", "The held request's id");
+            keep.type_mut().label = "Keep the page as it is".into();
+            page.actions.push(keep);
+        }
         let element = String::new();
         for (spec, asking) in [
             (
@@ -5698,7 +5751,7 @@ impl BrowserWidget {
         let mut browser = ResourceSpec::new(
             crate::resource::Browser::KIND,
             crate::resource::Browser::KIND,
-            "Browser",
+            crate::resource::CATALOG.t("browser-window-name"),
         );
         browser.actions = E::specs();
         browser.children = vec![
@@ -5995,6 +6048,7 @@ impl BrowserWidget {
         self.drive_page_operation();
         self.sync_page_review();
         self.sync_forms_read();
+        self.expire_holds();
         self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
         self.structure_dirty |= downloads_changed;
@@ -6081,6 +6135,10 @@ impl BrowserWidget {
                 let value = self.answer_download(id, *allow)?;
                 return Ok(ui::framework::Effected::value(value));
             }
+            BrowserOperation::AnswerHeldRequest { id, allow } => {
+                let value = self.answer_hold(id, *allow)?;
+                return Ok(ui::framework::Effected::value(value));
+            }
             _ => {}
         }
         if let BrowserOperation::RememberedForms { all } = operation {
@@ -6091,6 +6149,12 @@ impl BrowserWidget {
             return Ok(ui::framework::Effected::Pending);
         }
         if let BrowserOperation::Page(request) = operation {
+            // The person allowed the departure this invocation reached: it
+            // leaves now, and the page action is not run a second time.
+            if let Some((id, kind)) = self.holds.release_for(invocation) {
+                self.release_held(id, kind, true);
+                return Ok(ui::framework::Effected::Pending);
+            }
             self.start_page_operation(invocation, actor, request)?;
             return Ok(ui::framework::Effected::Pending);
         }
@@ -6246,7 +6310,7 @@ impl AppWidget for BrowserWidget {
     }
     fn app_title(&self) -> &str {
         if self.title.is_empty() {
-            "Browser"
+            &self.window_name
         } else {
             &self.title
         }

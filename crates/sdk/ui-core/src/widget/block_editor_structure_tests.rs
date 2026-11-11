@@ -100,3 +100,54 @@ fn another_document_changes_nothing_above_the_editor() {
     );
     assert_eq!(editor.take_structure_change(), StructureChange::None);
 }
+
+/// A host places the editor itself in the page it shows: absolute, under the title pinned above
+/// it, with the insets that page leaves. Carrying out a change under the editor in place leaves
+/// that placement as the host set it: an editor stacked at the page's origin draws its first
+/// blocks under the pinned title, and a press on a block reaches the title instead of the caret.
+#[test]
+fn a_remount_leaves_the_place_the_host_gave_the_editor() {
+    let theme = Theme::dark();
+    let (mut editor, mut taffy, mut nodes, node) = laid_out_editor(vec![
+        Block::paragraph("first"),
+        Block::from_content(Block::paragraph("![An attachment](fixture.png)").content()),
+    ]);
+    let placed = Style {
+        position: taffy::Position::Absolute,
+        size: Size {
+            width: Dimension::auto(),
+            height: Dimension::auto(),
+        },
+        inset: taffy::Rect {
+            left: taffy::style_helpers::length(16.0_f32),
+            right: taffy::style_helpers::length(24.0_f32),
+            top: taffy::style_helpers::length(72.0_f32),
+            bottom: taffy::LengthPercentageAuto::auto(),
+        },
+        ..taffy.style(node).expect("the editor's layout node").clone()
+    };
+    let _ = taffy.set_style(node, placed.clone());
+
+    // A document without the picture: a change of the editor's own children, carried out here.
+    editor.set_blocks(vec![Block::paragraph("no picture here")]);
+    assert_eq!(editor.take_structure_change(), StructureChange::Children);
+    let mut remount = Remount::new(&mut taffy, &theme, &mut nodes);
+    assert!(editor.remount_children(&mut remount));
+
+    let after = taffy.style(node).expect("the editor's layout node").clone();
+    assert_eq!(
+        after.position,
+        taffy::Position::Absolute,
+        "the editor stands where the host placed it"
+    );
+    assert_eq!(
+        after.inset, placed.inset,
+        "the page's insets are the host's"
+    );
+    assert_eq!(after.size, placed.size, "the host sizes the editor");
+    assert_eq!(
+        after.padding.left,
+        taffy::style_helpers::length(editor.handle_column() as f32),
+        "the editor keeps the leading column its drag handles stand in"
+    );
+}

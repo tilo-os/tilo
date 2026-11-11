@@ -480,3 +480,115 @@ fn an_embedded_note_shows_its_start_links_back_and_follows_the_note() {
         "the card reads the note's title now, and is still the same card"
     );
 }
+
+/// `note`'s window with `target` written into its body as a projection of it, as choosing the
+/// note in the editor's picker writes it: its view, the tree the window receives of it, and the
+/// reference the card it shows is of.
+fn projecting(
+    replica: &Replica,
+    note: &str,
+    title: &str,
+) -> (
+    std::rc::Rc<std::cell::RefCell<ViewInstance>>,
+    tilo_ui_host::UiNode,
+    String,
+) {
+    let (view, tree) = live(replica, note);
+    let key = find(&tree, "ui.BlockEditor")
+        .expect("the body is the editor")
+        .key
+        .clone();
+    let (_, picked) = picking(replica, note, title);
+    let (reference, _) = offered(find(&picked, "ui.BlockEditor").unwrap())
+        .into_iter()
+        .find(|(_, offered)| offered == title)
+        .expect("the note it offers");
+    let mut body = RichValue::from_text(title);
+    body.blocks[0].marks.push(tilo_doc::document::MarkSpan {
+        start: 0,
+        end: title.chars().count(),
+        name: tilolang_runtime::rich::PROJECTION.into(),
+        value: tilo_doc::document::MarkValue::Str(reference.clone()),
+    });
+    view.borrow_mut()
+        .edit(&key, &Value::Rich(body))
+        .expect("the body writes");
+    (view, tree, reference)
+}
+
+#[test]
+fn an_embedded_note_shows_its_first_lines_and_follows_them() {
+    let Workspace {
+        ada,
+        plan,
+        groceries,
+    } = workspace();
+    // The embedded note says six lines, more than a card shows at once.
+    let told = [
+        "Oat milk, eggs, two lemons, and the bread the baker keeps back under the counter.",
+        "Cheese from the stall by the river, the hard one, and something soft for the weekend.",
+        "Coffee beans, the dark roast, ground for the machine rather than the pot this time.",
+        "Apples for the crumble, the ones that keep, and a lemon for the end of the soup.",
+        "Yoghurt, the plain one, and the small jars of the jam the grocer orders from the farm.",
+        "Something green for Sunday, and candles for the table, and the good butter again.",
+    ];
+    let (groceries_view, tree) = live(&ada, &groceries);
+    let groceries_key = find(&tree, "ui.BlockEditor")
+        .expect("its body is the editor")
+        .key
+        .clone();
+    groceries_view
+        .borrow_mut()
+        .edit(
+            &groceries_key,
+            &Value::Rich(RichValue::from_text(&told.join("\n"))),
+        )
+        .expect("the body writes");
+
+    // The note that embeds it: a paragraph that is nothing but a projection of it.
+    let (view, _tree, reference) = projecting(&ada, &plan, "Groceries");
+    let Some((title, said)) = embed_of(&ada, &view, &reference) else {
+        panic!("the card shows what it projects");
+    };
+    assert_eq!(
+        title, "Groceries",
+        "the card is titled by the note it projects"
+    );
+    let lines: Vec<&str> = said
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
+    assert!(
+        lines.len() >= 3,
+        "a card of it shows several lines of what it says, not one: {lines:?}"
+    );
+    assert_eq!(
+        lines.first().map(|line| line.trim()),
+        Some(told[0]),
+        "the first line of the note, as it says it: {lines:?}"
+    );
+    assert!(
+        lines.len() < told.len(),
+        "the card shows the start of it, and the note reads on: {lines:?}"
+    );
+
+    // What it says changes: the card is what it says now, from its first line.
+    groceries_view
+        .borrow_mut()
+        .edit(
+            &groceries_key,
+            &Value::Rich(RichValue::from_text(
+                "Bread, cheese and apples, from the market.",
+            )),
+        )
+        .expect("the body writes");
+    assert!(view.borrow_mut().poll_patches().is_ok(), "the view runs");
+    let Some((_, said)) = embed_of(&ada, &view, &reference) else {
+        panic!("the card still shows what it projects");
+    };
+    assert_eq!(
+        said.lines().next().map(str::trim),
+        Some("Bread, cheese and apples, from the market."),
+        "the card follows the note it shows"
+    );
+}

@@ -1,26 +1,16 @@
-//! The person's workspaces on the relay, reached as a grant: the door's one
-//! way in, the same a `tilo login` computer takes (`tilo_relay_client::login`).
+//! The person's workspaces on the relay, reached as a grant: the same way
+//! into a workspace every device takes ([`Device::enter_workspace`]).
 //!
 //! The grant's own key is the device. It dials the relay's iroh endpoint
 //! (which the relay's public origin names, `/peer/v1/host`) with the grant's
-//! certificate, and the relay admits it as its person's agent
-//! (`tilo_room_host::workspace_access`) in exactly the workspaces its scope
-//! reaches where it redeemed its person's invitation:
+//! certificate, and asks the relay's own operations (its person's list, making
+//! and deleting their workspaces, their account) on that session, in no
+//! workspace. It enters one of the person's workspaces its scope reaches as
+//! any device of theirs does: the relay invites it in on the session, it
+//! redeems the invitation there, and joins.
 //!
-//! - **A grant reaching all the person's workspaces** goes through the
-//!   site's door to the site's home workspace, as the person's page does
-//!   (the door the site's `entry.json` names for the relay), and from there
-//!   asks the relay for the person's own workspace (`room.create-own`),
-//!   which answers it with an invitation for the person; the grant redeems
-//!   it and joins.
-//! - **A minted grant** reaches one workspace and never the home workspace.
-//!   Its parent, which reaches all of them, asks for the invitation into
-//!   that workspace (`room.create-own` naming it, which only answers the
-//!   person's own workspace and never makes another), and the minted grant
-//!   redeems it itself and joins.
-//!
-//! What either does there is decided by the relay, at every handshake and
-//! audit: the grant's scope, its certificate's expiry, and its person's
+//! What it does there is decided by the relay, at every handshake and audit:
+//! the grant's scope, its certificate's expiry, and its person's
 //! revocations, a minted grant's issuer included.
 
 use crate::grant_key::GrantKey;
@@ -30,10 +20,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tilo_relay_client::CertifyError;
 use tilo_relay_client::https::{self, Origin};
-use tilo_relay_client::login::door_at;
-use tilo_session_host::PeerConfig;
-use tilo_session_host::device::{Device, HostRefusal};
-use tilo_user_identity::AgentScope;
+use tilo_session_client::PeerConfig;
+use tilo_session_client::device::{Device, HostRefusal};
 
 /// How long entering a workspace may take.
 const ENTERING: Duration = Duration::from_secs(30);
@@ -44,13 +32,19 @@ pub struct Workspace {
     /// The workspace's id (a UUID): what every action names it by.
     pub id: String,
     pub name: String,
-    /// The host serving it, named as hosts are (`eu1.tilo.sh`).
-    pub host: String,
+    /// The host serving it, named as hosts are: a relay's name
+    /// (`eu1.tilo.sh`), or the person's device that hosts it. `None` while
+    /// none of their devices said where it is hosted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// The part the person takes in it: `owner` for a workspace of their own,
     /// else the role they hold there (`viewer`, `commenter`, `editor`,
     /// `moderator`). `None` when the answer did not say.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Where its host is reached, as the person's list says.
+    #[serde(skip)]
+    pub address: Option<tilo_relay_session::workspaces::WorkspaceHostAddress>,
 }
 
 /// Why the relay did not answer what was asked.
@@ -99,19 +93,17 @@ impl From<HostRefusal> for RelayError {
     }
 }
 
-/// The relay the person's workspaces live on, and the site whose door lets
-/// people into its home workspace there.
+/// The relay the person's workspaces live on.
 pub struct Relay {
     host: Origin,
-    site: Origin,
     /// The relay's name, as hosts are named (`eu1.tilo.sh`).
     name: String,
 }
 
 impl Relay {
-    /// The relay at `origin`, behind the site at `site`.
+    /// The relay at `origin`.
     #[must_use]
-    pub fn new(client: &tilo_net::Client, origin: &str, site: &str) -> Self {
+    pub fn new(client: &tilo_net::Client, origin: &str) -> Self {
         let name = origin
             .split_once("://")
             .map_or(origin, |(_, rest)| rest)
@@ -119,7 +111,6 @@ impl Relay {
             .to_owned();
         Self {
             host: Origin::new(client, origin),
-            site: Origin::new(client, site),
             name,
         }
     }
@@ -145,108 +136,51 @@ impl Relay {
             .ok_or_else(|| {
                 RelayError::Unavailable("the relay takes no device sessions".to_owned())
             })?;
-        // A key reaching all the person's workspaces asks the relay its own operations in the
-        // site's home workspace: its session enters it through the site's door as it opens.
-        let lobby = if key.scope() == AgentScope::AllWorkspaces {
-            door_at(&self.site, self.host.name())
-                .await
-                .and_then(|door| door.workspace())
-        } else {
-            None
-        };
         let label = key.cert().device_label.clone();
-        let mut request_id = [0; 32];
-        getrandom::fill(&mut request_id)
-            .map_err(|error| RelayError::Unavailable(error.to_string()))?;
-        let entering = lobby
-            .clone()
-            .map(|workspace| tilo_relay_protocol::entering::Entering {
-                workspace,
-                name: label.clone(),
-                request_id,
-            });
         let device = Device::over(
             PeerConfig {
                 host,
                 cert: key.cert().clone(),
                 host_cert: info.host_cert,
                 revocations: tilo_user_identity::RevocationList::new(),
-                entering,
+                entering: None,
             },
             Arc::new(key.key().clone()),
             &label,
         );
-        Ok(Connection {
+        let connection = Connection {
             device,
             key: key.clone(),
-            relay: self.host.clone(),
             host: self.name.clone(),
-            lobby_workspace: lobby,
-            lobby: tokio::sync::Mutex::new(None),
             entered: Mutex::default(),
-        })
+            endpoint: tokio::sync::OnceCell::new(),
+        };
+        connection.device.connected().await?;
+        Ok(connection)
     }
 
-    /// Bring `connection` into the site's home workspace through its door,
-    /// once: where a grant reaching all the person's workspaces asks the
-    /// relay its own operations.
-    async fn lobby(&self, connection: &Connection) -> Result<u64, RelayError> {
-        let mut lobby = connection.lobby.lock().await;
-        if let Some(id) = *lobby {
-            return Ok(id);
-        }
-        if connection.key.scope() != AgentScope::AllWorkspaces {
-            return Err(RelayError::Refused(
-                "a key for one workspace reaches no other".to_owned(),
-            ));
-        }
-        let workspace = connection.lobby_workspace.clone().ok_or_else(|| {
-            RelayError::Unavailable("the site names no door to its workspace".to_owned())
-        })?;
-        tilo_session_host::device::entered(connection.device.session()).await?;
-        let id = connection.join(&workspace).await?;
-        *lobby = Some(id);
-        drop(lobby);
-        Ok(id)
-    }
-
-    /// The person's own workspace, as `connection` (reaching all of them)
-    /// asks for it with `arguments`, and the invitation for its person.
-    async fn own(
-        &self,
-        connection: &Connection,
-        arguments: Map<String, Value>,
-    ) -> Result<(Workspace, Vec<u8>), RelayError> {
-        let lobby = self.lobby(connection).await?;
-        let (listing, invitation) = connection
-            .device
-            .own_workspace(lobby, arguments, "tilo front door")
-            .await?;
-        Ok((connection.workspace(&listing), invitation))
-    }
-
-    /// The workspaces `connection`'s grant reaches here: the person's own.
+    /// The workspaces `connection`'s grant reaches: the person's list as the
+    /// relay keeps it, every workspace of theirs wherever it is hosted (one
+    /// of their desktops, a paired device, this relay), each naming its host.
     ///
     /// # Errors
     /// The relay was not reached or refused.
     pub async fn workspaces(&self, connection: &Connection) -> Result<Vec<Workspace>, RelayError> {
-        let lobby = self.lobby(connection).await?;
         let listed = connection
             .device
-            .host_action(
-                lobby,
-                tilo_relay_session::workspaces::LIST_ROOMS,
-                Map::new(),
-                "tilo front door",
-            )
+            .personal_list()
             .await
             .map_err(RelayError::from)?;
-        let listed: Vec<tilo_relay_session::workspaces::WorkspaceListing> =
-            serde_json::from_value(listed)
-                .map_err(|error| RelayError::Unavailable(error.to_string()))?;
         Ok(listed
-            .iter()
-            .map(|listing| connection.workspace(listing))
+            .workspaces
+            .into_iter()
+            .map(|listed| Workspace {
+                id: listed.workspace,
+                name: listed.name,
+                host: listed.host.as_ref().map(|host| host.name.clone()),
+                role: listed.role,
+                address: listed.host,
+            })
             .collect())
     }
 
@@ -258,11 +192,10 @@ impl Relay {
     /// The relay was not reached or refused.
     pub async fn account(&self, connection: &Connection) -> Result<Value, RelayError> {
         use tilo_actions::remote::host_account;
-        let lobby = self.lobby(connection).await?;
         connection
             .device
             .ask_host(
-                lobby,
+                tilo_session_client::session::HOST_ITSELF,
                 host_account::target(host_account::ACCOUNT),
                 Map::new(),
                 "tilo front door",
@@ -293,8 +226,11 @@ impl Relay {
         let mut arguments = Map::new();
         arguments.insert("name".into(), json!(name));
         arguments.insert("room".into(), json!(fresh));
-        let (workspace, _invitation) = self.own(connection, arguments).await?;
-        Ok(workspace)
+        let (listing, _invitation) = connection
+            .device
+            .own_workspace(arguments, "tilo front door")
+            .await?;
+        Ok(connection.workspace(&listing))
     }
 
     /// Delete the person's own `workspace` as `connection` (reaching all
@@ -307,13 +243,11 @@ impl Relay {
         if tilo_relay_protocol::room_workspace_id(workspace).is_err() {
             return Err(RelayError::NotFound);
         }
-        let lobby = self.lobby(connection).await?;
         let mut arguments = Map::new();
         arguments.insert("room".into(), json!(workspace));
         connection
             .device
             .host_action(
-                lobby,
                 tilo_relay_session::workspaces::DELETE_ROOM,
                 arguments,
                 "tilo front door",
@@ -331,20 +265,16 @@ impl Relay {
         Ok(())
     }
 
-    /// Bring `connection` into `workspace`: its grant's person's own, which
-    /// it reaches. A grant reaching all of them asks for the invitation
-    /// itself; a minted one has `parent`, the grant that minted it, ask.
+    /// Bring `connection` into `workspace`, one its grant reaches: its id on
+    /// the session.
     ///
     /// # Errors
     /// Not a workspace the grant reaches, or the relay refused or was not
     /// reached.
-    pub async fn enter(
-        &self,
-        connection: &Connection,
-        parent: Option<&Connection>,
-        workspace: &str,
-    ) -> Result<u64, RelayError> {
-        if !connection.key.scope().reaches(workspace) {
+    pub async fn enter(&self, connection: &Connection, workspace: &str) -> Result<u64, RelayError> {
+        if !connection.key.scope().reaches(workspace)
+            || tilo_relay_protocol::room_workspace_id(workspace).is_err()
+        {
             return Err(RelayError::NotFound);
         }
         // Every run of the grant shares its session, so runs entering the
@@ -356,7 +286,7 @@ impl Relay {
                 .or_default(),
         );
         let entered = entering
-            .get_or_try_init(|| self.admit(connection, parent, workspace))
+            .get_or_try_init(|| connection.enter(workspace))
             .await
             .copied();
         if entered.is_err() {
@@ -370,36 +300,6 @@ impl Relay {
         }
         entered
     }
-
-    /// Ask for `connection`'s invitation into `workspace`, redeem it and
-    /// join.
-    async fn admit(
-        &self,
-        connection: &Connection,
-        parent: Option<&Connection>,
-        workspace: &str,
-    ) -> Result<u64, RelayError> {
-        let asking = match connection.key.scope() {
-            AgentScope::AllWorkspaces => connection,
-            AgentScope::Workspace(_) => parent.ok_or_else(|| {
-                RelayError::Refused(
-                    "only a key an account key minted enters its workspace here".to_owned(),
-                )
-            })?,
-        };
-        let mut arguments = Map::new();
-        arguments.insert("room".into(), json!(workspace));
-        let (own, invitation) = match self.own(asking, arguments).await {
-            Ok(answered) => answered,
-            Err(RelayError::Refused(_)) => return Err(RelayError::NotFound),
-            Err(other) => return Err(other),
-        };
-        if own.id != workspace {
-            return Err(RelayError::NotFound);
-        }
-        connection.redeem(&invitation).await?;
-        connection.join(workspace).await
-    }
 }
 
 /// A grant's session with the relay. The relay keeps one session per key,
@@ -407,31 +307,68 @@ impl Relay {
 pub struct Connection {
     pub device: Device,
     pub key: GrantKey,
-    relay: Origin,
     host: String,
-    /// The site's home workspace, which the session entered through its door
-    /// as it opened: a key reaching all the person's workspaces asks the relay
-    /// its own operations there.
-    lobby_workspace: Option<String>,
-    lobby: tokio::sync::Mutex<Option<u64>>,
     /// The workspaces it entered or is entering, by id: each joined once,
     /// and left with the session.
     entered: Mutex<HashMap<String, Arc<tokio::sync::OnceCell<u64>>>>,
+    /// The grant's own iroh endpoint, keyed by it: what dials the person's
+    /// devices that host a workspace of theirs.
+    endpoint: tokio::sync::OnceCell<iroh::Endpoint>,
 }
 
 impl Drop for Connection {
     fn drop(&mut self) {
         self.device.close();
+        if let Some(endpoint) = self.endpoint.get().cloned() {
+            tokio::spawn(async move { endpoint.close().await });
+        }
     }
 }
 
 impl Connection {
+    /// The grant's endpoint, bound the first time a workspace on one of the
+    /// person's devices is entered.
+    ///
+    /// # Errors
+    /// The endpoint could not bind.
+    pub async fn endpoint(&self) -> Result<iroh::Endpoint, RelayError> {
+        self.endpoint
+            .get_or_try_init(|| async {
+                // It only dials: the relays and directory the setting names find the
+                // person's device, and nothing about the grant is published.
+                let relays = tilo_endpoint_reachability::relays();
+                let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+                    .secret_key(iroh::SecretKey::from_bytes(&self.key.key().to_bytes()))
+                    .relay_mode(iroh::RelayMode::Custom(relays.relays));
+                if relays.n0_dns {
+                    builder =
+                        builder.address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
+                }
+                builder
+                    .bind()
+                    .await
+                    .map_err(|error| RelayError::Unavailable(error.to_string()))
+            })
+            .await
+            .cloned()
+    }
+
+    /// The key as the shared way into a workspace takes it.
+    #[must_use]
+    pub fn entering_key(&self) -> tilo_runtime::enter::Key {
+        tilo_runtime::enter::Key {
+            key: self.key.key().clone(),
+            cert: self.key.cert().clone(),
+        }
+    }
+
     fn workspace(&self, listing: &tilo_relay_session::workspaces::WorkspaceListing) -> Workspace {
         Workspace {
             id: listing.workspace.clone(),
             name: listing.name.clone(),
-            host: self.host.clone(),
+            host: Some(self.host.clone()),
             role: listing.role.clone(),
+            address: None,
         }
     }
 
@@ -442,28 +379,22 @@ impl Connection {
         self.device.is_live()
     }
 
-    async fn redeem(&self, invitation: &[u8]) -> Result<(), RelayError> {
+    /// Enter `workspace`, as every device enters one, in at most [`ENTERING`]:
+    /// one the person does not have is not found, as one never made.
+    async fn enter(&self, workspace: &str) -> Result<u64, RelayError> {
         let label = self.key.cert().device_label.clone();
-        self.device
-            .redeem(&self.relay, invitation, &label)
-            .await
-            .map(drop)
-            .map_err(RelayError::from)
-    }
-
-    /// Join `workspace`, which admitted this grant: its id on the session.
-    async fn join(&self, workspace: &str) -> Result<u64, RelayError> {
-        if tilo_relay_protocol::room_workspace_id(workspace).is_err() {
-            return Err(RelayError::NotFound);
-        }
-        tokio::time::timeout(ENTERING, self.device.join(workspace))
-            .await
-            .unwrap_or_else(|_| {
-                Err(CertifyError::Denied(
-                    "the workspace did not admit this key".to_owned(),
-                ))
-            })
-            .map_err(RelayError::from)
+        let Ok(entered) =
+            tokio::time::timeout(ENTERING, self.device.enter_workspace(workspace, &label)).await
+        else {
+            return Err(RelayError::Unavailable(
+                "the workspace did not admit this key in time".to_owned(),
+            ));
+        };
+        entered.map_err(|refusal| match RelayError::from(refusal) {
+            // Not theirs, or not one at all: the same answer, so a guess learns nothing.
+            RelayError::Refused(_) => RelayError::NotFound,
+            other => other,
+        })
     }
 }
 

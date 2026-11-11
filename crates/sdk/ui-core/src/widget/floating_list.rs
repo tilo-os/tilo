@@ -19,6 +19,7 @@ use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::floating_surface;
 use crate::widget::scroll_region::ScrollRegion;
 use crate::widget::spinner::Spinner;
@@ -520,14 +521,23 @@ impl<R: FloatingRow> FloatingList<R> {
         self.resolve_heights();
     }
 
-    /// Each row's height from the geometry and the floor.
+    /// Each row's height from the geometry and the floor. The floor is a target's: a row a
+    /// person presses (or whose cells they press) is never shorter, while a rule or a caption,
+    /// which nobody presses, keeps its own height.
     fn resolve_heights(&mut self) {
         let m = self.metrics;
         let min = self.min_row;
         self.heights = self
             .rows
             .iter()
-            .map(|row| row.height(&m).max(min))
+            .map(|row| {
+                let height = row.height(&m);
+                if row.pickable() || row.cell_count() > 0 {
+                    height.max(min)
+                } else {
+                    height
+                }
+            })
             .collect();
         self.place_scroll();
     }
@@ -1308,7 +1318,7 @@ impl<R: FloatingRow> FloatingList<R> {
                 x + side,
                 rect.center().y + side / 2.0,
             ));
-            crate::widget::Widget::draw(
+            DrawChild::draw_child(
                 &mut self.spinner,
                 scene,
                 content,

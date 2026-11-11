@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, joinGranted, hostDeviceOf, joinViaHost, keepJoinedHost, keptMembership, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, defaultDisplayName, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
+import {chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, confirmWaitList, defaultDisplayName, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces, heldWorkspaces, HostAdmissionError, hostDeviceOf, joinGranted, joinViaHost, keepJoinedHost, keptMembership, leaveOnWaitList, leaveWaitList, listedAt, listedWorkspaces, markUnavailable, nameEntered, ownDesktopOpen, pairViaHost, randomDisplayName, redrawnDisplayName, rememberEntered, removedFrom, settleFailedWorkspace, waitListing, waitListStanding, workspaceActions, workspaceAt, workspaceChoices} from './workspaces.mjs';
 import {CustodyError} from './device-custody.mjs';
 import {HOST_CHANGED} from './peer.mjs';
 
@@ -8,6 +8,11 @@ const identity = key => ({kind: 'webcrypto-ed25519', publicKey: new Uint8Array(3
 
 const commons = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/'};
 const KEY = 'tilo-host-memberships';
+
+const reply = ({status = 200, headers = {}, body = {}}) => ({
+  ok: status === 200, status, headers: new Map(Object.entries(headers)), json: async () => body,
+  text: async () => (typeof body === 'string' ? body : JSON.stringify(body)),
+});
 
 /** A device key of `profile` as `openDeviceCustody` gives it: `created` for
  * one no host has seen yet (a new tab's). */
@@ -276,6 +281,121 @@ test('a door taking people by invitation tells a visitor without one so, and ask
   assert.equal(calls.connected.length, 0);
 });
 
+test('an address left at the door is sent there, and each refusal is named for the page to say', async () => {
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), init}); return reply(answer); };
+  assert.deepEqual(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ', language: 'de-AT',
+    fetch: door({body: {email: 'ada@example.org', mail: true}})}), {email: 'ada@example.org', mail: true});
+  assert.equal(posted[0].url, 'https://rooms.example/wait-list');
+  assert.equal(posted[0].init.method, 'POST');
+  assert.deepEqual(JSON.parse(posted[0].init.body), {email: ' Ada@Example.org ', language: 'de-AT'});
+  for (const [status, code, headers = {}] of [[400, 'invalid-email'], [429, 'too-many', {'retry-after': '600'}],
+    [503, 'wait-list-full'], [404, 'no-wait-list'], [503, 'unavailable'], [500, 'something-else']]) {
+    await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: door({status, headers, body: {error: 'no', code}})}),
+      error => error instanceof HostAdmissionError && error.code === (code === 'something-else' ? 'unavailable' : code)
+        && error.retryAfter === (code === 'too-many' ? 600 : null));
+  }
+  await assert.rejects(leaveOnWaitList({workspace: commons, email: 'x@y.org', fetch: async () => { throw new TypeError('Failed to fetch'); }}),
+    {name: 'HostAdmissionError', code: 'unavailable'});
+  await assert.rejects(leaveOnWaitList({workspace: {name: 'Closed', host: {origin: 'https://h.example'}}, email: 'x@y.org', fetch: door({})}),
+    {name: 'HostAdmissionError', code: 'invitation-only'});
+});
+
+const memoryStorage = () => {
+  const values = new Map();
+  return {values, getItem: key => values.get(key) ?? null, setItem: (key, value) => values.set(key, String(value)), removeItem: key => values.delete(key)};
+};
+
+test('the browser keeps the secret that takes its address off a door’s wait list, and only for that door', async () => {
+  const storage = memoryStorage();
+  const secret = 'a1'.repeat(32);
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body), credentials: init.credentials}); return reply(answer); };
+  assert.equal(waitListing(commons, storage), null);
+  assert.deepEqual(await leaveOnWaitList({workspace: commons, email: ' Ada@Example.org ', storage,
+    fetch: door({body: {email: 'Ada@Example.org', removal: secret}})}), {email: 'Ada@Example.org', mail: false});
+  assert.deepEqual(waitListing(commons, storage), {email: 'Ada@Example.org', pending: false});
+  assert.equal(waitListing({...commons, admission: 'https://other.example/'}, storage), null);
+  assert.doesNotMatch(JSON.stringify(waitListing(commons, storage)), /a1a1/, 'the secret stays inside');
+
+  // Taking it off sends the secret alone, and forgets it here.
+  await leaveWaitList({workspace: commons, storage, fetch: door({body: {}})});
+  assert.equal(posted.at(-1).url, 'https://rooms.example/wait-list/remove');
+  assert.deepEqual(posted.at(-1).body, {secret});
+  assert.equal(posted.at(-1).credentials, 'omit');
+  assert.equal(waitListing(commons, storage), null);
+  assert.equal(storage.values.size, 0);
+  // Nothing kept: nothing is asked.
+  const asked = posted.length;
+  await leaveWaitList({workspace: commons, storage, fetch: door({body: {}})});
+  assert.equal(posted.length, asked);
+});
+
+test('a wait-list removal the door could not do keeps the secret to try again', async () => {
+  const storage = memoryStorage();
+  await leaveOnWaitList({workspace: commons, email: 'bo@example.org', storage,
+    fetch: async () => reply({body: {email: 'bo@example.org', removal: 'b2'.repeat(32)}})});
+  for (const [status, code, headers = {}] of [[429, 'too-many', {'retry-after': '60'}], [503, 'unavailable']]) {
+    await assert.rejects(leaveWaitList({workspace: commons, storage, fetch: async () => reply({status, headers, body: {error: 'no', code}})}),
+      error => error instanceof HostAdmissionError && error.code === code);
+    assert.deepEqual(waitListing(commons, storage), {email: 'bo@example.org', pending: false});
+  }
+  await assert.rejects(leaveWaitList({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}),
+    {code: 'unavailable'});
+  assert.deepEqual(waitListing(commons, storage), {email: 'bo@example.org', pending: false});
+  // A secret the door calls none is nothing to keep.
+  await leaveWaitList({workspace: commons, storage, fetch: async () => reply({status: 400, body: {code: 'invalid-secret'}})});
+  assert.equal(waitListing(commons, storage), null);
+  // A door that handed back no secret leaves nothing to take off here.
+  await leaveOnWaitList({workspace: commons, email: 'cy@example.org', storage, fetch: async () => reply({body: {email: 'cy@example.org'}})});
+  assert.equal(waitListing(commons, storage), null);
+});
+
+test('a mailed address waits to be confirmed by its link, and the door says where it stands', async () => {
+  const storage = memoryStorage();
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
+  const secret = 'c3'.repeat(32);
+  await leaveOnWaitList({workspace: commons, email: 'cy@example.org', storage,
+    fetch: door({body: {email: 'cy@example.org', removal: secret, mail: true}})});
+  assert.deepEqual(waitListing(commons, storage), {email: 'cy@example.org', pending: true});
+
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'pending'}})}), 'pending');
+  assert.equal(posted.at(-1).url, 'https://rooms.example/wait-list/standing');
+  assert.deepEqual(posted.at(-1).body, {secret});
+  // The link confirms it: sent as it came, and this browser stops waiting.
+  const token = 'd4'.repeat(32);
+  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: door({body: {confirmed: true}})}), true);
+  assert.equal(posted.at(-1).url, 'https://rooms.example/wait-list/confirm');
+  assert.deepEqual(posted.at(-1).body, {token});
+  assert.deepEqual(waitListing(commons, storage), {email: 'cy@example.org', pending: false});
+  // A link no longer waiting, or none at all, confirms nothing.
+  assert.equal(await confirmWaitList({workspace: commons, token, storage, fetch: door({body: {confirmed: false}})}), false);
+  const asked = posted.length;
+  assert.equal(await confirmWaitList({workspace: commons, token: 'nope', storage, fetch: door({body: {confirmed: true}})}), false);
+  assert.equal(posted.length, asked);
+  // The door cannot say now: nothing changes; it says gone: forgotten.
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({status: 503, body: {code: 'unavailable'}})}), null);
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: async () => { throw new TypeError('Failed to fetch'); }}), null);
+  assert.ok(waitListing(commons, storage));
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'gone'}})}), 'gone');
+  assert.equal(waitListing(commons, storage), null);
+  assert.equal(await waitListStanding({workspace: commons, storage, fetch: door({body: {standing: 'listed'}})}), null);
+});
+
+test('a removal link takes its address off, and this browser forgets what it left', async () => {
+  const storage = memoryStorage();
+  const posted = [];
+  const door = answer => async (url, init) => { posted.push({url: String(url), body: JSON.parse(init.body)}); return reply(answer); };
+  await leaveOnWaitList({workspace: commons, email: 'dee@example.org', storage,
+    fetch: door({body: {email: 'dee@example.org', removal: 'e5'.repeat(32), mail: true}})});
+  const linked = 'f6'.repeat(32);
+  await leaveWaitList({workspace: commons, secret: linked, storage, fetch: door({body: {}})});
+  assert.deepEqual(posted.at(-1), {url: 'https://rooms.example/wait-list/remove', body: {secret: linked}});
+  assert.equal(waitListing(commons, storage), null);
+  await assert.rejects(leaveWaitList({workspace: commons, secret: 'not hex', storage, fetch: door({body: {}})}), {code: 'invalid-secret'});
+});
+
 test('a host that has not answered a kept membership yet keeps it and is not asked to admit again', async () => {
   const membership = {origin: 'https://rooms.example', room: 'WORKSPACE', userPublicKey: '11'.repeat(32)};
   const {calls, options, store} = harness({person: identity(0x11), membership});
@@ -514,7 +634,7 @@ const memoryStore = () => {
 const seed = (store, list) => store.setItem('tilo-entered-workspaces', JSON.stringify(list));
 const kept = (origin, room, extra = {}) => ({origin, room, hostDevice: HOST, ...extra});
 
-/** The runtime's rules of the list (tilo-session-host's `entered`, tested
+/** The runtime's rules of the list (tilo-session-client's `entered`, tested
  * there), answering what each was asked with `answer`. */
 const rules = answer => {
   const asked = [];
@@ -701,19 +821,30 @@ test('the directory lists the workspaces this page holds by the host actions tha
   assert.deepEqual(heldWorkspaces({entered: [], current: {kind: 'own'}}), []);
 });
 
-test('a join the directory was granted is made with its invitation and token, then opened under its name', async () => {
+test('a join chosen in the directory enters through its door on the session, then opens under its name', async () => {
   const joined = [];
+  const door = 'https://rooms.example/peer/v1/directory/WORKSPACE/';
   const grant = await joinGranted(
-    {origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', workspace: 'WORKSPACE', name: 'Gardeners'},
+    {origin: 'https://rooms.example', door, workspace: 'WORKSPACE', name: 'Gardeners'},
     {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }, displayName: 'Brave Otter'},
   );
-  assert.deepEqual(joined, [{origin: 'https://rooms.example/join/garden', invitation: 'INV', admissionToken: 'TOKEN', displayName: 'Brave Otter'}]);
+  assert.deepEqual(joined, [{origin: 'https://rooms.example', door, displayName: 'Brave Otter'}],
+    'the page enters through the door itself, holding no invitation or token');
   assert.deepEqual(grant, {peer: {workspace: 'WORKSPACE'}, origin: 'https://rooms.example', room: 'WORKSPACE', name: 'Gardeners'});
 });
 
-test('a grant that carries no invitation joins nothing', async () => {
+test('a pasted link\'s invitation is redeemed with the same join', async () => {
+  const joined = [];
+  await joinGranted(
+    {origin: 'https://rooms.example', invitation: 'INV', workspace: 'WORKSPACE', name: 'Gardeners'},
+    {join: async options => { joined.push(options); return {workspace: 'WORKSPACE'}; }},
+  );
+  assert.deepEqual(joined, [{origin: 'https://rooms.example', invitation: 'INV'}]);
+});
+
+test('a grant that names neither a door nor an invitation joins nothing', async () => {
   await assert.rejects(() => joinGranted({origin: 'https://rooms.example', invitation: ''}, {join: async () => {}}), TypeError);
-  await assert.rejects(() => joinGranted({origin: '', invitation: 'INV'}, {join: async () => {}}), TypeError);
+  await assert.rejects(() => joinGranted({origin: '', door: 'https://rooms.example/directory/W/'}, {join: async () => {}}), TypeError);
 });
 
 test('an invitation to another workspace on the home\'s host leaves the home its own name and choice', () => {

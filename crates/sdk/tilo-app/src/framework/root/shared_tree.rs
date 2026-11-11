@@ -182,11 +182,12 @@ impl ResourceRoot {
         let parts = self.typed.children_parts(state);
         let items = self.item_children(parts.items, &parts.item_actions, live, state);
         let head = match epoch {
-            Some(epoch) => self.live_head(state, epoch),
-            None => Rc::new(
-                self.typed
-                    .head(self.dispatch.resource_id(), &self.label, state),
-            ),
+            Some(epoch) => self.live_head(state, epoch, &self.name_of(state)),
+            None => Rc::new(self.typed.head(
+                self.dispatch.resource_id(),
+                &self.name_of(state),
+                state,
+            )),
         };
         let mut kept = self.document_children.borrow_mut();
         let last = kept
@@ -954,7 +955,7 @@ mod tests {
                 let kept = root.shared_document_tree(&*state);
                 let fresh = tilo_resource::publish::<Board>(
                     root.dispatch.resource_id(),
-                    &root.label,
+                    &root.name_of(&*state),
                     &*state,
                 );
                 assert_eq!(
@@ -1011,7 +1012,7 @@ mod tests {
                     outline(&root.shared_document_tree(&empty).to_resource()),
                     outline(&tilo_resource::publish::<Board>(
                         root.dispatch.resource_id(),
-                        &root.label,
+                        &root.name_of(&empty),
                         &empty
                     )),
                     "an unsynced version's document tree"

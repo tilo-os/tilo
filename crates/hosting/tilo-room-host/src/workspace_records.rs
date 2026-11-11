@@ -329,6 +329,22 @@ impl WorkspaceRecords {
             .collect()
     }
 
+    /// Keep what `workspace_id` commits for `device` alone until the device
+    /// subscribes, which the door just let it in to do
+    /// ([`crate::peer::Arriving`]). False for a workspace this host does not
+    /// hold.
+    pub(crate) async fn expect_arrival(&self, workspace_id: u64, device: [u8; 32]) -> bool {
+        let workspace = {
+            let workspaces = self.workspaces.lock().await;
+            let Some(workspace) = workspaces.get(&workspace_id).cloned() else {
+                return false;
+            };
+            workspace
+        };
+        workspace.lock().await.arriving.expect(device);
+        true
+    }
+
     /// Wait until every host commit queued for `workspace_id` so far is
     /// durable.
     pub(crate) async fn settled(&self, workspace_id: u64) {

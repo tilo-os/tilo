@@ -235,6 +235,7 @@ fn inbound(
             app_id,
             cluster_id,
             hash,
+            ..
         } => {
             if *cluster_id != workspace || *requester == peers.own() {
                 return None;
@@ -598,6 +599,7 @@ impl ContentPeers for Peers {
             app_id: route.app_id.clone(),
             cluster_id: route.cluster_id.clone(),
             hash: hash.to_owned(),
+            have: Vec::new(),
         };
         self.say(ws, msg);
     }

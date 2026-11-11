@@ -24,7 +24,7 @@ pub(crate) struct HeldControl {
     /// Where the row draws it this frame; nothing while the row has no room for it.
     rect: Rect,
     /// The window shows restore rather than maximize.
-    maximized: bool,
+    resize: crate::widget::window_controls::Resize,
     /// It has the keyboard.
     focused: bool,
     /// A press asked for its action, for the window to run
@@ -39,7 +39,7 @@ impl HeldControl {
         Self {
             kind,
             rect: Rect::ZERO,
-            maximized: false,
+            resize: crate::widget::window_controls::Resize::Maximize,
             focused: false,
             pressed: false,
             dirty: false,
@@ -47,10 +47,10 @@ impl HeldControl {
     }
 
     /// Where the row draws it this frame, and which way the window's maximize control acts.
-    pub(super) fn place(&mut self, rect: Rect, maximized: bool) {
-        if self.rect != rect || self.maximized != maximized {
+    pub(super) fn place(&mut self, rect: Rect, resize: crate::widget::window_controls::Resize) {
+        if self.rect != rect || self.resize != resize {
             self.rect = rect;
-            self.maximized = maximized;
+            self.resize = resize;
             self.dirty = true;
         }
     }
@@ -104,6 +104,13 @@ impl Widget for HeldControl {
         self.rect
     }
 
+    /// It takes no room and measures nothing, so nothing about it ever asks the layout to
+    /// measure again: a leaf's default answer would re-measure the window's whole path to the
+    /// root on every frame.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     fn is_focusable(&self) -> bool {
         self.placed()
     }
@@ -126,7 +133,7 @@ impl Widget for HeldControl {
         use crate::a11y::{AccessNode, AccessState, Role};
         self.placed().then(|| {
             AccessNode::new(Role::Button)
-                .with_name(self.kind.name(self.maximized))
+                .with_name(self.kind.name(self.resize))
                 .with_action_target(self.kind.target())
                 .with_bounds(self.rect)
                 .with_state(AccessState::new().focusable(true).focused(self.focused))
@@ -159,10 +166,10 @@ impl WindowGroup {
     /// The furniture of the row holding the bar, each control where the row places it this frame.
     pub(super) fn place_held_controls(&mut self) {
         let furniture = self.held;
-        let maximized = self.maximized;
+        let resize = self.resize();
         for control in &mut self.held_controls {
             let rect = control.kind().rect(&furniture);
-            control.place(rect, maximized);
+            control.place(rect, resize);
         }
     }
 

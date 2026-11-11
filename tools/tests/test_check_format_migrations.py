@@ -61,14 +61,6 @@ class FormatMigrationTests(unittest.TestCase):
             self.assertIn("no longer brings up version 1", formats.against("main", root)[0])
             path.write_text("")
             self.assertIn("no longer declared", formats.against("main", root)[0])
-            # A format whose feature is deleted is named as retired, with why.
-            retirements = root / formats.RETIREMENTS
-            retirements.parent.mkdir(parents=True)
-            retirements.write_text('[[retired]]\nname = "fixture state"\nreason = ""\n')
-            self.assertIn("no longer declared", formats.against("main", root)[0],
-                          "a retirement says why")
-            retirements.write_text('[[retired]]\nname = "fixture state"\nreason = "deleted"\n')
-            self.assertEqual(formats.against("main", root), [])
 
     def test_a_declaration_moved_to_a_new_file_is_found_there(self):
         with tempfile.TemporaryDirectory() as root:
@@ -102,7 +94,7 @@ class FormatMigrationTests(unittest.TestCase):
         # The type is named through an import as often as in full, so a
         # declaration written as `Format { .. }` is found too.
         self.assertIn("sign-in record", declared)
-        self.assertIn("room door", declared)
+        self.assertIn("room wait list", declared)
 
 
 if __name__ == "__main__":

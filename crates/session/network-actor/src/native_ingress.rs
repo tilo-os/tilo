@@ -410,8 +410,18 @@ impl ActorState {
             return;
         };
         let peer = payload.endpoint_addr.id;
-        self.publish_to_subscriber(ws, super::NetEvent::HostReady { ws, peer })
-            .await;
+        self.publish_to_subscriber(
+            ws,
+            super::NetEvent::HostReady {
+                ws,
+                peer,
+                // This host keeps the workspace's records on its link's own session, which
+                // replays them all to this device as its history starts: nothing of a record
+                // waits for the record to be opened here.
+                records_when_opened: false,
+            },
+        )
+        .await;
     }
 
     /// The workspace on topic `ws`'s link ended: its host said its owner
@@ -687,6 +697,7 @@ mod tests {
             app_id: "so.tilo.chat".into(),
             cluster_id: "workspace".into(),
             hash: "ab".repeat(32),
+            have: Vec::new(),
         };
         let heard = |message: NeighbourMsg| tilo_peer_state::direct::Heard {
             author: device,
@@ -757,6 +768,7 @@ mod tests {
             app_id: "so.tilo.notes".into(),
             cluster_id: "workspace".into(),
             hash: "ab".repeat(32),
+            have: Vec::new(),
         };
         for message in [genesis, asking, routed, want] {
             assert_eq!(carried(&message), Some(Carried::Link), "{}", message.kind());

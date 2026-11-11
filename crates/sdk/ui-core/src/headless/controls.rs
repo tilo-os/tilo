@@ -1075,9 +1075,31 @@ mod locus_tests {
             mark.contains(tip) && locus.contains(tip),
             "the pointer rests on the row's check box: {mark:?} vs {check:?} in {locus:?}"
         );
+        // One tag, saying who and what, standing where no word is: the row's title stays
+        // readable beside the control the mark rests on.
+        let tags = presence.caret_tags();
+        let [tag] = tags.as_slice() else {
+            panic!("the agent wears one tag: {tags:?}");
+        };
+        let words: Vec<vello::kurbo::Rect> = tree
+            .iter()
+            .filter(|node| {
+                node.name
+                    .as_deref()
+                    .is_some_and(|name| !name.trim().is_empty())
+                    || node
+                        .value
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+            })
+            .filter_map(|node| node.bounds)
+            .collect();
         assert!(
-            mark.width() > mark.height(),
-            "the agent wears its nametag beside its pointer: {mark:?}"
+            words
+                .iter()
+                .all(|word| tag.rect.intersect(*word).is_zero_area()),
+            "the tag covers no word: {:?} among {words:?}",
+            tag.rect
         );
         assert!(
             viewport.x0 <= x0 && x1 <= viewport.x1 && viewport.y0 <= y0 && y1 <= viewport.y1,

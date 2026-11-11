@@ -152,6 +152,12 @@ pub(crate) struct Personal {
     /// Whether the list this computer kept could not be read, until the person is told: the list
     /// starts empty for it.
     unreadable: bool,
+    /// The list as the person's keys read it, last kept on the hosts of their workspaces and handed
+    /// to this device's door: kept again when it moves.
+    kept: Option<tilo_relay_session::workspaces::PersonalList>,
+    /// Whether `kept` was handed to the hosts too: a session's broker reaches them only once it
+    /// serves, so a list said before then is kept on them once it does.
+    kept_on_hosts: bool,
 }
 
 /// The parts of a desk [`Personal::publish_local`] reads.
@@ -268,6 +274,8 @@ impl Personal {
             store,
             published: None,
             unreadable: false,
+            kept: None,
+            kept_on_hosts: false,
         };
         let read = personal
             .store
@@ -777,6 +785,37 @@ impl Personal {
     }
 
     /// This device's whole list, signed for the person's other devices.
+    /// The person's workspaces as their keys read them: every one the list carries, in the person's
+    /// order, each with the signed address of its host `hint` answers for it, as a workspace's id.
+    pub(crate) fn readable(
+        &self,
+        hint: impl Fn(&str) -> Option<Vec<u8>>,
+    ) -> tilo_relay_session::workspaces::PersonalList {
+        let mut listed = self.directory.list_workspaces();
+        listed.sort_by(|a, b| {
+            a.order
+                .unwrap_or(f64::INFINITY)
+                .total_cmp(&b.order.unwrap_or(f64::INFINITY))
+                .then(a.id.cmp(&b.id))
+        });
+        let workspaces = listed
+            .into_iter()
+            .filter_map(|meta| {
+                let workspace = meta.room?;
+                let host = hint(&workspace).and_then(|hint| {
+                    tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(&hint)
+                });
+                Some(tilo_relay_session::workspaces::PersonalWorkspace {
+                    name: meta.name,
+                    host,
+                    role: meta.governor.is_none().then(|| "owner".to_owned()),
+                    workspace,
+                })
+            })
+            .collect();
+        tilo_relay_session::workspaces::PersonalList { workspaces }
+    }
+
     pub(crate) fn snapshot(&mut self) -> Option<DirectoryUpdate> {
         self.directory
             .signed_snapshot(
@@ -966,8 +1005,9 @@ impl crate::Shared {
         self.ask_of_desk("new-workspace", &args)
     }
 
-    /// Give this computer the workspace a join was granted, and redeem the invitation it was
-    /// granted with: what the workspace held before this device arrived comes with it.
+    /// Give this computer the workspace a join chose, and come into it the way the join named:
+    /// through its door, or with the invitation it holds. What the workspace held before this
+    /// device arrived comes with it.
     /// A joined workspace the desk does not already hold is admitted before it gets a slot
     /// ([`Self::redeem_invitation`]): a host that refuses leaves the person where they were, with
     /// no empty workspace to arrive in and vanish from.
@@ -991,8 +1031,9 @@ impl crate::Shared {
         Ok(())
     }
 
-    /// Redeem the invitation a join was granted with, off the loop: this
-    /// device becomes a member of the workspace and takes in its state. A
+    /// Come into the workspace a join chose, off the loop, through its door or
+    /// with its invitation: this device becomes a member of the workspace and
+    /// takes in its state. A
     /// session that holds no workspaces, or takes no part in the collaboration
     /// plane,
     /// shows the workspace with what this computer itself keeps in it.
@@ -1039,7 +1080,11 @@ impl crate::Shared {
         let asked = sync.enroll(crate::sync::Enrolling {
             slot,
             workspace_id: workspace,
-            invitation: joined.granted.invitation.clone(),
+            way: joined.granted.way.clone(),
+            // A door's workspace learns the person by the name the desk knows them by.
+            name: crate::platform::directory::person()
+                .map(|person| person.name)
+                .unwrap_or_default(),
             renewal: self.fleet_renewal.clone(),
         });
         match asked {
@@ -1048,20 +1093,20 @@ impl crate::Shared {
                     target: JOIN_FLOW_TARGET,
                     workspace = %joined.granted.workspace,
                     slot = slot.0,
-                    "join: the invitation is presented to the workspace's host"
+                    "join: the way in is presented to the workspace's host"
                 );
                 self.directory_store
                     .expect_enrollment(&joined.granted.workspace);
             }
             Err(error) => {
-                tracing::warn!(%error, workspace = %joined.granted.workspace, "the invitation was not redeemed");
+                tracing::warn!(%error, workspace = %joined.granted.workspace, "the workspace was not asked to take this device in");
                 tracing::info!(
                     target: JOIN_FLOW_TARGET,
                     workspace = %joined.granted.workspace,
                     slot = slot.0,
                     %error,
                     outcome = "slot removed",
-                    "join: the invitation could not be presented, so the slot is taken away"
+                    "join: the way in could not be presented, so the slot is taken away"
                 );
                 engine.unbind(slot);
                 if on_desk {
@@ -1191,9 +1236,12 @@ impl crate::Shared {
 
     /// What the person's own records say: their workspaces as all their devices hold them, and what
     /// this device did since the last pass.
-    pub(crate) fn follow_records(&self) {
+    pub(crate) fn follow_records(
+        &self,
+        hosted: Option<&dyn tilo_action_broker::services::HostedWorkspaces>,
+    ) {
         self.follow_data_usage();
-        self.follow_personal();
+        self.follow_personal(hosted);
     }
 
     /// Count what this device did since the last pass into the person's records, through the verb
@@ -1205,7 +1253,10 @@ impl crate::Shared {
     /// Keep the person's own workspaces as all their devices hold them: list what this desk has,
     /// take what the others listed, open here what they made there, take off the desk what they
     /// took off theirs, and say again what this device has when theirs was missing something.
-    pub(crate) fn follow_personal(&self) {
+    pub(crate) fn follow_personal(
+        &self,
+        hosted: Option<&dyn tilo_action_broker::services::HostedWorkspaces>,
+    ) {
         let Some(personal) = &self.personal else {
             return;
         };
@@ -1305,6 +1356,7 @@ impl crate::Shared {
             {
                 sync.tell_personal(&update);
             }
+            self.keep_readable(&mut personal, hosted, news || behind);
             if adoption.changed {
                 self.keep_desk_now();
             }
@@ -1319,6 +1371,43 @@ impl crate::Shared {
                 &self.workspace_settings_feed(),
             );
         }
+    }
+
+    /// Keep the person's list where their keys read it, when it moved: this device's door answers
+    /// it to a key of theirs that dials it, and every dedicated host of a workspace held here keeps
+    /// it for the keys that reach no device of theirs.
+    fn keep_readable(
+        &self,
+        personal: &mut Personal,
+        hosted: Option<&dyn tilo_action_broker::services::HostedWorkspaces>,
+        moved: bool,
+    ) {
+        let owed = personal.kept.is_none() || (hosted.is_some() && !personal.kept_on_hosts);
+        if !moved && !owed {
+            return;
+        }
+        let hints: BTreeMap<String, Vec<u8>> = self
+            .engine
+            .as_ref()
+            .map(|engine| engine.host_hints().into_iter().collect())
+            .unwrap_or_default();
+        let list = personal.readable(|workspace| {
+            hints.get(workspace).cloned().or_else(|| {
+                self.sync
+                    .as_ref()?
+                    .host_hint(workspace)
+                    .and_then(|hint| postcard::to_stdvec(&hint).ok())
+            })
+        });
+        if personal.kept.as_ref() == Some(&list) && (personal.kept_on_hosts || hosted.is_none()) {
+            return;
+        }
+        self.remote.show_list(list.clone());
+        if let (Some(engine), Some(hosted)) = (&self.engine, hosted) {
+            crate::hosted_workspaces::keep_on_hosts(hosted, engine, &list);
+        }
+        personal.kept_on_hosts = hosted.is_some();
+        personal.kept = Some(list);
     }
 
     /// Take one of the person's workspaces in that this device does not hold: the list says which
@@ -1641,6 +1730,76 @@ mod tests {
             reopened.agreed, personal.agreed,
             "the list survives the session"
         );
+    }
+
+    /// The list the person's keys read names every workspace of theirs in their order, with its
+    /// host as the host's own signed address names it, and the ones of their own as theirs.
+    #[test]
+    fn the_list_a_key_reads_names_each_workspace_and_where_it_is_hosted() {
+        let desk = desk();
+        let [(first, _)] = on_desk(&desk)
+            .try_into()
+            .expect("a fresh desk holds one workspace");
+        let second = WorkspaceId::new();
+        open_here(&desk, second, "Second");
+        let identity = identity(0x11, 0x21, "The laptop");
+        let mut personal = open(identity.clone(), None);
+        assert!(personal.publish_local(&desk));
+        let key = identity.signing_key().expect("the device's key");
+        let workspace = first.to_string();
+        let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+            workspace_id: tilo_peer_state::join::room_workspace_id(&workspace).expect("an id"),
+            room: workspace.clone(),
+            endpoint_addr: iroh::EndpointAddr::new(
+                iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+                    .expect("a key"),
+            ),
+            host_user_public_key: identity.device_cert.user_public_key,
+            host_device_certificate: identity.device_cert.clone(),
+            packet_relay_url: "iroh:direct".into(),
+        }
+        .transport_hint(&key)
+        .expect("a signed address");
+        let hint = postcard::to_stdvec(&hint).expect("an address's bytes");
+        let list = personal.readable(|asked| (asked == workspace).then(|| hint.clone()));
+        let read: Vec<_> = list
+            .workspaces
+            .iter()
+            .map(|entry| {
+                (
+                    entry.workspace.clone(),
+                    entry.name.clone(),
+                    entry.host.as_ref().map(|host| host.name.clone()),
+                    entry.role.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            read,
+            [
+                (
+                    workspace.clone(),
+                    "Desk".to_owned(),
+                    Some("The laptop".to_owned()),
+                    Some("owner".to_owned())
+                ),
+                (
+                    second.to_string(),
+                    "Second".to_owned(),
+                    None,
+                    Some("owner".to_owned())
+                ),
+            ],
+            "the person's order, each named by the host that signed its address"
+        );
+        let address = list.workspaces[0]
+            .host
+            .as_ref()
+            .and_then(|host| host.address().ok())
+            .expect("the address reads back, signed");
+        assert_eq!(address.room, workspace);
     }
 
     /// A list this computer kept but cannot read does not leave the person with an empty list and

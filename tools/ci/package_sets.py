@@ -62,7 +62,7 @@ def example_apps(packages: dict[str, dict], root: Path) -> set[str]:
 # native devices do: its admission and replica core keep building for the
 # browser.
 WASM_ALSO = {
-    "tilo-session-host": ("--no-default-features", "--features", "toolkit"),
+    "tilo-session-client": ("--no-default-features", "--features", "toolkit"),
     "channel-crypto": (),
     "tilo-peer-state": (),
 }

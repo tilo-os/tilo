@@ -59,6 +59,9 @@ start_lounge() {
   cp -R "$fonts" "$work/bin/fonts"
 
   # The image's entrypoint, with the environment the gate gives the image.
+  # `LOUNGE_ADMISSION` is the door: `open` (the gate's own Lounge) or
+  # `invite`, which keeps a wait list (`LOUNGE_WAIT_LIST_MAX`, and the mail
+  # settings a test names for its sink).
   env -i HOME="$work" PATH="$work/bin:/usr/bin:/bin" \
     TILO_SOURCE_REVISION=direct-lounge \
     TILO_SECRETS_DIR="$volume/secrets" \
@@ -67,7 +70,13 @@ start_lounge() {
     TILO_ROOMS_NAME=Lounge \
     TILO_ROOMS_DESCRIPTION='The Tilo community: chat, notes and a shared desktop' \
     TILO_ROOMS_DEFAULT_ROLE=editor \
-    TILO_ROOMS_ADMISSION=open \
+    TILO_ROOMS_ADMISSION="${LOUNGE_ADMISSION:-open}" \
+    TILO_ROOMS_WAIT_LIST_MAX="${LOUNGE_WAIT_LIST_MAX:-}" \
+    TILO_ROOMS_CONTACT="${LOUNGE_CONTACT:-}" \
+    TILO_ROOMS_MAIL_FROM="${LOUNGE_MAIL_FROM:-}" \
+    TILO_ROOMS_RESEND_KEY_FILE="${LOUNGE_RESEND_KEY_FILE:-}" \
+    TILO_ROOMS_RESEND_URL="${LOUNGE_RESEND_URL:-}" \
+    TILO_ROOMS_MAIL_TEMPLATES="${LOUNGE_MAIL_TEMPLATES:-}" \
     TILO_ROOMS_RELAY_ORIGIN="$relay_origin" \
     TILO_ROOMS_LIVE="127.0.0.1:$live_port" \
     TILO_ROOMS_RELAY_PLAIN="127.0.0.1:$plain_port" \
@@ -90,8 +99,13 @@ start_lounge() {
   room=$(cat "$volume/lounge/room-id" 2>/dev/null) || lounge_fail 'the Lounge kept no workspace id'
   echo "ok: the Lounge is Ready ($room)"
 
+  # Who the host is, as the operator hands it to the web entry
+  # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
+  local info
+  info=$("$relay_bin" page-host "http://127.0.0.1:$plain_port") \
+    || lounge_fail 'the relay did not say who it is (tilo-relay page-host)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$room/" "$site_port" >> "$site_log" 2>&1 &
+    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$room/" "$site_port" "$info" >> "$site_log" 2>&1 &
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do

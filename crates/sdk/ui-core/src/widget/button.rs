@@ -70,8 +70,8 @@ pub struct Button {
     /// leads with them.
     faces: Vec<(String, String)>,
     /// One person this face leads with ([`Self::with_avatar`]): their avatar before the label,
-    /// as a person field's chip shows who it holds.
-    avatar: Option<(String, String)>,
+    /// as a person field's chip shows who it holds, in the presence hue the workspace gives them.
+    avatar: Option<(String, String, crate::tokens::PresenceHue)>,
     /// The label stands for no value yet (`Self::with_placeholder`): painted in the secondary
     /// ink a field shows an empty value in.
     placeholder: bool,
@@ -446,10 +446,17 @@ impl Button {
     }
 
     /// Lead with one person's avatar before the label, so a chip names who it is about as well as
-    /// what it is called.
+    /// what it is called, in the presence `hue` the workspace gives them
+    /// ([`People::hue`](crate::presence::PresenceCtx::hue_of)): the one they chose, never one
+    /// derived here.
     #[must_use]
-    pub fn with_avatar(mut self, name: impl Into<String>, identity: impl Into<String>) -> Self {
-        self.avatar = Some((name.into(), identity.into()));
+    pub fn with_avatar(
+        mut self,
+        name: impl Into<String>,
+        identity: impl Into<String>,
+        hue: crate::tokens::PresenceHue,
+    ) -> Self {
+        self.avatar = Some((name.into(), identity.into(), hue));
         self.layout_dirty = true;
         self.dirty = true;
         self
@@ -682,7 +689,7 @@ impl Button {
     /// the transport draws it (play/pause the one round, prominent control)
     /// and named for what it does now.
     pub fn transport(id: &str, control: crate::widget::TransportControl) -> Self {
-        let mut button = Self::icon_only(id, control.icon(), control.name());
+        let mut button = Self::icon_only(id, control.icon(), &control.name());
         button.transport = Some((control, 0.0));
         button
     }
@@ -695,8 +702,9 @@ impl Button {
         let side = self.transport.map_or(0.0, |(_, side)| side);
         self.transport = Some((control, side));
         self.icon = Some(control.icon());
-        self.set_accessible_name(control.name());
-        self.tooltip = Some(control.name().to_owned());
+        let name = control.name();
+        self.set_accessible_name(&name);
+        self.tooltip = Some(name);
         self.dirty = true;
     }
 
@@ -742,6 +750,12 @@ impl Button {
         self.dirty = true;
         self.layout_dirty = true;
         self
+    }
+
+    /// Whether this is the window's one main action, drawn on the accent.
+    #[must_use]
+    pub fn is_primary(&self) -> bool {
+        self.role == ButtonRole::Primary
     }
 
     /// What the button does; the role decides its whole look.
@@ -1288,7 +1302,7 @@ struct FaceContent<'a> {
     /// empty for every face that is not a group of people.
     faces: &'a [(String, String)],
     /// One person's avatar before the label, as a person chip leads with it.
-    avatar: Option<(&'a str, &'a str)>,
+    avatar: Option<(&'a str, &'a str, crate::tokens::PresenceHue)>,
     /// The label names no value yet: painted in the secondary ink.
     placeholder: bool,
     /// What the content marks means: its colour, where the face's own ink would stand.
@@ -1438,14 +1452,16 @@ impl FaceContent<'_> {
                 );
                 return;
             }
-            if let Some((name, identity)) = self.avatar {
+            if let Some((name, identity, hue)) = self.avatar {
                 let face = Rect::new(
                     rect.center().x - icon_px / 2.0,
                     rect.center().y - icon_px / 2.0,
                     rect.center().x + icon_px / 2.0,
                     rect.center().y + icon_px / 2.0,
                 );
-                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+                crate::widget::AvatarFace::new(name, identity)
+                    .hue(hue)
+                    .paint(ctx, face);
                 return;
             }
             if let Some(image) = self.image {
@@ -1504,10 +1520,12 @@ impl FaceContent<'_> {
                     ink,
                 );
             }
-            if let Some((name, identity)) = self.avatar {
+            if let Some((name, identity, hue)) = self.avatar {
                 let iy = rect.center().y - icon_px / 2.0;
                 let face = Rect::new(leading, iy, leading + icon_px, iy + icon_px);
-                crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+                crate::widget::AvatarFace::new(name, identity)
+                    .hue(hue)
+                    .paint(ctx, face);
             }
             if !self.faces.is_empty() {
                 self.draw_faces(ctx, leading, rect.center().y, rect.height());
@@ -1548,10 +1566,12 @@ impl FaceContent<'_> {
                 ink,
             );
         }
-        if let Some((name, identity)) = self.avatar {
+        if let Some((name, identity, hue)) = self.avatar {
             let iy = rect.center().y - icon_px / 2.0;
             let face = Rect::new(start_x, iy, start_x + icon_px, iy + icon_px);
-            crate::widget::AvatarFace::new(name, identity).paint(ctx, face);
+            crate::widget::AvatarFace::new(name, identity)
+                .hue(hue)
+                .paint(ctx, face);
         }
         if !self.faces.is_empty() {
             self.draw_faces(ctx, start_x, rect.center().y, rect.height());
@@ -2136,7 +2156,7 @@ impl Button {
                 avatar: self
                     .avatar
                     .as_ref()
-                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
                 placeholder: self.placeholder,
                 tone: None,
                 badge: None,
@@ -2485,7 +2505,7 @@ impl Widget for Button {
                 avatar: self
                     .avatar
                     .as_ref()
-                    .map(|(name, identity)| (name.as_str(), identity.as_str())),
+                    .map(|(name, identity, hue)| (name.as_str(), identity.as_str(), *hue)),
                 placeholder: self.placeholder,
                 tone: self.content_tone,
                 badge: self.badge.as_deref(),
@@ -2562,6 +2582,12 @@ impl Widget for Button {
         // measure: the host sizes it, however hidden or unplaced it is.
         self.solver_placed
             && (self.layout_dirty || self.i18n_revision != crate::i18n::I18nManager::revision())
+    }
+
+    /// The solver measured the face it asked for, whether or not this frame
+    /// draws the control: a shut overflow door's button finds no `mark_drawn`.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn needs_idle_sync(&self) -> bool {
@@ -2643,40 +2669,10 @@ impl Widget for Button {
         Some(self.id.as_str())
     }
 
-    /// This button as a slot in the window's bar, sent back as `id`: a button with an icon says
-    /// its name beside it where the bar has room for the words and its icon alone where it has
-    /// none, and one its header keeps in its menu, or one that opens a menu of its own, is
-    /// listed behind the bar's own "…". `None` for a button with no name to show.
-    ///
-    /// A button that shows its glyph alone asked for that: the bar draws it as the glyph the
-    /// app put on it instead of spending the room a second control needs on words the button
-    /// itself keeps off. Its name is still what it says for itself (its tooltip, its menu row).
-    /// The window's one main action ([`ButtonRole::Primary`]) is declared as such whatever its
-    /// glyph: the bar draws it as the primary button, in its row at every width.
-    fn window_slot(&self, id: String) -> Option<crate::window_toolbar::ToolbarAction> {
-        let name = self.accessibility()?.name.filter(|name| !name.is_empty())?;
-        let icon = self.icon.map_or("", crate::icons::Icon::name);
-        let primary = self.role == ButtonRole::Primary;
-        let action = crate::window_toolbar::ToolbarAction::new(id, icon, name)
-            .enabled(self.is_enabled())
-            .on(self.toggled == Some(true));
-        // The window's one main action stands in the row wherever the bar has room for its
-        // words or only for its icon: what the window is for never hides behind its door.
-        Some(if primary {
-            action.labelled().primary()
-        } else if self.menu_only || self.opens_menu || self.icon.is_none() {
-            action.in_menu()
-        } else if self.label.trim().is_empty() {
-            action
-        } else {
-            action.labelled()
-        })
-    }
-
     /// Returns the raw string (a fluent key or plain text); the host
     /// resolves i18n and renders.
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
 
     fn get_rect(&self) -> Rect {

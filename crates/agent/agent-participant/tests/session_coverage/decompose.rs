@@ -14,7 +14,7 @@ use tilo_relay_protocol::agents::TaskState;
 
 use super::{
     CHAT, RelayWorkspace, SHEETS, ana_said, answered_model_endpoint, chat_parts_text, last_turn,
-    message_text, offered, plan_call, post_in_chat, posts, wait_for,
+    message_text, offered, offered_on, plan_call, post_in_chat, posts, wait_for,
 };
 use crate::common::pdf;
 
@@ -532,8 +532,8 @@ async fn an_item_s_agent_plans_with_the_records_and_what_earlier_items_read() {
     answer
         .send(plan_call(
             "i2",
-            &serde_json::json!({"steps": [{"operation": offered(&reads, "read-messages"),
-                "arguments": {"channel": chat::record::CHAT_CHANNEL, "pageSize": 32}}]}),
+            &serde_json::json!({"steps": [{"operation": offered_on(&reads, "so.tilo.chat", "read-record"),
+                "arguments": {}}]}),
         ))
         .unwrap();
     workspace

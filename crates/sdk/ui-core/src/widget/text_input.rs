@@ -26,6 +26,7 @@ use crate::text_selection::{
 };
 use crate::theme::Theme;
 use crate::tokens::{SyntaxPalette, TextRole};
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
@@ -78,6 +79,9 @@ use touch::TouchIntent;
 
 #[path = "text_input_input.rs"]
 mod input;
+
+#[path = "text_input_written.rs"]
+mod written;
 
 /// Outline a field whose content was refused (a wrong password) in the
 /// danger colour, over the field's own edge at the control radius.
@@ -368,6 +372,8 @@ pub struct TextInput {
     /// ([`Self::with_change`]): their presence identity, which tints the field, and what the
     /// field says of it on hover.
     change: Option<(String, String)>,
+    /// What the field held before that change, when it is known: what it wrote is the rest.
+    change_before: Option<String>,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -845,6 +851,7 @@ impl TextInput {
             is_hovered: false,
             invalid: false,
             change: None,
+            change_before: None,
             is_focused: false,
             caret_paint_suppressed: false,
             ml_caret: None,
@@ -1920,8 +1927,13 @@ impl TextInput {
 
     /// Single source of truth for both the local and any peer caret, so they line up.
     pub fn text_band(&self) -> (f64, f64) {
-        if !self.multiline
-            && !self.masked()
+        if self.multiline {
+            return (
+                self.multiline_top() - self.shown_scroll_y(),
+                self.line_height(),
+            );
+        }
+        if !self.masked()
             && let Some(layout) = &self.single_layout
         {
             return (
@@ -1940,7 +1952,7 @@ impl TextInput {
     pub(crate) fn first_row_band(&self) -> (f64, f64) {
         if self.multiline {
             (
-                self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
+                self.multiline_top() - self.shown_scroll_y(),
                 self.line_height(),
             )
         } else {
@@ -2070,7 +2082,7 @@ impl TextInput {
         }
         let lh = self.line_height();
         let px = self.ml_left();
-        let py = self.multiline_padding_y();
+        let top = self.multiline_top();
         let mut out = Vec::new();
         for r in &self.lines {
             let lo = start.max(r.start);
@@ -2089,7 +2101,7 @@ impl TextInput {
             if x1 - x0 < 0.5 {
                 continue;
             }
-            let y0 = self.rect.y0 + py + r.y - self.shown_scroll_y();
+            let y0 = top + r.y - self.shown_scroll_y();
             out.push(Rect::new(
                 self.rect.x0 + px + x0,
                 y0,
@@ -2188,7 +2200,7 @@ impl TextInput {
         let (i, x) = self.locate_ml(byte);
         let y = self.lines.get(i).map_or(0.0, |r| r.y);
         let cx = self.rect.x0 + self.ml_left() + x;
-        let cy = self.rect.y0 + self.multiline_padding_y() + y - self.shown_scroll_y();
+        let cy = self.multiline_top() + y - self.shown_scroll_y();
         Rect::new(cx, cy, cx + width, cy + self.line_height())
     }
 
@@ -2198,7 +2210,7 @@ impl TextInput {
             return 0;
         }
         let lh = self.line_height();
-        let local_y = pt.y - (self.rect.y0 + self.multiline_padding_y()) + self.shown_scroll_y();
+        let local_y = pt.y - self.multiline_top() + self.shown_scroll_y();
         let max_row = self.lines.len().saturating_sub(1);
         let row = {
             let row_f = (local_y / lh).floor().max(0.0);
@@ -2766,7 +2778,7 @@ impl TextInput {
         self.measure_wrapped_content(width, tr, theme);
         self.single_origin = Point::new(
             self.rect.x0 + self.ml_left(),
-            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
+            self.multiline_top() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
     }
@@ -2873,7 +2885,7 @@ impl TextInput {
         (caret_position, shape): (TextPosition, &RoundedRect),
     ) {
         self.ml_caret = None;
-        if !self.is_focused || self.effectively_disabled() {
+        if !self.is_focused || !crate::caret_owner::shown() || self.effectively_disabled() {
             return;
         }
         let Some(layout) = self.single_layout.as_ref() else {
@@ -2914,6 +2926,10 @@ impl TextInput {
         transform: Affine,
         theme: &Theme,
     ) -> Option<Rect> {
+        if !crate::caret_owner::shown() {
+            self.ml_caret = None;
+            return None;
+        }
         let (caret, shape) = self.ml_caret.take()?;
         let bounds = shape.rect();
         let painted = caret.intersect(bounds);
@@ -3010,7 +3026,7 @@ impl TextInput {
         self.update_ml_scroll(caret_top, caret_height, layout_height);
         self.single_origin = Point::new(
             self.rect.x0 + left,
-            self.rect.y0 + self.multiline_padding_y() - self.shown_scroll_y(),
+            self.multiline_top() - self.shown_scroll_y(),
         );
         self.multiline_shaped = true;
         self.lines.clear();
@@ -3179,7 +3195,7 @@ impl TextInput {
             if top + lh < 0.0 || top > view_h {
                 continue;
             }
-            let y0 = self.rect.y0 + self.multiline_padding_y() + top;
+            let y0 = self.multiline_top() + top;
             let band = Rect::new(self.rect.x0 + gutter_w, y0, self.rect.x1, y0 + lh);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -3251,11 +3267,8 @@ impl TextInput {
                 clippy::arithmetic_side_effects,
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
-            let origin = transform
-                * Affine::translate((
-                    x,
-                    self.rect.y0 + self.multiline_padding_y() + ry - self.scroll_y,
-                ));
+            let origin =
+                transform * Affine::translate((x, self.multiline_top() + ry - self.scroll_y));
             let col = if *current {
                 theme.text_primary
             } else {
@@ -3286,7 +3299,7 @@ impl TextInput {
                 let origin = transform
                     * Affine::translate((
                         self.rect.x0 + left + x,
-                        self.rect.y0 + self.multiline_padding_y() + ry - self.scroll_y,
+                        self.multiline_top() + ry - self.scroll_y,
                     ));
                 self.draw_text_run(scene, tr, text, size, *color, origin);
             }
@@ -3338,10 +3351,7 @@ impl TextInput {
                 reason = "Affine transform composition over f64 screen coordinates"
             )]
             let origin = transform
-                * Affine::translate((
-                    self.rect.x0 + left,
-                    self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
-                ));
+                * Affine::translate((self.rect.x0 + left, self.multiline_top() - self.scroll_y));
             // A prompt wraps within the body it prompts for, as the text typed there does.
             tr.draw_style(
                 scene,
@@ -3363,7 +3373,11 @@ impl TextInput {
         self.draw_body_gutter_numbers(scene, transform, tr, theme, size, gutter_w, &gutter_nums);
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
 
-        if !self.caret_paint_suppressed && self.is_focused && !self.effectively_disabled() {
+        if !self.caret_paint_suppressed
+            && self.is_focused
+            && crate::caret_owner::shown()
+            && !self.effectively_disabled()
+        {
             let caret = self.caret_rect_ml(self.core.caret(), theme.caret_width);
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -3486,7 +3500,7 @@ impl TextInput {
         if self.multiline && self.multiline_shaped {
             self.single_origin = Point::new(
                 self.rect.x0 + self.ml_left(),
-                self.rect.y0 + self.multiline_padding_y() - self.scroll_y,
+                self.multiline_top() - self.scroll_y,
             );
         }
     }
@@ -3668,6 +3682,62 @@ impl TextInput {
         } else {
             ML_PAD_Y
         }
+    }
+
+    /// The top of a wrapping field's content, in window coordinates and before its scroll: the
+    /// inset its chrome keeps — or, where the field stands one band tall and holds one line,
+    /// that line centred in it.
+    ///
+    /// A field grows to its text, but a band can be taller than one line: a composer on a phone
+    /// stands at the target a finger reaches, and a row may stretch the field to the face of the
+    /// button beside it. A single-line field centres its text in that band ([`Self::text_band`]);
+    /// a wrapping field that holds one line centres it the same way, so the words and the caret
+    /// stand in the middle of the control a person touches rather than at its top edge. Anything
+    /// more is not a band's room: text that wraps, a field given lines of its own (`min_lines`, a
+    /// note's box), a document's page and a field stretched to fill a pane all start at the inset
+    /// and grow down.
+    fn multiline_top(&self) -> f64 {
+        let inset = self.rect.y0 + self.multiline_padding_y();
+        let line = self.line_height();
+        let room = self.rect.height() - line;
+        if self.plain
+            || self.min_lines > 0
+            || !self.fits_one_line()
+            || room <= 2.0 * self.multiline_padding_y() + 0.5
+            || self.rect.height() > self.band() + 0.5
+        {
+            return inset;
+        }
+        self.rect.y0 + room / 2.0
+    }
+
+    /// Whether the field's content is one row tall: one line of text, or its placeholder, that
+    /// has not wrapped.
+    fn fits_one_line(&self) -> bool {
+        if self.multiline_shaped
+            && let Some(layout) = &self.single_layout
+        {
+            return f64::from(layout.height()) <= self.line_height() * 1.5;
+        }
+        self.lines.len() <= 1
+    }
+
+    /// The rows the field's text takes as it is laid out, never less than one: an empty field
+    /// holds the line its placeholder stands on.
+    fn content_rows(&self) -> u32 {
+        if self.multiline_shaped
+            && let Some(layout) = &self.single_layout
+        {
+            let line = self.line_height().max(1.0);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a window holds far fewer rows of text than u32's range, and a short field's height is positive"
+            )]
+            let rows = (f64::from(layout.height()) / line).round() as u32;
+            return rows.max(1);
+        }
+        u32::try_from(self.lines.len()).unwrap_or(u32::MAX).max(1)
     }
 
     pub fn is_multiline(&self) -> bool {
@@ -4533,6 +4603,17 @@ impl TextInput {
         theme.tokens.metrics.field_min_width * crate::tokens::Metrics::text_growth(theme.text_scale)
     }
 
+    /// The band a field of this size stands at: the control height, grown to
+    /// the target a coarse pointer reaches, as a single-line field's band is.
+    fn band(&self) -> f64 {
+        if self.interaction.supports_hover() {
+            self.band_height
+        } else {
+            self.band_height
+                .max(f64::from(self.interaction.minimum_target()))
+        }
+    }
+
     /// The least height of a wrapping chrome'd field: one band, or
     /// `min_lines` lines and the vertical inset; a coarse pointer makes it at
     /// least the touch target, as a single-line field's band is.
@@ -4543,13 +4624,7 @@ impl TextInput {
         let line =
             f64::from(self.effective_font_size() * self.scale_for(scale) * LINE_HEIGHT_RATIO);
         let lines = f64::from(u32::try_from(self.min_lines).unwrap_or(u32::MAX));
-        let band = if self.interaction.supports_hover() {
-            self.band_height
-        } else {
-            self.band_height
-                .max(f64::from(self.interaction.minimum_target()))
-        };
-        (lines * line + 2.0 * self.multiline_padding_y()).max(band)
+        (lines * line + 2.0 * self.multiline_padding_y()).max(self.band())
     }
 
     fn masked(&self) -> bool {
@@ -6411,7 +6486,7 @@ impl Widget for TextInput {
         if self.has_reveal_control() {
             self.refresh_reveal_control();
             self.reveal
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         #[cfg(test)]
         let spelling_probe = crate::profiling::frame_probe::span("single_line_spelling");
@@ -6627,6 +6702,35 @@ impl Widget for TextInput {
     /// waits to publish it, and idle inputs are never re-measured.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    /// Where the field's text stands in it, so an audit of a window holds it to the band a
+    /// person reads: one line in the middle of the field it is typed into.
+    ///
+    /// The band is read from the field's layout, never from a painted frame: a window laid out
+    /// and never drawn reports the same line a drawn one does.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        if self.rect == Rect::ZERO {
+            return None;
+        }
+        let line = if self.multiline {
+            self.line_height()
+        } else {
+            f64::from(self.effective_font_size() * LINE_HEIGHT_RATIO)
+        };
+        let top = if self.multiline {
+            self.multiline_top()
+        } else {
+            self.rect.y0 + (self.rect.height() - line) / 2.0
+        };
+        Some(crate::widget::LayoutInfo::Text(crate::widget::TextLayout {
+            top: crate::num::f32_of_f64(top),
+            line: crate::num::f32_of_f64(line),
+            rows: self.content_rows(),
+            lines: u32::try_from(self.min_lines).unwrap_or(u32::MAX),
+            band: crate::num::f32_of_f64(self.band()),
+            document: self.plain,
+        }))
     }
 
     /// A disabled input claims no cursor and defers to the host default.
@@ -7198,6 +7302,7 @@ impl TextInput {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        self.draw_written(scene, transform, text_renderer, theme, presence);
         if let Some(key) = crate::presence::capability::presence_key(self) {
             // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
             // re-derived approximation. `transform` maps the local rect to the scene.

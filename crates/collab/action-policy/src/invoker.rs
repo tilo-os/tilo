@@ -148,7 +148,7 @@ impl Invoker {
         match self {
             Self::Person { person, bounds } => Some(Standing {
                 person,
-                policy,
+                policy: policy.into(),
                 bounds,
             }),
             Self::Own(_) => None,

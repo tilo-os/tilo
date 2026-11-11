@@ -2604,7 +2604,7 @@ fn draw_inline_editor(
     rect: Rect,
 ) {
     input.apply_layout_external(rect);
-    input.draw(scene, base, tr, theme, &PresenceCtx::empty());
+    input.draw_child(scene, base, tr, theme, &PresenceCtx::empty());
 }
 
 /// The pages within reach of the canvas this frame (0-based indices).

@@ -24,9 +24,6 @@ use crate::notifications::{
 };
 use tilo_lock::MutexRecover as _;
 
-/// Width of the centre panel, and its inset from the surface's edges.
-const PANEL_WIDTH: f64 = 360.0;
-const PANEL_INSET: f64 = 16.0;
 /// How tall the centre's panel stands while its code is on its way.
 const LOADING_HEIGHT: f64 = 96.0;
 
@@ -51,9 +48,13 @@ struct NoticeState {
     /// Bumped by every change, so the layer repaints only when one happened.
     revision: Cell<u64>,
     outcomes: RefCell<Vec<NotificationOutcome>>,
-    /// The person asked for the centre from the banner stack (its "more" card); the layer opens it
-    /// on its next pass.
-    centre_requested: Cell<bool>,
+    /// The person asked the centre open or closed (the bell, a chord, the banner stack's "more"
+    /// card): whoever draws it over the windows takes the ask on its next pass.
+    centre_asked: Cell<Option<bool>>,
+    /// An app a row of the centre asked to open: the desk focuses its window.
+    open_app: RefCell<Option<String>>,
+    /// Where the shown windows' content starts: banners stand below it.
+    clear_top: Cell<f64>,
     /// Notifications posted since the person last looked at the centre, by id: what the bell
     /// counts.
     unread: RefCell<std::collections::BTreeSet<u64>>,
@@ -116,7 +117,7 @@ impl NotificationHost for NoticeState {
         self.log.borrow_mut().present(now, on_screen, held);
     }
     fn open_center(&self) {
-        self.centre_requested.set(true);
+        self.centre_asked.set(Some(true));
         self.touch();
     }
     fn quiet_status(&self) -> Option<String> {
@@ -419,10 +420,51 @@ impl DesktopNotifications {
         self.log.present(now, on_screen, held);
     }
 
-    /// Restore a host's persisted history without showing it as new banners.
-    pub fn restore_history(&self, history: Vec<Notification>) {
+    /// The centre's history as a host keeps it between sessions: each row's words, sender and age,
+    /// and whether the person has seen it. What a row could act on, and a row that is only an
+    /// offer of this host's, do not outlive the session.
+    pub fn kept(&self, wall_now: ui::time::SystemTime) -> Result<Vec<u8>, serde_json::Error> {
+        let history: Vec<Notification> = self
+            .log
+            .log
+            .borrow()
+            .history()
+            .iter()
+            .filter(|notification| !crate::is_host_offer(notification))
+            .cloned()
+            .collect();
+        crate::notifications::encode_history(
+            &history,
+            |id| self.is_unread(id),
+            wall_now,
+            ui::time::now(),
+        )
+    }
+
+    /// Put the history [`Self::kept`] wrote back into the centre, without showing it as new
+    /// banners: what the person had not seen is still unread, so the bell counts it again.
+    pub fn restore_kept(
+        &self,
+        bytes: &[u8],
+        wall_now: ui::time::SystemTime,
+    ) -> Result<(), serde_json::Error> {
+        let kept = crate::notifications::decode_history(bytes, wall_now, ui::time::now())?;
+        if kept.is_empty() {
+            return Ok(());
+        }
+        let mut history = Vec::with_capacity(kept.len());
+        {
+            let mut unread = self.log.unread.borrow_mut();
+            for (notification, was_unread) in kept {
+                if was_unread {
+                    unread.insert(notification.id);
+                }
+                history.push(notification);
+            }
+        }
         self.log.log.borrow_mut().restore_history(history);
         self.log.touch();
+        Ok(())
     }
 
     /// Also tell `tap` of each outcome as it happens: for a host that answers a notification's
@@ -455,9 +497,29 @@ impl DesktopNotifications {
         ask.answer(self.host());
     }
 
-    /// Open the notification centre at the desktop surface's next update.
-    pub fn open_center(&self) {
-        self.host().open_center();
+    /// Ask for the notification centre open or closed: whoever draws it takes the ask
+    /// ([`Self::take_centre_ask`]).
+    pub fn ask_centre(&self, open: bool) {
+        self.log.centre_asked.set(Some(open));
+        self.log.touch();
+    }
+
+    /// Whether the person last asked the centre open or closed since this was last called.
+    pub fn take_centre_ask(&self) -> Option<bool> {
+        self.log.centre_asked.take()
+    }
+
+    /// The app a row of the centre asked to open since this was last called.
+    pub fn take_open_app(&self) -> Option<String> {
+        self.log.open_app.borrow_mut().take()
+    }
+
+    /// Banners begin below `y` , where the shown windows' content starts.
+    pub fn set_clear_top(&self, y: f64) {
+        if self.log.clear_top.get().to_bits() != y.to_bits() {
+            self.log.clear_top.set(y);
+            self.log.touch();
+        }
     }
 
     /// What the person chose since the last call, oldest first.
@@ -485,6 +547,8 @@ impl DesktopNotifications {
     pub fn mark_read(&self) {
         let had = !std::mem::take(&mut *self.log.unread.borrow_mut()).is_empty();
         if had {
+            // What is kept between sessions says which rows were read.
+            self.log.log.borrow_mut().history_changed();
             self.log.touch();
         }
     }
@@ -765,11 +829,10 @@ impl AppInbox {
     }
 }
 
-/// The banner stack over the surface and, while open, the centre panel.
-pub(super) struct NotificationLayer {
+/// The banner stack and, while open, the centre panel: drawn over the windows, by the host that
+/// stands above them.
+pub struct NotificationLayer {
     notifications: DesktopNotifications,
-    /// Applications' requests, when the host routes them here.
-    pub inbox: Option<AppInbox>,
     stack: NotificationStack,
     center: Option<Centre>,
     /// The person asked for the centre: it takes input and its arrivals join it. A centre that
@@ -778,8 +841,9 @@ pub(super) struct NotificationLayer {
     /// The centre's coming and going, on the standard appear motion: from the corner under the
     /// bar's bell and back to it.
     appear: ui::motion::Appearing,
-    /// An application a retained notification asked to open.
-    pub open_app: Option<String>,
+    /// Where the centre stands while it is open, as the stack of surfaces over the windows places
+    /// it: the panel takes its width and top, and as much of its height as its rows ask.
+    place: Option<Rect>,
     rect: Rect,
     cursor: Option<Point>,
     /// The caption and label line boxes the centre lays out with, captured from the theme each
@@ -795,12 +859,11 @@ impl NotificationLayer {
     pub fn new(notifications: DesktopNotifications) -> Self {
         Self {
             notifications,
-            inbox: None,
             stack: NotificationStack::new(),
             center: None,
             centre_open: false,
             appear: ui::motion::Appearing::closed(),
-            open_app: None,
+            place: None,
             rect: Rect::ZERO,
             cursor: None,
             type_lines: CenterLayout::metrics(&ui::Theme::dark(), &mut ui::TextRenderer::new()),
@@ -839,9 +902,20 @@ impl NotificationLayer {
         self.feed_stack();
     }
 
-    /// Banners begin below `y` , where the shown windows' content starts.
-    pub fn set_clear_top(&mut self, y: f64) {
-        self.stack.set_clear_top(y);
+    /// Stand the centre at `place` , where the stack of surfaces over the windows puts it.
+    pub fn set_place(&mut self, place: Option<Rect>) {
+        if self.place != place {
+            self.place = place;
+            self.dirty = true;
+        }
+    }
+
+    /// Where the centre's panel is drawn now, while it is open.
+    #[must_use]
+    pub fn panel(&self) -> Option<Rect> {
+        self.centre_open
+            .then(|| self.layout().map(|layout| layout.panel()))
+            .flatten()
     }
 
     /// Open or close the centre. Either way the person has seen what it holds: nothing is unread
@@ -890,18 +964,12 @@ impl NotificationLayer {
         self.centre_open
     }
 
-    /// Retire what ran out; returns whether that changed what is shown.
-    pub fn tick(&self) -> bool {
-        self.notifications.expire(ui::time::now())
-    }
-
-    /// The centre panel: top-right, as tall as its rows ask within the surface.
+    /// The centre panel: where the stack placed it, as tall as its rows ask within that place.
     fn layout(&self) -> Option<CenterLayout> {
         let center = self.center.as_ref()?;
-        let r = self.rect;
-        let width = PANEL_WIDTH.min(r.width() - 2.0 * PANEL_INSET).max(0.0);
-        let y0 = r.y0 + PANEL_INSET;
-        let max = r.y1 - PANEL_INSET - y0;
+        let place = self.place?;
+        let width = place.width().max(0.0);
+        let max = place.height().max(0.0);
         let height = center
             .ready()
             .map_or_else(
@@ -911,9 +979,8 @@ impl NotificationLayer {
                 },
             )
             .max(0.0);
-        let x1 = r.x1 - PANEL_INSET;
         Some(CenterLayout::new(
-            Rect::new(x1 - width, y0, x1, y0 + height),
+            Rect::new(place.x0, place.y0, place.x1, place.y0 + height),
             &self.type_lines,
         ))
     }
@@ -924,7 +991,8 @@ impl NotificationLayer {
             CenterOutcome::Handled => {}
             CenterOutcome::Back => self.set_center_open(false),
             CenterOutcome::OpenApp { app_id, .. } => {
-                self.open_app = Some(app_id);
+                *self.notifications.log.open_app.borrow_mut() = Some(app_id);
+                self.notifications.log.touch();
                 self.set_center_open(false);
             }
         }
@@ -953,9 +1021,6 @@ impl NotificationLayer {
             self.feed_stack();
             self.dirty |= self.stack.handle_pointer_event(event, scale, &mut handled);
             self.answer_stack();
-            if notifications.log.centre_requested.take() {
-                self.set_center_open(true);
-            }
             return handled;
         }
         self.stack.cancel_pointer_press();
@@ -1033,7 +1098,7 @@ impl NotificationLayer {
     }
 
     /// Whether the layer shows anything at all.
-    pub fn visible(&self) -> bool {
+    fn visible(&self) -> bool {
         self.center.is_some()
             || self.appear.is_moving()
             || (!self.notifications.log.banners_elsewhere.get()
@@ -1059,9 +1124,6 @@ impl Widget for NotificationLayer {
     /// The reading page glides on after a flick, repainted as a wheel's scroll is; that changes no
     /// model.
     fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
-        if self.notifications.log.centre_requested.take() {
-            self.set_center_open(true);
-        }
         self.feed_stack();
         self.adopt_centre();
         if let Some(center) = self.centre_mut() {
@@ -1100,6 +1162,7 @@ impl Widget for NotificationLayer {
         let notifications = self.notifications.clone();
         let host = notifications.host();
         self.stack.set_viewport(self.rect);
+        self.stack.set_clear_top(notifications.log.clear_top.get());
         self.feed_stack();
         self.stack.draw(scene, transform, text, theme);
         self.answer_stack();
@@ -1256,8 +1319,12 @@ fn overlay_style() -> ui::taffy::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::DrawChild;
 
     use crate::notifications::{RemoteNotificationRoute, RowShape};
+
+    /// Where the stack of surfaces over the windows stands the centre on a 1280 by 800 display.
+    const PLACE: Rect = Rect::new(892.0, 32.0, 1272.0, 792.0);
 
     fn layer_with(count: usize) -> (NotificationLayer, DesktopNotifications) {
         let notifications = DesktopNotifications::default();
@@ -1270,6 +1337,7 @@ mod tests {
         }
         let mut layer = NotificationLayer::new(notifications.clone());
         layer.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+        layer.set_place(Some(PLACE));
         (layer, notifications)
     }
 
@@ -1292,7 +1360,7 @@ mod tests {
     }
 
     fn paint(layer: &mut NotificationLayer, theme: &ui::Theme) {
-        layer.draw(
+        layer.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut ui::TextRenderer::new(),
@@ -1424,7 +1492,15 @@ mod tests {
         assert_eq!(notifications.counts(), (1, 1));
         layer.set_center_open(true);
         let panel = layer.layout().unwrap().panel();
-        assert!(panel.x1 <= 1280.0 - PANEL_INSET);
+        assert_eq!(
+            (panel.x0, panel.y0, panel.x1),
+            (PLACE.x0, PLACE.y0, PLACE.x1),
+            "the centre stands where the stack placed it"
+        );
+        assert!(
+            panel.y1 <= PLACE.y1,
+            "as tall as its rows, within its place"
+        );
         let node = layer.accessibility().unwrap();
         assert_eq!(node.children.len(), 1, "the centre's dialog is exposed");
         assert!(press(&mut layer, Point::new(10.0, 700.0)));
@@ -1444,7 +1520,7 @@ mod tests {
     /// happens.
     #[test]
     fn banners_shown_elsewhere_leave_the_layer_only_the_centre() {
-        let (mut layer, notifications) = layer_with(2);
+        let (layer, notifications) = layer_with(2);
         notifications.show_banners_elsewhere();
         let heard = Rc::new(RefCell::new(Vec::new()));
         let tap = Rc::clone(&heard);
@@ -1460,9 +1536,12 @@ mod tests {
         notifications.answer(crate::notifications::BannerAsk::Activate(chosen));
         assert_eq!(*heard.borrow(), [Some("default".to_owned())]);
         assert_eq!(notifications.take_outcomes().len(), 1, "and still queued");
-        notifications.open_center();
-        Widget::update(&mut layer, &(), &());
-        assert!(layer.center_open(), "the centre opens on the host's word");
+        notifications.host().open_center();
+        assert_eq!(
+            notifications.take_centre_ask(),
+            Some(true),
+            "the host asks for the centre, which whoever draws it opens"
+        );
     }
 
     /// The person opened the centre to read what it holds: no banner stands over the rows it
@@ -1565,7 +1644,7 @@ mod tests {
         for interrupted in [false, true] {
             let (mut layer, notifications) = layer_with(1);
             let theme = ui::Theme::dark().with_reduce_motion(true);
-            layer.draw(
+            layer.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut ui::TextRenderer::new(),
@@ -1853,7 +1932,7 @@ mod tests {
         assert!(layer.route(&reader_key_event(NamedKey::Escape), 1.0));
         assert!(!layer.center_open());
         assert!(notifications.take_outcomes().is_empty());
-        assert!(layer.open_app.is_none());
+        assert!(notifications.take_open_app().is_none());
     }
 
     /// An ask as a host offers it: its answer, and "Not now" under it.

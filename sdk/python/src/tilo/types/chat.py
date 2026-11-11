@@ -669,34 +669,6 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("triage", report=report, update=update)
 
-    def read_workspace(self,
-        *,
-        message: str | None = None,
-        channel: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        if message is not None:
-            args["message"] = message
-        if channel is not None:
-            args["channel"] = channel
-        return self.action("read-workspace", **args)
-
-    def read_messages(self,
-        *,
-        channel: str,
-        pageSize: int | None = None,
-        cursor: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        args["channel"] = channel
-        if pageSize is not None:
-            args["pageSize"] = pageSize
-        if cursor is not None:
-            args["cursor"] = cursor
-        return self.action("read-messages", **args)
-
     def export_content(self,
         *,
         channel: str,

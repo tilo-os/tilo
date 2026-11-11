@@ -93,14 +93,13 @@ fn authorize_document_decodes_capabilities_at_most_once_per_document_state() {
         assert!(outcome.changed && outcome.rejected == 0);
     }
     assert_eq!(replica.rows(), governor.rows());
-    assert_eq!(
-        crate::workspace::POLICY_READS.with(std::cell::Cell::get),
-        1,
+    // Taking in the governance may have read it already.
+    assert!(
+        crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
         "capabilities are decoded once for the governance state, not per message"
     );
-    assert_eq!(
-        crate::cached_document::IDENTITY_DECODES.with(std::cell::Cell::get),
-        identities,
+    assert!(
+        crate::cached_document::IDENTITY_DECODES.with(std::cell::Cell::get) <= identities,
         "each identity row is decoded once for the governance state, not per message"
     );
 }
@@ -229,16 +228,21 @@ fn person_device(n: usize) -> (SigningKey, DeviceCert) {
     (key, cert)
 }
 
-/// A workspace of `people` editors and its owner, whose grants keep the first
+/// Workspace `workspace` of `people` editors and its owner, whose grants keep the first
 /// person from `named` records: the governed peer, and the people's devices.
-fn crowded_workspace(people: usize, named: usize, now: SystemTime) -> (StatePeer, Vec<DeviceCert>) {
+fn crowded_workspace(
+    workspace: &str,
+    people: usize,
+    named: usize,
+    now: SystemTime,
+) -> (StatePeer, Vec<DeviceCert>) {
     let (owner_key, owner) = person_device(people);
     let people: Vec<DeviceCert> = (0..people).map(|n| person_device(n).1).collect();
     let roster: Vec<DeviceCert> = std::iter::once(owner.clone())
         .chain(people.iter().cloned())
         .collect();
     let mut doc =
-        crate::workspace::candidate(None, &seed_workspace(WORKSPACE, &owner, &roster).unwrap())
+        crate::workspace::candidate(None, &seed_workspace(workspace, &owner, &roster).unwrap())
             .unwrap();
     let members = doc.get(ROOT, "members").unwrap().unwrap().1;
     for cert in &people {
@@ -255,7 +259,7 @@ fn crowded_workspace(people: usize, named: usize, now: SystemTime) -> (StatePeer
         let grant = Grant::new(
             format!("hidden-{n}"),
             Subject::person(hidden.as_str()),
-            collab_types::document_node(WORKSPACE, "so.tilo.chat", &format!("tab:{n}")),
+            collab_types::document_node(workspace, "so.tilo.chat", &format!("tab:{n}")),
             tilo_action_policy::KindSet::READ,
             tilo_action_policy::Answer::Deny,
             Subject::person(hex::encode(owner.user_public_key)),
@@ -272,7 +276,7 @@ fn crowded_workspace(people: usize, named: usize, now: SystemTime) -> (StatePeer
         .into_iter()
         .map(|change| change.raw_bytes().to_vec())
         .collect();
-    let mut peer = StatePeer::new(WORKSPACE, owner, roster, RevocationList::new(), now).unwrap();
+    let mut peer = StatePeer::new(workspace, owner, roster, RevocationList::new(), now).unwrap();
     peer.install_seed(
         SeedState {
             workspace_changes,
@@ -300,7 +304,7 @@ fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records(
         .checked_add(Duration::from_secs(2000))
         .unwrap();
     // The first person may not read any of the 20 records the grants name.
-    let (peer, people) = crowded_workspace(PEOPLE, 20, now);
+    let (peer, people) = crowded_workspace(WORKSPACE, PEOPLE, 20, now);
 
     let named = collab_types::document_channel_id("so.tilo.chat", WORKSPACE, "tab:0");
     let scope = collab_types::workspace_scope(WORKSPACE);
@@ -352,5 +356,80 @@ fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records(
         crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
         0,
         "each member's certificate is verified once for the governance state"
+    );
+}
+
+/// What a newcomer's page does with a workspace's governance before it shows
+/// the desktop: take in the governance its host replays, list the members and
+/// their devices, decide who reads the workspace's channels, and keep the
+/// replica with its security basis. Each row is decoded and its certificate
+/// checked once for all of these, and the whole-governance reads and replays
+/// are as many among 300 people as among 30.
+#[test]
+fn a_newcomer_reads_each_members_identity_once_however_many_people() {
+    // A workspace of its own: what was read of a workspace's last states is
+    // remembered for the whole process, and other tests reading theirs at the
+    // same time under the same name would make this one read it again.
+    const CROWDED: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    let work = |people: usize| {
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(2000))
+            .unwrap();
+        let (governor, _) = crowded_workspace(CROWDED, people, 0, now);
+        let owner = governor
+            .core
+            .certificates
+            .values()
+            .find(|cert| cert.user_public_key == governor.core.owner)
+            .unwrap()
+            .as_ref()
+            .clone();
+        let (_, newcomer) = person_device(people + 1);
+        let mut page = StatePeer::from_join(
+            CROWDED,
+            owner.clone(),
+            vec![owner.clone(), newcomer],
+            &[],
+            now,
+        )
+        .unwrap();
+        let message = governor.workspace_message();
+        let _ = crate::governance_work::take();
+        page.receive_from_report(
+            TransportOrigin::RelayDelta(owner.device_public_key),
+            message,
+            now,
+        )
+        .unwrap();
+        page.governance().governed_members(now).unwrap();
+        let access = page.governance().governed_access(now).unwrap();
+        assert_eq!(
+            access.member_devices.len(),
+            people + 1,
+            "every member's device"
+        );
+        page.governance()
+            .channel_readers(now, collab_types::workspace_scope(CROWDED), None)
+            .unwrap();
+        page.security_basis().unwrap().unwrap();
+        page.durable().unwrap();
+        crate::governance_work::take()
+    };
+    let (few, many) = (work(30), work(300));
+    for (people, work) in [(30_u64, few), (300, many)] {
+        assert_eq!(
+            work.identities_decoded,
+            people + 1,
+            "{people} people: each identity row is decoded once: {work:?}"
+        );
+        assert!(
+            work.signatures_verified <= people + 2,
+            "{people} people: each member's certificate is checked once: {work:?}"
+        );
+    }
+    assert_eq!(
+        (few.governance_reads, few.replays),
+        (many.governance_reads, many.replays),
+        "the governance is read as often among 300 people as among 30"
     );
 }

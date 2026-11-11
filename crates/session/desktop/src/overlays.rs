@@ -38,8 +38,12 @@ pub enum Slot {
     WindowMenu,
     /// The menu of the workspace in front, opened from its name on the bar.
     WorkspaceMenu,
+    /// The workspace's name on the bar, being typed: its menu's Rename turns the name into a field.
+    WorkspaceName,
     /// The menu behind the bar's Tilo mark.
     TiloMenu,
+    /// The notification centre, under the bar's trailing end.
+    Centre,
     /// The workspace overview.
     Overview,
     /// The strip ribbon and rail: which strip of the workspace, which window of the strip.
@@ -51,12 +55,14 @@ pub enum Slot {
 
 impl Slot {
     /// Every slot, topmost first.
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 10] = [
         Self::Search,
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
+        Self::WorkspaceName,
         Self::TiloMenu,
+        Self::Centre,
         Self::Overview,
         Self::Strips,
         Self::QuickSettings,
@@ -70,7 +76,9 @@ impl Slot {
             Self::Emoji => "emoji",
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
+            Self::WorkspaceName => "workspace-name",
             Self::TiloMenu => "tilo-menu",
+            Self::Centre => "centre",
             Self::Overview => "overview",
             Self::Strips => "strips",
             Self::QuickSettings => "quick-settings",
@@ -89,24 +97,13 @@ impl Slot {
         match self {
             Self::Search => Role::Dialog,
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
-            Self::WindowMenu | Self::WorkspaceMenu | Self::TiloMenu | Self::QuickSettings => {
-                Role::Popup
-            }
+            Self::WindowMenu
+            | Self::WorkspaceMenu
+            | Self::WorkspaceName
+            | Self::TiloMenu
+            | Self::Centre
+            | Self::QuickSettings => Role::Popup,
         }
-    }
-
-    /// Who may work the surface while it is open: a surface that takes the keyboard holds it
-    /// against everything behind it, and a press outside it closes it rather than reaching what it
-    /// covers.
-    #[must_use]
-    pub const fn modality(self) -> Modality {
-        Modality::WindowModal
-    }
-
-    /// Whose surface this is.
-    #[must_use]
-    pub const fn owner(self) -> Owner {
-        Owner::Shell
     }
 
     /// Whether the surface stands over the desk beside others: a menu, a popover, the strip labels,
@@ -124,8 +121,8 @@ impl Slot {
             Self::Overview | Self::Strips => Anchor::Fill,
             Self::Search | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
-            Self::WorkspaceMenu | Self::TiloMenu => Anchor::TopLeading(0.0),
-            Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
+            Self::WorkspaceMenu | Self::WorkspaceName | Self::TiloMenu => Anchor::TopLeading(0.0),
+            Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
         }
     }
 
@@ -137,6 +134,11 @@ impl Slot {
             Self::QuickSettings => Size {
                 width: Some(POPOVER_WIDTH),
                 height: Some(POPOVER_HEIGHT),
+            },
+            // As tall as its rows, down to the display's margin.
+            Self::Centre => Size {
+                width: Some(POPOVER_WIDTH),
+                height: None,
             },
             _ => Size {
                 width: None,
@@ -171,12 +173,13 @@ pub struct Size {
 /// The width of a popover hanging under the bar, logical pixels.
 pub const POPOVER_WIDTH: f64 = 380.0;
 
-/// The height of a popover hanging under the bar: its footprint, which no page it shows moves. What
-/// a page has beyond it scrolls inside it.
+/// The most height a popover hanging under the bar takes: it is as tall as the page it shows up to
+/// this, and what a page has beyond it scrolls inside it.
 pub const POPOVER_HEIGHT: f64 = 640.0;
 
-/// The gap between a popover and the edges of its display.
-pub const POPOVER_MARGIN: f64 = 8.0;
+/// The gap between a popover and the edges of its display: the same corner margin the banner stack
+/// and the notification centre keep, so the three line up on one trailing edge.
+pub const POPOVER_MARGIN: f64 = tilo_desktop_surface::notifications::CORNER_INSET;
 
 /// The kind of thing a surface is: what the person sees standing over the desktop. The kind fixes
 /// how Escape and a press outside it answer, how assistive technology hears it and whether it
@@ -189,13 +192,6 @@ pub enum Role {
     Overlay,
     /// A sheet a person asked for and works in.
     Dialog,
-    /// A picker on another process's behalf, asked through the portal; the app that asked is
-    /// waiting on the answer.
-    Picker,
-    /// A question that *is* the grant: it asks the person, who alone may answer it.
-    Consent,
-    /// A short, self-dismissing message. It takes no input.
-    Toast,
 }
 
 impl Role {
@@ -206,22 +202,18 @@ impl Role {
             Self::Popup => "popup",
             Self::Overlay => "overlay",
             Self::Dialog => "dialog",
-            Self::Picker => "picker",
-            Self::Consent => "consent",
-            Self::Toast => "toast",
         }
     }
 
-    /// Whether Escape closes a surface of this kind: a menu, a sheet and a
-    /// picker do. An overlay answers Escape only if its own model says so,
-    /// and a consent question never closes as a side effect — it answers.
+    /// Whether Escape closes a surface of this kind: a menu and a sheet do. An overlay answers
+    /// Escape only if its own model says so.
     #[must_use]
     pub const fn closes_on_escape(self) -> bool {
-        matches!(self, Self::Popup | Self::Dialog | Self::Picker)
+        matches!(self, Self::Popup | Self::Dialog)
     }
 
-    /// Whether a press outside a surface of this kind closes it. A popup does; an overlay, a sheet,
-    /// a picker and a consent question stay until they are answered.
+    /// Whether a press outside a surface of this kind closes it. A popup does; an overlay and a
+    /// sheet stay until they are answered.
     #[must_use]
     pub const fn closes_on_press_outside(self) -> bool {
         matches!(self, Self::Popup)
@@ -238,9 +230,8 @@ pub enum Anchor {
     TopTrailing(f64),
     /// Hanging from the display's top bar, against its leading edge.
     TopLeading(f64),
-    /// Bottom centre, unless that would cover `caret` .
-    BottomCenter(Option<Rect>),
-    /// Beside `at` : `gap` clear of it, on the side with room.
+    /// At the caret `at` : `gap` clear of the line it sits on, below that line while the room
+    /// there holds the surface and above it otherwise.
     Beside { at: Rect, gap: f64 },
     /// Over the thing it acts on. The surface's own view places itself.
     At(Point),
@@ -256,17 +247,13 @@ impl Anchor {
         match *self {
             Self::Beside { at, .. } => Some(at),
             Self::At(point) => Some(Rect::new(point.x, point.y, point.x, point.y)),
-            Self::Center
-            | Self::TopTrailing(_)
-            | Self::TopLeading(_)
-            | Self::BottomCenter(_)
-            | Self::Fill => None,
+            Self::Center | Self::TopTrailing(_) | Self::TopLeading(_) | Self::Fill => None,
         }
     }
 
     /// The anchor as a verb spells it, and as a reading gives it back:
     /// `center`, `fill`, `top-trailing:8`, `top-leading:0`,
-    /// `bottom-center:x0,y0,x1,y1`, `beside:x0,y0,x1,y1,gap`, `at:x,y`.
+    /// `beside:x0,y0,x1,y1,gap`, `at:x,y`.
     #[must_use]
     pub fn as_str(&self) -> String {
         fn numbers(values: &[f64]) -> String {
@@ -281,10 +268,6 @@ impl Anchor {
             Self::Fill => "fill".into(),
             Self::TopTrailing(gap) => format!("top-trailing:{gap}"),
             Self::TopLeading(gap) => format!("top-leading:{gap}"),
-            Self::BottomCenter(None) => "bottom-center".into(),
-            Self::BottomCenter(Some(at)) => {
-                format!("bottom-center:{}", numbers(&[at.x0, at.y0, at.x1, at.y1]))
-            }
             Self::Beside { at, gap } => {
                 format!("beside:{}", numbers(&[at.x0, at.y0, at.x1, at.y1, gap]))
             }
@@ -311,11 +294,6 @@ impl Anchor {
             "fill" => Some(Self::Fill),
             "top-trailing" => Some(Self::TopTrailing(rest.trim().parse().ok()?)),
             "top-leading" => Some(Self::TopLeading(rest.trim().parse().ok()?)),
-            "bottom-center" => match numbers(rest)?.as_slice() {
-                [] => Some(Self::BottomCenter(None)),
-                &[x0, y0, x1, y1] => Some(Self::BottomCenter(Some(Rect::new(x0, y0, x1, y1)))),
-                _ => None,
-            },
             "beside" => match numbers(rest)?.as_slice() {
                 &[x0, y0, x1, y1, gap] => Some(Self::Beside {
                     at: Rect::new(x0, y0, x1, y1),
@@ -328,95 +306,6 @@ impl Anchor {
                 _ => None,
             },
             _ => None,
-        }
-    }
-}
-
-/// Who may work a surface while it is open.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Modality {
-    /// Shares the desktop with everything else; what it does not use goes on to what is below. It
-    /// never takes the keyboard.
-    Passive,
-    /// Everything behind it is inert while it is up, and it takes the keyboard: a menu, a picker, a
-    /// panel a press outside closes.
-    WindowModal,
-    /// Nothing behind it is reachable at all, and the person cannot leave the surface by accident:
-    /// a consent question, first-use setup.
-    SystemModal,
-}
-
-impl Modality {
-    /// The modality's name, as a reading spells it.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Passive => "passive",
-            Self::WindowModal => "window-modal",
-            Self::SystemModal => "system-modal",
-        }
-    }
-
-    /// Whether a surface this modal takes the keyboard from what is behind it. A passive surface
-    /// never does.
-    #[must_use]
-    pub const fn takes_keyboard(self) -> bool {
-        !matches!(self, Self::Passive)
-    }
-}
-
-/// Whose surface it is: who is told about its outcome, and whose frame it is counted in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Owner {
-    /// The compositor's own chrome: its menus, quick settings.
-    Shell,
-    /// One app's surface, which is that app's public way of asking.
-    App(String),
-    /// A portal request from `caller` , which waits for the answer.
-    Portal(String),
-}
-
-impl Owner {
-    /// The owner's name, as a reading spells it.
-    #[must_use]
-    pub fn as_str(&self) -> String {
-        match self {
-            Self::Shell => "shell".into(),
-            Self::App(app) => format!("app:{app}"),
-            Self::Portal(caller) => format!("portal:{caller}"),
-        }
-    }
-}
-
-/// Where a surface is in its life.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Lifecycle {
-    /// Asked for, and not yet on screen.
-    Requested,
-    /// On screen, and taking input.
-    Shown,
-    /// On its way out; it takes no input.
-    Closing,
-    /// Closed. What opened it holds the keyboard again.
-    Closed,
-}
-
-impl Lifecycle {
-    /// The state of a surface that is open or not; the stack keeps no exit motion and no consent
-    /// that waits to be told.
-    #[must_use]
-    pub const fn of(open: bool) -> Self {
-        if open { Self::Shown } else { Self::Closed }
-    }
-
-    /// The state's name, as a reading spells it.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Requested => "requested",
-            Self::Shown => "shown",
-            Self::Closing => "closing",
-            Self::Closed => "closed",
         }
     }
 }
@@ -457,12 +346,9 @@ pub struct Entry {
     pub role: Role,
     pub anchor: Anchor,
     pub size: Size,
-    pub modality: Modality,
-    pub owner: Owner,
-    pub lifecycle: Lifecycle,
-    /// The rect the host places it at, when the anchor and its size settle one. A surface its own
+    /// The room the host places it in, when the anchor and its size settle one. A surface its own
     /// view places has none.
-    pub place: Option<Rect>,
+    pub place: Option<Standing>,
 }
 
 /// One slot's state in the stack.
@@ -510,9 +396,22 @@ impl Displays {
     }
 }
 
+/// Where the stack stands a surface it places: the room the surface may take on its display, and
+/// the edge of that room its content rests against as it fits inside.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Standing {
+    /// The room the surface may take: it fills it along the edges its anchor pins, and is as big as
+    /// its own content inside it.
+    pub room: Rect,
+    /// Whether its content rests against the room's bottom edge: a surface opened above the caret
+    /// it edits hangs by its bottom there, so a page shorter than the room stands clear of the
+    /// caret's line instead of at the top of the room.
+    pub rests_at_bottom: bool,
+}
+
 /// Where a surface stands on `display` , from its anchor and the room its size leaves; `None` for a
 /// surface its own view places, or one whose size and anchor do not settle a rect.
-fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
+pub(crate) fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Standing> {
     // The bar hangs above a surface anchored to the top edge.
     let top = display.y0 + f64::from(TOPBAR_HEIGHT_PX).ceil();
     let margin = POPOVER_MARGIN;
@@ -520,6 +419,9 @@ fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
         .width
         .unwrap_or_else(|| (display.width() - 2.0 * margin).max(1.0));
     let height = size.height;
+    // Only a surface opened at a caret may hang by the room's bottom edge: every other one is
+    // placed by its anchor and rests at the room's top, or fills it.
+    let mut rests_at_bottom = false;
     let rect = match anchor {
         Anchor::TopTrailing(gap) => {
             let x1 = display.x1 - gap;
@@ -549,31 +451,38 @@ fn place_on(display: Rect, anchor: Anchor, size: Size) -> Option<Rect> {
             )
         }
         Anchor::Fill => display,
-        Anchor::BottomCenter(caret) => {
-            let height = height?;
-            let center = caret.map_or_else(|| display.center().x, |caret| caret.x1);
-            let y1 = display.y1 - margin;
-            Rect::new(center - width / 2.0, y1 - height, center + width / 2.0, y1)
-        }
-        // Beside the rect it was opened on: the side with room wins, and the surface never overlaps
-        // it.
+        // Beside the rect it was opened on, clear of the line the person edits: the surface takes
+        // the room below that line while that holds as much as it may be, and while it is the
+        // roomier side; above the line only when it is the roomier side and the room below cannot
+        // hold the surface whole. Either way it never covers the line.
         Anchor::Beside { at, gap } => {
             let x0 = if at.x1 + gap + width <= display.x1 - margin {
                 at.x1 + gap
             } else {
                 (at.x0 - gap - width).max(display.x0 + margin)
             };
-            let height = height.unwrap_or_else(|| (display.y1 - margin - at.y0).max(1.0));
-            let y0 = at
-                .y0
-                .min(display.y1 - margin - height)
-                .max(display.y0 + margin);
-            Rect::new(x0, y0, x0 + width, y0 + height)
+            let (top, bottom) = (display.y0 + margin, display.y1 - margin);
+            let below = (at.y1 + gap).max(top);
+            let above = (at.y0 - gap).min(bottom);
+            let wanted = height.unwrap_or_else(|| (bottom - top).max(1.0));
+            let room_below = (bottom - below).max(0.0);
+            let room_above = (above - top).max(0.0);
+            if room_below >= wanted || room_below >= room_above {
+                Rect::new(x0, below, x0 + width, below + room_below.min(wanted))
+            } else {
+                // It hangs by its bottom edge from the room's, so a page shorter than the room
+                // stands just clear of the caret's line.
+                rests_at_bottom = true;
+                Rect::new(x0, above - room_above.min(wanted), x0 + width, above)
+            }
         }
         // Over the thing it acts on: the view decides its own card.
         Anchor::At(_) => return None,
     };
-    Some(rect)
+    Some(Standing {
+        room: rect,
+        rests_at_bottom,
+    })
 }
 
 /// The overlays over the windows, shared between the session's loop, the keys it answers and the
@@ -623,16 +532,41 @@ impl Overlays {
         self.0.borrow().displays.caret
     }
 
+    /// Where the surface standing in `slot` was last seen, as its app drew it: the size a panel
+    /// that fits its content asked for, which is shorter than the room when its page is.
+    #[must_use]
+    pub fn surface(&self, slot: Slot) -> Option<Rect> {
+        self.0
+            .borrow()
+            .slots
+            .get(&slot)
+            .and_then(|state| state.stands)
+    }
+
     /// Put `slot` up, standing at `anchor` or where the slot stands by itself.
     /// One anchored surface at a time: the person looks at the one they just opened, so the others
     /// go down with it. Their widgets follow the stack ([`Self::is_open`]), which is how the chrome
     /// learns to close them.
     pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
+        self.raise(slot, anchor, false);
+    }
+
+    /// Put `slot` up over the surface the person types in, standing at `anchor`: what is opened
+    /// for that field (the clipboard, to paste into it) leaves the field's surface up under it,
+    /// takes the keyboard from it while it stands, and gives it back as it goes. Every other
+    /// anchored surface goes down, as [`Self::open`] takes them.
+    pub fn open_over(&self, slot: Slot, anchor: Option<Anchor>) {
+        self.raise(slot, anchor, true);
+    }
+
+    fn raise(&self, slot: Slot, anchor: Option<Anchor>, over: bool) {
         {
             let mut stack = self.0.borrow_mut();
+            let typed_in = over.then(|| stack.target()).flatten();
             if slot.stands_beside() {
                 for other in Slot::ALL {
                     if other != slot
+                        && Some(other) != typed_in
                         && other.stands_beside()
                         && let Some(state) = stack.slots.get_mut(&other)
                         && state.open
@@ -647,6 +581,11 @@ impl Overlays {
             state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
             state.dismissed = false;
             state.awaiting_close = false;
+            if over {
+                stack.over = Some(slot);
+            } else if stack.over == Some(slot) {
+                stack.over = None;
+            }
         }
         self.woke();
     }
@@ -751,16 +690,22 @@ impl Overlays {
     /// back.
     #[must_use]
     pub fn target(&self) -> Target {
-        let stack = self.0.borrow();
-        Slot::ALL
-            .into_iter()
-            .find(|slot| stack.is_shown(*slot) && slot.modality().takes_keyboard())
+        self.0
+            .borrow()
+            .target()
             .map_or(Target::Window, Target::Surface)
     }
 
-    /// Where `slot` stands now, if its anchor and size settle a rect the host can place it at.
+    /// The surface opened over the one the person types in ([`Self::open_over`]), while it stands:
+    /// it holds the keyboard whatever stands under it.
     #[must_use]
-    pub fn place(&self, slot: Slot) -> Option<Rect> {
+    pub fn over(&self) -> Option<Slot> {
+        self.0.borrow().over()
+    }
+
+    /// Where `slot` stands now, if its anchor and size settle a room the host can place it in.
+    #[must_use]
+    pub fn place(&self, slot: Slot) -> Option<Standing> {
         self.0.borrow().entry(slot).and_then(|entry| entry.place)
     }
 
@@ -800,7 +745,10 @@ impl Overlays {
             };
             let place = match state.stands {
                 Some(place) => Some(place),
-                None if slot.session_closes() => stack.entry(*slot).and_then(|entry| entry.place),
+                None if slot.session_closes() => stack
+                    .entry(*slot)
+                    .and_then(|entry| entry.place)
+                    .map(|standing| standing.room),
                 None => None,
             };
             place.is_some_and(|place| !place.contains(Point::new(x, y)))
@@ -813,6 +761,9 @@ impl Overlays {
 struct Stack {
     slots: BTreeMap<Slot, SlotState>,
     displays: Displays,
+    /// The surface last opened over the one the person types in ([`Overlays::open_over`]): while
+    /// it is up it holds the keyboard over that surface, which stays up under it.
+    over: Option<Slot>,
     /// Whether the button of the press that dismissed something has come up,
     /// and what it asked is yet to be carried out.
     press_over: bool,
@@ -822,6 +773,18 @@ struct Stack {
 }
 
 impl Stack {
+    /// The surface that holds the keyboard: one opened over the field the person types in, else
+    /// the topmost open one that takes it.
+    fn target(&self) -> Option<Slot> {
+        self.over()
+            .or_else(|| Slot::ALL.into_iter().find(|slot| self.is_shown(*slot)))
+    }
+
+    /// The open surface opened over the one the person types in.
+    fn over(&self) -> Option<Slot> {
+        self.over.filter(|slot| self.is_shown(*slot))
+    }
+
     /// Whether `slot` is up and taking input.
     fn is_shown(&self, slot: Slot) -> bool {
         self.slots.get(&slot).is_some_and(|state| state.open)
@@ -844,9 +807,6 @@ impl Stack {
             role: slot.role(),
             anchor,
             size,
-            modality: slot.modality(),
-            owner: slot.owner(),
-            lifecycle: Lifecycle::of(true),
             place,
         })
     }
@@ -872,27 +832,14 @@ mod tests {
                 !role.as_str().is_empty() && !slot.as_str().is_empty(),
                 "{slot:?} is named"
             );
-            assert_eq!(slot.owner(), Owner::Shell, "{slot:?}");
             assert_eq!(Slot::named(slot.as_str()), Some(slot), "{slot:?}");
-            // A surface that takes the keyboard is one a press outside may close; one that never
-            // takes it is not.
-            assert!(
-                !role.closes_on_press_outside() || slot.modality().takes_keyboard(),
-                "{slot:?}: a flyout takes the keyboard while it stands"
-            );
         }
     }
 
     #[test]
     fn only_a_menu_closes_on_a_press_outside_and_escape_answers_by_kind() {
         assert!(Role::Popup.closes_on_press_outside());
-        for role in [
-            Role::Overlay,
-            Role::Dialog,
-            Role::Picker,
-            Role::Consent,
-            Role::Toast,
-        ] {
+        for role in [Role::Overlay, Role::Dialog] {
             assert!(!role.closes_on_press_outside(), "{role:?} stays");
         }
         assert!(Role::Popup.closes_on_escape() && Role::Dialog.closes_on_escape());
@@ -900,7 +847,6 @@ mod tests {
             !Role::Overlay.closes_on_escape(),
             "an overlay answers Escape only if its own model says so"
         );
-        assert!(!Role::Consent.closes_on_escape(), "a question never does");
     }
 
     #[test]
@@ -935,7 +881,7 @@ mod tests {
     fn a_popover_under_the_bars_right_end_leaves_the_margin_and_the_bar() {
         let overlays = overlays();
         overlays.open(Slot::QuickSettings, None);
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
         let bar = f64::from(TOPBAR_HEIGHT_PX).ceil();
         assert_eq!(place.x1, DISPLAY.x1 - POPOVER_MARGIN);
         assert_eq!(place.x0, DISPLAY.x1 - POPOVER_MARGIN - POPOVER_WIDTH);
@@ -963,19 +909,21 @@ mod tests {
                 gap: 4.0,
             }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(place.x0, caret.x1 + 4.0, "clear of the caret");
-        assert!(place.x0 >= caret.x1, "and never over it");
-        assert_eq!(place.width(), POPOVER_WIDTH);
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.x0, caret.x1 + 4.0, "clear of the caret");
+        assert!(standing.room.x0 >= caret.x1, "and never over it");
+        assert_eq!(standing.room.width(), POPOVER_WIDTH);
         assert_eq!(
-            place.y1,
+            standing.room.y0,
+            caret.y1 + 4.0,
+            "under the line the person types on"
+        );
+        assert_eq!(
+            standing.room.y1,
             DISPLAY.y1 - POPOVER_MARGIN,
-            "its footprint reaches the display's margin"
+            "taking the room below it, down to the display's margin"
         );
-        assert!(
-            place.y0 <= caret.y0,
-            "raised only as far as its footprint needs to stay on the display"
-        );
+        assert!(!standing.rests_at_bottom, "hanging from its top edge");
 
         // With no room on the right of the caret, it opens on the left.
         let edge = Rect::new(1200.0, 300.0, 1202.0, 320.0);
@@ -983,9 +931,53 @@ mod tests {
             Slot::QuickSettings,
             Some(Anchor::Beside { at: edge, gap: 4.0 }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(place.x1, edge.x0 - 4.0);
-        assert!(place.x1 <= edge.x0, "still clear of the caret");
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.x1, edge.x0 - 4.0);
+        assert!(standing.room.x1 <= edge.x0, "still clear of the caret");
+    }
+
+    #[test]
+    fn a_pane_at_the_caret_never_covers_the_line_the_person_edits() {
+        let overlays = overlays();
+        // Halfway down: the room below the line holds the whole pane, so it goes there.
+        let middle = Rect::new(600.0, 200.0, 602.0, 220.0);
+        overlays.open(
+            Slot::QuickSettings,
+            Some(Anchor::Beside {
+                at: middle,
+                gap: 6.0,
+            }),
+        );
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.y0, middle.y1 + 6.0, "just under the line");
+        assert_eq!(
+            standing.room.y1,
+            DISPLAY.y1 - POPOVER_MARGIN,
+            "as far down as the display's margin"
+        );
+        assert!(!standing.rests_at_bottom, "hanging from its top edge");
+        assert!(
+            standing.room.y0 >= middle.y1,
+            "the pane stands clear of the line: {:?} against {middle:?}",
+            standing.room
+        );
+
+        // Near the bottom: no room below the line holds it, so it hangs above, by its bottom edge,
+        // and still covers nothing of the line.
+        let low = Rect::new(600.0, 700.0, 602.0, 720.0);
+        overlays.open(
+            Slot::QuickSettings,
+            Some(Anchor::Beside { at: low, gap: 6.0 }),
+        );
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.y1, low.y0 - 6.0, "just over the line");
+        assert!(standing.rests_at_bottom, "hanging by its bottom edge");
+        assert_eq!(standing.room.height(), POPOVER_HEIGHT);
+        assert!(
+            standing.room.y1 <= low.y0,
+            "the pane stands clear of the line: {:?} against {low:?}",
+            standing.room
+        );
     }
 
     #[test]
@@ -1001,16 +993,16 @@ mod tests {
             Slot::QuickSettings,
             overlays.caret().map(|at| Anchor::Beside { at, gap: 6.0 }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
-        assert_eq!(place.x0, caret.x1 + 6.0, "clear of the caret");
+        let standing = overlays.place(Slot::QuickSettings).expect("placed");
+        assert_eq!(standing.room.x0, caret.x1 + 6.0, "clear of the caret");
         assert!(
-            place.y0 <= caret.y0,
-            "level with it, or raised only as far as its footprint needs"
+            standing.room.y0 >= caret.y1,
+            "under the line it types on, never over it"
         );
         assert_eq!(
-            place.height(),
-            POPOVER_HEIGHT,
-            "at the height the surface asks for"
+            standing.room.height(),
+            700.0 - POPOVER_MARGIN - caret.y1 - 6.0,
+            "the room below the line, which is less than the surface may be"
         );
     }
 
@@ -1022,7 +1014,7 @@ mod tests {
         overlays.set_displays(&[left, right], Some(left));
         // On the right display's trailing edge, though the person works on the left one.
         overlays.open(Slot::QuickSettings, Some(Anchor::TopTrailing(8.0)));
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
         assert_eq!(place.x1, left.x1 - 8.0, "the display the person works on");
 
         let caret = Rect::new(2000.0, 100.0, 2002.0, 120.0);
@@ -1033,7 +1025,7 @@ mod tests {
                 gap: 0.0,
             }),
         );
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
         assert!(
             place.x0 >= right.x0,
             "the display holding the caret it was opened from"
@@ -1065,10 +1057,41 @@ mod tests {
     }
 
     #[test]
+    fn a_surface_opened_over_the_field_typed_in_leaves_it_up_and_gives_the_keys_back() {
+        let overlays = overlays();
+        overlays.open(Slot::Search, None);
+        overlays.open_over(Slot::QuickSettings, None);
+        assert!(
+            overlays.is_open(Slot::Search),
+            "the search the clipboard was opened for stays up under it"
+        );
+        assert_eq!(overlays.target(), Target::Surface(Slot::QuickSettings));
+        assert_eq!(overlays.over(), Some(Slot::QuickSettings));
+        assert_eq!(
+            overlays.escape(),
+            Some(Slot::QuickSettings),
+            "Escape puts the clipboard away, not the search"
+        );
+        overlays.close(Slot::QuickSettings);
+        assert_eq!(overlays.over(), None);
+        assert_eq!(
+            overlays.target(),
+            Target::Surface(Slot::Search),
+            "the search has the keys back"
+        );
+
+        // Opened plainly, it stands alone.
+        overlays.open_over(Slot::QuickSettings, None);
+        overlays.open(Slot::QuickSettings, None);
+        assert!(!overlays.is_open(Slot::Search));
+        assert_eq!(overlays.over(), None);
+    }
+
+    #[test]
     fn escape_and_a_press_outside_close_the_top_menu_that_stands_where_it_is_not() {
         let overlays = overlays();
         overlays.open(Slot::QuickSettings, None);
-        let place = overlays.place(Slot::QuickSettings).expect("placed");
+        let place = overlays.place(Slot::QuickSettings).expect("placed").room;
 
         assert_eq!(overlays.escape(), Some(Slot::QuickSettings));
         assert_eq!(
@@ -1204,8 +1227,6 @@ mod tests {
             Anchor::Fill,
             Anchor::TopTrailing(8.0),
             Anchor::TopLeading(0.0),
-            Anchor::BottomCenter(None),
-            Anchor::BottomCenter(Some(Rect::new(1.0, 2.0, 3.0, 4.0))),
             Anchor::Beside {
                 at: Rect::new(600.0, 300.0, 602.0, 320.0),
                 gap: 4.0,
@@ -1234,9 +1255,6 @@ mod tests {
         );
         let overview = &entries[0];
         assert_eq!(overview.role, Role::Overlay);
-        assert_eq!(overview.modality, Modality::WindowModal);
-        assert_eq!(overview.lifecycle, Lifecycle::Shown);
-        assert_eq!(overview.owner, Owner::Shell);
         assert_eq!(overlays.target().as_str(), "overlay:overview");
     }
 }

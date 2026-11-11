@@ -1380,8 +1380,8 @@ impl Widget for Chip {
         "Chip"
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(std::borrow::Cow::Borrowed)
     }
 
     fn test_id(&self) -> Option<&str> {

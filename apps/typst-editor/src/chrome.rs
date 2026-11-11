@@ -21,6 +21,7 @@ use ui::icons::Icon;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::{Button, Widget};
 use ui::window_toolbar::{
     ToolbarAction, ToolbarEvent, ToolbarLocation, ToolbarView, ToolbarViews, WindowToolbar,
@@ -321,7 +322,7 @@ impl Chrome {
         presence: &PresenceCtx,
     ) {
         for child in self.children_mut() {
-            child.draw(scene, transform, tr, theme, presence);
+            child.draw_child(scene, transform, tr, theme, presence);
         }
     }
 

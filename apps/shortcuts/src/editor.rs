@@ -241,7 +241,8 @@ fn opened_branch(step: &Step) -> Option<&'static str> {
         | StepKind::SetVar { .. }
         | StepKind::Ask { .. }
         | StepKind::Ai { .. }
-        | StepKind::Task { .. } => None,
+        | StepKind::Task { .. }
+        | StepKind::Read { .. } => None,
     }
 }
 
@@ -312,7 +313,8 @@ pub fn step_number(steps: &[Step], id: &str) -> Option<usize> {
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
-                | StepKind::Task { .. } => None,
+                | StepKind::Task { .. }
+                | StepKind::Read { .. } => None,
             };
             if found.is_some() {
                 return found;
@@ -468,6 +470,14 @@ pub fn title(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String {
             None => prompt.clone(),
         },
         StepKind::Task { instruction, .. } => instruction.clone(),
+        StepKind::Read {
+            app,
+            record,
+            joined,
+        } => {
+            let parts = if *joined { " with its parts" } else { "" };
+            format!("Read record “{record}” of {app}{parts}")
+        }
     }
 }
 
@@ -517,6 +527,8 @@ pub fn substance(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> String
         StepKind::Task { instruction, .. } => {
             let _ = write!(line, " ({instruction:?})");
         }
+        // The heading names the record and app; nothing else is held.
+        StepKind::Read { .. } => {}
     }
     line
 }
@@ -545,7 +557,8 @@ pub fn outline(step: &Step, catalog: &ActionCatalog, steps: &[Step]) -> Vec<Stri
             | StepKind::SetVar { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
-            | StepKind::Task { .. } => {}
+            | StepKind::Task { .. }
+            | StepKind::Read { .. } => {}
         }
     }
     let mut out = Vec::new();
@@ -815,6 +828,6 @@ fn substance_text(kind: &StepKind, steps: &[Step]) -> String {
         StepKind::Ai { prompt, .. } => format!(" “{prompt}”"),
         StepKind::Task { instruction, .. } => format!(" “{instruction}”"),
         StepKind::Ask { param } => format!(" “{}”", param.description),
-        StepKind::Invoke { .. } => String::new(),
+        StepKind::Invoke { .. } | StepKind::Read { .. } => String::new(),
     }
 }

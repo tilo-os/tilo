@@ -172,6 +172,39 @@ impl HostedPumpFixture {
         self.app.pump_hosted_model_as(false)
     }
 
+    /// A settled worker whose document declares three roots.
+    fn with_three_roots(actions: usize) -> Self {
+        let mut fixture = Self::new(actions);
+        fixture.app.state.doc.put(ROOT, "more", true).unwrap();
+        fixture.wake.wake();
+        fixture.pump();
+        fixture.pump();
+        fixture
+    }
+
+    /// `query` through the broker's real queue and one owner pump: the page,
+    /// when its asker still waits for it, and what the pump did.
+    fn ask_directory(
+        &mut self,
+        query: runtime_collab::ActionDirectoryQuery,
+        waits: bool,
+    ) -> (
+        Option<runtime_collab::ActionDirectoryPage>,
+        model_lifecycle::HostedPumpReport,
+    ) {
+        let (reply, response) = tokio::sync::oneshot::channel();
+        let mut response = waits.then_some(response);
+        self.directory
+            .borrow_mut()
+            .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
+        self.wake.notify_events();
+        let report = self.pump();
+        let page = response
+            .as_mut()
+            .map(|response| response.try_recv().expect("the pump answers the request"));
+        (page, report)
+    }
+
     fn labels(&self) -> Vec<String> {
         self.app
             .actions
@@ -243,11 +276,7 @@ fn completed_view_syncs_its_local_projection_before_returning_to_idle() {
 
 #[test]
 fn hosted_pump_idle_keeps_directory_cursor() {
-    let mut fixture = HostedPumpFixture::new(1);
-    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
-    fixture.wake.wake();
-    fixture.pump();
-    fixture.pump();
+    let mut fixture = HostedPumpFixture::with_three_roots(1);
     let page = fixture
         .app
         .action_directory_page(directory_query("", "", 1, 8192, 8));
@@ -490,7 +519,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         model_lifecycle::HostedPumpReport::default()
     );
     assert_eq!(app.actions.resource_generation.get(), generation);
-    // What HostWorker::pump does with the host's recomputed authority.
+    // What a host does with its recomputed authority before a pump.
     permissions.set(crate::permissions::PermissionContext::stranger(
         "fixture-user",
     ));
@@ -617,11 +646,7 @@ fn hosted_pump_baseline_always_refreshes() {
 #[ignore = "timing measurement"]
 fn hosted_pump_cost_idle_before_after() {
     const PUMPS: u32 = 200;
-    let mut fixture = HostedPumpFixture::new(40);
-    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
-    fixture.wake.wake();
-    fixture.pump();
-    fixture.pump();
+    let mut fixture = HostedPumpFixture::with_three_roots(40);
     for (name, always) in [("baseline", true), ("dirty-tracked", false)] {
         let started = std::time::Instant::now();
         for _ in 0..PUMPS {
@@ -666,29 +691,14 @@ fn hosted_pump_action_authority_revoke_refreshes_without_forced_sync() {
 /// real queue through the owner pump, rather than calling the page helper alone.
 #[test]
 fn hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change() {
-    let mut fixture = HostedPumpFixture::new(1);
-    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
-    fixture.wake.wake();
-    fixture.pump();
-    fixture.pump();
+    let mut fixture = HostedPumpFixture::with_three_roots(1);
     let before = fixture.app.state.doc.save();
     let mut query = directory_query("", "", 1, 8192, 8);
     let mut revision = None;
     let mut rows = Vec::new();
     for _ in 0..4 {
-        let (reply, mut response) = tokio::sync::oneshot::channel();
-        fixture
-            .directory
-            .borrow_mut()
-            .push(crate::collaboration::ActionDirectoryRequest::Query {
-                query: query.clone(),
-                reply,
-            });
-        fixture.wake.notify_events();
-        let report = fixture.pump();
-        let page = response
-            .try_recv()
-            .expect("owner pump answers the actual queued request");
+        let (page, report) = fixture.ask_directory(query.clone(), true);
+        let page = page.unwrap();
         assert!(
             !page.stale_cursor,
             "metadata-only owner wakes keep consecutive pages valid"
@@ -714,15 +724,11 @@ fn hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change
         query.cursor = page.next_cursor;
     }
     assert_eq!(
-        rows.len(),
-        3,
-        "all declared roots appear once across real queue turns"
-    );
-    assert_eq!(
         rows.iter()
             .map(|row| row.resource.as_str())
             .collect::<Vec<_>>(),
-        ["probe:0", "probe:1", "probe:2"]
+        ["probe:0", "probe:1", "probe:2"],
+        "all declared roots appear once across real queue turns"
     );
     assert_eq!(fixture.app.state.doc.save(), before);
     let page = fixture
@@ -732,40 +738,38 @@ fn hosted_directory_rpc_wake_preserves_no_change_cursor_and_rejects_model_change
     *fixture.pending_label.borrow_mut() = Some("Changed".into());
     fixture.wake.wake();
     assert!(fixture.pump().synced);
-    let (reply, mut response) = tokio::sync::oneshot::channel();
     let mut query = directory_query(&page.revision, "", 1, 8192, 8);
     query.cursor = page.next_cursor;
-    fixture
-        .directory
-        .borrow_mut()
-        .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
-    fixture.wake.notify_events();
-    fixture.pump();
     assert!(
-        response.try_recv().unwrap().stale_cursor,
+        fixture.ask_directory(query, true).0.unwrap().stale_cursor,
         "a real changed model still invalidates the old cursor"
     );
 }
 
+/// A remount between pumps sets the directory aside until the next
+/// publication. A listing asked for in that gap reads the publication the
+/// pump owes, never an empty directory; once current, reads republish
+/// nothing.
+#[test]
+fn directory_rpc_after_a_remount_lists_what_is_published() {
+    let mut fixture = HostedPumpFixture::with_three_roots(1);
+    let query = || directory_query("", "", 8, 8192, 8);
+    let listed = fixture.ask_directory(query(), true).0.unwrap().rows;
+    assert_eq!(listed.len(), 3);
+    crate::host_core::HostCore::remounted(&mut fixture.app, 0);
+    assert!(fixture.app.actions.action_directory_snapshot.is_none());
+    let (page, _) = fixture.ask_directory(query(), true);
+    assert_eq!(page.unwrap().rows, listed, "a remount keeps the listing");
+    let (page, report) = fixture.ask_directory(query(), true);
+    assert_eq!(page.unwrap().rows, listed);
+    assert!(!report.published, "a current listing republishes nothing");
+}
+
 #[test]
 fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
-    let mut fixture = HostedPumpFixture::new(1);
-    fixture.app.state.doc.put(ROOT, "more", true).unwrap();
-    fixture.wake.wake();
-    fixture.pump();
-    fixture.pump();
+    let mut fixture = HostedPumpFixture::with_three_roots(1);
     let cursors = fixture.app.actions.action_directory_cursors.len();
-    let (reply, response) = tokio::sync::oneshot::channel();
-    drop(response);
-    fixture
-        .directory
-        .borrow_mut()
-        .push(crate::collaboration::ActionDirectoryRequest::Query {
-            query: directory_query("", "", 1, 8192, 8),
-            reply,
-        });
-    fixture.wake.notify_events();
-    let report = fixture.pump();
+    let (_, report) = fixture.ask_directory(directory_query("", "", 1, 8192, 8), false);
     assert!(!report.synced && !report.published);
     assert_eq!(
         fixture.app.actions.action_directory_cursors.len(),
@@ -778,44 +782,17 @@ fn cancelled_directory_rpc_does_not_consume_undelivered_cursor() {
     assert!(!page.next_cursor.is_empty());
     let mut query = directory_query(&page.revision, "", 1, 8192, 8);
     query.cursor = page.next_cursor;
-    let (reply, response) = tokio::sync::oneshot::channel();
-    drop(response);
-    fixture
-        .directory
-        .borrow_mut()
-        .push(crate::collaboration::ActionDirectoryRequest::Query {
-            query: query.clone(),
-            reply,
-        });
-    fixture.wake.notify_events();
-    let report = fixture.pump();
+    let report = fixture.ask_directory(query.clone(), false).1;
     assert!(!report.synced && !report.published);
-    let (reply, mut response) = tokio::sync::oneshot::channel();
-    fixture
-        .directory
-        .borrow_mut()
-        .push(crate::collaboration::ActionDirectoryRequest::Query {
-            query: query.clone(),
-            reply,
-        });
-    fixture.wake.notify_events();
-    fixture.pump();
-    let next = response.try_recv().unwrap();
+    let next = fixture.ask_directory(query.clone(), true).0.unwrap();
     assert!(
         !next.stale_cursor,
         "a request cancelled before owner admission must not consume the offered continuation"
     );
     assert_eq!(next.rows.len(), 1);
     assert_eq!(next.rows.first().unwrap().resource, "probe:1");
-    let (reply, mut response) = tokio::sync::oneshot::channel();
-    fixture
-        .directory
-        .borrow_mut()
-        .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
-    fixture.wake.notify_events();
-    fixture.pump();
     assert!(
-        response.try_recv().unwrap().stale_cursor,
+        fixture.ask_directory(query, true).0.unwrap().stale_cursor,
         "a delivered continuation remains strictly one-use"
     );
 }

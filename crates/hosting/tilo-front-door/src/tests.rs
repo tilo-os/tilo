@@ -33,6 +33,8 @@ pub(crate) struct Asked {
     /// `None` for a server key that lasts until revoked.
     pub expires_ms: Option<u64>,
     pub server_key: bool,
+    /// The link lets the key operate web pages in Browser.
+    pub browser_pages: bool,
     pub client: String,
 }
 
@@ -62,6 +64,7 @@ impl Asked {
                 Some("server_key") => true,
                 Some(other) => panic!("no grant kind {other}"),
             },
+            browser_pages: asked.contains_key("grant_pages"),
             client: asked["client"].clone(),
         }
     }
@@ -101,7 +104,8 @@ impl Person {
             DeviceCapabilities::server_key_grant()
         } else {
             DeviceCapabilities::agent_grant(scope)
-        };
+        }
+        .with_browser_pages(asked.browser_pages);
         self.certify_as(asked, capabilities, expires_ms)
     }
 
@@ -572,6 +576,7 @@ async fn the_grant_is_exactly_what_the_door_asked_the_person_to_certify() {
                     scope: asked.scope,
                     expires_ms: asked.expires_ms,
                     server_key: asked.server_key,
+                    browser_pages: asked.browser_pages,
                     client: asked.client.clone(),
                 };
                 alice.certify(&other, asked.scope, asked.expires_ms)
@@ -754,6 +759,59 @@ async fn poll_key(door: &Arc<Door>, poll: &str) -> (StatusCode, Value) {
 }
 
 #[tokio::test(flavor = "multi_thread")]
+async fn a_key_operates_web_pages_in_browser_unless_its_person_says_no() {
+    let alice = Person::new(1);
+    let door = door();
+
+    // Made with no answer: the certificate its person approves lets it
+    // operate web pages, and the key the door keeps says so.
+    let (poll, asked) = ask_for_key(&door, &json!({"name": "Visa backend"})).await;
+    assert!(asked.browser_pages);
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let (status, polled) = poll_key(&door, &poll).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    let token = polled["key"].as_str().unwrap().to_owned();
+    let grant = door
+        .store
+        .access(&token, tilo_clock::unix_now_ms())
+        .unwrap();
+    assert!(
+        grant.key().unwrap().cert().capabilities.browser_pages,
+        "the certificate his person signed carries it"
+    );
+    assert!(grant.browser_pages);
+    assert_eq!(
+        account::grant_row(&grant)["browser_pages"],
+        serde_json::json!(true)
+    );
+
+    // Said no: neither the certificate nor the key operates a page.
+    let (poll, asked) =
+        ask_for_key(&door, &json!({"name": "Reader", "browser_pages": false})).await;
+    assert!(!asked.browser_pages, "the person is not asked to allow it");
+    assert!(
+        answer(&door, &alice.allow(&asked))
+            .await
+            .status()
+            .is_success()
+    );
+    let (status, polled) = poll_key(&door, &poll).await;
+    assert_eq!(status, StatusCode::OK, "{polled}");
+    let token = polled["key"].as_str().unwrap().to_owned();
+    let grant = door
+        .store
+        .access(&token, tilo_clock::unix_now_ms())
+        .unwrap();
+    assert!(!grant.key().unwrap().cert().capabilities.browser_pages);
+    assert!(!grant.browser_pages);
+}
+
+#[tokio::test(flavor = "multi_thread")]
 async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     const DAY_MS: u64 = 24 * 60 * 60 * 1000;
     let alice = Person::new(1);
@@ -766,6 +824,10 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     assert_eq!(
         (asked.scope, asked.expires_ms),
         (AgentScope::AllWorkspaces, None)
+    );
+    assert!(
+        asked.browser_pages,
+        "a key made with no answer operates web pages in Browser"
     );
     assert!(
         answer(&door, &alice.allow(&asked))
@@ -802,6 +864,19 @@ async fn a_server_key_lasts_until_revoked_unless_its_person_chose_an_expiry() {
     );
     assert!(page.contains("approved on Laptop"), "{page}");
     assert!(page.contains("lasts until revoked"), "{page}");
+    // What a person reads of the scope: on the key's row, and the box the
+    // next key is made with.
+    assert!(page.contains("operates web pages in Browser"), "{page}");
+    assert!(page.contains("name=\"browser_pages\""), "{page}");
+    assert!(
+        page.contains("The key opens, fills in and clicks the page without asking you"),
+        "{page}"
+    );
+    assert!(
+        pages::key_created(&grant, "tilo_sk_secret")
+            .contains("It operates web pages in Browser; submitting a page still asks you."),
+        "the key shown once says what it may do"
+    );
     assert!(page.contains(&format!("action=\"/grants/{}/revoke\"", grant.id)));
     // Revoking it ends it.
     assert!(door.revoke_grant(&alice.id(), &grant.id).await.unwrap());
@@ -1016,7 +1091,7 @@ fn a_busy_relay_answers_rate_limited_with_its_wait() {
             tilo_relay_protocol::refusal::too_many_changes(std::time::Duration::from_millis(480))
         ),
     };
-    let relay = relay::RelayError::from(tilo_session_host::device::HostRefusal::of(&busy));
+    let relay = relay::RelayError::from(tilo_session_client::device::HostRefusal::of(&busy));
     assert_eq!(
         relay,
         relay::RelayError::RateLimited {

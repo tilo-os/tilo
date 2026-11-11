@@ -10,7 +10,6 @@
 //! workspace's file, and one file per workspace ([`open_file`]).
 //! [`enroll`] redeems an invitation with the host that issued it, and
 //! [`session`] holds the relay co-edit session with that host.
-mod application_record;
 mod certified;
 mod checkpoint;
 mod create;
@@ -22,6 +21,9 @@ pub mod enroll;
 mod enrollment;
 #[cfg(not(target_arch = "wasm32"))]
 mod file_store;
+#[cfg(test)]
+#[path = "owner/fixture_tests.rs"]
+pub(crate) mod fixture;
 #[cfg(not(target_arch = "wasm32"))]
 mod history_content;
 #[cfg(not(target_arch = "wasm32"))]
@@ -40,7 +42,6 @@ mod tests;
 mod vouched;
 mod workspace_membership;
 
-pub use application_record::{ApplicationInitialization, ApplicationRecord};
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use checkpoint::{
     CheckpointAcknowledgement, CheckpointCapture, CheckpointCompleteness, CheckpointEntry,
@@ -54,7 +55,10 @@ pub use history_content::HistoryContent;
 #[cfg(not(target_arch = "wasm32"))]
 pub use join_service::OwnerJoinWorkspaces;
 pub use limits::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
-pub use publication::{NativeOutgoing, NativeOutgoingEntry, validate_file_layout};
+pub use publication::{
+    CUSTODY_FULL, HostAnswer, NativeOutgoing, NativeOutgoingEntry, RecordWrites,
+    validate_file_layout,
+};
 pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
     StoredPendingEnrollment,
@@ -172,6 +176,9 @@ struct SharedOwner {
     mutation: Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
+    /// Who hands on what this device commits to a workspace it hosts itself
+    /// ([`NativeWorkspaceOwner::observe_kept_here`]).
+    kept_here: Mutex<Vec<Weak<dyn NativeKeptHereObserver>>>,
 }
 #[derive(Default)]
 struct Current {
@@ -196,6 +203,10 @@ pub struct NativeCommittedView {
     /// Who reads each channel, as [`Self::channel_readers`] and
     /// [`Self::unit_scope`] last answered.
     readers: Arc<std::sync::Mutex<ChannelReaders>>,
+    /// What the view's publication changes for the workspace's other devices
+    /// ([`security_digest`]), taken once: it reads every member's identity,
+    /// and the next publication compares against it.
+    security: Arc<std::sync::OnceLock<[u8; 32]>>,
 }
 /// A channel asked about, and the route of its record when the asker knows it.
 type ChannelAsked = (collab_types::ChannelId, Option<collab_types::ChannelRoute>);
@@ -225,6 +236,7 @@ impl NativeCommittedView {
             peer,
             record,
             readers: Arc::default(),
+            security: Arc::default(),
         }
     }
     /// The devices that may read `channel` at `now`
@@ -328,7 +340,7 @@ impl NativeCommittedView {
     /// Whether this device's own host orders the workspace's commits.
     #[must_use]
     pub fn hosted_here(&self) -> bool {
-        self.record.device == self.record.workspace_host
+        self.record.hosted_here()
     }
     /// Whether this device entered a workspace that existed before it: it
     /// redeemed an invitation, or a host vouched for it as a further device of
@@ -380,7 +392,11 @@ impl NativeCommittedView {
             .ok_or_else(|| "the workspace's record holds no host hint".to_owned())
     }
     fn security_digest(&self) -> Result<[u8; 32], String> {
-        security_digest(&self.peer, &self.record.device)
+        if let Some(digest) = self.security.get() {
+            return Ok(*digest);
+        }
+        let digest = security_digest(&self.peer, &self.record.device)?;
+        Ok(*self.security.get_or_init(|| digest))
     }
 }
 
@@ -391,8 +407,7 @@ impl NativeCommittedView {
 fn security_digest(peer: &StatePeer, device: &DeviceCert) -> Result<[u8; 32], String> {
     let policy = peer.validated_media_policy().ok().flatten();
     let basis = peer
-        .admitted_workspace()
-        .map(|doc| crate::workspace::media::security_basis(doc, &peer.revocations()))
+        .security_basis()
         .transpose()
         .map_err(|e| e.to_string())?;
     let bytes = postcard::to_stdvec(&(policy, basis, device)).map_err(|e| e.to_string())?;
@@ -412,7 +427,38 @@ impl<F: Fn(WorkspaceId, u64) + Send + Sync> NativeFenceObserver for F {
 pub struct NativeFenceSubscription {
     _observer: Arc<dyn NativeFenceObserver>,
 }
+
+/// Told what this device committed to a workspace it hosts itself, once per
+/// commit, after it is durable: such a workspace keeps no outgoing custody
+/// (its own device is its keeper) and holds no link to a host, so what its
+/// device writes reaches the members linked to it only through whoever is
+/// told here.
+pub trait NativeKeptHereObserver: Send + Sync {
+    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg);
+}
+impl<F: Fn(WorkspaceId, &NeighbourMsg) + Send + Sync> NativeKeptHereObserver for F {
+    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
+        self(workspace, message);
+    }
+}
+/// Retaining this token retains the observer; owner stores only a weak reference.
+pub struct NativeKeptHereSubscription {
+    _observer: Arc<dyn NativeKeptHereObserver>,
+}
 impl SharedOwner {
+    /// Tell [`NativeKeptHereObserver`]s what this device committed to
+    /// `workspace`, which it hosts itself.
+    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
+        let observers: Vec<_> = {
+            let mut observers = self.kept_here.lock();
+            let live = observers.iter().filter_map(Weak::upgrade).collect();
+            observers.retain(|observer| observer.strong_count() != 0);
+            live
+        };
+        for observer in observers {
+            observer.kept_here(workspace, message);
+        }
+    }
     fn notify(&self, workspace: WorkspaceId, continuity: u64) {
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();
@@ -478,6 +524,7 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
+            kept_here: Mutex::new(Vec::new()),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -518,6 +565,7 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
+            kept_here: Mutex::new(Vec::new()),
         })))
     }
     #[must_use]
@@ -706,6 +754,17 @@ impl NativeWorkspaceOwner {
         .unwrap_or_default()
     }
 
+    /// Be told what this device commits to a workspace it hosts itself, for as long as the
+    /// returned token is kept.
+    pub fn observe_kept_here(
+        &self,
+        observer: Arc<dyn NativeKeptHereObserver>,
+    ) -> NativeKeptHereSubscription {
+        self.0.kept_here.lock().push(Arc::downgrade(&observer));
+        NativeKeptHereSubscription {
+            _observer: observer,
+        }
+    }
     pub fn observe_fences(
         &self,
         observer: Arc<dyn NativeFenceObserver>,
@@ -807,7 +866,10 @@ impl NativeWorkspaceOwner {
             return Ok(reports);
         }
         let mut record = candidate.record.clone();
-        {
+        // One snapshot under the replica's lock, as [`Self::publish`] takes
+        // it: the durable bytes that show whether anything changed are the
+        // ones published, encoded once.
+        let snapshot = {
             let live = replica.lock();
             publication::retire(&live, &mut record)?;
             publication::retire_member_changes(&live, &mut record, &governed)?;
@@ -821,12 +883,14 @@ impl NativeWorkspaceOwner {
             if durable == record.peer && record.publication == previous_publication {
                 return Ok(reports);
             }
-        }
-        record.generation = record
-            .generation
-            .checked_add(1)
-            .ok_or("native owner generation exhausted")?;
-        self.publish(workspace, &replica, record, None)?;
+            record.peer = durable;
+            record.generation = record
+                .generation
+                .checked_add(1)
+                .ok_or("native owner generation exhausted")?;
+            Self::snapshot(&live, &mut record)?
+        };
+        self.install_snapshot(workspace, &replica, record, snapshot, None)?;
         Ok(reports)
     }
     /// The workspace changes `message` carries, from any device of the workspace: each
@@ -953,32 +1017,68 @@ impl NativeWorkspaceOwner {
         // One snapshot, taken under the replica's lock: what is published is
         // this device's copy exactly as it was made durable, never a frame a
         // link admitted after it.
-        let (published, security) = {
+        let snapshot = {
             let live = replica.lock();
             publication::refresh_governance_checkpoint(&live, &mut record)?;
             record.peer = live.durable()?;
-            // The signed root is the replica's, and the store's blocks follow
-            // it: the record mirrors it rather than deciding it, so a
-            // publication that did not reach disk still converges on the next.
-            if live.admitted_workspace().is_some() {
-                record.effect_history_root = live
-                    .workspace()
-                    .workspace_effect_history_root(&record.device)?;
-            }
-            let security = security_digest(&live, &record.device)?;
-            (live.clone(), security)
+            Self::snapshot(&live, &mut record)?
         };
+        self.install_snapshot(workspace, replica, record, snapshot, enrollment)
+    }
+
+    /// The rest of a publication's snapshot of `live`, whose durable bytes
+    /// `record` holds: the effect history root, and the replica as published.
+    fn snapshot(
+        live: &StatePeer,
+        record: &mut record::StoredWorkspace,
+    ) -> Result<StatePeer, String> {
+        // The signed root is the replica's, and the store's blocks follow
+        // it: the record mirrors it rather than deciding it, so a
+        // publication that did not reach disk still converges on the next.
+        if live.admitted_workspace().is_some() {
+            record.effect_history_root = live
+                .workspace()
+                .workspace_effect_history_root(&record.device)?;
+        }
+        Ok(live.clone())
+    }
+
+    /// Make `record` and the replica `snapshot` took durable and current.
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "fence observers are notified in order under the continuity write lock"
+    )]
+    fn install_snapshot(
+        &self,
+        workspace: WorkspaceId,
+        replica: &Replica,
+        mut record: record::StoredWorkspace,
+        published: StatePeer,
+        enrollment: Option<&StoredPendingEnrollment>,
+    ) -> Result<(), String> {
+        // What the publication changes for the workspace's other devices
+        // ([`security_digest`]), taken when a comparison needs it: it reads
+        // every member, and a replica taking in its workspace's governance
+        // for the first time changes it whatever the governance says.
+        let security = Arc::new(std::sync::OnceLock::new());
         let changed = {
             let current = self.0.current.read();
             if self.0.fenced(&current, workspace) {
                 return Err("native owner continuity is fenced".into());
             }
-            current
-                .workspaces
-                .get(&workspace)
-                .map(|old| old.security_digest().map(|digest| digest != security))
-                .transpose()?
-                .unwrap_or(true)
+            match current.workspaces.get(&workspace) {
+                None => true,
+                Some(old)
+                    if old.peer.admitted_workspace().is_some()
+                        != published.admitted_workspace().is_some() =>
+                {
+                    true
+                }
+                Some(old) => {
+                    let digest = security_digest(&published, &record.device)?;
+                    old.security_digest()? != *security.get_or_init(|| digest)
+                }
+            }
         };
         limits::preflight(&record, limits::MAX_AUTHORITY_BYTES).map_err(|e| e.to_string())?;
         if changed {
@@ -1008,6 +1108,7 @@ impl NativeWorkspaceOwner {
             peer: published,
             record,
             readers: Arc::default(),
+            security,
         });
         let continuity = candidate.continuity();
         self.0.publish(
@@ -1027,4 +1128,39 @@ impl NativeWorkspaceOwner {
             },
         )
     }
+}
+
+/// Whether the workspace took a frame in, as a device's apps read it: a write
+/// it accepted or holds already, this device's own included.
+#[must_use]
+pub fn took_in(report: &crate::AdmissionReport, retained: bool) -> bool {
+    match report.primary() {
+        crate::InputDisposition::Accepted(_) | crate::InputDisposition::Duplicate(_) => true,
+        // A host's replay of a frame this device took in before: its exact
+        // evidence is gone (a legacy state, or one folded by a compaction),
+        // so admission reports it as history it already holds. This device's
+        // apps may be new — a restarted session keeps the workspace and
+        // starts its apps empty — and the frame is part of their record: it
+        // goes to them as any other replayed frame does, and their CRDT drops
+        // what they already hold.
+        crate::InputDisposition::RetryLater(
+            crate::MissingPrerequisite::ExactHistoricalEvidence,
+        ) => retained && report.duplicate,
+        _ => false,
+    }
+}
+
+/// An app write the owner took in for this device's apps: another device's, or this device's own.
+#[derive(Clone)]
+pub struct AppWrite {
+    /// The writer's peer handle, as the write names it.
+    pub peer: u64,
+    pub app_id: String,
+    pub cluster_id: String,
+    pub record_id: String,
+    /// The author's standing in the workspace.
+    pub author: tilo_action_policy::Standing,
+    /// Whether the host replayed it from what it retains.
+    pub replayed: bool,
+    pub envelope: collab_types::SignedOp,
 }

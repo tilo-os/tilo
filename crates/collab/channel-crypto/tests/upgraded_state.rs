@@ -118,11 +118,11 @@ fn devices_upgraded_from_an_earlier_build_go_on_as_members() {
         .access_request_now(1, false, &vault())
         .unwrap()
         .unwrap();
-    first.learn_request(request, &vault()).unwrap();
+    first.learn_request(request).unwrap();
     let members: BTreeSet<Ed25519PublicKey> = [1, 2, 3, 4].into_iter().map(public).collect();
     assert!(first.reconcile_now(&members, &vault()).unwrap().changed());
     let frames: Vec<MlsGovernanceFrame> = first.outbox().to_vec();
-    first.published(&vault()).unwrap();
+    first.published();
     // As a host fans a commit out: the copy carrying join material reaches
     // only the devices it adds.
     for frame in &frames {

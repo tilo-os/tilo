@@ -1177,6 +1177,7 @@ fn line_spans(spans: &[Arc<[Span]>], number: Option<usize>) -> &[Span] {
 pub(crate) mod performance_tests {
     use super::*;
     use std::time::Instant;
+    use ui::widget::DrawChild;
 
     pub(crate) fn unique_sources() -> (String, String) {
         use std::fmt::Write as _;
@@ -1215,7 +1216,7 @@ pub(crate) mod performance_tests {
         view.place(Rect::new(0.0, 0.0, 1280.0, 800.0));
         let mut scene = Scene::new();
         let started = Instant::now();
-        view.draw(
+        view.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -1227,7 +1228,7 @@ pub(crate) mod performance_tests {
         view.scroll_to(view.max_scroll() / 2.0);
         scene.reset();
         let started = Instant::now();
-        view.draw(
+        view.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text,

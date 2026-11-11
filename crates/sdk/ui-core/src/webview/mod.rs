@@ -27,9 +27,11 @@ pub use credentials::{
     CredentialRequest,
 };
 pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
+pub mod hold;
 pub mod page;
 pub mod paint;
 pub mod text_input;
+pub use hold::{HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN};
 pub use page::{
     FormSubmit, FrameId, MAX_POINTER_STEPS, PageActor, PageChange, PageFailure, PageFieldChange,
     PageFormChange, PageKey, PageNavigation, PageRecordNote, PageReply, PageRequest, PointerButton,
@@ -597,6 +599,14 @@ pub enum WebViewCommand {
         accept: bool,
         text: Option<String>,
     },
+    /// Answer the request `id` an agent's window held
+    /// ([`WebViewEvent::HeldRequest`]): let it leave exactly once, or keep
+    /// the page as it is and drop it. Answered once: a second answer for the
+    /// same id does nothing.
+    AnswerHeldRequest {
+        id: u32,
+        allow: bool,
+    },
     SetZoomLevel(f64),
     /// Report the document's size and scroll as [`WebViewEvent::DocumentSize`]
     /// whenever they change, or stop. Off until asked: an embedder that sizes
@@ -1042,6 +1052,15 @@ pub enum WebViewEvent {
     PageDialogClosed {
         id: u32,
     },
+    /// A page an agent operates was about to send something, and holds it
+    /// for the person's answer ([`WebViewCommand::AnswerHeldRequest`]): the
+    /// page stays as it was filled and nothing leaves until then.
+    HeldRequest(HeldRequest),
+    /// The engine no longer holds `id`: the person allowed it (and it left),
+    /// the person kept the page as it was, or the page went away.
+    HeldRequestClosed {
+        id: u32,
+    },
     FindResult {
         id: u32,
         count: i32,
@@ -1309,6 +1328,18 @@ pub trait WebViewEngine: Send + Sync {
     fn accept_page_dialogs(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_page_dialogs();
+        }
+    }
+
+    /// Hold what the page is about to send, as a window an agent operates
+    /// does: every form submission, every navigation or request with a
+    /// method of its own, every download and every payment waits for the
+    /// person's answer ([`WebViewEvent::HeldRequest`],
+    /// [`WebViewCommand::AnswerHeldRequest`]). A person's own window never
+    /// holds, and an engine that cannot hold sends nothing.
+    fn hold_departures(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.hold_departures();
         }
     }
 

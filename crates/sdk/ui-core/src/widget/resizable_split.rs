@@ -21,6 +21,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 
@@ -1090,10 +1091,10 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         let blend = vello::peniko::BlendMode::default();
         scene.push_layer(fill, blend, 1.0, transform, &first);
         self.left
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         scene.pop_layer();
         scene.push_layer(fill, blend, 1.0, transform, &second);
-        self.right.draw(
+        self.right.draw_child(
             scene,
             transform * Affine::translate(offset),
             text_renderer,

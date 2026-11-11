@@ -1245,8 +1245,8 @@ fn typescript_module(app: &App, types: &Types) -> String {
     let head: Vec<&str> = head.iter().map(String::as_str).collect();
     comment_block(&mut out, &head);
     out.push('\n');
-    out.push_str("import { resourceProxy } from \"@tilo/sdk\";\n");
-    out.push_str("import type * as tilo from \"@tilo/sdk\";\n\n");
+    out.push_str("import { resourceProxy } from \"tilo-sdk\";\n");
+    out.push_str("import type * as tilo from \"tilo-sdk\";\n\n");
     for declaration in &types.declarations {
         typescript_declaration(&mut out, declaration);
     }

@@ -1,9 +1,10 @@
 //! What a surface hands the host that draws it, and what the host gives back.
 //!
-//! A surface draws its layers itself — the top bar, a panel, a sheet — as premultiplied RGBA pixels
-//! and says which parts of them changed; the host copies those parts into whatever it draws with
-//! (the Linux compositor's buffers, the page's canvas) and hands the surface the input that lands
-//! on them. Nothing here knows how the pixels were made or where they are shown.
+//! A surface draws its layers itself — the top bar, a panel, a sheet — and says which parts of them
+//! changed: as premultiplied RGBA pixels the host copies into whatever it draws with (the page's
+//! canvas, the compositor where no GPU draws), or, where a GPU draws them, into dma-bufs the host
+//! composites straight from. It hands the surface the input that lands on them. Nothing here knows
+//! how the pixels were made or where they are shown.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -16,9 +17,10 @@ use super::{
 
 /// How many pixels a side of one coverage cell is: the granularity at which a frame says what it
 /// shows.
-const CELL: u32 = 8;
+pub const CELL: u32 = 8;
 
-/// What one cell of a frame holds.
+/// What one cell of a frame holds; a surface that reads its cells on the GPU hands them over as
+/// these numbers ([`HostFrame::record_cells`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cell {
     /// Every pixel of it is transparent: nothing is shown there.
@@ -51,6 +53,34 @@ impl Coverage {
                     .unwrap_or(0)
                     .saturating_mul(usize::try_from(rows).unwrap_or(0))
             ],
+        }
+    }
+
+    /// Take the cells of `area` (frame pixels, its corner on a cell's) as a surface read them:
+    /// `cells` row by row, `area.width.div_ceil(CELL)` a row, each a [`Cell`] number.
+    fn set(&mut self, area: Region, cells: &[u8]) {
+        let columns = usize::try_from(self.columns).unwrap_or(0).max(1);
+        let first_row = (area.y / CELL) as usize;
+        let first_column = (area.x / CELL) as usize;
+        let across = area.width.div_ceil(CELL) as usize;
+        for (row, read) in cells.chunks(across.max(1)).enumerate() {
+            for (column, cell) in read.iter().enumerate() {
+                let column = first_column.saturating_add(column);
+                if column >= columns {
+                    continue;
+                }
+                let slot = first_row
+                    .saturating_add(row)
+                    .saturating_mul(columns)
+                    .saturating_add(column);
+                if let Some(held) = self.cells.get_mut(slot) {
+                    *held = match cell {
+                        0 => Cell::Empty,
+                        2 => Cell::Opaque,
+                        _ => Cell::Partly,
+                    };
+                }
+            }
         }
     }
 
@@ -238,17 +268,53 @@ fn alpha_at(pixels: &[u8], width: u32, x: u32, y: u32) -> Option<u8> {
     pixels.get(index).copied()
 }
 
+/// The dma-bufs a surface draws its frames into on the GPU: linear, one plane each, all of one
+/// size and format. The host composites the one a frame shows straight from it, as it would a
+/// client's.
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct HostBuffers {
+    /// The DRM format.
+    pub fourcc: u32,
+    /// The DRM format modifier.
+    pub modifier: u64,
+    pub buffers: Vec<HostBuffer>,
+}
+
+/// One of a surface's [`HostBuffers`].
+#[cfg(unix)]
+#[derive(Debug)]
+pub struct HostBuffer {
+    pub fd: std::os::fd::OwnedFd,
+    pub offset: u32,
+    pub stride: u32,
+}
+
+/// Where a frame drawn on the GPU stands: the buffer it shows, and the ones the host drew last,
+/// which the GPU may still be reading.
+#[cfg(unix)]
+#[derive(Debug)]
+struct OnGpu {
+    buffers: Arc<HostBuffers>,
+    shown: Option<usize>,
+    /// The buffers the host took last, newest first.
+    taken: [Option<usize>; 2],
+}
+
 /// What a frame holds besides its size: only the host that draws it and the surface that draws into
 /// it read this, each through [`HostFrame`].
 #[derive(Debug)]
 struct Held {
-    /// Premultiplied RGBA, `size.0 * 4` bytes a row.
+    /// Premultiplied RGBA, `size.0 * 4` bytes a row; nothing for a frame drawn on the GPU.
     pixels: Vec<u8>,
     /// What it shows, cell by cell; `None` for a frame a surface handed over whole, whose drawing
     /// this side has not seen.
     coverage: Option<Coverage>,
     /// The parts drawn since a host last took them.
     damage: Vec<Region>,
+    /// The buffers a frame drawn on the GPU is shown from.
+    #[cfg(unix)]
+    gpu: Option<OnGpu>,
 }
 
 /// The pixels a hosted surface shows: premultiplied RGBA, kept by the surface and taken by the host
@@ -272,8 +338,58 @@ impl HostFrame {
                 pixels: vec![0; pixels_in(size)],
                 coverage: Some(Coverage::new(size)),
                 damage: Vec::new(),
+                #[cfg(unix)]
+                gpu: None,
             })),
             size,
+        }
+    }
+
+    /// An empty frame of `size` physical pixels that a surface draws on the GPU into `buffers`
+    /// ([`Self::show_buffer`]), reading what it shows there ([`Self::record_cells`]).
+    #[cfg(unix)]
+    #[must_use]
+    pub fn on_gpu(size: (u32, u32), buffers: Arc<HostBuffers>) -> Self {
+        Self {
+            held: Arc::new(Mutex::new(Held {
+                pixels: Vec::new(),
+                coverage: Some(Coverage::new(size)),
+                damage: Vec::new(),
+                gpu: Some(OnGpu {
+                    buffers,
+                    shown: None,
+                    taken: [None; 2],
+                }),
+            })),
+            size,
+        }
+    }
+
+    /// The frame now shows buffer `index` of its [`HostBuffers`], which changed in `regions` since
+    /// the one it showed before.
+    #[cfg(unix)]
+    pub fn show_buffer(&self, index: usize, regions: &[Region]) {
+        let mut held = self.held();
+        if let Some(gpu) = held.gpu.as_mut() {
+            gpu.shown = Some(index);
+            held.damage.extend_from_slice(regions);
+        }
+    }
+
+    /// The buffers the host drew from last, which the GPU may still be reading: a surface draws
+    /// into neither.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn buffers_in_use(&self) -> [Option<usize>; 2] {
+        self.held().gpu.as_ref().map_or([None; 2], |gpu| gpu.taken)
+    }
+
+    /// What the cells of `area` (frame pixels, its corner on a cell's corner) hold now, as a
+    /// surface that draws on the GPU read them there: row by row, `area.width.div_ceil(CELL)` a
+    /// row, `0` for an empty cell, `2` for an opaque one, `1` for one partly drawn.
+    pub fn record_cells(&self, area: Region, cells: &[u8]) {
+        if let Some(coverage) = self.held().coverage.as_mut() {
+            coverage.set(area, cells);
         }
     }
 
@@ -286,6 +402,8 @@ impl HostFrame {
                 pixels,
                 coverage: None,
                 damage: vec![Region::new(0, 0, size.0, size.1)],
+                #[cfg(unix)]
+                gpu: None,
             })),
             size,
         }
@@ -375,6 +493,12 @@ impl HostFrame {
             return None;
         }
         let regions = std::mem::take(&mut held.damage);
+        #[cfg(unix)]
+        if let Some(gpu) = held.gpu.as_mut()
+            && gpu.shown != gpu.taken[0]
+        {
+            gpu.taken = [gpu.shown, gpu.taken[0]];
+        }
         Some(Changed {
             held,
             size: self.size,
@@ -409,10 +533,23 @@ pub struct Changed<'a> {
 }
 
 impl Changed<'_> {
-    /// The frame's pixels: premultiplied RGBA, `size().0 * 4` bytes a row.
+    /// The frame's pixels: premultiplied RGBA, `size().0 * 4` bytes a row; `None` for a frame drawn
+    /// on the GPU, which shows [`Self::buffer`].
     #[must_use]
-    pub fn pixels(&self) -> &[u8] {
-        &self.held.pixels
+    pub fn pixels(&self) -> Option<&[u8]> {
+        #[cfg(unix)]
+        if self.held.gpu.is_some() {
+            return None;
+        }
+        Some(&self.held.pixels)
+    }
+
+    /// The buffers of a frame drawn on the GPU, and the one it shows now.
+    #[cfg(unix)]
+    #[must_use]
+    pub fn buffer(&self) -> Option<(&Arc<HostBuffers>, usize)> {
+        let gpu = self.held.gpu.as_ref()?;
+        Some((&gpu.buffers, gpu.shown?))
     }
 
     /// The parts of the frame that changed, in its own pixels.
@@ -995,5 +1132,80 @@ mod tests {
             ["closed", "press"],
             "what it has open closes before the press reaches it"
         );
+    }
+
+    /// Three buffers, as a surface that draws on the GPU delivers its frames in: their memory is
+    /// never read here, so any file stands in for a dma-buf.
+    #[cfg(unix)]
+    fn buffers() -> Arc<HostBuffers> {
+        Arc::new(HostBuffers {
+            fourcc: 0,
+            modifier: 0,
+            buffers: (0..3)
+                .map(|_| HostBuffer {
+                    fd: std::fs::File::open("/dev/null").expect("/dev/null").into(),
+                    offset: 0,
+                    stride: 256,
+                })
+                .collect(),
+        })
+    }
+
+    /// A frame drawn on the GPU hands the host the buffer it shows and what changed, and the
+    /// surface never draws into the buffers the host drew from last, which the GPU may still be
+    /// reading.
+    #[cfg(unix)]
+    #[test]
+    fn the_host_shows_the_newest_buffer_and_the_surface_spares_the_ones_it_read() {
+        let frame = HostFrame::on_gpu(SIZE, buffers());
+        assert!(
+            frame.take_changed().is_none(),
+            "nothing drawn, nothing to show"
+        );
+        let bar = Region::new(0, 0, 64, 8);
+        frame.show_buffer(0, &[bar]);
+        let changed = frame.take_changed().expect("a frame was drawn");
+        assert_eq!(changed.pixels(), None, "its pixels stay on the GPU");
+        assert_eq!(changed.buffer().map(|(_, index)| index), Some(0));
+        assert_eq!(changed.regions(), [bar]);
+        drop(changed);
+        assert_eq!(frame.buffers_in_use(), [Some(0), None]);
+        // Two frames before the host draws again: it shows the newer, with both frames' changes.
+        let glyph = Region::new(8, 16, 8, 8);
+        frame.show_buffer(1, &[bar]);
+        frame.show_buffer(2, &[glyph]);
+        assert_eq!(frame.buffers_in_use(), [Some(0), None]);
+        let changed = frame.take_changed().expect("frames were drawn");
+        assert_eq!(changed.buffer().map(|(_, index)| index), Some(2));
+        assert_eq!(changed.regions(), [bar, glyph]);
+        drop(changed);
+        assert_eq!(
+            frame.buffers_in_use(),
+            [Some(2), Some(0)],
+            "the buffer drawn now and the one drawn before it"
+        );
+    }
+
+    /// What a frame drawn on the GPU shows is read there, cell by cell, and it says so as one drawn
+    /// in memory does: a layer costs what it draws, and nothing under its opaque part is drawn.
+    #[cfg(unix)]
+    #[test]
+    fn a_frame_drawn_on_the_gpu_shows_the_cells_read_there() {
+        let frame = HostFrame::on_gpu(SIZE, buffers());
+        assert_eq!(frame.shown(), None);
+        // A 32 by 16 area at (32, 8): its cells row by row, four a row.
+        frame.record_cells(Region::new(32, 8, 32, 16), &[2, 2, 0, 0, 2, 2, 1, 0]);
+        frame.show_buffer(0, &[Region::new(32, 8, 32, 16)]);
+        assert_eq!(frame.shown(), Some(Region::new(32, 8, 24, 16)));
+        let changed = frame.take_changed().expect("drawn");
+        assert_eq!(
+            changed.opaque(),
+            Some(vec![Region::new(32, 8, 16, 16)]),
+            "the opaque cells, merged down the rows"
+        );
+        drop(changed);
+        // The same area read again, empty now: the layer shows nothing.
+        frame.record_cells(Region::new(32, 8, 32, 16), &[0; 8]);
+        assert_eq!(frame.shown(), None);
     }
 }

@@ -32,6 +32,7 @@ fn projection_of(workspace: &crate::testing::Workspace, identity: LocalIdentity)
 }
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ui::Widget;
+use ui::headless::fixture_runner_inputs;
 
 #[test]
 fn browser_media_reply_enables_voice_without_native_attachment_access() {
@@ -456,10 +457,24 @@ fn component_mount_as(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
+    let (component, records) = component_as(cache, author, instance, workspace, role);
+    let checkout = component.record().clone();
+    let frame =
+        ui::headless::FrameHarness::from_component(component, (1280, 720), fixture_runner_inputs())
+            .unwrap();
+    (frame, records, checkout)
+}
+
+/// One mount of the workspace's Chat, not yet in a window.
+fn component_as(
+    cache: &ui::portable_storage::PortableStorage,
+    author: &str,
+    instance: u64,
+    workspace: &str,
+    role: ui::permissions::Role,
+) -> (ui::application::AppComponent, ui::record::RecordStore) {
     use std::rc::Rc;
-    use ui::application::{
-        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
-    };
+    use ui::application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 
     let cache = cache.clone();
     let definition = crate::definition();
@@ -497,19 +512,7 @@ fn component_mount_as(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let checkout = component.record().clone();
-    let font_root = ui::font_catalog::checkout_root();
-    let fonts = ui::font_catalog::FontCatalog::controlled_fixture(&font_root, "en-US");
-    let frame = ui::headless::FrameHarness::from_component(
-        component,
-        (1280, 720),
-        ComponentRunnerInputs {
-            theme: ui::Theme::dark(),
-            text_renderer: ui::TextRenderer::with_font_catalog(&fonts).unwrap(),
-        },
-    )
-    .unwrap();
-    (frame, records, checkout)
+    (component, records)
 }
 
 fn semantic_owner_path(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
@@ -1032,12 +1035,12 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     };
     let listed = messages(&agent);
     let question = listed.last().unwrap().clone();
-    let read = invoke(&mut agent, &question, "read-message", serde_json::json!({}));
-    let read = read.value.unwrap();
-    assert_eq!(read["text"], "Where does Odysseus wake up?");
-    assert_eq!(read["author"], "Visitor");
-    assert_eq!(read["agent"], false);
-    assert_eq!(read["mine"], false);
+    // An agent reads the conversation from the chat's record and its parts.
+    let asked = crate::testing::messages_in(&records, "c_chat")
+        .pop()
+        .unwrap();
+    assert_eq!(asked.text, "Where does Odysseus wake up?");
+    assert_eq!(asked.author, "Visitor");
 
     // Its work is recorded on the message itself, in the part of the
     // chat's messages that holds it.
@@ -1062,15 +1065,22 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     let reply = messages(&agent).last().unwrap().clone();
     assert_ne!(reply, question);
-    let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
-        .value
+    // The agent's work is recorded on its reply.
+    let said_text = "On Scheria, on the shore of the Phaeacians.";
+    let work = |records: &ui::record::RecordStore| {
+        let said = crate::testing::messages_in(records, "c_chat");
+        let reply = said
+            .iter()
+            .find(|message| message.text == said_text)
+            .unwrap();
+        serde_json::to_value(&reply.work).unwrap()
+    };
+    let answered = crate::testing::messages_in(&records, "c_chat")
+        .pop()
         .unwrap();
-    assert_eq!(read["author"], "agent-task:reading");
-    assert_eq!(read["text"], "On Scheria, on the shore of the Phaeacians.");
-    assert_eq!(read["authorName"], "Reading agent");
-    assert_eq!(read["agent"], true);
-    assert_eq!(read["work"]["state"]["state"], "done");
-    assert_eq!(read["work"]["trace"][0]["label"], "Add note");
+    assert_eq!(answered.text, said_text);
+    assert_eq!(work(&records)["state"]["state"], "done");
+    assert_eq!(work(&records)["trace"][0]["label"], "Add note");
 
     let (author, agents) = records
         .read(&checkout.id, |doc| {
@@ -1103,11 +1113,9 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         serde_json::json!({"work": {"state": "refused"}}),
     );
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
-    let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
-        .value
-        .unwrap();
     assert_eq!(
-        read["work"]["state"]["state"], "done",
+        work(&records)["state"]["state"],
+        "done",
         "a person cannot rewrite an agent's work"
     );
     visitor.close_components();
@@ -1775,4 +1783,46 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
         })
         .unwrap();
     assert!(opened, "the page opened the workspace's chat");
+}
+
+/// A Chat with no window publishes what a window of it does: its resource's
+/// actions and the effects its view answers (send, open an agent).
+#[test]
+fn a_chat_with_no_window_publishes_what_a_window_of_it_does() {
+    let cache = ui::portable_storage::PortableStorage::new("unshown", "device").unwrap();
+    let (component, _) = component_as(
+        &cache,
+        "author",
+        1,
+        "workspace",
+        ui::permissions::Role::Owner,
+    );
+    let mut app = ui::App::from_component(component, fixture_runner_inputs()).unwrap();
+    let catalogue = |app: &mut ui::App| {
+        for _ in 0..3 {
+            app.controlled_hosted_model_for_test();
+        }
+        let mut actions: Vec<String> = app
+            .collect_resources()
+            .iter()
+            .flat_map(|resource| {
+                (resource.actions.iter()).map(|action| format!("{}#{}", resource.kind, action.id))
+            })
+            .collect();
+        actions.sort();
+        actions
+    };
+    let unshown = catalogue(&mut app);
+    for effect in ["chat.workspace#send", "chat.workspace#open-agent"] {
+        assert!(
+            unshown.iter().any(|action| action == effect),
+            "{effect} in {unshown:?}"
+        );
+    }
+    app.init_layout();
+    assert_eq!(
+        unshown,
+        catalogue(&mut app),
+        "a window of it publishes the same"
+    );
 }

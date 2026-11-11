@@ -822,6 +822,16 @@ pub(crate) fn build_root<A: ResourceApp>(
     build_root_from::<A>(reader, editing, storage, hosted, super::Source::Document)
 }
 
+/// [`ResourceApp::label`] of `state`, the name the app gives the resource as
+/// it stands: what a root publishes whenever it publishes a state, so the
+/// name follows the resource (a library of one book is "1 books" as soon as
+/// the book is shelved) rather than the state the window opened on.
+fn live_label<A: ResourceApp>(state: &dyn std::any::Any) -> String {
+    state
+        .downcast_ref::<<A::Resource as Resource>::State>()
+        .map_or_else(<A::Resource as Resource>::label, A::label)
+}
+
 /// [`build_root`] over `source`: the app's own document, or the session's
 /// document host over the app's one connection (`one-app-model.md` §4).
 pub(crate) fn build_root_from<A: ResourceApp>(
@@ -864,6 +874,9 @@ pub(crate) fn build_root_from<A: ResourceApp>(
     } else {
         dispatch
     };
+    // The name the app gives the record it opened: the first publication
+    // names it by the state it holds then, and every one after by its own.
+    dispatch.name_resource(&label);
     // A window someone uses opens the records the app keeps beside its own,
     // so they are published before any view shows them.
     if permissions.is_some() {
@@ -890,7 +903,7 @@ pub(crate) fn build_root_from<A: ResourceApp>(
         _ => A::view(&mut cx),
     };
     let live = permissions.is_some();
-    let mut root = ResourceRoot::new(app.title(), icon(app), label, cx, alive, content)
+    let mut root = ResourceRoot::new(app.title(), icon(app), live_label::<A>, cx, alive, content)
         .following(permissions, scope)
         .with_presentation((app.local_operations)());
     // A window shown over other apps' content paints no ground of its own:
@@ -1299,6 +1312,11 @@ fn create_component(
 ) -> Result<AppComponent, LaunchError> {
     if let Some(catalog) = (app.catalog)() {
         catalog.ensure();
+    } else {
+        // A window with no catalogue of its own — a sheet of the frames, a system menu — still
+        // speaks the person's language: the toolkit's own labels are part of every window, and on
+        // a thread with no catalogue yet they install it in the desktop's language.
+        ui_core::i18n::I18nManager::register_widget_messages();
     }
     // The workspace's record is being read off the frame: the window shows what the app shows
     // before it, and opens as below once the record is had.

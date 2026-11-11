@@ -26,6 +26,7 @@ use crate::permissions::UserId;
 use crate::presence::{ParticipantKind, PresenceCtx};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::completion::{CompletionSource, Tier};
 use crate::widget::marks::{Mark, MarkSpan};
 use crate::widget::mention_picker::{self, MentionCandidate};
@@ -107,7 +108,7 @@ struct DrawerPeople {
     speakers: Vec<Person>,
     members: Vec<Person>,
     /// The kind and colour of each, in order, as the source was built with; `None` until built.
-    built: Option<Vec<(ParticipantKind, (u8, u8, u8))>>,
+    built: Option<Vec<(ParticipantKind, crate::tokens::PresenceHue)>>,
 }
 
 impl DrawerPeople {
@@ -131,7 +132,7 @@ impl DrawerPeople {
         }
         let said = |person: &Person| {
             let user = UserId(person.identity.clone());
-            (presence.participant_kind(&user), presence.color_for(&user))
+            (presence.participant_kind(&user), presence.hue_for(&user))
         };
         let now: Vec<_> = self
             .speakers
@@ -143,12 +144,12 @@ impl DrawerPeople {
             return None;
         }
         let candidate = |person: &Person| {
-            let (kind, color) = said(person);
+            let (kind, hue) = said(person);
             mention_picker::candidate(&MentionCandidate {
                 id: person.identity.clone(),
                 name: person.name.clone(),
                 kind,
-                color,
+                hue,
                 is_self: presence.is_own_identity(&person.identity),
             })
         };
@@ -528,7 +529,8 @@ impl Decorator for RichInput {
             self.people_source = Some(source);
             self.offer();
         }
-        self.line.draw(scene, transform, text, theme, presence);
+        self.line
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     /// The field's completion drawer floats above everything, as every field's does.

@@ -14,6 +14,8 @@
     reason = "layer geometry: logical coordinates of an output and the surfaces on it, far from i32 limits"
 )]
 
+use std::time::{Duration, Instant};
+
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
@@ -30,7 +32,7 @@ use smithay::desktop::utils::{
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
+use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource};
 use smithay::utils::{Logical, Physical, Point, Rectangle, SERIAL_COUNTER, Scale, Size};
 use smithay::backend::renderer::utils::with_renderer_surface_state;
 use smithay::wayland::compositor::{get_parent, with_states};
@@ -55,7 +57,32 @@ pub(crate) struct Layers {
     /// How the session draws a surface it is moving, by the same name: one coming or going is posed
     /// here frame by frame until it rests. A name the session never posed is drawn as it stands.
     poses: std::collections::BTreeMap<String, LayerPose>,
+    /// Where the session stands a surface it places itself, by the same name: the room it may
+    /// take, in the layout's logical coordinates, whatever its anchors and margins say. It is as
+    /// big as it asks for inside that room, so a panel that fits its content resizes there, and
+    /// moving it costs its app nothing.
+    places: std::collections::BTreeMap<String, Place>,
+    /// The layer surface the session handed the keyboard to, by name, and where the keyboard was
+    /// before: it goes back there when that surface is hidden while it still holds it.
+    lent: Option<(String, Option<WlSurface>)>,
+    /// The layer surfaces the session has shown that have not yet drawn the size they asked for,
+    /// by name, when showing them gives up waiting, and the commit they must follow: the first
+    /// frame a person sees is at the size the panel fits, never a room-sized frame its app draws
+    /// before it resizes, and never one drawn before the page the session asked it for.
+    settling: std::collections::BTreeMap<String, (Instant, u64)>,
 }
+
+/// Where the session stands a layer surface it places: the room it may take in the layout's
+/// logical coordinates, and the edge of that room its content rests against as it fits inside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Place {
+    pub(crate) room: Rectangle<i32, Logical>,
+    pub(crate) rests_at_bottom: bool,
+}
+
+/// How long showing a surface waits for its app to draw at the size it asked for before it shows
+/// the frame it has: a panel that cannot resize must not stay hidden.
+const SETTLE: Duration = Duration::from_millis(500);
 
 /// One layer surface and where it is on its output.
 struct Placed {
@@ -68,6 +95,9 @@ struct Placed {
     /// Its rectangle in the logical layout, from its anchors, margins and size on the output it is
     /// on; empty before it has an output.
     rect: Rectangle<i32, Logical>,
+    /// How many frames its client has committed: what says a frame was drawn after something the
+    /// session asked it for.
+    frames: u64,
 }
 
 impl Placed {
@@ -75,6 +105,15 @@ impl Placed {
     fn has_buffer(&self) -> bool {
         with_renderer_surface_state(self.surface.wl_surface(), |state| state.buffer().is_some())
             .unwrap_or(false)
+    }
+
+    /// The logical size of the buffer its client last committed: what the person would see if the
+    /// session showed it now.
+    fn buffer_size(&self) -> Option<Size<i32, Logical>> {
+        with_renderer_surface_state(self.surface.wl_surface(), |state| {
+            state.surface_size().or_else(|| state.buffer_size())
+        })
+        .flatten()
     }
 
     /// What its client asked of it: its anchors, margins and size.
@@ -101,6 +140,9 @@ impl Layers {
             surfaces: Vec::new(),
             visibility: std::collections::BTreeMap::new(),
             poses: std::collections::BTreeMap::new(),
+            places: std::collections::BTreeMap::new(),
+            lent: None,
+            settling: std::collections::BTreeMap::new(),
         }
     }
 
@@ -129,16 +171,39 @@ impl Layers {
             .unwrap_or(true)
     }
 
-    /// Whether the person sees `placed` and input reaches it: the session shows it, and its client
-    /// has drawn it.
+    /// Whether the person sees `placed` and input reaches it: the session shows it, its client
+    /// has drawn it, and that frame is the size it asked for rather than one drawn before it
+    /// resized.
     fn visible(&self, placed: &Placed) -> bool {
-        self.shows(placed) && placed.has_buffer()
+        self.shows(placed) && !self.settling.contains_key(&placed.namespace) && placed.has_buffer()
     }
 
     /// Whether the session shows the layer surface `namespace` ; `None` when it never said, which
     /// is shown.
     fn shown(&self, namespace: &str) -> Option<bool> {
         self.visibility.get(namespace).copied()
+    }
+
+    /// When showing a surface next gives up waiting for its app to draw the size it asked for.
+    fn settle_deadline(&self) -> Option<Instant> {
+        self.settling.values().map(|(until, _)| *until).min()
+    }
+
+    /// Showing surfaces that waited too long for their app take the frame they have: whether any
+    /// gave up.
+    fn expire_settling(&mut self, now: Instant) -> bool {
+        let before = self.settling.len();
+        self.settling.retain(|_, (until, _)| *until > now);
+        self.settling.len() != before
+    }
+
+    /// How many frames the client of the layer surface `namespace` has committed: 0 before it
+    /// stands anywhere.
+    fn frames(&self, namespace: &str) -> u64 {
+        self.surfaces
+            .iter()
+            .find(|placed| placed.namespace == namespace)
+            .map_or(0, |placed| placed.frames)
     }
 
     /// Whether the client of `namespace` has drawn it: a surface shows nothing before its first
@@ -157,6 +222,13 @@ impl Layers {
     /// Whether `surface` is (part of) a layer surface's tree.
     pub(crate) fn holds(&self, surface: &WlSurface) -> bool {
         self.index_of(surface).is_some()
+    }
+
+    /// Whether `surface` is (part of) a layer surface the session shows now.
+    pub(crate) fn shows_surface(&self, surface: &WlSurface) -> bool {
+        self.index_of(surface)
+            .and_then(|index| self.surfaces.get(index))
+            .is_some_and(|placed| self.visible(placed))
     }
 
     /// The layer surfaces on `output` that `want` takes, bottom first.
@@ -193,10 +265,12 @@ impl Layers {
                 if !rect.to_f64().contains(point) {
                     return None;
                 }
-                let local = point - rect.loc.to_f64();
+                // The tree is walked from where the surface stands, so the point stays in the
+                // layout's coordinates: a surface away from the output's corner is hit where it
+                // is drawn.
                 let (surface, offset) = under_from_surface_tree(
                     placed.surface.wl_surface(),
-                    local,
+                    point,
                     rect.loc,
                     WindowSurfaceType::ALL,
                 )?;
@@ -222,6 +296,7 @@ impl State {
             output,
             layer,
             rect: Rectangle::default(),
+            frames: 0,
         });
         let index = self.layers.surfaces.len().saturating_sub(1);
         self.place_layer(index, true);
@@ -234,12 +309,19 @@ impl State {
         let Some(placed) = self.layers.surfaces.get(index) else {
             return;
         };
-        // A surface that named no output goes where the session connected its client for — the
-        // on-screen keyboard stands on the display the person types on — and on the first output
-        // otherwise.
-        let output = placed
-            .output
-            .clone()
+        let place = self.layers.places.get(&placed.namespace).copied();
+        // A surface the session places stands on the output its place is on. One that named no
+        // output goes where the session connected its client for — the on-screen keyboard stands
+        // on the display the person types on — and on the first output otherwise.
+        let output = place
+            .and_then(|place| {
+                let place = place.room.to_f64();
+                self.output_under(Point::from((
+                    place.loc.x + place.size.w / 2.0,
+                    place.loc.y + place.size.h / 2.0,
+                )))
+            })
+            .or_else(|| placed.output.clone())
             .or_else(|| self.client_output(placed.surface.wl_surface()))
             .or_else(|| self.space.outputs().next().cloned());
         let geometry = output
@@ -252,7 +334,11 @@ impl State {
         let Some(geometry) = geometry else {
             return;
         };
-        let rect = placement(&placed.request(), geometry);
+        let request = placed.request();
+        let rect = place.map_or_else(
+            || placement(&request, geometry),
+            |room| within(&request, room),
+        );
         placed.rect = rect;
         if !send {
             return;
@@ -284,7 +370,27 @@ impl State {
         let Some(index) = self.layers.index_of(surface) else {
             return;
         };
+        if let Some(placed) = self.layers.surfaces.get_mut(index) {
+            placed.frames = placed.frames.saturating_add(1);
+        }
         self.place_layer(index, true);
+        // The frame it committed is at the size its app asks for, and it was drawn after what the
+        // session last asked of it: the one the person may see.
+        let settled = self.layers.surfaces.get(index).and_then(|placed| {
+            let at_asked = placed.buffer_size().is_some_and(|size| {
+                (size.w - placed.rect.size.w).abs() <= 1 && (size.h - placed.rect.size.h).abs() <= 1
+            });
+            let after = self
+                .layers
+                .settling
+                .get(&placed.namespace)
+                .is_some_and(|(_, after)| placed.frames > *after);
+            (at_asked && after).then(|| placed.namespace.clone())
+        });
+        if let Some(namespace) = settled {
+            self.layers.settling.remove(&namespace);
+            self.mark_redraw_all();
+        }
         // Frames of a surface the session hid change nothing on the desk and take no keyboard: it
         // stands there for the opening that shows it.
         if self
@@ -299,14 +405,126 @@ impl State {
         self.mark_redraw_all();
     }
 
+    /// How many frames the client of the layer surface `namespace` has committed.
+    pub(crate) fn layer_frames(&self, namespace: &str) -> u64 {
+        self.layers.frames(namespace)
+    }
+
     /// Show the session's layer surface `namespace` , or hide it: a surface whose app the session
     /// keeps running between openings stands here without drawing, taking input or keeping room.
     pub(crate) fn set_layer_shown(&mut self, namespace: &str, shown: bool) {
+        self.set_layer_shown_after(namespace, shown, None);
+    }
+
+    /// Show the session's layer surface `namespace` only once its app has committed a frame after
+    /// the `after`th, or if it already has: the frame a person sees is drawn after the page the
+    /// session asked the app for, at the size it asked, never the one the app was left on.
+    pub(crate) fn set_layer_shown_after(
+        &mut self,
+        namespace: &str,
+        shown: bool,
+        after: Option<u64>,
+    ) {
         if self.layers.shown(namespace) == Some(shown) {
             return;
         }
         self.layers.visibility.insert(namespace.to_owned(), shown);
+        if shown && self.layers.places.contains_key(namespace) {
+            // A surface the session places fits itself: the person sees the frame its app draws
+            // once it is shown, not one drawn while it was hidden and never answered. Hold it
+            // back until that frame is the size it asked for.
+            // Only a show that names the commit it waits for can find its frame already drawn; one
+            // that names none waits for the next, as it always has.
+            let ready = after.is_some_and(|after| {
+                self.layers.surfaces.iter().any(|placed| {
+                    placed.namespace == namespace
+                        && placed.frames > after
+                        && placed.buffer_size().is_some_and(|size| {
+                            (size.w - placed.rect.size.w).abs() <= 1
+                                && (size.h - placed.rect.size.h).abs() <= 1
+                        })
+                })
+            });
+            if !ready {
+                let after = after.unwrap_or(0);
+                self.layers
+                    .settling
+                    .insert(namespace.to_owned(), (Instant::now() + SETTLE, after));
+            }
+        } else if !shown {
+            self.layers.settling.remove(namespace);
+            self.return_layer_keyboard(namespace);
+        }
         self.mark_redraw_all();
+    }
+
+    /// Hand the keyboard to the shown layer surface `namespace` , which takes it on demand: a panel
+    /// the person opened from the keyboard is worked from it at once. Where the keyboard was goes
+    /// back to it when the panel is hidden. False while no such surface stands to take it.
+    pub(crate) fn lend_layer_keyboard(&mut self, namespace: &str) -> bool {
+        if self.locked() || self.layers.shown(namespace) == Some(false) {
+            return false;
+        }
+        let Some(focus) = self
+            .layers
+            .surfaces
+            .iter()
+            .find(|placed| {
+                placed.namespace == namespace
+                    && placed.request().keyboard_interactivity != KeyboardInteractivity::None
+            })
+            .map(|placed| placed.surface.wl_surface().clone())
+        else {
+            return false;
+        };
+        self.lend_keyboard_to(namespace, focus)
+    }
+
+    /// Give the keyboard to the layer surface `focus` of `namespace` , remembering where it was:
+    /// whether the panel was opened from the keyboard or pressed, the field the person was typing
+    /// in has it back when the panel goes. A surface lent it already keeps where it came from.
+    fn lend_keyboard_to(&mut self, namespace: &str, focus: WlSurface) -> bool {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return false;
+        };
+        let before = keyboard.current_focus();
+        if before.as_ref() == Some(&focus) {
+            return true;
+        }
+        if self
+            .layers
+            .lent
+            .as_ref()
+            .is_none_or(|(lent_to, _)| lent_to != namespace)
+        {
+            self.layers.lent = Some((namespace.to_owned(), before));
+        }
+        keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
+        true
+    }
+
+    /// The layer surface `namespace` is put away: the keyboard it was lent goes back where it was,
+    /// when it still holds it and that is still there.
+    pub(crate) fn return_layer_keyboard(&mut self, namespace: &str) {
+        let Some((lent_to, before)) = self.layers.lent.take() else {
+            return;
+        };
+        if lent_to != namespace {
+            self.layers.lent = Some((lent_to, before));
+            return;
+        }
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return;
+        };
+        let holds = keyboard.current_focus().is_some_and(|focus| {
+            self.layers.surfaces.iter().any(|placed| {
+                placed.namespace == namespace && *placed.surface.wl_surface() == focus
+            })
+        });
+        if holds {
+            let back = before.filter(Resource::is_alive);
+            keyboard.set_focus(self, back, SERIAL_COUNTER.next_serial());
+        }
     }
 
     /// Whether the session shows the layer surface `namespace`, or hid it;
@@ -339,6 +557,64 @@ impl State {
         self.mark_redraw_all();
     }
 
+    /// Stand the session's layer surface `namespace` in `room` (logical layout coordinates), as big
+    /// as it asks for inside it, whatever its own anchors and margins say; `None` gives it back to
+    /// them. Moving it, or giving it less room, is a configure, not a new surface.
+    pub(crate) fn place_layer_in(&mut self, namespace: &str, room: Option<Place>) {
+        let changed = match room {
+            Some(room) => self.layers.places.insert(namespace.to_owned(), room) != Some(room),
+            None => self.layers.places.remove(namespace).is_some(),
+        };
+        if !changed {
+            return;
+        }
+        for index in 0..self.layers.surfaces.len() {
+            if self
+                .layers
+                .surfaces
+                .get(index)
+                .is_some_and(|placed| placed.namespace == namespace)
+            {
+                self.place_layer(index, true);
+            }
+        }
+        self.mark_redraw_all();
+    }
+
+    /// Where the session's layer surface `namespace` stands now, in logical layout coordinates:
+    /// the size its app asked for inside the room it was given. `None` before it stands anywhere.
+    pub(crate) fn layer_rect(&self, namespace: &str) -> Option<Rectangle<i32, Logical>> {
+        self.layers
+            .surfaces
+            .iter()
+            .find(|placed| placed.namespace == namespace && placed.output.is_some())
+            .map(|placed| placed.rect)
+            .filter(|rect| rect.size.w > 0 && rect.size.h > 0)
+    }
+
+    /// Whether the person sees the layer surface `namespace` and input reaches it.
+    pub(crate) fn layer_visible(&self, namespace: &str) -> bool {
+        self.layers
+            .surfaces
+            .iter()
+            .find(|placed| placed.namespace == namespace)
+            .is_some_and(|placed| self.layers.visible(placed))
+    }
+
+    /// When showing a layer surface next takes the frame its app has, whether or not it resized:
+    /// the loop wakes then so a panel that could not resize is still shown.
+    pub(crate) fn layer_settle_deadline(&self) -> Option<Instant> {
+        self.layers.settle_deadline()
+    }
+
+    /// Showing surfaces that waited too long for a frame at the size they asked for take the one
+    /// they have.
+    pub(crate) fn expire_layer_settling(&mut self, now: Instant) {
+        if self.layers.expire_settling(now) {
+            self.mark_redraw_all();
+        }
+    }
+
     /// Place every layer surface again: an output came, went or changed.
     pub(crate) fn place_layers(&mut self) {
         for index in 0..self.layers.surfaces.len() {
@@ -366,11 +642,28 @@ impl State {
         let Some(index) = self.layers.index_of(surface) else {
             return;
         };
+        // The keyboard it was lent goes back where it was before it goes.
+        if let Some(namespace) = self
+            .layers
+            .surfaces
+            .get(index)
+            .map(|placed| placed.namespace.clone())
+        {
+            self.return_layer_keyboard(&namespace);
+        }
         let root = self
             .layers
             .surfaces
             .get(index)
             .map(|placed| placed.surface.wl_surface().clone());
+        if let Some(namespace) = self
+            .layers
+            .surfaces
+            .get(index)
+            .map(|placed| placed.namespace.clone())
+        {
+            self.layers.settling.remove(&namespace);
+        }
         self.layers.surfaces.remove(index);
         if let Some(root) = root
             && self
@@ -426,10 +719,11 @@ impl State {
         if placed.request().keyboard_interactivity != KeyboardInteractivity::OnDemand {
             return;
         }
-        let focus = placed.surface.wl_surface().clone();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
-        }
+        let (namespace, focus) = (
+            placed.namespace.clone(),
+            placed.surface.wl_surface().clone(),
+        );
+        self.lend_keyboard_to(&namespace, focus);
     }
 
     /// The output whose rectangle holds `point` .
@@ -621,6 +915,25 @@ impl State {
     }
 }
 
+/// Where a surface asking `request` stands in the `room` the session gave it: against the edge of
+/// that room it rests on, as big as it asks for inside it, and the whole of it on an axis it names
+/// no size for.
+fn within(request: &LayerSurfaceCachedState, room: Place) -> Rectangle<i32, Logical> {
+    let side = |asked: i32, room: i32| if asked > 0 { asked.min(room) } else { room };
+    let extent = Size::from((
+        side(request.size.w, room.room.size.w),
+        side(request.size.h, room.room.size.h),
+    ));
+    // A surface that hangs by the room's bottom edge keeps its own height clear of what it was
+    // opened against: a page shorter than the room stands near that edge, not at the far one.
+    let y = if room.rests_at_bottom {
+        room.room.loc.y + room.room.size.h - extent.h
+    } else {
+        room.room.loc.y
+    };
+    Rectangle::new((room.room.loc.x, y).into(), extent)
+}
+
 /// Where a surface asking `request` of `output` is put: the edges it is anchored to keep it at the
 /// margin, both edges of an axis stretch it between them, and one edge with a size of its own keeps
 /// that size there.
@@ -765,6 +1078,42 @@ mod tests {
             output(),
         );
         assert_eq!(low.loc, Point::from((1000 - 300 - 10, 800 - 200 - 20)));
+    }
+
+    /// A popover the session places stands at its room's corner whatever its anchors say, as tall
+    /// as the page it asks for and never past the room.
+    #[test]
+    fn a_surface_the_session_places_is_as_big_as_it_asks_inside_its_room() {
+        let room = Place {
+            room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
+            rests_at_bottom: false,
+        };
+        let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
+        assert_eq!(
+            within(&asked, room),
+            Rectangle::new(Point::from((892, 32)), Size::from((380, 412)))
+        );
+        let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
+        assert_eq!(within(&tall, room).size, Size::from((380, 640)));
+        let open = request(Anchor::TOP | Anchor::LEFT, (0, 0), (0, 0, 0, 0));
+        assert_eq!(within(&open, room), room.room);
+    }
+
+    /// A surface that rests against its room's bottom edge keeps its own bottom there: a page
+    /// shorter than the room stands clear of what it was opened against, not at the room's far end.
+    #[test]
+    fn a_surface_resting_on_its_rooms_bottom_edge_clears_the_top_of_the_room() {
+        let room = Place {
+            room: Rectangle::new(Point::from((892, 32)), Size::from((380, 640))),
+            rests_at_bottom: true,
+        };
+        let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
+        assert_eq!(
+            within(&asked, room),
+            Rectangle::new(Point::from((892, 32 + 640 - 412)), Size::from((380, 412)))
+        );
+        let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
+        assert_eq!(within(&tall, room), room.room);
     }
 
     #[test]

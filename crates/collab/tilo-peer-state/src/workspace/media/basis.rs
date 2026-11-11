@@ -1,5 +1,6 @@
 //! The security-basis algorithm.
 use super::{MediaPolicyError, read::Error};
+use crate::cached_document::CachedDocument;
 use crate::state::GovernedIdentity;
 use crate::workspace::read::collections::Collections;
 use crate::workspace::read::{self, Capacity, LegacyRead, ReadError, WorkspaceRead};
@@ -9,20 +10,37 @@ use tilo_action_policy::{Grant, Role};
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList};
 
 trait Decode {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
+    fn identity(&self, key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error>;
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error>;
     fn member(&self, bytes: &[u8]) -> Result<Role, Error>;
 }
 struct Legacy;
 impl Decode for Legacy {
-    fn identity(&self, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
-        serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
+    fn identity(&self, _key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
+        GovernedIdentity::decode(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
     fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
     }
     fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
         serde_json::from_slice(bytes).map_err(|_| policy(MediaPolicyError::Malformed))
+    }
+}
+/// The identity rows as their governance state decoded them once, the rest
+/// as [`Legacy`] decodes it.
+struct Decoded<'a>(&'a CachedDocument);
+impl Decode for Decoded<'_> {
+    fn identity(&self, key: &str, bytes: &[u8]) -> Result<GovernedIdentity, Error> {
+        match self.0.decoded_identity(key, bytes) {
+            Some(identity) => Ok(identity.clone()),
+            None => Legacy.identity(key, bytes),
+        }
+    }
+    fn grant(&self, bytes: &[u8]) -> Result<Grant, Error> {
+        Legacy.grant(bytes)
+    }
+    fn member(&self, bytes: &[u8]) -> Result<Role, Error> {
+        Legacy.member(bytes)
     }
 }
 fn policy(error: MediaPolicyError) -> Error {
@@ -50,6 +68,23 @@ pub(super) fn legacy(
     project(
         &LegacyRead(workspace),
         &Legacy,
+        extra,
+        &mut Work {
+            collections: Collections::unqualified(),
+        },
+    )
+    .map_err(super::read::legacy_error)
+}
+
+/// [`legacy`] of a governance state whose identity rows are decoded once for
+/// it.
+pub(super) fn decoded(
+    workspace: &CachedDocument,
+    extra: &[RevocationEntry],
+) -> Result<[u8; 32], MediaPolicyError> {
+    project(
+        &LegacyRead(&**workspace),
+        &Decoded(workspace),
         extra,
         &mut Work {
             collections: Collections::unqualified(),
@@ -116,7 +151,7 @@ fn project<'a, R: WorkspaceRead, D: Decode>(
     workspace
         .visit_keys(&identities, |key| {
             let bytes = read::strict_bytes(workspace, &identities, key).map_err(strict_error)?;
-            let row = &decoder.identity(&bytes)?;
+            let row = &decoder.identity(key, &bytes)?;
             let device = super::canonical_key(key).map_err(policy)?;
             if device != row.device_cert.device_public_key {
                 return Err(policy(MediaPolicyError::Binding));

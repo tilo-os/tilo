@@ -156,6 +156,10 @@ pub struct Dispatcher<R: Resource> {
     /// The last immediate action and its serial, to tell whether the next
     /// continues it.
     last: Rc<RefCell<Option<Serialed<R>>>>,
+    /// What an action a person applies here is reported to the broker as:
+    /// for a child resource, its parent's action carrying it, which is what
+    /// applies; `None` for the resource's own actions, reported as invoked.
+    reported_as: Option<ReportedAs<R>>,
 }
 
 /// What a dispatcher keeps that does not name the resource's action type
@@ -182,6 +186,18 @@ impl DispatchCore {
     /// ([`Dispatcher::child`]): the record's own kind.
     fn applied_as_kind(&self) -> Option<&'static str> {
         self.applied_as.map(|(kind, _)| kind)
+    }
+
+    /// The nested editors the views opened ([`Dispatcher::child`]), at their
+    /// own addresses, to publish beside this resource.
+    pub(crate) fn nested_resources(&self) -> Vec<(String, tilo_actions::ResourceSpec)> {
+        self.nested.borrow().clone()
+    }
+
+    /// Name this resource `label`, as history, the palette and an agent read
+    /// it: the name its app gives the state it holds now.
+    pub(crate) fn name_resource(&self, label: &str) {
+        self.resource_label.set(label.to_owned());
     }
 }
 
@@ -285,6 +301,11 @@ pub(crate) struct DispatchState {
     /// document the host lends the pass, or the session over the app's one
     /// connection ([`super::Source`]).
     source: super::Source,
+    /// The nested editors the views opened ([`Dispatcher::child`]), each
+    /// published at its own address beside this resource: what the palette,
+    /// agents and scripts address. Kept once made, so an editor acts on its
+    /// record after it was last shown.
+    nested: Rc<RefCell<Vec<(String, tilo_actions::ResourceSpec)>>>,
 }
 
 impl Clone for DispatchCore {
@@ -324,9 +345,14 @@ impl Clone for DispatchCore {
             continuable: self.continuable.clone(),
             gesture: self.gesture.clone(),
             source: self.source.clone(),
+            nested: Rc::clone(&self.nested),
         }))
     }
 }
+
+/// The published invocation a child's action is reported as.
+type ReportedAs<R> =
+    Rc<dyn Fn(&Invoke<R>) -> Option<ui_core::local_document_action::PublishedInvocation>>;
 
 /// What applying one action needs.
 type PermissionOf<R> = Rc<dyn Fn(&<R as Resource>::Action) -> ActionNeed>;
@@ -367,6 +393,7 @@ impl<R: Resource> Clone for Dispatcher<R> {
             submit_now: Rc::clone(&self.submit_now),
             group_now: self.group_now.clone(),
             last: Rc::clone(&self.last),
+            reported_as: self.reported_as.clone(),
         }
     }
 }
@@ -411,6 +438,7 @@ impl DispatchCore {
             gesture: Rc::default(),
             source: super::Source::Document,
             applied_as: None,
+            nested: Rc::default(),
         }))
     }
 
@@ -456,6 +484,7 @@ impl DispatchCore {
             // kept here: only the source of this one may be the session's.
             source: super::Source::Document,
             applied_as: None,
+            nested: Rc::default(),
         })
     }
 
@@ -1000,6 +1029,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::clone(&self.submit_now),
             group_now: self.group_now.clone(),
             last: Rc::clone(&self.last),
+            reported_as: self.reported_as.clone(),
         }
     }
 
@@ -1035,6 +1065,7 @@ impl<R: Resource> Dispatcher<R> {
                 )
             })),
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1879,6 +1910,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
             group_now: None,
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1902,6 +1934,7 @@ impl<R: Resource> Dispatcher<R> {
             submit_now: Rc::new(move |_, _, action: &C::Action, _| apply(action)),
             group_now: None,
             last: Rc::default(),
+            reported_as: None,
         }
     }
 
@@ -1914,21 +1947,28 @@ impl<R: Resource> Dispatcher<R> {
     /// [`apply_now`](Self::apply_now) take `C`'s own actions, coalesce into
     /// undo steps by `C`'s [`Resource::coalesces`], and history names them
     /// after `C`'s labels. Underneath, each applies as this resource's
-    /// action: the same permission check, history, undo and replay. Queued
-    /// invocations are addressed to the child resource `id`, so this
-    /// resource publishes the child at the same id with the same `wrap`
-    /// ([`tilo_resource::publish_child`] in [`Resource::children`]), which
-    /// is also what lets the palette, agents and scripts reach it.
+    /// action: the same permission check, history, undo and replay.
+    ///
+    /// The child is published with this one, at its own address `id`, with
+    /// `C`'s actions and the same `wrap`
+    /// ([`tilo_resource::publish_child`]): the palette, agents and scripts
+    /// reach it like any resource, and an invocation addressed to it resolves
+    /// and applies here. Publishing is the framework's, from this call, so no
+    /// resource can offer an editor it does not publish.
     #[must_use]
     pub fn child<C: Resource>(
         &self,
         id: &str,
-        wrap: impl Fn(C::Action) -> R::Action + 'static,
+        wrap: impl Fn(C::Action) -> R::Action + Send + Sync + 'static,
     ) -> Dispatcher<C> {
         let parent = Rc::clone(&self.submit_now);
         let parent_permission = Rc::clone(&self.permission_of);
-        let wrap = Rc::new(wrap);
-        let wrap_for_permission = Rc::clone(&wrap);
+        let wrap: std::sync::Arc<dyn Fn(C::Action) -> R::Action + Send + Sync> =
+            std::sync::Arc::new(wrap);
+        let wrap_for_permission = std::sync::Arc::clone(&wrap);
+        let wrap_for_report = std::sync::Arc::clone(&wrap);
+        let parent_report = self.clone();
+        self.publish_child::<C>(id, std::sync::Arc::clone(&wrap));
         Dispatcher {
             core: self.core.child(id, (C::KIND, C::LABEL)),
             group: Rc::default(),
@@ -1942,7 +1982,33 @@ impl<R: Resource> Dispatcher<R> {
                 parent(host, edits, &wrap(action.clone()), context)
             }),
             last: Rc::default(),
+            reported_as: Some(Rc::new(move |invoke: &Invoke<C>| {
+                let action = invoke.build(tilo_resource::origin_now_ms()).ok()?;
+                parent_report.reported(&Invoke::<R>::apply(&wrap_for_report(action)).ok()?)
+            })),
         }
+    }
+
+    /// Publish the nested editor `id` beside this resource, once per address:
+    /// built the first time a view opens it, and kept from then on.
+    fn publish_child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: std::sync::Arc<dyn Fn(C::Action) -> R::Action + Send + Sync>,
+    ) {
+        let mut nested = self.core.nested.borrow_mut();
+        if nested.iter().any(|(published, _)| published == id) {
+            return;
+        }
+        let mut child =
+            tilo_resource::publish_child::<C, R>(id, C::LABEL, None, move |action| wrap(action));
+        // The child's actions are what it applies here; its views are the
+        // app's, offered while it shows the editor, and a host refuses a view
+        // operation nothing handles.
+        child
+            .actions
+            .retain(|spec| spec.kind == tilo_actions::OperationKind::Document);
+        nested.push((id.to_owned(), child));
     }
 
     fn capture_nonlocal(&self) -> Option<ui_core::local_document_action::Scope> {
@@ -1962,12 +2028,23 @@ impl<R: Resource> Dispatcher<R> {
             return None;
         }
         Some(ui_core::local_document_action::with_invocation(
-            ui_core::local_document_action::PublishedInvocation {
+            self.reported(invoke)?,
+        ))
+    }
+
+    /// The published invocation `invoke` is reported to the broker as.
+    fn reported(
+        &self,
+        invoke: &Invoke<R>,
+    ) -> Option<ui_core::local_document_action::PublishedInvocation> {
+        match &self.reported_as {
+            Some(reported_as) => reported_as(invoke),
+            None => Some(ui_core::local_document_action::PublishedInvocation {
                 resource: self.core.resource_id.to_string(),
                 action: invoke.id.to_owned(),
                 arguments: invoke.arguments.clone(),
-            },
-        ))
+            }),
+        }
     }
 
     /// End the gesture the last immediate actions belonged to: the pointer
@@ -1980,7 +2057,7 @@ impl<R: Resource> Dispatcher<R> {
     }
 
     pub(crate) fn name_resource(&self, label: &str) {
-        self.core.resource_label.set(label.to_owned());
+        self.core.name_resource(label);
     }
 
     /// The id of the app whose resource this is, which presence keys name

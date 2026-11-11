@@ -56,8 +56,6 @@ pub struct HostIdentity {
     pub workspace_id: Option<String>,
     /// The signed-in person's id, when the launcher bound one.
     pub user_id: Option<String>,
-    /// The presence handle to announce, overriding the user id.
-    pub presence_handle: Option<String>,
     /// The operating-system account name.
     pub account_name: Option<String>,
     /// The resume projection this window was relaunched with.
@@ -213,6 +211,11 @@ pub struct RunnerDiagnostics {
 /// reach a window that is already being built.
 pub const REVEAL_ENV: &str = "TILO_WINDOW_REVEAL";
 
+/// The variable a launch sets (`1`) for a process the session starts with no
+/// window: the app takes its actions and publishes what it offers, and makes
+/// a window only once the shell asks it for one.
+pub const WINDOWLESS_ENV: &str = "TILO_WINDOWLESS";
+
 /// Everything the host tells a `ui` process about itself.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct HostEnvironment {
@@ -235,6 +238,8 @@ pub struct HostEnvironment {
     /// started for one window ([`REVEAL_ENV`]): a window asked for over the
     /// process's door names its own.
     pub reveal: Option<String>,
+    /// The process was started with no window ([`WINDOWLESS_ENV`]).
+    pub windowless: bool,
 }
 
 static INSTALLED: RwLock<Option<Arc<HostEnvironment>>> = RwLock::new(None);

@@ -125,9 +125,30 @@ struct Step {
 struct History {
     app: String,
     resource: String,
-    /// The resource is one the session itself publishes (the arrangement), taken back at the
-    /// session's own provider.
+    /// The resource is one the session itself publishes (the arrangement, the records it keeps
+    /// for a package), taken back at the session's own provider.
     published: bool,
+}
+
+impl History {
+    /// Where a call through `app`'s provider takes its step back: the app's own history, or — a
+    /// record the session keeps, published at the session's own provider — the history its
+    /// record offers there on `history` (the nearest resource holding what changed that offers
+    /// `undo`), where no app's process is asked.
+    fn of_call(app: &str, history: Option<String>) -> Self {
+        match history {
+            Some(resource) if app == crate::session_door::SESSION_PROVIDER => Self {
+                app: app.to_owned(),
+                resource,
+                published: true,
+            },
+            _ => Self {
+                app: app.to_owned(),
+                resource: format!("tl:{app}"),
+                published: false,
+            },
+        }
+    }
 }
 
 /// What a program's answer says each app it changed takes a step back on.
@@ -165,16 +186,19 @@ pub(crate) struct Programs {
 }
 
 impl Programs {
-    /// Note what a call of the run `gesture` (named `label`, `""` when the run has no title)
-    /// changed in the app `app`: the calls of one run are one step of the task's, taken back
-    /// in each app they changed, as one program is.
+    /// Note a change a call of the run `gesture` (named `label`, `""` when the run has no title)
+    /// made through the app `app`, whose record's history is on `history` when the call found
+    /// one: the calls of one run are one step of the task's, taken back in each app they
+    /// changed, as one program is.
     pub(super) fn note_run(
         &mut self,
         gesture: tilo_actions::ActionId,
         label: &str,
         app: &str,
-        changed: u64,
+        history: Option<String>,
     ) {
+        let changed = 1;
+        let at = History::of_call(app, history);
         if let Some(step) = self
             .steps
             .iter_mut()
@@ -182,12 +206,10 @@ impl Programs {
             .find(|step| step.gesture == Some(gesture))
         {
             step.changed = step.changed.saturating_add(changed);
+            if !step.history.contains(&at) {
+                step.history.push(at);
+            }
             if !step.apps.iter().any(|known| known == app) {
-                step.history.push(History {
-                    app: app.to_owned(),
-                    resource: format!("tl:{app}"),
-                    published: false,
-                });
                 step.apps.push(app.to_owned());
             }
             return;
@@ -195,11 +217,7 @@ impl Programs {
         self.steps.push(Step {
             number: self.steps.len().saturating_add(1),
             apps: vec![app.to_owned()],
-            history: vec![History {
-                app: app.to_owned(),
-                resource: format!("tl:{app}"),
-                published: false,
-            }],
+            history: vec![at],
             program: if label.is_empty() {
                 "run".to_owned()
             } else {
@@ -1179,13 +1197,13 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
 
     /// The provider of the app `app` (an id) a task's invocation goes to, starting the app in
     /// the workspace when none of it runs yet: the task invokes the app's own door, and the
-    /// workspace opens it.
+    /// workspace starts it without a window.
     async fn provider_of(&self, app: &str, known: &mut Providers) -> Result<Addressed, String> {
         if let Some(found) = known.get(app) {
             return Ok(found.clone());
         }
         let found = Addressed {
-            provider: self.opened_provider(app, Some(PROGRAM_WAIT_MS)).await?,
+            provider: self.started_provider(app, Some(PROGRAM_WAIT_MS)).await?,
             app_id: Some(app.to_owned()),
         };
         known.insert(app.to_owned(), found.clone());
@@ -2033,8 +2051,8 @@ mod tests {
         });
         let reply = run(server.undo_steps(false)).expect("the step is taken back");
         assert!(!reply.failed, "{}", reply.text);
-        // Neither app ran: the workspace started each, and its undo went to the instance it
-        // started, on the record the app keeps its steps in.
+        // Neither app ran: the workspace started each without a window, and its undo went to
+        // the instance it started, on the record the app keeps its steps in.
         assert_eq!(host.opened(), ["so.tilo.chat", "so.tilo.tasks"]);
         assert_eq!(
             host.invoked(),
@@ -2045,7 +2063,7 @@ mod tests {
                         "{}so.tilo.chat",
                         tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
                     ),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
                     json!({}),
                 ),
                 (
@@ -2060,7 +2078,7 @@ mod tests {
                         "{}so.tilo.tasks",
                         tilo_actions::remote::APPLICATION_RESOURCE_PREFIX
                     ),
-                    tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned(),
+                    tilo_actions::remote::APPLICATION_START_ACTION.to_owned(),
                     json!({}),
                 ),
                 (

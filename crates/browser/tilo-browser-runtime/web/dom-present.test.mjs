@@ -75,7 +75,37 @@ test('painted text is hidden from assistive technology', () => {
   frame(presenter, [['k', 'a', 0, 0, 1], text('Hello', 0, 10), ['ke']]);
   const span = all(layer).find(n => n.localName === 'span');
   assert.equal(span.textContent, 'Hello');
-  assert.equal(span.getAttribute('aria-hidden'), 'true');
+  const flow = layer.children[0].children[0];
+  assert.ok(all(flow).includes(span));
+  assert.equal(flow.getAttribute('aria-hidden'), 'true');
+});
+
+test('the lines of one block are one text flow, each run where the toolkit set it', () => {
+  const layer = new Node('div');
+  const presenter = createDomPresenter(layer);
+  // Two lines, the first of two runs (a bold word after a plain one), then a
+  // caret box, then a label further up: a flow of its own.
+  const ops = [['k', 'a', 0, 0, 1],
+    text('The quick ', 10, 20), text('brown', 70, 20), text('fox jumps', 10, 40),
+    box(0, 0), text('label', 10, 5), ['ke']];
+  frame(presenter, ops);
+  const widget = layer.children[0];
+  const flows = widget.children.filter(n => n.localName === 'div' && n.children[0]?.localName === 'div');
+  assert.equal(flows.length, 2, 'the label after the box is a flow of its own');
+  const [flow] = flows;
+  assert.deepEqual(flow.children.map(line => line.children.map(span => span.textContent)), [['The quick ', 'brown'], ['fox jumps']]);
+  const [first, second] = flow.children;
+  assert.equal(first.style.props.get('height'), '20px', 'a line is as tall as the step to the next');
+  assert.equal(first.children[0].style.props.get('width'), '60px', 'a run followed on its line is as wide as the step to the next run');
+  assert.equal(first.children[1].style.props.get('margin-left'), '0px');
+  assert.equal(second.children[0].style.props.get('margin-left'), '0px');
+  // Typing into the first line rewrites its text and nothing is created.
+  frame(presenter, [['k', 'a', 0, 0, 1],
+    text('The quicker ', 10, 20), text('brown', 80, 20), text('fox jumps', 10, 40),
+    box(0, 0), text('label', 10, 5), ['ke']]);
+  assert.equal(presenter.stats.created, 0);
+  assert.equal(first.children[0].textContent, 'The quicker ');
+  assert.equal(layer.children[0].children.find(n => n === flow), flow);
 });
 
 test('a scrolling widget\'s viewport is a native scroll container', () => {
@@ -112,6 +142,7 @@ test('a semantic element lives in the element of the widget it describes', () =>
   assert.ok(button, 'hosted in the painted widget');
   assert.equal(button.getAttribute('aria-label'), 'Save');
   assert.equal(button.style.left, '0px', 'placed from the widget\'s origin');
+  assert.equal(button.style.pointerEvents, 'none', 'the pointer is the runtime\'s');
   assert.equal(mirror.children.length, 0);
   // The next frame keeps it there, ahead of what is painted.
   frame(presenter, [['k', 'aa', 10, 20, 1], box(10, 20), box(12, 22), ['ke']]);
@@ -120,4 +151,21 @@ test('a semantic element lives in the element of the widget it describes', () =>
   frame(presenter, []);
   bridge.update({root: {path: 'app', paint_key: 'aa', rect: [10, 20, 50, 30], semantics: {role: 'Button', name: 'Save'}}});
   assert.ok(mirror.children.includes(button));
+});
+
+test('a reordered frame moves the fewest elements, so a selection in the rest stays', () => {
+  const layer = new Node('div');
+  const presenter = createDomPresenter(layer);
+  const widget = key => [['k', key, 0, 0, 1], box(0, 0), ['ke']];
+  frame(presenter, ['a', 'b', 'c', 'd'].flatMap(widget));
+  const [a, b, c, d] = layer.children;
+  const moved = [];
+  const insertBefore = layer.insertBefore.bind(layer);
+  layer.insertBefore = (child, before) => { moved.push(child); insertBefore(child, before); };
+  // The bar `a` now draws after the panel `b`, and `e` is new.
+  frame(presenter, ['b', 'c', 'a', 'e', 'd'].flatMap(widget));
+  assert.deepEqual(layer.children.slice(0, 3), [b, c, a]);
+  assert.equal(layer.children[4], d);
+  assert.equal(moved.length, 2, 'only the bar and the new widget are placed');
+  assert.ok(!moved.includes(b) && !moved.includes(c) && !moved.includes(d));
 });

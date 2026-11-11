@@ -916,6 +916,69 @@ fn a_configured_host_is_read_as_an_id_or_an_address() {
     assert!(host_addr("not an address").is_none());
 }
 
+/// The relay the tests' settings name, as the document a session reads it from: `None` leaves the
+/// setting unset.
+fn with_relay(stored: Option<&str>, check: impl FnOnce()) {
+    let mut document = serde_json::Map::new();
+    if let Some(stored) = stored {
+        document.insert("network".into(), serde_json::json!({ "relay": stored }));
+    }
+    let settings = settings_store::HostDocument::new(document, |_| Ok(()));
+    let _scoped = settings_store::scoped_source(Some(std::sync::Arc::new(settings)));
+    check();
+}
+
+fn held_back(relays: &iroh::RelayMap) -> Vec<String> {
+    relays
+        .urls::<Vec<_>>()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// This device's endpoint relays through what its person chose: number 0's relays unless they
+/// named their own, or none.
+#[test]
+fn this_devices_endpoint_relays_as_its_person_chose() {
+    let (cert, key) = certified(1, 2, "here");
+    let identity = HostIdentity::kept(cert, key);
+
+    with_relay(None, || {
+        let default = endpoint_for(Some(&identity))
+            .expect("an endpoint to bind")
+            .1;
+        assert_eq!(
+            held_back(&default),
+            held_back(&iroh::endpoint::default_relay_mode().relay_map()),
+            "unset is number 0's relays, as before"
+        );
+        assert!(!default.is_empty(), "a device relays by default");
+    });
+
+    with_relay(Some("https://relay.example.com."), || {
+        let own = endpoint_for(Some(&identity))
+            .expect("an endpoint to bind")
+            .1;
+        assert_eq!(held_back(&own), ["https://relay.example.com./"]);
+    });
+
+    with_relay(Some("none"), || {
+        let none = endpoint_for(Some(&identity))
+            .expect("an endpoint to bind")
+            .1;
+        assert!(
+            none.is_empty(),
+            "no relay is held back for a device that relays through none"
+        );
+    });
+
+    let nobody = endpoint_for(None).expect("a loopback endpoint to bind").1;
+    assert!(
+        nobody.is_empty(),
+        "a session that takes part as nobody relays nowhere"
+    );
+}
+
 #[test]
 fn a_host_is_dialled_before_the_workspaces_it_carries() {
     let host = device(7);
@@ -1108,6 +1171,46 @@ fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
     // Their pointer leaves the tile: that is said.
     assert!(sync.set_where(None, Some(shell(3))));
     assert!(!sync.take_said().is_empty());
+}
+
+/// A page names the host it was admitted by as its workspace's host itself, and its session can
+/// tell no host of its own: following its workspaces again keeps the run that host speaks for, so
+/// the agent stays in the bar rather than leaving on every pass until its next keep-alive.
+#[test]
+fn a_run_the_page_host_speaks_for_stays_while_the_page_follows_its_workspaces() {
+    let publisher = device(0x33);
+    let (outgoing, _said) = tokio::sync::mpsc::unbounded_channel();
+    let (_heard, arrived) = std::sync::mpsc::channel();
+    let (_landed, enrolled) = std::sync::mpsc::channel();
+    let sync = Client::over(
+        Transport {
+            outgoing: Arc::new(outgoing),
+            arrived,
+            enrolled,
+            saying: None,
+        },
+        Device {
+            publisher,
+            endpoint: EndpointAddr::new(publisher),
+            person: Some(root(0x05)),
+            name: "Page".to_owned(),
+        },
+        OwnPresence::default(),
+    );
+    let showing = [(topic(WORKSPACE), WORKSPACE.to_owned())];
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    let host = device(0x40);
+    sync.set_workspace_host(WORKSPACE, Some(*host.as_bytes()));
+    let run = Presence::desktop(WORKSPACE, Payload::Arrived).spoken_for("run-1");
+    sync.heard_presence(WORKSPACE, host, &run);
+    assert_eq!(sync.members(WORKSPACE).len(), 1, "the run is here");
+
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    assert_eq!(
+        sync.members(WORKSPACE).len(),
+        1,
+        "following the same workspaces again keeps the run the host speaks for"
+    );
 }
 
 /// A host that names the workspaces it shows itself — a page's mounts, each showing one — takes

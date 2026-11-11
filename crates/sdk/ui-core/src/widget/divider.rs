@@ -177,6 +177,12 @@ impl Widget for Divider {
         taffy.widget_leaf(style, node_map, self)
     }
 
+    /// A rule's size is its style's alone, fixed when it is built: nothing it shows asks for a
+    /// measure, so a still frame re-measures nothing for it.
+    fn is_layout_dirty(&self) -> bool {
+        false
+    }
+
     crate::rect_geometry!();
 
     fn draw(

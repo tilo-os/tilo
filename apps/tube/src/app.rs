@@ -49,6 +49,7 @@ use crate::resource::Library;
 use crate::screens;
 use crate::widgets::SharedPlayer;
 use ui::tilo_resource::{Edit, Invoke};
+use ui::widget::DrawChild;
 
 mod playback;
 mod requests;
@@ -1480,7 +1481,7 @@ impl Widget for TubeApp {
         presence: &PresenceCtx,
     ) {
         self.shell
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

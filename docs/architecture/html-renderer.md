@@ -36,9 +36,15 @@ transparent, as the input surface. Nothing changes for a mount without
    so they survive subtree caches, `Scene::append` and transforms.
    `ui::scene_parts` writes them while a host asks for them
    (`key_widgets`):
-   - every widget drawn through `draw_child` / `draw_child_at` and every
-     child of a flow container gets one key: its parent's key, its index
-     and its type, or its test id when it has one;
+   - every widget gets one key: its parent's key, its index and its type,
+     or its test id when it has one. A container draws each child through
+     the toolkit's draw paths: `draw_child` / `draw_child_at`, which also
+     cull a child outside the viewport, or `child.draw_child(…)`
+     (`widget::DrawChild`), which keys without culling, for a container
+     that culls itself or draws a child where its rect is not. Calling a
+     child's `Widget::draw` directly is a clippy error (`disallowed-methods`
+     in `clippy.toml` and the crates' own copies), so new code cannot skip
+     the key. Tests may draw the widget under test directly;
    - widgets that draw many items themselves key each item by its own id
      (`scene_parts::item_key`): the block editor's blocks and a virtual
      list's rows.
@@ -75,6 +81,48 @@ transparent, as the input surface. Nothing changes for a mount without
    more) with `color-scheme`. Light or dark follows the browser's
    `prefers-color-scheme` while the person has chosen neither in their
    settings, and changes with it.
+
+6. **The HTML layer is the hit target** (`web/dom-input.mjs`). The canvas
+   lies under the layer, where winit listens, and the page forwards what it
+   does not handle itself as the same pointer events, without bubbling:
+   - a wheel over a scroll container that can still move moves it in the
+     wheel event itself, so the next frame shows it; any other wheel goes
+     to the runtime;
+   - a touch that lands on a scroll container pans it natively, with the
+     browser's momentum and overscroll. The runtime hears the touch begin
+     and end, so a tap is still a tap, and a pan the browser takes over
+     ends in a cancel, so the runtime never drags what the browser
+     scrolls. Elsewhere a touch is the runtime's (`touch-action: none`);
+   - a press is the runtime's, as on the canvas: its own focus change and
+     selection are prevented, or the page's focus would leave the runtime's
+     editor for the page and the semantic mirror would take it;
+   - `__tiloDom.selectText(true)` hands presses to the page for native
+     selection; while the person makes or holds one, neither the host nor
+     the semantic mirror moves the focus, and the copy shortcut is the
+     browser's;
+   - the runtime's cursor, set on the canvas, shows on the layer.
+7. **Images and gradients.** An image is handed to the page once, as its
+   pixels under an id, and shown as a `<canvas>` placed by the image's own
+   matrix and clipped to what the scene draws it into; both sides forget an
+   image no frame showed for a while. A linear, radial (one centre) or sweep
+   gradient filling a box becomes the CSS gradient that paints the same
+   pixels, laid out against the box. A gradient on a path, a stroke or text
+   still shows its first stop.
+8. **Text as flows.** The runs a widget draws one after another, each
+   further along its line or on a line below, are one element: a block per
+   line, as tall as the step to the next, holding its runs side by side.
+   Each run stands where the toolkit set it: a line's first run is indented
+   to its x, and a run followed on its line is exactly as wide as the step
+   to the next run, so the browser's own advances never move what follows.
+   Line breaks stay the toolkit's. A selection or find-in-page then reads a
+   paragraph as one text, with a line break between its lines.
+9. **Native selection holds.** A frame moves the fewest elements it can
+   (the longest run already in order stays), and never the one holding the
+   page's selection; moving a node takes the selection out of what it
+   holds. Root widgets are numbered per scene and per type, so a widget
+   drawn at the root of another scene (a measuring pass) no longer
+   renumbers the frame's own: on a press that blurred the editor, every
+   root key changed and the note's panel was rebuilt under the selection.
 
 Everything that only an HTML mount runs is reached through `DOM_CODE`
 (`ui::lazy_code!`): drawing the frame, the toolkit's keying code (the
@@ -135,58 +183,91 @@ Against the targets:
   scrollbar are the same. The phone figure is higher only because its text
   is set at three device pixels per point, so more of each glyph is edge.
 - **Accessibility:** no painted text is exposed to assistive technology (0
-  of 46 text elements). 14 semantic elements live inside their widget's
-  painted element; the other 517 are in the mirror's layer, because their
-  widgets are not drawn through a keyed path yet (next steps).
+  of 47 text elements). With every widget keyed, 523 semantic elements live
+  inside their widget's painted element and 7 are left in the mirror's
+  layer (before: 14 and 517).
+- **With every widget keyed** (one run on the same builder): typing p50 /
+  p90 19.2 / 32.9 ms at 1280 px and 12.0 / 43.4 ms at 390 px; wheel p50 /
+  p90 16.6 / 59.5 ms at 1280 px and 5.4 / 40.6 ms at 390 px (before: 21.2
+  ms p50). The 1280 px frame holds 241 elements (before: 118), since every
+  widget has one; a scroll frame writes 112 properties and creates 19
+  elements at the median (before: 103 and 13). The 1280 px wheel median is
+  one frame above the previous runs' 2.6 – 4.9 ms with the same work per
+  frame; it needs a run on a quiet machine. Pixel parity with the canvas
+  is unchanged (1.1 – 1.2 % at 1280 px, 4.5 % at 390 px).
 - **Light and dark** follow the emulated `prefers-color-scheme` in the
   HTML runs with no Tilo setting given.
-- **Size with `dom` off:** the desktop bundle's start module (as the
-  `sdk-web-size` check builds it, `tools/web/html-renderer/size.sh`) is
-  31,062,993 bytes against 31,011,973 for the main it is based on, built on
-  the same builder: 51 KB, 0.16 %, larger. The functions in it grew by 24 KB
-  before optimising; the rest is static data the splitter places
-  differently from build to build (an earlier build of nearly the same code
-  measured 25 KB over main). What grew: the mount's dispatch and the page
-  exports (8.5 KB), the encoder's walk over marks and text runs, which the
-  canvas path's CPU rasterizer shares (2.6 KB), glyph-run text (1.8 KB),
-  the draw paths' keyed check (1.8 KB) and marks in the encoding (1.3 KB).
-  The keying code, the encoder, the presenter and the HTML frame path are a
-  module of their own (`dom_presenter`, 45 KB), fetched only by a page that
-  asks for `dom: true`.
+- **With the HTML layer as the hit target** (two runs, each with the canvas
+  and plain DOM in the same run, the builder otherwise quiet):
+
+  | | HTML | WebGPU canvas | Plain DOM |
+  |---|---|---|---|
+  | typing p50 / p90, 1280 px | 14.7 – 15.8 / 29.7 – 39.5 ms | 253 – 264 / 489 – 535 ms | 2.0 – 2.2 / 2.8 – 4.3 ms |
+  | wheel p50 / p90, 1280 px | 30.7 – 36.6 / 54.5 – 72.0 ms | 64.8 – 69.1 / 620 – 631 ms | 20.8 – 21.1 / 26.8 – 29.2 ms |
+  | typing p50, 390 px | 17.5 – 19.6 ms | — | — |
+  | wheel p50, 390 px | 22.1 – 27.2 ms | — | — |
+  | touch pan of the note, 390 px | 280 px for a 260 px drag, native | — | — |
+
+  The wheel median is about one frame above plain DOM and above the run
+  with the canvas as the hit target (16.6 ms); the work per scroll frame
+  is the same (99 writes, 14 new elements, 1.3 ms in the presenter).
+  Pixel parity is unchanged (1.2 % at 1280 px, 4.5 % at 390 px). A tap
+  opens the note as on the canvas: an earlier difference at 390 px was a
+  passing "Saved" notice caught in one screenshot and not the other.
+- **With paragraphs as flows** (one run with the canvas and plain DOM, one
+  of HTML alone, today's builder): a drag over the note after typing
+  selects from where it was pressed to where it was let go, across lines
+  and paragraphs ("Paragraph 25: … keep every thought close at hand, and
+  the page keeps scrolling. / Paragraph 26: the quick brown fox …"); before,
+  it came back empty. Typing p50 / p90 17.0 – 30.3 / 24.6 – 51.3 ms at 1280
+  px and 14.9 / 25.6 ms at 390 px; wheel p50 21.0 – 22.0 ms (plain DOM 16.4
+  in the same run). 524 semantic elements live inside their widget's
+  painted element, 6 in the mirror's layer. Pixel parity is unchanged at
+  1280 px (1.2 %); at 390 px 5.8 %, from the passing "Saved" notice caught
+  in the HTML screenshot and not the canvas one. The median keystroke
+  still writes 2 properties and creates nothing; the largest frame of the
+  run wrote 1,510 and created 287.
+- **Size with `dom` off:** keying every widget leaves the desktop bundle's
+  start module (as the `sdk-web-size` check builds it,
+  `tools/web/html-renderer/size.sh`) at 20,295,058 bytes against 20,281,659
+  for the main it is based on, built on the same builder: 13 KB, 0.07 %,
+  larger, with no module among those that grew most. A first version that
+  made every child a trait object grew it by 35 – 67 KB: a type that was
+  never a trait object got a vtable, which brings all of its `Widget`
+  methods in. A child held by value is now drawn through one generic,
+  never-inlined method per type. The keying code, the encoder, the
+  presenter and the HTML frame path stay in their own module
+  (`dom_presenter`), fetched only by a page that asks for `dom: true`.
 
 ## Next steps, with what this stage learned
 
-- **Keys for every widget.** Most containers call `child.draw(…)`
-  directly (about 300 call sites in ui-core alone), so only widgets drawn
-  through `draw_child`, flow containers, editor blocks and list rows are
-  keyed today; Notes' panels are drawn through `draw_child_at` for that
-  reason. Everything else is named by place inside the nearest keyed
-  ancestor, which is correct but rewrites more when it changes. Moving the
-  remaining containers to `draw_child_at` (or a lint that asks for it) is
-  mechanical and gives every widget its own element, every scroller its
-  native container and every semantic node its painted home.
-- **Touch scrolling.** Wheels scroll natively. A touch drag does not yet:
-  the transparent canvas above the HTML layer takes every pointer, and a
-  touch sequence cannot be handed to another element once it began. The
-  fix is to make the HTML layer the hit target and forward to the runtime
-  what the page does not handle itself, which the selection and `<input>`
-  work below needs too.
-- **Canvas islands.** Images are still placeholders and gradients show
-  their first stop. A widget that declares itself a picture, or a subtree
-  with too many ops, should become one `<canvas>` rasterized by
-  `tilo-cpu-raster` (or WebGPU when present); images `<img>` or
-  `ImageBitmap` from the image store; gradients CSS gradients.
+- **Keys for every widget: done.** Every container draws its children
+  through a keyed path, and clippy rejects a direct `Widget::draw` call
+  outside tests (about 480 call sites moved: 150 in ui-core, 325 in
+  apps and the session crates). Two gaps remain: a container that leaves a
+  child undrawn without saying so (`skip_widget`, or an index through
+  `draw_child_at`) shifts the keys of the children after it, which is
+  correct but rewrites more; and calls inside a macro's expansion are not
+  always linted, so the decorator's forwarding draw is allowed by name.
+- **Native selection after typing: done.** Two things emptied it. The
+  reconciler moved an element whose place among its siblings changed, and
+  a move takes the selection out of what it holds; and every root key
+  changed on the press that blurred the editor, so the note's panel was
+  rebuilt under the selection. Both are fixed (above, 9).
+- **Canvas islands.** Images and box gradients are done (above). A
+  widget that declares itself a picture, or a subtree with too many ops,
+  should still become one `<canvas>` rasterized by `tilo-cpu-raster` (or
+  WebGPU when present); gradients on paths and text still show their first
+  stop.
 - **Real `<input>` with autofill and passkeys.** With painted and semantic
   elements now one node per widget, a single-line field's semantic element
   can become the visible field at the widget's rect. It needs an autofill
   purpose on text-input semantics and the field's text left out of the
   scene.
-- **The selection focus fix.** A native selection after typing still comes
-  back empty; the host takes focus back into its hidden editor. That and
-  the layer becoming the hit target belong together.
-- **Paragraph grouping.** Lines are still one element each. The keys now
-  give each block one element, so its lines can become one text element
-  with forced breaks.
+- **Paragraph grouping: done** (above, 8). Runs are grouped by how they
+  follow one another inside one widget, not by what the toolkit knows of
+  paragraphs: two labels a widget draws one under the other are one flow.
+  Nothing marks a paragraph in the scene yet.
 - **Other apps.** Notes is the only app measured. Each app gets keys where
   it draws its children through `draw_child_at`; the parity harness in
   `tools/web/html-renderer` should run over every app's scenarios.
@@ -200,8 +281,8 @@ tools/web/html-renderer/size.sh
 ```
 
 The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`; open
-`notes.html?render=dom` or `?render=gpu` (`&theme=light|dark` sets the
-person's setting). Results, screenshots and the HTML-against-WebGPU diff
+`app.html?render=dom` or `?render=gpu` (`&app=` names another app of the
+bundle, `&theme=light|dark` sets the person's setting). Results, screenshots and the HTML-against-WebGPU diff
 images land in `$CARGO_TARGET_DIR/htmlrenderer/measure`; they are not in
 the repository, which takes no binary files.
 

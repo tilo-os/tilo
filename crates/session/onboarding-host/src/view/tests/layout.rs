@@ -56,7 +56,9 @@ pub fn draw_until_rest<W: ui::widget::Widget + ?Sized>(
 ) -> LaidOut {
     let mut laid = lay_out_as_root_with_text(widget, width, height, theme, text);
     for _ in 1..limit {
-        widget.draw(
+        ui::widget::draw_child_at(
+            widget,
+            None,
             &mut vello::Scene::new(),
             vello::kurbo::Affine::IDENTITY,
             text,

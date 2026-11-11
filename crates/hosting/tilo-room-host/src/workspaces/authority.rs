@@ -150,11 +150,15 @@ impl Workspaces {
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         if let WorkspaceOp::Host(operation) = op {
             // What anyone may do here is for a host that keeps workspaces of
-            // people's own: making theirs, and listing it.
+            // people's own: making theirs, listing them, and keeping their list.
             let anyones = operation == HostOperation::CreateOwnWorkspace
-                || ((operation == HostOperation::ListWorkspaces
-                    || operation == HostOperation::DeleteOwnWorkspace)
-                    && !relay_person);
+                || (matches!(
+                    operation,
+                    HostOperation::ListWorkspaces
+                        | HostOperation::DeleteOwnWorkspace
+                        | HostOperation::KeepPersonalList
+                        | HostOperation::ReadPersonalList
+                ) && !relay_person);
             if anyones && self.own().is_none() {
                 return Err(CollaborationError::new(
                     "this host keeps no workspaces of people's own",

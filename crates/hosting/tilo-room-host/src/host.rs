@@ -20,7 +20,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
+use iroh::endpoint::{Connection, Endpoint};
 use iroh::protocol::{AcceptError, DynProtocolHandler, ProtocolHandler};
 use tilo_clock::unix_now_ns;
 use tilo_lock::RwLockRecover as _;
@@ -242,7 +242,9 @@ impl HostSessions {
             admin: Arc::default(),
             fetch: Arc::default(),
             agents: Arc::default(),
-            environments: Arc::default(),
+            environments: crate::environment::EnvironmentRegistry::at(
+                cfg.state_root.join("environments.json"),
+            ),
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
                 identity.device_cert.clone(),
@@ -374,6 +376,7 @@ impl HostSessions {
         self.access_writer()
             .replace(workspace_id, pinned, access)
             .await
+            .map(drop)
     }
 
     /// Whether the host counts `device` as subscribed to `workspace_id`.
@@ -408,7 +411,9 @@ impl HostSessions {
                 // The sender lives as long as the host; its end is one too.
                 let _ = closing.wait_for(|closing| *closing).await;
             };
-            if let Err(error) = serve_session(handler, server_read, server_write, closed).await {
+            if let Err(error) =
+                serve_session(handler, server_read, server_write, None, closed).await
+            {
                 tracing::debug!(%error, "in-process session ended");
             }
         });
@@ -848,7 +853,7 @@ impl GovernedAccessWriter {
         workspace_id: u64,
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
-    ) -> Result<(), HostError> {
+    ) -> Result<Vec<[u8; 32]>, HostError> {
         if self.handshake_trust.allow_any {
             return Err(HostError::GovernedAccess(
                 "allow_any cannot host governed workspace admission".into(),
@@ -883,8 +888,7 @@ impl GovernedAccessWriter {
         // requested removal narrowed in memory, and the handshake union must
         // reflect that fail-closed ceiling.
         self.handshake_trust.refresh(&self.workspaces).await;
-        result?;
-        Ok(())
+        Ok(result?)
     }
 }
 
@@ -1106,18 +1110,66 @@ impl RelayProtocol {
                 "home peer is decommissioned",
             )));
         }
-        let first = connection.accept_bi().await?;
-        tokio::spawn(serve_streams(self.clone(), connection, first));
+        let connection = tilo_relay_client::link::Link::iroh(connection);
+        let binding = connection.offer_binding().await;
+        let first = connection
+            .accept_bi()
+            .await
+            .map_err(|error| AcceptError::from_err(std::io::Error::other(error.to_string())))?;
+        tokio::spawn(serve_streams(self.clone(), connection, binding, first));
         Ok(())
+    }
+
+    /// Prove which member device opened a stream that does not say so itself
+    /// (a WebTransport session's first): the relay handshake under the live
+    /// policy, as every session opens with.
+    ///
+    /// # Errors
+    ///
+    /// The device is not one this host admits, or the handshake failed.
+    pub async fn authenticate_member<R, W>(
+        &self,
+        recv: &mut R,
+        send: &mut W,
+    ) -> Result<crate::auth::AuthenticatedPeer, HandshakeError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+        W: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        self.identity
+            .authenticate(
+                EndpointTrust::Live(&self.trust_policy),
+                recv,
+                send,
+                MAX_FRAME_BYTES,
+            )
+            .await
+    }
+
+    /// Serve every session `link` carries, each on a stream of its own, until
+    /// it closes: what a WebTransport session at the session path is, as a
+    /// connection on the relay ALPN is.
+    pub async fn serve_link(&self, link: tilo_relay_client::link::Link) {
+        let binding = link.offer_binding().await;
+        let Ok(first) = link.accept_bi().await else {
+            return;
+        };
+        serve_streams(self.clone(), link, binding, first).await;
     }
 }
 
 /// Serve every session `connection` carries, `first` (already accepted)
-/// first, each on a stream of its own, until the connection closes.
+/// first, each on a stream of its own, until the connection closes. An entry
+/// on any of them is bound to `binding`
+/// ([`tilo_relay_client::link::Link::offer_binding`]).
 async fn serve_streams(
     ctx: RelayProtocol,
-    connection: Connection,
-    first: (SendStream, RecvStream),
+    connection: tilo_relay_client::link::Link,
+    binding: Option<[u8; 32]>,
+    first: (
+        tilo_relay_client::link::LinkSend,
+        tilo_relay_client::link::LinkRecv,
+    ),
 ) {
     let sessions = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let mut first = Some(first);
@@ -1134,7 +1186,7 @@ async fn serve_streams(
         let sessions = Arc::clone(&sessions);
         tokio::spawn(async move {
             let closed = connection.clone();
-            let result = Box::pin(serve_session(ctx, recv, send, async move {
+            let result = Box::pin(serve_session(ctx, recv, send, binding, async move {
                 closed.closed().await;
             }))
             .await;
@@ -1143,7 +1195,7 @@ async fn serve_streams(
             }
             let last = sessions.fetch_sub(1, std::sync::atomic::Ordering::AcqRel) == 1;
             if last {
-                connection.close(0u32.into(), b"relay session ended");
+                connection.close("relay session ended");
             }
         });
     }
@@ -1152,7 +1204,8 @@ async fn serve_streams(
 /// One member session over `recv`/`send`: the bounded shared handshake
 /// under the live policy (the owner and every user the host currently
 /// admits), then the peer loop until the stream ends or `closed` resolves.
-/// Every carrier runs this: an iroh stream, and an in-process stream.
+/// Every carrier runs this: an iroh stream, and an in-process stream. Only a
+/// stream with a connection's keying material (`binding`) takes an entry.
 #[expect(
     clippy::significant_drop_tightening,
     reason = "the context is a set of shared handles moved into the peer session it runs"
@@ -1161,6 +1214,7 @@ async fn serve_session<R, W>(
     ctx: RelayProtocol,
     mut recv: R,
     mut send: W,
+    binding: Option<[u8; 32]>,
     closed: impl std::future::Future<Output = ()> + Send,
 ) -> Result<(), HostError>
 where
@@ -1181,16 +1235,14 @@ where
             doorway
                 .as_deref()
                 .map(|workspaces| workspaces as &dyn crate::handshake::Doorway),
+            binding,
         )
         .await
     {
         Ok(entered) => entered,
         Err(error) => {
-            if matches!(error, HandshakeError::Auth(_) | HandshakeError::Refused(_)) {
+            if matches!(error, HandshakeError::Auth(_)) {
                 ctx.metrics.inc_auth_rejected();
-            }
-            if matches!(error, HandshakeError::Refused(_)) {
-                told_then_closed(&mut send, closed).await;
             }
             return Err(HostError::Handshake(error.to_string()));
         }
@@ -1219,6 +1271,9 @@ where
     }
     ctx.metrics.inc_conns_authed();
     ctx.arrivals.arrived(client_peer.device_public_key);
+    // One of an environment's devices may be here: its environment is up, and
+    // an end being waited on is not one.
+    ctx.environments.arrived(client_peer.device_public_key);
     let context = ctx.peer_context();
     if let Err(e) = Box::pin(run_peer_until(client_peer, closed, recv, send, context)).await {
         tracing::debug!("peer session ended with error: {e}");

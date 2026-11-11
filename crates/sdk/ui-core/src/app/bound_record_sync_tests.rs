@@ -28,7 +28,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
                 automerge::transaction::Transactable::base_heads,
             )
             .unwrap();
-        let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();
+        let (initial, heads, _) = fixture.app.pending_primary_document().unwrap().unwrap();
         // A route's first publication is the record whole, so a replica that
         // holds nothing of it can take it in.
         assert!(matches!(
@@ -55,7 +55,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             .app
             .pending_primary_document()
             .unwrap()
-            .map(|(mutation, heads)| (mutation.data().to_vec(), heads))
+            .map(|(mutation, heads, _)| (mutation.data().to_vec(), heads))
             .unwrap();
         assert!(!rejected.is_empty());
         // Saving or a late-join snapshot must not consume the transport cursor.
@@ -70,7 +70,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
                 .app
                 .pending_primary_document()
                 .unwrap()
-                .map(|(mutation, _)| mutation.data().to_vec())
+                .map(|(mutation, _, _)| mutation.data().to_vec())
                 .unwrap_or_default(),
             rejected
         );
@@ -86,7 +86,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             .app
             .pending_primary_document()
             .unwrap()
-            .map(|(mutation, heads)| (mutation.data().to_vec(), heads))
+            .map(|(mutation, heads, _)| (mutation.data().to_vec(), heads))
             .unwrap();
         assert!(
             !retry.is_empty(),
@@ -220,7 +220,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
 
     {
         let mut fixture = ActionFixture::broker();
-        let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();
+        let (initial, heads, _) = fixture.app.pending_primary_document().unwrap().unwrap();
         assert!(matches!(
             initial,
             collab_types::DocumentMutation::Snapshot(_)
@@ -280,7 +280,7 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
 
     {
         let mut fixture = ActionFixture::broker();
-        let (initial, heads) = fixture.app.pending_primary_document().unwrap().unwrap();
+        let (initial, heads, _) = fixture.app.pending_primary_document().unwrap().unwrap();
         assert!(!initial.data().is_empty());
         fixture.app.advance_primary_document(heads);
         assert!(fixture.app.pending_primary_document().unwrap().is_none());
@@ -315,5 +315,47 @@ fn native_bound_sync_routes_verified_bytes_and_preserves_undo_retries_and_depend
             "closed components cannot fall back to the outer document"
         );
         assert_eq!(fixture.app.state.doc.get_heads(), outer);
+    }
+}
+
+/// Each letter typed into the window's own record goes out under the action
+/// of the person who typed it, the next letters of a word too.
+#[test]
+fn every_letter_typed_into_the_primary_record_travels_under_its_action() {
+    let mut fixture = ActionFixture::new();
+    let binding = fixture.bindings[0].clone();
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(crate::collaboration::PrimaryRouteWitness {
+            route: binding.broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
+    let (_, heads, _) = fixture.app.pending_primary_document().unwrap().unwrap();
+    fixture.app.advance_primary_document(heads);
+    let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
+    let typed = |text: &str| tilo_actions::ActionContext {
+        action: Some(tilo_actions::EncodedAction {
+            type_id: "notes.type".into(),
+            payload: format!("{text:?}").into_bytes(),
+        }),
+        invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+        ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
+    };
+    for (text, message) in [
+        ("a", typed("a").change_message().unwrap()),
+        ("ab", typed("ab").continuation_of(&typed("a")).unwrap()),
+    ] {
+        fixture
+            .records
+            .with_history(&binding.checkout.id, |doc, _| {
+                doc.put(ROOT, "body", text).unwrap();
+                doc.commit_with(
+                    automerge::transaction::CommitOptions::default().with_message(message),
+                );
+            })
+            .unwrap();
+        let (_, heads, commit) = fixture.app.pending_primary_document().unwrap().unwrap();
+        let commit = commit.expect("every letter travels under its action");
+        assert_eq!(commit.author.principal.as_deref(), Some("alice"));
+        fixture.app.advance_primary_document(heads);
     }
 }

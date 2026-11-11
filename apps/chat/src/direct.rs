@@ -82,35 +82,6 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    /// The conversation with `peer` as opening it answers: its messages in
-    /// the order the window shows them, and how many of them this person has
-    /// not seen.
-    pub(crate) fn opened_direct_answer(&mut self, peer: &str, id: &Id, chat: &Chat) -> Effected {
-        let channel = id.to_string();
-        let held = self.held_messages();
-        let rows = chat.message_rows(&held, &channel);
-        let messages: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|message| {
-                serde_json::json!({
-                    "id": message.id,
-                    "author": message.author,
-                    "text": message.text,
-                    "at": message.ts,
-                })
-            })
-            .collect();
-        let unread = chat.unread(&held, &channel, &self.me.id);
-        if self.active_channel == channel {
-            self.messages = rows;
-        }
-        Effected::value(serde_json::json!({
-            "peer": peer,
-            "messages": messages,
-            "unread": unread,
-        }))
-    }
-
     /// Post `text`, with what it carries, to the conversation `id` now, as
     /// the record's `post` does, and say whether it was taken.
     pub(crate) fn post_to_conversation(
@@ -149,12 +120,12 @@ impl ChatApp {
             .ok_or_else(|| crate::i18n::t("chat-direct-unavailable"))
     }
 
-    /// Send what a window's box held: the words and everything they carry go
-    /// to the conversation with whom it names — a person, an agent, several of
-    /// them, or a conversation that is already there — and the conversation
-    /// opens as a window of the desk, floated where the box stood
-    /// ([`ui::shell_tabs::open_floated`]). The window that sent it goes on
-    /// showing what it showed, its box ready for the next message.
+    /// Send what a box held: the words and everything they carry go to the
+    /// conversation with whom it names — a person, an agent, several of
+    /// them, or a conversation that is already there. When it `opens`, the
+    /// conversation opens as a window of the desk, floated where the box
+    /// stood ([`ui::shell_tabs::open_floated`]). The window that sent it goes
+    /// on showing what it showed, its box ready for the next message.
     ///
     /// # Errors
     /// The box names nobody this chat knows, a conversation beside other
@@ -164,6 +135,7 @@ impl ChatApp {
         to: &[ui::floating_surface::Recipient],
         attached: Vec<tilo_reference::Attached>,
         text: &str,
+        opens: bool,
         chat: &Chat,
     ) -> Result<Effected, String> {
         if text.trim().is_empty() && attached.is_empty() {
@@ -175,7 +147,9 @@ impl ChatApp {
         // floated over it, that the workspace's record keeps for every
         // member.
         let anchor = item_row_id("channels", id.as_str());
-        ui::shell_tabs::open_floated(anchor.clone());
+        if opens {
+            ui::shell_tabs::open_floated(anchor.clone());
+        }
         Ok(Effected::value(serde_json::json!({
             "conversation": id.to_string(),
             "anchor": anchor,
@@ -230,26 +204,13 @@ impl ChatApp {
         Ok(Chat::direct_id(participants))
     }
 
-    /// The person the direct conversation `channel` is with, when it is one
-    /// of this window's person with exactly one other person: what the app's
-    /// direct operations are asked on. A conversation with an agent, or one
-    /// of more than two people, is not one of them.
+    /// The person the direct conversation `channel` is with, when it is one of this window's
+    /// person with exactly one other person: what the app's direct operations are asked on. A
+    /// conversation with an agent, or one of more than two people, is not one of them.
     fn direct_peer(&self, channel: &crate::model::Channel) -> Option<String> {
-        if !channel.direct || channel.participants.len() != 2 {
-            return None;
-        }
-        let participants: Vec<Participant> = channel
-            .participants
-            .iter()
-            .filter_map(|key| Participant::parse(key))
-            .collect();
-        if participants.len() != 2 || participants.iter().any(Participant::is_agent) {
-            return None;
-        }
-        participants
-            .into_iter()
-            .find(|participant| participant.id() != self.me.id)
-            .map(|participant| participant.id().to_owned())
+        self.conversation_peer(&channel.participants)
+            .filter(|peer| channel.direct && !peer.is_agent())
+            .map(|peer| peer.id().to_owned())
     }
 
     /// The direct conversations the sidebar lists: those holding messages,
@@ -270,7 +231,7 @@ impl ChatApp {
     /// by a written address. Every person has one, not only those the
     /// conversation with whom holds a message yet: a caller asks for the
     /// row before it can write the first message. Its messages are read as
-    /// any conversation's, by `read-messages` on its id.
+    /// any conversation's, from the chat's record and its parts.
     pub(crate) fn direct_conversation_rows(&self) -> Vec<LiveRow> {
         self.channels
             .iter()
@@ -291,14 +252,6 @@ impl ChatApp {
                             text: String::new(),
                         }
                         .bound_asking(&["text"]),
-                    )
-                    .operation(
-                        ChatEffect::ReadMessages {
-                            channel: channel.id.clone(),
-                            page_size: None,
-                            cursor: None,
-                        }
-                        .bound_asking(&["pageSize", "cursor"]),
                     ),
                 )
             })

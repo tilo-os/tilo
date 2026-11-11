@@ -513,23 +513,57 @@ impl Replica {
         let in_chains = chain_resources(&resources);
         tilo_actions::door::survey(&resources)
             .into_iter()
-            // An action for people only (copying a link to the clipboard)
-            // means nothing to an agent; the host acting for a person
-            // offers it (a reviewed feedback report a person files).
-            .filter(|descriptor| !self.automated() || descriptor.contract.reaches_agents())
-            .filter(|descriptor| {
-                self.offers(descriptor, &in_chains)
-                    || (self.runs_effects
-                        && self.automated
-                        && offered_when_host_renders(descriptor))
-            })
-            .map(|mut descriptor| {
-                if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
-                    descriptor.params.retain(|param| param.name != PATH_PARAM);
-                }
-                descriptor
-            })
+            .filter_map(|descriptor| self.offered(descriptor, &in_chains))
             .collect()
+    }
+
+    /// [`Self::survey`] for the one action `address` names: what a host that
+    /// already knows what it runs asks for, without listing every resource
+    /// the record holds. An action the record publishes for a chain's parts
+    /// is answered as the whole listing answers it; one the listing leaves
+    /// out is found in the listing, as before.
+    #[must_use]
+    pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
+        let in_chains: std::collections::HashSet<String> =
+            ui::record::chain_of_resource_id(address.resource.as_str())
+                .map(|_| address.resource.as_str().to_owned())
+                .into_iter()
+                .collect();
+        if let Some(descriptor) = self
+            .view
+            .descriptor(address)
+            .and_then(|descriptor| self.offered(descriptor, &in_chains))
+        {
+            return Some(descriptor);
+        }
+        self.survey()
+            .into_iter()
+            .find(|descriptor| descriptor.address == *address)
+    }
+
+    /// `descriptor` as [`Self::survey`] offers it, of a tree whose chains
+    /// publish the resources `in_chains`: `None` for one this participant is
+    /// not offered.
+    fn offered(
+        &self,
+        mut descriptor: ActionDescriptor,
+        in_chains: &std::collections::HashSet<String>,
+    ) -> Option<ActionDescriptor> {
+        // An action for people only (copying a link to the clipboard) means
+        // nothing to an agent; the host acting for a person offers it (a
+        // reviewed feedback report a person files).
+        if self.automated() && !descriptor.contract.reaches_agents() {
+            return None;
+        }
+        if !(self.offers(&descriptor, in_chains)
+            || (self.runs_effects && self.automated && offered_when_host_renders(&descriptor)))
+        {
+            return None;
+        }
+        if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
+            descriptor.params.retain(|param| param.name != PATH_PARAM);
+        }
+        Some(descriptor)
     }
 
     /// Whether [`Self::survey`] lists `descriptor`, of a tree whose chains
@@ -782,6 +816,25 @@ impl Replica {
     #[must_use]
     pub fn keeps_beside(&self, record: &RecordId) -> bool {
         self.view.beside(record).is_some()
+    }
+
+    /// Take this replica's records to come from its workspace's hosts, which
+    /// send a public workspace's records only once they are asked for: a
+    /// chain it holds no part of asks for its head, and writes to it wait
+    /// for the answer ([`Self::wanted_records`]).
+    pub fn ask_workspace_for_missing(&self) {
+        self.view.ask_workspace_for_missing();
+    }
+
+    /// What this replica's records ask the workspace's hosts for.
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        self.view.wanted_records()
+    }
+
+    /// The workspace's hosts hold none of `record`, which this replica asked for.
+    pub fn workspace_answered(&mut self, record: RecordId) {
+        self.view.workspace_answered(record);
     }
 
     /// The records held beside this one ([`Self::keeps_beside`]), by id.

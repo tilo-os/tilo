@@ -50,6 +50,7 @@ use crate::merge_view::MergeView;
 use crate::resource::session;
 use ui::chrome::status_bar;
 use ui::icons::Icon;
+use ui::widget::DrawChild;
 
 /// The error the `error` screenshot scenario shows.
 const SHOT_LOAD_ERROR: &str = "Couldn’t read the selected files. Check permissions and try again.";
@@ -1128,8 +1129,8 @@ impl Widget for DiffMergeApp {
             self.reveal_folder_row(self.folder_selection, row_h);
         } else {
             match self.mode {
-                Mode::Diff => self.diff.draw(scene, transform, tr, theme, presence),
-                Mode::Merge => self.merge.draw(scene, transform, tr, theme, presence),
+                Mode::Diff => self.diff.draw_child(scene, transform, tr, theme, presence),
+                Mode::Merge => self.merge.draw_child(scene, transform, tr, theme, presence),
             }
         }
 

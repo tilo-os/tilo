@@ -32,7 +32,7 @@ use tilo_desktop_policy::DesktopPolicy;
 use ui::widget::Wells;
 use ui::widget::arrange::rem_of;
 
-use crate::desktop::{DeskGesture, GestureReader, Reading, WindowFollowers, WindowObserver};
+use crate::desktop::{DeskGesture, GestureReader, WindowFollowers, WindowObserver};
 use crate::widget::WidgetHost;
 
 /// Where a window not shown waits: left of every output, out of sight and out of the pointer's
@@ -401,15 +401,10 @@ impl WindowPolicy for WellPolicy {
     }
 
     fn gesture(&mut self, gesture: &GestureEvent) -> bool {
-        let config = self.desk.gesture_config();
-        match self.gestures.read(gesture, config) {
-            Reading::Clients => false,
-            Reading::Taken => true,
-            Reading::Asked(asked) => {
-                self.desk.took_gesture(asked);
-                true
-            }
-        }
+        let desk = &self.desk;
+        self.gestures.take(gesture, desk.gesture_config(), |asked| {
+            desk.took_gesture(asked);
+        })
     }
 
     fn focused(&mut self) -> Option<u64> {

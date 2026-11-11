@@ -1068,7 +1068,7 @@ impl ui::widget::Decorator for SnippetsWindow {
             .body
             .control_mut()
             .set_rect(Rect::ZERO);
-        Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme, presence);
     }
 
     fn draw_overlay(

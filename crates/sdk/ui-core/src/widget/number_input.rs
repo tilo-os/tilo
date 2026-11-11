@@ -19,6 +19,7 @@ use crate::num::f32_of_f64;
 use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 #[path = "number_input_component.rs"]
 mod component;
 use crate::widget::TaffyTreeExt;
@@ -943,7 +944,7 @@ impl Widget for NumberInput {
             face.paint_value(&mut ctx);
         } else {
             self.field
-                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
+                .draw_child(ctx.scene, ctx.transform, ctx.text, theme, presence);
         }
 
         if disabled {

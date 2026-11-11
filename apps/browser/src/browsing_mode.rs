@@ -56,6 +56,13 @@ impl BrowsingMode {
     pub const fn has_own_profile(self) -> bool {
         matches!(self, Self::Private | Self::Visitor)
     }
+
+    /// Whether nothing the page reaches leaves without the person's answer:
+    /// a window an agent operates holds every departure, while the person's
+    /// own window sends what they click on.
+    pub const fn holds_departures(self) -> bool {
+        matches!(self, Self::Visitor)
+    }
 }
 
 #[cfg(test)]
@@ -80,5 +87,15 @@ mod tests {
         assert_eq!(BrowsingMode::of_launch(true, true), BrowsingMode::Private);
         assert_eq!(BrowsingMode::of_launch(false, true), BrowsingMode::Visitor);
         assert_eq!(BrowsingMode::of_launch(false, false), BrowsingMode::Normal);
+    }
+
+    /// Only the window an agent operates holds what its page sends; the
+    /// person's own clicks in their own window leave as they are made.
+    #[test]
+    fn only_the_window_an_agent_operates_holds_what_the_page_sends() {
+        assert!(BrowsingMode::Visitor.holds_departures());
+        for mode in [BrowsingMode::Normal, BrowsingMode::Private] {
+            assert!(!mode.holds_departures(), "{mode:?}");
+        }
     }
 }

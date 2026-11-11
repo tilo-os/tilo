@@ -10,7 +10,8 @@
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tilo_relay_protocol::workspaces::{
-    PendingInvite, Workspace, WorkspaceMember, WorkspaceRole, WorkspacesReply, WorkspacesRequest,
+    PendingInvite, WaitListEntry, Workspace, WorkspaceMember, WorkspaceRole, WorkspacesReply,
+    WorkspacesRequest,
 };
 use tilo_workspace_join::encode_invitation_text;
 use wasm_bindgen::prelude::*;
@@ -34,8 +35,11 @@ struct RoomsArgs {
     role: String,
     expires_in_seconds: Option<u64>,
     inviter_name: Option<String>,
+    wait_list_entry: Option<String>,
     user_public_key: Option<String>,
     invite_id: Option<String>,
+    request_id: Option<String>,
+    link: String,
 }
 
 /// The role a host is asked for, under the name the workspace settings give it.
@@ -69,7 +73,11 @@ impl RoomsArgs {
             expires_at_ns: ui::time::unix_now_ns()
                 .saturating_add(seconds(self.expires_in_seconds)?.saturating_mul(1_000_000_000)),
             inviter_name: self.inviter_name.clone(),
-            retired_wait_list_entry: None,
+            wait_list_entry: self
+                .wait_list_entry
+                .as_deref()
+                .map(device_key)
+                .transpose()?,
             recipient: None,
         })
     }
@@ -130,6 +138,12 @@ fn invitation(value: &PendingInvite) -> Value {
         "expiresAtMs": millis(value.expires_at_ns)})
 }
 
+fn listed(value: &WaitListEntry) -> Value {
+    json!({"requestId": hex::encode(value.request_id), "contact": value.contact,
+        "addedAtMs": millis(value.added_at_ns),
+        "invitedAtMs": value.invited_at_ns.map(millis)})
+}
+
 /// What `reply` answered, which must be what the call asked for.
 fn answered<T>(
     reply: WorkspacesReply,
@@ -147,6 +161,7 @@ fn entries(reply: WorkspacesReply, wanted: &str) -> Result<Value, JsError> {
     Ok(Value::Array(match reply {
         WorkspacesReply::Refused(reason) => return Err(js_error(reason)),
         WorkspacesReply::Pending(list) => list.iter().map(invitation).collect(),
+        WorkspacesReply::WaitList(list) => list.iter().map(listed).collect(),
         _ => {
             return Err(js_error(format!(
                 "the host answered something else than its {wanted}"
@@ -230,6 +245,28 @@ impl WasmPeer {
                     None => return Err(js_error("the host does not govern this workspace")),
                 }
             }
+            "waitList" => entries(
+                self.rooms_request(WorkspacesRequest::WaitList { workspace: room })
+                    .await?,
+                "wait list",
+            )?,
+            "unlist" => entries(
+                self.rooms_request(WorkspacesRequest::Unlist {
+                    workspace: room.clone(),
+                    request_id: named_key(args.request_id.as_ref(), "wait-list entry")?,
+                })
+                .await?,
+                "wait list",
+            )?,
+            "mailInvite" => entries(
+                self.rooms_request(WorkspacesRequest::MailInvite {
+                    workspace: room.clone(),
+                    wait_list_entry: named_key(args.request_id.as_ref(), "wait-list entry")?,
+                    link: args.link.clone(),
+                })
+                .await?,
+                "wait list",
+            )?,
             "setRole" => one(self
                 .rooms_request(WorkspacesRequest::SetRole {
                     workspace: room.clone(),

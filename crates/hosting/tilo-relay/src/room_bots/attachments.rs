@@ -48,6 +48,10 @@ const HOUR_MS: u64 = 3_600_000;
 /// How often the parts members wrote to are read for their files: a busy
 /// Chat takes many writes a second, and one read finds all their files.
 const READ_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
+/// How often the files being gathered are looked at for the pieces a lost one
+/// left missing, so a member's answer arrives whole without waiting for the
+/// next write to the part that named it.
+const MISSING_EVERY: std::time::Duration = std::time::Duration::from_millis(100);
 
 /// How much of members' posted files a host keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,6 +265,8 @@ impl WorkspaceAttachments {
         again.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut read = tokio::time::interval(READ_EVERY);
         read.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        let mut missing = tokio::time::interval(MISSING_EVERY);
+        missing.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         self.read_all().await;
         loop {
             tokio::select! {
@@ -280,12 +286,32 @@ impl WorkspaceAttachments {
                         self.read_part(&part).await;
                     }
                 }
+                _ = missing.tick() => self.ask_again_for_missing().await,
                 _ = again.tick() => {
                     let parts = std::mem::take(&mut self.state.lock_recover().unanswered);
                     for part in parts {
                         self.read_part(&part).await;
                     }
                 }
+            }
+        }
+    }
+
+    /// Ask the workspace again for the files being gathered that a lost piece
+    /// left short: an answer carries only so much of a file at a time, and a
+    /// piece a session could not deliver is not sent again by itself, so the
+    /// host asks within [`neighbour_wire::content::PIECE_PATIENCE_MS`] of the
+    /// last piece it got, naming what it holds.
+    async fn ask_again_for_missing(&self) {
+        let asks = {
+            let mut state = self.state.lock_recover();
+            state.wants.reask(&self.host, now_ms())
+        };
+        // Every file here belongs to this one workspace, whatever member
+        // posted it.
+        for (_, ask) in asks {
+            if let Err(error) = self.workspaces.ask_members(&self.workspace, ask).await {
+                tracing::debug!(workspace = %self.workspace, %error, "could not ask the room for a file it is missing");
             }
         }
     }
@@ -502,7 +528,7 @@ impl ContentKeeper for WorkspaceAttachments {
             return;
         }
         let mut state = self.state.lock_recover();
-        if let Some(arrived) = state.wants.piece(&self.host, frame) {
+        if let Some(arrived) = state.wants.piece(&self.host, frame, now_ms()) {
             self.keep(&mut state, &arrived.tag, &arrived.hash, &arrived.bytes);
         }
     }

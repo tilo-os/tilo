@@ -76,10 +76,10 @@ pub struct Hello {
     /// sign.
     pub client_nonce: [u8; 32],
     /// The workspace a device the host has not admitted yet asks to enter
-    /// through its door ([`crate::entering`]). Only the host's session
-    /// endpoint takes it; every other endpoint refuses a hello that carries
-    /// one.
-    pub entering: Option<crate::entering::Entering>,
+    /// through its door, and the device's proof ([`crate::entering`]). Only
+    /// the host's session endpoint takes it; every other endpoint refuses a
+    /// hello that carries one.
+    pub entering: Option<crate::entering::Entry>,
 }
 
 /// Second message: server → client.
@@ -113,15 +113,15 @@ impl Hello {
     }
 
     /// The hello of a device the host has not admitted yet, asking to come
-    /// in as `entering` says.
+    /// in as `entry` says.
     #[must_use]
     pub fn entering(
         cert: DeviceCert,
         client_nonce: [u8; 32],
-        entering: crate::entering::Entering,
+        entry: crate::entering::Entry,
     ) -> Self {
         Self {
-            entering: Some(entering),
+            entering: Some(entry),
             ..Self::new(cert, client_nonce)
         }
     }
@@ -321,6 +321,49 @@ pub fn server_begin(
         &hello.client_nonce,
     );
     Ok((PendingServer { peer, server_nonce }, ack))
+}
+
+/// The server side of an entry ([`crate::entering`]): check the entering
+/// device's certificate as any device's (valid and unrevoked, of any person)
+/// and its proof under `binding`, the keying material this end exported from
+/// the connection carrying the hello, and return the peer with the
+/// [`HelloAck`] that proves this server to it. No `HelloAck2` follows: the
+/// entry's proof is the device's proof of its key on this connection.
+///
+/// `server_nonce` must be fresh randomness for every handshake.
+///
+/// # Errors
+///
+/// As [`server_begin`] for the certificate; [`AuthError::BadChallengeSig`]
+/// for a hello that carries no entry or whose proof does not verify.
+pub fn server_enter(
+    identity: &ServerIdentity<'_>,
+    revocations: &RevocationList,
+    hello: &Hello,
+    binding: &[u8; 32],
+    now_ns: u64,
+    server_nonce: [u8; 32],
+) -> Result<(AuthenticatedPeer, HelloAck), AuthError> {
+    let entry = hello.entering.as_ref().ok_or(AuthError::BadChallengeSig)?;
+    let peer = admit_cert(
+        &hello.cert,
+        identity.own_user,
+        HandshakeTrust::AnyCertifiedDevice,
+        revocations,
+        now_ns,
+    )?;
+    let digest = crate::entering::entry_digest(binding, &peer.device_public_key, &entry.entering);
+    ed25519_dalek::VerifyingKey::from_bytes(&peer.device_public_key)
+        .map_err(|_| AuthError::BadChallengeSig)?
+        .verify(&digest, &ed25519_dalek::Signature::from_bytes(&entry.proof))
+        .map_err(|_| AuthError::BadChallengeSig)?;
+    let ack = build_hello_ack(
+        identity.cert.clone(),
+        identity.key,
+        server_nonce,
+        &hello.client_nonce,
+    );
+    Ok((peer, ack))
 }
 
 /// Authenticate a certificate offered over a transport that already proved

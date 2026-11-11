@@ -33,6 +33,7 @@ use ui::winit::event::{ElementState, WindowEvent};
 
 use crate::link::{Ask, BarFeed, BarPlace, Command, Link, Placement, Shown};
 use crate::resource::{BarEffect, TopBar};
+use ui::widget::DrawChild;
 
 /// A menu or card a bar asked to open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -690,7 +691,7 @@ impl Widget for TopBarSurface {
         for (bar, suppressed) in self.bars.iter_mut().zip(suppressed) {
             if !suppressed {
                 bar.widget
-                    .draw(scene, transform, text_renderer, theme, presence);
+                    .draw_child(scene, transform, text_renderer, theme, presence);
             }
         }
         if self.menu.is_open() {

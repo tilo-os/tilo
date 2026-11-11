@@ -6,6 +6,8 @@ use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperati
 /// Handle `OpenRecord`: under the admission a replay has, mark the record
 /// held by the device, so its live changes reach it from now on, then send
 /// it everything retained of the record and, after it, [`Envelope::RecordOpened`].
+/// A chain's head ([`neighbour_wire::chain_head`]) sends the chain's newest
+/// part, and the device follows the chain's heads from then on.
 /// Marking first means no change committed meanwhile is missed; one that is
 /// both sent and retained arrives twice, which a record takes as once.
 pub(super) async fn handle_open_record(
@@ -40,12 +42,24 @@ pub(super) async fn handle_open_record(
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused("workspace not bound on this relay");
     };
+    // A chain's head names whichever part is the chain's newest: that part
+    // is what is sent.
+    let head = {
+        let store = ws.lock().await.store.clone();
+        tokio::task::spawn_blocking(move || store.chain_head_channel(&channel))
+            .await
+            .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??
+    };
     let (store, governed) = {
         let mut runtime = crate::workspace_io::fresh_membership(&ws).await?;
         if !session.admits(&runtime, peer, WorkspaceOperation::State) {
             return refused("device not in workspace membership");
         }
-        runtime.hold_record(&peer.device_public_key, channel);
+        let device = &peer.device_public_key;
+        runtime.hold_record(device, channel);
+        if let Some(head) = head {
+            runtime.hold_record(device, head);
+        }
         (
             runtime.store.clone(),
             runtime
@@ -54,13 +68,17 @@ pub(super) async fn handle_open_record(
                 .and_then(crate::workspaces::WorkspaceAuthority::workspaces),
         )
     };
+    // Sent whether or not the device holds the head already: an answer of no
+    // frames says the chain has no part at all, never "you have it", so a
+    // device whose copy has not opened yet never takes the chain as empty.
+    let read = head.unwrap_or(channel);
     let frames = tokio::task::spawn_blocking(move || {
-        let mut frames = store.record_frames(&channel)?;
+        let mut frames = store.record_frames(&read)?;
         // A linked member's write whose copy to the relay has not landed yet
         // is kept by the workspace's link: sent from there, so the page never
         // hears the record is absent while the workspace's host keeps it.
         if let Some(governed) = governed {
-            match governed.link_frames_lacking(workspace_id, channel, &frames) {
+            match governed.link_frames_lacking(workspace_id, read, &frames) {
                 Ok(lacking) => frames.extend(lacking),
                 Err(error) => {
                     return Err(PeerError::Protocol(format!(

@@ -410,11 +410,22 @@ def in_shell(ctx, terminal: ae.Terminal, tree: str, name: str, script: str) -> N
     and runs there: the shell types one short line, never the script, so nothing of it is lost to
     the typing on a busy box. Returns once the script has run."""
     done = f"{SCRIPTS}/{name}.done"
-    ae.slot_write(ctx, f"{tree}/{SCRIPTS}/{name}.sh", (script.strip() + f"\necho ok > ~/{done}\n").encode())
+    # Every command's complaint goes to the script's log, and the end writes its own exit status:
+    # a person's commands that succeed say nothing.
+    body = "\n".join(f"{line} || echo \"failed ($?): {line.strip()}\" >&2" if line.strip() and not
+                      line.lstrip().startswith(("if ", "fi", "then", "else")) and not line.rstrip().endswith(
+                          ("then", "do", "\\")) else line for line in script.strip().splitlines())
+    ae.slot_write(ctx, f"{tree}/{SCRIPTS}/{name}.sh",
+                  (f"exec 2>/tmp/e2e-{name}.log\n{body}\ncat /tmp/e2e-{name}.log > ~/{done}\n"
+                   f"echo ok >> ~/{done}\n").encode())
     terminal.bash(f"bash ~/{SCRIPTS}/{name}.sh")
-    if wait_until(lambda: tree_read(ctx, tree, done), ae.SHELL_S, interval=1.0) is None:
+    said = wait_until(lambda: tree_read(ctx, tree, done), ae.SHELL_S, interval=1.0)
+    if said is None:
         ctx.write(f"{name}-screen.txt", terminal.screen())
-        raise CheckFailed(f"{terminal.name}: ~/{SCRIPTS}/{name}.sh did not finish in its shell")
+        raise CheckFailed(f"{terminal.name}: ~/{SCRIPTS}/{name}.sh did not finish in its shell: "
+                          f"{terminal.screen()[-1500:]}")
+    if said.strip() != "ok":
+        raise CheckFailed(f"{terminal.name}: ~/{SCRIPTS}/{name}.sh failed in its shell: {said[-1500:]}")
 
 
 # What a shell in an environment says about itself and its tree, a field a line.
@@ -744,8 +755,8 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
     and among what the desk's search lists in front."""
     ae.select_workspace(ctx, ws)
     if not app_rows(ctx, CHAT):
-        ctx.open_app(CHAT)
-    rows = wait_until(lambda: chat_rows(ctx, "read") or None, 15, interval=1.0)
+        open_by_id(ctx, CHAT)
+    rows = wait_until(lambda: chat_rows(ctx, "read") or None, 30, interval=1.0)
     read = ae.invoke(ctx, rows[0]["provider"], rows[0]["id"], {}, name=f"chat-read-{label}") if rows else None
     listed = [r for r in ctx.vm.actions(text) if text in json.dumps(r)]
     shown = [t.get("name") for t in ctx.vm.targets() if text in str(t.get("name", ""))]
@@ -753,6 +764,26 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
                                                "offered": offered(ctx, CHAT)}, indent=1, default=str))
     return {"read": text in json.dumps(read, default=str), "listed": bool(listed), "shown": bool(shown),
             "readable": rows is not None}
+
+
+def open_by_id(ctx, app: str, patience: float = TERMINAL_S) -> None:
+    """Open `app` in the workspace in front by its id, as the launcher does, and wait until it
+    offers its actions there: a window the desk opened again for it counts as much as a new one."""
+    deadline = time.monotonic() + patience
+    asked = False
+    while not app_rows(ctx, app):
+        awake(ctx)
+        if time.monotonic() > deadline:
+            raise CheckFailed(f"{app} offers nothing {patience:.0f} s after it was asked for "
+                              f"({'asked' if asked else 'never in the catalogue'}): {app_evidence(ctx, app)}")
+        if not asked:
+            try:
+                ctx.vm.invoke("applications", app)
+                asked = True
+            except VmError as exc:
+                if "unknown_action" not in str(exc):
+                    raise
+        time.sleep(2)
 
 
 def holds(heard: dict) -> bool:
@@ -763,7 +794,7 @@ def holds(heard: dict) -> bool:
 def post_chat(ctx, ws: dict, text: str) -> None:
     """The person says `text` in `ws`'s chat, in its first channel, through Chat's own post."""
     ae.select_workspace(ctx, ws)
-    ctx.open_app(CHAT)
+    open_by_id(ctx, CHAT)
     rows = wait_until(lambda: chat_rows(ctx, "post") or None, 10, interval=1.0)
     if rows:
         ae.invoke(ctx, rows[0]["provider"], rows[0]["id"], {"channel": CHAT_CHANNEL, "text": text},
@@ -771,7 +802,10 @@ def post_chat(ctx, ws: dict, text: str) -> None:
         return
     # Chat offers a person no post of its own until the channel holds a message: they write in the
     # channel's composer and press Enter.
-    if not wait_until(lambda: any(t.get("name") == COMPOSER for t in ctx.vm.targets()) or None, 30, interval=1.0):
+    # Chat draws its own window, in software on a box without a GPU: its first frame, and the
+    # composer in it, can take a minute and more.
+    if not wait_until(lambda: any(t.get("name") == COMPOSER for t in ctx.vm.targets()) or None, TERMINAL_S,
+                      interval=2.0):
         said = ctx.vm.exec(
             f"sed 's/\\x1b\\[[0-9;]*m//g' \"{core.SESSION_LOG}\" | grep -ai 'chat' "
             "| grep -avE 'FRAME-LIFECYCLE|paint-stats' | tail -n 40 | cut -c1-300; "
@@ -794,7 +828,8 @@ def post_chat(ctx, ws: dict, text: str) -> None:
         said = crash + "\n" + said
         ctx.write("WB01-chat-said.txt", said)
         raise Unobservable(f"Chat in {ws.get('name')} shows no {COMPOSER!r} and offers no post; it offers "
-                           f"{offered(ctx, CHAT)}; Chat's crash: {crash[-2000:]}; its drawing: {gpu[-2500:]}")
+                           f"{offered(ctx, CHAT)}; Chat's crash: {crash[-2000:]}; its drawing: {gpu[-2500:]}; "
+                           f"{app_evidence(ctx, CHAT)}")
     ae.press(ctx, COMPOSER)
     ctx.vm.input("type", text)
     ctx.vm.key("Return")
@@ -1035,7 +1070,9 @@ def after_restart(ctx, res):
     # Chat works in the first branch after the restart: it still holds none of the source's chat,
     # takes a line of its own, and its records' history is not held back; the source keeps its chat.
     first = scene["branches"][0]
-    if scene["chat"]:
+    if not scene["chat"]:
+        problems.append("Chat after the restart is unobservable: the source's chat was never set up (WB01)")
+    else:
         try:
             before = chat_says(ctx, first, scene["chat"], "restarted-branch")
             problems.want(not holds(before), f"after the restart {first['name']}'s Chat holds the source's "

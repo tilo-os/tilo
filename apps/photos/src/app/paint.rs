@@ -27,6 +27,7 @@ use super::{
     card_action_controls, displayed_image_rect, thumbnail_key, timeline_date_label,
     timeline_row_height,
 };
+use ui::widget::DrawChild;
 
 /// Coarse, bundled coastlines for the private/offline Places overview. These
 /// are intentionally only continental silhouettes: they add orientation but
@@ -206,7 +207,7 @@ impl Photos {
         theme: &Theme,
     ) {
         if let Some(empty) = empty {
-            empty.draw(
+            empty.draw_child(
                 scene,
                 transform,
                 text_renderer,
@@ -440,7 +441,7 @@ impl Photos {
                 x = rect.x0 - gap;
                 button.set_enabled(enabled);
                 button.apply_layout_external(rect);
-                button.draw(ctx.scene, ctx.transform, ctx.text, theme, &presence);
+                button.draw_child(ctx.scene, ctx.transform, ctx.text, theme, &presence);
                 rects.push((hit, rect, enabled));
                 if hit == next {
                     x -= label_w + gap;
@@ -755,7 +756,7 @@ impl Photos {
             self.library_analysis_progress
                 .apply_layout_external(Rect::new(frame.x0, y, frame.x1, y + bar_h));
             self.library_analysis_progress
-                .draw(ctx.scene, transform, ctx.text, theme, presence);
+                .draw_child(ctx.scene, transform, ctx.text, theme, presence);
             y += bar_h + related;
             if let Some(name) = self.library_analysis.current_name.as_deref() {
                 ctx.text_role(
@@ -806,7 +807,7 @@ impl Photos {
                     .icon(icon)
                     .intrinsic_width(ctx.text, theme);
                 button.apply_layout_external(Rect::new(x, y, x + width, y + button_h));
-                button.draw(ctx.scene, transform, ctx.text, theme, presence);
+                button.draw_child(ctx.scene, transform, ctx.text, theme, presence);
                 x += width + related;
             } else {
                 button.apply_layout_external(Rect::ZERO);

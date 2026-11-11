@@ -4,7 +4,7 @@
 use super::{build_test_widget, send_cursor_move, send_left_press, shell_command};
 use crate::TerminalWidget;
 use automerge::{AutoCommit, ROOT};
-use ui::widget::Widget as _;
+use ui::widget::DrawChild;
 use vello::kurbo::Rect;
 
 #[test]
@@ -27,7 +27,7 @@ fn ended_session_banner_reserves_its_own_band_above_the_grid() {
         widget.force_geometry(viewport, 10.0, 20.0);
         let theme = Theme::dark().with_text_scale(scale);
         let mut scene = Scene::new();
-        widget.draw(
+        widget.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -71,7 +71,7 @@ fn an_ended_shell_restarts_in_place() {
         w.is_disconnected() && w.grid_text().contains("before")
     });
     widget.force_geometry(Rect::new(0.0, 0.0, 600.0, 400.0), 10.0, 20.0);
-    widget.draw(
+    widget.draw_child(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),
@@ -141,7 +141,7 @@ fn the_history_bar_shows_on_scroll_and_fades_at_rest() {
     use vello::{Scene, kurbo::Affine};
 
     let draw = |w: &mut TerminalWidget, theme: &Theme| {
-        w.draw(
+        w.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),

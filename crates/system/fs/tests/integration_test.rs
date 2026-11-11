@@ -1110,7 +1110,7 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                     .expect("chmod +x");
                 assert_eq!(mode(&tool), 0o755, "chmod is kept");
                 let ran = std::process::Command::new(&tool)
-                    .output()
+                    .output_locked()
                     .expect("the tool runs");
                 assert_eq!(ran.stdout, b"ran\n");
                 std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o4755))

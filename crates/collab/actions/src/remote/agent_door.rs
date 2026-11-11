@@ -121,6 +121,12 @@ pub struct Grant {
     pub last_ms: Option<i64>,
     /// Its runs open now, oldest first.
     pub runs: Vec<Run>,
+    /// The key operates web pages in Browser without asking the person each
+    /// time, as its certificate carries it
+    /// ([`tilo_user_identity::DeviceCapabilities::browser_pages`]): what it
+    /// opens, fills, selects and clicks runs on the person's word, while
+    /// submitting a page still asks them.
+    pub browser_pages: bool,
 }
 
 impl Grant {

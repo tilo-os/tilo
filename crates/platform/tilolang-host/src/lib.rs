@@ -896,6 +896,7 @@ impl TilolangHost {
                     app,
                     record,
                     mutation,
+                    document: None,
                 })
                 .collect::<Vec<_>>(),
         )

@@ -16,13 +16,25 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | [`DIRECTORY_PATH`] | none | [`DirectoryPage`] |
-//! | `<door>join` | [`DoorJoin`] | [`DoorAnswer`] |
 //! | `<door>report` | [`DoorReport`] | `204` |
 //! | `<door>errors` | [`PageError`] | `204` |
+//! | [`WAIT_LIST`] | `{email, language}` | `{email, removal, mail}` |
+//! | [`WAIT_LIST_REMOVE`] | `{secret}` | `{}` |
+//! | [`WAIT_LIST_CONFIRM`] | `{token}` | `{confirmed}` |
+//! | [`WAIT_LIST_STANDING`] | `{secret}` | `{standing}` |
+//!
+//! The wait list is what a door that takes people by invitation keeps for
+//! someone it turns away: an address it may be invited at, confirmed by the
+//! link mailed there, taken off by whoever left it. A door that keeps none
+//! answers its four routes `404`.
 //!
 //! `<door>` is a [`DirectoryEntry::door`], resolved against the directory's
 //! own address. A site names its directory in its `entry.json`
 //! (`directory`, an address), beside its home workspace.
+//!
+//! Joining is not one of these routes: a device enters through a door on the
+//! session it opens with the door's host ([`crate::entering`]), whose origin
+//! is the door's own, and the workspace's door decides there.
 
 use serde::{Deserialize, Serialize};
 
@@ -48,13 +60,32 @@ pub fn door_path(workspace: &str) -> String {
 }
 
 /// The workspace a relay door route below the API prefix names, and what is
-/// asked of it there: `/directory/<workspace>/join` is `(workspace, "join")`.
+/// asked of it there: `/directory/<workspace>/report` is `(workspace, "report")`.
+/// The wait list's acts are the one step of two words:
+/// `…/wait-list/remove` is `(workspace, "wait-list/remove")`.
 #[must_use]
 pub fn door_route(route: &str) -> Option<(&str, &str)> {
     let rest = route.strip_prefix(DIRECTORY_PATH)?.strip_prefix('/')?;
     let (workspace, step) = rest.split_once('/')?;
-    (!workspace.is_empty() && !step.contains('/')).then_some((workspace, step))
+    let two_words = matches!(
+        step,
+        WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STANDING
+    );
+    (!workspace.is_empty() && (two_words || !step.contains('/'))).then_some((workspace, step))
 }
+
+/// The door's wait list: the acts a person who asked without an invitation
+/// leaves an address with, confirms it, takes it off and asks where it
+/// stands, each a step after its door (`<door>wait-list`, below the API
+/// prefix for a relay).
+pub const WAIT_LIST: &str = "wait-list";
+/// The step taking an address off the list with the secret it was handed or
+/// mailed.
+pub const WAIT_LIST_REMOVE: &str = "wait-list/remove";
+/// The step opening the link a confirmation mail carried.
+pub const WAIT_LIST_CONFIRM: &str = "wait-list/confirm";
+/// The step asking where the address a removal secret belongs to stands.
+pub const WAIT_LIST_STANDING: &str = "wait-list/standing";
 
 /// What the owner decided when they made the workspace public.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -147,7 +178,9 @@ pub struct DirectoryPage {
     pub workspaces: Vec<DirectoryEntry>,
 }
 
-/// A person asking a door to let them in.
+/// A person asking a door to let them in: what a device's entry through the
+/// door asks of it ([`crate::entering::Through::Door`]), on its session with
+/// the door's host.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DoorJoin {
@@ -158,23 +191,9 @@ pub struct DoorJoin {
     pub display_name: String,
 }
 
-/// What a door answers a person it lets in: an invitation only they can
-/// redeem and the one-time token that admits them at once.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DoorAnswer {
-    /// The invitation bound to the person, URL-safe base64 without padding.
-    pub invitation: String,
-    /// The token their redemption presents.
-    pub admission_token: String,
-    /// Where to redeem it; the door's own origin when absent.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub origin: Option<String>,
-}
-
 /// Why a door did not let a person in, as it says it: what every caller reads, never a sentence
 /// to match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DoorRefusalCode {
     /// The workspace's people banned them.
@@ -187,18 +206,79 @@ pub enum DoorRefusalCode {
     /// `Retry-After` the answer carries.
     Full,
     /// Anything else; the sentence says what.
+    #[default]
     Refused,
 }
 
 /// What a door answers a person it does not let in (HTTP 403, or 503 with `Retry-After` when
 /// [`DoorRefusalCode::Full`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// It also travels in a session's entry ([`crate::entering::EnterRefusal::Door`]), whose frames
+/// are postcard: a format that names no fields, so every field is written whatever its value. A
+/// field left out when empty shifts the rest, and the device can read no refusal at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoorRefused {
     /// What kind of refusal it is.
     pub code: DoorRefusalCode,
     /// What happened, in plain words.
     pub error: String,
+    /// The workspace takes people by invitation and keeps a wait list
+    /// ([`DoorWaitList`]): the person may leave an address to be invited at.
+    #[serde(default)]
+    pub wait_list: bool,
+    /// Where the person asks to be taken off that list, when whoever runs the
+    /// door named a contact.
+    #[serde(default)]
+    pub contact: Option<String>,
+    /// The door mails the address a link that confirms it: without, it lists
+    /// an address at once.
+    #[serde(default)]
+    pub mail: bool,
+}
+
+impl DoorRefused {
+    /// The refusal, naming the wait list `door` keeps for a workspace taking
+    /// people by invitation.
+    #[must_use]
+    pub fn with_wait_list(mut self, door: Option<&DoorWaitList>) -> Self {
+        if self.code == DoorRefusalCode::InvitationOnly
+            && let Some(door) = door
+        {
+            self.wait_list = true;
+            self.contact.clone_from(&door.contact);
+            self.mail = door.mail;
+        }
+        self
+    }
+
+    /// The refusal as a host action's refusal reason: its JSON, which
+    /// [`Self::from_reason`] reads back typed. A host refuses its own
+    /// operations this way when the person asking was never let in through
+    /// its site's door, so whoever asked hears the door's answer, wait list
+    /// included.
+    #[must_use]
+    pub fn to_reason(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| self.error.clone())
+    }
+
+    /// The door's refusal an action's refusal reason carries, when it carries
+    /// one ([`Self::to_reason`]).
+    #[must_use]
+    pub fn from_reason(reason: &str) -> Option<Self> {
+        serde_json::from_str(reason).ok()
+    }
+}
+
+/// The wait list a door keeps for a workspace that takes people by
+/// invitation: what its page offers someone it turns away, in the refusal's
+/// [`DoorRefused::wait_list`] (`workspaces::Workspaces::offer_wait_list`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DoorWaitList {
+    /// Where someone asks to be taken off the list (`TILO_ROOMS_CONTACT`).
+    pub contact: Option<String>,
+    /// The door mails the address a link that confirms it.
+    pub mail: bool,
 }
 
 /// A report of a public workspace to the people who run it.
@@ -338,17 +418,17 @@ mod tests {
     fn a_door_route_names_its_room_and_step() {
         let workspace = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
         assert_eq!(
-            door_route(&format!("/{}join", door_path(workspace))),
-            Some((workspace, "join"))
+            door_route(&format!("/{}errors", door_path(workspace))),
+            Some((workspace, "errors"))
         );
         assert_eq!(
             door_route(&format!("/directory/{workspace}/report")),
             Some((workspace, "report"))
         );
         assert_eq!(door_route("/directory"), None);
-        assert_eq!(door_route("/directory//join"), None);
+        assert_eq!(door_route("/directory//report"), None);
         assert_eq!(
-            door_route(&format!("/directory/{workspace}/join/more")),
+            door_route(&format!("/directory/{workspace}/report/more")),
             None
         );
         assert_eq!(door_route("/rooms"), None);
@@ -438,10 +518,5 @@ mod tests {
         assert_eq!(listed.default_role, WorkspaceRole::Editor);
         assert_eq!(listed.here_count, 12);
         assert!(listed.here.is_empty());
-        let answer: DoorAnswer = serde_json::from_value(serde_json::json!({
-            "invitation": "abc", "admissionToken": "t"
-        }))
-        .unwrap();
-        assert_eq!(answer.origin, None);
     }
 }

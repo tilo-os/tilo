@@ -31,7 +31,7 @@ use super::agent_work::{
 };
 use super::{
     MessageColumn, RowM, TimelineItem, attachment_icon, clock_label, file_card_height,
-    header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h,
+    header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h, time_label,
 };
 use crate::app::{ChatApp, Hit};
 use crate::model::{self, AgentWork, Message};
@@ -583,7 +583,9 @@ impl ChatApp {
         } else {
             0.0
         };
-        let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
+        // A channel's thread link; a direct conversation shows the answers
+        // themselves, so it has no thread to open.
+        let thread_h = if self.keeps_threads() && model::reply_count(&self.messages, &m.id) > 0 {
             thread_bar_h(theme) + f64::from(sp.s2)
         } else {
             0.0
@@ -899,47 +901,18 @@ impl ChatApp {
                     attachment: index,
                 },
             );
-            *y += gap;
-            let caption = self.resource_navigation.label(&m.id, index, false);
-            let button_w = ButtonFace::new(Rect::ZERO, &caption)
-                .intrinsic_width(tr, theme)
-                .min(width);
-            let rect = Rect::new(column.text_x, *y, column.text_x + button_w, *y + height);
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
-            );
-            ChatApp::push_hit(
-                hits,
-                rect,
-                Hit::CopyResourceLink {
-                    msg: m.id.clone(),
-                    attachment: index,
-                },
-            );
-            *y += height;
         }
     }
 
-    /// The height of the chip and "Copy link" a message's resource
-    /// attachments take: a control's row each, with their gaps.
+    /// The height a message's resource chips take: a control's row each, with its gap. Copying a
+    /// chip's link is in the message's menu, which a right-click on the chip opens.
     fn resource_controls_height(m: &Message, theme: &Theme) -> f64 {
         let height = ButtonFace::height(ControlSize::Regular, theme);
         let gap = f64::from(theme.tokens.spacing.s2);
         m.attachments
             .iter()
             .filter(|attached| attached.is_chip())
-            .map(|attached| {
-                if attached.at().is_some() {
-                    gap + height + gap + height
-                } else {
-                    gap + height
-                }
-            })
-            .fold(0.0, |total, row| total + row)
+            .fold(0.0, |total, _| total + gap + height)
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`
@@ -977,7 +950,7 @@ impl ChatApp {
         // The time's line box is bottom-aligned to the name's, which keeps
         // their baselines together at any text scale.
         let time_style = theme.text(TextRole::Caption).numeric();
-        let clock = clock_label(m.ts);
+        let clock = time_label(m);
         let th = line_of(ctx.text, &time_style);
         let clock_x = end_x + f64::from(theme.tokens.spacing.s2);
         let (clock_w, clock_h) = text(
@@ -1367,9 +1340,13 @@ impl ChatApp {
         let cy = bar.center().y;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         for pid in parts.iter().take(3) {
-            let name = self.user_name(pid);
-            AvatarFace::new(&name, pid)
-                .presence(self.identity_colour(pid))
+            // An agent who answered wears its own face, as its byline does.
+            let name = self.display_name(pid);
+            let mut face = AvatarFace::new(&name, pid);
+            if self.is_agent_author(pid) {
+                face = face.agent();
+            }
+            face.presence(self.identity_colour(pid))
                 .ringed_on(if open || self.hovered(bar) {
                     ground
                 } else {

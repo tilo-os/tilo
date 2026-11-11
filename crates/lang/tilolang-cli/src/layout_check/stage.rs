@@ -62,16 +62,10 @@ impl Platform for Packages {
     }
 
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
+        // A number stays a number, so a plural rule selects by it.
         let args: Vec<(&str, ui::i18n::ArgValue)> = args
             .iter()
-            .map(|(name, value)| {
-                // A number stays a number, so a plural rule selects by it.
-                let value: ui::i18n::ArgValue = match value.parse::<f64>() {
-                    Ok(number) => number.into(),
-                    Err(_) => value.as_str().into(),
-                };
-                (name.as_str(), value)
-            })
+            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
             .collect();
         tilo_ui_host::i18n::t_args(id, &args)
     }
@@ -649,19 +643,33 @@ impl Staged {
         self.window()?.composed().cloned()
     }
 
-    /// The trees of the rows the window's lists show, by row key: a list draws each row as one
-    /// widget keyed by the row, from the row view's nodes.
-    pub fn rows(&mut self) -> std::collections::HashMap<String, tilo_ui_host::UiNode> {
-        let mut out = std::collections::HashMap::new();
+    /// The trees of the rows the window's lists show, each with its key, in the order the window
+    /// lists them: the lists of the window's own lane first and the lists of every other lane
+    /// after them, each lane's by key, and each list's rows as its own model orders them. A row
+    /// taken off this is the row a person meets first, and the same row in every process and at
+    /// every size.
+    pub fn rows(&mut self) -> Vec<(String, tilo_ui_host::UiNode)> {
         let Some(window) = self.window() else {
-            return out;
+            return Vec::new();
         };
-        for list in window.lists() {
+        let mut lists: Vec<(bool, String)> = window
+            .lists()
+            .into_iter()
+            .map(|list| {
+                let elsewhere = window
+                    .rows_of(&list)
+                    .is_some_and(|rows| rows.borrow().lane() != tilo_ui_host::Lane::Root);
+                (elsewhere, list)
+            })
+            .collect();
+        lists.sort();
+        let mut out = Vec::new();
+        for (_, list) in lists {
             if let Some(rows) = window.rows_of(&list) {
                 let rows = rows.borrow();
-                for key in rows.rendered() {
+                for key in rows.in_order() {
                     if let Some(row) = rows.row(&key) {
-                        out.insert(key, row.clone());
+                        out.push((key, row.clone()));
                     }
                 }
             }
@@ -709,24 +717,13 @@ impl Staged {
         self.settle()
     }
 
-    /// Press one of the window's bar slots by its id, as the desktop hands the press over: the
-    /// shell's own Back, an action the app's page declared. The bar is the window's, so the press
-    /// reaches the app through it, never through a widget of the frame.
-    pub fn press_bar_slot(&mut self, id: &str) -> Result<(), String> {
-        self.harness
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::Action { id: id.into() });
-        self.exchange();
-        self.settle()
-    }
-
-    /// Press the window's sidebar toggle in its bar, as a person holding a window whose list
-    /// stands over what it shows brings that list forward: the shell's own slot, which the bar
-    /// hands the app through the window.
-    pub fn press_sidebar_toggle(&mut self) -> Result<(), String> {
-        self.harness
-            .press_window_slot(ui::window_toolbar::ToolbarEvent::ToggleSidebar);
-        self.exchange();
-        self.settle()
+    /// Press the shell's own control `id` in the window's header row — its Back, its sidebar
+    /// toggle — as the person holding the window presses it: a finger's tap where the window is
+    /// held in the hand, a click otherwise.
+    pub fn press_shell(&mut self, id: &str) -> Result<(), String> {
+        let touch = self.harness.interaction_environment().modality
+            == ui::interaction::InputModality::Touch;
+        self.press(id, touch)
     }
 
     /// Press `x`, `y` as a person presses them, and let the window and its instance answer: what
@@ -1018,39 +1015,6 @@ mod tests {
         }
     }
 
-    /// The check box the frame binds to a published action: the one control of `descriptor`'s
-    /// exactly, holding a check box where a person would press.
-    fn bound_check(
-        staged: &Staged,
-        descriptors: &[tilo_actions::ActionDescriptor],
-    ) -> Option<(
-        tilo_actions::ActionDescriptor,
-        String,
-        ui::kurbo::Rect,
-        ui::kurbo::Rect,
-    )> {
-        let controls = staged.harness().controls();
-        for descriptor in descriptors {
-            let routes = staged.harness().action_ui_routes(&descriptor.address);
-            let [route] = routes.as_slice() else {
-                continue;
-            };
-            let Some(control) = route.bounds else {
-                continue;
-            };
-            let Some(check) = controls
-                .iter()
-                .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
-                .filter_map(|shown| shown.bounds)
-                .find(|bounds| control.contains(bounds.center()))
-            else {
-                continue;
-            };
-            return Some((descriptor.clone(), route.control_id.clone(), control, check));
-        }
-        None
-    }
-
     /// The agent's interaction with `descriptor`, as an agent states it: one action, applying.
     fn interaction(
         descriptor: &tilo_actions::ActionDescriptor,
@@ -1119,14 +1083,15 @@ mod tests {
         staged
             .harness()
             .render_png(&captures.join(format!("{name}-agent-marker.png")));
+        let faults = ui::presence::tag_faults(&staged.harness().inspection().root);
+        assert!(faults.is_empty(), "the agent's tag: {faults:?}");
         (before, staged.harness().render_rgba())
     }
 
-    /// The bar the desktop draws over the app's frame keeps one "…" and shows each control
-    /// once: an app's own door to what does not fit is the bar's door, not a second one beside
-    /// it.
+    /// The window's header row keeps one "…" and shows each control once, and the bar over it
+    /// offers none of them again: what does not fit the row goes behind the row's one door.
     #[test]
-    fn the_window_bar_shows_each_control_once() {
+    fn the_window_shows_each_control_once() {
         tilo_ui_host::i18n::ensure();
         let packages = app_packages("tasks");
         let app = packages.0.last().expect("the app").meta.app.clone();
@@ -1150,33 +1115,38 @@ mod tests {
             )
             .expect("the window lies out");
         let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-        let named = |bar: &ui::window_toolbar::BarLayout| -> String {
-            bar.controls
-                .iter()
-                .map(|control| format!("{}:{}", control.slot, control.name))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        let doors = bar
-            .controls
+        let row = crate::layout_check::header_row_controls(&staged, (width, height));
+        let named = row
             .iter()
-            .filter(|control| {
-                control.icon.as_deref() == Some(ui::icons::Icon::MoreHorizontal.name())
-            })
-            .count();
-        assert_eq!(doors, 1, "one bar keeps one \"…\": {}", named(&bar));
-        let problems = crate::layout_check::audit::bar(&bar);
+            .map(|control| control.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let doors = row.iter().filter(|control| control.menu).count();
+        assert_eq!(doors, 1, "the window's row keeps one \"…\": {named}");
+        let mut distinct: Vec<&str> = row.iter().map(|control| control.name.as_str()).collect();
+        distinct.sort_unstable();
+        distinct.dedup();
+        assert_eq!(
+            distinct.len(),
+            row.len(),
+            "the row shows each control once: {named}"
+        );
+        let buttons: Vec<String> = row.iter().map(|control| control.name.clone()).collect();
+        let problems: Vec<_> = crate::layout_check::audit::bar(&bar)
+            .into_iter()
+            .chain(crate::layout_check::audit::offered_twice(&bar, &buttons))
+            .collect();
         assert!(
             problems.is_empty(),
-            "the bar shows each control once: {:?} ({})",
+            "the bar offers nothing the row does: {:?} ({named})",
             problems.iter().map(|p| p.kind).collect::<Vec<_>>(),
-            named(&bar),
         );
     }
 
     /// A window with nothing to act on offers no action: Mail with no account yet says where an
-    /// account comes from and stands no New message in its bar, at every width the bar has room
-    /// for the words or not, while a window with an account offers it as the primary button.
+    /// account comes from and stands no New message in its header row, at every width the row
+    /// has room for the words or not, while a window with an account offers it as the primary
+    /// button.
     #[test]
     fn a_mail_window_with_no_account_offers_no_new_message() {
         tilo_ui_host::i18n::ensure();
@@ -1202,11 +1172,10 @@ mod tests {
                     1.0,
                 )
                 .expect("the window lies out");
-            let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-            bar.controls
+            crate::layout_check::header_row_controls(&staged, (width, height))
                 .into_iter()
                 .filter(|control| control.name == "New message")
-                .map(|control| (control.slot, control.primary))
+                .map(|control| control.primary)
                 .collect::<Vec<_>>()
         };
         for (size, text) in [((320, 568), 1.0_f32), ((390, 844), 1.5), ((1280, 800), 1.0)] {
@@ -1217,14 +1186,14 @@ mod tests {
         }
         assert_eq!(
             shown("a busy inbox", (1280, 800), 1.0),
-            [("action", true)],
+            [true],
             "an account's window offers New message as its primary button"
         );
     }
 
     /// A window has a way back only when it went somewhere: the scenario that stages the feed of
-    /// the app's own root stands where the app opens, and its bar carries no Back, while a page
-    /// opened over the feed does.
+    /// the app's own root stands where the app opens, and its header row carries no Back, while
+    /// a page opened over the feed does.
     #[test]
     fn a_window_on_its_own_root_offers_no_way_back() {
         tilo_ui_host::i18n::ensure();
@@ -1251,8 +1220,9 @@ mod tests {
                     1.0,
                 )
                 .expect("the window lies out");
-            let bar = staged.harness_mut().window_bar_layout(f64::from(width));
-            bar.controls.iter().any(|control| control.name == "Back")
+            crate::layout_check::header_row_controls(&staged, (width, height))
+                .iter()
+                .any(|control| control.id == ui::widget::WINDOW_BACK)
         };
         assert!(
             !back("YouTube cannot be reached"),
@@ -1318,108 +1288,6 @@ mod tests {
             notice(ui::clock::TimeStyle::H24),
             "Connection refused. Last fetched 10:41"
         );
-    }
-
-    /// The agent's mark on the control the tilolang Tasks app binds: an action the app
-    /// published lands on the control that runs it and nowhere else, and the frame draws the
-    /// agent there — the same pixels rule the app's own tests hold a marker to.
-    #[test]
-    fn an_agents_marker_rests_on_the_control_the_tasks_app_binds() {
-        tilo_ui_host::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.0.last().expect("the app").meta.app.clone();
-        let (width, height) = (1280, 800);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
-        staged.harness.relayout();
-        let descriptors = publish_actions(&mut staged);
-        assert!(
-            !descriptors.is_empty(),
-            "the app publishes the actions its views run"
-        );
-
-        let (descriptor, control_id, control, check) =
-            bound_check(&staged, &descriptors).expect("the app binds a check box to an action");
-        let event = interaction(&descriptor);
-        let locus = staged
-            .harness()
-            .semantic_locus(&event)
-            .expect("the control the app binds the action to");
-        assert!(
-            locus.contains(check.center()),
-            "the locus is the check box the row offers: {locus:?} vs {check:?}"
-        );
-        assert!(
-            control.contains(locus.center()),
-            "the locus is the control bound to the action: {locus:?} vs {control:?}"
-        );
-
-        let (before, after) = capture_agent(&mut staged, &event, "tasks-tilolang");
-
-        marked_only(&staged, &before, &after, width, control, check);
-
-        // The press and the agent's action take the one path: the app is handed the action,
-        // not a view event.
-        staged
-            .press_action(&control_id)
-            .expect("the control presses");
-        let chosen = staged.instance.take_chosen();
-        assert_eq!(
-            chosen.as_ref().map(|(_press, address, _argument)| address),
-            Some(&descriptor.address),
-            "pressing the control runs the action the app published"
-        );
-        assert!(
-            staged.instance.take_chosen().is_none(),
-            "one press runs the action once"
-        );
-    }
-
-    /// The agent's mark shows inside the check box the app binds, and on no other check box the
-    /// window shows: the agent is drawn where it acts, not where any control of the same kind
-    /// stands.
-    fn marked_only(
-        staged: &Staged,
-        before: &[u8],
-        after: &[u8],
-        width: u32,
-        control: ui::kurbo::Rect,
-        check: ui::kurbo::Rect,
-    ) {
-        changed_pixels(before, after, width, pixels(check))
-            .expect("the agent's marker rests on the check box the app binds");
-        // The agent's pointer and nametag float beside the mark, over whatever stands there, as a
-        // peer's cursor does: only the mark itself is held to the control the app binds.
-        let [marker] = staged.harness().drawn_action_markers() else {
-            panic!("the frame paints the agent's mark");
-        };
-        let [x0, y0, x1, y1] = marker.marker;
-        let chrome = ui::kurbo::Rect::new(x0, y0, x1, y1);
-        let others: Vec<_> = staged
-            .harness()
-            .controls()
-            .iter()
-            .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
-            .filter_map(|shown| shown.bounds)
-            .filter(|bounds| !control.contains(bounds.center()))
-            .collect();
-        assert!(!others.is_empty(), "the scenario shows more than one row");
-        for other in others {
-            let (x0, y0, x1, y1) = pixels(other);
-            let changed = changed_pixels_clear_of(before, after, width, (x0, y0, x1, y1), chrome);
-            assert!(
-                changed.is_none(),
-                "no mark rests on {other:?}, which the action does not act on: {changed:?}"
-            );
-        }
     }
 
     /// `rect` as the pixels a frame draws it in: the whole pixels its edges cut.
@@ -2150,11 +2018,11 @@ mod tests {
                     "pressing the row opens the task in front of the list at {width}×{height}"
                 );
                 assert!(
-                    crate::layout_check::back_chip(&mut staged, (width, height)),
+                    crate::layout_check::back_chip(&staged, (width, height)),
                     "the page carries the shell's way back at {width}×{height}"
                 );
                 staged
-                    .press_bar_slot(ui::widget::WINDOW_BACK)
+                    .press_shell(ui::widget::WINDOW_BACK)
                     .expect("the shell's back presses");
                 staged.freshen().expect("the list comes back to rest");
                 let root = &staged.harness().inspection().root;
@@ -2499,7 +2367,7 @@ mod tests {
                 "the window shows the task as a page at {width}×{height}"
             );
             assert!(
-                crate::layout_check::back_chip(&mut staged, (width, height)),
+                crate::layout_check::back_chip(&staged, (width, height)),
                 "the page carries the shell's way back at {width}×{height}, not one of its own"
             );
             assert!(
@@ -2508,7 +2376,7 @@ mod tests {
             );
 
             staged
-                .press_bar_slot(ui::widget::WINDOW_BACK)
+                .press_shell(ui::widget::WINDOW_BACK)
                 .expect("the shell's back presses");
             staged.freshen().expect("the list comes back to rest");
             assert_ne!(
@@ -2773,9 +2641,11 @@ mod tests {
                 .expect("lays out");
             // The task the scenario answers with opens where it stands, or as a page of its own
             // from the list a finger comes back to.
-            staged
-                .press_bar_slot(ui::widget::WINDOW_BACK)
-                .expect("back to the list");
+            if crate::layout_check::back_chip(&staged, (width, height)) {
+                staged
+                    .press_shell(ui::widget::WINDOW_BACK)
+                    .expect("back to the list");
+            }
             staged
                 .lay_out(
                     (width, height),
@@ -2818,7 +2688,7 @@ mod tests {
     }
 
     /// A service that cannot be reached says so in the page's one content gutter: the notice
-    /// stands as far under the window's bar as the list under it stands below the notice, in
+    /// stands as far under its column's header row as the list under it stands below the notice, in
     /// every app and at every width. A page whose gutter grew with the window (48 at a desktop
     /// width, 24 on a phone) put 48 over the notice and 24 under it beside Mail's 24, so one app
     /// said a thing and its neighbour said another.
@@ -2855,6 +2725,15 @@ mod tests {
                 .position(|node| node.widget == "Banner")
                 .expect("the notice shows");
             let notice = order[at];
+            // The notice stands under the header row of the column it is in.
+            let top = staged
+                .harness()
+                .column_frames()
+                .iter()
+                .find(|frame| {
+                    frame.column.x0 <= notice.rect[0] + 0.5 && notice.rect[0] < frame.column.x1
+                })
+                .map_or(0.0, |frame| frame.header.y1);
             // What stands under the notice: the first box after it that starts below it.
             let below = order[at..]
                 .iter()
@@ -2864,7 +2743,7 @@ mod tests {
                 })
                 .map(|node| node.rect[1] - (notice.rect[1] + notice.rect[3]))
                 .expect("the list under the notice stands");
-            (notice.rect[1], below)
+            (notice.rect[1] - top, below)
         };
         let gutter = f64::from(ui::Theme::light().tokens.spacing.rhythm.group);
         for size in [(390, 844), (1280, 800)] {

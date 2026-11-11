@@ -152,12 +152,16 @@ chat-header-call-open = Open call
 
 chat-identity-available = Available
 chat-identity-in-voice = In voice
+chat-member-in-channel = In { $channel }
 
-chat-resource-copy-link = Copy resource link
+chat-resource-copy-link = Copy link
 chat-resource-not-opened = Could not open
 chat-agent-kind = Agent
 chat-channel-empty-message = Say hello. Everyone in #{ $channel } sees it.
 chat-send = Send
+chat-voice-channel = Voice channel
+chat-quote-caption = In reply to
+chat-quote-earlier = A message above
 chat-conversation-read-only = You can read this conversation but not write in it.
 chat-direct-unavailable = You can't open that conversation yet: this device hasn't loaded the workspace's chat.
 chat-person-unknown = There's nobody in this workspace to message there.
@@ -296,84 +300,10 @@ chat-sheet-topic-placeholder = What this channel is for (optional)
 # feedback picker ("Message in Chat").
 chat-message-kind = Message
 
-## A filed feedback report as its channel shows it
-# One picked part of the screen: its place, what it was, and the app.
-chat-feedback-pick = { $index }. { $what } in { $app }
-# One picked part from an app whose name is not known: its place and what it
-# was, never the app's id.
-chat-feedback-pick-alone = { $index }. { $what }
-# What a picked part was, when the app said what kind of thing it is.
-chat-feedback-part-kind = { $kind }
-# What a picked part was, by the app's own name for it and its role.
-chat-feedback-part-named = The “{ $name }” { $role ->
-    [Button] button
-    [ToggleButton] button
-    [Link] link
-    [Tab] tab
-    [MenuItem] menu item
-    [Checkbox] checkbox
-    [Switch] switch
-    [TextInput] field
-    [MultilineTextInput] field
-    [Heading] heading
-   *[other] { $role }
-}
-# What a picked part was, known only by its role.
-chat-feedback-part-role = { $role ->
-    [ListItem] A list item
-    [Row] A row
-    [Cell] A cell
-    [Button] A button
-    [ToggleButton] A button
-    [Link] A link
-    [Image] A picture
-    [TextInput] A field
-    [MultilineTextInput] A field
-    [StaticText] A text
-    [Paragraph] A paragraph
-    [Heading] A heading
-    [List] A list
-    [Group] A group
-    [Window] A window
-    [Toolbar] A toolbar
-    [Menu] A menu
-    [MenuItem] A menu item
-    [Tab] A tab
-   *[other] A part
-}
-chat-feedback-note = “{ $note }”
-# One text a picked part showed, as reviewed.
-chat-feedback-text = { $text }
-# One of the reporter's last actions, by the label its app gives it;
-# $outcome is done, refused or failed.
-chat-feedback-action = { $outcome ->
-    [refused] { $label } (refused)
-    [failed] { $label } (failed)
-   *[done] { $label }
-}
-# An action whose app gave it no label, by its id and resource kind.
-chat-feedback-action-unnamed = { $action } on { $resource }
-chat-feedback-recent = Just before: { $actions }
-# The recording a report carries: the app whose record it recorded, the
-# times it starts and ends, and how many changes it steps through.
-chat-feedback-recording = Recording of { $app } from { $from } to { $to }, { $steps ->
-    [one] one change
-   *[other] { $steps } changes
-}
+## A filed feedback report's recording
 chat-feedback-replay = Replay the recording
 chat-feedback-replay-failed = The recording did not open
 chat-feedback-replay-description = Open the recording in { $app } and step through it
-chat-feedback-slow = Slow: { $slow } of the last { $frames } frames over { $budget } ms, the slowest { $worst } ms
-# A hidden span of a reported text, by what it hid.
-chat-feedback-hidden = { $kind ->
-    [name] ‹name›
-    [email] ‹email›
-    [phone] ‹phone›
-    [address] ‹address›
-    [account] ‹account number›
-    [credential] ‹credential›
-   *[personal] ‹personal›
-}
 
 ## The conversation's own controls and labels
 chat-surface = Chat
@@ -393,6 +323,9 @@ chat-message-deleted = Message deleted
 chat-message-edited = Edited
 # Beside a pinned message's time.
 chat-message-pinned-marker = Pinned
+# Where a message's time stands while the conversation it goes to is still
+# arriving on this device; it is written once it arrived.
+chat-message-sending = Sending…
 chat-empty-title = No messages yet
 chat-empty-title-read-only = Nothing has been said here yet
 chat-jump-latest = Jump to latest
@@ -485,3 +418,4 @@ chat-menu-report-sender = Report sender
 chat-menu-ban = Ban from the workspace
 chat-menu-volume = Volume
 chat-attach-share = Share a file
+chat-channel-composer-placeholder = Message #{ $channel }

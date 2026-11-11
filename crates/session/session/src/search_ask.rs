@@ -2,8 +2,8 @@
 //! choose, streamed into the row as the answer is written. The row the person is on never moves
 //! while the text arrives: the rows are built again around the same selection. Choosing the row
 //! copies the answer.
-//! With no provider set up the one row opens the page that sets one up, so a question is never a
-//! dead end and search never explains a setting by name.
+//! With no provider set up a question's one row opens the page that sets one up, so a question is
+//! never a dead end and search never explains a setting by name; a name typed asks nothing.
 //! The ask goes through this host's model gateway as Activity does ([`crate::activity_models`]): on
 //! a thread of its own on a desktop, as a task of its own turn on the page, where nothing may
 //! block. Nothing typed leaves the machine before the person asks, and nothing about a failure
@@ -312,15 +312,15 @@ impl Source for Ask {
 
     fn query(&self, needle: &str) -> Vec<Hit> {
         let needle = needle.trim();
-        if needle.is_empty() {
+        // A name typed is looked up, not asked: a search that found nothing
+        // for it says so, rather than offering to set up an answer to a
+        // question nobody asked.
+        if !question::asks(needle) {
             return Vec::new();
         }
         let Some((provider, model)) = chosen() else {
             return vec![self.setup_row()];
         };
-        if !question::asks(needle) {
-            return Vec::new();
-        }
         self.ask(needle, &provider, &model);
         vec![self.row(needle)]
     }
@@ -372,14 +372,15 @@ mod tests {
     }
 
     /// A question with nothing set up leads to the place that sets it up: the row opens Settings at
-    /// its providers, in the workspace the search was opened in.
+    /// its providers, in the workspace the search was opened in. A name typed asks nothing, so a
+    /// search that finds nothing for it shows that, not this row.
     #[test]
     fn without_a_provider_the_one_row_opens_the_setup() {
         let ask = setup("workspace");
-        for typed in ["what is a CRDT?", "notes", ""] {
+        for typed in ["what is a CRDT?", "notes", "xqzv", ""] {
             let rows = ask.query(typed);
-            if typed.is_empty() {
-                assert!(rows.is_empty(), "an empty field asks nothing");
+            if !question::asks(typed) {
+                assert!(rows.is_empty(), "{typed:?} asks nothing");
                 continue;
             }
             assert_eq!(rows.len(), 1);

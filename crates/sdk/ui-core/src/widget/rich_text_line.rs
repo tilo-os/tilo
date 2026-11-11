@@ -29,6 +29,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::TokenKind;
 use crate::widget::markdown_input;
@@ -149,7 +150,12 @@ pub struct RichTextLine {
     table_source_height: f32,
     /// An image attachment uses the leaf's actual Taffy width for its preview.
     image_preview: ImagePreview,
-    image_source_height: f32,
+    /// The height a picture's editable source took beside its picture, with the width it was
+    /// measured at, newest first: a host measures a line at widths it never applies (a flex
+    /// solve probes a child's intrinsic size), and a source measured at one of those is not the
+    /// room the source takes at the width the line is applied at, so the picture would start
+    /// inside itself.
+    image_source: Vec<(f32, f32)>,
     /// Kept sorted by `range.start`.
     marks: Vec<MarkSpan>,
     /// Paint-only semantic colours (for example fenced-code syntax). These
@@ -219,7 +225,7 @@ impl RichTextLine {
             table_preview: None,
             table_source_height: 0.0,
             image_preview: ImagePreview::Absent,
-            image_source_height: 0.0,
+            image_source: Vec::new(),
             marks: Vec::new(),
             transient_colors: Vec::new(),
             transient_key: None,
@@ -434,8 +440,15 @@ impl RichTextLine {
         self.image_preview = preview;
     }
 
-    pub(super) fn image_source_height(&self) -> f32 {
-        self.image_source_height
+    /// The height the picture's editable source takes at `width`, the width the line is applied
+    /// at: the measurement made there, else the newest one made.
+    pub(super) fn image_source_height_at(&self, width: f64) -> f32 {
+        let width = crate::num::f32_of_f64(width);
+        self.image_source
+            .iter()
+            .find(|(measured, _)| (measured - width).abs() < 0.5)
+            .or_else(|| self.image_source.first())
+            .map_or(0.0, |(_, height)| *height)
     }
 
     pub fn value(&self) -> &str {
@@ -1134,6 +1147,7 @@ impl RichTextLine {
 
     fn forget_stack_heights(&mut self) {
         self.stack_measures.clear();
+        self.image_source.clear();
     }
 
     /// The tallest height the line took at any width: what a host that cannot measure keeps for
@@ -1226,7 +1240,7 @@ impl RichTextLine {
                     _ => 400.0,
                 })
                 .max(1.0);
-            self.image_source_height = if editing {
+            let source_height = if editing {
                 self.inner.measure_wrapped_content(
                     (width - self.layout_inset).max(1.0),
                     text_renderer,
@@ -1235,6 +1249,10 @@ impl RichTextLine {
             } else {
                 0.0
             };
+            self.image_source
+                .retain(|(measured, _)| measured.to_bits() != width.to_bits());
+            self.image_source.insert(0, (width, source_height));
+            self.image_source.truncate(STACKED_WIDTHS);
             // The image stands on the editor's content edge, inside the
             // line's text inset on both sides, at its native aspect, and
             // never taller than its share of the visible height: a capped
@@ -1256,7 +1274,7 @@ impl RichTextLine {
                 .min(max_height.map_or(f32::INFINITY, |max| crate::num::f32_of_u32(max.max(1))));
             return Size {
                 width,
-                height: self.image_source_height
+                height: source_height
                     + if editing {
                         6.0 * self.measurement_theme.text_scale
                     } else {
@@ -1350,6 +1368,13 @@ impl Widget for RichTextLine {
         self.dirty.styled_layout || self.emoji_moved() || self.inner.is_layout_dirty()
     }
 
+    /// Where the field's text stands in it, as the field paints it: an audit of a window reads
+    /// the line a composer or a block editor shows, whether it stands in the middle of a band
+    /// taller than itself or at its inset.
+    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+        self.inner.layout_info()
+    }
+
     /// The inner field is no child, so it takes the host's inputs from here: a coarse pointer
     /// makes the field a finger's target tall, as any field is.
     fn set_interaction_environment(
@@ -1441,7 +1466,7 @@ impl Widget for RichTextLine {
         // TextInput owns glyph shaping and painting. This wrapper supplies
         // attributes and draws only mark decorations that are not glyphs.
         self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         #[cfg(test)]
         drop(input_probe);
 

@@ -6,7 +6,7 @@ use crate::plane::{Event, Topic};
 use collab_types::presence::{
     Availability, MAX_ACTIVITY_BYTES, Presence, ShellPresence, ShellSelection, ShellWindow, Shown,
 };
-use iroh::EndpointId;
+use iroh_base::EndpointId;
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::WorkspaceId as DeskWorkspaceId;
 use tilo_live::presence;

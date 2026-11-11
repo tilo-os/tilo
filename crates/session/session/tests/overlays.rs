@@ -489,6 +489,31 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
     );
 }
 
+/// The panel's app starts with the session, hidden, so the first opening only shows it; the stack
+/// places it, and opening it somewhere else moves the surface it stands on.
+#[test]
+fn the_panel_runs_before_its_first_opening_and_moves_where_the_stack_places_it() {
+    let (mut session, _panel) = session_with_quick_settings();
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "the app runs before the panel is first opened"
+    );
+    assert_eq!(
+        session
+            .compositor()
+            .layer_shown(quick_settings::SURFACE_NAMESPACE),
+        Some(false),
+        "hidden, drawing nothing"
+    );
+    open(&mut session, "quick-settings", None);
+    assert!(session.surfaces().running("quick-settings"));
+    open(&mut session, "quick-settings", Some("top-leading:8"));
+    assert!(
+        session.surfaces().running("quick-settings"),
+        "it stands where the stack places it now"
+    );
+}
+
 #[test]
 fn the_panel_stands_hidden_between_openings_and_the_next_opening_starts_nothing() {
     let (mut session, _panel) = session_with_quick_settings();

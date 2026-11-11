@@ -105,6 +105,9 @@ enum Installed {
     /// Notes to open; Sheets offered only to close, as the workspace offers
     /// an app that runs before its directory is published for browsing.
     SheetsOnlyCloses,
+    /// Notes, and Sheets listed by a name of its own, as Files lists
+    /// `file-explorer`.
+    SheetsNamedSpreadsheets,
     /// None at all.
     Nothing,
     /// It cannot be read.
@@ -485,6 +488,9 @@ impl Notes {
                         action.action_label = "Close".into();
                     }
                     vec![open(APP, "Notes"), sheets]
+                }
+                Installed::SheetsNamedSpreadsheets => {
+                    vec![open(APP, "Notes"), open("so.tilo.sheets", "Spreadsheets")]
                 }
                 Installed::Nothing | Installed::Unreadable => Vec::new(),
             };
@@ -986,6 +992,8 @@ impl ActionHost for Notes {
         let long = *self.long.lock().unwrap();
         let update = match action.as_str() {
             "slow" => InvocationUpdate::Accepted { invocation: *id },
+            // The workspace's start of Notes names the instance it started.
+            "start" => succeeded(Some(json!({"peer_id": 1}))),
             "rename" if !arguments.contains_key("title") => {
                 failed("invalid_arguments", "argument `title` is required")
             }
@@ -1313,6 +1321,33 @@ fn an_app_offered_only_to_close_is_still_the_agents_to_open() {
         );
         let (text, _) = tool(&agent(&host), "tilo_do", json!({"path": "sheets#open"})).await;
         assert!(!text.contains("may not open"), "{text}");
+        assert!(
+            host.invoked()
+                .iter()
+                .any(|(resource, action, _)| resource == "app.so.tilo.sheets" && action == "open"),
+            "the workspace was asked to open Sheets: {text}"
+        );
+    });
+}
+
+/// An app is named by the name the listing shows it by, not only by its id:
+/// `spreadsheets` is the app listed as `sheets  Spreadsheets`.
+#[test]
+fn an_app_is_named_by_the_name_it_is_listed_by() {
+    let host = Notes::new(true).installed(Installed::SheetsNamedSpreadsheets);
+    run(async {
+        let (text, failed) = tool(&agent(&host), "tilo_ls", json!({"path": "spreadsheets"})).await;
+        assert!(
+            !failed && text.contains("installed but not running"),
+            "{text}"
+        );
+        let (text, failed) = tool(
+            &agent(&host),
+            "tilo_do",
+            json!({"path": "Spreadsheets#open"}),
+        )
+        .await;
+        assert!(!failed, "{text}");
         assert!(
             host.invoked()
                 .iter()
@@ -1914,6 +1949,27 @@ fn an_installed_app_is_started_by_its_path_and_then_listed() {
             "{text}"
         );
         assert!(text.contains("Todo/  notes.page"), "{text}");
+        // One of the app's own actions, or `#start`, starts it first without
+        // a window: the workspace is asked to start it, never to open it.
+        for (path, said) in [
+            ("notes#read", "Groceries"),
+            ("notes#start", "ok: notes is running"),
+        ] {
+            let host = Notes::new(false);
+            let (text, failed) = tool(&agent(&host), "tilo_do", json!({ "path": path })).await;
+            assert!(!failed && text.contains(said), "{text}");
+            let asked = host.invoked.lock().unwrap().clone();
+            let target = &asked[0].target;
+            assert_eq!(
+                (target.provider.as_str(), target.address.action.as_str()),
+                (WORKSPACE, "start")
+            );
+            assert!(
+                asked
+                    .iter()
+                    .all(|request| request.target.address.action != "open")
+            );
+        }
         // Not the app's own action on an app that is not running.
         let host = Notes::new(false);
         let (text, failed) = tool(

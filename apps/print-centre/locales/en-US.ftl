@@ -21,3 +21,11 @@ print-centre-print-defaults-ocr-language = { $new ->
     [spa] Recognizing Spanish text from now on
    *[eng] Recognizing English text from now on
 }
+
+## What the window says while it works
+
+print-centre-loading = Loading Print Centre
+print-centre-finding-printers = Finding nearby printers
+print-centre-choose-printer = Choose a printer
+print-centre-preparing-preview = Preparing document preview
+print-centre-all-pages = All pages

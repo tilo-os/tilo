@@ -63,10 +63,7 @@ impl Names {
 
 /// What this device calls its person, when presence does not say.
 fn own_name() -> String {
-    ui::local_identity::bound()
-        .map(|identity| identity.display_name.trim().to_owned())
-        .filter(|name| !name.is_empty())
-        .unwrap_or_else(|| "You".to_owned())
+    ui::local_identity::own_name().unwrap_or_else(|| "You".to_owned())
 }
 
 /// The workspace's other participants as presence names them, by id.

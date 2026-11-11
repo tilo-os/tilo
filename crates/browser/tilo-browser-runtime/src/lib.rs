@@ -25,6 +25,13 @@
     allow(dead_code, reason = "only the browser page fetches deferred code")
 )]
 mod app_load;
+// The record a page showing one app opens: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser page opens an app alone")
+)]
+mod app_page;
 // The desk's arranging actions in the page: its tests run on the host too.
 #[cfg(any(target_arch = "wasm32", test))]
 #[cfg_attr(
@@ -51,14 +58,12 @@ mod capture_declarations;
 )]
 mod console_hold;
 // Content handed to an app, opened as its file: its tests run on the host too.
+#[cfg(target_arch = "wasm32")]
+mod browser;
 #[cfg(any(target_arch = "wasm32", test))]
 mod content_open;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod page_content;
-#[cfg(target_arch = "wasm32")]
-pub(crate) use page_content::page_content;
-#[cfg(target_arch = "wasm32")]
-mod browser;
 /// Install an already-admitted feedback transport before mounting its desktop.
 /// This Rust host hook is intentionally absent from URL/JSON launch options.
 /// # Errors
@@ -243,9 +248,15 @@ mod rooms;
 // The workspaces this browser entered, by the rules every device keeps them by.
 #[cfg(target_arch = "wasm32")]
 mod entered;
-// Which way the page takes into the workspace a link names, by the rules every device takes.
-#[cfg(target_arch = "wasm32")]
-#[cfg(target_arch = "wasm32")]
+// When a status carries the semantics tree: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser publishes statuses; the host runs its tests"
+    )
+)]
 mod semantics_status;
 #[cfg(target_arch = "wasm32")]
 mod settings;
@@ -253,14 +264,19 @@ mod settings;
 pub(crate) mod shell;
 #[cfg(target_arch = "wasm32")]
 mod storage;
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(
+        dead_code,
+        reason = "only the browser throttles statuses; the host runs its tests"
+    )
+)]
 mod throttle;
 #[cfg(target_arch = "wasm32")]
 mod video_pictures;
 #[cfg(target_arch = "wasm32")]
 mod way_in;
-#[cfg(target_arch = "wasm32")]
-mod window_menu;
 #[cfg(target_arch = "wasm32")]
 mod workspace_records;
 // When graphics start-up is said to stall: its tests run on the host too.
@@ -284,3 +300,10 @@ mod viewport;
     allow(dead_code, reason = "only the browser draws; the host runs its tests")
 )]
 mod frame_pacing;
+// How often a lost GPU is made again: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
+mod gpu_recovery;

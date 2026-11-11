@@ -31,6 +31,7 @@ use super::Widget;
 use super::capability::capability_mut;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 
 /// What the window's History control shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,15 +166,12 @@ pub trait WindowHeader {
         false
     }
 
-    /// Merge the window's bar into this header row while the window is
-    /// maximized, or stop (`None`). The row reserves `bar.controls_width` at
-    /// its trailing end for the window's controls, which the host paints
-    /// there when the person reaches for them, so the app's header and the
-    /// window's controls read as one bar instead of two stacked ones. A row
-    /// whose app put its header in the window's bar
-    /// ([`WindowBarSlot::hides_with_bar`]) shows only while `bar.revealed`,
-    /// over the app's content. Returns whether the row took the bar; a row
-    /// that does not leaves the host to float its controls over the window.
+    /// Merge the window's bar into this header row, or stop (`None`). The row reserves
+    /// `bar.controls_width` at its trailing end for the window's controls, which the host paints
+    /// there, so the app's header and the window's controls read as one bar instead of two
+    /// stacked ones. The row stands at every time: the window's controls come into the room it
+    /// keeps for them, never over the app's title or actions. Returns whether the row took the
+    /// bar; a row that does not leaves the host to float its controls over the window.
     fn set_window_bar(&mut self, bar: Option<WindowBar>) -> bool {
         let _ = bar;
         false
@@ -191,6 +189,27 @@ pub trait WindowHeader {
     fn header_row_height(&self) -> f64 {
         0.0
     }
+
+    /// Where each column the window shows stands and the header row it draws at that column's
+    /// top, after layout. A column's header — its title and the buttons that act on what it
+    /// shows — is the app's own and stands at every time, at the top of its column; the window's
+    /// bar holds only what is the window's.
+    fn column_frames(&self) -> Vec<ColumnFrame> {
+        Vec::new()
+    }
+}
+
+/// Where one column of a window stands, and the header row it draws at that column's top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnFrame {
+    /// Which column: `sidebar`, `overview`, `content` or `inspector`.
+    pub key: &'static str,
+    /// The column: docked beside the others, a floating drawer's panel, or a pushed screen.
+    pub column: Rect,
+    /// The header row at the column's top: zero where the column draws none.
+    pub header: Rect,
+    /// The column reads as a rail of icons, which say what it holds without a row of words.
+    pub rail: bool,
 }
 
 /// The window's bar, as the host offers it to a header row.
@@ -198,15 +217,6 @@ pub trait WindowHeader {
 pub struct WindowBar {
     /// Room the window's controls take at the row's trailing end.
     pub controls_width: f64,
-    /// Whether the person reached for the bar
-    /// ([`crate::widget::TopEdgeReveal`]).
-    pub revealed: bool,
-    /// How far below the window's top edge the bar stands: the height of
-    /// what overlays that edge now (the desktop's top bar, while it shows
-    /// over a window under an auto-hiding top bar), so the two stack instead
-    /// of one covering the other. A row whose header lives in the bar moves
-    /// down by it; a permanent row stays put.
-    pub top_inset: f64,
     /// The system already lists the window's actions where the person reaches
     /// them (the desktop bar's window menu, for the window in front): the row's
     /// actions that do not fit give way with no door of their own, since every
@@ -225,9 +235,6 @@ pub struct WindowBarSlot {
     /// Where the window's controls go: the trailing end of the row,
     /// `controls_width` wide and the row's height.
     pub controls: Rect,
-    /// The app put its header in the window's bar: it shows only with the
-    /// bar, over the content, instead of standing above it.
-    pub hides_with_bar: bool,
 }
 
 /// Offer the window's bar to the first header row in `root`'s tree. Returns
@@ -371,7 +378,7 @@ impl RowFurniture {
             );
         }
         search.set_ground(theme.tokens.colors.surfaces.content);
-        search.draw(scene, transform, text, theme, presence);
+        search.draw_child(scene, transform, text, theme, presence);
         if let Some(control) = state.keyboard {
             let rect = control.rect(self);
             if rect.area() > 0.0 {
@@ -432,17 +439,17 @@ impl RowControl {
         }
     }
 
-    /// What a person reads for it, named as the bar names the same function. `maximized` says which
+    /// What a person reads for it, named as the bar names the same function. `resize` says which
     /// way the maximize control acts.
-    pub(crate) fn name(self, maximized: bool) -> String {
+    pub(crate) fn name(self, resize: crate::widget::window_controls::Resize) -> String {
         use crate::widget::window_controls::WindowControl;
         match self {
-            RowControl::NewTab => crate::widget::tabs::NEW_TAB.to_owned(),
+            RowControl::NewTab => crate::widget::tabs::new_tab_name(),
             RowControl::Maximize => {
-                crate::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(maximized))
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(resize))
             }
             RowControl::Close => {
-                crate::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(maximized))
+                crate::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(resize))
             }
         }
     }
@@ -471,7 +478,6 @@ pub fn merged_row_width_in(width: f64) -> f64 {
     let slot = WindowBarSlot {
         row: wide,
         controls: wide,
-        hides_with_bar: false,
     };
     let furniture = RowFurniture::of(slot);
     let leading = if merged_row_holds_search(width) {

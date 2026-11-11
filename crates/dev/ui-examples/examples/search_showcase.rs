@@ -33,6 +33,7 @@ use tilo_ui::search::{
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::TextRole;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{
     FilterCount, Filterable, FindBar, FindMatch, FindOptions, Findable, SearchField,
     SearchResultsView, Widget, paint_find_match,
@@ -194,8 +195,8 @@ fn shoot(theme: &Theme, out: &Path, query: &str, cursor: usize) {
     let height = px_dim(overlay_top + view.desired_height() + PAD);
 
     let mut scene = Scene::new();
-    field.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
-    view.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    field.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    view.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
 
     let mut r = OffscreenRenderer::new(WIDTH, height);
     r.render_png(&scene, theme.tokens.colors.surfaces.content, out);
@@ -444,7 +445,7 @@ fn shoot_filters(theme: &Theme, out: &Path) {
         field.set_focused(focused);
         let top = PAD + row * f64::from(u8::try_from(index).unwrap_or(0));
         lay_out_field(&mut field, theme, w, Point::new(PAD, top));
-        field.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+        field.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     }
     let height = px_dim(PAD * 2.0 + row * 4.0);
     let mut r = OffscreenRenderer::new(px_dim(width + PAD * 2.0), height);
@@ -671,7 +672,7 @@ fn shoot_window_search(theme: &Theme, out: &Path, query: &str, replacement: &str
     }
     tilo_ui::surface::separator(&mut scene, Affine::IDENTITY, 0.0, width, bar_h, 0.0, ground);
     search.set_ground(ground);
-    search.draw(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    search.draw_child(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     search.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
     let height = search.get_rect().y1.max(y) + 24.0;
     let mut r = OffscreenRenderer::new(px_dim(width), px_dim(height));

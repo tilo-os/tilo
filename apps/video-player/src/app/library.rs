@@ -22,24 +22,11 @@ use ui::widget::{
     SegmentedFace, ToggleGroup,
 };
 
-/// The remove action of a queued video.
-const REMOVE_FROM_QUEUE: RowAction<'static> = RowAction {
-    icon: Icon::X,
-    label: "Remove from queue",
-};
-/// The delete action of a shared playlist or bookmark.
-const DELETE_SHARED: RowAction<'static> = RowAction {
-    icon: Icon::Trash2,
-    label: "Delete",
-};
-/// The jump action of a bookmark on the video that is open.
-const JUMP_TO_BOOKMARK: RowAction<'static> = RowAction {
-    icon: Icon::Play,
-    label: "Jump to bookmark",
-};
-
 impl LibraryTab {
-    const LABELS: [&'static str; 3] = ["Queue", "Recent", "Shared"];
+    /// The tabs, named by the catalogue as the window bar names them.
+    fn labels() -> [String; 3] {
+        ["video-queue", "video-recent", "video-shared"].map(crate::i18n::t)
+    }
 
     fn index(self) -> usize {
         match self {
@@ -50,13 +37,20 @@ impl LibraryTab {
     }
 }
 
+/// A hover action of a row: its icon, and what it does in the person's
+/// language, read from the catalogue where the row is built.
+fn action(icon: Icon, label: &str) -> (Icon, String) {
+    (icon, crate::i18n::t(label))
+}
+
 /// One row of a list in the sheet.
 struct RowSpec<'a> {
     title: &'a str,
     meta: Option<&'a str>,
     selected: bool,
     focused: bool,
-    actions: Vec<RowAction<'static>>,
+    /// What a hover offers, as [`action`] builds it.
+    actions: Vec<(Icon, String)>,
 }
 
 /// Where a row and its actions landed.
@@ -79,22 +73,27 @@ fn paint_rows(
     for (index, spec) in specs.iter().enumerate() {
         let height = ListRowFace::new(spec.title).height(ctx.text, ctx.theme);
         let row = Rect::new(x0, *y, x1, *y + height);
+        let actions: Vec<RowAction<'_>> = spec
+            .actions
+            .iter()
+            .map(|(icon, label)| RowAction { icon: *icon, label })
+            .collect();
         let probe = ListRowFace::new(spec.title)
-            .actions(&spec.actions)
+            .actions(&actions)
             .interaction(Interaction {
                 hovered: true,
                 ..Interaction::default()
             });
-        let actions = probe.action_rects(row, ctx.theme);
+        let rects = probe.action_rects(row, ctx.theme);
         let visible = row.y1 > clip.y0 && row.y0 < clip.y1;
         let hovered = visible && clip.contains(cursor) && row.contains(cursor);
         if visible {
             let hovered_action = hovered
-                .then(|| actions.iter().position(|rect| rect.contains(cursor)))
+                .then(|| rects.iter().position(|rect| rect.contains(cursor)))
                 .flatten();
             let mut face = ListRowFace::new(spec.title)
                 .selected(spec.selected)
-                .actions(&spec.actions)
+                .actions(&actions)
                 .hovered_action(hovered_action)
                 .interaction(Interaction {
                     hovered,
@@ -109,7 +108,10 @@ fn paint_rows(
             }
             face.paint(ctx, row);
         }
-        placed.push(RowPlaced { row, actions });
+        placed.push(RowPlaced {
+            row,
+            actions: rects,
+        });
         *y += height;
     }
     placed
@@ -180,6 +182,55 @@ impl PlayerState {
         self.shared_bookmark_rect = Rect::ZERO;
     }
 
+    /// The library's views: tabs across the top of `inner`, each as wide as
+    /// its label, answering the pointer and the keyboard. Returns their
+    /// height.
+    fn paint_library_tabs(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        inner: Rect,
+        cursor: Point,
+    ) -> f64 {
+        let tab_h = SegmentedFace::height(ControlSize::Regular, theme);
+        let labels = LibraryTab::labels();
+        let tab_labels = labels.each_ref().map(String::as_str);
+        let segments = tab_labels.map(ui::widget::Segment::new);
+        let packed = SegmentedFace::partition_segments(
+            Rect::new(inner.x0, inner.y0, inner.x1, inner.y0 + tab_h),
+            &segments,
+            ui::widget::SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            text,
+            theme,
+        );
+        let tab_rects: [Rect; 3] =
+            std::array::from_fn(|i| packed.get(i).copied().unwrap_or_default());
+        [
+            self.library_queue_tab_rect,
+            self.library_recent_tab_rect,
+            self.library_shared_tab_rect,
+        ] = tab_rects;
+        let hovered_tab = tab_rects.iter().position(|rect| rect.contains(cursor));
+        let tab_focus = self
+            .library_focus_id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("library-tab-"));
+        ToggleGroup::paint(
+            scene,
+            transform,
+            text,
+            theme,
+            &SegmentedFace::new(&tab_rects, &tab_labels, self.library_tab.index())
+                .style(ui::widget::SegmentedStyle::Tabs)
+                .hovered(hovered_tab)
+                .focused(tab_focus),
+        );
+        tab_h
+    }
+
     /// Paint the scrim and the sheet, and record every rect the pointer,
     /// keyboard and assistive technology act on.
     pub(super) fn paint_library_panel(
@@ -207,7 +258,8 @@ impl PlayerState {
         let mut inner = inner;
         if self.library_takes_the_window() {
             let control = ButtonFace::height(ControlSize::Regular, theme);
-            let width = ButtonFace::new(Rect::ZERO, "Back to video")
+            let back = crate::i18n::t("video-back-to-video");
+            let width = ButtonFace::new(Rect::ZERO, &back)
                 .icon(Icon::ChevronLeft)
                 .role(ButtonRole::Plain)
                 .intrinsic_width(text, theme);
@@ -218,7 +270,7 @@ impl PlayerState {
                 transform,
                 text,
                 theme,
-                &ButtonFace::new(self.library_back_rect, "Back to video")
+                &ButtonFace::new(self.library_back_rect, &back)
                     .icon(Icon::ChevronLeft)
                     .role(ButtonRole::Plain)
                     .hovered(self.library_back_rect.contains(cursor))
@@ -227,44 +279,11 @@ impl PlayerState {
             inner.y0 = self.library_back_rect.y1 + sibling;
         }
 
-        // The library's views: tabs, each as wide as its label.
-        let tab_h = SegmentedFace::height(ControlSize::Regular, theme);
-        let tabs_y0 = inner.y0;
-        let segments = LibraryTab::LABELS.map(ui::widget::Segment::new);
-        let packed = SegmentedFace::partition_segments(
-            Rect::new(inner.x0, tabs_y0, inner.x1, tabs_y0 + tab_h),
-            &segments,
-            ui::widget::SegmentedStyle::Tabs,
-            ControlSize::Regular,
-            text,
-            theme,
-        );
-        let tab_rects: [Rect; 3] =
-            std::array::from_fn(|i| packed.get(i).copied().unwrap_or_default());
-        [
-            self.library_queue_tab_rect,
-            self.library_recent_tab_rect,
-            self.library_shared_tab_rect,
-        ] = tab_rects;
-        let hovered_tab = tab_rects.iter().position(|rect| rect.contains(cursor));
-        let tab_focus = self
-            .library_focus_id
-            .as_deref()
-            .is_some_and(|id| id.starts_with("library-tab-"));
-        ToggleGroup::paint(
-            scene,
-            transform,
-            text,
-            theme,
-            &SegmentedFace::new(&tab_rects, &LibraryTab::LABELS, self.library_tab.index())
-                .style(ui::widget::SegmentedStyle::Tabs)
-                .hovered(hovered_tab)
-                .focused(tab_focus),
-        );
+        let tab_h = self.paint_library_tabs(scene, transform, text, theme, inner, cursor);
 
         // Clear, on Recent with something to clear, at the trailing end of
         // its own row under the tabs.
-        let mut list_top = tabs_y0 + tab_h + sibling;
+        let mut list_top = inner.y0 + tab_h + sibling;
         if self.library_tab == LibraryTab::Recent && !self.recent.is_empty() {
             let control = ButtonFace::height(ControlSize::Regular, theme);
             let width = ButtonFace::new(Rect::ZERO, "Clear")
@@ -343,7 +362,7 @@ impl PlayerState {
                     focused: focus == Some(entry.id.as_str())
                         || focus == Some(remove_focus.as_str()),
                     actions: if tab == LibraryTab::Queue {
-                        vec![REMOVE_FROM_QUEUE]
+                        vec![action(Icon::X, "video-remove-from-queue")]
                     } else {
                         Vec::new()
                     },
@@ -460,7 +479,7 @@ impl PlayerState {
                 meta: None,
                 selected: false,
                 focused: focus == Some(format!("shared-delete-{id}").as_str()),
-                actions: vec![DELETE_SHARED],
+                actions: vec![action(Icon::Trash2, "video-delete")],
             })
             .collect();
         let jumpable: Vec<bool> = annotations
@@ -485,9 +504,12 @@ impl PlayerState {
                 focused: focus == Some(format!("shared-jump-{id}").as_str())
                     || focus == Some(format!("shared-delete-{id}").as_str()),
                 actions: if *jumpable {
-                    vec![JUMP_TO_BOOKMARK, DELETE_SHARED]
+                    vec![
+                        action(Icon::Play, "video-jump-to-bookmark"),
+                        action(Icon::Trash2, "video-delete"),
+                    ]
                 } else {
-                    vec![DELETE_SHARED]
+                    vec![action(Icon::Trash2, "video-delete")]
                 },
             })
             .collect();
@@ -587,7 +609,7 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
     use ui::a11y::{AccessNode, AccessState, Role};
     let mut nodes = vec![
         AccessNode::new(Role::Button)
-            .with_name("Add current video to Watch later")
+            .with_name(crate::i18n::t("video-add-to-watch-later"))
             .with_action_target("video-player.shared.watch-later")
             .with_bounds(app.shared_watch_later_rect)
             .with_state(AccessState {
@@ -597,7 +619,7 @@ pub(super) fn shared_accessibility_nodes(app: &PlayerState) -> Vec<ui::a11y::Acc
                 ..Default::default()
             }),
         AccessNode::new(Role::Button)
-            .with_name("Bookmark current timestamp")
+            .with_name(crate::i18n::t("video-bookmark-timestamp"))
             .with_action_target("video-player.shared.bookmark")
             .with_bounds(app.shared_bookmark_rect)
             .with_state(AccessState {
@@ -647,7 +669,7 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
                 .map_or("Local video", |entry| entry.title.as_str());
             AccessNode::new(Role::Button)
                 .with_name(format!("Play {title}"))
-                .with_description("Opens this device-local video")
+                .with_description(crate::i18n::t("video-local-only-detail"))
                 .with_action_target(format!("video-player.library.play.{id}"))
                 .with_bounds(row.play)
                 .with_state(AccessState {
@@ -660,8 +682,8 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
     if app.library_tab == LibraryTab::Recent && !app.recent.is_empty() {
         nodes.push(
             AccessNode::new(Role::Button)
-                .with_name("Clear recent videos")
-                .with_description("Removes recent-history entries from this device")
+                .with_name(crate::i18n::t("video-clear-recent"))
+                .with_description(crate::i18n::t("video-clear-recent-detail"))
                 .with_action_target("video-player.library.clear")
                 .with_bounds(app.library_clear_rect)
                 .with_state(AccessState {
@@ -674,8 +696,8 @@ pub(super) fn local_library_accessibility_nodes(app: &PlayerState) -> Vec<ui::a1
     nodes.extend(app.library_row_hits.iter().filter_map(|row| {
         row.remove.map(|remove| {
             AccessNode::new(Role::Button)
-                .with_name("Remove from queue")
-                .with_description("Removes this item from the session-only queue")
+                .with_name(crate::i18n::t("video-remove-from-queue"))
+                .with_description(crate::i18n::t("video-remove-from-queue-detail"))
                 .with_action_target(format!("video-player.library.remove.{}", row.id))
                 .with_bounds(remove)
                 .with_state(AccessState {

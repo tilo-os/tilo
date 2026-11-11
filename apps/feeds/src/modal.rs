@@ -21,6 +21,7 @@ use ui::tokens::TextRole;
 use ui::widget::{AppModel, ModelPath, TaffyTreeExt, Text, TextInput, TextInputKind, Widget};
 
 use crate::model::Id;
+use ui::widget::DrawChild;
 
 /// What a feeds dialog is asking for, so the submit handler knows which
 /// mutation to run against the store and the document.
@@ -162,9 +163,10 @@ impl Widget for ModalBody {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.caption.draw(scene, transform, text, theme, presence);
+        self.caption
+            .draw_child(scene, transform, text, theme, presence);
         if let Some(input) = &mut self.input {
-            input.draw(scene, transform, text, theme, presence);
+            input.draw_child(scene, transform, text, theme, presence);
         }
     }
 

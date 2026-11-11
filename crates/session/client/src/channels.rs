@@ -82,7 +82,8 @@ impl Channels {
     /// Open this device's channel service over the workspaces `engine` holds:
     /// its sealed channel state under the platform secret store, and its
     /// groups settling through `link`, the workspace transport of this
-    /// session's collaboration plane.
+    /// session's collaboration plane. `settled` runs after every pass that
+    /// settles them: keys a record waited for may be here since.
     ///
     /// Without a secret store the service still runs, for the workspaces this
     /// device's own room host takes part in: their keys come from that host,
@@ -94,6 +95,7 @@ impl Channels {
         engine: &Arc<Engine>,
         link: Arc<ChannelLink>,
         broker: Arc<Mutex<BrokerChannels>>,
+        mut settled: impl FnMut() + Send + 'static,
     ) -> std::io::Result<Self> {
         let directory = Box::new(OwnerDirectory::participant(engine.owner().clone()));
         let gates: Arc<dyn ChannelGates> = Arc::new(BrokerGates(broker));
@@ -132,14 +134,17 @@ impl Channels {
         });
         let settled_access = access.clone();
         let mut rosters = Rosters::default();
-        let settled = Arc::clone(engine);
+        let engine_settled = Arc::clone(engine);
         let transport = Arc::clone(&link);
         let pump = GovernancePump::spawn(
             "tilo-channels",
             park,
             access,
             Arc::clone(&link) as Arc<dyn GovernanceTransport + Send + Sync>,
-            move || rosters.sweep(&transport, &settled),
+            move || {
+                rosters.sweep(&transport, &engine_settled);
+                settled();
+            },
         )?;
         // Every workspace this device already holds reads its roster: the plane carries a
         // workspace's window streams between the devices it admits from the moment it runs, not
@@ -154,6 +159,11 @@ impl Channels {
         })
     }
 }
+
+/// The records this device asked a workspace's hosts for, by the workspace's topic and the record's
+/// retained channel, and what each answered: `None` while the answer is owed, the frames the host
+/// sent once it came.
+type AskedRecords = std::collections::HashMap<(Topic, [u8; 32]), Option<u32>>;
 
 /// The workspace transport the channels' governance travels on: what this session's collaboration
 /// plane hears and says, reached from the thread that settles the groups.
@@ -170,8 +180,18 @@ pub struct ChannelLink {
     /// ([`Self::host_ready`]): every record comes with that history, so a record not here then is
     /// not anywhere.
     replayed: Mutex<BTreeSet<Topic>>,
+    /// The workspaces, by topic, whose host sends records only once a device opens them
+    /// ([`Self::host_ready`]): what a record not here is decided by, together with the host's answer
+    /// about it ([`Self::record_opened`]).
+    when_opened: Mutex<BTreeSet<Topic>>,
+    /// The records this device asked the workspaces' hosts for, by topic and retained channel, and
+    /// what each answered: `None` while the answer is owed, the frames it sent once it came
+    /// ([`Self::record_opened`]).
+    records: Mutex<AskedRecords>,
     /// Ticks whenever a host finished its replay.
     replays: tokio::sync::watch::Sender<u64>,
+    /// Ticks whenever a host answered for a record this device opened.
+    answers: tokio::sync::watch::Sender<u64>,
     /// What this session says on the collaboration plane, once it is running.
     outgoing: Mutex<Option<std::sync::Arc<dyn crate::Outbox>>>,
     /// The devices that reach this one as their workspace's host, when it
@@ -197,7 +217,10 @@ impl ChannelLink {
             inbound: Mutex::new(Vec::new()),
             changed: Mutex::new(BTreeSet::new()),
             replayed: Mutex::new(BTreeSet::new()),
+            when_opened: Mutex::new(BTreeSet::new()),
+            records: Mutex::new(AskedRecords::new()),
             replays: tokio::sync::watch::Sender::new(0),
+            answers: tokio::sync::watch::Sender::new(0),
             outgoing: Mutex::new(None),
             members: Mutex::new(None),
             park: GovernancePark::new(),
@@ -273,10 +296,12 @@ impl ChannelLink {
     fn say(&self, workspace: ModelWorkspaceId, message: NeighbourMsg) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
         outgoing.is_some_and(|outgoing| {
-            outgoing.send(Cmd::Publish {
-                ws: topic_of(workspace),
-                msg: Box::new(message),
-            })
+            outgoing
+                .send(Cmd::Publish {
+                    ws: topic_of(workspace),
+                    msg: Box::new(message),
+                })
+                .is_ok()
         })
     }
 
@@ -313,18 +338,98 @@ impl ChannelLink {
     }
 
     /// The host of the workspace on topic `ws` finished replaying what it retains to this device,
-    /// after the replay's own writes.
-    pub fn host_ready(&self, ws: Topic) {
+    /// after the replay's own writes. `records_when_opened`: it sends this device only the
+    /// workspace's governance, its shared desktop and the heads of its chained records, and every
+    /// other record once it opens it ([`Self::open_record`]).
+    pub fn host_ready(&self, ws: Topic, records_when_opened: bool) {
+        if records_when_opened {
+            self.when_opened.lock_recover().insert(ws);
+        }
         self.replayed.lock_recover().insert(ws);
         self.replays
             .send_modify(|count| *count = count.wrapping_add(1));
         // A group that waited on the history is founded now, if it held no genesis.
         self.park.poke();
+        // A host session that just came up owes this device the records it asked for before it was
+        // there: a record asked for on a session that has since ended reaches here over this one.
+        let asked: Vec<[u8; 32]> = self
+            .records
+            .lock_recover()
+            .keys()
+            .filter(|(asked_ws, _)| *asked_ws == ws)
+            .map(|(_, channel)| *channel)
+            .collect();
+        self.ask_for(ws, asked);
     }
 
     /// Whether `workspace`'s host finished replaying what it retains to this device.
     pub fn has_replayed(&self, workspace: ModelWorkspaceId) -> bool {
         self.replayed.lock_recover().contains(&topic_of(workspace))
+    }
+
+    /// Whether `workspace`'s host sends a device only the workspace's governance, its shared
+    /// desktop and the heads of its chained records, and every other record once the device opens
+    /// it ([`Self::open_record`]): a record that is not here is not new until the host answered it
+    /// holds none of it ([`Self::record_opened`]).
+    pub fn records_when_opened(&self, workspace: ModelWorkspaceId) -> bool {
+        self.when_opened
+            .lock_recover()
+            .contains(&topic_of(workspace))
+    }
+
+    /// Ask `workspace`'s hosts for the record on `channel`
+    /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
+    /// then on. Asked once per record and session; a host session that comes up later asks again
+    /// ([`Self::host_ready`]). `false` when the plane is not running, so nothing was asked.
+    pub fn open_record(&self, workspace: ModelWorkspaceId, channel: [u8; 32]) -> bool {
+        let ws = topic_of(workspace);
+        {
+            let mut records = self.records.lock_recover();
+            if records.contains_key(&(ws, channel)) {
+                return true;
+            }
+            records.insert((ws, channel), None);
+        }
+        self.ask_for(ws, [channel])
+    }
+
+    /// Say [`Cmd::OpenRecord`] for each of `channels` on the plane: whether it was taken, or `true`
+    /// when there is no plane to ask on.
+    fn ask_for(&self, ws: Topic, channels: impl IntoIterator<Item = [u8; 32]>) -> bool {
+        let outgoing = self.outgoing.lock_recover().clone();
+        channels.into_iter().all(|channel| {
+            outgoing
+                .as_ref()
+                .is_none_or(|outgoing| outgoing.send(Cmd::OpenRecord { ws, channel }).is_ok())
+        })
+    }
+
+    /// The host of the workspace on topic `ws` sent everything it retains of the record on
+    /// `channel`, `frames` of them — none when the workspace has none of it, and then the record is
+    /// new to whoever opens it.
+    pub fn record_opened(&self, ws: Topic, channel: [u8; 32], frames: u32) {
+        self.records
+            .lock_recover()
+            .insert((ws, channel), Some(frames));
+        self.answers
+            .send_modify(|count| *count = count.wrapping_add(1));
+        self.park.poke();
+    }
+
+    /// What the hosts of `workspace` answered about the record on `channel`: `None` while the
+    /// answer is owed, the frames they sent once it came.
+    pub fn record_answer(&self, workspace: ModelWorkspaceId, channel: &[u8; 32]) -> Option<u32> {
+        self.records
+            .lock_recover()
+            .get(&(topic_of(workspace), *channel))
+            .copied()
+            .flatten()
+    }
+
+    /// Wait for the next record a host answered for, from a value read before the wait.
+    #[must_use]
+    pub fn answers(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.answers.subscribe()
     }
 
     /// Wait for the next replay a host finished, from a value read before the wait.
@@ -356,7 +461,7 @@ impl ChannelLink {
     /// roster is told again when a later pass finds it changed.
     fn tell_roster(&self, ws: Topic, devices: Roster) -> bool {
         let outgoing = self.outgoing.lock_recover().clone();
-        outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }))
+        outgoing.is_some_and(|outgoing| outgoing.send(Cmd::Roster { ws, devices }).is_ok())
     }
 }
 
@@ -486,7 +591,7 @@ impl ChannelDirectory for OwnerDirectory {
         route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
         let reader = self.reader;
         let readers = self
             .owner
@@ -521,7 +626,7 @@ impl ChannelDirectory for OwnerDirectory {
         route: &ChannelRoute,
         now: u64,
     ) -> Option<ChannelId> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
         self.owner
             .with_current(workspace, |view| view.unit_scope(at, route))
             .ok()
@@ -651,7 +756,7 @@ pub fn roster_of(engine: &Engine, workspace: ModelWorkspaceId) -> Result<Roster,
     members_of(engine, workspace)?
         .into_iter()
         .map(|member| {
-            iroh::EndpointId::from_bytes(&member.device)
+            iroh_base::EndpointId::from_bytes(&member.device)
                 .map(|publisher| (publisher, member.cert.expires_at_ns))
                 .map_err(|error| error.to_string())
         })

@@ -208,6 +208,13 @@ struct LocalWrite {
     derived: bool,
 }
 
+/// A write of the store's the record holds, with the change that carried it: the overlay derives
+/// it until the index its app reads from reflects that change ([`Inner::rebuild_overlay`]).
+struct Accepted {
+    write: LocalWrite,
+    change: automerge::ChangeHash,
+}
+
 impl LocalWrite {
     /// What it reached, as derivation takes it.
     fn reached(&self) -> Reached {
@@ -290,6 +297,10 @@ pub struct StoreStats {
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
     pub catch_ups: u64,
+    /// Indexes written: one commit of the rows a change derived, per package the change reached.
+    /// A change one package made writes that package's index alone, whatever else a workspace
+    /// holds.
+    pub index_writes: u64,
 }
 
 /// How much the store read, counted since it was made: work that does not depend on the
@@ -321,6 +332,7 @@ use clock::ClockSource;
 mod burst;
 
 mod index_build;
+pub(crate) use index_build::reached_app;
 mod loading;
 use loading::{planned_unheld, unloaded};
 mod reading;
@@ -362,6 +374,11 @@ struct Inner {
     /// record's carries what they wrote, so reads hold it from the index and the writes are not
     /// derived into the overlay again.
     settled: BTreeSet<Vec<u8>>,
+    /// The store's writes the record holds that an index read from does not reflect yet: what
+    /// the overlay keeps deriving until that index's heads take in the change that carried each
+    /// ([`Inner::drop_committed_local`]), so a write the record accepted while its app's index
+    /// is still being derived reads back all along.
+    accepted: Vec<Accepted>,
     stats: StoreStats,
     /// Every resource of the workspace: its app and type.
     index: BTreeMap<DocId, (AppId, TypeId)>,
@@ -417,6 +434,9 @@ struct Inner {
     /// The type a commit adding it is refused for, as a test asks
     /// ([`TiloStore::fail_commits_adding`]): what a record that cannot take a change does.
     refused_commit: Option<String>,
+    /// The resource whose reads are refused, as a test asks ([`TiloStore::fail_reads_of`]):
+    /// what a store whose index has not caught up with the resource does.
+    refused_read: Option<String>,
     /// The runs that have not finished, as they began: where a run's first write stands in the
     /// record's local changes and in what it queued, so that a run that fails anywhere takes all
     /// it wrote back out ([`Store::abort_run`]).
@@ -702,6 +722,7 @@ impl TiloStore {
                 chunks: Chunks::default(),
                 local: Vec::new(),
                 settled: BTreeSet::new(),
+                accepted: Vec::new(),
                 stats: StoreStats::default(),
                 index: BTreeMap::new(),
                 apps: BTreeMap::new(),
@@ -729,6 +750,7 @@ impl TiloStore {
                 burst: None,
                 edit_pause: DEFAULT_EDIT_PAUSE,
                 refused_commit: None,
+                refused_read: None,
                 runs: HashMap::new(),
                 handed: BTreeMap::new(),
                 next_ticket: 1,
@@ -1008,6 +1030,24 @@ impl TiloStore {
     /// Refuse no commit: the store takes changes again ([`Self::fail_commits_adding`]).
     pub fn take_commits(&self) {
         self.mutate().refused_commit = None;
+    }
+
+    /// Refuse every read of the resource `at` (as [`ResourceRef::id_string`] names it), with
+    /// the `NotFound` a store whose index has not caught up with the resource answers, until
+    /// [`Self::take_reads`]: how a test reads a workspace whose index is behind what it holds.
+    pub fn fail_reads_of(&self, at: &str) {
+        self.mutate().refused_read = Some(at.to_owned());
+    }
+
+    /// Refuse no read: the store answers what it holds ([`Self::fail_reads_of`]).
+    pub fn take_reads(&self) {
+        self.mutate().refused_read = None;
+    }
+
+    /// Whether a test asked the reads of the resource `at` to be refused
+    /// ([`Self::fail_reads_of`]).
+    fn refuses_reads_of(&self, at: &ResourceRef) -> bool {
+        self.inner.borrow().refused_read.as_deref() == Some(at.id_string().as_str())
     }
 
     /// Take every action committed under a ticket of `first` or later, oldest first.
@@ -1543,14 +1583,6 @@ fn scan_of(chunks: &Chunks) -> BTreeMap<DocId, (AppId, TypeId)> {
     out
 }
 
-/// Whether the stamps `from` reflect every chunk the store holds: what a change's versions and
-/// placements take in, so an index stamped with them has nothing else to read.
-fn reflects_held(chunks: &Chunks, from: &Stamps) -> bool {
-    chunks
-        .docs()
-        .all(|(chunk, doc)| from.get(&chunk) == Some(&doc.committed_document().get_heads()))
-}
-
 /// The stamps `from` brought up to what the store holds now: the heads of each chunk it holds,
 /// and the stamps of the chunks it was not sent, which its index still reflects.
 fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
@@ -1684,6 +1716,11 @@ impl Inner {
         if !self.chunks.has_record() {
             return (moved, wholes, notified);
         }
+        // A change writes the index of each app it has something of to take in, and no other: an
+        // app with nothing of it keeps its rows, and a write for it is a commit of nothing. What
+        // such an index has taken in moves with the chunks here, as its rows are the ones they
+        // were: its own stamps are written with its next derivation, and one that opens before
+        // then catches up from them.
         let apps: Vec<AppId> = self
             .apps
             .iter()
@@ -1700,9 +1737,16 @@ impl Inner {
             let docs = &self.index;
             let own_placed;
             let (ends, placed) = match since {
-                // The index reflects every chunk the store held before the change: what the
-                // change made is all it has to take in.
-                Some((from, ends, placed)) if reflects_held(&self.chunks, from) => (ends, placed),
+                // The index had taken in everything the store held before the change: what the
+                // change made is all it has to take in, read once for every app rather than a
+                // chunk's changes again for each.
+                Some((from, ends, placed))
+                    if from
+                        .iter()
+                        .all(|(chunk, heads)| held.heads.get(chunk) == Some(heads)) =>
+                {
+                    (ends, placed)
+                }
                 _ => {
                     // The versions of what changed since the index's heads, and where it put
                     // the items it placed: the chunks it does not reflect yet, and only those.
@@ -1718,7 +1762,14 @@ impl Inner {
                     (&own, &own_placed)
                 }
             };
+            if !reached_app(docs, &app, reached, ends) {
+                if let Some(held) = self.apps.get_mut(&app) {
+                    held.heads = seen;
+                }
+                continue;
+            }
             let nested = &self.nested;
+            self.stats.index_writes = self.stats.index_writes.saturating_add(1);
             let written = index.write(|writer| {
                 let mut derive = Derive::new(&self.chunks, docs, nested, self.clock.read());
                 derive.removed_before(writer, &app, ends, placed)?;

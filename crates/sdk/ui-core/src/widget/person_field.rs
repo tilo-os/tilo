@@ -238,6 +238,14 @@ fn field(
                     .find(|person| person.identity == identity)
                     .map_or(identity, |person| person.name.as_str()),
                 identity,
+                people
+                    .iter()
+                    .chain(me)
+                    .find(|person| person.identity == identity)
+                    .map_or_else(
+                        || crate::tokens::PresenceHue::of_identity(identity),
+                        |person| person.hue,
+                    ),
             )
             .showing_choice(),
         // Nobody yet: the person icon stands where the avatar would, so the chip is as tall as
@@ -255,7 +263,7 @@ fn entry(id: &str, label: &str, who: &Person, picked: Option<Person>, chosen: &P
     let on_pick = Rc::clone(chosen);
     Button::new(id, label)
         .role(ButtonRole::Plain)
-        .with_avatar(&who.name, &who.identity)
+        .with_avatar(&who.name, &who.identity, who.hue)
         .on_view(move || on_pick.set(Some(picked.clone())))
 }
 
@@ -305,10 +313,12 @@ mod tests {
         let mia = Person {
             identity: "scenario:Mia".to_owned(),
             name: "Mia".to_owned(),
+            hue: crate::tokens::PresenceHue::Violet,
         };
         let sam = Person {
             identity: "scenario:Sam".to_owned(),
             name: "Sam".to_owned(),
+            hue: crate::tokens::PresenceHue::Cyan,
         };
         (vec![mia.clone(), sam], mia)
     }

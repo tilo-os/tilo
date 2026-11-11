@@ -60,6 +60,7 @@ use ui::widget::{
 use crate::actions::DraftBodySeed;
 use crate::model::{ComposeFormat, Draft, DraftAttachment};
 use crate::resource::{Mail, draft_body_dispatcher, draft_body_object, mailbox};
+use ui::widget::DrawChild;
 
 /// The HTML body: the SDK rich-text editor over the draft's body, every
 /// edit a field edit of the body through `dispatcher`; shown view-only
@@ -639,9 +640,9 @@ impl ComposeWindow {
             body_plain: String::new(),
             plain_body: {
                 // The body stands on the window like the rich editor does.
-                let mut b = TextInput::local()
-                    .multiline(true)
-                    .with_placeholder("Write your message");
+                let mut b = TextInput::local().multiline(true).with_placeholder(
+                    ui::i18n::I18nManager::lookup_plain("mail-compose-placeholder-body"),
+                );
                 b.set_plain_chrome(true);
                 b
             },
@@ -779,8 +780,10 @@ impl ComposeWindow {
             (Role::Dialog, true)
         };
         AccessNode::new(role)
-            .with_name("Compose email")
-            .with_description("Email composer")
+            .with_name(ui::i18n::I18nManager::lookup_plain("mail-compose-a11y"))
+            .with_description(ui::i18n::I18nManager::lookup_plain(
+                "mail-compose-a11y-description",
+            ))
             .with_bounds(self.rect)
             .with_state(AccessState::new().modal(modal))
             .with_children(children)
@@ -2514,7 +2517,7 @@ impl ComposeWindow {
                 plain,
             );
             self.format_bar.bar.lay_out_in(rect, tr, theme);
-            ui::Widget::draw(
+            ui::widget::DrawChild::draw_child(
                 &mut self.format_bar.bar,
                 scene,
                 t,
@@ -2555,12 +2558,19 @@ impl ComposeWindow {
                     t,
                     &body,
                 );
-                ui::Widget::draw(&mut self.editor, scene, t, tr, theme, presence);
+                ui::widget::DrawChild::draw_child(&mut self.editor, scene, t, tr, theme, presence);
                 scene.pop_layer();
                 ui::Widget::draw_overlay(&mut self.editor, scene, t, tr, theme, presence);
             }
             ComposeFormat::Text => {
-                ui::widget::Widget::draw(&mut self.plain_body, scene, t, tr, theme, presence);
+                ui::widget::DrawChild::draw_child(
+                    &mut self.plain_body,
+                    scene,
+                    t,
+                    tr,
+                    theme,
+                    presence,
+                );
             }
         }
     }
@@ -2662,7 +2672,7 @@ impl ComposeWindow {
             );
         }
         if let Some(p) = self.prompt.as_mut() {
-            p.input.draw(scene, t, tr, theme, presence);
+            p.input.draw_child(scene, t, tr, theme, presence);
         }
     }
 
@@ -2705,12 +2715,12 @@ impl ComposeWindow {
             return;
         }
         let panel = theme.on_ground(self.ground(theme));
-        self.to.draw(scene, t, tr, &panel, presence);
+        self.to.draw_child(scene, t, tr, &panel, presence);
         if self.show_cc_bcc {
-            self.cc.draw(scene, t, tr, &panel, presence);
-            self.bcc.draw(scene, t, tr, &panel, presence);
+            self.cc.draw_child(scene, t, tr, &panel, presence);
+            self.bcc.draw_child(scene, t, tr, &panel, presence);
         }
-        self.subject.draw(scene, t, tr, &panel, presence);
+        self.subject.draw_child(scene, t, tr, &panel, presence);
         // Offered recipients float over everything under the field.
         self.completions.paint(scene, t, tr, theme);
     }

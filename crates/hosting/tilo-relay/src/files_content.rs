@@ -71,6 +71,10 @@ const FILES_APP: &str = fs::tree_record::FILES_APP;
 const READ_EVERY: Duration = Duration::from_secs(2);
 /// How long the host waits before it asks again for content nobody answered.
 const ASK_AGAIN: Duration = Duration::from_secs(90);
+/// How often the content being gathered is looked at for the pieces a lost
+/// one left missing, so a member's answer arrives whole without waiting for
+/// the next write to the tree that named it.
+const MISSING_EVERY: Duration = Duration::from_millis(100);
 /// How long a tree that could not be read waits before it is read again, at
 /// first: each failed read waits twice as long, up to [`RETRY_LONGEST`].
 const RETRY_FIRST: Duration = Duration::from_secs(1);
@@ -148,6 +152,7 @@ impl FilesContent {
         let mut read = ticker(READ_EVERY);
         let mut again = ticker(ASK_AGAIN);
         let mut reopen = ticker(RETRY_FIRST);
+        let mut missing = ticker(MISSING_EVERY);
         loop {
             tokio::select! {
                 write = writes.recv() => match write {
@@ -186,6 +191,7 @@ impl FilesContent {
                         self.keep_tree(&workspace).await;
                     }
                 }
+                _ = missing.tick() => self.ask_again_for_missing().await,
             }
         }
     }
@@ -200,6 +206,23 @@ impl FilesContent {
             .lock_recover()
             .again
             .insert(write.workspace.clone());
+    }
+
+    /// Ask the workspaces again for the content being gathered that a lost
+    /// piece left short: an answer carries only so much of a file at a time,
+    /// and a piece a session could not deliver is not sent again by itself,
+    /// so the host asks within [`neighbour_wire::content::PIECE_PATIENCE_MS`]
+    /// of the last piece it got, naming what it holds.
+    async fn ask_again_for_missing(&self) {
+        let asks = {
+            let mut state = self.state.lock_recover();
+            state.wants.reask(&self.host, now_ms())
+        };
+        for (workspace, ask) in asks {
+            if let Err(error) = self.workspaces.ask_members(&workspace, ask).await {
+                tracing::debug!(%workspace, %error, "could not ask a workspace for the content it is missing");
+            }
+        }
     }
 
     /// Read the tree of every workspace governed here.
@@ -347,7 +370,7 @@ impl FilesContent {
 impl ContentKeeper for FilesContent {
     fn piece(&self, workspace: &str, _from: [u8; 32], frame: &[u8]) {
         let mut state = self.state.lock_recover();
-        let Some(arrived) = state.wants.piece(&self.host, frame) else {
+        let Some(arrived) = state.wants.piece(&self.host, frame, now_ms()) else {
             return;
         };
         let kept = self

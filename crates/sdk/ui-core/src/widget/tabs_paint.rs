@@ -154,7 +154,7 @@ impl TabBar {
                 crate::widget::window_controls::ControlsState {
                     hovered: self.hover_control,
                     pressed: self.pressed_control,
-                    maximized: self.maximized,
+                    resize: self.resize,
                     lifts: [
                         self.control_lifts[0].level(now),
                         self.control_lifts[1].level(now),

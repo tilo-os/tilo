@@ -28,6 +28,7 @@ use tilo_channels::{ChannelAccess, ChannelKeyProvider};
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::MemberRole;
 #[cfg(target_os = "linux")]
 use tilo_peer_state::join::invitations::{
@@ -188,6 +189,16 @@ pub struct Engine {
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
+    /// This device's own writes its replica has not taken in yet ([`HeldWrites`]).
+    held: HeldWrites,
+    /// Keys of records whose channel this device takes no part in, handed to it by the records'
+    /// host ([`Self::hand_keys`]): a sealed record they open reads with them.
+    handed: std::sync::Mutex<
+        std::collections::BTreeMap<
+            (WorkspaceId, collab_types::ChannelRoute),
+            tilo_channels::HistoryKeys,
+        >,
+    >,
 }
 
 /// How much of the workspaces' sealed history this device keeps to hand their other devices: every
@@ -200,6 +211,20 @@ const FRAMES_KEPT: tilo_peer_state::store::Appetite = tilo_peer_state::store::Ap
 /// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
 /// when the record changed since the caller last read it.
 type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
+
+/// The writes this device made that its replica has not taken in yet, by record, as document
+/// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for room
+/// in custody. The session that writes them keeps them here, and its readers read them over the
+/// replica ([`Engine::read_record`]); nobody else sees them until they land.
+#[derive(Clone, Default)]
+pub struct HeldWrites(Arc<std::sync::Mutex<BTreeMap<DocumentRoute, Vec<Vec<u8>>>>>);
+
+impl HeldWrites {
+    /// The held writes, to read or change.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<DocumentRoute, Vec<Vec<u8>>>> {
+        self.0.lock_recover()
+    }
+}
 
 /// What a read of one of a workspace's records found ([`Engine::read_record`]).
 pub enum RecordReading {
@@ -247,6 +272,8 @@ impl Engine {
             #[cfg(not(target_arch = "wasm32"))]
             directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
+            handed: std::sync::Mutex::default(),
+            held: HeldWrites::default(),
         }
     }
 
@@ -369,31 +396,80 @@ impl Engine {
         known: Option<[u8; 32]>,
         maximum: usize,
     ) -> Result<RecordReading, String> {
+        let route = DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_owned(),
+            record: record.to_owned(),
+        };
+        let held = self.held.lock().get(&route).cloned();
+        let Some(held) = held.filter(|frames| !frames.is_empty()) else {
+            return self.read_replica(workspace, app, record, known, maximum);
+        };
+        // This device's own writes the replica has not taken in yet read over what it holds.
+        let base = match self.read_replica(workspace, app, record, None, maximum) {
+            Ok(RecordReading::Captured { bytes, .. }) => Some(bytes),
+            _ => None,
+        };
+        let author = self.identity.device_cert.device_public_key;
+        let tilo_peer_state::document_frame::OwnRead {
+            bytes,
+            heads,
+            revision,
+        } = tilo_peer_state::document_frame::with_own_writes(base.as_deref(), author, &held)?;
+        if known == Some(revision) {
+            return Ok(RecordReading::Unchanged(revision));
+        }
+        Ok(RecordReading::Captured {
+            revision,
+            heads,
+            bytes,
+        })
+    }
+
+    /// What this device's replica holds of the record, its own held writes left out.
+    fn read_replica(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        known: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<RecordReading, String> {
         let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        let route = collab_types::ChannelRoute::new(app, record);
+        let handed = self
+            .handed
+            .lock_recover()
+            .get(&(workspace, route.clone()))
+            .cloned();
         let sealed = self.owner.with_current(workspace, |view| {
             Ok(view.peer().publication().is_sealed_record(app, record))
         })?;
-        if sealed && !self.join_channel(workspace, app, record)? {
+        if sealed && handed.is_none() && !self.join_channel(workspace, app, record)? {
             return Ok(RecordReading::Pending);
         }
         // Taken before the workspace's view is held: the channel service's pump settles the groups
         // under its own lock and reads the workspace's governance there, so a read that asked it
         // for keys while holding the view would wait on it as it waits on the view.
-        let history = self.keys.get().and_then(|keys| {
-            keys.history_keys(workspace, &collab_types::ChannelRoute::new(app, record))
-        });
+        let history = self
+            .keys
+            .get()
+            .and_then(|keys| keys.history_keys(workspace, &route));
         // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
         // of the branch it was sealed on, has not reached this device — is a record still
         // arriving here: it reads whole once the keys have, as the app's own channel holds such a
-        // write until they do.
+        // write until they do. The keys this session was handed open what they carry; the
+        // channel's own history keys open the rest.
         let mut unopened = false;
         let read = self.read_in(workspace, (app, record), known, maximum, &mut |write| {
-            let keys = history
-                .as_ref()
-                .ok_or("this session's channel service is not running")?
-                .as_ref()
-                .map_err(Clone::clone)?;
-            let opened = keys.open(write);
+            let opened = match (&handed, &history) {
+                (Some(handed), Some(Ok(history))) => {
+                    handed.open(write).or_else(|_| history.open(write))
+                }
+                (Some(handed), _) => handed.open(write),
+                (None, Some(history)) => history.as_ref().map_err(Clone::clone)?.open(write),
+                (None, None) => Err("this session's channel service is not running".into()),
+            };
             unopened |= opened.is_err();
             opened
         });
@@ -448,7 +524,9 @@ impl Engine {
     }
 
     /// Whether `workspace`'s host finished replaying to this device what it retains: every record
-    /// comes with it, so one that is not here then is one the workspace has none of.
+    /// comes with it, so one that is not here then is one the workspace has none of — unless the
+    /// host sends records only when they are opened
+    /// ([`Self::records_when_opened`]).
     #[must_use]
     pub fn host_replayed(&self, workspace: &str) -> bool {
         let Some(workspace) = WorkspaceId::parse(workspace) else {
@@ -458,6 +536,54 @@ impl Engine {
             .lock_recover()
             .as_ref()
             .is_some_and(|link| link.has_replayed(workspace))
+    }
+
+    /// Whether `workspace`'s host sends this device only the workspace's governance, its shared
+    /// desktop and the heads of its chained records, and every other record once this device opens
+    /// it ([`Self::open_record`]): a record that is not here is not new until the host answered it
+    /// holds none of it ([`Self::record_answer`]).
+    #[must_use]
+    pub fn records_when_opened(&self, workspace: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        self.link
+            .lock_recover()
+            .as_ref()
+            .is_some_and(|link| link.records_when_opened(workspace))
+    }
+
+    /// Ask `workspace`'s hosts for `app`'s `record`
+    /// (`neighbour_wire::app_document_channel`): what they hold of it, and their changes to it from
+    /// then on. Asked once per record while the plane runs; `false` when there is no plane to ask
+    /// on, so nothing was asked.
+    pub fn open_record(&self, workspace: &str, app: &str, record: &str) -> bool {
+        let Some(workspace) = WorkspaceId::parse(workspace) else {
+            return false;
+        };
+        let Some(link) = self.link.lock_recover().clone() else {
+            return false;
+        };
+        link.open_record(workspace, neighbour_wire::app_document_channel(app, record))
+    }
+
+    /// What `workspace`'s host answered about `app`'s `record`: `None` while the answer to
+    /// [`Self::open_record`] is owed, and the frames it sent once it came — none when the workspace
+    /// has none of the record, which is then new here.
+    #[must_use]
+    pub fn record_answer(&self, workspace: &str, app: &str, record: &str) -> Option<u32> {
+        let workspace = WorkspaceId::parse(workspace)?;
+        let channel = neighbour_wire::app_document_channel(app, record);
+        self.link
+            .lock_recover()
+            .as_ref()?
+            .record_answer(workspace, &channel)
+    }
+
+    /// What ticks whenever a host answered for a record this device opened; `None` with no plane.
+    #[must_use]
+    pub fn record_answers(&self) -> Option<tokio::sync::watch::Receiver<u64>> {
+        self.link.lock_recover().as_ref().map(|link| link.answers())
     }
 
     /// What ticks whenever a host finished its replay; `None` with no plane.
@@ -524,9 +650,18 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, or its documents cannot be listed now.
     pub fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        self.owner
-            .with_current(workspace, |view| Ok(view.peer().records()))
+        let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        let mut records = self
+            .owner
+            .with_current(id, |view| Ok(view.peer().records()))?;
+        // A record this device wrote that its replica holds nothing of yet is one of them too.
+        for route in self.held.lock().keys() {
+            let named = (route.app_id.clone(), route.record.clone());
+            if route.cluster_id == workspace && !records.contains(&named) {
+                records.push(named);
+            }
+        }
+        Ok(records)
     }
 
     /// Whether this device's person reads everything `workspace` holds here, so that it may be
@@ -556,45 +691,104 @@ impl Engine {
     pub fn found_record(
         &self,
         workspace: WorkspaceId,
-        (app, record): (&str, &str),
+        record: (&str, &str),
         changes: &[u8],
         sealed: Option<&channel_crypto::ChannelContentKeys>,
     ) -> Result<(), String> {
+        self.write_record(workspace, record, changes, true, sealed)
+            .map(|_| ())
+    }
+
+    /// Write `changes` to `record` of `app` in `workspace` as this device's own write, and publish
+    /// it to the workspace's other devices: the record's founding write when `founding` (the whole
+    /// document, which the workspace must not hold yet), a change of it otherwise. Sealed under
+    /// `sealed` , the keys of the record's channel, where the workspace's records are its members'
+    /// sealed channels — a founding write as a checkpoint, so the record is sealed from the start —
+    /// and in the clear where they are documents this device commits.
+    /// Answers the write as this device's apps take a member's: their copies of the record follow
+    /// it only once it is handed to them.
+    /// # Errors
+    /// The workspace is not held here, a founding write finds the record held already, or the
+    /// workspace refused the write.
+    pub fn write_record(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+        changes: &[u8],
+        founding: bool,
+        sealed: Option<&channel_crypto::ChannelContentKeys>,
+    ) -> Result<tilo_peer_state::owner::AppWrite, String> {
         use tilo_broker_core::custody::OwnerCustody as _;
         let key = self.identity.signing_key()?;
+        let device = self.identity.device_cert.device_public_key;
         let now = SystemTime::now();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
+        let mut written = None;
         self.owner.commit_document_with_current(
             workspace,
             |view| {
-                if view.peer().document(app, record).is_some() {
+                if founding && view.peer().document(app, record).is_some() {
                     return Err(format!("{record} of {app} is in the workspace already"));
                 }
+                let author = view
+                    .peer()
+                    .permissions(device, now)
+                    .map(tilo_peer_state::MemberAuthority::standing)
+                    .map_err(|error| error.to_string())?;
                 let mut peer = view.peer().clone();
                 let publication = peer.publication_mut();
                 let message = match sealed {
                     None => {
                         publication.publish_incremental(app, record, changes.to_vec(), &key, now)?
                     }
-                    Some(keys) => publication.publish_sealed_checkpoint(
-                        app,
-                        record,
-                        changes.to_vec(),
-                        &mut |plaintext: &[u8]| {
-                            keys.seal_content(
-                                artifact,
-                                collab_types::ContentRetention::Checkpoint,
-                                plaintext,
-                            )
-                            .map_err(|error| error.to_string())
-                        },
-                        &key,
-                        now,
-                    )?,
+                    Some(keys) => {
+                        let retention = if founding {
+                            collab_types::ContentRetention::Checkpoint
+                        } else {
+                            collab_types::ContentRetention::Delta
+                        };
+                        let mut seal = |plaintext: &[u8]| {
+                            keys.seal_content(artifact, retention, plaintext)
+                                .map_err(|error| error.to_string())
+                        };
+                        if founding {
+                            publication.publish_sealed_checkpoint(
+                                app,
+                                record,
+                                changes.to_vec(),
+                                &mut seal,
+                                &key,
+                                now,
+                            )?
+                        } else {
+                            publication.publish_sealed_incremental(
+                                app,
+                                record,
+                                changes.to_vec(),
+                                &mut seal,
+                                &key,
+                                now,
+                            )?
+                        }
+                    }
                 };
-                let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
-                    return Err("a record's founding write is not a document write".to_owned());
+                let neighbour_wire::NeighbourMsg::AppDocument {
+                    peer: writer,
+                    envelope,
+                    ..
+                } = message
+                else {
+                    return Err("a record's write is not a document write".to_owned());
                 };
+                written = Some(tilo_peer_state::owner::AppWrite {
+                    peer: writer,
+                    app_id: app.to_owned(),
+                    cluster_id: workspace.to_string(),
+                    record_id: record.to_owned(),
+                    author,
+                    replayed: false,
+                    envelope: (*envelope).clone(),
+                });
                 Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
                     workspace: workspace.to_string(),
                     operation: tilo_peer_state::owner_commit::CommitOperation::Document {
@@ -607,7 +801,7 @@ impl Engine {
             now,
         )?;
         self.schedule_publication(workspace);
-        Ok(())
+        written.ok_or_else(|| "the write was not made".to_owned())
     }
 
     /// [`Self::record`] of a sealed record, opened with `keys` rather than this device's channel
@@ -941,7 +1135,7 @@ impl Engine {
         invitee_name: Option<String>,
         recipient_user_public_key: Option<[u8; 32]>,
         expires_in_seconds: u64,
-        endpoint: &iroh::EndpointAddr,
+        endpoint: &iroh_base::EndpointAddr,
         now: SystemTime,
     ) -> Result<Issued, String> {
         let room = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
@@ -1089,7 +1283,10 @@ impl Engine {
     /// Where `workspace` 's host is reached and the device its enrollment pins: the address its
     /// live plane is dialled at.
     #[cfg(target_os = "linux")]
-    pub fn workspace_host(&self, workspace: WorkspaceId) -> Option<([u8; 32], iroh::EndpointAddr)> {
+    pub fn workspace_host(
+        &self,
+        workspace: WorkspaceId,
+    ) -> Option<([u8; 32], iroh_base::EndpointAddr)> {
         self.owner.host_addr(workspace)
     }
 
@@ -1150,6 +1347,24 @@ impl Engine {
 
     /// Where this session's channel service installs this device's keys: the broker, the room host
     /// and every sealed read meet here.
+    /// This device's own writes its replica has not taken in yet.
+    pub fn held_writes(&self) -> &HeldWrites {
+        &self.held
+    }
+
+    /// Read `workspace`'s record of `route` with `keys` from now on: the record's host handed them
+    /// to this device, which takes no part in the record's channel.
+    pub fn hand_keys(
+        &self,
+        workspace: WorkspaceId,
+        route: collab_types::ChannelRoute,
+        keys: channel_crypto::ChannelContentKeys,
+    ) {
+        self.handed
+            .lock_recover()
+            .insert((workspace, route), keys.into());
+    }
+
     pub fn keys(&self) -> ChannelKeyProvider {
         self.keys.clone()
     }
@@ -1167,7 +1382,7 @@ impl Engine {
     fn own_host_hint(
         &self,
         workspace: &str,
-        endpoint: &iroh::EndpointAddr,
+        endpoint: &iroh_base::EndpointAddr,
     ) -> Result<tilo_peer_state::join::TransportHint, String> {
         let workspace_id = tilo_peer_state::join::room_workspace_id(workspace)
             .map_err(|error| error.to_string())?;
@@ -1201,7 +1416,7 @@ impl Engine {
         slot: WorkspaceSlot,
         workspace: WorkspaceId,
         name: &str,
-        endpoint: Option<&iroh::EndpointAddr>,
+        endpoint: Option<&iroh_base::EndpointAddr>,
     ) {
         if self.holds(workspace) || self.unfounded.lock_recover().contains(&workspace) {
             return;
@@ -1249,7 +1464,7 @@ impl Engine {
     /// one founded before its record said: a workspace founded here is reached at its own host, and
     /// a record that does not say so leaves its records where no device reaches them.
     #[cfg(target_os = "linux")]
-    pub fn name_own_hosts(&self, endpoint: &iroh::EndpointAddr) {
+    pub fn name_own_hosts(&self, endpoint: &iroh_base::EndpointAddr) {
         for workspace in self.owner.hosts_unnamed() {
             let hint = match self.own_host_hint(&workspace.to_string(), endpoint) {
                 Ok(hint) => hint,
@@ -1457,9 +1672,9 @@ mod tests {
     }
 
     /// Where a desk's own host is reached: its device's endpoint.
-    fn endpoint(identity: &HostIdentity) -> iroh::EndpointAddr {
-        iroh::EndpointAddr::new(
-            iroh::EndpointId::from_bytes(&identity.device_cert.device_public_key)
+    fn endpoint(identity: &HostIdentity) -> iroh_base::EndpointAddr {
+        iroh_base::EndpointAddr::new(
+            iroh_base::EndpointId::from_bytes(&identity.device_cert.device_public_key)
                 .expect("a device endpoint"),
         )
     }

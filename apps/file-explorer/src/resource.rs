@@ -64,6 +64,37 @@ impl FileExplorer {
     }
 }
 
+impl FileExplorer {
+    /// What a read of Files answers: the pinned places and the filesystem
+    /// changes asked for, each with the device that carries it out and how
+    /// it settled. It is the document every window shares, so an agent finds
+    /// Files and its verbs through it; the folder a window shows is that
+    /// window's own and is not in it.
+    fn read_content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
+        if item.is_some() {
+            return Err("Files is read whole".into());
+        }
+        let places: Vec<serde_json::Value> = self
+            .places
+            .iter()
+            .map(|(_, bookmark)| serde_json::json!({"place": bookmark.place.0, "name": bookmark.name()}))
+            .collect();
+        let changes: Vec<serde_json::Value> = self
+            .ops
+            .entries()
+            .map(|(id, entry)| {
+                serde_json::json!({
+                    "id": id.as_str(),
+                    "device": entry.value.device,
+                    "op": entry.value.op,
+                    "settled": entry.settled,
+                })
+            })
+            .collect();
+        Ok(serde_json::json!({"places": places, "changes": changes}))
+    }
+}
+
 impl Bookmark {
     /// The folder's name, never its stored form ([`crate::places::name`]).
     fn name(&self) -> String {
@@ -271,7 +302,8 @@ fn record_native(
     kind = "files.folder",
     label = "Folder",
     initialize = FileExplorer::with_default_places,
-    search = FileExplorer::search
+    search = FileExplorer::search,
+    read_content = FileExplorer::read_content
 )]
 impl FileExplorer {
     // Every verb names what it changes outright: the device, absolute paths,

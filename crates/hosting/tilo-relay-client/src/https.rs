@@ -210,10 +210,17 @@ pub async fn workspace_deleted(
     .await
 }
 
-/// One step of joining a workspace with no session (`/join`).
-pub async fn join(
+/// What `invitation` (its signed bytes) offers at the host, or why the host would not honour it
+/// ([`INVITATION_PATH`](tilo_relay_protocol::web::INVITATION_PATH)): what a page shows someone
+/// following a link before it makes them a person. Redeeming it is an entry on a session.
+pub async fn invitation(
     client: &dyn HttpClient,
-    step: &tilo_relay_protocol::workspaces::JoinStep,
+    invitation: &[u8],
 ) -> Result<tilo_relay_protocol::workspaces::JoinReply, LinkError> {
-    call(client, "/join", encode(step)?).await
+    call(
+        client,
+        tilo_relay_protocol::web::INVITATION_PATH,
+        encode(&invitation)?,
+    )
+    .await
 }

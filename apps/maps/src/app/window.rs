@@ -24,6 +24,7 @@ use super::MapsApp;
 use crate::failure;
 use crate::resource::MapsEffect;
 use crate::workspace::Workspace;
+use ui::widget::DrawChild;
 
 /// The maps window over the shared [`MapsApp`]: the map and its chrome,
 /// drawn by the map, which the view's effect handler and what the view
@@ -432,7 +433,7 @@ impl Widget for MapWindow {
         presence: &PresenceCtx,
     ) {
         self.app()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

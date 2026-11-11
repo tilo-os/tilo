@@ -65,7 +65,6 @@ const OCCLUDED_TICK_INTERVAL: Duration = Duration::from_millis(50);
 /// scene buffers.
 struct AppHandler {
     app: App,
-    clipboard_attachment: Option<crate::clipboard::ClipboardAttachment>,
     animation_schedule: animation_schedule::AnimationSchedule,
     /// When the next "just typed" highlight steps down its fade
     /// (`PresenceCtx::typing_next_step`).
@@ -195,6 +194,11 @@ struct AppHandler {
     /// The window is done: the last window of the process ends its loop, any
     /// other closes alone ([`process_windows`]).
     closing: std::cell::Cell<bool>,
+    /// The session started this app with no window
+    /// ([`crate::host::WINDOWLESS_ENV`]): it serves its actions and records
+    /// and makes no window. The first window the shell asks of the process
+    /// takes its place ([`process_windows`]).
+    windowless: bool,
 }
 
 #[cfg(test)]
@@ -836,6 +840,30 @@ thread_local! {
     /// takes them, so the app drawn in its place starts without making them again.
     static HANDED_RENDERER: std::cell::RefCell<Option<PreparedRenderer>> =
         const { std::cell::RefCell::new(None) };
+    /// The clipboard on the loop's Wayland connection. It is the connection's, not a window's:
+    /// it outlives the window that attached it, through a window that gives its place to the
+    /// next and the process's other windows, until the loop is done. The compositor accepts a
+    /// copy only from the connection that owns the focused surface, and the clipboard attaches
+    /// once per process, so a window that dropped it would leave every later copy unheard.
+    static LOOP_CLIPBOARD: std::cell::RefCell<Option<crate::clipboard::ClipboardAttachment>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Attach the clipboard to the loop's connection, once.
+fn attach_loop_clipboard(event_loop: &ActiveEventLoop) {
+    LOOP_CLIPBOARD.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if slot.is_none() {
+            *slot = crate::host::native::attach_display(event_loop.owned_display_handle());
+        }
+    });
+}
+
+/// Close the loop's clipboard: the loop is done and hands its connection to no window after it.
+/// Its workers are torn down off this thread, retaining the display.
+fn close_loop_clipboard() {
+    // Taking the guard lets it go here; a target that attaches no clipboard holds none to take.
+    let _ = LOOP_CLIPBOARD.with(|slot| slot.borrow_mut().take());
 }
 
 fn take_early_event_loop() -> Option<EventLoop<UserEvent>> {
@@ -1370,7 +1398,7 @@ impl AppHandler {
         };
 
         let attributes = Window::default_attributes()
-            .with_title("Audience presentation")
+            .with_title(crate::i18n::widget_format("presentation-window-title", &[]))
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false);
@@ -2599,6 +2627,10 @@ impl AppHandler {
         };
         drop(layout_phase);
         mark_first_frame("first-frame-layout-done");
+        // A window that fits its content asks for the size its layout just measured before this
+        // frame is committed: the frame a client sees is at the size its page needs, not one
+        // drawn at the room it was given and resized after.
+        app.reconcile_minimum_size(window);
         // A local read this frame would show has not answered and is still
         // inside its frame budget ([`crate::arriving`]): the frame on screen
         // stays until the data lands (its wake redraws) or the budget runs
@@ -3669,12 +3701,10 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
             return;
         }
-        // Required, not incidental: the compositor only accepts
-        // `set_selection` from the connection that owns the focused surface.
-        if self.clipboard_attachment.is_none() {
-            self.clipboard_attachment =
-                crate::host::native::attach_display(event_loop.owned_display_handle());
+        if self.windowless {
+            return;
         }
+        attach_loop_clipboard(event_loop);
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
@@ -3821,9 +3851,6 @@ impl ApplicationHandler<UserEvent> for AppHandler {
     /// `RenderSurface<'static>` references it, and wgpu may panic if the
     /// surface outlives the window.
     fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
-        // Close clipboard admission before the runner dismantles its native
-        // surfaces. Worker teardown retains its own display, off this thread.
-        self.clipboard_attachment = None;
         self.app.close_wake_scope();
         let _entry = self.app.enter_wake_scope();
         // The Unix adapter owns an asynchronous AT-SPI provider.  Drop it
@@ -3893,6 +3920,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         let _entry = self.app.enter_wake_scope();
         let Some(window) = self.window.clone() else {
+            // With no window to draw, a wake runs the passes a frame runs
+            // before it paints: the app takes its actions and publishes.
+            if self.windowless {
+                event_loop.set_control_flow(
+                    self.app
+                        .wake_unshown()
+                        .map_or(ControlFlow::Wait, ControlFlow::WaitUntil),
+                );
+            }
             return;
         };
         // Both volume keys have been held long enough, or a finger rested.
@@ -5039,7 +5075,8 @@ impl App {
         // takes a window as it maps as one this process serves, and only a
         // process that answered its door before that is served more.
         let door = open.and_then(|open| process_windows::serve_door(&proxy).map(|()| open));
-        let handler = self.into_handler(&proxy, native_scenario, setup);
+        let mut handler = self.into_handler(&proxy, native_scenario, setup);
+        handler.windowless = crate::host::environment().windowless;
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, door);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every
@@ -5062,6 +5099,8 @@ impl App {
         let handing_over = handler.as_ref().is_some_and(|handler| handler.handing_over);
         if handing_over && let Some(handler) = handler.as_mut() {
             hand_over(handler, event_loop);
+        } else {
+            close_loop_clipboard();
         }
         // The app and its state are dropped (and saved) before the process
         // reports how its window ended, and so are the settings it changed.
@@ -5146,7 +5185,6 @@ impl App {
 
         AppHandler {
             app: self,
-            clipboard_attachment: None,
             window: None,
             render: None,
             surface_suspended: false,
@@ -5210,6 +5248,7 @@ impl App {
             _settings_watch: settings_watch,
             handing_over: false,
             closing: std::cell::Cell::new(false),
+            windowless: false,
         }
     }
 }

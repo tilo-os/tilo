@@ -3,6 +3,7 @@
 //! and it draws nothing of its own.
 
 use tilo_ui::component::{Described, Event, Person, ResourceId};
+use tilo_ui::tokens::PresenceHue;
 use tilo_ui::widget::{TabItemProps, TabStrip, TabStripProps, pack_point, unpack_point};
 
 fn tab(key: &str, title: &str) -> TabItemProps {
@@ -95,6 +96,7 @@ fn a_pill_says_who_is_at_its_resource() {
         who: Some(Person {
             identity: "mia".to_owned(),
             name: "Mia".to_owned(),
+            hue: PresenceHue::of_identity("mia"),
         }),
         name: None,
     }];

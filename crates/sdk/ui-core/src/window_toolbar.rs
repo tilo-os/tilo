@@ -322,6 +322,11 @@ pub struct ToolbarLocation {
     /// leading edge instead of the app's icon.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image: Option<ToolbarImage>,
+    /// Who the location is, for a conversation with one person or agent: their face (initials in
+    /// their colour, the agent mark) and whether they are here, before the label in place of the
+    /// icon.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub avatar: Option<LocationAvatar>,
     /// What the bar lists under the field while it is edited, best first:
     /// the app's answer to the text it heard last ([`ToolbarEvent::Edit`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -374,6 +379,44 @@ pub struct LocationSegment {
     /// What a click on it commits ([`ToolbarEvent::Commit`]): the level's
     /// full location ("/home/ana/Downloads").
     pub value: String,
+}
+
+/// The person or agent a location is ([`ToolbarLocation::avatar`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LocationAvatar {
+    /// Their name, for the initials.
+    pub name: String,
+    /// A stable id of theirs (a peer id, an agent's id), for their colour.
+    pub identity: String,
+    /// Software, not a person: the agent mark.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub agent: bool,
+    /// Whether they are here: the badge on the face. `None`: not known, no badge.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<LocationPresence>,
+}
+
+/// Whether the person a location is, is here ([`LocationAvatar::presence`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LocationPresence {
+    Online,
+    Away,
+    Busy,
+    Offline,
+}
+
+impl LocationPresence {
+    /// The badge their face wears.
+    #[must_use]
+    pub fn status(self) -> crate::widget::PresenceStatus {
+        match self {
+            Self::Online => crate::widget::PresenceStatus::Online,
+            Self::Away => crate::widget::PresenceStatus::Away,
+            Self::Busy => crate::widget::PresenceStatus::Busy,
+            Self::Offline => crate::widget::PresenceStatus::Offline,
+        }
+    }
 }
 
 /// A location's picture, as PNG bytes.
@@ -687,6 +730,12 @@ pub enum ToolbarEvent {
     /// The window's History control was pressed: open History, or close it
     /// while it shows.
     History,
+    /// The window floats over the desk as a card, or stands in its strip again: sent when that
+    /// changes. A window too narrow for its sidebar shows its point alone while it floats
+    /// ([`floats`]).
+    Floating {
+        floating: bool,
+    },
 }
 
 /// What a window's search acts on in place, as its app offers it.
@@ -880,6 +929,20 @@ impl From<HistoryOffer> for crate::widget::HistoryControl {
 }
 
 impl WindowToolbar {
+    /// What a window floating as a card shows of these in its header: whom or what it is about,
+    /// alone, as a card's header names its activity — the app's own controls are the window's
+    /// in its strip.
+    #[must_use]
+    pub fn card_form(&self) -> Self {
+        Self {
+            location: self.location.clone().map(|location| ToolbarLocation {
+                editable: false,
+                ..location
+            }),
+            ..Self::default()
+        }
+    }
+
     /// Whether there is anything to show.
     #[must_use]
     pub fn is_empty(&self) -> bool {
@@ -1055,6 +1118,10 @@ impl WindowToolbar {
                     suggestion.icon = None;
                 }
             }
+            if let Some(avatar) = &mut location.avatar {
+                cut(&mut avatar.name);
+                cut(&mut avatar.identity);
+            }
             if location
                 .image
                 .as_ref()
@@ -1091,7 +1158,8 @@ impl ToolbarEvent {
             | Self::SearchClose
             | Self::SearchOptions { .. }
             | Self::SearchCover { .. }
-            | Self::History => {}
+            | Self::History
+            | Self::Floating { .. } => {}
         }
         self
     }
@@ -1126,6 +1194,7 @@ thread_local! {
     static EVENTS: RefCell<VecDeque<ToolbarEvent>> = const { RefCell::new(VecDeque::new()) };
     static NOTICE_PRESSES: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static HOSTED: Cell<bool> = const { Cell::new(false) };
+    static FLOATS: Cell<bool> = const { Cell::new(false) };
     static EDIT_REQUESTED: Cell<bool> = const { Cell::new(false) };
     static SEARCH_REQUESTED: Cell<Option<SearchOpening>> = const { Cell::new(None) };
     /// The windows a host is running apps in, the innermost last: the last one is the window
@@ -1151,7 +1220,7 @@ pub fn enter(window: Option<&crate::hosted_window::HostedWindow>) -> WindowScope
 /// Leaves the window it entered when dropped: see [`enter`].
 pub struct WindowScope {
     /// Which window this guard entered ([`crate::hosted_window::HostedWindow::identity`]).
-    entered: Option<usize>,
+    entered: Option<u64>,
 }
 
 impl Drop for WindowScope {
@@ -1189,9 +1258,15 @@ pub fn workspace() -> Option<String> {
     window().and_then(|window| window.workspace())
 }
 
-/// Which window this module's calls act on now: the one a host lent the app
-/// it is running, or `None` for the process's own window.
-pub(crate) fn current_window() -> Option<usize> {
+/// Which window this module's calls act on now: the one a host lent the app it
+/// runs ([`crate::hosted_window::HostedWindow::identity`]), or `None` for the
+/// process's own window. What the app declares, shows and is told is that
+/// window's, and a window that arrives after it declared — a harness that hosts
+/// its bar once the app is open — is a different one: an app that keeps what it
+/// last declared compares this with it, so its slots are declared on the window
+/// that shows it.
+#[must_use]
+pub fn current_window() -> Option<u64> {
     window()
         .as_ref()
         .map(crate::hosted_window::HostedWindow::identity)
@@ -1223,17 +1298,6 @@ pub(crate) fn declaration(toolbar: WindowToolbar) -> WindowToolbar {
         notice: None,
         reactions: None,
         ..toolbar.bounded()
-    }
-}
-
-/// Take the slots back, as [`declare`] with `None` does, unless the thread
-/// is ending and they are gone already (a widget dropped with its thread).
-pub(crate) fn retract() {
-    let changed = DECLARED
-        .try_with(|declared| declared.borrow_mut().take().is_some())
-        .unwrap_or(false);
-    if changed {
-        let _ = REVISION.try_with(|revision| revision.set(revision.get().wrapping_add(1)));
     }
 }
 
@@ -1568,11 +1632,25 @@ pub(crate) fn deliver_to_app(event: ToolbarEvent) -> bool {
     hands_keyboard
 }
 
+/// Whether the window floats over the desk as a card rather than standing in its strip
+/// ([`ToolbarEvent::Floating`]).
+#[must_use]
+pub fn floats() -> bool {
+    if let Some(window) = window() {
+        return window.floats();
+    }
+    FLOATS.with(Cell::get)
+}
+
 /// Hand the app what the person did in the bar (the runner, from the
 /// shell's message).
 pub fn deliver(event: ToolbarEvent) {
     if let Some(window) = window() {
         window.deliver(event);
+        return;
+    }
+    if let ToolbarEvent::Floating { floating } = event {
+        FLOATS.with(|cell| cell.set(floating));
         return;
     }
     if let Some(id) = NOTICE.with(|notice| notice_press(notice.borrow().as_ref(), &event)) {

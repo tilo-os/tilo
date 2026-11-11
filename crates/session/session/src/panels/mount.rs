@@ -11,7 +11,7 @@ use crate::controls::ControlsReading;
 use tilo_sheets::shortcut_guide::State as GuideState;
 
 use crate::keys::{ControllerKeys, DeskKeys, Invocations, PressedChords, Presses, SessionKeys};
-use crate::panels::{ActivityLayer, Readout, ReadoutPlace, ReadoutPlaces, Reserved};
+use crate::panels::{ActivityLayer, Readout, ReadoutPlaces, Reserved};
 use crate::platform::keys::NativeKeys;
 use crate::setup::Setup;
 use crate::{BeforeDesk, SessionCommand};
@@ -59,13 +59,12 @@ pub(crate) struct KeyContext {
 /// answers wherever the keyboard is: above every surface, so offered every press first. What
 /// mounting the session's controls hands the session back: the commands the key surface raises and
 /// the state its own resources read, the invocations it answers, the chords it pressed through,
-/// where the readout stands and the readout itself.
+/// and the readout itself.
 pub(crate) type Controls = (
     Rc<RefCell<Vec<SessionCommand>>>,
     Rc<RefCell<ControlsReading>>,
     Invocations,
     PressedChords,
-    ReadoutPlaces,
     Rc<RefCell<Readout>>,
 );
 
@@ -90,12 +89,9 @@ pub(crate) fn mount_controls(
         panel,
     }: KeyContext,
     scale: f64,
-    band: Reserved,
+    (band, places): (Reserved, &ReadoutPlaces),
 ) -> Controls {
-    // Where each display stands and where the person types, filled in every pass: what the readout
-    // answers with.
-    let places: ReadoutPlaces = Rc::new(RefCell::new(ReadoutPlace::default()));
-    let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(&places), band)));
+    let readout = Rc::new(RefCell::new(Readout::new(scale, Rc::clone(places), band)));
     compositor.add_host(readout.clone());
     let shared: tilo_session_core::door::Shared = readout.clone();
     doors.add(shared);
@@ -130,14 +126,7 @@ pub(crate) fn mount_controls(
         portal,
         Rc::clone(&commands),
     ))));
-    (
-        commands,
-        controls_reading,
-        invocations,
-        triggered,
-        places,
-        readout,
-    )
+    (commands, controls_reading, invocations, triggered, readout)
 }
 
 /// The floating layer over the desk: every app's activity as a card, which the session's own
@@ -149,8 +138,8 @@ pub(crate) fn mount_activities(
     doors: &mut Doors,
     reader: &Rc<crate::chrome::Activities>,
     cards: &crate::cards::Cards,
-    banners: Reserved,
-    readout: Reserved,
+    (banners, readout): (Reserved, Reserved),
+    (places, desk): (&ReadoutPlaces, &tilo_desktop_surface::DesktopHandle),
     options: &crate::Options,
 ) -> Option<tilo_activities::Link> {
     if options.shell {
@@ -166,8 +155,9 @@ pub(crate) fn mount_activities(
                 link.clone(),
                 Rc::clone(reader),
                 cards.clone(),
-                banners,
-                readout,
+                (banners, readout),
+                Rc::clone(places),
+                desk.clone(),
                 options.scale,
             )));
             compositor.add_host(surface.clone());

@@ -34,6 +34,7 @@ use crate::search::{ScopeDecl, SearchOpener, SearchRequest};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::capability::capability_mut;
 use crate::widget::text::centered_text_top;
 use crate::widget::{ControlSize, TaffyTreeExt};
@@ -216,7 +217,8 @@ impl SearchField {
     /// query to the platform search of this app, and the count slot is
     /// reserved so the text never runs under the count.
     pub fn filter() -> Self {
-        let mut field = Self::new().with_placeholder("Filter");
+        let mut field =
+            Self::new().with_placeholder(&crate::i18n::widget_format("search-field-filter", &[]));
         field.escalation = Some(SearchRequest::this_app());
         field.reserve_count = true;
         field
@@ -233,7 +235,7 @@ impl SearchField {
             input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
-                .with_placeholder("Search"),
+                .with_placeholder(crate::i18n::widget_format("search-field-placeholder", &[])),
             leading: Icon::Search,
             clearable: true,
             cleared: false,
@@ -334,6 +336,13 @@ impl SearchField {
         self.dirty = true;
         hint.clone_into(&mut self.placeholder);
         self.input.set_placeholder(hint);
+    }
+
+    /// The words the field shows while it holds nothing, which a step that
+    /// repurposes it reads out as what it asks for.
+    #[must_use]
+    pub fn placeholder(&self) -> &str {
+        &self.placeholder
     }
 
     /// Give the input the placeholder elided to the room it has, so a long
@@ -874,7 +883,7 @@ impl Widget for SearchField {
         }
         self.fit_placeholder(text_renderer, theme);
         self.input
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
 
         self.draw_trailing_slot(scene, transform, text_renderer, theme);
         if self.clear_visible() {
@@ -1207,9 +1216,9 @@ impl Widget for Filtered {
         presence: &PresenceCtx,
     ) {
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

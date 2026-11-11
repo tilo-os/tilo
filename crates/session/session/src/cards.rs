@@ -158,6 +158,15 @@ impl Cards {
         self.shared.borrow().cards.values().cloned().collect()
     }
 
+    /// Whether `at` stands inside a card the layer placed last pass.
+    pub(crate) fn holds(&self, at: Rect) -> bool {
+        self.shared
+            .borrow()
+            .slots
+            .values()
+            .any(|slot| slot.contains(at.center()))
+    }
+
     /// A new pass of the layer's layout: the places it gave last are gone until it gives them
     /// again.
     pub(crate) fn begin_slots(&self) {

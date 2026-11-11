@@ -24,6 +24,15 @@ on:
         required: false
         type: string
 
+# Without a `concurrency:` block the forge cancels every unfinished push run of
+# this workflow on main when the next push arrives, which under main's push rate
+# cancels each window before it finishes. One group per commit with
+# `cancel-in-progress: false` turns that off; which run measures main's window is
+# the `supersede` job's decision.
+concurrency:
+  group: check-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
 env:
   CARGO_BUILD_JOBS: "4"
   CARGO_INCREMENTAL: "0"

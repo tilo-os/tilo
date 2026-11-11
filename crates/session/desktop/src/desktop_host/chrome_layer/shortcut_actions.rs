@@ -165,12 +165,12 @@ impl DesktopChrome {
         true
     }
 
-    /// Open the app picker, as an empty desk does: a new window of the app the person chooses,
-    /// placed by the desk's rule.
+    /// Open the app picker, as an empty desk's own button does: search over the apps, for a new
+    /// window of the one the person chooses, placed by the desk's rule. The desk carries this out
+    /// itself; the surface's verb door refuses it.
     fn open_the_app_picker(&self) {
-        self.dispatch(DeskEffect::Launchpad {
-            card: "apps".to_owned(),
-        });
+        self.handle
+            .open_search(ui::search::Scope::WindowGroup(None), None);
     }
 
     /// Where the window in front stands, and the app it runs, when it runs one.

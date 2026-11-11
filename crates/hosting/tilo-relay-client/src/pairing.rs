@@ -6,7 +6,7 @@
 //! Only the root signs: the host carries and checks, and hands nothing on
 //! that a root did not sign for exactly that request.
 
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 use tilo_relay_protocol::certify::{
     ApproverDecision, ApproverReply, ApproverRequest, MemberApproval,
 };
@@ -16,8 +16,8 @@ use tilo_user_identity::{
     certification::MAX_CERTIFICATION_LABEL_BYTES, verify_device_cert_at,
 };
 
-#[cfg(feature = "iroh")]
-use crate::certify::MemberApprover;
+#[cfg(feature = "dial")]
+use crate::certify::MemberHost;
 use crate::error::CertifyError;
 use crate::https::{self, HttpClient};
 use crate::signer::DeviceSigner;
@@ -255,7 +255,7 @@ pub async fn revoke_device(
     Ok(entry)
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub(crate) async fn member_approval(
     root: &dyn DeviceSigner,
     request: ApproverRequest,
@@ -276,9 +276,9 @@ pub(crate) async fn member_approval(
     })
 }
 
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 async fn approve(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     root: &dyn DeviceSigner,
     request: ApproverRequest,
 ) -> Result<ApproverReply, CertifyError> {
@@ -296,9 +296,9 @@ async fn approve(
 ///
 /// [`CertifyError::Transport`] when the host is not reached, or
 /// [`CertifyError::Denied`] when it refuses.
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub async fn pending_pairings(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     root: &dyn DeviceSigner,
 ) -> Result<Vec<tilo_relay_protocol::certify::PendingCertification>, CertifyError> {
     match approve(host, root, ApproverRequest::ListPending).await? {
@@ -317,9 +317,9 @@ pub async fn pending_pairings(
 ///
 /// [`CertifyError::Denied`] when the request is gone or the host refuses, and
 /// [`CertifyError::Transport`] when it is not reached.
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub async fn answer_pairing(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     root: &dyn DeviceSigner,
     request_digest: [u8; 32],
     approved: bool,
@@ -361,9 +361,9 @@ pub async fn answer_pairing(
 /// # Errors
 ///
 /// As [`answer_pairing`].
-#[cfg(feature = "iroh")]
+#[cfg(feature = "dial")]
 pub async fn decide_pairing(
-    host: &MemberApprover,
+    host: &impl MemberHost,
     approver: &dyn DeviceSigner,
     request_digest: [u8; 32],
     cert: Option<DeviceCert>,

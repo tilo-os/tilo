@@ -36,7 +36,7 @@ pub enum KeysCmd {
         after_help = "Example:\n  tilo keys create \"Visa backend\"\n  export TILO_API_KEY=tilo_sk_…\n\n\
                       A key reaching all your workspaces lasts until you revoke it (`tilo keys revoke`), \
                       unless --expires-in says when it expires. A key reaching one workspace (-w) lasts \
-                      at most 89 days."
+                      at most 89 days. It operates web pages in Browser unless --no-browser-pages."
     )]
     Create {
         /// What will use it, as your grants page will name it. With -w
@@ -46,6 +46,11 @@ pub enum KeysCmd {
         /// workspaces lasts until revoked.
         #[arg(long)]
         expires_in: Option<u64>,
+        /// The key may not operate web pages in Browser: every page action
+        /// asks you first. Without it, it navigates, fills in, selects and
+        /// clicks without asking, and submissions ask you anyway.
+        #[arg(long)]
+        no_browser_pages: bool,
     },
     /// This key and the keys it minted.
     Ls,
@@ -718,8 +723,20 @@ pub fn members(door: Option<&str>, json: bool, workspace: &str, cmd: MembersCmd)
 pub fn keys(door: Option<&str>, json: bool, workspace: Option<&str>, cmd: KeysCmd) -> ExitCode {
     run(async {
         let client = match cmd {
-            KeysCmd::Create { name, expires_in } => {
-                return create_key(&door_of(door), json, &name, workspace, expires_in).await;
+            KeysCmd::Create {
+                name,
+                expires_in,
+                no_browser_pages,
+            } => {
+                return create_key(
+                    &door_of(door),
+                    json,
+                    &name,
+                    workspace,
+                    expires_in,
+                    !no_browser_pages,
+                )
+                .await;
             }
             _ => Client::from_env(door, json)?,
         };
@@ -753,12 +770,21 @@ async fn create_key(
     name: &str,
     workspace: Option<&str>,
     expires_in: Option<u64>,
+    browser_pages: bool,
 ) -> Result<ExitCode> {
     let http = tilo_net::Client::new();
     let asked = http
         .post(format!("{door}/keys/new"))
         .header("content-type", "application/json")
-        .body(json!({"name": name, "workspace": workspace, "expires_in": expires_in}).to_string())
+        .body(
+            json!({
+                "name": name,
+                "workspace": workspace,
+                "expires_in": expires_in,
+                "browser_pages": browser_pages,
+            })
+            .to_string(),
+        )
         .send()
         .await
         .with_context(|| format!("reaching {door}"))?;

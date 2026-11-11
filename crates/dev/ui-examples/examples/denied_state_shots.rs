@@ -29,6 +29,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::widget::ButtonRole;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{Button, Checkbox, Toggle, Widget};
 
 const WIDTH: u32 = 760;
@@ -77,7 +78,7 @@ fn stamp(
     widget.apply_layout(&taffy, node, origin);
     let presence = PresenceCtx::default();
     presence.with_permissions(permissions.clone(), || {
-        widget.draw(scene, Affine::IDENTITY, tr, theme, &presence);
+        widget.draw_child(scene, Affine::IDENTITY, tr, theme, &presence);
     });
     Ok(())
 }

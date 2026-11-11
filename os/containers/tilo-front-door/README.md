@@ -28,7 +28,7 @@ the relay's Caddy, which terminates TLS; the door serves plain HTTP.
 
 | | |
 | --- | --- |
-| user | 65532 (distroless `nonroot`) |
+| user | 65532:65532 |
 | port | 8080/tcp, plain HTTP |
 | volume | `/state` |
 | health | `GET /health` answers `{"ok":true}` |

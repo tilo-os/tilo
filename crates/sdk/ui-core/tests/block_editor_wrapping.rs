@@ -29,11 +29,7 @@ impl RetainedCode {
         ]);
         editor.focus_block(0, CursorPlacement::Start);
         let theme = tilo_ui::Theme::dark().with_text_scale(scale);
-        let catalog = tilo_ui::font_catalog::FontCatalog::controlled_fixture(
-            tilo_ui::font_catalog::checkout_root(),
-            "en-US",
-        );
-        let mut text = tilo_ui::TextRenderer::with_font_catalog(&catalog).unwrap();
+        let mut text = tilo_ui::font_catalog::fixture_renderer();
         text.set_text_scale(scale);
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();

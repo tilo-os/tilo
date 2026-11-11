@@ -555,6 +555,9 @@ fn agent_here(agent: clap::Command, here: Here) -> clap::Command {
             sub.hide(!((here.has)(agent::DOOR) || login::logged_in()))
         })
         .mut_subcommand("models", |sub| sub.hide(!(here.has)(agent::MODELS)))
+        // Checking says whether Tilo's server is in the agent, which only a
+        // computer logged in to the person's workspace has one of.
+        .mut_subcommand("check", |sub| sub.hide(!login::logged_in()))
 }
 
 /// The examples under `tilo --help`: real commands, only ones that work here.

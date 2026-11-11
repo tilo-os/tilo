@@ -674,6 +674,7 @@ impl Moves {
             .map(|arrived| Launch::Record {
                 app: crossing.app.clone(),
                 record: arrived.target.id.as_str().to_owned(),
+                visitor: false,
             });
         let launch = on.unwrap_or_else(|| Launch::Package {
             app: crossing.app.clone(),

@@ -112,3 +112,18 @@ mail-select-all = Select all
 mail-show-quoted = Show quoted text
 mail-show-plain = Show plain text
 mail-show-formatted = Show formatted
+
+## What the window and its parts are called for assistive technology
+
+mail-title = Mail
+mail-a11y-queued-message = Queued message
+mail-a11y-outbox = Outbox
+mail-a11y-outbox-empty = Nothing is waiting to be sent
+mail-a11y-no-message = No message selected
+mail-a11y-message-actions = Message actions
+mail-a11y-download-first = Download this attachment before saving it
+mail-a11y-syncing = Syncing mail
+mail-compose-placeholder-body = Write your message
+mail-compose-a11y = Compose email
+mail-compose-a11y-description = Email composer
+mail-shortcuts-title = Keyboard shortcuts

@@ -10,6 +10,7 @@ use vello::Scene;
 use vello::kurbo::Affine;
 
 use super::jobs::thumbnail_request;
+use ui::widget::DrawChild;
 
 /// Collections: naming and saving albums, the controls a view offers, and
 /// what collection views show and act on.
@@ -1748,7 +1749,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw(
+                app.draw_child(
                     &mut scene,
                     Affine::IDENTITY,
                     &mut tr,
@@ -1832,7 +1833,7 @@ fn accessible_toolbars_menus_and_metadata_sheet_route_real_controls() {
                 .unwrap();
             app.apply_layout(&taffy, child, Point::ORIGIN);
             let mut scene = Scene::new();
-            app.draw(
+            app.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
@@ -2294,7 +2295,7 @@ fn controls_contain_their_text_share_insets_and_keep_pointer_targets() {
                 .unwrap();
             app.apply_layout(&taffy, child, Point::ORIGIN);
             let mut scene = Scene::new();
-            app.draw(
+            app.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,

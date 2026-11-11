@@ -18,6 +18,7 @@ use super::{ContextMenu, Element, EventCtx, MenuItem, Widget};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 
 /// One row of a context menu: what it shows, and what choosing it does.
 pub struct MenuEntry {
@@ -665,12 +666,17 @@ impl super::Decorator for ContextMenuArea {
         self.content.as_mut()
     }
 
-    // The area answers operations itself, so one addressed to a row of its
-    // open menu reaches the menu even when the content answers its own.
-    // Every other capability is the content's.
+    // The area answers operations and controls itself, so one addressed to a
+    // row of its open menu reaches the menu even when the content answers its
+    // own, and a row chosen from it hands over its action after the menu
+    // closed. Every other capability is the content's.
     fn provide<'a>(&'a self, request: &mut super::capability::Request<'a, '_>) {
         if request.wants::<dyn super::ResourceOperations>() {
             request.provide::<dyn super::ResourceOperations>(self);
+            return;
+        }
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
             return;
         }
         self.content.provide(request);
@@ -679,6 +685,10 @@ impl super::Decorator for ContextMenuArea {
     fn provide_mut<'a>(&'a mut self, request: &mut super::capability::RequestMut<'a, '_>) {
         if request.wants::<dyn super::ResourceOperations>() {
             request.provide::<dyn super::ResourceOperations>(self);
+            return;
+        }
+        if request.wants::<dyn crate::widget::controls::ActionControls>() {
+            request.provide::<dyn crate::widget::controls::ActionControls>(self);
             return;
         }
         self.content.provide_mut(request);
@@ -863,7 +873,7 @@ impl super::Decorator for ContextMenuArea {
             self.picker = Some((picker, pick));
         }
         if let Some((picker, _)) = self.picker.as_mut() {
-            picker.draw(scene, transform, text_renderer, theme, presence);
+            picker.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

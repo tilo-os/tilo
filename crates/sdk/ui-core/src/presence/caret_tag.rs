@@ -102,8 +102,33 @@ impl LabeledCaret {
         if above_y >= self.top && !covers(above) {
             return above;
         }
-        let below_y = line_bottom + CARET_CHIP_GAP;
-        Rect::new(x, below_y, x + w, below_y + h)
+        // Below the line, and past whatever words stand under it: the first
+        // gap down the column no glyph is in.
+        let first = Rect::new(
+            x,
+            line_bottom + CARET_CHIP_GAP,
+            x + w,
+            line_bottom + CARET_CHIP_GAP + h,
+        );
+        let mut below = first;
+        for _ in 0..8 {
+            let Some(bottom) = self
+                .ink
+                .iter()
+                .filter(|glyphs| overlaps(below, **glyphs))
+                .map(|glyphs| glyphs.y1)
+                .reduce(f64::max)
+            else {
+                return below;
+            };
+            below = Rect::new(
+                x,
+                bottom + CARET_CHIP_GAP,
+                x + w,
+                bottom + CARET_CHIP_GAP + h,
+            );
+        }
+        first
     }
 }
 
@@ -119,6 +144,8 @@ const CARET_CHIP_GAP: f64 = 2.0;
 /// coordinates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct CaretTag {
+    /// Whose name it carries.
+    pub user: crate::permissions::UserId,
     pub label: String,
     pub rect: Rect,
 }
@@ -320,6 +347,7 @@ mod tests {
         assert_eq!(
             ctx.caret_tags(),
             vec![CaretTag {
+                user: crate::permissions::UserId("ada".into()),
                 label: "Ada".into(),
                 rect: Affine::scale(2.0).transform_rect_bbox(caret.chip_rect(w, h)),
             }]
@@ -376,6 +404,7 @@ mod tests {
     fn first_line_tag(label: &str, x: f64) -> CaretTag {
         let caret = LabeledCaret::within(Rect::new(x, 100.0, x + 2.0, 120.0), 100.0);
         CaretTag {
+            user: crate::permissions::UserId(label.to_owned()),
             label: label.into(),
             rect: caret.chip_rect(90.0, 20.0),
         }
@@ -465,3 +494,65 @@ mod tests {
         assert_eq!(shown(vec![talking], &tags), vec![1.0]);
     }
 }
+
+/// What is wrong with the name tags presence drew in the frame `root`, as
+/// its inspection publishes them (`PresenceTag` nodes): a tag over a word of
+/// the frame's text, and a second tag for one actor. A tag names who is
+/// there; a word it covers is lost, and two tags of one actor read as two.
+pub fn tag_faults(root: &crate::headless::InspectionNode) -> Vec<String> {
+    fn walk<'a>(
+        node: &'a crate::headless::InspectionNode,
+        tags: &mut Vec<&'a crate::headless::InspectionNode>,
+        words: &mut Vec<&'a crate::headless::InspectionNode>,
+    ) {
+        if node.widget == TAG_WIDGET {
+            tags.push(node);
+            return;
+        }
+        let worded = node.semantics.as_ref().is_some_and(|access| {
+            access
+                .name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+                || access
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+        });
+        // A field places a tag among its own glyphs; a mark is presence itself.
+        let own = matches!(node.widget.as_str(), "TextInput" | "PresenceMark");
+        if node.children.is_empty() && worded && !own {
+            words.push(node);
+        }
+        for child in &node.children {
+            walk(child, tags, words);
+        }
+    }
+    let rect = |r: [f64; 4]| Rect::new(r[0], r[1], r[0] + r[2], r[1] + r[3]);
+    let (mut tags, mut words) = (Vec::new(), Vec::new());
+    walk(root, &mut tags, &mut words);
+    let mut faults = Vec::new();
+    for (index, tag) in tags.iter().enumerate() {
+        let at = rect(tag.rect);
+        for word in &words {
+            if overlaps(at, rect(word.rect)) {
+                let said = word
+                    .semantics
+                    .as_ref()
+                    .and_then(|access| access.name.clone().or_else(|| access.value.clone()))
+                    .unwrap_or_default();
+                faults.push(format!("{} covers \"{said}\" ({})", tag.path, word.path));
+            }
+        }
+        if tags[..index]
+            .iter()
+            .any(|before| before.test_id == tag.test_id)
+        {
+            faults.push(format!("{} is a second tag of one actor", tag.path));
+        }
+    }
+    faults
+}
+
+/// The inspection widget a drawn name tag is published as.
+pub const TAG_WIDGET: &str = "PresenceTag";

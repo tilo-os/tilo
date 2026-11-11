@@ -209,7 +209,6 @@ pub fn readings(name: Option<&str>) -> QuickSettingsState {
     ];
     state.clipboard = crate::ClipboardView {
         total: copies.len(),
-        caption: String::new(),
         rows: copies
             .iter()
             .map(|(key, title, detail, pinned)| HostedRow {

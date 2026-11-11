@@ -1,5 +1,10 @@
 counter = Value: { $count }
 tab-modified = Unsaved changes
+tab-loading = Loading
+tab-playing = Playing audio
+tab-muted = Muted
+tab-close-named = Close { $title }
+tab-mute-named = Mute { $title }
 tab-search-in = Search in { $title }
 tab-held-by = { $name }’s window
 tab-opened-by = { $agent } opened this window
@@ -45,9 +50,13 @@ host-menu-front = Bring All to Front
 host-window-minimize = Minimize
 host-window-maximize = Maximize
 host-window-restore = Restore
+host-window-snap = Snap back into the strip
+host-window-collapse = Collapse
+host-window-expand = Expand
 host-window-close = Close
 window-toolbar-back = Back
 window-toolbar-forward = Forward
+window-toolbar-new-tab = New tab
 window-toolbar-go = Go
 window-toolbar-more = More actions
 window-toolbar-views = View
@@ -592,6 +601,7 @@ participant-acting-for = { $name }, for { $person }
 interaction-agent = Agent
 interaction-collaborator = Collaborator
 # What an actor is doing: its name, then the action in the present tense.
+interaction-editing-field = editing { $field }
 interaction-working = working
 interaction-action-doing = { $name }: { $doing }
 # The same, with the phase said where only a person can settle it.
@@ -764,6 +774,23 @@ display-arrangement-caption-status = { $status } · { $name }
 # Search: the row that lists the rest of a group the palette cut short
 search-show-all = Show all { $count }
 search-no-matches = No matches
+# What a group header and its kind chip say the results are
+search-kind-actions = Actions
+search-kind-apps = Apps
+search-kind-notes = Notes
+search-kind-records = Records
+search-kind-files = Files
+search-kind-folders = Folders
+search-kind-creators = Creators
+search-kind-videos = Videos
+search-kind-playlists = Playlists
+search-kind-tabs = Tabs
+search-kind-window-groups = Window groups
+window-root-name = Tilo application window
+action-palette-query = Search actions and results
+search-field-filter = Filter
+search-field-placeholder = Search
+presentation-window-title = Audience presentation
 
 approved-check-reports-disabled = Phase reports unavailable
 
@@ -960,6 +987,10 @@ text-menu-bold = Bold
 text-menu-italic = Italic
 text-menu-underline = Underline
 text-menu-strikethrough = Strikethrough
+text-menu-heading-1 = Heading 1
+text-menu-heading-2 = Heading 2
+text-menu-heading-3 = Heading 3
+text-menu-body-text = Body text
 text-menu-bulleted-list = Bulleted list
 text-menu-numbered-list = Numbered list
 
@@ -1203,3 +1234,64 @@ emoji-picker-add-reaction = Add reaction
 quote-dismiss = Stop replying
 
 toast-reply-placeholder = Reply…
+
+## Window furniture and widget chrome, named where a screen reader reads it
+floating-window-move-hint = Movable window. Hold Alt and use the arrow keys to move; hold Shift for larger steps.
+widget-dialog-close = Close
+widget-dismiss = Dismiss
+widget-hand-to-agent = Hand to an agent
+widget-more = More
+widget-copy = Copy
+widget-hosted-applications = Hosted applications
+widget-searching = Searching…
+widget-search-results = Search results
+widget-loading = Loading
+widget-timeline-name = Timeline position
+widget-timeline-hint = Chronological collection. Arrow keys move, Page Up and Page Down move a screen, Home and End jump to the beginning or end; plus and minus change density.
+widget-timeline-jump = Jump to { $marker }
+widget-timeline-group = Chronological index
+widget-timeline-group-hint = Date-indexed scrollbar
+widget-shortcut-change = Change shortcut
+widget-shortcut-unavailable = That shortcut is unavailable. Activate to choose another.
+widget-chart-series = { $name } series
+widget-step-of = Step { $step } of { $total }
+widget-steps-count = { $count ->
+    [one] { $count } step
+   *[other] { $count } steps
+  }
+widget-page-of = Page { $page } of { $total }
+widget-preview-named = { $label } preview
+widget-type-to-confirm = Type { $phrase } to confirm
+widget-color-name = Colour
+widget-color-hex = Hex colour
+widget-crop-name = Crop page
+widget-crop-hint = From { $left }% across and { $top }% down to { $right }% across and { $bottom }% down
+widget-document-switch-blocked = Document switch blocked
+widget-qr-failed = Could not draw the QR code: { $error }
+media-volume = Volume
+media-position = Position
+media-more-controls = More controls
+media-play = Play
+media-pause = Pause
+media-previous = Previous track
+media-next = Next track
+media-mute = Mute
+media-unmute = Unmute
+media-like = Like
+media-unlike = Unlike
+media-lyrics = Lyrics
+media-shuffle = Shuffle
+media-repeat = Repeat
+media-repeat-one = Repeat one
+media-repeat-all = Repeat all
+media-queue = Queue
+media-player = Video player
+media-no-video = No video loaded
+media-player-hint = Space plays or pauses; Left and Right Arrow seek; Up and Down Arrow change volume; M mutes; F toggles fullscreen
+media-key-play-pause = Space
+media-position-value = { $position } of { $duration }
+media-fullscreen-enter = Enter fullscreen
+media-fullscreen-exit = Exit fullscreen
+media-playback-settings = Playback settings
+media-toggle-on = On
+media-toggle-off = Off

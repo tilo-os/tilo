@@ -1467,7 +1467,11 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         ] {
             let control = track_control(&mut app, &mut doc, track, "offline", draw_once);
             send(&mut app, &cursor_at(control.center()), &mut doc);
-            assert_eq!(ui::widget::Widget::tooltip(&app), Some(name), "{track}");
+            assert_eq!(
+                ui::widget::Widget::tooltip(&app).as_deref(),
+                Some(name),
+                "{track}"
+            );
         }
         // Pressing the failed row's control retries it.
         let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once);
@@ -1492,7 +1496,7 @@ fn offline_downloads_and_media_cache_are_honest_and_device_local() {
         let retry = track_control(&mut app, &mut doc, "tk_g3", "offline", draw_once_large_text);
         send(&mut app, &cursor_at(retry.center()), &mut doc);
         assert_eq!(
-            app.tooltip(),
+            app.tooltip().as_deref(),
             Some("connection reset while downloading"),
             "hover exposes the unelided transport failure"
         );

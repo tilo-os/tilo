@@ -48,7 +48,7 @@ pub(crate) fn convert_with<T>(
     let (rendered, reads) = {
         let instance = view.borrow();
         let toggles = |key: &str, event: &str| toggles(host, &instance, key, event);
-        let invokes = |key: &str, event: &str| invokes(&instance, key, event);
+        let invokes = |key: &str, event: &str| invokes(host, &instance, key, event);
         let reads: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
         let preview = |reference: &crate::runtime::rich::Reference| {
             preview(host, names, reference, &mut reads.borrow_mut())
@@ -152,15 +152,17 @@ pub fn inline_view(
     }
 }
 
-/// The most of a projected record's content a card shows, in characters: the start of its
-/// first line with text.
-pub const PREVIEW_CHARS: usize = 180;
+/// The most of a projected record's content a card shows, in characters: the start of what it
+/// says, the few lines a card has room for and some past them.
+pub const PREVIEW_CHARS: usize = 320;
 
 /// What the record `reference` shows of its own content where a text projects it (an embed):
-/// the start of its first line with text, each reference in it read as it reads now, one level
-/// deep — a projection inside it is a link, never opened out, so a note embedding a note that
-/// embeds a note ends in a link, as a note embedding itself does. Costs the projected record's
-/// one read; `None` when it says nothing, or is a record this reader cannot read.
+/// the start of what it says, a paragraph per line it breaks, each reference in it read as it
+/// reads now, one level deep — a projection inside it is a link, never opened out, so a note
+/// embedding a note that embeds a note ends in a link, as a note embedding itself does. It is
+/// [`PREVIEW_CHARS`] of it at most; a card shows the lines of that it has room for. Costs the
+/// projected record's one read; `None` when it says nothing, or is a record this reader cannot
+/// read.
 #[must_use]
 pub fn preview(
     host: &Host,
@@ -188,10 +190,50 @@ pub fn preview(
             .unwrap_or_default(),
     );
     let rich = first_rich(host, &target)?;
-    let block = rich
+    let mut left = PREVIEW_CHARS;
+    let mut runs: Vec<tilo_render_protocol::patch::rich::Run> = Vec::new();
+    for block in rich
         .blocks
         .iter()
-        .find(|block| !block.text.trim().is_empty())?;
+        .filter(|block| !block.text.trim().is_empty())
+    {
+        if left == 0 {
+            break;
+        }
+        let said = block_runs(host, names, block);
+        if said.is_empty() {
+            continue;
+        }
+        // A paragraph of it stands under the one before, as it does in the record.
+        if !runs.is_empty() {
+            runs.push(runo("\n".to_owned(), None));
+            left = left.saturating_sub(1);
+        }
+        for run in said {
+            let count = run.text.chars().count();
+            if count <= left {
+                left = left.saturating_sub(count);
+                runs.push(run);
+                continue;
+            }
+            let kept: String = run.text.chars().take(left).collect();
+            left = 0;
+            if !kept.is_empty() {
+                runs.push(runo(kept, run.reference));
+            }
+            break;
+        }
+    }
+    Some(runs).filter(|runs| !runs.is_empty())
+}
+
+/// One paragraph of a projected record, as the runs a card shows of it: its text, a run per
+/// reference in it, each read as it reads now.
+fn block_runs(
+    host: &Host,
+    names: &dyn NameHost,
+    block: &tilo_doc::snapshot::BlockView,
+) -> Vec<tilo_render_protocol::patch::rich::Run> {
     let chars: Vec<char> = block.text.chars().collect();
     let written = |from: usize, to: usize| -> Option<String> {
         (from < to).then(|| chars.get(from..to).unwrap_or_default().iter().collect())
@@ -241,7 +283,7 @@ pub fn preview(
     if let Some(text) = written(at, chars.len()) {
         runs.push(runo(text, None));
     }
-    bound(runs)
+    runs
 }
 
 /// One run of a projection's content, naming `refers` when it refers to something.
@@ -250,38 +292,6 @@ fn runo(text: String, refers: Option<String>) -> tilo_render_protocol::patch::ri
         text,
         reference: refers,
     }
-}
-
-/// `runs`, cut to [`PREVIEW_CHARS`] characters with the cut marked: what a card shows is the
-/// start of what it projects. `None` when there is nothing to show.
-fn bound(
-    runs: Vec<tilo_render_protocol::patch::rich::Run>,
-) -> Option<Vec<tilo_render_protocol::patch::rich::Run>> {
-    let mut left = PREVIEW_CHARS;
-    let mut out: Vec<tilo_render_protocol::patch::rich::Run> = Vec::new();
-    let mut cut = false;
-    for mut run in runs {
-        let count = run.text.chars().count();
-        if count <= left {
-            left = left.saturating_sub(count);
-            out.push(run);
-            continue;
-        }
-        let kept: String = run.text.chars().take(left).collect();
-        cut = true;
-        if !kept.is_empty() {
-            run.text = kept;
-            out.push(run);
-        }
-        break;
-    }
-    if out.is_empty() {
-        return None;
-    }
-    if cut && let Some(last) = out.last_mut() {
-        last.text.push('…');
-    }
-    Some(out)
 }
 
 /// What the record `reference` reads as, a title and nothing else: what a projected run says of
@@ -388,13 +398,31 @@ pub(crate) fn toggles(
 }
 
 /// The resource and the action the event `event` of the node `key` of `view` runs, when it
-/// runs an action on a resource: what a menu tells a placed command by.
+/// runs an action on a resource as it is: the action its control is bound to. An action that
+/// still asks for something (`Pick date…`) opens its form from the view's own event instead.
 pub(crate) fn invokes(
+    host: &Host,
     view: &ViewInstance,
     key: &str,
     event: &str,
 ) -> Option<(ResourceRef, String)> {
     let aref = view.event_action(key, event)?;
+    let given = aref
+        .args
+        .iter()
+        .position(|arg| *arg == Value::Missing)
+        .unwrap_or(aref.args.len());
+    let asks = host.find_in_packages(|package| {
+        package
+            .meta
+            .actions
+            .iter()
+            .find(|action| action.id == aref.action)
+            .map(|action| action.unbound(given).next().is_some())
+    })?;
+    if asks {
+        return None;
+    }
     match aref.args.first() {
         Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), aref.action)),
         _ => None,

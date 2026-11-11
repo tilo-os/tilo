@@ -1319,6 +1319,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             id: id.into(),
             label: label.into(),
             kind: "agent-run".into(),
+            title: None,
         });
         self
     }
@@ -1544,6 +1545,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     id: continued.unwrap_or_else(|| format!("mcp:{}", uuid::Uuid::new_v4())),
                     label,
                     kind: "agent-run".into(),
+                    title: None,
                 });
             }
             run.as_ref().map(|run| run.id.clone())
@@ -1575,14 +1577,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             Some(provider) => tilo_actions::remote::provider_workspace(provider).is_some(),
         };
         tokio::time::timeout(
-            HOST_ANSWER_WAIT,
+            QUERY_ANSWER_WAIT,
             self.at_host(eager, move |host, caller| host.query(caller, query)),
         )
         .await
         .map_err(|_| {
             BridgeError::from(format!(
                 "the desktop's actions did not answer within {} s",
-                HOST_ANSWER_WAIT.as_secs()
+                QUERY_ANSWER_WAIT.as_secs()
             ))
         })?
         .ok_or_else(|| BridgeError::from("the desktop's actions stopped answering"))?
@@ -2396,7 +2398,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // Best effort: the app is open whether or not its directory reads.
         let page = match peer {
             Some(peer) if self.detail() == Detail::Compact || file_open => {
-                self.first_directory(peer).await.ok()
+                self.directory_page(&peer.to_string()).await.ok()
             }
             _ => None,
         };
@@ -2767,22 +2769,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(any_file)
     }
-    /// A just-opened instance's [`Self::directory`] once it lists a
-    /// resource, or as it is after [`FIRST_DIRECTORY_WAIT`]. An app may
-    /// publish again while it starts (binding its document), and a page read
-    /// in between is empty, which leaves the caller to query again.
-    async fn first_directory(&self, peer: u64) -> Result<(CataloguePage, bool), String> {
-        let provider = peer.to_string();
-        let deadline = tokio::time::Instant::now().checked_add(FIRST_DIRECTORY_WAIT);
-        loop {
-            let (page, truncated) = self.directory_page(&provider).await?;
-            let listed = !page.rows.is_empty();
-            if listed || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
-                return Ok((page, truncated));
-            }
-            tokio::time::sleep(FIRST_DIRECTORY_POLL).await;
-        }
-    }
     async fn directory(&self, provider: &str) -> Result<Value, String> {
         let (page, truncated) = self.directory_page(provider).await?;
         Ok(self.directory_value(&page, truncated))
@@ -2970,9 +2956,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         self.agent_run().map(|mut run| {
             // A call naming the run it is a step of (`_meta` run.title) is
             // attributed to that name, which is what people read in history
-            // and see in presence, not the connection's own label.
-            if let Ok(Some(title)) = STEP_TITLE.try_with(Clone::clone) {
-                run.label = title;
+            // and see in presence, not the connection's own label. It says so
+            // as its own title too: a host that names the run itself still
+            // calls it what the agent asked for.
+            if let Ok(Some(title)) = STEP_TITLE.try_with(Clone::clone)
+                && !title.is_empty()
+            {
+                run.label.clone_from(&title);
+                run.title = Some(title);
             }
             tilo_actions::ActionContext {
                 group: Some(run),
@@ -3075,21 +3066,23 @@ fn unanswered_admission(id: tilo_actions::InvocationId, patience: std::time::Dur
         ),
     })
 }
-/// How long the host may take at least to answer a catalogue query or to
-/// admit an invocation. A query not answered by then fails; an admission is
-/// answered as pending with its invocation id, to be invoked again.
+/// How long the host may take at least to admit an invocation: one not
+/// admitted by then is answered as pending with its invocation id, to be
+/// invoked again.
 const HOST_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+/// How long a catalogue query waits for its answer. A workspace's host
+/// reading a record whose keys are still on their way waits up to ten seconds
+/// for them, then refuses it rather than answer from half of it: the first
+/// listing of an app just opened on a busy host takes that long, and a query
+/// given up sooner told the agent the desktop did not answer while the host
+/// was still getting the answer.
+const QUERY_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long a workspace `open` waits at least for the host to answer with
 /// the instance it started, which it does once that instance has connected
-/// and published what it offers.
+/// and published its catalogue.
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Where a workspace `open`'s answer names the instance it started.
 const OPENED_PEER: &str = "/update/output/value/peer_id";
-/// How long an `open` waits more for the new instance's directory to list a
-/// resource when it reads empty, as while the app publishes again binding
-/// its document, and how often it looks: two query turns cost more.
-const FIRST_DIRECTORY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
-const FIRST_DIRECTORY_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 /// The experimental capability naming this surface's version. Version 2
 /// answers `tilo_query` with compact pages; version 3 names long resource
 /// ids by session handles in them and answers an `open` with the new

@@ -701,3 +701,149 @@ fn two_notes_of_one_title_are_two_files() {
     );
     assert_eq!(entry(&exported, "Q3 plan/Monday (2)/images/fox.png"), ARCH);
 }
+
+/// The notes `note`'s body refers to, by their ids: what its links name.
+fn refers_to(r: &Replica, note: &ResourceRef) -> Vec<String> {
+    body(r, note)
+        .references()
+        .iter()
+        .filter_map(tilolang_runtime::rich::resource_id)
+        .map(str::to_owned)
+        .collect()
+}
+
+/// A notebook an archive made: two `Ideas` under one `Home`, each with a note under it, and a
+/// link from the first to the second — which names it by the file its own title gave it.
+const LINKED: &[(&str, &[u8])] = &[
+    ("Home.md", b"# Home\n\nWhat the flat needs.\n"),
+    (
+        "Home/Ideas.md",
+        b"# Ideas\n\nSee [the other ideas](<Ideas (2).md>).\n",
+    ),
+    ("Home/Ideas/Monday.md", b"# Monday\n\nStandup.\n"),
+    ("Home/Ideas (2).md", b"# Ideas\n\nThe second one.\n"),
+    (
+        "Home/Ideas (2)/Tuesday.md",
+        b"# Tuesday\n\nSecond branch.\n",
+    ),
+];
+
+/// Two notes of one title are two files, each named by the tree's order, and a note's folder
+/// follows the name its own note took. A link between them names the file of the note it links
+/// to, so the export read back is the notebook it was: the same tree, and a link reaching the
+/// same note rather than the first one of that title.
+#[test]
+fn two_notes_of_one_title_are_two_files_a_link_between_them_reaches() {
+    let device = Device::default();
+    let (mut ada, _loaded) = notebook(&device);
+    let file = Value::file(device.keeping("Notes.zip", "application/zip", &archive(LINKED)));
+    let nb = ada.host.root_of(APP).unwrap();
+    call(&ada, "import_archive", vec![Value::resource(&nb), file]);
+    ada.commit();
+
+    let all = written(&ada, &nb);
+    assert_eq!(all.len(), 5, "a note for each page");
+    let titles: Vec<String> = all.iter().map(|n| title(&ada, n)).collect();
+    assert_eq!(titles, ["Home", "Ideas", "Monday", "Ideas", "Tuesday"]);
+    assert_eq!(
+        refers_to(&ada, &all[1]),
+        [all[3].id_string()],
+        "the page's link reaches the second Ideas, the one its path named"
+    );
+
+    // Two notes of one title are two files, and each note's folder is the file of the note it
+    // stands under: `Ideas (2)` takes its own children with it.
+    let export = exported_notebook(&ada);
+    let exported = held(&device, &export);
+    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Home.md",
+            "Home/Ideas.md",
+            "Home/Ideas/Monday.md",
+            "Home/Ideas (2).md",
+            "Home/Ideas (2)/Tuesday.md",
+        ],
+        "a note of a title another took beside it is a file of its own"
+    );
+    let page = entry_text(&exported, "Home/Ideas.md");
+    assert!(
+        page.contains("[the other ideas](<Ideas (2).md>)"),
+        "the link names the file of the note it links to, as a reader of the file reaches it: \
+         {page}"
+    );
+
+    // The export imported again is the notebook it was, the link reaching the second `Ideas`
+    // again, and exporting that one gives the same files.
+    let (mut ben, _loaded) = notebook(&device);
+    let nb = ben.host.root_of(APP).unwrap();
+    call(
+        &ben,
+        "import_archive",
+        vec![Value::resource(&nb), Value::file(export)],
+    );
+    ben.commit();
+    let all = written(&ben, &nb);
+    let titles: Vec<String> = all.iter().map(|n| title(&ben, n)).collect();
+    assert_eq!(titles, ["Home", "Ideas", "Monday", "Ideas", "Tuesday"]);
+    assert_eq!(parent_of(&ben, &all[1]), Some(all[0].clone()));
+    assert_eq!(parent_of(&ben, &all[2]), Some(all[1].clone()));
+    assert_eq!(parent_of(&ben, &all[3]), Some(all[0].clone()));
+    assert_eq!(
+        parent_of(&ben, &all[4]),
+        Some(all[3].clone()),
+        "the second Ideas keeps its own child"
+    );
+    assert_eq!(
+        refers_to(&ben, &all[1]),
+        [all[3].id_string()],
+        "the link reaches the second Ideas again, not the first"
+    );
+    assert_eq!(
+        notebook_export(&ben, &device),
+        exported,
+        "the notebook exports as it imported"
+    );
+}
+
+/// A title that spells a name the export would give a duplicate keeps a file of its own: the
+/// second `Ideas` steps past `Ideas (2)` rather than standing over the note titled that, and
+/// two notes without a title are two files as well.
+#[test]
+fn a_title_that_spells_a_name_the_export_gives_is_a_file_of_its_own() {
+    let device = Device::default();
+    let (mut ada, _loaded) = notebook(&device);
+    note(&mut ada, None, "Ideas");
+    note(&mut ada, None, "Ideas (2)");
+    note(&mut ada, None, "Ideas");
+    note(&mut ada, None, "");
+    note(&mut ada, None, "");
+
+    let exported = notebook_export(&ada, &device);
+    let names: Vec<&str> = exported.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(
+        names,
+        [
+            "Ideas.md",
+            "Ideas (2).md",
+            "Ideas (3).md",
+            "Note.md",
+            "Note (2).md",
+        ],
+        "no note's file stands over another's, whatever its title spells"
+    );
+    // Each file says which note it is, so the notebook read back has every note again.
+    let titles: Vec<String> = ["Ideas.md", "Ideas (2).md", "Ideas (3).md"]
+        .iter()
+        .map(|name| {
+            entry_text(&exported, name)
+                .lines()
+                .next()
+                .unwrap_or_default()
+                .trim_start_matches("# ")
+                .to_owned()
+        })
+        .collect();
+    assert_eq!(titles, ["Ideas", "Ideas (2)", "Ideas"]);
+}

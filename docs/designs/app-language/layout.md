@@ -101,11 +101,22 @@ selected once, a list offers one add entry, a name a screen reader announces is 
 code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
 a narrow window keeps a 16 px gutter, a list beside the page it opens highlights the row that page
 shows, a section's heading keeps clearly more room under the block over it than over the content it
-opens, and a surface whose corners round — a card, a notice — keeps a gutter from the edge of the
+opens, the page's own sections stand under a rule that says where the writing they follow ends, and
+a surface whose corners round — a card, a notice — keeps a gutter from the edge of the
 column or window it stands in, where an edge would cut its shape, and the gap of a sibling from what
 stands over and under it, so a list under a notice is not read as a row of it. It reads that an item
 stands once: a list folds the branch of a row standing open into its item, since the document under
 that row lists it, so no step of a task is read both there and again as a row of the list.
+
+It reads a window as it stands at rest too, its bar hidden over the window's top edge, and holds a
+sidebar that declares a header row — the words that name its places and the buttons that add to
+them — to drawing it there: what a sidebar says of itself is on the window at every time, never
+only once the person reaches for the bar (`sidebar-header-on-reveal`).
+
+It reads a field's line where the field stands it: a field one band tall keeps its one line in the
+middle of the control, even where that band grew to a finger's target or a row stretched it to the
+face of the button beside it, while text that wraps, a box given rows of its own, a document's page
+and a field stretched to fill a pane start at the inset and grow down.
 
 It reads the words a window shows where their ink stands, the bar's own painted labels among
 them — the words of its tabs, its location, its pickers and its notices: two words drawn in one

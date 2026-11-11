@@ -34,6 +34,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
 use crate::widget::{Element, TaffyTreeExt, Tone, Widget, card_column_width};
 
@@ -673,7 +674,6 @@ impl Widget for StatTile {
             self.dirty = true;
         }
         self.rect = rect;
-        self.layout_dirty = false;
     }
 
     fn draw(
@@ -707,6 +707,10 @@ impl Widget for StatTile {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -914,7 +918,7 @@ impl Widget for StatGroup {
         presence: &PresenceCtx,
     ) {
         for tile in &mut self.tiles {
-            tile.draw(scene, transform, text_renderer, theme, presence);
+            tile.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

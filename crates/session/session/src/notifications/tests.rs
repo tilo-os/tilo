@@ -289,11 +289,26 @@ fn a_program_is_named_by_itself_never_by_its_path() {
     );
 
     program.app_name = "Notes".into();
-    let says = shown(from_app(program, "/usr/bin/notify-send"), 0, None);
+    let says = shown(from_app(program.clone(), "/usr/bin/notify-send"), 0, None);
     assert_eq!(
         says.app_name.as_deref(),
         Some("Notes"),
         "the program's own name is what the person reads"
+    );
+
+    // A command line program names itself by its file: the person reads where it came from, with
+    // the terminal's mark, never the program's file name beside a generic window.
+    program.app_name = "notify-send".into();
+    let command = shown(from_app(program, "/usr/bin/notify-send"), 0, None);
+    assert_eq!(
+        command.app_name.as_deref(),
+        Some("Terminal"),
+        "a command line sender is the terminal"
+    );
+    assert_eq!(
+        command.mark().icon,
+        Some(ui::icons::Icon::SquareTerminal),
+        "and leads with the terminal's mark"
     );
 }
 
@@ -631,7 +646,9 @@ fn the_centre_opens_with_what_the_last_session_kept() {
     assert!(path.is_file(), "the centre was written");
 
     let reopened = DesktopNotifications::default();
-    super::restore_kept(&reopened, &path);
+    reopened
+        .restore_kept(&std::fs::read(&path).unwrap(), ui::time::SystemTime::now())
+        .unwrap();
     let next = SessionNotifications::new(
         Notifications::new(),
         reopened,

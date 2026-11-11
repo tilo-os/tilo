@@ -189,7 +189,14 @@ fn a_screenshot_larger_than_an_asset_is_kept_smaller() {
         bytes: screenshot,
     });
     paste(&mut app);
-    let pasted = images(&app, page);
+    // It is made smaller off the frame, and goes in once it is.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let mut pasted = images(&app, page);
+    while pasted.is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        app.settle();
+        pasted = images(&app, page);
+    }
     assert_eq!(pasted.len(), 1);
     let kept = &pasted[0].1;
     assert!(!kept.is_empty() && kept.len() <= notes::notebook::MAX_ASSET_BYTES);

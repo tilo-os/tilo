@@ -184,7 +184,12 @@ impl App {
                     self.committed_documents.push((route, read));
                 }
                 Ok(Err(error)) | Err(error) => {
-                    tracing::warn!(%error,"committed history remains blocked at document owner");
+                    tracing::warn!(
+                        %error,
+                        app = %route.app_id,
+                        record = route.record.as_deref().unwrap_or("-"),
+                        "committed history remains blocked at document owner"
+                    );
                     // Preserve unfinished local work and this exact immutable
                     // capture. Never acknowledge a failed or deferred merge.
                     self.committed_documents.push((route, read));

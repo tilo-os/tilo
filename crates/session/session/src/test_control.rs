@@ -31,7 +31,7 @@ use tilo_actions::remote::{
     settle_with,
 };
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
-use tilo_compositor::{Compositor, GestureEvent, InputEvent, gestures};
+use tilo_compositor::{Compositor, InputEvent};
 
 use tilo_desktop::overlays::{Overlays, Slot};
 use tilo_desktop_surface::DesktopHandle;
@@ -42,8 +42,10 @@ use tilo_session_core::door::Doors;
 use crate::agent_door::{self, PeerRefusal};
 use crate::engine::Engine;
 
+mod gesture_input;
 mod state;
 
+use gesture_input::asked_of_gestures;
 use state::{shown, state_dump, window_rows, within};
 
 /// The variable `tilo-control` reads the test-control socket's path from: what a development
@@ -245,6 +247,9 @@ pub(crate) struct Control {
     /// The keys a `key_down` holds, so `key_up` releases them and `modifiers` knows what to press
     /// and release to reach the mask it names.
     held: RefCell<BTreeSet<u32>>,
+    /// The fingers a `swipe` with `release: false` left on the touchpad, so the next `swipe`
+    /// carries the same gesture on and its release lifts them.
+    fingers_down: std::cell::Cell<Option<u32>>,
     /// The desk state the loop last published, as its stamp.
     published: std::cell::Cell<Option<u64>>,
     changes: Arc<Changes>,
@@ -594,6 +599,7 @@ impl Control {
             door,
             asked,
             held: RefCell::new(BTreeSet::new()),
+            fingers_down: std::cell::Cell::new(None),
             published: std::cell::Cell::new(None),
             changes,
             waiting: RefCell::new(Vec::new()),
@@ -627,7 +633,13 @@ impl Control {
         {
             if op.hands_input() || op.starts_an_action(&request) {
                 let _ = answer.send(loop_answer(
-                    op, &request, &ctx, compositor, desk, &self.held,
+                    op,
+                    &request,
+                    &ctx,
+                    compositor,
+                    desk,
+                    &self.held,
+                    &self.fingers_down,
                 ));
             } else {
                 later.push(Asked {
@@ -659,7 +671,13 @@ impl Control {
         } in ready
         {
             let _ = answer.send(loop_answer(
-                op, &request, &ctx, compositor, desk, &self.held,
+                op,
+                &request,
+                &ctx,
+                compositor,
+                desk,
+                &self.held,
+                &self.fingers_down,
             ));
         }
     }
@@ -1050,6 +1068,7 @@ fn loop_answer(
     compositor: &mut Compositor,
     desk: &Desk<'_>,
     held: &RefCell<BTreeSet<u32>>,
+    fingers_down: &std::cell::Cell<Option<u32>>,
 ) -> Json {
     if let Some(answer) = asked_of_desk(ctx, op, request, compositor, desk) {
         return answer;
@@ -1057,7 +1076,7 @@ fn loop_answer(
     if let Some(answer) = asked_of_pointer(op, request, compositor) {
         return answer;
     }
-    if let Some(answer) = asked_of_gestures(op, request, compositor) {
+    if let Some(answer) = asked_of_gestures(op, request, compositor, fingers_down) {
         return answer;
     }
     if let Some(answer) = asked_of_keys(op, request, compositor, held) {
@@ -1292,116 +1311,6 @@ fn asked_of_pointer(op: Op, request: &Json, compositor: &mut Compositor) -> Opti
     })
 }
 
-/// The answer to what `op` asks of the seat's gesture tracker, when it asks of it.
-fn asked_of_gestures(op: Op, request: &Json, compositor: &mut Compositor) -> Option<Json> {
-    let events = match op {
-        Op::Swipe => swipe_events(request),
-        Op::Pinch => pinch_events(request),
-        _ => return None,
-    };
-    Some(match events {
-        Err(answer) => answer,
-        Ok(events) => inject(compositor, &events),
-    })
-}
-
-/// How many updates a gesture is split into unless the request says: the tools' own default.
-const DEFAULT_GESTURE_STEPS: u32 = 10;
-
-/// The most updates one gesture is split into: what a touchpad reports over a long swipe.
-const MAX_GESTURE_STEPS: u32 = 288;
-
-/// The seat's own gesture is the shell's: fewer fingers are the focused client's, which the control
-/// door refuses rather than delivering where a person's hand could not reach.
-fn client_gesture(fingers: u32) -> Json {
-    refusal(
-        "client_gesture",
-        &format!(
-            "a {fingers}-finger gesture belongs to the focused client; the shell takes {} or \
-             more",
-            gestures::SHELL_FINGER_THRESHOLD
-        ),
-    )
-}
-
-/// A swipe of `fingers` fingers travelling `(dx, dy)` over `steps` updates: a begin, the updates,
-/// and the release at the end unless the request keeps the fingers down.
-fn swipe_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
-    let fingers = fingers_of(request)?;
-    if !gestures::claims(fingers) {
-        return Err(client_gesture(fingers));
-    }
-    let (dx, dy) = (
-        number(request, "dx").unwrap_or(0.0),
-        number(request, "dy").unwrap_or(0.0),
-    );
-    let steps = gesture_steps(request);
-    let release = request
-        .get("release")
-        .and_then(Json::as_bool)
-        .unwrap_or(true);
-    let n = f64::from(steps);
-    let mut events = vec![GestureEvent::SwipeBegin { fingers }];
-    events.extend((0..steps).map(|_| GestureEvent::SwipeUpdate {
-        dx: dx / n,
-        dy: dy / n,
-    }));
-    if release {
-        events.push(GestureEvent::SwipeEnd { cancelled: false });
-    }
-    Ok(events)
-}
-
-/// A pinch of `fingers` fingers to the absolute `scale` over `steps` updates.
-fn pinch_events(request: &Json) -> Result<Vec<GestureEvent>, Json> {
-    let fingers = fingers_of(request)?;
-    if !gestures::claims(fingers) {
-        return Err(client_gesture(fingers));
-    }
-    let scale = number(request, "scale").unwrap_or(1.0);
-    let steps = gesture_steps(request);
-    let n = f64::from(steps);
-    let mut events = vec![GestureEvent::PinchBegin { fingers }];
-    events.extend((1..=steps).map(|step| GestureEvent::PinchUpdate {
-        dx: 0.0,
-        dy: 0.0,
-        scale: 1.0 + (scale - 1.0) * f64::from(step) / n,
-        rotation: 0.0,
-    }));
-    events.push(GestureEvent::PinchEnd { cancelled: false });
-    Ok(events)
-}
-
-/// A request's `fingers` , which a gesture must name.
-fn fingers_of(request: &Json) -> Result<u32, Json> {
-    request
-        .get("fingers")
-        .and_then(Json::as_u64)
-        .and_then(|fingers| u32::try_from(fingers).ok())
-        .ok_or_else(|| refusal("parse_error", "a gesture takes `fingers`"))
-}
-
-/// A request's `steps` , by the tools' default and within what a touchpad reports.
-fn gesture_steps(request: &Json) -> u32 {
-    request
-        .get("steps")
-        .and_then(Json::as_u64)
-        .map_or(DEFAULT_GESTURE_STEPS, |steps| {
-            u32::try_from(steps).unwrap_or(u32::MAX)
-        })
-        .clamp(1, MAX_GESTURE_STEPS)
-}
-
-/// Feed `events` to the seat, in order.
-fn inject(compositor: &mut Compositor, events: &[GestureEvent]) -> Json {
-    for event in events {
-        if let Err(error) = compositor.input(InputEvent::Gesture(*event)) {
-            return refusal("input_failed", &error.to_string());
-        }
-    }
-    json!({"ok": {}})
-}
-
 /// The answer to what `op` asks of the keyboard, when it asks of it.
 fn asked_of_keys(
     op: Op,
@@ -1410,23 +1319,34 @@ fn asked_of_keys(
     held: &RefCell<BTreeSet<u32>>,
 ) -> Option<Json> {
     Some(match op {
-        Op::Key => match key_code(request, compositor) {
-            Some(code) => {
-                for pressed in [true, false] {
-                    if let Err(error) = compositor.input(InputEvent::Key {
-                        keycode: code,
-                        pressed,
-                    }) {
-                        return Some(refusal("input_failed", &error.to_string()));
-                    }
-                }
-                json!({"ok": {}})
+        Op::Key => {
+            let pressed = match typed_char(request) {
+                // A character is pressed as the keyboard types it, with the Shift or AltGr its layout
+                // needs held: `/` on a German keyboard is Shift+7.
+                Some(ch) => compositor.type_char(ch).map_err(|error| error.to_string()),
+                None => match key_code(request, compositor) {
+                    Some(code) => [true, false]
+                        .into_iter()
+                        .try_for_each(|pressed| {
+                            compositor.input(InputEvent::Key {
+                                keycode: code,
+                                pressed,
+                            })
+                        })
+                        .map(|()| true)
+                        .map_err(|error| error.to_string()),
+                    None => Ok(false),
+                },
+            };
+            match pressed {
+                Ok(true) => json!({"ok": {}}),
+                Ok(false) => refusal(
+                    "parse_error",
+                    "`key` takes a named key or one character the keyboard types",
+                ),
+                Err(error) => refusal("input_failed", &error),
             }
-            None => refusal(
-                "parse_error",
-                "`key` takes a named key or one character the keyboard types",
-            ),
-        },
+        }
         Op::KeyDown => match key_code(request, compositor) {
             Some(code) => {
                 if let Err(error) = compositor.input(InputEvent::Key {
@@ -2213,6 +2133,17 @@ fn drag(
     Ok(())
 }
 
+/// The one character a request's `key` names, when it names no named key.
+fn typed_char(request: &Json) -> Option<char> {
+    let key = request.get("key").and_then(Json::as_str)?;
+    if named_key(key).is_some() {
+        return None;
+    }
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    chars.next().is_none().then_some(first)
+}
+
 /// The evdev code a request's `key` means: a named key's, or, for one character, the key this
 /// seat's layout puts it on.
 fn key_code(request: &Json, compositor: &mut Compositor) -> Option<u32> {
@@ -2246,7 +2177,17 @@ fn named_key(name: &str) -> Option<u32> {
         "PageUp" => 104,
         "PageDown" => 109,
         "F1" => 59,
+        "F2" => 60,
+        "F3" => 61,
         "F4" => 62,
+        "F5" => 63,
+        "F6" => 64,
+        "F7" => 65,
+        "F8" => 66,
+        "F9" => 67,
+        "F10" => 68,
+        "F11" => 87,
+        "F12" => 88,
         "PrintScreen" => 99,
         "Space" => 57,
         "Shift" => 42,
@@ -2772,53 +2713,6 @@ mod tests {
         );
         assert_eq!(decode_cursor("nonsense"), None);
         assert_eq!(decode_cursor("12.34~zz"), None);
-    }
-
-    #[test]
-    fn a_client_keeps_its_own_gestures_and_the_shell_takes_three() {
-        let refused = swipe_events(&json!({"fingers": 2, "dx": 100.0, "dy": 0.0}))
-            .expect_err("two fingers are the client's");
-        assert_eq!(refused["err"]["code"], "client_gesture");
-        assert!(
-            refused["err"]["message"]
-                .as_str()
-                .is_some_and(|message| message.contains("3 or more"))
-        );
-
-        let events = swipe_events(&json!({"fingers": 3, "dx": 300.0, "dy": 0.0, "steps": 3}))
-            .expect("three fingers are the shell's");
-        assert_eq!(events.len(), 5);
-        assert!(matches!(
-            events.first(),
-            Some(GestureEvent::SwipeBegin { fingers: 3 })
-        ));
-        assert!(matches!(events.last(), Some(GestureEvent::SwipeEnd { .. })));
-
-        let held = swipe_events(&json!({"fingers": 3, "dx": 10.0, "release": false}))
-            .expect("a swipe whose fingers stay down");
-        assert_eq!(
-            held.len(),
-            1 + usize::try_from(DEFAULT_GESTURE_STEPS).unwrap()
-        );
-
-        let events = pinch_events(&json!({"fingers": 3, "scale": 2.0, "steps": 2}))
-            .expect("a three-finger pinch");
-        assert_eq!(events.len(), 4);
-        assert!(matches!(
-            events.get(1),
-            Some(GestureEvent::PinchUpdate { scale, .. }) if (*scale - 1.5).abs() < f64::EPSILON
-        ));
-        assert!(matches!(
-            events.get(2),
-            Some(GestureEvent::PinchUpdate { scale, .. }) if (*scale - 2.0).abs() < f64::EPSILON
-        ));
-
-        let clamped = pinch_events(&json!({"fingers": 3, "scale": 2.0, "steps": 10_000}))
-            .expect("a pinch takes the most steps a touchpad reports");
-        assert_eq!(
-            clamped.len(),
-            2 + usize::try_from(MAX_GESTURE_STEPS).unwrap()
-        );
     }
 
     #[test]

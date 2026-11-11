@@ -6,6 +6,7 @@
 use super::*;
 use ui::framework::HostDelivery as _;
 use ui::tilo_actions::OperationKind;
+use ui::widget::DrawChild;
 
 /// What the window does for the effect an encoded invocation names.
 pub(super) fn effect_operation(payload: &[u8]) -> BrowserOperation {
@@ -31,7 +32,7 @@ pub(super) fn layout_at(widget: &mut BrowserWidget, width: f32, height: f32) {
 /// Draw the widget as a window at device scale `scale` draws it.
 pub(super) fn draw_at(widget: &mut BrowserWidget, scale: f64) -> Scene {
     let mut scene = Scene::new();
-    widget.draw(
+    widget.draw_child(
         &mut scene,
         Affine::scale(scale),
         &mut TextRenderer::new(),
@@ -1110,7 +1111,7 @@ fn narrow_chrome_keeps_settings_toolbar_and_page_viewport_usable() {
                 let mut text = TextRenderer::new();
                 let mut scene = Scene::new();
                 let presence = PresenceCtx::default();
-                widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+                widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
                 widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
                 if let Some(directory) = std::env::var_os("TILO_CREDENTIAL_RENDER_EVIDENCE") {
                     let directory = std::path::PathBuf::from(directory);
@@ -1358,7 +1359,7 @@ fn site_panel_stays_retained_composed_and_actionable() {
             let panel = widget.anchored_panel.as_ref().unwrap();
             assert!(panel.get_rect().height() > 100.0);
             let mut scene = Scene::new();
-            widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
             let page_tags = scene.encoding().draw_tags.len();
             widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
             assert!(
@@ -1442,7 +1443,7 @@ fn site_panel_stays_retained_composed_and_actionable() {
                 "{rect:?}"
             );
             let mut scene = Scene::new();
-            widget.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+            widget.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
             widget.draw_overlay(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
             if let Some(directory) = std::env::var_os("TILO_SITE_RENDER_EVIDENCE") {
                 let path = std::path::PathBuf::from(directory);

@@ -357,35 +357,46 @@ mod tests {
     /// A live channel with nothing due does not wake the pump: it sleeps
     /// until a frame, an announcement or the deadline a later pass names.
     ///
+    /// The announcements the pump wakes for are the whole process's, so a
+    /// test of its own is what tells its own wakeups from another test's.
+    ///
     /// Linux only: it reads the thread's scheduling from `/proc/self/task`.
     #[cfg(target_os = "linux")]
     #[test]
     fn a_pump_with_a_live_channel_sleeps_until_something_happens() {
-        let (member, endpoint) = live_member();
-        let park = GovernancePark::new();
-        let poke = Arc::clone(&park);
-        let access = ChannelKeyAccess::with_wake(member, Arc::new(move || poke.poke()));
-        let _pump = GovernancePump::spawn(
-            "broker-live",
-            park,
-            Some(access),
-            Arc::new(endpoint) as Arc<dyn GovernanceTransport + Send + Sync>,
-            || {},
-        )
-        .unwrap();
-        // Named once it runs, which is before its first pass reads the
-        // transport.
-        let tid = tilo_test_env::wait_for("the live pump's thread", || {
-            tilo_test_env::idle::live_named("broker-live")
-        });
-        tilo_test_env::wait_until("the pump to settle", || tilo_test_env::idle::blocked(&tid));
-        let before = tilo_test_env::idle::asleep_runs(&tid);
-        // Longer than the second a live channel used to tick on.
-        std::thread::sleep(Duration::from_millis(2_500));
-        assert_eq!(
-            tilo_test_env::idle::asleep_runs(&tid).saturating_sub(before),
-            0,
-            "a live channel with nothing due woke the pump"
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "a_pump_with_a_live_channel_sleeps_until_something_happens",
+            || {
+                let (member, endpoint) = live_member();
+                let park = GovernancePark::new();
+                let poke = Arc::clone(&park);
+                let access = ChannelKeyAccess::with_wake(member, Arc::new(move || poke.poke()));
+                let _pump = GovernancePump::spawn(
+                    "broker-live",
+                    park,
+                    Some(access),
+                    Arc::new(endpoint) as Arc<dyn GovernanceTransport + Send + Sync>,
+                    || {},
+                )
+                .unwrap();
+                // Named once it runs, which is before its first pass reads the
+                // transport.
+                let tid = tilo_test_env::wait_for("the live pump's thread", || {
+                    tilo_test_env::idle::live_named("broker-live")
+                });
+                tilo_test_env::wait_until("the pump to settle", || {
+                    tilo_test_env::idle::blocked(&tid)
+                });
+                let before = tilo_test_env::idle::asleep_runs(&tid);
+                // Longer than the second a live channel used to tick on.
+                std::thread::sleep(Duration::from_millis(2_500));
+                assert_eq!(
+                    tilo_test_env::idle::asleep_runs(&tid).saturating_sub(before),
+                    0,
+                    "a live channel with nothing due woke the pump"
+                );
+            },
         );
     }
 }

@@ -20,7 +20,7 @@ use crate::buffer::{ByteBuffer, Hex};
 use crate::model::BufferEdit;
 use crate::view::HexView;
 
-ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["en-US", "de-DE"]);
 
 /// The open buffer.
 #[derive(Model, Clone, Debug, Default, PartialEq)]

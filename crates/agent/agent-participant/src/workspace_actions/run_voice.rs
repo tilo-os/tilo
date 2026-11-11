@@ -15,22 +15,26 @@
 //! ([`narration::lines`]): looking at the apps, reading a record, the action
 //! it takes on what, and what that action changed is its selection. The host
 //! says it signed with its own device key, outside the live plane
-//! ([`PeerHandle::say_for_run`]): a host that is no member of the plane holds
+//! ([`Cmd::SayForRun`](tilo_session_client::Cmd::SayForRun)): a host that is no member of the plane holds
 //! none of its keys, and needs none to speak for its runs.
 //!
-//! A run stays present while its session lasts: its word is restated at the
-//! presence keep-alive, and it leaves once the session that is the run ended,
-//! or once it took no action for [`IDLE`].
+//! A run is present from the moment its session says it is one
+//! ([`RunVoices::arrived`]), waiting until it asks something, and stays
+//! present while its session lasts, however long it goes without
+//! acting (an agent thinking, or waiting on its person, is still there): its
+//! word is restated at the presence keep-alive, and it leaves once the
+//! session that is the run ended.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::presence::{Payload, Presence, ShellSelection, agent_rgb};
 use tilo_actions::remote::{ActorPlace, Caller, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_relay_protocol::host_voice::HostWords;
 use tilo_relay_protocol::live::LiveRecord;
-use tilo_session_host::{PeerHandle, narration};
+use tilo_session_client::narration;
 
 use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, record_of as route_of};
 
@@ -40,9 +44,6 @@ const KEEPALIVE: Duration = Duration::from_millis(3_000);
 
 /// How soon a run leaves once the session that is the run ended.
 const ENDED_WITHIN: Duration = Duration::from_millis(250);
-
-/// How long a run that took no action stays present before it leaves.
-const IDLE: Duration = Duration::from_secs(30);
 
 /// What the host says of one run it executes.
 struct Voice {
@@ -62,10 +63,9 @@ struct Voice {
     /// The sequence of its narration on the live plane.
     narrated: u64,
     said_at: Instant,
-    acted_at: Instant,
     /// The execution the host minted for the run's session: closed when the
-    /// session ended.
-    lease: Option<tilo_actions::remote::ExecutionLease>,
+    /// session ended, which is when the run leaves.
+    lease: tilo_actions::remote::ExecutionLease,
 }
 
 /// The runs the host speaks for, by workspace and run.
@@ -82,7 +82,7 @@ impl RunVoices {
     /// a caller in no run.
     pub(super) fn acting(
         &mut self,
-        (peer, workspace_id, cluster): (&PeerHandle, u64, &str),
+        (peer, workspace_id, cluster): (&Link, u64, &str),
         caller: &Caller,
         (invocation, target, args): (
             InvocationId,
@@ -129,7 +129,10 @@ impl RunVoices {
         };
         if let Some(event) = narration::frame(&narrated, voice.narrated, tilo_clock::unix_now_ms())
         {
-            let _ = peer.say_for_run(workspace_id, HostWords::Narration { record, event });
+            let _ = peer.send(Cmd::SayForRun(
+                workspace_id,
+                HostWords::Narration { record, event },
+            ));
         }
     }
 
@@ -139,7 +142,7 @@ impl RunVoices {
     /// run.
     pub(super) fn saying(
         &mut self,
-        (peer, workspace_id, cluster): (&PeerHandle, u64, &str),
+        (peer, workspace_id, cluster): (&Link, u64, &str),
         caller: &Caller,
         line: String,
         provider: Option<&str>,
@@ -160,20 +163,44 @@ impl RunVoices {
         voice.say(peer, workspace_id, &run, Instant::now());
     }
 
+    /// `caller`'s run connected to the workspace `cluster` and has asked
+    /// nothing yet: it is present, waiting. A run already present keeps what
+    /// it is at. Nothing for a caller in no run.
+    pub(super) fn arrived(
+        &mut self,
+        (peer, workspace_id, cluster): (&Link, u64, &str),
+        caller: &Caller,
+    ) {
+        let present = caller
+            .agent_run()
+            .is_some_and(|run| self.runs.contains_key(&(workspace_id, run.id)));
+        if present {
+            return;
+        }
+        let Some((run, voice)) = self.voice(peer, (workspace_id, cluster), caller) else {
+            return;
+        };
+        voice.activity = Some(narration::lines::waiting());
+        voice.say(peer, workspace_id, &run, Instant::now());
+    }
+
     /// `caller`'s run's voice in the workspace, present from now on: it
     /// arrives the first time. `None` for a caller in no run.
     fn voice(
         &mut self,
-        peer: &PeerHandle,
+        peer: &Link,
         (workspace_id, cluster): (u64, &str),
         caller: &Caller,
     ) -> Option<(String, &mut Voice)> {
         let run = caller.agent_run()?;
+        // A run is its session's: every run has the execution its session
+        // was minted, which closes with it.
+        let lease = caller.execution_lease()?;
         let now = Instant::now();
         let key = (workspace_id, run.id.clone());
         if !self.runs.contains_key(&key) {
             let arrived = Presence::desktop(cluster, Payload::Arrived).spoken_for(&run.id);
-            let _ = peer.say_for_run(workspace_id, HostWords::Presence(arrived));
+            let _ = peer.send(Cmd::SayForRun(workspace_id, HostWords::Presence(arrived)));
         }
         let voice = self.runs.entry(key).or_insert_with(|| Voice {
             cluster: cluster.to_owned(),
@@ -185,46 +212,35 @@ impl RunVoices {
             seq: 0,
             narrated: 0,
             said_at: now,
-            acted_at: now,
-            lease: caller.execution_lease(),
+            lease,
         });
-        voice.acted_at = now;
         Some((run.id, voice))
     }
 
-    /// When a run's word is next due: said again, or leaving.
+    /// When a run's word is next due: said again, or leaving. While any run
+    /// is present its session may end at any moment, so it is looked at
+    /// within [`ENDED_WITHIN`] and leaves with its session rather than at the
+    /// next restatement.
     pub(super) fn next_due(&self) -> Option<Instant> {
-        let ending = Instant::now().checked_add(ENDED_WITHIN);
+        let ending = Instant::now().checked_add(ENDED_WITHIN)?;
         self.runs
             .values()
-            .filter_map(|voice| {
-                let restate = voice.said_at.checked_add(KEEPALIVE)?;
-                let leave = voice.acted_at.checked_add(IDLE)?;
-                // A run whose session may end is looked at sooner, so it
-                // leaves with its session rather than at the next restatement.
-                let ended = voice.lease.as_ref().and(ending).unwrap_or(leave);
-                Some(restate.min(leave).min(ended))
-            })
+            .filter_map(|voice| voice.said_at.checked_add(KEEPALIVE))
+            .map(|restate| restate.min(ending))
             .min()
     }
 
     /// Say again what is due by now, on each workspace's `peer`: a present
-    /// run's word, and the leaving of a run that went idle.
-    pub(super) fn tick<'a>(&mut self, peer: impl Fn(u64) -> Option<&'a PeerHandle>) {
+    /// run's word, and the leaving of a run whose session ended.
+    pub(super) fn tick<'a>(&mut self, peer: impl Fn(u64) -> Option<&'a Link>) {
         let now = Instant::now();
         self.runs.retain(|(workspace_id, run), voice| {
             let Some(peer) = peer(*workspace_id) else {
                 return false;
             };
-            let ended = voice.lease.as_ref().is_some_and(|lease| !lease.is_live());
-            if ended
-                || voice
-                    .acted_at
-                    .checked_add(IDLE)
-                    .is_none_or(|leave| leave <= now)
-            {
+            if !voice.lease.is_live() {
                 let left = Presence::desktop(&voice.cluster, Payload::Left).spoken_for(run);
-                let _ = peer.say_for_run(*workspace_id, HostWords::Presence(left));
+                let _ = peer.send(Cmd::SayForRun(*workspace_id, HostWords::Presence(left)));
                 return false;
             }
             if voice
@@ -241,7 +257,7 @@ impl RunVoices {
 
 impl Voice {
     /// Say the run's face: the agent it is, what it does and where.
-    fn say(&mut self, peer: &PeerHandle, workspace_id: u64, run: &str, now: Instant) {
+    fn say(&mut self, peer: &Link, workspace_id: u64, run: &str, now: Instant) {
         self.seq = self.seq.wrapping_add(1);
         self.said_at = now;
         let (r, g, b) = self.colour;
@@ -257,7 +273,7 @@ impl Voice {
         let mut view = view;
         view.selection.clone_from(&self.selection);
         let face = Presence::desktop(&self.cluster, Payload::Shell(Box::new(view))).spoken_for(run);
-        let _ = peer.say_for_run(workspace_id, HostWords::Presence(face));
+        let _ = peer.send(Cmd::SayForRun(workspace_id, HostWords::Presence(face)));
     }
 }
 
@@ -299,6 +315,19 @@ impl super::Worker {
             phase,
             left_at,
         );
+    }
+
+    /// Say `caller`'s run present in `workspace_id`, waiting: it connected
+    /// and has asked nothing yet ([`run_voice`]).
+    pub(super) fn voice_arrived(&mut self, workspace_id: u64, caller: &Caller) {
+        let Some(workspace) = self.workspaces.get(&workspace_id) else {
+            return;
+        };
+        let Some(cluster) = workspace.cluster_id(workspace_id) else {
+            return;
+        };
+        self.voices
+            .arrived((&workspace.peer, workspace_id, &cluster), caller);
     }
 
     /// Say `caller`'s run reading the catalogue `query` asks: looking at the

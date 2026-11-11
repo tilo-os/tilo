@@ -10,6 +10,7 @@ use vello::peniko::{Color, Fill};
 
 use ui::icons::Icon;
 use ui::paint::{PaintCtx, with_alpha};
+use ui::presence::PresenceCtx;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::tokens::colors::NON_TEXT_MIN_CONTRAST;
@@ -39,20 +40,17 @@ const COMMENT_HIGHLIGHT_ALPHA: u8 = 0x66;
 pub(super) struct ReviewColors;
 
 impl ReviewColors {
-    /// Presence colour of an author, stepped until it reads on the paper.
-    pub(super) fn author_mark(theme: &Theme, paper: Color, author: &str) -> Color {
+    /// The presence colour of the author a `tone` names, stepped until it
+    /// reads on the paper.
+    pub(super) fn author_mark(theme: &Theme, paper: Color, tone: Tone) -> Color {
         let c = &theme.tokens.colors;
-        c.ink_on(
-            paper,
-            Tone::of_identity(author).colour(theme),
-            NON_TEXT_MIN_CONTRAST,
-        )
+        c.ink_on(paper, tone.colour(theme), NON_TEXT_MIN_CONTRAST)
     }
 
-    /// The translucent band under a range `author` commented on.
-    pub(super) fn comment_highlight(theme: &Theme, paper: Color, author: &str) -> Color {
+    /// The translucent band under a range `tone`'s author commented on.
+    pub(super) fn comment_highlight(theme: &Theme, paper: Color, tone: Tone) -> Color {
         with_alpha(
-            Self::author_mark(theme, paper, author),
+            Self::author_mark(theme, paper, tone),
             COMMENT_HIGHLIGHT_ALPHA,
         )
     }
@@ -230,13 +228,14 @@ impl ReviewOverlay {
         ctx: &mut PaintCtx<'_>,
         paper: Color,
         comment_markers: &[(String, f64, f64)],
+        presence: &PresenceCtx,
     ) {
         if !self.visible {
             return;
         }
         for (id, y, right) in comment_markers {
             if let Some(author) = self.comment_author(id) {
-                let mark = ReviewColors::author_mark(ctx.theme, paper, author);
+                let mark = ReviewColors::author_mark(ctx.theme, paper, tone_of(presence, author));
                 draw_pip(ctx, mark, Point::new(*right, *y));
             }
         }
@@ -253,6 +252,7 @@ impl ReviewOverlay {
         placement: &ReviewPlacement,
         markers: (Markers<'_>, Markers<'_>),
         expanded: Option<(&str, f64)>,
+        presence: &PresenceCtx,
     ) {
         self.clear_hits();
         self.expanded_slot = None;
@@ -293,8 +293,10 @@ impl ReviewOverlay {
                     self.expanded_slot = Some(Rect::new(slot.x0, top, slot.x1, top + height));
                     height
                 }
-                (MarginCard::Comment(comment, _), _) => self.draw_comment(ctx, slot, comment),
-                (MarginCard::Change(change, _), _) => self.draw_change(ctx, slot, change),
+                (MarginCard::Comment(comment, _), _) => {
+                    self.draw_comment(ctx, slot, comment, presence)
+                }
+                (MarginCard::Change(change, _), _) => self.draw_change(ctx, slot, change, presence),
             };
             next_y = top + height + seam;
         }
@@ -304,7 +306,13 @@ impl ReviewOverlay {
     /// column's) and return its height: the author as the title, the
     /// comment in `Body`, up to two replies in `Caption`, then Reply and
     /// Resolve.
-    fn draw_comment(&mut self, ctx: &mut PaintCtx<'_>, slot: Rect, comment: &CommentView) -> f64 {
+    fn draw_comment(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        slot: Rect,
+        comment: &CommentView,
+        presence: &PresenceCtx,
+    ) -> f64 {
         let theme = ctx.theme;
         let comment_label = t("review-comment");
         let author = if comment.author.is_empty() {
@@ -335,7 +343,7 @@ impl ReviewOverlay {
             .collect();
         let face = CardFace::new()
             .title(author)
-            .leading_stripe(Tone::of_identity(&comment.author));
+            .leading_stripe(tone_of(presence, &comment.author));
         let probe = face.body_rect(ctx.text, theme, Rect::new(slot.x0, 0.0, slot.x1, 1.0e4));
         let wrap = num::f32_of_f64(probe.width().max(1.0));
         let related = f64::from(theme.tokens.spacing.rhythm.related);
@@ -418,7 +426,13 @@ impl ReviewOverlay {
     /// Paint the card for the tracked `change` at the top of `slot` and
     /// return its height: what changed and who changed it, then Accept and
     /// Reject as icon buttons.
-    fn draw_change(&mut self, ctx: &mut PaintCtx<'_>, slot: Rect, change: &ChangeView) -> f64 {
+    fn draw_change(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        slot: Rect,
+        change: &ChangeView,
+        presence: &PresenceCtx,
+    ) -> f64 {
         let theme = ctx.theme;
         let (label, accept, reject) = match change.kind {
             ChangeKind::Ins => (
@@ -434,7 +448,7 @@ impl ReviewOverlay {
         };
         let face = CardFace::new()
             .title(&label)
-            .leading_stripe(Tone::of_identity(&change.author));
+            .leading_stripe(tone_of(presence, &change.author));
         let probe = face.body_rect(ctx.text, theme, Rect::new(slot.x0, 0.0, slot.x1, 1.0e4));
         let wrap = num::f32_of_f64(probe.width().max(1.0));
         let caption = theme.text(TextRole::Caption);
@@ -489,6 +503,13 @@ impl ReviewOverlay {
     }
 }
 
+/// The tone a person's review marks wear: the colour presence paints them in,
+/// the one they chose or the one their identity derives, the same colour their
+/// face and their caret wear.
+fn tone_of(presence: &PresenceCtx, author: &str) -> Tone {
+    Tone::Presence(presence.hue_of(author))
+}
+
 /// The comment pip: a caret-thin mark in the author's colour standing
 /// between the last commented character and the next, one body line tall.
 fn draw_pip(ctx: &mut PaintCtx<'_>, mark: Color, at: Point) {
@@ -519,12 +540,13 @@ mod tests {
         let paper = Color::from_rgb8(0xfc, 0xfc, 0xfa);
         for name in Theme::ALL {
             let theme = Theme::named(name).expect("shipped theme resolves");
-            let mark = ReviewColors::author_mark(&theme, paper, "Maya Chen");
+            let mark = ReviewColors::author_mark(&theme, paper, Tone::of_identity("Maya Chen"));
             assert!(
                 contrast_ratio(mark, paper) >= NON_TEXT_MIN_CONTRAST,
                 "{name}"
             );
-            let wash = ReviewColors::comment_highlight(&theme, paper, "Maya Chen");
+            let wash =
+                ReviewColors::comment_highlight(&theme, paper, Tone::of_identity("Maya Chen"));
             assert_eq!(wash.to_rgba8().a, COMMENT_HIGHLIGHT_ALPHA, "{name}");
         }
     }

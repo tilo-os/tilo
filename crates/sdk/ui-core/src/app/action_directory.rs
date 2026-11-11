@@ -103,9 +103,10 @@ impl App {
                     None => action.kind == tilo_actions::OperationKind::View,
                 })
                 // A document read discloses the resource without borrowing
-                // the publisher's private render, focus or navigation state.
-                // An explicit disclosure action still takes precedence.
-                .min_by_key(|action| !action.contract.reads_document())
+                // the publisher's private render, focus or navigation state,
+                // and so does another read of the record. An explicit
+                // disclosure action still takes precedence.
+                .min_by_key(|action| action.contract.disclosure_rank())
                 .map(|action| App::directory_descriptor(resource, action))
                 .or_else(|| {
                     resource
@@ -862,11 +863,26 @@ impl App {
             .map_or(runtime_collab::ActionDirectoryResolution::NotFound, found)
     }
 
+    /// Whether the directory answers for what is published: the route's
+    /// history is applied, and a directory set aside since the last
+    /// publication (a remount, a change between pumps) has had the
+    /// publication the pump owes it. Without that a listing in the gap reads
+    /// nothing, and a revision the replacement keeps reads as stale.
+    fn published_action_directory_current(&mut self) -> bool {
+        if !self.published_action_history_ready() {
+            return false;
+        }
+        if self.actions.action_directory_snapshot.is_none() {
+            self.publish_action_surface_after_refresh();
+        }
+        true
+    }
+
     fn published_action_directory_page(
         &mut self,
         query: runtime_collab::ActionDirectoryQuery,
     ) -> runtime_collab::ActionDirectoryPage {
-        if self.published_action_history_ready() {
+        if self.published_action_directory_current() {
             self.action_directory_page(query)
         } else {
             ::collaboration::action_directory::unavailable_page(&query)
@@ -879,7 +895,7 @@ impl App {
         resource: &str,
         action: &str,
     ) -> runtime_collab::ActionDirectoryResolution {
-        if self.published_action_history_ready() {
+        if self.published_action_directory_current() {
             self.resolve_action_directory(revision, resource, action)
         } else {
             runtime_collab::ActionDirectoryResolution::Unavailable

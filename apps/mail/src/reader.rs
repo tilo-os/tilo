@@ -23,6 +23,7 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 #[cfg(test)]
 use ui::webview::{SharedEngine, WebViewCommand};
+use ui::widget::DrawChild;
 use ui::widget::{
     AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, Button, ButtonFace, ChipFace,
     ChipLead, ControlSize, EmptyState, EmptyStateContent, FindMatch, FindOptions, Findable,
@@ -824,7 +825,7 @@ impl MessageReader {
         let inset = body.input.text_inset_x(theme);
         let rect = Rect::new(flow.x - inset, flow.y, flow.x + flow.width + inset, flow.y);
         let height = body.input.place_wrapped(rect, flow.ctx.text, theme);
-        body.input.draw(
+        body.input.draw_child(
             flow.ctx.scene,
             flow.ctx.transform,
             flow.ctx.text,
@@ -1667,26 +1668,26 @@ impl Widget for MessageReader {
 
     /// Over a link of an HTML message, the address it really opens; over an
     /// attachment, what a press does.
-    fn tooltip(&self) -> Option<&str> {
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         let point = self.pointer;
         if self.html.rect().is_some_and(|rect| rect.contains(point))
             && let Some(link) = self.html.hovered()
         {
-            return Some(link);
+            return Some(link.into());
         }
         if self
             .attachments
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Open");
+            return Some("Open".into());
         }
         if self
             .attachment_saves
             .iter()
             .any(|(rect, _, _)| rect.contains(point))
         {
-            return Some("Save");
+            return Some("Save".into());
         }
         None
     }
@@ -1809,7 +1810,7 @@ mod tests {
 
     fn draw(reader: &mut MessageReader) {
         let mut scene = Scene::new();
-        reader.draw(
+        reader.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1820,7 +1821,7 @@ mod tests {
 
     fn draw_themed(reader: &mut MessageReader, theme: &Theme) {
         let mut scene = Scene::new();
-        reader.draw(
+        reader.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -2092,7 +2093,7 @@ mod tests {
         reader.set_html_engine(engine.clone());
         let dense = |reader: &mut MessageReader| {
             let mut scene = Scene::new();
-            reader.draw(
+            reader.draw_child(
                 &mut scene,
                 Affine::scale(2.0),
                 &mut TextRenderer::new(),
@@ -2263,7 +2264,7 @@ mod tests {
         ));
         draw(&mut reader);
         assert_eq!(
-            reader.tooltip(),
+            reader.tooltip().as_deref(),
             Some("https://fieldnotes.example/read"),
             "the pointer over a link shows where it really goes"
         );

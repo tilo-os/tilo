@@ -1019,6 +1019,7 @@ impl Widget for CollaborationLaunchpad {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
+    use ui::widget::DrawChild;
 
     fn deliver(
         pad: &mut CollaborationLaunchpad,
@@ -1229,7 +1230,7 @@ mod tests {
             let theme = Theme::dark().with_text_scale(2.0);
             let mut text = TextRenderer::new();
             text.set_text_scale(2.0);
-            pad.draw(
+            pad.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut text,
@@ -1251,7 +1252,7 @@ mod tests {
                     let theme = Theme::dark().with_text_scale(scale);
                     let mut text = TextRenderer::new();
                     text.set_text_scale(scale);
-                    pad.draw(
+                    pad.draw_child(
                         &mut Scene::new(),
                         Affine::IDENTITY,
                         &mut text,

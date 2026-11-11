@@ -689,36 +689,17 @@ fn workspace_settings_pins_an_app_for_the_workspace() {
 /// Read on a thread of its own: the session's loop never waits on storage and is told "not yet"
 /// instead, while this asks the disk itself, as the session's own reader of other apps' records
 /// does.
-fn chat_emoji(home: &tilo_test_env::TestHome, workspace: &str) -> Option<Vec<String>> {
-    let data = home.data().to_path_buf();
-    let workspace = workspace.to_owned();
-    std::thread::spawn(move || read_chat_emoji(&data, &workspace))
-        .join()
-        .ok()
-        .flatten()
-}
-
-fn read_chat_emoji(data: &std::path::Path, workspace: &str) -> Option<Vec<String>> {
-    let record = ui::record::RecordId::parse(&collab_types::workspace_record_id(
-        tilo_app::tilo_workspace_emoji::KIND,
-    ))?
-    .storage_key();
-    let store = app_state::FsStore::new(data.to_path_buf());
-    let stored = durable_store::DurableStore::read(
-        &store,
-        &durable_store::StorageKey::record(
-            tilo_app::tilo_workspace_emoji::OWNER,
-            workspace,
-            record,
-        ),
-    )
-    .ok()
-    .flatten()?;
+fn chat_emoji(session: &Session, workspace: &str) -> Option<Vec<String>> {
+    let stored = session.stored_record(
+        tilo_app::tilo_workspace_emoji::OWNER,
+        workspace,
+        &collab_types::workspace_record_id(tilo_app::tilo_workspace_emoji::KIND),
+    )?;
     // A window appends to the record as it changes it, and this read may land on a tail it has not
     // finished writing: what came before it is the record as the last finished write left it, which
     // is what Chat loads.
     let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
-    let doc = automerge::AutoCommit::load_with_options(&stored.bytes, options).ok()?;
+    let doc = automerge::AutoCommit::load_with_options(&stored, options).ok()?;
     let state =
         tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_emoji::WorkspaceEmoji>::read(
             &doc,
@@ -814,7 +795,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         app.settle();
         app.harness().a11y_node_named(":wave:").is_some()
     });
-    let held = held_by_chat(&mut session, &home, &workspace, |held| {
+    let held = held_by_chat(&mut session, &workspace, |held| {
         held.is_some_and(|names| names.iter().any(|name| name == "wave"))
     });
     assert!(
@@ -830,7 +811,7 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
         app.settle();
         app.harness().a11y_node_named(":wave:").is_none()
     });
-    let held = held_by_chat(&mut session, &home, &workspace, |held| {
+    let held = held_by_chat(&mut session, &workspace, |held| {
         held.is_some_and(|names| !names.iter().any(|name| name == "wave"))
     });
     assert!(
@@ -844,13 +825,12 @@ fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
 /// meanwhile: the store commits a window's change after a debounce.
 fn held_by_chat(
     session: &mut Session,
-    home: &tilo_test_env::TestHome,
     workspace: &str,
     mut done: impl FnMut(Option<&[String]>) -> bool,
 ) -> Option<Vec<String>> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let held = chat_emoji(home, workspace);
+        let held = chat_emoji(session, workspace);
         if done(held.as_deref()) || std::time::Instant::now() >= deadline {
             return held;
         }
@@ -966,33 +946,14 @@ type StoredAgent = (
 /// What Chat's record of `workspace` 's agents holds, as the device's store keeps it: read without
 /// taking its writer (Chat owns the record), the changes a window made committed as the store
 /// writes them.
-fn chat_agents(home: &tilo_test_env::TestHome, workspace: &str) -> Option<Vec<StoredAgent>> {
-    let data = home.data().to_path_buf();
-    let workspace = workspace.to_owned();
-    std::thread::spawn(move || read_chat_agents(&data, &workspace))
-        .join()
-        .ok()
-        .flatten()
-}
-
-fn read_chat_agents(data: &std::path::Path, workspace: &str) -> Option<Vec<StoredAgent>> {
-    let record = ui::record::RecordId::parse(&collab_types::workspace_record_id(
-        tilo_app::tilo_workspace_agent::KIND,
-    ))?
-    .storage_key();
-    let store = app_state::FsStore::new(data.to_path_buf());
-    let stored = durable_store::DurableStore::read(
-        &store,
-        &durable_store::StorageKey::record(
-            tilo_app::tilo_workspace_agent::OWNER,
-            workspace,
-            record,
-        ),
-    )
-    .ok()
-    .flatten()?;
+fn chat_agents(session: &Session, workspace: &str) -> Option<Vec<StoredAgent>> {
+    let stored = session.stored_record(
+        tilo_app::tilo_workspace_agent::OWNER,
+        workspace,
+        &collab_types::workspace_record_id(tilo_app::tilo_workspace_agent::KIND),
+    )?;
     let options = automerge::LoadOptions::new().on_partial_load(automerge::OnPartialLoad::Ignore);
-    let doc = automerge::AutoCommit::load_with_options(&stored.bytes, options).ok()?;
+    let doc = automerge::AutoCommit::load_with_options(&stored, options).ok()?;
     let state =
         tilo_app::tilo_resource::Reader::<tilo_app::tilo_workspace_agent::WorkspaceAgents>::read(
             &doc,
@@ -1024,13 +985,12 @@ fn read_chat_agents(data: &std::path::Path, workspace: &str) -> Option<Vec<Store
 /// meanwhile: the store commits a window's change after a debounce.
 fn held_agents(
     session: &mut Session,
-    home: &tilo_test_env::TestHome,
     workspace: &str,
     mut done: impl FnMut(Option<&[StoredAgent]>) -> bool,
 ) -> Option<Vec<StoredAgent>> {
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        let held = chat_agents(home, workspace);
+        let held = chat_agents(session, workspace);
         if done(held.as_deref()) || std::time::Instant::now() >= deadline {
             return held;
         }
@@ -1078,7 +1038,7 @@ fn make_agent(session: &mut Session, app: &mut HeadlessApp<WorkspaceSettingsApp>
 #[test]
 fn workspace_settings_makes_the_workspaces_agents() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1129,7 +1089,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
         admitted,
         "the record is the whole admission: the workspace's grants name no agent"
     );
-    let held = held_agents(&mut session, &home, &workspace, |held| {
+    let held = held_agents(&mut session, &workspace, |held| {
         held.is_some_and(|agents| {
             agents
                 .iter()
@@ -1149,7 +1109,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
 #[test]
 fn workspace_settings_retires_the_workspaces_agents() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1163,7 +1123,7 @@ fn workspace_settings_retires_the_workspaces_agents() {
         app.settle();
         app.harness().a11y_node_named("Analyst").is_none()
     });
-    let held = held_agents(&mut session, &home, &workspace, |held| {
+    let held = held_agents(&mut session, &workspace, |held| {
         held.is_some_and(|agents| {
             agents
                 .iter()
@@ -1190,7 +1150,7 @@ fn workspace_settings_retires_the_workspaces_agents() {
 #[test]
 fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
@@ -1242,7 +1202,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
         "the row counts the day against what the keeper allows, under who keeps it"
     );
     capture(&mut app, "workspace-settings-agents-spend");
-    let held = held_agents(&mut session, &home, &workspace, |held| {
+    let held = held_agents(&mut session, &workspace, |held| {
         held.is_some_and(|agents| {
             agents
                 .iter()
@@ -1264,7 +1224,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
 #[test]
 fn workspace_settings_reads_an_agents_admission_into_chats_record() {
     let _settled = ui::motion::testing::settled();
-    let home = tilo_test_env::TestHome::new().expect("a home of its own");
+    let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
@@ -1293,7 +1253,7 @@ fn workspace_settings_reads_an_agents_admission_into_chats_record() {
         },
     );
 
-    let held = held_agents(&mut session, &home, &workspace, |held| {
+    let held = held_agents(&mut session, &workspace, |held| {
         held.is_some_and(|agents| {
             agents
                 .iter()

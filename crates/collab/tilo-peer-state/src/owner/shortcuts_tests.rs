@@ -1,5 +1,5 @@
 use super::*;
-use crate::owner::application_record::tests::{Fixture, fixture};
+use crate::owner::fixture::{Fixture, fixture};
 use crate::owner::testing::shortcut;
 use tilo_automation::{Shortcut, ShortcutChange};
 

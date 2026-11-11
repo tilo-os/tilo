@@ -13,12 +13,13 @@
 //! too large to key", so no build ever kept this one, and every build started that cargo again
 //! for a module a build without tests never reads.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// The app model crates a host test runs, each built as the module an app ships: Tasks and
-/// Tube, the two apps the storage migration moves first (`one-app-model.md` §6).
-const MODELS: &[&str] = &["tasks-model", "tube-model"];
+/// The app model crates a host test runs, each built as the module an app ships: Tasks, Tube
+/// and Console, the apps the storage migration has moved (`one-app-model.md` §6).
+const MODELS: &[&str] = &["tasks-model", "tube-model", "console-model"];
 
 fn main() -> Result<(), String> {
     let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -44,17 +45,24 @@ fn main() -> Result<(), String> {
     // A build before this kept its target directory in `OUT_DIR`; nothing reads it now, and its
     // size is what kept this run out of every cache.
     let _ = std::fs::remove_dir_all(out.join("target"));
+    // Every crate of this repository the models link: their sources are inputs of the module as
+    // much as the models' own, and a build script that does not name a file is never rerun for
+    // it — a change in one would leave the module built from the sources before it.
+    let linked = linked_crates(&manifest);
+    let mut common: Vec<PathBuf> = shared.to_vec();
+    common.extend(linked.iter().cloned());
+    // Every source the module is built from: cargo watches a directory's own entry only, so a
+    // file changed under it is not seen. What every model shares is named once.
+    for watched in &common {
+        println!("cargo::rerun-if-changed={}", watched.display());
+    }
     for model_crate in MODELS {
         let model = manifest.join("../../../apps").join(model_crate);
         let module = out.join(format!("{}.wasm", model_crate.replace('-', "_")));
-        let mut sources: Vec<PathBuf> = shared.to_vec();
+        let mut sources = common.clone();
         sources.push(model.join("src"));
         sources.push(model.join("Cargo.toml"));
-        // Every source the module is built from: cargo watches a directory's own entry only, so
-        // a file changed under it is not seen.
-        for watched in sources.iter().chain(std::iter::once(&module)) {
-            println!("cargo::rerun-if-changed={}", watched.display());
-        }
+        println!("cargo::rerun-if-changed={}", module.display());
         if sources.iter().all(|source| fresh(&module, source)) {
             continue;
         }
@@ -66,6 +74,54 @@ fn main() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// The sources of every crate of this repository the models link, as cargo names them: each
+/// crate's `src` and its manifest, from the union of the models' dependency graphs.
+fn linked_crates(manifest: &Path) -> BTreeSet<PathBuf> {
+    let repository = manifest.join("../../..");
+    let mut sources = BTreeSet::new();
+    for model_crate in MODELS {
+        let model = repository.join("apps").join(model_crate);
+        for crate_dir in tree_paths(&model).unwrap_or_default() {
+            if !crate_dir.starts_with(&repository) {
+                continue;
+            }
+            sources.insert(crate_dir.join("src"));
+            sources.insert(crate_dir.join("Cargo.toml"));
+        }
+    }
+    sources
+}
+
+/// Where the crates `model` links live, from `cargo tree`: each line names a package by its
+/// path in parentheses when it comes from this repository.
+fn tree_paths(model: &Path) -> Result<Vec<PathBuf>, String> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let mut command = Command::new(cargo);
+    command
+        .arg("tree")
+        .arg("--manifest-path")
+        .arg(model.join("Cargo.toml"))
+        .args(["--edges", "normal", "--prefix", "none"]);
+    if std::env::var_os("TILO_MODEL_FIXTURE_OFFLINE").is_some()
+        || std::env::var_os("CARGO_NET_OFFLINE").is_some_and(|value| value == "true")
+    {
+        command.arg("--offline");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("could not run cargo tree: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    let listed = String::from_utf8_lossy(&output.stdout);
+    Ok(listed
+        .lines()
+        .filter_map(|line| line.split_once(" (/"))
+        .filter_map(|(_, rest)| rest.split_once(')'))
+        .map(|(path, _)| PathBuf::from(path))
+        .collect())
 }
 
 /// Build `model` for `wasm32-unknown-unknown` into `target`, and copy the module to `module`.

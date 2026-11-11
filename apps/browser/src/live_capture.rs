@@ -17,6 +17,7 @@ use vello::kurbo::{Affine, Point};
 
 use crate::BrowserWidget;
 use ui::lock::MutexRecover as _;
+use ui::widget::DrawChild;
 
 /// The page a live capture opens unless `TILO_BROWSER_LIVE_URL` names one.
 const DEFAULT_LIVE_URL: &str = "https://example.org";
@@ -231,7 +232,7 @@ fn render_live_shot_to_png(
                         continue;
                     }
                     let mut scene = Scene::new();
-                    widget.draw(
+                    widget.draw_child(
                         &mut scene,
                         Affine::IDENTITY,
                         &mut text_renderer,

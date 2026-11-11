@@ -932,16 +932,23 @@ fn row_of(
 /// row's content — one disclosure gutter (`nest`) in for each depth it stands in — so its leading
 /// control and its title stand on the column a [`ListRow`]'s do at that depth, and how far its
 /// branch got follows it.
-fn indent_view(view: Element, depth: u32, nest: f32, progress: Option<String>) -> Element {
+fn indent_view(
+    view: Element,
+    depth: u32,
+    nest: f32,
+    chevron_column: f32,
+    progress: Option<String>,
+) -> Element {
     // The line packs what it holds, so the view starts on the row's column and not one gap
-    // further: the row's own depth and the step its chevron takes in front of it are the whole
-    // of the room before it, and a row with nothing to fold stands there all the same.
+    // further: the chevron column the list keeps in front of its rows, the row's own depth and
+    // the step its chevron takes in front of it are the whole of the room before it, and a row
+    // with nothing to fold stands there all the same.
     let mut line = Row::row()
         .fill_width()
         .align(Align::Center)
         .gap(Rhythm::None);
-    if depth > 0 {
-        let indent = crate::num::f32_of_f64(f64::from(depth) * f64::from(nest));
+    let indent = chevron_column + crate::num::f32_of_f64(f64::from(depth) * f64::from(nest));
+    if indent > 0.0 {
         line = line.push(Box::new(Spacer::fixed(indent)));
     }
     let mut slot = Slot::new(view);
@@ -963,7 +970,12 @@ fn bare_row(
     key: &str,
     feel: crate::motion::Feel,
     tree: Option<&TreeMarks<String>>,
-    RowBuild { expanded, nest, .. }: RowBuild,
+    RowBuild {
+        expanded,
+        nest,
+        chevron_column,
+        ..
+    }: RowBuild,
 ) -> Option<(Element, Option<SwipeActionProps>, Attachments)> {
     // What the row over it states, read before the row's own: a row that stands under its
     // parent says only what the parent leaves unsaid, so the day fact it shares with the parent
@@ -1046,7 +1058,9 @@ fn bare_row(
                     // A tree's row stands one step per depth in from the column its list
                     // leads, whether or not it has subtasks to fold: the chevron that folds it
                     // hangs in the step in front of its content.
-                    row = row.depth(marks.depth(&key.to_owned()));
+                    row = row
+                        .depth(marks.depth(&key.to_owned()))
+                        .chevron_column(f64::from(chevron_column));
                     if value_free && let Some(progress) = progress.clone() {
                         row = row.value(progress);
                     }
@@ -1060,9 +1074,13 @@ fn bare_row(
                     Align::Center,
                 );
                 match tree {
-                    Some(marks) => {
-                        indent_view(view, marks.depth(&key.to_owned()), nest, progress.clone())
-                    }
+                    Some(marks) => indent_view(
+                        view,
+                        marks.depth(&key.to_owned()),
+                        nest,
+                        chevron_column,
+                        progress.clone(),
+                    ),
                     None => view,
                 }
             }
@@ -1082,7 +1100,13 @@ fn bare_row(
                     Align::Start,
                 );
                 let document = match tree {
-                    Some(marks) => indent_view(document, marks.depth(&key.to_owned()), nest, None),
+                    Some(marks) => indent_view(
+                        document,
+                        marks.depth(&key.to_owned()),
+                        nest,
+                        chevron_column,
+                        None,
+                    ),
                     None => document,
                 };
                 // The row stands open into its item: the document takes its place, and the
@@ -1897,6 +1921,7 @@ mod tests {
                 author: Some(Person {
                     identity: format!("person-{index}"),
                     name: format!("Writer {index}"),
+                    hue: crate::tokens::PresenceHue::of_identity(&format!("person-{index}")),
                 }),
                 time: Some(Moment(*said)),
                 read_by: read_by(index),
@@ -2074,10 +2099,12 @@ mod tests {
                         Person {
                             identity: "person-0".to_owned(),
                             name: "Mia".to_owned(),
+                            hue: crate::tokens::PresenceHue::of_identity("person-0"),
                         },
                         Person {
                             identity: "person-1".to_owned(),
                             name: "Writer 1".to_owned(),
+                            hue: crate::tokens::PresenceHue::of_identity("person-1"),
                         },
                     ],
                     _ => Vec::new(),
@@ -2198,6 +2225,7 @@ mod tests {
                     by: Some(Person {
                         identity: "person:bo".to_owned(),
                         name: "Bo".to_owned(),
+                        hue: crate::tokens::PresenceHue::of_identity("person:bo"),
                     }),
                     said: Some("moved it to Today".to_owned()),
                     ..ChangeMarkProps::default()

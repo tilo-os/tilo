@@ -63,10 +63,12 @@ const FORWARDED: &[&str] = &[
     // How much an app (and the connector the system runs for one) logs, as the session's own
     // log says: a development session's log is all a connector without a window has.
     "RUST_LOG",
-    // A run promised the product's font catalog, which the app it starts draws in: an app that
-    // finds none stops instead of setting its text in the host's faces, where a frame it draws
-    // for a comparison would be about a font the product does not ship.
+    // A run promised the product's font catalog, and the catalog itself: a
+    // package installed outside the build directory cannot find it beside its
+    // own executable.
     "TILO_REQUIRE_FONTS",
+    "TILO_FONT_CATALOG",
+    "TILO_FONT_ASSET_CACHE",
     // The document-media socket this session serves its apps, where it serves one that is not
     // the image's (`fs serve-media`, `docs/architecture/apps.md`): the launcher reads it to
     // scope every app's capability, and a session started from a build under test serves its
@@ -291,6 +293,30 @@ mod tests {
             Some(socket),
             "an app reads its content through the socket this session serves"
         );
+    }
+
+    /// A package installed outside the build directory finds the catalog the
+    /// session verified, not one beside an executable that has none.
+    #[test]
+    fn a_package_is_told_the_catalog_the_session_verified() {
+        let session = SessionEnvironment::reading(|name| match name {
+            "TILO_FONT_CATALOG" => Some("/var/tmp/fonts".into()),
+            "TILO_FONT_ASSET_CACHE" => Some("/var/tmp/artifacts".into()),
+            "TILO_REQUIRE_FONTS" => Some("1".into()),
+            _ => None,
+        });
+        let variables = session.variables();
+        for (name, value) in [
+            ("TILO_FONT_CATALOG", "/var/tmp/fonts"),
+            ("TILO_FONT_ASSET_CACHE", "/var/tmp/artifacts"),
+            ("TILO_REQUIRE_FONTS", "1"),
+        ] {
+            assert_eq!(
+                variables.get(name).map(String::as_str),
+                Some(value),
+                "{name}"
+            );
+        }
     }
 
     #[test]

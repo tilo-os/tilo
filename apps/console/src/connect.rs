@@ -5,7 +5,7 @@ use ui::icons::Icon;
 use ui::prelude::*;
 use ui::tilo_actions::remote::agent_door as door;
 use ui::tilo_actions::remote::workspace_activity as wire;
-use ui::widget::{ButtonRole, ListRow, Property, PropertyList, Section};
+use ui::widget::{ButtonRole, ChipStyle, ListRow, Property, PropertyList, Section};
 
 use crate::{Console, Doors, Reads, ago, faced, page, tr, trf};
 
@@ -41,7 +41,6 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
         let agents: Vec<Element> = if door.grants.is_empty() {
             vec![Box::new(
                 EmptyState::new(tr("console-grants-empty"))
-                    .with_message(tr("console-grants-empty-message"))
                     .with_icon(Icon::Link)
                     .with_id("console-grants-empty"),
             )]
@@ -60,9 +59,9 @@ pub(crate) fn view(cx: &ViewCx<Console>, reads: &Reads) -> Element {
     }))
 }
 
-/// Where `reach` lets the agent work, in words.
-fn reach(reach: &door::Reach) -> String {
-    match reach {
+/// Where the grant lets the agent work, in words.
+pub(crate) fn access(grant: &door::Grant) -> String {
+    match &grant.reach {
         door::Reach::Account => tr("console-reach-account"),
         door::Reach::Workspace { name, .. } => trf(
             "console-reach-workspace",
@@ -112,10 +111,18 @@ fn grant_row(doors: &Doors, index: usize, grant: &door::Grant) -> Element {
         ListRow::new(format!("console-grant-{index}"), grant.agent.clone()),
         &agent,
     )
-    .secondary(reach(&grant.reach))
+    .secondary(access(grant))
     .secondary_lines(2)
     .meta(status)
     .trailing(Box::new(revoke));
+    // The key operating web pages in Browser without asking is a fact of its
+    // own beside the reach, not a clause of it.
+    if grant.browser_pages {
+        row = row.tags(&[(
+            tr("console-grant-browser-pages").as_str(),
+            ChipStyle::Neutral,
+        )]);
+    }
     if !grant.runs.is_empty() {
         row = row.active();
     }

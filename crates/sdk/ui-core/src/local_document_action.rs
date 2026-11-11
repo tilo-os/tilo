@@ -220,7 +220,7 @@ impl Queue {
             queue: Rc::downgrade(&self.0),
             keepalive: Some(self.clone()),
             bytes,
-            _pin: pin,
+            pin,
         })
     }
 
@@ -432,7 +432,7 @@ impl Reservation {
                 queue: Rc::downgrade(&self.active.queue.0),
                 keepalive: None,
                 bytes: self.bytes,
-                _pin: self.active.pin.clone(),
+                pin: self.active.pin.clone(),
             },
         ));
         // The outstanding lease survives draining and transport submission.
@@ -455,7 +455,14 @@ pub(crate) struct Lease {
     queue: std::rc::Weak<RefCell<Pending>>,
     keepalive: Option<Queue>,
     bytes: usize,
-    _pin: Option<Rc<dyn std::any::Any>>,
+    pin: Option<Rc<dyn std::any::Any>>,
+}
+impl Lease {
+    /// Hold `pin` instead of the surface the input froze: a report waiting
+    /// for its answer needs only the row it is reported against.
+    pub(crate) fn narrow_pin(&mut self, pin: Rc<dyn std::any::Any>) {
+        self.pin = Some(pin);
+    }
 }
 impl Drop for Lease {
     fn drop(&mut self) {

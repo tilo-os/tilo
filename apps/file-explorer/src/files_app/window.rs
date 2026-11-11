@@ -18,6 +18,7 @@ use vello::kurbo::Point;
 use super::{FilesState, StagedScenario, native_observer};
 use crate::command::FileCommand;
 use crate::i18n::t;
+use ui::widget::DrawChild;
 
 /// The window's own widgets over the [`FilesState`]: the shell its panes
 /// are composed into, and the menus shown over it.
@@ -393,7 +394,7 @@ impl Widget for FileExplorerWidget {
             state.paint_background(theme);
             chrome
                 .nav
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             state.draw_rename_editor(scene, transform, text_renderer, theme, presence);
         });
     }

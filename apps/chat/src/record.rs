@@ -1273,30 +1273,6 @@ impl Chat {
         Id::from_raw(format!("{DIRECT_CONVERSATION_PREFIX}{}", keys.join("|")))
     }
 
-    /// The id of the channel that keeps the conversation with exactly
-    /// `participants` as a channel of its own: derived from the set, so every
-    /// device that makes it makes the same one, and spelled as a channel id
-    /// ([`given_channel_id`]) because it is named in item addresses and steps.
-    ///
-    /// A direct conversation is not a channel — its id names its participants
-    /// ([`Self::direct_id`]) and nothing is created for it. A conversation
-    /// that is kept, such as a person's with an agent (`docs/designs/\
-    /// app-language/shell.md` §8.1), is one: it is made once, on its first
-    /// message, and every device that derives this id meets the one made.
-    #[must_use]
-    pub fn conversation_channel_id(participants: impl IntoIterator<Item = Participant>) -> Id {
-        use std::hash::Hasher as _;
-        let mut keys: Vec<String> = participants.into_iter().map(|one| one.key()).collect();
-        keys.sort();
-        keys.dedup();
-        let mut hash = fnv::FnvHasher::default();
-        for key in &keys {
-            hash.write(key.as_bytes());
-            hash.write(&[0]);
-        }
-        Id::from_raw(format!("c_{:016x}", hash.finish()))
-    }
-
     /// The participants the direct conversation `id` names, or none when
     /// `id` names no direct conversation.
     #[must_use]

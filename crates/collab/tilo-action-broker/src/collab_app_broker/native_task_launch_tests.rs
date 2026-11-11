@@ -417,6 +417,65 @@ async fn a_cold_package_activates_before_fresh_resource_actions_move_the_writer_
     })).await;
 }
 
+/// A task's step that shows nothing asks the workspace to start the closed
+/// app first: the host runs it with no window, nothing is launched, and the
+/// start answers with that instance, as an `open` names the one it started.
+#[tokio::test(flavor = "current_thread")]
+async fn a_task_start_of_a_closed_app_runs_it_without_a_window() {
+    tokio::task::LocalSet::new()
+        .run_until(Box::pin(async {
+            let (f, mut launches) = fixture();
+            f.approve();
+            let (asked, mut asks) = tokio::sync::mpsc::unbounded_channel();
+            f.state
+                .launchable
+                .replace_windowless_for_test(Arc::new(move |app, workspace| {
+                    asked
+                        .send((app.to_owned(), workspace.to_owned()))
+                        .map_err(|error| error.to_string())?;
+                    let (started, start) = tokio::sync::oneshot::channel();
+                    let _ = started.send(Ok(()));
+                    Ok(Some(start))
+                }));
+            let agent = f.channel(100, true);
+            let run = delivered(&agent).await;
+            let workspace_provider =
+                tilo_actions::remote::workspace_provider(&workspace_id().to_string());
+            let app_resource = format!("app.{WRITER}");
+            let start = invoke_provider(
+                &agent,
+                &run,
+                &workspace_provider,
+                &app_resource,
+                tilo_actions::remote::APPLICATION_START_ACTION,
+                serde_json::json!({}),
+            );
+            tokio::pin!(start);
+            let (app, workspace) = tokio::select! {
+                ask = asks.recv() => ask.unwrap(),
+                answer = &mut start => panic!("the start answered before the app ran: {answer:?}"),
+            };
+            assert_eq!(
+                (app.as_str(), workspace),
+                (WRITER, workspace_id().to_string())
+            );
+            f.state
+                .launchable
+                .windowless_peers
+                .lock()
+                .unwrap()
+                .insert(210);
+            let _writer = Box::pin(Writer::mount(&f, false)).await;
+            let (_, update) = start.await.unwrap();
+            let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                panic!("the start did not succeed: {update:?}");
+            };
+            assert_eq!(output.value, Some(serde_json::json!({"peer_id": 210})));
+            assert!(launches.try_recv().is_err(), "no window was launched");
+        }))
+        .await;
+}
+
 fn retain_writer(f: &Fixture) -> String {
     let mut app = HeadlessApp::<WordProcessorApp>::new().unwrap();
     let descriptor = app

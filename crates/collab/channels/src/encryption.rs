@@ -49,6 +49,12 @@ const REQUEST_FRESH: Duration = Duration::from_secs(60);
 /// for one member's commit to reach the others, so they follow it rather than
 /// commit the same change beside it and fork the group.
 const TURN: Duration = Duration::from_secs(2);
+/// The least time between two commits this device writes for one channel.
+/// Every member follows each commit, and in a group of hundreds a commit costs
+/// each of them work that grows with the group: people arriving within this
+/// of each other are admitted in one commit rather than one each. A change
+/// after a quiet spell is committed at once.
+const COMMIT_SPACING: Duration = Duration::from_millis(500);
 /// Under the state root, the directory of a workspace's channels.
 #[cfg(not(target_arch = "wasm32"))]
 const CHANNELS_DIR: &str = "channels";
@@ -632,6 +638,9 @@ struct PeerEntry {
     /// one in turn to commit the change: it commits at this instant if none
     /// of them has by then.
     turn_at: Option<Instant>,
+    /// When this device last committed a change of the channel's group: the
+    /// next waits for [`COMMIT_SPACING`] after it.
+    committed_at: Option<Instant>,
     /// An endpoint opened the route after this device was removed: ask
     /// again, and the policy decides whether access resumes.
     rejoin: bool,
@@ -726,6 +735,10 @@ pub struct ChannelEncryption {
     /// while naming its own channel, so a payload's channel is turned back
     /// into its group here.
     units: HashMap<ChannelId, ChannelId>,
+    /// The key scope a workspace's host named for a storage unit as this
+    /// device entered ([`Self::scope_told`]), by the unit's own channel: what
+    /// the unit seals under until the governance here names its scope.
+    told: HashMap<ChannelId, ChannelId>,
     /// The policy epoch the last pass read, while the directory announces
     /// its changes: a request that went unanswered under the policy before
     /// it is asked again at once when it moves, rather than waiting out a
@@ -755,6 +768,8 @@ impl ChannelEncryption {
             self.groups_seen.remove(channel);
         }
         self.units
+            .retain(|unit, scope| !channels.contains(unit) && !channels.contains(scope));
+        self.told
             .retain(|unit, scope| !channels.contains(unit) && !channels.contains(scope));
         self.store
             .as_ref()
@@ -824,6 +839,7 @@ impl ChannelEncryption {
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
             units: HashMap::new(),
+            told: HashMap::new(),
             policy_epoch: None,
         }
     }
@@ -868,7 +884,15 @@ impl ChannelEncryption {
         wall: u64,
     ) -> Option<ChannelId> {
         let unit = route.channel(&workspace.to_string());
-        let scope = self.directory.unit_scope(workspace, route, wall)?;
+        // The governance here decides; before it arrives, what the host named
+        // as this device entered.
+        let scope = match self.directory.unit_scope(workspace, route, wall) {
+            Some(scope) => {
+                self.told.remove(&unit);
+                scope
+            }
+            None => *self.told.get(&unit)?,
+        };
         self.units.insert(unit, scope);
         Some(scope)
     }
@@ -1293,18 +1317,47 @@ impl ChannelEncryption {
     /// Await every signature the device's custody owes, keeping each signed request for the next
     /// [`Self::pump`] to send.
     pub async fn signatures(&mut self) {
-        for entry in self.peers.values_mut() {
-            let Some((mut request, signing)) = entry.signing.take() else {
-                continue;
-            };
-            match signing.await {
-                Ok(signature) => {
+        for (channel, request, signing) in self.take_signing() {
+            let signed = signing.await;
+            self.signed(channel, request, signed);
+        }
+    }
+
+    /// The access requests whose signatures the device's custody owes, taken out of the service
+    /// so a shared one is not held while they are awaited; each answer goes back with
+    /// [`Self::signed`].
+    pub fn take_signing(
+        &mut self,
+    ) -> Vec<(
+        ChannelId,
+        MlsAccessRequestV1,
+        collab_types::signer::SignFuture<'static>,
+    )> {
+        self.peers
+            .iter_mut()
+            .filter_map(|(channel, entry)| {
+                let (request, signing) = entry.signing.take()?;
+                Some((*channel, request, signing))
+            })
+            .collect()
+    }
+
+    /// Keep `request`, signed by the device's custody, for the next [`Self::pump`] to send.
+    pub fn signed(
+        &mut self,
+        channel: ChannelId,
+        mut request: MlsAccessRequestV1,
+        signed: Result<[u8; 64], collab_types::signer::SignError>,
+    ) {
+        match signed {
+            Ok(signature) => {
+                if let Some(entry) = self.peers.get_mut(&channel) {
                     request.signature = collab_types::Signature::from_bytes(signature);
                     entry.request = Some(request);
                     self.queued = true;
                 }
-                Err(error) => tracing::warn!(%error, "channel access request was not signed"),
             }
+            Err(error) => tracing::warn!(%error, "channel access request was not signed"),
         }
     }
 
@@ -1695,13 +1748,20 @@ impl ChannelEncryption {
         if let Some(route) = route {
             self.learn_route(workspace, channel, route);
         }
-        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
+        let Some(entry) = self
+            .peers
+            .get_mut(&channel)
+            .filter(|_| self.store.is_some())
+        else {
             return;
         };
         if entry.workspace != workspace {
             return;
         }
-        match entry.peer.learn_request(request, &store.vault) {
+        let device = request.device;
+        let learned = entry.peer.learn_request(request);
+        tracing::debug!(%workspace, channel = %channel.0, ?device, ?learned, "channel access request taken");
+        match learned {
             Ok(true) => entry.dirty = true,
             Ok(false) => {}
             Err(error) => tracing::warn!(%error, %workspace, "channel access request refused"),
@@ -1736,9 +1796,14 @@ impl ChannelEncryption {
             return;
         };
         let waits = TURN.saturating_mul(u32::try_from(turn).unwrap_or(u32::MAX));
-        let at = *entry
-            .turn_at
-            .get_or_insert_with(|| now.checked_add(waits).unwrap_or(now));
+        let spaced = entry
+            .committed_at
+            .and_then(|at| at.checked_add(COMMIT_SPACING));
+        let at = *entry.turn_at.get_or_insert_with(|| {
+            now.checked_add(waits)
+                .unwrap_or(now)
+                .max(spaced.unwrap_or(now))
+        });
         if now < at {
             return;
         }
@@ -1754,6 +1819,8 @@ impl ChannelEncryption {
             tracing::warn!(%workspace, refused = outcome.refused.len(), "malformed channel access requests refused");
         }
         if outcome.changed() {
+            tracing::debug!(%workspace, channel = %channel.0, admitted = ?outcome.admitted, removed = ?outcome.removed, "channel group changed");
+            entry.committed_at = Some(now);
             let gate = entry.peer.gate();
             self.register_gate(channel, gate);
             self.bump(channel);
@@ -1763,7 +1830,11 @@ impl ChannelEncryption {
     /// Hand the transport every frame this device wrote or must publish
     /// again; kept for the next pass while the transport refuses one.
     fn publish(&mut self, channel: ChannelId, transport: &dyn GovernanceTransport) {
-        let (Some(entry), Some(store)) = (self.peers.get_mut(&channel), &self.store) else {
+        let Some(entry) = self
+            .peers
+            .get_mut(&channel)
+            .filter(|_| self.store.is_some())
+        else {
             return;
         };
         if entry.peer.outbox().is_empty() {
@@ -1779,8 +1850,8 @@ impl ChannelEncryption {
                 delivery: self.delivery,
             });
         }
-        if accepted && let Err(error) = entry.peer.published(&store.vault) {
-            tracing::warn!(%error, workspace = %entry.workspace, "channel outbox could not be written");
+        if accepted {
+            entry.peer.published();
         }
     }
 
@@ -1865,6 +1936,7 @@ impl ChannelEncryption {
             return;
         };
         entry.retry.fired(now, REQUEST_LONGEST);
+        tracing::debug!(workspace = %entry.workspace, channel = %channel.0, device = ?request.device, issued = request.issued_at, "channel access asked");
         // Routed when the record is known, so participants decide Read on it.
         self.delivery = self.delivery.wrapping_add(1);
         let message = match entry.route.clone() {
@@ -2041,6 +2113,7 @@ impl ChannelEncryption {
                 fresh_at: now.checked_add(REQUEST_FRESH).unwrap_or(now),
                 dirty: true,
                 turn_at: None,
+                committed_at: None,
                 rejoin: false,
                 founding: Founding {
                     at: found_at,
@@ -2131,6 +2204,34 @@ impl ChannelKeyAccess {
         Some(operation(&mut service))
     }
 
+    /// See [`ChannelEncryption::ask_on_entry`]; the custody's signature is awaited without
+    /// holding the service.
+    pub async fn ask_on_entry(
+        &self,
+        workspace: WorkspaceId,
+        now: Instant,
+        wall: u64,
+    ) -> Option<MlsAccessRequestV1> {
+        match self.run(|service| service.entry_request(workspace, now, wall))?? {
+            entry::EntryRequest::Signed(request) => Some(request),
+            entry::EntryRequest::Unsigned(scope, mut request, signing) => {
+                let signature = signing
+                    .await
+                    .inspect_err(
+                        |error| tracing::warn!(%error, "channel access request was not signed"),
+                    )
+                    .ok()?;
+                request.signature = collab_types::Signature::from_bytes(signature);
+                self.run(|service| service.entry_signed(scope, request, now))
+            }
+        }
+    }
+
+    /// See [`ChannelEncryption::scope_told`].
+    pub fn scope_told(&self, workspace: WorkspaceId, route: &ChannelRoute, scope: ChannelId) {
+        self.run(|service| service.scope_told(workspace, route, scope));
+    }
+
     /// Forget `workspace`, deleted ([`ChannelEncryption::forget_workspace`]).
     ///
     /// # Errors
@@ -2209,6 +2310,34 @@ impl ChannelKeyAccess {
         (access, generation)
     }
 
+    /// [`ChannelEncryption::signatures`] on the shared service, never holding it while the
+    /// device's custody signs.
+    pub async fn signatures(&self) {
+        let Some(owed) = self.run(ChannelEncryption::take_signing) else {
+            return;
+        };
+        let mut answered = Vec::with_capacity(owed.len());
+        for (channel, request, signing) in owed {
+            answered.push((channel, request, signing.await));
+        }
+        let queued = self.run(|service| {
+            for (channel, request, signed) in answered {
+                service.signed(channel, request, signed);
+            }
+            std::mem::take(&mut service.queued)
+        });
+        if queued == Some(true)
+            && let Some(wake) = &self.wake
+        {
+            wake();
+        }
+    }
+
+    /// Whether the device's custody owes a signature ([`ChannelEncryption::signing`]).
+    pub fn signing(&self) -> bool {
+        self.run(|service| service.signing()).unwrap_or(false)
+    }
+
     /// See [`ChannelEncryption::access_record`]; also returns the service's
     /// generation, as [`Self::access`] does.
     pub fn access_record(
@@ -2216,22 +2345,39 @@ impl ChannelKeyAccess {
         workspace: WorkspaceId,
         route: &ChannelRoute,
     ) -> (ChannelAccess, u64) {
+        let (_, access, generation) = self.record_access(workspace, route, Instant::now());
+        (access, generation)
+    }
+
+    /// [`Self::access_record`] at the caller's own `now`, with the channel the route's access
+    /// is to.
+    pub fn record_access(
+        &self,
+        workspace: WorkspaceId,
+        route: &ChannelRoute,
+        now: Instant,
+    ) -> (ChannelId, ChannelAccess, u64) {
         // As `ChannelEncryption::access_record` asks: the route only when it
         // is the channel's.
-        let Some((access, generation, queued)) = self.run(|service| {
-            let (_, access) = service.access_record(workspace, route, Instant::now());
+        let Some((channel, access, generation, queued)) = self.run(|service| {
+            let (channel, access) = service.access_record(workspace, route, now);
             (
+                channel,
                 access,
                 service.generation(),
                 std::mem::take(&mut service.queued),
             )
         }) else {
-            return (ChannelAccess::Unavailable, 0);
+            return (
+                route.channel(&workspace.to_string()),
+                ChannelAccess::Unavailable,
+                0,
+            );
         };
         if queued && let Some(wake) = &self.wake {
             wake();
         }
-        (access, generation)
+        (channel, access, generation)
     }
 
     /// Open `envelope`, a new sealed write to one of `workspace`'s channels, for
@@ -2593,6 +2739,8 @@ impl tilo_identity_host::sources::ChannelKeySource for ChannelKeyProvider {
         })
     }
 }
+
+mod entry;
 
 #[cfg(test)]
 mod tests {

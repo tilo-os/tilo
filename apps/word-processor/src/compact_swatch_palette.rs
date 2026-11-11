@@ -21,6 +21,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::num;
+use ui::widget::DrawChild;
 
 /// Swatches per row of the grid.
 const COLUMNS: usize = 4;
@@ -265,7 +266,7 @@ impl CompactSwatchPalette {
             .hovered(self.clear_hovered)
             .focused(self.clear_focused);
         Button::paint(scene, transform, text, &ink, &face);
-        picker.draw(scene, transform, text, &ink, presence);
+        picker.draw_child(scene, transform, text, &ink, presence);
     }
 
     pub(super) fn handle_event(

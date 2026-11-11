@@ -173,24 +173,21 @@ async fn what_a_door_agent_changes_opens_on_the_workspaces_desk() {
                 .is_some_and(|author| author.contains(&person)),
             "the window is Ada's: {desktop:?}"
         );
-        let opened = desktop
-            .opened_by
-            .get(tab)
-            .unwrap_or_else(|| panic!("the window says which run opened it: {desktop:?}"));
-        assert!(opened.run.starts_with("agent-run:"), "{opened:?}");
-        assert!(!opened.label.is_empty(), "{opened:?}");
     }
-    // The form's window says it was opened in the run the agent named; the
-    // letter's, made outside any, in the run the session goes by.
-    let opened_in = |tab: u64| desktop.opened_by.get(&tab).map(|run| run.title.clone());
-    assert_eq!(
-        opened_in(form_windows[0]).as_deref(),
-        Some(RUN),
+    // Both windows were opened in the connection's one run, which the host
+    // names. The form's says the title the agent gave its step; the letter's,
+    // made in no titled step, says none, so its mark names the agent alone.
+    let opened = |tab: u64| desktop.opened_by.get(&tab).expect("the run that opened it");
+    let (form, letter) = (opened(form_windows[0]), opened(letter_windows[0]));
+    assert!(
+        form.run.starts_with("agent-run:") && !form.label.is_empty(),
         "{desktop:?}"
     );
-    let letter = opened_in(letter_windows[0]).unwrap_or_default();
-    assert!(
-        !letter.is_empty() && letter != RUN,
-        "the letter's window names the session's run: {desktop:?}"
+    assert_eq!(form.title, RUN, "{desktop:?}");
+    assert_eq!(
+        (&letter.run, &letter.label),
+        (&form.run, &form.label),
+        "{desktop:?}"
     );
+    assert!(letter.title.is_empty(), "{desktop:?}");
 }

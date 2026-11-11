@@ -2421,7 +2421,6 @@ impl Widget for ToggleGroup {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.place(crate::widget::layout_rect(taffy, node, origin));
-        self.layout_dirty = false;
     }
 
     fn draw(
@@ -2563,6 +2562,10 @@ impl Widget for ToggleGroup {
     /// layout's business (one scrolled out of view is never drawn).
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO || self.layout_dirty
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

@@ -156,7 +156,7 @@ packages = [
     "containers", "discord-worker", "file-explorer", "imager", "launcher", "local-model-service",
     "notes", "osk", "runtime-bundle", "runtime-portal", "scratchpad", "settings", "store",
     "tilo-agent-participant", "tilo-app", "tilo-bluez", "tilo-browser-compute",
-    "tilo-session-host", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
+    "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
     "tilo-location", "tilo-model-gateway", "tilo-notify", "tilo-ntfs-protocol",
     "tilo-paint-stream", "tilo-pdf", "tilo-relay", "tilo-staging-reclaim", "tilo-ui", "tilo-vmd",
@@ -445,7 +445,7 @@ fix = "cargo fmt"
 
 [[check]]
 name = "hakari"
-run = "if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then\n  echo \"crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (docs/development/dependencies.md).\" >&2\n  exit 1\nfi\ncargo hakari verify\n"
+run = "if ! { cargo hakari generate --diff && cargo hakari manage-deps --dry-run; }; then\n  echo \"crates/workspace-hack is stale: run 'cargo hakari generate' and 'cargo hakari manage-deps', then commit the result (docs/policies.md).\" >&2\n  exit 1\nfi\ncargo hakari verify\n"
 image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c09579279dbf7ed0d519ca5ed0efa89"
 env = { PATH = "/usr/local/rustup/toolchains/1.97.1-x86_64-unknown-linux-gnu/bin:/usr/local/cargo/bin:/usr/local/bin:/usr/bin:/bin" }
 requires = ["arch=x86_64"]
@@ -584,7 +584,7 @@ requires = ["arch=x86_64"]
 
 [[check]]
 name = "chromium-host"
-run = "bash tools/ci/ensure-browser-dependencies.sh\ncommand -v cmake >/dev/null || dnf install -y cmake\npython3 scripts/browser/build-host.py --jobs 8\nctest --test-dir target/chromium-build --output-on-failure\n# Chromium refuses root, and the host never turns its sandbox off: the page tests run as a user.\nchmod -R a+rX target/chromium apps/browser/chromium/tests apps/browser/chromium/src apps/browser/assets/extension-manager apps/browser/src/extension_toolbar.rs\nmkdir -p -m 1777 /tmp/host-test\n# Every suite runs, so one that fails does not hide the ones after it; the check\n# fails at the end and names each suite that did.\nfailed=\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/document_size.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  document_size\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/privacy_defaults.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  privacy_defaults\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/pointer_input.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  pointer_input\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/ime_composition.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  ime_composition\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_popups.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_popups\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/tabs.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  tabs\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/navigation.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  navigation\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/native_regressions.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  native_regressions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_dialogs.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_dialogs\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_clipboard.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_clipboard\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/context_menu.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  context_menu\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/adblock_extension.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  adblock_extension\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/extensions.py target/chromium/tilo-chromium-host Extensions.test_mv3_worker_storage_content_and_action RuntimeExtensions.test_load_unload_and_denied_methods; } || failed=\"$failed\\n  extensions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/extension_toggle.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  extension_toggle\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/extension_tabs.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  extension_tabs\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/site_extensions.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  site_extensions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_actions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/sealed_documents.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  sealed_documents\"\n# Camera and microphone questions only: on this node Chromium refuses notifications and\n# location without asking, so the rest of capabilities.py runs against a macOS host.\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/capabilities.py target/chromium/tilo-chromium-host Capabilities.test_fake_camera_microphone_policy_grant_revoke_and_new_request Capabilities.test_refused_camera_is_kept_until_the_site_may_ask_again; } || failed=\"$failed\\n  capabilities\"\n# The same page again with the engine started the way a Browser launch starts it: its\n# environment and the seccomp filters its sandbox stacks (launcher example web_engine_sandbox).\ncargo build --locked -p launcher --example web_engine_sandbox\ninstall -m 0755 \"${CARGO_TARGET_DIR:-target}/debug/examples/web_engine_sandbox\" /tmp/host-test/web_engine_sandbox\nprintf '#!/bin/sh\\nexec /tmp/host-test/web_engine_sandbox %s/target/chromium/tilo-chromium-host \"$@\"\\n' \"$PWD\" > /tmp/host-test/sandboxed-host\nchmod a+rx /tmp/host-test/sandboxed-host\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/document_size.py /tmp/host-test/sandboxed-host; } || failed=\"$failed\\n  document_size (as a Browser launch starts the engine)\"\n# Frames reach the app through the memory it hands the sandboxed engine.\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/frame_transport.py --transport memory /tmp/host-test/sandboxed-host; } || failed=\"$failed\\n  frame_transport (as a Browser launch starts the engine)\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/resize_frames.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  resize_frames\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/frame_transport.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  frame_transport\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/frame_damage.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  frame_damage\"\n\n[ -z \"$failed\" ] || { printf 'engine suites that failed:%b\\n' \"$failed\" >&2; exit 1; }"
+run = "bash tools/ci/ensure-browser-dependencies.sh\ncommand -v cmake >/dev/null || dnf install -y cmake\npython3 scripts/browser/build-host.py --jobs 8\nctest --test-dir target/chromium-build --output-on-failure\n# Chromium refuses root, and the host never turns its sandbox off: the page tests run as a user.\nchmod -R a+rX target/chromium apps/browser/chromium/tests apps/browser/chromium/src apps/browser/assets/extension-manager apps/browser/src/extension_toolbar.rs\nmkdir -p -m 1777 /tmp/host-test\n# Every suite runs, so one that fails does not hide the ones after it; the check\n# fails at the end and names each suite that did.\nfailed=\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/document_size.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  document_size\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/privacy_defaults.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  privacy_defaults\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/pointer_input.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  pointer_input\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/ime_composition.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  ime_composition\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_popups.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_popups\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/tabs.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  tabs\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/navigation.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  navigation\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/native_regressions.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  native_regressions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_dialogs.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_dialogs\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_clipboard.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_clipboard\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/context_menu.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  context_menu\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/adblock_extension.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  adblock_extension\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/extensions.py target/chromium/tilo-chromium-host Extensions.test_mv3_worker_storage_content_and_action RuntimeExtensions.test_load_unload_and_denied_methods; } || failed=\"$failed\\n  extensions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/extension_toggle.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  extension_toggle\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/extension_tabs.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  extension_tabs\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/site_extensions.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  site_extensions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  page_actions\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/page_holds.py target/chromium/tilo-chromium-host; } || failed=\"$failed\n  page_holds\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/sealed_documents.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  sealed_documents\"\n# Camera and microphone questions only: on this node Chromium refuses notifications and\n# location without asking, so the rest of capabilities.py runs against a macOS host.\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/capabilities.py target/chromium/tilo-chromium-host Capabilities.test_fake_camera_microphone_policy_grant_revoke_and_new_request Capabilities.test_refused_camera_is_kept_until_the_site_may_ask_again; } || failed=\"$failed\\n  capabilities\"\n# The same page again with the engine started the way a Browser launch starts it: its\n# environment and the seccomp filters its sandbox stacks (launcher example web_engine_sandbox).\ncargo build --locked -p launcher --example web_engine_sandbox\ninstall -m 0755 \"${CARGO_TARGET_DIR:-target}/debug/examples/web_engine_sandbox\" /tmp/host-test/web_engine_sandbox\nprintf '#!/bin/sh\\nexec /tmp/host-test/web_engine_sandbox %s/target/chromium/tilo-chromium-host \"$@\"\\n' \"$PWD\" > /tmp/host-test/sandboxed-host\nchmod a+rx /tmp/host-test/sandboxed-host\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/document_size.py /tmp/host-test/sandboxed-host; } || failed=\"$failed\\n  document_size (as a Browser launch starts the engine)\"\n# Frames reach the app through the memory it hands the sandboxed engine.\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/frame_transport.py --transport memory /tmp/host-test/sandboxed-host; } || failed=\"$failed\\n  frame_transport (as a Browser launch starts the engine)\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/resize_frames.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  resize_frames\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/frame_transport.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  frame_transport\"\n{ HOME=/tmp/host-test TMPDIR=/tmp/host-test unshare --user --map-user=1000 --map-group=1000 -- python3 apps/browser/chromium/tests/frame_damage.py target/chromium/tilo-chromium-host; } || failed=\"$failed\\n  frame_damage\"\n\n[ -z \"$failed\" ] || { printf 'engine suites that failed:%b\\n' \"$failed\" >&2; exit 1; }"
 requires = ["arch=x86_64"]
 isolation = "nested"
 outputs = ["target/chromium/**"]
@@ -650,6 +650,36 @@ run = "bash tools/ci/sdk-typescript.sh"
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
+# The SDKs' release to npm and PyPI, tools/ci/publish/sdks.sh: both packages publish under the
+# one name tilo-sdk (on PyPI plain `tilo` belongs to an unrelated project, on npm the @tilo scope
+# is not available), and the version is the release tag's, never a number in the tree. The check
+# that publishes runs on release tags, with the registries' tokens and nowhere else; a version
+# already on a registry is skipped, so re-running a tag finishes a release that stopped halfway
+# rather than failing on what it already sent. Dispatched on a branch it publishes nothing:
+# sdks.sh refuses any ref but a release tag.
+#
+# What runs on main is the same build with no token: both packages are built as a tag would
+# build them, their artifacts are packed and read back, and the version a tag would write is
+# exercised on a stand-in. A renamed package, a manifest that stops being publishable or an
+# import package that falls out of the wheel breaks here, long before a tag does. It runs again
+# in the tag's own publish run, on that tag's version, before anything is sent.
+[[check]]
+name = "publish-sdks-dry-run"
+run = "bash tools/ci/publish/sdks.sh check"
+needs = ["sdk-python", "sdk-typescript"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+on = ["main", "dispatch"]
+
+[[check]]
+name = "publish-sdks"
+run = "bash tools/ci/publish/sdks.sh publish"
+needs = ["sdk-python", "sdk-typescript", "publish-sdks-dry-run"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
+
 [[check]]
 name = "sdk-policy"
 run = "python3 tools/policy/check_app_capabilities.py\npython3 tools/web/generate_web_desktop.py --check\npython3 tools/apps/generate_catalogue_fleet.py --check\npython3 tools/sdk/publish_check.py --report-only\n"
@@ -667,11 +697,7 @@ heavy = true
 name = "sdk-web-size"
 run = "cargo build --locked -p tilo-app-cli --bin tilo-app\ncargo test --locked --manifest-path tools/web/wasm-split/Cargo.toml\napp=$CARGO_TARGET_DIR/debug/tilo-app\n# model-providers-web builds the same bundle path in the dev profile, possibly\n# at the same time in the same build directory, so the release bundle has its own.\nexport CARGO_TARGET_DIR=$CARGO_TARGET_DIR/release-web\nbundle=$CARGO_TARGET_DIR/tilo-app/web/calculator/bundle\n\"$app\" build --target web --bundle desktop --release apps/calculator\npython3 tools/web/wasm_size_ratchet.py measure desktop \"$bundle\"\n"
 needs = ["test-assets"]
-# It also tests tools/web/wasm-split, a workspace of its own whose lockfile names crates the root
-# Cargo.lock doesn't, so it needs cargo's network; t turns it off where it hands a job the
-# state's crates.
-env = { TILO_TEST_ASSET_SEED = "/target/test-assets", CARGO_NET_OFFLINE = "false" }
-git = true
+env = { TILO_TEST_ASSET_SEED = "/target/test-assets" }
 
 # The same bundle qualified in Chromium: release candidates, and when there is room.
 [[check]]
@@ -1872,6 +1898,14 @@ name = "web-desktop-wasm"
 run = "bash tools/ci/publish/web-desktop-bundle.sh wasm /target/publish/web-desktop/wasm"
 # The apps it builds embed image fixtures whose build script fetches them: a
 # node has no network, so the seeded cache is the only source (`test-assets`).
+#
+# What it writes is mostly the compiler cache storing the units it compiles, at
+# 10-30 MB each (an app's rlib is the framework instantiated for that app; the
+# UI framework alone is 268 MB of rlib and metadata). A run that finds every unit
+# cached writes about 630 MB; a run that catches up with the wasm crates other
+# commits moved compiles about a hundred units and writes 1.5-2.1 GB. The same
+# commit writes both, so a run past this check's disk envelope says what was
+# stale, not what changed in the bundle: that is the same 126 MB either way.
 needs = ["test-assets"]
 env = { CARGO_BUILD_JOBS = "8", TILO_TEST_ASSET_SEED = "/target/test-assets" }
 requires = ["arch=x86_64"]
@@ -2068,7 +2102,7 @@ arch = ["x86_64", "aarch64"]
 # The browser regressions that once broke on a builder, run in the candidate. They compile the
 # browser peer and the agent participant, which read nearly every source file, so in every
 # head's publication they ran again for each commit while the image stayed the same. Each commit
-# runs the same tests in the pinned builder (`test/tilo-session-host`,
+# runs the same tests in the pinned builder (`test/tilo-session-client`,
 # `test-x86_64/tilo-agent-participant`), so what this adds is the candidate: it gates a release
 # candidate's signature and publication, runs when dispatched and on main's newest head when t
 # has room (bisected to the commit that broke it), and main's development tags go without it.
@@ -2541,15 +2575,50 @@ image = "registry.tilo.so/tilo/ci-fast@sha256:4974765531ae306e2c33265f0d7d33624c
 outputs = ["/target/publish/rpm-snapshot/**"]
 default = false
 
+# The relay's programs: the image packages what this leaves, so it compiles no Rust inside its
+# build.
+[[check]]
+name = "relay-binaries"
+run = "bash tools/ci/publish/server-binaries.sh relay /target/publish/relay/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/relay/binaries/**"]
+timeout_secs = 7200
+default = false
+
+# The agent host's programs, its own check so a change to one image's crates leaves the other's
+# image keyed as it was: the agent host's image packages what this leaves, too.
+[[check]]
+name = "agent-host-binaries"
+run = "bash tools/ci/publish/server-binaries.sh agent-host /target/publish/agent-host/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/agent-host/binaries/**"]
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "image-relay"
-run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay"
-needs = ["rpm-snapshot", "image-rpms-x86_64", "os-assets"]
+run = "bash tools/ci/publish/relay-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/relay/binaries /target/publish/relay"
+needs = ["relay-binaries", "rpm-snapshot", "image-rpms-x86_64"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
 isolation = "vm"
 git = true
 outputs = ["/target/publish/relay/image.oci.tar", "/target/publish/relay/digest", "/target/publish/relay/rpms-source"]
+default = false
+
+# The agent host's image (os/containers/tilo-agent-host): the member and its enroll program on the
+# same base and snapshot as the relay, which it runs beside. Like the relay's it is packaging only.
+[[check]]
+name = "image-agent-host"
+run = "bash tools/ci/publish/agent-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/agent-host/binaries /target/publish/agent-host"
+needs = ["agent-host-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
+requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+outputs = ["/target/publish/agent-host/image.oci.tar", "/target/publish/agent-host/digest", "/target/publish/agent-host/rpms-source"]
 default = false
 
 [[check]]
@@ -2898,13 +2967,17 @@ id_token = ["registry.tilo.so"]
 [[check]]
 name = "image-rpms-{arch}"
 run = "bash tools/ci/publish/rpms-build.sh {arch} /target/publish/rpms/{arch}"
-needs = ["os-assets", "rpm-package-set"]
+needs = ["os-assets", "rpm-package-set", "signing-tools"]
 optional_needs = ["mirror-base"]
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch={arch}", "disk-100g"]
 isolation = "vm"
 # No Git: the snapshot is dated by when it was resolved (rpms-build.sh), never by the commit, so
 # its key is the package set's and every OS layer above it is reused across commits that keep it.
+# It is not served from the cache either way — the job asks the registry and, unpublished, Fedora —
+# but once this package set is published the job verifies and copies the published snapshot (about
+# a minute) instead of resolving Fedora again, so an image rebuild after a code change does not pay
+# a resolution.
 outputs = ["/target/publish/rpms/{arch}/image.oci.tar", "/target/publish/rpms/{arch}/digest", "/target/publish/rpms/{arch}/epoch"]
 timeout_secs = 10800
 default = false
@@ -4786,6 +4859,22 @@ outputs = ["/target/agent-setup/**"]
 timeout_secs = 1800
 default = false
 
+# A person's setup survives what their browser does mid-way, on every change that reaches it: the
+# real page in headless Chromium against the Lounge's relay run directly and the tilo command an
+# agent runs, reloaded, closed and reopened, gone back and forward to and opened in a second tab at
+# every step of "Set up with your agent", with a code running out and the network dropping. Each
+# case must land on the step the person was at, never in the Lounge by surprise. It builds nothing
+# itself: it takes the same cached outputs as agent-setup.
+[[check]]
+name = "setup-resume"
+run = "mkdir -p /target/setup-resume-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/setup-resume-cli tilo\nbash os/containers/tilo-lounge/test-setup-resume.sh /target/publish/web-desktop/bundle /target/setup-resume"
+needs = ["lounge-gate-binaries", "lounge-fonts", "cli-x86_64", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/setup-resume-cli/tilo" }
+requires = ["arch=x86_64"]
+# What it found, not what it ran: the captures, the report, each tab's console and the Lounge's logs.
+outputs = ["/target/setup-resume/setup-resume/*.png", "/target/setup-resume/setup-resume/*.json", "/target/setup-resume/setup-resume/*.log", "/target/setup-resume/*.log"]
+timeout_secs = 1800
+
 # The web page boots for real, on every change that reaches it: the built bundle in headless
 # Chromium against the Lounge's relay run directly, arriving, joining the workspace and opening
 # Notes, failing on any exception the page throws or panic it reports. A page's unit tests run
@@ -4802,6 +4891,32 @@ requires = ["arch=x86_64"]
 outputs = ["/target/page-boot/**"]
 timeout_secs = 1200
 
+# The front door of a workspace that takes people by invitation, in a real browser: a stranger
+# whose browser has never been here sees the wait list rather than the setup screen, leaves an
+# address, confirms it through the mail the door sends to a local sink, and stays on the list
+# when the tab reloads. The screenshots it keeps are what someone arriving today sees.
+[[check]]
+name = "wait-list-door"
+run = "bash os/containers/tilo-lounge/test-wait-list-door.sh /target/publish/web-desktop/bundle /target/wait-list-door"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/wait-list-door/**"]
+timeout_secs = 1200
+default = false
+
+# A newcomer's tour of the page for a person to review: every screen a first-time visitor meets,
+# light, dark and at a phone's width, kept as pictures. It judges nothing on looks.
+[[check]]
+name = "page-tour"
+run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-desktop/bundle /target/page-tour"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle", "cli-x86_64"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
+timeout_secs = 1800
+default = false
+
 # Two people on the page, each in their own browser, against the Lounge's relay run directly as
 # page-boot runs it: the gate's people step, brief (chat, presence, a call and the names on its
 # card, the strip panned and a sideways swipe over Sheets among a few apps), so what broke between
@@ -4815,6 +4930,57 @@ env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO
 requires = ["arch=x86_64"]
 outputs = ["/target/page-two-people/**"]
 timeout_secs = 1200
+default = false
+
+# tilo.sh, whole, on one machine, and used end to end (os/containers/tilo-sh/check.sh): the
+# Lounge, front door and web entry images of this commit run under podman with the environment
+# production's manifests give them, a fresh startup identity approves a server key on the local
+# site in a headless Chromium, the visa run makes workspaces, mints a one-workspace MCP, has the
+# agent fill the form, a reviewer join by invitation and approve, and revoked keys refused; then
+# fresh visitors' entry into the Lounge is timed. What it found (pages, logs, report.json with
+# the bring-up and entry times) stays in /target/tilo-sh-local. The VM host is not in it: it needs
+# a privileged host with KVM, which a micro-VM step is not.
+[[check]]
+name = "tilo-sh-local"
+run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
+needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64"]
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1" }
+requires = ["arch=x86_64"]
+isolation = "vm"
+outputs = ["/target/tilo-sh-local/**"]
+timeout_secs = 3600
+default = false
+
+# The same stack with the VM hosts' own machines in it: tilo.sh's VM host (privileged, with its
+# loop-backed state disk and Firecracker) runs here, so a hosted workspace's Browser runs in the
+# workspace's VM, on the guest image this checkout built. A one-workspace key opens Browser and the
+# open is timed; the agent fills the visa test page with page actions and is asked nothing, the
+# person allows a submission and refuses another, a click on the submit button is held; a key
+# without the scope is asked about its first page actions; a reviewer joins by invitation and reads
+# the run in History; the page actions past the plans file's free ones are refused until the
+# account is added to it; and the VM is held to its proofs - every renderer sandboxed, the session
+# as the image's unprivileged browser user, its device key, and what the page costs in memory.
+# What it found stays in /target/tilo-sh-local-vm.
+#
+# Room: a workspace's VM at `default` is 8 GiB, which is all the guest t gives a step, so the stack
+# places it at `small` (4 GiB) here and the door, relay, web entry and VM host fit beside it. t
+# books a step's guest from what its runs measured (8 GiB for a micro-VM step), and a guest short
+# of it says so and is given more next time; a run that needs a bigger workspace VM raises
+# TILO_SH_HOSTED_VM_SIZE and says why.
+[[check]]
+name = "tilo-sh-local-vm"
+# tilo-enroll makes the VM host's member device, which the relay's root certifies, and tilo-approve
+# answers for the person the startup page made: the stack has no other copy of either outside a
+# release.
+run = "cargo build --locked -p tilo-relay --bin tilo-enroll --bin tilo-approve\ninstall -m 0755 \"$CARGO_TARGET_DIR/debug/tilo-enroll\" \"$CARGO_TARGET_DIR/debug/tilo-approve\" /target/\nbash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs xfsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
+needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest"]
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/publish/front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "200", TILO_SH_HOSTED_VM_SIZE = "small", TILO_SH_TILO_ENROLL = "/target/tilo-enroll", TILO_SH_TILO_APPROVE = "/target/tilo-approve" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/tilo-sh-local-vm/**"]
+timeout_secs = 5400
 default = false
 
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
@@ -4898,22 +5064,39 @@ requires = ["arch=any"]
 on = ["dispatch", "stable"]
 
 # The hosted VM host (os/containers/tilo-vm-host): the service that runs tilo.sh workspaces'
-# Linux programs in jailed Firecracker VMs, its jail helper, Firecracker and pasta. Built like
-# the registry server (this tree is its context, the pinned Firecracker release a named one),
-# tested in a micro-VM, and published on dispatch as dev-<commit> for the infra repository's
-# apps/tilo-sh-vm-host to pin, signed on stable.
+# Linux programs in jailed Firecracker VMs, its jail helper, Firecracker and pasta. Its programs
+# are t's own compile (vm-host-binaries, cached like every other build here), so the image is
+# packaging only: the pinned Fedora base, the runtime packages from the frozen RPM snapshot and
+# the pinned Firecracker release as a named context. Tested in a micro-VM, and published on
+# dispatch as dev-<commit> for the infra repository's apps/tilo-sh-vm-host to pin, signed on
+# stable.
+[[check]]
+name = "vm-host-binaries"
+run = "bash tools/ci/publish/server-binaries.sh vm-host /target/publish/vm-host/binaries"
+# One feature resolution for the three programs; the link is most of a server build, and the
+# compiler cache the builder gives this check is what keeps a one-crate change at a relink.
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/vm-host/binaries/**"]
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "image-vm-host"
-build = { containerfile = "os/containers/tilo-vm-host/Containerfile", context = ".", contexts = { github-assets = { check = "os-assets", path = "os/external-assets/cache" } } }
-needs = ["os-assets"]
+run = "bash tools/ci/publish/vm-host-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/vm-host/binaries /target/publish/vm-host"
+needs = ["vm-host-binaries", "rpm-snapshot", "image-rpms-x86_64", "os-assets"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+outputs = ["/target/publish/vm-host/image.oci.tar", "/target/publish/vm-host/digest", "/target/publish/vm-host/rpms-source"]
 timeout_secs = 7200
 default = false
 
 [[check]]
 name = "test-image-vm-host"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/containers/tilo-vm-host/test-image.sh /target/images/image-vm-host/image.oci.tar"
+run = "bash os/containers/tilo-vm-host/test-image.sh /target/publish/vm-host/image.oci.tar"
 needs = ["image-vm-host"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -4923,7 +5106,7 @@ default = false
 [[check]]
 name = "sign-vm-host"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/vm-host /target/publish/vm-host"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/vm-host /target/publish/vm-host"
 needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
 outputs = ["/target/publish/vm-host/payload.json", "/target/publish/vm-host/signature", "/target/publish/vm-host/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -4934,7 +5117,7 @@ on = ["stable"]
 [[check]]
 name = "publish-vm-host"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/vm-host\ncp /target/images/image-vm-host/image.oci.tar /target/images/image-vm-host/digest /target/publish/vm-host/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/vm-host /target/publish/vm-host 'dev:dev-{commit}' 'release:sha-{commit}'"
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/vm-host /target/publish/vm-host 'dev:dev-{commit}' 'release:sha-{commit}'"
 needs = ["image-vm-host", "test-image-vm-host", "signing-tools"]
 optional_needs = ["sign-vm-host"]
 outputs = ["/target/publish/vm-host/receipt.json"]
@@ -4943,22 +5126,55 @@ id_token = ["registry.tilo.so"]
 requires = ["arch=any"]
 on = ["dispatch", "stable"]
 
+# The local tilo.sh stack's VM host (os/containers/tilo-sh/vm-host.sh): the same image,
+# privileged with a loop-backed state disk, the placer that places workspaces' VMs on it, and
+# the guest image this checkout built instead of a release's. It is what a hosted workspace
+# needs under it locally: its Linux programs and its Browser run in its VM there. The check
+# boots it and holds it to a workspace's VM waking from that guest and running a program,
+# with its member device installed, and a clean `down`.
+[[check]]
+name = "tilo-sh-vm-host"
+run = "cargo build --locked -p tilo-relay --bin tilo-enroll\nbash os/containers/tilo-sh/test-vm-host.sh /target/publish/vm-host/image.oci.tar /target/publish/hosted-guest/image \"$CARGO_TARGET_DIR/debug/tilo-enroll\"\n"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all" }
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
+needs = ["image-vm-host", "image-hosted-guest"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+timeout_secs = 3600
+default = false
+
 # The front door of hosted Tilo (os/containers/tilo-front-door): the MCP endpoint behind
 # https://mcp.tilo.sh, with OAuth for agents and routing to the workspace's host. It is
-# configured entirely by its environment, so the deployment's values never enter the image;
-# it is built here, tested in a micro-VM against a real start, and published on dispatch as
-# dev-<commit> for the infra repository's deployment to pin, signed on stable.
+# configured entirely by its environment, so the deployment's values never enter the image. Its
+# program is t's own compile (front-door-binaries), so the image is packaging only: the pinned
+# Fedora base and the packages from the frozen RPM snapshot. Tested in a micro-VM against a real
+# start, and published on dispatch as dev-<commit> for the infra repository's deployment to pin,
+# signed on stable.
+[[check]]
+name = "front-door-binaries"
+run = "bash tools/ci/publish/server-binaries.sh front-door /target/publish/front-door/binaries"
+env = { CARGO_BUILD_JOBS = "8" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/front-door/binaries/**"]
+timeout_secs = 7200
+default = false
+
 [[check]]
 name = "image-front-door"
-build = { containerfile = "os/containers/tilo-front-door/Containerfile", context = "." }
+run = "bash tools/ci/publish/front-door-build.sh /target/publish/rpm-snapshot /target/publish/rpms/x86_64 /target/publish/front-door/binaries /target/publish/front-door"
+needs = ["front-door-binaries", "rpm-snapshot", "image-rpms-x86_64"]
+image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
 requires = ["arch=x86_64"]
+isolation = "vm"
+git = true
+outputs = ["/target/publish/front-door/image.oci.tar", "/target/publish/front-door/digest", "/target/publish/front-door/rpms-source"]
 timeout_secs = 7200
 default = false
 
 [[check]]
 name = "test-image-front-door"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"
-run = "bash os/containers/tilo-front-door/test-image.sh /target/images/image-front-door/image.oci.tar"
+run = "bash os/containers/tilo-front-door/test-image.sh /target/publish/front-door/image.oci.tar"
 needs = ["image-front-door"]
 requires = ["arch=x86_64"]
 isolation = "vm"
@@ -4968,7 +5184,7 @@ default = false
 [[check]]
 name = "sign-front-door"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/front-door\ncp /target/images/image-front-door/image.oci.tar /target/images/image-front-door/digest /target/publish/front-door/\nbash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/front-door /target/publish/front-door"
+run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/front-door /target/publish/front-door"
 needs = ["image-front-door", "test-image-front-door", "signing-tools"]
 outputs = ["/target/publish/front-door/payload.json", "/target/publish/front-door/signature", "/target/publish/front-door/dry-run.pub"]
 id_token = ["sts.amazonaws.com"]
@@ -4979,7 +5195,7 @@ on = ["stable", "dispatch"]
 [[check]]
 name = "publish-front-door"
 image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-run = "install -d /target/publish/front-door\ncp /target/images/image-front-door/image.oci.tar /target/images/image-front-door/digest /target/publish/front-door/\nbash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/front-door /target/publish/front-door 'dev:dev-{commit}' 'release:sha-{commit}'"
+run = "bash tools/ci/publish/oci-publish.sh any registry.tilo.so/tilo/front-door /target/publish/front-door 'dev:dev-{commit}' 'release:sha-{commit}'"
 needs = ["image-front-door", "test-image-front-door", "signing-tools"]
 optional_needs = ["sign-front-door"]
 outputs = ["/target/publish/front-door/receipt.json"]

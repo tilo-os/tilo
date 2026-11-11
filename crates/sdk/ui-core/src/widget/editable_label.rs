@@ -23,6 +23,7 @@ use winit::keyboard::{Key, NamedKey};
 use crate::presence::PresenceCtx;
 use crate::text_render::{FontChoice, TextRenderer, TextStyle};
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 #[path = "editable_label_component.rs"]
 mod component;
@@ -528,7 +529,7 @@ impl Widget for EditableLabel {
         if self.editing {
             self.input.apply_layout_external(self.rect);
             self.input
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             return;
         }
         let (shown, color) = if self.value.is_empty() {

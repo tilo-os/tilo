@@ -957,6 +957,11 @@ impl Checker<'_> {
                 {
                     return self.value_field(b, &key, name).unwrap_or_else(Ex::error);
                 }
+                // `.id`: the id the resource is, which every record has and no field holds — what
+                // a map of a notebook's notes is keyed by, as `{n}` in a text says it.
+                if name.name == "id" {
+                    return Ex::host(Imp::RefId, vec![b], Ty::Text);
+                }
                 // `host.Resource`: any resource at all, whose fields depend on what it is.
                 if key.app == crate::host::HOST_APP && key.name == crate::host::RESOURCE_TYPE_NAME {
                     self.err(

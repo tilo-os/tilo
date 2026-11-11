@@ -28,9 +28,9 @@ pub mod voice;
 #[cfg(feature = "relay")]
 pub mod carrier;
 
-/// What a native device presents to be admitted to a scope: the page builds
-/// one over iroh too, so it is here wherever a device can dial.
-#[cfg(any(feature = "relay", feature = "iroh"))]
+/// What a device presents to be admitted to a scope, over whichever carrier
+/// it dials.
+#[cfg(feature = "plane")]
 pub mod grant;
 
 /// The carrier over a direct iroh connection: the one every device dials,

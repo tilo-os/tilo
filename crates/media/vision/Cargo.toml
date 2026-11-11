@@ -12,6 +12,8 @@ tilo-model-client = { path = "../../agent/model-client", default-features = fals
 base64.workspace = true
 hex.workspace = true
 image = { workspace = true, features = ["jpeg"] }
+# What callers hand it: the toolkit codec's decoded pixels.
+tilo-image-codec = { path = "../../platform/tilo-image-codec" }
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

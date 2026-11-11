@@ -19,8 +19,8 @@ use ui::serde_json;
 
 use crate::PowerProfile;
 use crate::session::{
-    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NIGHT_LIGHT, NOTIFICATIONS, SLEEP,
-    SOUND, SYSTEM_UPDATE, VPN,
+    BATTERY, BLUETOOTH, CLIPBOARD, DEVICES, DISPLAYS, NETWORK, NIGHT_LIGHT, NOTIFICATIONS,
+    QUICK_SETTINGS, SLEEP, SOUND, SYSTEM_UPDATE, VPN,
 };
 use crate::state::QuickSettingsState;
 
@@ -170,6 +170,7 @@ pub(crate) fn land(readings: &Readings, resource: &str, text: &str) -> bool {
                 land_clipboard(state, copies);
             })
         }
+        QUICK_SETTINGS => parse::<Arrangement>(readings, resource, text, land_arrangement),
         DEVICES => parse::<crate::hosted::DevicesReading>(readings, resource, text, land_devices),
         NIGHT_LIGHT => parse::<NightLight>(readings, resource, text, land_night_light),
         _ => false,
@@ -307,6 +308,21 @@ fn land_notifications(state: &mut QuickSettingsState, centre: &crate::hosted::No
 
 fn land_clipboard(state: &mut QuickSettingsState, copies: &[crate::hosted::ClipboardCopy]) {
     state.clipboard = crate::hosted::clipboard_view(copies, ui::time::unix_now_ms());
+}
+
+/// Which controls the panel shows, in the person's order, as the session keeps them: a control
+/// this build does not know stays out of it.
+#[derive(Deserialize)]
+struct Arrangement {
+    controls: Vec<String>,
+}
+
+fn land_arrangement(state: &mut QuickSettingsState, arrangement: &Arrangement) {
+    state.arrangement.controls = arrangement
+        .controls
+        .iter()
+        .filter_map(|control| crate::faces::control_named(control))
+        .collect();
 }
 
 fn land_devices(state: &mut QuickSettingsState, reading: &crate::hosted::DevicesReading) {

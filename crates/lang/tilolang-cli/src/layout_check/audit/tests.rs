@@ -902,6 +902,73 @@ fn empty_surfaces(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
+fn unruled_bodies(root: &InspectionNode) -> Vec<Problem> {
+    inspect(root, (1280, 800), None, 1.0)
+        .into_iter()
+        .filter(|p| p.kind == Kind::UnruledBody)
+        .collect()
+}
+
+/// A page's own sections stand under a rule, apart from the writing the page holds: a heading
+/// set like the writing's own and standing no further from it reads as another line of the text.
+#[test]
+fn a_page_section_after_the_writing_stands_under_a_rule() {
+    let page = |between: Vec<InspectionNode>, wrapped: bool| {
+        let top = 400.0;
+        let section = holding(
+            node("Section", "section", [304.0, top, 320.0, 120.0], None),
+            vec![
+                node(
+                    HEADING,
+                    "heading",
+                    [304.0, top, 320.0, 29.0],
+                    Some(Role::Heading { level: 2 }),
+                ),
+                node("ListRow", "row", [304.0, top + 37.0, 320.0, 36.0], None),
+            ],
+        );
+        let mut blocks = vec![node(
+            "BlockEditor",
+            "writing",
+            [304.0, 120.0, 320.0, 250.0],
+            None,
+        )];
+        if wrapped {
+            blocks.push(holding(
+                node("Stack", "tail", [304.0, top - 24.0, 320.0, 144.0], None),
+                {
+                    let mut tail = between;
+                    tail.push(section);
+                    tail
+                },
+            ));
+        } else {
+            blocks.extend(between);
+            blocks.push(section);
+        }
+        holding(
+            node("Page", "page", [304.0, 100.0, 320.0, 600.0], None),
+            blocks,
+        )
+    };
+    let rule = || node("Divider", "rule", [304.0, 378.0, 320.0, 1.0], None);
+    let unruled = unruled_bodies(&page(Vec::new(), false));
+    assert_eq!(unruled.len(), 1, "{unruled:?}");
+    assert!(unruled[0].detail.contains("writing"), "{unruled:?}");
+    assert!(
+        unruled_bodies(&page(vec![rule()], false)).is_empty(),
+        "a rule between the writing and the page's own sections says where the writing ends"
+    );
+    assert!(
+        unruled_bodies(&page(vec![rule()], true)).is_empty(),
+        "the rule stands in the box the page's sections are gathered in"
+    );
+    assert!(
+        !unruled_bodies(&page(Vec::new(), true)).is_empty(),
+        "a box of the page's own sections with no rule over them changes nothing"
+    );
+}
+
 /// A card standing empty in a column paints a filled block with nothing in it, and what it
 /// promised is not there: a surface is drawn for what it holds, so one holding nothing — or
 /// only a placeholder that never filled — is no surface at all. What holds words, a control
@@ -1490,6 +1557,88 @@ fn a_header_row_under_the_bar_is_a_second_row() {
     );
 }
 
+/// Every column says what it shows, and offers what acts on it, in a row of its own at the
+/// window's top at every time: a window that declares that row and draws none at rest loses it
+/// until the person reaches for the window's bar.
+#[test]
+fn a_column_declares_its_header_and_draws_it_at_rest() {
+    let frame = |key: &'static str, x0: f64, header: Rect| ui::widget::ColumnFrame {
+        key,
+        column: Rect::new(x0, 0.0, x0 + 400.0, 800.0),
+        header,
+        rail: false,
+    };
+    let row = |x0: f64| Rect::new(x0, 0.0, x0 + 400.0, 44.0);
+    let at_rest = |declared: &[&str], frames: &[ui::widget::ColumnFrame]| {
+        super::column_headers_at_rest(declared, frames, 1280.0)
+    };
+    assert!(
+        at_rest(&[], &[frame("overview", 220.0, Rect::ZERO)]).is_empty(),
+        "a column the app gives no header is the app's own, drawn or not"
+    );
+    assert!(
+        at_rest(&["overview"], &[frame("overview", 220.0, row(220.0))]).is_empty(),
+        "the row that names the column stands at rest"
+    );
+    assert!(
+        at_rest(&["content"], &[frame("content", 1280.0, Rect::ZERO)]).is_empty(),
+        "a pushed screen behind the one in front is not on the window"
+    );
+    let rail = ui::widget::ColumnFrame {
+        rail: true,
+        ..frame("sidebar", 0.0, Rect::ZERO)
+    };
+    assert!(
+        at_rest(&["sidebar"], &[rail]).is_empty(),
+        "a rail says what it holds by its icons"
+    );
+    let found = at_rest(
+        &["sidebar", "overview"],
+        &[
+            frame("sidebar", 0.0, row(0.0)),
+            frame("overview", 400.0, Rect::ZERO),
+        ],
+    );
+    assert_eq!(found.len(), 1, "a declared header that only the bar shows");
+    assert_eq!(found[0].kind, Kind::HeaderOnReveal);
+    assert!(
+        found[0].detail.contains("overview") && found[0].detail.contains("400px"),
+        "the finding names the column and how wide it stands: {}",
+        found[0].detail
+    );
+}
+
+/// An action stands once: in its column's header row, never again in the window's bar.
+#[test]
+fn an_action_the_window_offers_is_never_offered_again_by_its_bar() {
+    let control = |name: &str, furniture: bool| ui::window_toolbar::BarControl {
+        name: name.to_owned(),
+        furniture,
+        ..ui::window_toolbar::BarControl::new("action", format!("bar.{name}"), Rect::ZERO)
+    };
+    let layout = ui::window_toolbar::BarLayout {
+        spare: 0.0,
+        controls: vec![
+            control("Compose", false),
+            control("Close", true),
+            ui::window_toolbar::BarControl {
+                name: "Close".to_owned(),
+                ..ui::window_toolbar::BarControl::new("close", "window-control-close", Rect::ZERO)
+            },
+        ],
+        labels: Vec::new(),
+    };
+    let buttons = vec!["Compose".to_owned(), "Close".to_owned()];
+    let found = super::offered_twice(&layout, &buttons);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(found[0].kind, Kind::OfferedTwice);
+    assert!(found[0].detail.contains("Compose"));
+    assert!(
+        super::offered_twice(&layout, &["Reply".to_owned()]).is_empty(),
+        "an action the window offers nowhere else stands in the bar alone"
+    );
+}
+
 /// One bar shows each control once: the same action under two ids, or two controls one glyph
 /// apart, is one control too many.
 #[test]
@@ -1698,6 +1847,33 @@ fn a_lift_reaching_past_what_its_row_shows_is_a_selection_bleed() {
     assert_eq!(reach_past(whole), None, "a row showing everything it has");
     let empty = lift([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0]);
     assert_eq!(reach_past(empty), None, "no lift at all");
+}
+
+/// A chevron folds the words of its row, so it centres on the line they stand on: the step in
+/// front of them is the chevron's column, not a second baseline beside it.
+#[test]
+fn a_chevron_centres_on_the_line_of_the_row_it_folds() {
+    use super::text::chevron_off_line;
+    let chevron = |rect: [f64; 4], line: [f64; 4]| ui::widget::virtual_list::RowChevron {
+        rect: ui::kurbo::Rect::new(rect[0], rect[1], rect[2], rect[3]),
+        line: ui::kurbo::Rect::new(line[0], line[1], line[2], line[3]),
+    };
+    // A row's line, and the chevron in the step in front of its words.
+    let line = [46.0, 56.0, 366.0, 84.0];
+    assert_eq!(
+        chevron_off_line(chevron([24.0, 63.0, 46.0, 77.0], line)),
+        None,
+        "one line: the chevron and the words share a centre"
+    );
+    // A chevron riding the taller slot a finger's row takes: 10 px under the words.
+    let off = chevron_off_line(chevron([24.0, 73.0, 46.0, 87.0], line))
+        .expect("a chevron below its line");
+    assert!((off - 10.0).abs() < 0.5, "{off}");
+    // A row with no line of its own (nothing laid out) says nothing.
+    assert_eq!(
+        chevron_off_line(chevron([0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0])),
+        None
+    );
 }
 
 /// The one main action a window declares stands in its bar as the primary button: a bar
@@ -2243,4 +2419,89 @@ fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
         heading_rooms(&with(48.0, 48.0), &theme, Some(48.0)).is_empty(),
         "a finger's target is the one room a band grows by"
     );
+}
+
+/// A page's body stands under the text a control beside its heading leads to only where the
+/// column has the room: on a phone's screen it starts on the gutter, and a section standing a
+/// control's width in is what a person sees the page lose on every line.
+#[test]
+fn a_page_on_a_phone_screen_starts_its_body_on_the_gutter() {
+    let theme = ui::Theme::dark();
+    let page = |width: f64, section_x: f64, section_width: f64| {
+        let mut page = node_of("Page", "page", [0.0, 56.0, width, 700.0]);
+        let mut stack = node_of("Stack", "blocks", [24.0, 80.0, width - 48.0, 600.0]);
+        stack.children.push(node_of(
+            "Section",
+            "section",
+            [section_x, 200.0, section_width, 85.0],
+        ));
+        page.children.push(stack);
+        page
+    };
+    // A control's cell and the gap after it, under a fine pointer.
+    let lead = 32.0 + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
+    let phone = indented_bodies(&page(390.0, 24.0 + lead, 302.0), &theme, None);
+    assert_eq!(phone.len(), 1, "{phone:?}");
+    assert_eq!(phone[0].kind, Kind::IndentedBody);
+    assert!(
+        phone[0].detail.contains("starts its body"),
+        "{}",
+        phone[0].detail
+    );
+    assert!(
+        indented_bodies(&page(390.0, 24.0, 342.0), &theme, None).is_empty(),
+        "a body on the gutter loses nothing"
+    );
+    assert!(
+        indented_bodies(&page(900.0, 24.0 + lead, 800.0), &theme, None).is_empty(),
+        "a column has the room the indent takes"
+    );
+    // A cell a grid places far across the page is no body indent, however narrow it is.
+    let mut wide = page(1280.0, 24.0, 1224.0);
+    wide.children[0]
+        .children
+        .push(node_of("Section", "cell", [869.0, 200.0, 371.0, 85.0]));
+    assert!(
+        indented_bodies(&wide, &theme, None).is_empty(),
+        "a grid's cell stands where its column does"
+    );
+}
+
+/// A presence name tag covers no word of the window, and one actor wears one tag.
+#[test]
+fn a_presence_tag_covers_no_word_and_one_actor_wears_one() {
+    let title = || {
+        let mut title = node(
+            "Text",
+            "title",
+            [40.0, 10.0, 120.0, 20.0],
+            Some(Role::StaticText),
+        );
+        title.semantics = title
+            .semantics
+            .map(|access| access.with_name("Buy oat milk"));
+        title
+    };
+    let tag = |at: [f64; 4], index: usize| {
+        let mut tag = node_of(ui::presence::TAG_WIDGET, "presence-tag-agent:helper", at);
+        tag.path = format!("presence-tag-agent:helper-{index}");
+        tag
+    };
+    let mut window = node_of("Window", "window", [0.0, 0.0, 400.0, 200.0]);
+    window.children = vec![title(), tag([40.0, 40.0, 80.0, 18.0], 0)];
+    let kinds = |root: &InspectionNode| {
+        inspect(root, (400, 200), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::PresenceTag)
+            .count()
+    };
+    assert_eq!(kinds(&window), 0, "a tag clear of the words is fine");
+    window.children = vec![title(), tag([60.0, 14.0, 80.0, 18.0], 0)];
+    assert_eq!(kinds(&window), 1, "a tag over the title is a fault");
+    window.children = vec![
+        title(),
+        tag([40.0, 40.0, 80.0, 18.0], 0),
+        tag([40.0, 80.0, 80.0, 18.0], 1),
+    ];
+    assert_eq!(kinds(&window), 1, "a second tag of one actor is a fault");
 }

@@ -12,6 +12,7 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use ui::image_codec::{DecodedImage, Format};
 
 use host_fs::attributes as xattr;
 use ui::framework::Fixture;
@@ -370,11 +371,11 @@ fn write_previews(dir: &Path) -> std::io::Result<PathBuf> {
     make_dir(dir)?;
     make_dir(&dir.join("Camera Roll"))?;
     for (name, width, height, kind, format) in [
-        ("sunset.png", 640, 480, 0, image::ImageFormat::Png),
-        ("harbour.jpg", 640, 480, 1, image::ImageFormat::Jpeg),
-        ("forest-path.png", 480, 640, 2, image::ImageFormat::Png),
-        ("bloom.jpg", 600, 600, 3, image::ImageFormat::Jpeg),
-        ("study.png", 720, 480, 4, image::ImageFormat::Png),
+        ("sunset.png", 640, 480, 0, Format::Png),
+        ("harbour.jpg", 640, 480, 1, Format::Jpeg),
+        ("forest-path.png", 480, 640, 2, Format::Png),
+        ("bloom.jpg", 600, 600, 3, Format::Jpeg),
+        ("study.png", 720, 480, 4, Format::Png),
     ] {
         write_file(
             &dir.join(name),
@@ -434,24 +435,25 @@ fn write_host_previews(workspace: &Path) -> std::io::Result<PathBuf> {
     Ok(workspace.to_path_buf())
 }
 
-/// `image` as a PNG, or as a JPEG (at the `image` crate's default quality)
-/// when `format` asks for one, through the runtime's encoders.
-fn encode_image(image: &image::RgbaImage, format: image::ImageFormat) -> Vec<u8> {
-    let (width, height) = image.dimensions();
-    let encoded = if format == image::ImageFormat::Jpeg {
-        ui::jpeg::encode_rgba8_opaque(width, height, image.as_raw(), 75)
+/// `image` as a PNG, or as a JPEG (at quality 75) when `format` asks for
+/// one, through the runtime's encoders.
+fn encode_image(image: &DecodedImage, format: Format) -> Vec<u8> {
+    let (width, height) = (image.width, image.height);
+    let encoded = if format == Format::Jpeg {
+        ui::jpeg::encode_rgba8_opaque(width, height, &image.rgba, 75)
     } else {
-        ui::png::encode_rgba8(width, height, image.as_raw())
+        ui::png::encode_rgba8(width, height, &image.rgba)
     };
     encoded.unwrap_or_default()
 }
 
 /// A distinct gradient or pattern per `kind`, so previews read as varied
 /// images rather than flat swatches.
-fn gradient_image(width: u32, height: u32, kind: u8) -> image::RgbaImage {
+fn gradient_image(width: u32, height: u32, kind: u8) -> DecodedImage {
     let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t.clamp(0.0, 1.0);
-    let mut img = image::RgbaImage::new(width, height);
-    for (x, y, px) in img.enumerate_pixels_mut() {
+    let mut img = DecodedImage::filled(width, height, [0, 0, 0, 255]);
+    let pixels = (0..height).flat_map(|y| (0..width).map(move |x| (x, y)));
+    for ((x, y), px) in pixels.zip(img.rgba.chunks_exact_mut(4)) {
         let fx = x as f32 / width as f32;
         let fy = y as f32 / height as f32;
         let (r, g, b) = match kind % 5 {
@@ -488,16 +490,13 @@ fn gradient_image(width: u32, height: u32, kind: u8) -> image::RgbaImage {
                 (c, c * 0.98, c * 0.92)
             }
         };
-        *px = image::Rgba([r as u8, g as u8, b as u8, 255]);
+        px.copy_from_slice(&[r as u8, g as u8, b as u8, 255]);
     }
     img
 }
 
 fn gradient_png(width: u32, height: u32, kind: u8) -> Vec<u8> {
-    encode_image(
-        &gradient_image(width, height, kind),
-        image::ImageFormat::Png,
-    )
+    encode_image(&gradient_image(width, height, kind), Format::Png)
 }
 
 /// A valid one-page PDF (a header band, a title, a framed body) with correct

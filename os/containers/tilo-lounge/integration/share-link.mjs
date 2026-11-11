@@ -81,7 +81,7 @@ const person = async (name, {width, height, scale = 1, mobile = false}) => {
   // Someone who has been here before: a browser new to the site opens on the
   // first screen instead of the Lounge.
   await tab.send('Page.addScriptToEvaluateOnNewDocument',
-    {source: "try { localStorage.setItem('tilo-first-run', '1'); } catch {}"});
+    {source: "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}"});
   pages.push({name, tab});
   return tab;
 };

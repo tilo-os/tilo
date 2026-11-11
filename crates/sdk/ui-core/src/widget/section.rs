@@ -19,6 +19,7 @@
 //!
 //! [`ListRow`]: crate::widget::ListRow
 
+use crate::widget::DrawChild;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -1523,7 +1524,7 @@ impl Widget for Section {
                 .as_deref()
                 .and_then(|shifts| shifts.get(index).copied())
                 .unwrap_or(0.0);
-            child.draw(
+            child.draw_child(
                 scene,
                 transform * Affine::translate((0.0, dy)),
                 text,

@@ -483,7 +483,7 @@ fn a_bot_without_a_write_grant_is_offered_only_reads() {
 }
 
 #[test]
-fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
+fn a_bot_reads_a_post_made_after_it_opened_the_record_through_the_record_door() {
     let mut page = common::open("so.tilo.chat", "ada", ReplicaActor::Owner, Seed::New).unwrap();
     let mut doc = page.read(Clone::clone).unwrap();
     common::add_channel(&mut doc, "ada", "general", None);
@@ -545,29 +545,43 @@ fn a_bot_reads_a_channels_latest_post_made_after_it_opened_the_record() {
     for (record, mutation) in &started {
         bot.apply_record(record, mutation).unwrap();
     }
-    let read = bot
-        .survey()
-        .into_iter()
-        .find(|action| action.address.action == "read-workspace")
-        .expect("a bot is offered Chat's read");
-    // A post names its channel, so a bot finds the message among the
-    // channel's latest.
-    let arguments = serde_json::json!({ "channel": channel });
-    let output = bot
-        .invoke_with(
-            None,
-            None,
-            &read.address,
-            arguments.as_object().unwrap(),
-            false,
-        )
-        .unwrap();
-    let value = output.value.unwrap();
-    assert_eq!(
-        value.pointer("/messages/0/value/text"),
-        Some(&serde_json::json!("hello")),
-        "{value:#}"
+    // The bot's host reads what the bot holds through the record door: the
+    // chain joined, or its head, the newest part alone.
+    let held = tilo_actions::remote::HeldCopies(
+        std::iter::once(bot.record_id().clone())
+            .chain(bot.records_beside())
+            .filter_map(|record| {
+                let bytes = bot.read_record(&record, |doc| doc.clone().save())?;
+                Some((record.route().to_owned(), bytes))
+            })
+            .collect(),
     );
+    let chain = chat::parts::chain().route().to_owned();
+    for (record, joined) in [
+        (chain.clone(), true),
+        (tilo_actions::record_sync::chain_head(&chain), false),
+    ] {
+        let ask = tilo_actions::remote::RecordAsk {
+            address: tilo_actions::remote::RecordAddress {
+                app: "so.tilo.chat".into(),
+                record,
+            },
+            joined,
+        };
+        let read = held
+            .readable(&tilo_actions::remote::Caller::local_agent("bot:b1"), &[ask])
+            .unwrap();
+        let records = read["records"].as_array().unwrap();
+        assert_eq!(records.len(), 1, "{read:#}");
+        assert_eq!(records[0]["record"], part.route(), "{read:#}");
+        let messages = records[0]["value"]["messages"].as_object().unwrap();
+        assert!(
+            messages
+                .values()
+                .any(|message| message["v"]["text"] == "hello"),
+            "{read:#}"
+        );
+    }
 }
 
 #[test]

@@ -90,10 +90,8 @@ impl AppLists {
         // The entries Tilo keeps for the person's downloaded programs are search's own source
         // (`providers::downloaded`): it lists them with what the registry knows of them (their
         // kind, and a file that went away), which a host app row says nothing of.
-        let host_apps = scan
-            .entries
-            .iter()
-            .filter(|entry| machine_entry(entry, &tilo_apps))
+        let host_apps = machine_apps(&scan.entries, &tilo_apps)
+            .into_iter()
             .map(|entry| HostAppEntry {
                 desktop_id: entry.id.clone(),
                 name: entry.name.clone(),
@@ -352,6 +350,33 @@ fn machine_entry(
         && !tilo_apps.contains(&entry.id)
 }
 
+/// The machine's apps, one row each. Entries that share an icon and whose names are another's
+/// with words after it are that app's variants — `Foot Client` and `Foot Server` beside `Foot` —
+/// and are listed once, as the app.
+fn machine_apps<'a>(
+    entries: &'a [desktop_entry::DesktopEntry],
+    tilo_apps: &app_catalogue::Installed,
+) -> Vec<&'a desktop_entry::DesktopEntry> {
+    let entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| machine_entry(entry, tilo_apps))
+        .collect();
+    let variant_of = |entry: &desktop_entry::DesktopEntry, app: &desktop_entry::DesktopEntry| {
+        entry.icon.is_some()
+            && entry.icon == app.icon
+            && entry
+                .name
+                .to_lowercase()
+                .strip_prefix(&app.name.to_lowercase())
+                .is_some_and(|rest| rest.starts_with(' '))
+    };
+    entries
+        .iter()
+        .copied()
+        .filter(|entry| !entries.iter().any(|app| variant_of(entry, app)))
+        .collect()
+}
+
 /// Each app's declared reach of the action door, from its signed manifest: the ceiling the broker
 /// admits its calls against.
 fn declared(
@@ -527,6 +552,46 @@ mod tests {
         assert!(!machine_entry(&entry("so.tilo.notes"), &tilo_apps));
         // Any other app's entry is one of the machine's.
         assert!(machine_entry(&entry("org.gnome.notes"), &tilo_apps));
+    }
+
+    #[test]
+    fn an_apps_variants_are_listed_once_as_the_app() {
+        let parse = |id: &str, name: &str, icon: &str| {
+            desktop_entry::entry::parse(
+                &format!(
+                    "[Desktop Entry]\nType=Application\nName={name}\nIcon={icon}\nExec={id}\n"
+                ),
+                id,
+                std::path::Path::new("/usr/share/applications/x.desktop"),
+                &[],
+            )
+            .expect("a desktop entry")
+        };
+        let entries = [
+            parse("foot", "Foot", "foot"),
+            parse("footclient", "Foot Client", "foot"),
+            parse("foot-server", "Foot Server", "foot"),
+            parse(
+                "libreoffice-startcenter",
+                "LibreOffice",
+                "libreoffice-startcenter",
+            ),
+            parse(
+                "libreoffice-writer",
+                "LibreOffice Writer",
+                "libreoffice-writer",
+            ),
+            parse("footnotes", "Footnotes", "foot"),
+        ];
+        let listed: Vec<_> = machine_apps(&entries, &app_catalogue::Installed::from_ids([""; 0]))
+            .into_iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(
+            listed,
+            ["Foot", "LibreOffice", "LibreOffice Writer", "Footnotes"],
+            "a variant shares the app's icon and extends its name; other apps stay"
+        );
     }
 
     /// The machine's own apps are named in the person's language, not in the machine's: on a German

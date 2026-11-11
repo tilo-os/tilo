@@ -191,3 +191,4 @@ git-show-commit-file = Show this file's changes in the commit
 # Diff controls in the window bar
 git-whitespace-name = Show whitespace
 git-wrap-name = Wrap long lines
+git-window-name = Git

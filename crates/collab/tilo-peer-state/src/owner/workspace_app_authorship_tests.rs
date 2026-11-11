@@ -1,4 +1,4 @@
-use crate::owner::application_record::tests::fixture;
+use crate::owner::fixture::fixture;
 use crate::owner::{WorkspaceId, testing};
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use crate::workspace_membership::WorkspaceMembershipCommand;

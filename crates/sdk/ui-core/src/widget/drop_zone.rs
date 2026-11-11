@@ -26,6 +26,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{Button, TaffyTreeExt, Widget};
 
 /// The resolved geometry of a drop zone in `theme`.
@@ -552,7 +553,7 @@ impl Widget for DropZone {
             action_h,
         );
         if let Some(button) = &mut self.action {
-            button.draw(scene, transform, text_renderer, theme, presence);
+            button.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

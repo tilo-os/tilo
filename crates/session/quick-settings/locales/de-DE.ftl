@@ -1,24 +1,8 @@
 # Quick Settings and the device status it shares with the top bar.
 display-confirm-applying = Wird angewendet …
-display-identify-builtin = Eingebauter Bildschirm
-host-qs-change-failed-airplane = Flugmodus konnte nicht geändert werden
-host-qs-change-failed-bluetooth = Bluetooth konnte nicht geändert werden
-host-qs-change-failed-mobile = Mobilfunk konnte nicht geändert werden
-host-qs-change-failed-power = Energiemodus konnte nicht geändert werden
-host-qs-change-failed-state-restored = Das Bedienelement zeigt wieder den aktuellen Zustand des Geräts.
-host-qs-change-failed-volume = Lautstärke konnte nicht geändert werden
-host-qs-change-failed-wifi = WLAN konnte nicht geändert werden
-host-qs-change-failed-wired = Kabelnetzwerk konnte nicht geändert werden
-host-wifi-connect-failed-body = Das Netzwerk hat die Verbindung nicht angenommen. Versuche es in den WLAN-Einstellungen erneut.
-host-wifi-connect-failed-title = Verbindung mit { $ssid } fehlgeschlagen
-host-wifi-connected-open = Mit dem offenen Netzwerk verbunden.
-host-wifi-connected-saved = Verbunden. Dieses gespeicherte Netzwerk wird automatisch wieder verbunden.
-host-wifi-connected-title = Mit { $ssid } verbunden
-host-wifi-join-check-password = Verbindung fehlgeschlagen. Prüfe das Passwort.
 power-lock = Sperren
 qs-account = Konto
 qs-account-description = Dein Konto und wer angemeldet ist
-qs-action-failed-refreshing = { $error }. Der aktuelle Gerätezustand wird aktualisiert.
 qs-airplane-mode = Flugmodus
 qs-awake-app = { $app } hält den Bildschirm an
 qs-awake-apps = { $count } Apps halten den Bildschirm an
@@ -37,9 +21,7 @@ qs-battery-time-to-full = { $hours ->
    *[other] Voll in { $hours } h { $minutes } min
 }
 qs-bluetooth = Bluetooth
-qs-bluetooth-connect-failed = { $device } konnte nicht verbunden werden
 qs-bluetooth-details = Bluetooth-Geräte
-qs-bluetooth-disconnect-failed = { $device } konnte nicht getrennt werden
 qs-bluetooth-empty = Keine Geräte gefunden
 qs-bluetooth-forget = Gerät entfernen
 qs-bluetooth-in-reach = In Reichweite
@@ -135,7 +117,6 @@ qs-turning-on = Wird eingeschaltet …
 qs-volume = Lautstärke
 qs-volume-mute = Stummschalten
 qs-vpn = VPN
-qs-vpn-change-failed = { $profile } konnte nicht geändert werden
 qs-vpn-details = VPN-Profile
 qs-vpn-empty = Keine VPN-Profile. Füge eines in den Einstellungen hinzu.
 qs-vpn-settings = VPN-Einstellungen
@@ -149,14 +130,11 @@ qs-wifi-hidden-caption = Einem Netzwerk beitreten, das seinen Namen nicht sendet
 qs-wifi-hidden-name = Netzwerkname
 qs-wifi-autoconnect = Diesem Netzwerk automatisch beitreten
 qs-wifi-off = WLAN ist aus
-qs-wifi-problem-failed = WLAN ließ sich nicht ändern
 qs-wifi-problem-hardware-switch = Mit dem Hardwareschalter aus
-qs-wifi-problem-stayed-off = Ließ sich nicht einschalten
 qs-wifi-scan-failed = Netzwerksuche fehlgeschlagen
 qs-wifi-scanning = Netzwerke werden gesucht …
 qs-wifi-settings = WLAN-Einstellungen
 qs-network-settings = Netzwerkeinstellungen
-qs-wifi-turn-on = WLAN einschalten
 qs-wired-network = Kabelnetzwerk
 
 # The panel as an app: its pages, the clipboard's search, the password

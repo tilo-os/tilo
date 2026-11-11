@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "@tilo/sdk";
-import type * as tilo from "@tilo/sdk";
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
 
 /** One of "sha1", "sha256", "sha512". */
 export type Algorithm = "sha1" | "sha256" | "sha512";

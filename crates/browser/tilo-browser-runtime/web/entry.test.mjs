@@ -4,7 +4,7 @@ import {WORKSPACE_DOCUMENT_WAIT_MS, boot, chosenRoute, configureFeedback, initia
 import {UNAVAILABLE, openTarget, untilSnapshot, untilViewable, viewInvocation} from './open-target.mjs';
 import {runtimeFake} from './runtime-surface.mjs';
 
-/** The runtime's way in (tilo-session-host's `way_in`, tested there),
+/** The runtime's way in (tilo-session-client's `way_in`, tested there),
  * answering the ways this page's scenario takes, in turn and again for each
  * entry. */
 const entering = (...ways) => {
@@ -527,6 +527,27 @@ test('the home workspace’s app in front is fetched once admitted, never before
   };
   assert.deepEqual((await run(async () => ({workspace: 'r1'}))).slice(0, 2), ['door', 'prefetch so.tilo.chat']);
   assert.deepEqual(await run(async () => { throw new Error('closed'); }), ['door', 'closed']);
+});
+
+test('a desktop’s first-layout code is asked for before the door, the app’s only once admitted', async () => {
+  const home = {name: 'Commons', host: {origin: 'https://rooms.example'}, admission: 'https://rooms.example/', app: 'so.tilo.chat'};
+  const order = [];
+  const window = {
+    __tiloLinkSecrets: Object.freeze({}),
+    location: {href: 'https://rooms.example/open/', hash: ''},
+    history: {state: null, replaceState() {}, pushState() {}},
+    addEventListener() {}, removeEventListener() {},
+  };
+  const deps = {
+    loadRuntime: async () => runtimeFake({...entering('door')}),
+    prefetchDesktop: () => order.push('prefetch desktop'),
+    prefetchApplication: app => order.push(`prefetch ${app}`),
+    fetch: async () => ({ok: true, json: async () => ({home})}),
+    enterViaHost: async () => { order.push('door'); return {workspace: 'r1'}; },
+  };
+  void boot({mode: 'desktop', window, deps}).catch(error => order.push(error.message));
+  await new Promise(resolve => setTimeout(resolve, 10));
+  assert.deepEqual(order.slice(0, 3), ['prefetch desktop', 'door', 'prefetch so.tilo.chat']);
 });
 
 test('only a bare desktop entry under a home reopens the workspace the person last chose', () => {

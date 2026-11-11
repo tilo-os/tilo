@@ -11,8 +11,11 @@
 //! selection, scroll) must never go through an action; only shared CRDT
 //! mutations do.
 
+use std::sync::Mutex;
+
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use uuid::timestamp::{Timestamp, context::ContextV7};
 
 /// The CRDT document an action mutates — aliased so call sites read as
 /// "mutate the Doc"; exactly [`automerge::AutoCommit`].
@@ -63,10 +66,27 @@ impl OperationKind {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct ActionId(pub Uuid);
 
+/// The counter that keeps a minted id after every id minted here before it:
+/// one millisecond never goes backwards, and within a millisecond the
+/// counter orders them.
+static MINTED: Mutex<ContextV7> = Mutex::new(ContextV7::new());
+
 impl ActionId {
-    /// Mint a fresh random id.
+    /// Mint a fresh id, ordered after every id this device minted before it.
+    ///
+    /// Its bytes are the actor of the action's change, and a document keeps its actors sorted:
+    /// an actor that sorts before others renumbers the actor of every op the document holds.
+    /// A time-ordered id (`UUIDv7`: milliseconds, then random bits) sorts after the actors a
+    /// document already has, so taking an action's change in costs what the change holds.
+    ///
+    /// The time is [`tilo_clock`]'s, which is the reading this process was given: an app model
+    /// runs as a WebAssembly module with no clock of its own, and what it stamps an action's
+    /// change with is the host's time.
     pub fn new() -> Self {
-        Self(Uuid::new_v4())
+        let now_ms = tilo_clock::unix_now_ms();
+        let seconds = now_ms / 1_000;
+        let nanos = u32::try_from(now_ms % 1_000).map_or(0, |rest| rest.saturating_mul(1_000_000));
+        Self(Uuid::new_v7(Timestamp::from_unix(&MINTED, seconds, nanos)))
     }
 
     /// The 16 raw bytes, used verbatim as the Automerge actor id.
@@ -312,6 +332,31 @@ impl EncodedAction {
             type_id: type_id.into(),
             payload: serde_json::to_vec(payload).map_err(ActionError::Encode)?,
         })
+    }
+}
+
+#[cfg(test)]
+mod action_id_tests {
+    use super::ActionId;
+    use tilo_clock::{Duration, UNIX_EPOCH};
+
+    /// The id's time is the clock this process was given, never `std`'s own: an app's model runs
+    /// as a WebAssembly module with no `std` clock to ask, and mints its ids under the host's
+    /// pinned reading.
+    #[test]
+    fn an_id_is_minted_at_the_time_the_process_holds() {
+        let at = UNIX_EPOCH + Duration::from_millis(1_700_000_000_123);
+        let (first, second) =
+            tilo_clock::testing::with_wall(at, || (ActionId::new(), ActionId::new()));
+        for id in [first, second] {
+            let (seconds, nanos) = id.0.get_timestamp().expect("a version 7 id").to_unix();
+            assert_eq!(
+                seconds * 1_000 + u64::from(nanos) / 1_000_000,
+                1_700_000_000_123,
+                "the id carries the time the process holds"
+            );
+        }
+        assert!(first.0 < second.0, "an id sorts after the one before it");
     }
 }
 

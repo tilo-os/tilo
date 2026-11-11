@@ -71,6 +71,9 @@ impl BlockEditor {
         // What an invocation writes here glows in its actor's colour, exactly
         // the characters it wrote, with its caret where they end: the marks a
         // person's typing leaves, from an action rather than from keys.
+        // Whose action caret stands on this line: the one tag it wears says who and what, so their
+        // own caret here draws no second one.
+        let mut acting: Vec<crate::permissions::UserId> = Vec::new();
         for interaction in ctx.presence.visible_interactions(now) {
             let Some((start, end)) = written_in(&interaction, &b.id, line.value()) else {
                 continue;
@@ -79,6 +82,7 @@ impl BlockEditor {
                 continue;
             };
             let user = crate::permissions::UserId(interaction.actor.id.clone());
+            acting.push(user.clone());
             let rect = line.selection_rect(ctx.theme, start, end);
             let p0 = transformed(ctx.transform, Point::new(rect.x0, rect.y0));
             let p1 = transformed(ctx.transform, Point::new(rect.x1, rect.y1));
@@ -91,6 +95,7 @@ impl BlockEditor {
             // The characters are the mark: the activity rail leaves this
             // invocation out rather than naming it a second time.
             ctx.presence.note_shown(interaction.invocation);
+            ctx.presence.note_drawn(interaction.invocation, now);
             let name = ctx.presence.interaction_status_label(&interaction);
             // The chip says what the invocation is doing here, and so does
             // what a reader is told of its caret.
@@ -117,7 +122,7 @@ impl BlockEditor {
                 .blocks
                 .first()
                 .map_or(brect.y0, |first| first.line.get_rect().y0);
-            for (user, byte_pos) in list {
+            for (user, byte_pos) in list.iter().filter(|(user, _)| !acting.contains(user)) {
                 let name = ctx.presence.display_name(user);
                 ctx.presence.draw_peer_caret_labeled_in(
                     ctx.scene,

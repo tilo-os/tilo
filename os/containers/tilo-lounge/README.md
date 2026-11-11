@@ -18,11 +18,20 @@ the workspace through the ingress that forwards the workspace's origin to
 `9780`. The process serves the routes on `8790` and the relay on `9780`, both
 plain HTTP behind that ingress, which ends TLS.
 
-The pages' live plane (live cursors, presence, window streams) is reached over
-iroh, which a page reaches through a packet relay over websockets: the process
-runs its own on `TILO_ROOMS_LIVE`, and pages dial it. An ingress that publishes
-it on its own host names that origin in `TILO_ROOMS_LIVE_ORIGIN`, so the
-address it forwards to never has to be the HTTPS origin's host.
+Pages reach the host over WebTransport, the browser's own transport: their
+session, certification and the live plane (live cursors, presence, window
+streams). It is HTTP/3 on UDP, which no HTTPS ingress carries, so the process
+listens on `TILO_ROOMS_LINK` and pages open their sessions at
+`TILO_ROOMS_LINK_ORIGIN`, a name that leads straight to that UDP port. The
+host presents its TLS certificate there, so it must be valid for that name;
+with the development certificate, pages pin it by the hash the host
+publishes instead.
+
+Native devices reach the host over iroh, through a packet relay where they
+have no direct path: the process runs its own on `TILO_ROOMS_LIVE`. An
+ingress that publishes it on its own host names that origin in
+`TILO_ROOMS_LIVE_ORIGIN`, so the address it forwards to never has to be the
+HTTPS origin's host.
 
 ## The deployment's environment
 
@@ -56,7 +65,11 @@ Optional, with these defaults:
 | `TILO_ROOMS_SITE_ORIGINS` | none | comma-separated origins besides the relay's that may join |
 | `TILO_ROOMS_RELAY_PLAIN` | `0.0.0.0:9780` | the listener the ingress forwards the workspace to |
 | `TILO_ROOMS_LIVE` | `0.0.0.0:9782` | the address the packet relay binds, as the ingress forwards to it |
-| `TILO_ROOMS_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin pages dial the packet relay at |
+| `TILO_ROOMS_LIVE_ORIGIN` | the address it bound | the `https://host[:port]` origin devices dial the packet relay at |
+| `TILO_ROOMS_TLS_CERT` | none | a publicly trusted certificate chain (PEM) the host's HTTPS listener presents instead of its own development one; read again when it changes |
+| `TILO_ROOMS_TLS_KEY` | none | its private key (PEM); set with `TILO_ROOMS_TLS_CERT` |
+| `TILO_ROOMS_LINK` | beside `TILO_ROOMS_WEB` | the UDP address the WebTransport listener binds, how pages reach the host |
+| `TILO_ROOMS_LINK_ORIGIN` | the public origin | the `https://host:port` origin pages open WebTransport sessions at; set with `TILO_ROOMS_LINK` |
 | `TILO_ROOMS_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_ROOMS_FETCH_PROXY` | on | `0` turns the fetch proxy off |
 | `TILO_ROOMS_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |

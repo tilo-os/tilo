@@ -6,7 +6,8 @@ use super::*;
 use serde_json::{Value, json};
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_runtime::mcp_windows;
-use tilo_session_host::session_actions::SessionActions;
+use tilo_session_client::Outbox;
+use tilo_session_core::remote::SessionActions;
 
 /// The app the agent writes in.
 const WRITER: &str = "so.tilo.word-processor";
@@ -65,7 +66,7 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
     // as `tilo login` does, and serves the projection over its session.
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -304,9 +305,10 @@ async fn an_agents_computer_lists_the_workspace_and_writes_what_another_device_s
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 
-    // And it leaves with the connection, rather than standing there.
+    // And it leaves with the connection, which `tilo mcp` closes as it ends,
+    // rather than standing there.
     drop(server);
-    drop(agent);
+    agent.peer.close();
     loop {
         browser.pump();
         if !browser
@@ -381,7 +383,7 @@ async fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -505,7 +507,7 @@ async fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
     let mut browser = Browser::open(&hosted, &browser_device, &host).await;
     let agent = Browser::open(&hosted, &computer, &host).await;
     // Its session runs the agent, as `tilo login` makes it say.
-    let _ = tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
     let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
         collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
     ) else {
@@ -689,7 +691,7 @@ async fn leaves_who_is_here(ending: Ending) {
         panic!("a key names a person")
     };
     let agent = Browser::open(&hosted, &computer, &host).await;
-    tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+    tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
         .await
         .expect("the computer's session is the agent's run");
     let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
@@ -760,7 +762,7 @@ async fn leaves_who_is_here(ending: Ending) {
         );
         assert_eq!(
             agent.peer.status().phase,
-            tilo_session_host::TransportPhase::Closed,
+            tilo_session_client::TransportPhase::Closed,
             "a stopped agent's session connects no more"
         );
     }
@@ -800,7 +802,7 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
     let mut seen = std::collections::BTreeSet::new();
     for run in 0..4 {
         let agent = Browser::open(&hosted, &computer, &host).await;
-        tilo_session_host::device::run_as_agent(&agent.peer, "Claude Code")
+        tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
             .await
             .expect("the computer's session is the agent's run");
         let actions =
@@ -841,4 +843,173 @@ async fn an_agent_that_comes_back_is_heard_by_an_open_page_every_time() {
         drop(server);
         drop(agent);
     }
+}
+
+/// How long the agent in [`a_quiet_agent_stays_while_its_session_lasts`]
+/// says nothing: longer than an agent's model takes to think or its person
+/// to answer it, and longer than the host ever kept a run that took no action.
+const QUIET: Duration = Duration::from_secs(35);
+
+/// An agent stays in who is here for as long as its session lasts, however
+/// long it goes without acting: one whose `tilo mcp` was killed leaves, and
+/// the one started right after it, which took one action and then waits on
+/// its person, is still listed, once, until its own session ends.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_quiet_agent_stays_while_its_session_lasts() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let _sheets = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    // One `tilo mcp` of the computer's, listed once it lists the workspace.
+    let mut runs = Vec::new();
+    for run in 0..2 {
+        let agent = Browser::open(&hosted, &computer, &host).await;
+        tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
+            .await
+            .expect("the computer's session is the agent's run");
+        let actions =
+            SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+        let server = McpServer::new(actions, WORKSPACE.into(), person.clone())
+            .with_surface(Surface::Agent)
+            .with_agent_run(format!("run-{run}"), "Claude Code");
+        let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
+        assert!(!failed, "run {run}: the agent lists the workspace");
+        let opened = Instant::now();
+        while runs_listed(&mut browser, &host).len() != 1 {
+            assert!(
+                opened.elapsed() < COMES_BACK_WITHIN,
+                "run {run}: the page never listed the agent once: {:?}",
+                runs_listed(&mut browser, &host)
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        if run == 0 {
+            // Killed: its session ends without a word, and it leaves.
+            agent.peer.close();
+            let ended = Instant::now();
+            while !runs_listed(&mut browser, &host).is_empty() {
+                assert!(
+                    ended.elapsed() < LEAVES_WITHIN,
+                    "the killed agent is still listed {:?} after its session ended",
+                    ended.elapsed()
+                );
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        }
+        runs.push((agent, server));
+    }
+    let quiet = Instant::now();
+    while quiet.elapsed() < QUIET {
+        let listed = runs_listed(&mut browser, &host);
+        assert_eq!(
+            listed.len(),
+            1,
+            "the waiting agent is listed once {:?} after its last action, with its session open: \
+             {listed:?}",
+            quiet.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    let (agent, _server) = runs.pop().expect("the second run");
+    agent.peer.close();
+    let ended = Instant::now();
+    while !runs_listed(&mut browser, &host).is_empty() {
+        assert!(
+            ended.elapsed() < LEAVES_WITHIN,
+            "the agent is still listed {:?} after its session ended",
+            ended.elapsed()
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
+/// An agent is present from the moment its `tilo mcp` connects, before it
+/// asks anything: the host says its run waiting, and the run's first request
+/// moves that same entry on to what it does, rather than a second one
+/// appearing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_agent_is_present_waiting_as_soon_as_it_connects() {
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let host = enrol(&root, "home-server", DeviceCapabilities::host());
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    let state = support::scratch_dir();
+    let hosted = start(&root, &host, state.path()).await;
+    let _laptop = participant::Participant::start(&hosted.relay, &root).await;
+    let mut browser = Browser::open(&hosted, &browser_device, &host).await;
+    let _sheets = browser.create(SHEETS);
+    browser.peer.barrier().unwrap().recv().unwrap().unwrap();
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+
+    let agent = Browser::open(&hosted, &computer, &host).await;
+    tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code")
+        .await
+        .expect("the computer's session is the agent's run");
+    let connected = Instant::now();
+    loop {
+        let listed = runs_listed(&mut browser, &host);
+        if let [run] = listed.as_slice() {
+            assert_eq!(
+                run.activity.as_deref(),
+                Some("Waiting"),
+                "an agent that has asked nothing is waiting: {run:?}"
+            );
+            break;
+        }
+        assert!(
+            connected.elapsed() < COMES_BACK_WITHIN,
+            "the page never listed the connected agent before its first request: {listed:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let server = McpServer::new(actions, WORKSPACE.into(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-0", "Claude Code");
+    let (_, failed) = tool(&server, "tilo_ls", json!({})).await;
+    assert!(!failed, "the agent lists the workspace");
+    let asked = Instant::now();
+    loop {
+        let listed = runs_listed(&mut browser, &host);
+        assert!(
+            listed.len() <= 1,
+            "the run's first request moves its entry on: {listed:?}"
+        );
+        if listed
+            .first()
+            .is_some_and(|run| run.activity.as_deref() != Some("Waiting"))
+        {
+            break;
+        }
+        assert!(
+            asked.elapsed() < COMES_BACK_WITHIN,
+            "the agent still reads waiting after its first request: {listed:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    agent.peer.close();
 }

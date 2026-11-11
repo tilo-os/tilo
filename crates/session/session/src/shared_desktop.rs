@@ -416,52 +416,21 @@ impl SharedDesktops {
         );
         let changes = candidate.save_after(&heads);
         // A write on no history is the whole record: the one that founds it.
-        let founding = heads.is_empty();
-        let artifact =
-            collab_types::document_artifact_id(DESKTOP_APP, &room.to_string(), DESKTOP_RECORD);
-        let Ok(key) = engine.identity().signing_key() else {
-            return false;
-        };
-        let committed = engine.owner().commit_document_with_current(
+        let committed = engine.write_record(
             room,
-            |view| {
-                let message = match sealed {
-                    None => view.peer().clone().publication_mut().publish_incremental(
-                        DESKTOP_APP,
-                        DESKTOP_RECORD,
-                        changes.clone(),
-                        &key,
-                        tilo_clock::SystemTime::now(),
-                    )?,
-                    Some(keys) => {
-                        sealed_write(view.peer(), keys, artifact, &changes, founding, &key)?
-                    }
-                };
-                let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
-                    return Err("a desktop write is not a document write".to_owned());
-                };
-                Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
-                    workspace: room.to_string(),
-                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
-                        app: DESKTOP_APP.to_owned(),
-                        record: DESKTOP_RECORD.to_owned(),
-                        envelope,
-                    },
-                })
-            },
-            tilo_clock::SystemTime::now(),
+            (DESKTOP_APP, DESKTOP_RECORD),
+            &changes,
+            heads.is_empty(),
+            sealed,
         );
         match committed {
-            Ok(_receipt) => {
+            Ok(_write) => {
                 // What the workspace took is the record this device wrote: the next look at the
                 // heads it now holds, this desk where it stands, and these notes, writes nothing.
                 self.written
                     .borrow_mut()
                     .insert(room, (candidate.get_heads(), own, notes));
                 self.keep(room, candidate, revision);
-                // What was just committed is this device's outgoing custody: the workspace's other
-                // devices read it as any member's change.
-                engine.schedule_publication(room);
                 true
             }
             Err(error) => {
@@ -613,49 +582,4 @@ fn windows_of(workspace: &Workspace) -> BTreeSet<u64> {
         .flat_map(|group| &group.tabs)
         .map(|tab| tab.id)
         .collect()
-}
-
-/// `changes` to the desk published into `peer` as this device's own write,
-/// sealed under the record's channel `keys`: a checkpoint of the whole record
-/// when the write founds it, so the record is sealed from the start, and a
-/// change of it after that.
-fn sealed_write(
-    peer: &tilo_peer_state::StatePeer,
-    keys: &channel_crypto::ChannelContentKeys,
-    artifact: collab_types::ArtifactId,
-    changes: &[u8],
-    founding: bool,
-    key: &ed25519_dalek::SigningKey,
-) -> Result<neighbour_wire::NeighbourMsg, String> {
-    let mut write = peer.clone();
-    let now = tilo_clock::SystemTime::now();
-    let publication = write.publication_mut();
-    if !founding {
-        return publication.publish_sealed_incremental(
-            DESKTOP_APP,
-            DESKTOP_RECORD,
-            changes.to_vec(),
-            &mut |plaintext: &[u8]| {
-                keys.seal_content(artifact, collab_types::ContentRetention::Delta, plaintext)
-                    .map_err(|error| error.to_string())
-            },
-            key,
-            now,
-        );
-    }
-    publication.publish_sealed_checkpoint(
-        DESKTOP_APP,
-        DESKTOP_RECORD,
-        changes.to_vec(),
-        &mut |plaintext: &[u8]| {
-            keys.seal_content(
-                artifact,
-                collab_types::ContentRetention::Checkpoint,
-                plaintext,
-            )
-            .map_err(|error| error.to_string())
-        },
-        key,
-        now,
-    )
 }

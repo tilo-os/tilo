@@ -7,6 +7,7 @@ use super::{DataTableCore, RowIdentity, TableModelChange};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -153,7 +154,7 @@ impl DataTableCore {
                 );
             }
             cell.widget
-                .draw(scene, cell_transform, text_renderer, theme, presence);
+                .draw_child(scene, cell_transform, text_renderer, theme, presence);
             if faded {
                 scene.pop_layer();
             }

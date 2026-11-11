@@ -230,6 +230,7 @@ fn a_window_is_named_by_what_it_shows_and_by_the_person_above_that() {
         .map(|(group, _, _)| group.to_string())
         .unwrap();
     let rename = |name: &str| ChromeEffect::Rename {
+        tab: None,
         group: Some(group.clone()),
         strip: None,
         workspace: None,

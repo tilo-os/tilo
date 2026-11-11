@@ -72,13 +72,16 @@ class MainIsNotGated(unittest.TestCase):
     def test_both_gates_hand_their_one_verdict_out_the_same_way(self):
         # A whole-tree lint at a later commit says everything an earlier one
         # could, and one window of checks at a time is what the runners carry.
-        # Both workflows decide who runs with tools/ci/push_window.py rather
-        # than the forge's `concurrency:`, which cancelled the waiting runs
-        # instead of letting one of them start.
+        # Both workflows decide who runs with tools/ci/push_window.py. Without
+        # an explicit `cancel-in-progress: false` the forge cancels every
+        # unfinished push run on main at the next push, holder included, and a
+        # group wider than one commit would queue runs behind each other.
         for name, marker in (("check.yml", "select"), ("lint.yml", "policy")):
             with self.subTest(workflow=name):
                 text = workflow(name)
-                self.assertNotIn("\nconcurrency:\n", text)
+                concurrency = block(text, "concurrency")
+                self.assertIn("cancel-in-progress: false", concurrency)
+                self.assertIn("-${{ github.sha }}", concurrency)
                 supersede = block(text, "supersede", 2)
                 self.assertIn("tools/ci/push_window.py", supersede)
                 self.assertIn(f"WORKFLOW: {name}", supersede)
@@ -249,6 +252,21 @@ class PushWindowTests(unittest.TestCase):
         self.assertEqual(superseding, 0)
         self.assertEqual(holding, 19)
         self.assertEqual(cancelling, [])
+
+    def test_a_holder_whose_later_jobs_wait_for_runners_is_never_cancelled(self):
+        # A window's shards queue for large runners long after its decision and
+        # plan finished; it still holds the window and is nobody's to drop.
+        holder = [{"name": "supersede", "status": "success"},
+                  {"name": "builder", "status": "success"},
+                  {"name": "select", "status": "success"},
+                  {"name": "security", "status": "failure"},
+                  {"name": "wasm", "status": "waiting"},
+                  {"name": "checks", "status": "blocked"},
+                  {"name": "test (x86_64, runner-large)", "status": "waiting"}]
+        runs = [self.record(20, "running"), self.record(19, "running")]
+        superseding, _, holding, cancelling = self.decide(runs, {19: holder})
+        self.assertEqual((superseding, holding, cancelling), (0, 19, []))
+        self.assertFalse(push_window.cancellable(runs[1], holder, "select"))
 
     def test_a_run_that_has_not_decided_yet_also_holds_the_window(self):
         # It may claim the window when its decision lands; starting beside it

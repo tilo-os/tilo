@@ -1,6 +1,6 @@
 //! Local exact retries use the signed author, never an invented carrier origin.
 
-use super::{AdmissionError, DocumentAdmission, LocalWrite, SignedOp, StatePeer, SystemTime};
+use super::{AdmissionError, DocumentAdmission, Route, SignedOp, StatePeer, SystemTime};
 
 impl StatePeer {
     /// Look up an already recorded local envelope with current authority,
@@ -23,6 +23,57 @@ impl StatePeer {
         )
     }
 
+    /// `envelope`, this device's own write to `app`'s `record`, as the record
+    /// takes it next. A device has several local writers (each instance of an
+    /// app, the file daemon), and each signs its writes with the device's key
+    /// before its owner's turn orders them: a write can reach the turn after a
+    /// write another writer signed later took a greater sequence, and the
+    /// record would refuse it as a replay. Such a write is signed again by
+    /// `key`, the device, under a sequence past the record's floor. A write
+    /// the record holds already, one still past the floor, and one another
+    /// author signed stay as they are.
+    ///
+    /// # Errors
+    ///
+    /// The write does not sign.
+    pub fn sequenced_local_document(
+        &self,
+        app: &str,
+        record: &str,
+        mut envelope: SignedOp,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<SignedOp, String> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(floor) = self
+            .core
+            .documents
+            .get(&route)
+            .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
+            .copied()
+            .filter(|floor| {
+                envelope.seq <= *floor
+                    && envelope.author.as_bytes() == &key.verifying_key().to_bytes()
+            })
+        else {
+            return Ok(envelope);
+        };
+        if self
+            .lookup_exact_local_document(app, record, &envelope, now)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Ok(envelope);
+        }
+        envelope.seq = collab_types::next_unordered_document_sequence(now)
+            .max(floor.checked_add(1).ok_or("sequence exhausted")?);
+        collab_types::sign_op(&mut envelope, key).map_err(|error| error.to_string())?;
+        Ok(envelope)
+    }
+
     /// Admit `envelope`, a local app's signed write to `record`, as a new
     /// exact admission: refused unless it is admitted now, completely and
     /// not as a duplicate, with evidence of it in the exact admission index.
@@ -43,44 +94,9 @@ impl StatePeer {
         envelope: SignedOp,
         now: SystemTime,
     ) -> Result<(), String> {
-        self.admit_new_local(app, record, envelope, LocalWrite::Plain, now)
-    }
-
-    /// [`Self::admit_new_local_document`] for a sealed write, by the owner
-    /// that holds the channel's keys. The sealed envelope passes every
-    /// check first (certificate, role, route, the author's signature over
-    /// the ciphertext and its sequence); only then does `open` decrypt it,
-    /// and the plaintext it returns takes the normal admission path. `open`
-    /// must refuse anything it cannot open under the channel's current
-    /// epoch. The record stays encrypted: a plaintext write to it is later
-    /// refused as a downgrade.
-    ///
-    /// # Errors
-    ///
-    /// As [`Self::admit_new_local_document`], for a write that is not
-    /// sealed, and when `open` refuses it.
-    pub fn admit_new_opened_local_document(
-        &mut self,
-        app: &str,
-        record: &str,
-        envelope: SignedOp,
-        open: &mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>,
-        now: SystemTime,
-    ) -> Result<(), String> {
-        self.admit_new_local(app, record, envelope, LocalWrite::Opened(open), now)
-    }
-
-    fn admit_new_local(
-        &mut self,
-        app: &str,
-        record: &str,
-        envelope: SignedOp,
-        write: LocalWrite<'_>,
-        now: SystemTime,
-    ) -> Result<(), String> {
         let author = *envelope.author.as_bytes();
         let before = self.clone();
-        let report = self.admit_local(app, record, envelope, write, now)?;
+        let report = self.admit_local(app, record, envelope, now)?;
         let outcome = &report.summary;
         if outcome.duplicate {
             return Err("native local document signed sequence is stale".into());
@@ -108,6 +124,104 @@ impl StatePeer {
                 && entry.author() == author
         }) {
             return Err("native local document has no exact admission evidence".into());
+        }
+        Ok(())
+    }
+
+    /// Take `envelope`, this device's own write to `app`'s `record`, back out of the record:
+    /// the workspace refused it, so the record holds what it would without it. A sealed write
+    /// leaves the record's sealed history; a write in the clear takes the changes it brought
+    /// out of the document, with every change of this replica built on them.
+    ///
+    /// # Errors
+    /// The document left holds changes that no longer apply.
+    pub fn withdraw_local_document(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: &SignedOp,
+    ) -> Result<(), String> {
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(document) = self.core.documents.get(&route) else {
+            return Ok(());
+        };
+        // The write was never the workspace's: no evidence of it stays, so a read of the record
+        // does not wait for it.
+        self.core
+            .exact_admissions
+            .withdraw(&crate::admission::AdmissionKey {
+                workspace: self.core.workspace.clone(),
+                app: app.into(),
+                record: record.into(),
+                author: *envelope.author.as_bytes(),
+                sequence: envelope.seq,
+            })
+            .map_err(|error| error.to_string())?;
+        if document
+            .sealed
+            .iter()
+            .any(|held| held.signature == envelope.signature)
+        {
+            let kept: Vec<SignedOp> = document
+                .sealed
+                .iter()
+                .filter(|held| held.signature != envelope.signature)
+                .cloned()
+                .collect();
+            // The author's floor falls back to its last write the record still holds.
+            let floor = kept
+                .iter()
+                .filter(|held| held.author == envelope.author)
+                .map(|held| held.seq)
+                .max();
+            if let Some(document) = self.core.documents.get_mut(&route) {
+                let watermarks = &mut document.channel.last_seq_per_author;
+                if watermarks.get(&envelope.author) == Some(&envelope.seq) {
+                    match floor {
+                        Some(floor) => {
+                            watermarks.insert(envelope.author, floor);
+                        }
+                        None => {
+                            watermarks.remove(&envelope.author);
+                        }
+                    }
+                }
+                document.sealed = kept.into();
+            }
+            return Ok(());
+        }
+        let mut withdrawn: std::collections::BTreeSet<automerge::ChangeHash> = envelope
+            .claims
+            .iter()
+            .map(|claim| claim.change)
+            .chain(super::personal::change_hashes(&envelope.payload))
+            .map(automerge::ChangeHash)
+            .collect();
+        let mut doc = (*document.doc).clone();
+        if !withdrawn
+            .iter()
+            .any(|hash| doc.get_change_meta_by_hash(hash).is_some())
+        {
+            return Ok(());
+        }
+        let mut kept = Vec::new();
+        for change in doc.get_changes(&[]) {
+            if withdrawn.contains(&change.hash())
+                || change.deps().iter().any(|dep| withdrawn.contains(dep))
+            {
+                withdrawn.insert(change.hash());
+            } else {
+                kept.push(change);
+            }
+        }
+        let mut rebuilt = automerge::AutoCommit::new();
+        tilo_automerge::ApplyIncoming::apply_incoming(&mut rebuilt, kept)
+            .map_err(|error| error.to_string())?;
+        if let Some(document) = self.core.documents.get_mut(&route) {
+            document.doc = rebuilt.into();
         }
         Ok(())
     }

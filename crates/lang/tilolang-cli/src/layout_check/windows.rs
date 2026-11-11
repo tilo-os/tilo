@@ -244,11 +244,9 @@ fn shown_floating_rect(staged: &stage::Staged, name: &str) -> Option<Rect> {
 }
 
 /// The change marks the rows of the window's lists draw, by the row they stand in.
-fn row_marks(
-    rows: &std::collections::HashMap<String, tilo_ui_host::UiNode>,
-) -> Vec<tilo_ui_host::UiNode> {
+fn row_marks(rows: &[(String, tilo_ui_host::UiNode)]) -> Vec<tilo_ui_host::UiNode> {
     let mut out = Vec::new();
-    for row in rows.values() {
+    for (_, row) in rows {
         let mut marks = Vec::new();
         nodes(row, "ui.ChangeMark", &mut marks);
         out.extend(marks.into_iter().cloned());
@@ -1207,8 +1205,8 @@ fn desktop_read_out(size: (u32, u32)) -> Vec<(bool, String)> {
 #[test]
 fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
     // A window draws its main actions as buttons and keeps the rest behind one menu: never
-    // every action as a button of its own, and one door to what does not fit in one bar. The
-    // desktop's bar over the window is where they stand, at a desk's width and in a hand's.
+    // every action as a button of its own, and one door to what does not fit in one row. The
+    // column's header row is where they stand, at a desk's width and in a hand's.
     for size in [(1280, 800), (390, 844)] {
         tilo_ui_host::i18n::ensure();
         let packages = tasks_packages();
@@ -1230,21 +1228,17 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
         staged
             .lay_out(size, ui::Theme::light(), input, 1.0)
             .expect("the app lays out");
-        let bar = staged.harness_mut().window_bar_layout(f64::from(size.0));
-        let buttons = bar
-            .controls
-            .iter()
-            .filter(|control| control.slot == "leading" || control.slot == "action")
-            .count();
+        let row = super::header_row_controls(&staged, size);
+        let buttons = row.iter().filter(|control| !control.menu).count();
         assert!(
             buttons <= ui::window_toolbar::MAX_LEADING + ui::window_toolbar::MAX_ACTIONS,
-            "a window draws no more actions as buttons than its bar holds at {size:?}: {buttons}"
+            "a window draws no more actions as buttons than one row holds at {size:?}: {row:?}"
         );
-        let menus: Vec<&ui::window_toolbar::BarControl> =
-            bar.controls.iter().filter(|control| control.menu).collect();
-        assert!(
-            !menus.is_empty(),
-            "a window keeps the rest of its actions in a menu at {size:?}: {bar:?}"
+        let menus: Vec<&super::RowControl> = row.iter().filter(|control| control.menu).collect();
+        assert_eq!(
+            menus.len(),
+            1,
+            "a window keeps the rest of its actions in one menu at {size:?}: {row:?}"
         );
         assert!(
             menus
@@ -1253,7 +1247,7 @@ fn a_windows_header_holds_the_rest_of_its_actions_in_one_menu() {
             "the window's menu stands where the person reaches it at {size:?}: {menus:?}"
         );
         assert!(
-            menus.iter().all(|menu| !menu.id.is_empty()),
+            menus.iter().all(|menu| !menu.name.is_empty()),
             "the window's menu is named at {size:?}: {menus:?}"
         );
     }
@@ -1290,7 +1284,7 @@ fn an_action_without_an_icon_is_reachable_from_the_row_that_offers_it() {
         // A tree's rows are built as the window shows them, so a note's menu stands in the row
         // the window built for it rather than in the tree the app sent.
         let mut labels = menu_labels(&tree);
-        for row in staged.rows().values() {
+        for (_, row) in &staged.rows() {
             labels.extend(menu_labels(row));
         }
         assert!(
@@ -1909,11 +1903,11 @@ fn a_scenario_that_fails_is_said_rather_than_shown_empty() {
     assert!(why.contains("no such scenario"), "{why}");
 }
 
-/// The one main action an app declares for its window stands in the window's bar as the
+/// The one main action an app declares for its window stands in its column's header row as the
 /// primary button, at a desk's width and in a hand's: a person sees at once what the window is
 /// for, and the action narrows to its icon before it ever leaves the row.
 #[test]
-fn the_windows_main_action_stands_in_the_bar_as_the_primary_button() {
+fn the_windows_main_action_stands_in_its_row_as_the_primary_button() {
     tilo_ui_host::i18n::ensure();
     for (app, scenario, action) in [
         ("tasks", "a busy week", "New task"),
@@ -1956,29 +1950,22 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         staged
             .lay_out(size, theme, input, 1.0)
             .expect("the app lays out");
-        let bar = staged.harness_mut().window_bar_layout(f64::from(size.0));
-        let primary: Vec<&ui::window_toolbar::BarControl> = bar
-            .controls
-            .iter()
-            .filter(|control| control.primary)
-            .collect();
+        let row = super::header_row_controls(&staged, size);
+        let primary: Vec<&super::RowControl> =
+            row.iter().filter(|control| control.primary).collect();
         assert_eq!(
             primary.len(),
             1,
-            "one bar draws one main action at {size:?}: {bar:?}"
+            "one window draws one main action at {size:?}: {row:?}"
         );
         let control = primary[0];
         assert_eq!(
             control.name, action,
             "the app's own main action: {control:?}"
         );
-        assert_eq!(
-            control.slot, "action",
-            "it stands among the app's actions: {control:?}"
-        );
         assert!(
             !control.menu,
-            "what the window is for never hides behind the bar's door: {control:?}"
+            "what the window is for never hides behind the row's door: {control:?}"
         );
         assert!(
             control.rect[2] > 0.0 && control.rect[3] > 0.0,
@@ -1987,15 +1974,15 @@ fn the_main_action_of(app: &str, packages: &Rc<stage::Packages>, scenario: &str,
         if size.0 >= 1280 {
             assert!(
                 control.labelled,
-                "a desk's bar says the main action's words at {size:?}: {control:?}"
+                "a desk's row says the main action's words at {size:?}: {control:?}"
             );
         }
         if size.0 <= 320 {
-            // The narrowest bar says the words where it has room for them and stands as its
+            // The narrowest row says the words where it has room for them and stands as its
             // icon alone where it has not: either way it is the primary button still.
             assert!(
-                control.labelled || control.rect[2] <= 28.5,
-                "the narrowest bar keeps the main action to its icon alone, still on the \
+                control.labelled || control.rect[2] <= control.rect[3] * 1.5,
+                "the narrowest row keeps the main action to its icon alone, still on the \
                  accent at {size:?}: {control:?}"
             );
         }
@@ -2121,8 +2108,74 @@ fn the_tasks_window_shows_one_bar_and_keeps_its_title_at_every_hand_held_size() 
         problems.join("\n  ")
     );
     assert!(
-        band > 0 && held > 0,
-        "both ways a window shows its bar stand: {band} with the window's own bar, {held} \
-         with the app's row as the bar"
+        band == 0 && held == measured,
+        "the app's header row is the window's bar at every size: {band} with the window's own \
+         bar, {held} of {measured} with the app's row as the bar"
+    );
+}
+
+/// What a row of a list says its item is: the title the row's own tree carries.
+fn row_title(node: &tilo_ui_host::UiNode) -> Option<String> {
+    if let Some(tilo_render_protocol::patch::Value::Text(title)) = node.props.get("title") {
+        return Some(title.clone());
+    }
+    node.children.iter().find_map(row_title)
+}
+
+/// A page the check stages over a list opens a row the list itself shows first, and the same
+/// row in every run: the list's own order, never the order a hash of the row keys happens to
+/// give. The check stages a scenario once at the smallest window and reads every size off that
+/// one window, so one row serves every size: shots of two runs are the same picture, and a
+/// finding that comes and goes is a finding about the app.
+#[test]
+fn a_list_opens_the_page_of_its_first_row_in_every_run() {
+    tilo_ui_host::i18n::ensure();
+    let packages = tasks_packages();
+    let task = packages
+        .0
+        .iter()
+        .find(|package| package.meta.app == "so.tilo.lang.tasks")
+        .and_then(|package| package.meta.types.iter().find(|ty| ty.name == "Task"))
+        .map(|ty| ty.id.clone())
+        .expect("the tasks app declares its task");
+    let first = super::layouts().first().copied().expect("a layout");
+    let size = (first.size.width, first.size.height);
+    let mut opened = Vec::new();
+    for run in 0..4 {
+        let mut staged = stage::Staged::over(
+            "so.tilo.lang.tasks",
+            &packages,
+            "a busy week",
+            size,
+            first.theme(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        // The rows as the window lists them, and the page the run opens off them: the row it
+        // opens is the first one, by the title the row shows rather than by the id a staging
+        // gives its records.
+        let rows = staged.rows();
+        let named = staged.resources();
+        let picked = super::listed_of(&mut staged, &task).expect("a task to open a page of");
+        let at = rows
+            .iter()
+            .position(|(key, _)| key.ends_with(&picked.id))
+            .unwrap_or_else(|| panic!("the page opens a row the list shows, run {run}"));
+        assert_eq!(
+            at, 0,
+            "the page opens the row the list shows first, run {run}"
+        );
+        let listed = super::row_items(&rows, &named);
+        assert_eq!(
+            listed.first(),
+            Some(&picked),
+            "the row is the first of its type the list shows, run {run}"
+        );
+        opened.push(row_title(&rows[at].1).expect("the row says what its task is called"));
+    }
+    assert!(
+        opened.windows(2).all(|pair| pair[0] == pair[1]),
+        "every run opens the same task: {opened:?}"
     );
 }

@@ -1232,7 +1232,9 @@ impl Resolver<'_> {
                     "Map" => Ty::Map(boxed),
                     _ => Ty::Collection(boxed),
                 };
-                if ty.is_container() && !field_position {
+                // A map is a value the code fills as it runs (`Map<Text>()`), as a list is one:
+                // the sets and collections a store keeps are fields, and those are not values.
+                if ty.is_container() && !field_position && !matches!(ty, Ty::Map(_)) {
                     self.err("E023", te.span, format!("`{}` can only be the type of a field or of a view's parameter; use `List<T>` for values you pass around", name.name));
                     return Ty::Error;
                 }

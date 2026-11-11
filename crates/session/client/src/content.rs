@@ -16,3 +16,9 @@ where
         self(app, workspace, hash)
     }
 }
+
+impl std::fmt::Debug for dyn Kept {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Kept")
+    }
+}

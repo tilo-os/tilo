@@ -24,6 +24,7 @@ use tilo_desktop_surface::navigation::DeskEffect;
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::search::Scope;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, Stack, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
@@ -470,7 +471,8 @@ impl Widget for DeskLayer {
             self.backdrop
                 .set_workspace(front.map_or_else(String::new, |id| id.to_string()));
         }
-        self.backdrop.draw(scene, transform, text, theme, presence);
+        self.backdrop
+            .draw_child(scene, transform, text, theme, presence);
         ui::widget::draw_child(&mut self.area, scene, transform, text, theme, presence);
         if self.hosts_cards {
             self.draw_cards(scene, transform, text, theme, presence);

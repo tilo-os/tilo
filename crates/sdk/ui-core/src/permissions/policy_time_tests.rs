@@ -7,12 +7,11 @@ fn member_with(answer: Answer) -> PermissionContext {
     let context = PermissionContext::member("member", Role::Viewer);
     let mut standing = context.standing().clone();
     if answer == Answer::Deny {
-        standing
-            .policy
+        std::sync::Arc::make_mut(&mut standing.policy)
             .members
             .insert("member".into(), Role::Editor);
     }
-    standing.policy.grants.push(
+    std::sync::Arc::make_mut(&mut standing.policy).grants.push(
         policy::Grant::new(
             "fixture",
             policy::Subject::person("member"),

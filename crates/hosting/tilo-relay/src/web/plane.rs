@@ -272,7 +272,8 @@ impl Authority {
             member.set(true);
             member
         } else {
-            let environment = crate::environment::scope_of(&self.environments, &device).is_some();
+            let environment =
+                crate::environment::environment_of(&self.environments, &device).is_some();
             let member = Arc::new(Grant::new(id, &workspace, peer, environment));
             self.members.lock_recover().insert(key, member.clone());
             member
@@ -334,6 +335,11 @@ impl Plane {
         (tilo_live::native::ALPN.to_vec(), Box::new(handler))
     }
 
+    /// The plane's origin, which every carrier's sessions are served into.
+    pub(crate) fn origin(&self) -> Relay {
+        self.relay.clone()
+    }
+
     /// Who the plane carries: the one account of who is here.
     pub(crate) fn authority(&self) -> Arc<Authority> {
         Arc::clone(&self.authority)
@@ -344,6 +350,30 @@ impl Plane {
     pub(crate) fn tasks(&mut self) -> Vec<tokio::task::JoinHandle<()>> {
         std::mem::take(&mut self.tasks)
     }
+}
+
+/// Serve one WebTransport session at the plane's path: the device proves
+/// itself with the relay handshake on the session's first stream (the
+/// transport does not say who dialled it, as iroh's does), then the
+/// session is the plane's, admitted by the device's grant as any other
+/// carrier's.
+pub(crate) async fn serve_web(
+    origin: &Relay,
+    protocol: &RelayProtocol,
+    session: tilo_net::webtransport::Session,
+) {
+    let link = tilo_relay_client::link::Link::web(session.clone());
+    let Ok((mut send, mut recv)) = link.accept_bi().await else {
+        return;
+    };
+    let Ok(device) = protocol.authenticate_member(&mut recv, &mut send).await else {
+        link.close("the device did not prove itself");
+        return;
+    };
+    send.finish();
+    origin
+        .serve_session(session, Peer(device.device_public_key))
+        .await;
 }
 
 #[cfg(test)]

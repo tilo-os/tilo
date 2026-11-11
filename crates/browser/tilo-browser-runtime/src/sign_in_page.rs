@@ -59,6 +59,11 @@ struct Ask {
     /// it reaches all their workspaces and may last until revoked.
     #[serde(default)]
     server_key: bool,
+    /// The key may operate web pages in Browser without asking its person
+    /// each time, which is what a key made there asks for unless they say
+    /// no.
+    #[serde(default)]
+    operate_browser_pages: bool,
 }
 
 #[derive(Serialize)]
@@ -74,7 +79,7 @@ struct Answer {
 ///
 /// `root` is the person's unlocked root (`identity.mjs`) and `custody` the
 /// device key this page signs with (`device-custody.mjs`); `ask` is JSON:
-/// `{audience, challenge, client, grantKey?, grantScope?, expiresAtMs?, serverKey?}`.
+/// `{audience, challenge, client, grantKey?, grantScope?, expiresAtMs?, serverKey?, operateBrowserPages?}`.
 ///
 /// # Errors
 ///
@@ -118,7 +123,7 @@ pub async fn sign_in_answer(
                 &root,
                 device_key(&key)?,
                 &grant_label(&ask.client, &ask.audience),
-                capabilities,
+                capabilities.with_browser_pages(ask.operate_browser_pages),
                 expires.map(nanoseconds).transpose()?,
             )
             .await

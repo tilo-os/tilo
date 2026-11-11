@@ -46,12 +46,6 @@ impl ResourceKind {
     /// source of the chip strip's scriptable `palette:filter:*` address and
     /// the control socket's `kind` field. `Custom` variants carry their own.
     pub fn id(&self) -> &str {
-        self.label()
-    }
-
-    /// Human-readable label used in the filter chip strip and group
-    /// headers. `Custom` variants surface their own string verbatim.
-    pub fn label(&self) -> &str {
         match self {
             ResourceKind::Action => "Actions",
             ResourceKind::Application => "Apps",
@@ -66,6 +60,34 @@ impl ResourceKind {
             ResourceKind::WindowGroup => "Window groups",
             ResourceKind::Custom(s) => s.as_str(),
         }
+    }
+
+    /// The kind's own label, as [`Self::id`], for scripted addresses and
+    /// comparisons.
+    pub fn label(&self) -> &str {
+        self.id()
+    }
+
+    /// What the group header and the chip strip say this kind is, in the
+    /// desktop's language. A kind a provider minted carries the words the
+    /// provider wrote, which are already the person's.
+    #[must_use]
+    pub fn display_label(&self) -> String {
+        let key = match self {
+            ResourceKind::Action => "search-kind-actions",
+            ResourceKind::Application => "search-kind-apps",
+            ResourceKind::Note => "search-kind-notes",
+            ResourceKind::Record => "search-kind-records",
+            ResourceKind::File => "search-kind-files",
+            ResourceKind::Folder => "search-kind-folders",
+            ResourceKind::Creator => "search-kind-creators",
+            ResourceKind::Video => "search-kind-videos",
+            ResourceKind::Playlist => "search-kind-playlists",
+            ResourceKind::Tab => "search-kind-tabs",
+            ResourceKind::WindowGroup => "search-kind-window-groups",
+            ResourceKind::Custom(s) => return s.clone(),
+        };
+        crate::i18n::widget_format(key, &[])
     }
 
     /// Stable sort key pinning the well-known kinds to a fixed palette
@@ -1041,7 +1063,7 @@ pub fn command_entries<Row: SearchRow>(groups: &[KindGroup<Row>]) -> Vec<Command
     for group in groups {
         for row in &group.results {
             let mut entry = CommandEntry::new(format!("result:{}", entries.len()), row.title())
-                .group(group.kind.label())
+                .group(group.kind.display_label())
                 .group_total(group.total)
                 .icon(icon_for_kind(row.kind()));
             if let Some(subtitle) = row.subtitle() {

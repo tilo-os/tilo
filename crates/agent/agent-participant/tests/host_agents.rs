@@ -30,9 +30,9 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 
 mod common;
@@ -45,6 +45,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::path::Path;
 use std::time::{Duration, Instant};
+use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::InvokeArgument;
@@ -459,7 +460,7 @@ impl Page {
         };
         browser
             .peer
-            .publish(route.clone(), &page.take_mutation().unwrap())
+            .write(route.clone(), &page.take_mutation().unwrap())
             .unwrap();
         Self {
             app: page,
@@ -491,7 +492,7 @@ impl Page {
                 )
                 .unwrap();
                 if let Some(own) = app.take_mutation() {
-                    browser.peer.publish(creator.route.clone(), &own).unwrap();
+                    browser.peer.write(creator.route.clone(), &own).unwrap();
                 }
                 return Self {
                     app,

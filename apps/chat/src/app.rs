@@ -39,6 +39,7 @@ use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
 use crate::model::{self, Channel, Id, Message, User};
 use crate::permissions::ChatPermissions;
+use ui::widget::DrawChild;
 
 // --- Floating call huddle home placement (fractions of the window) --------
 // The docked huddle's resting video rect before the user drags it. The
@@ -360,8 +361,17 @@ pub struct ChatApp {
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<Id, (u8, u8, u8)>,
-    /// Exact bare Agent ids from the authenticated workspace roster.
-    pub(crate) workspace_agents: Vec<Id>,
+    /// What the workspace's record of its agents calls each of them, by bare id: the agent identity
+    /// record every app of the workspace reads, followed as it changes. It names an author
+    /// (`agent:<id>`) whether or not the agent is working here this moment.
+    pub(crate) workspace_agent_names: HashMap<Id, String>,
+    /// The presence colour each agent's record gives it, by bare id: the one its keeper chose, or
+    /// the one its identity gives it. An agent wears it here as it does in every app of the
+    /// workspace.
+    pub(crate) workspace_agent_colours: HashMap<Id, u8>,
+    /// The agent identity record, followed every frame (see `follow_agents`).
+    agents_record:
+        Option<ui::framework::WorkspaceRecord<ui::tilo_workspace_agent::WorkspaceAgents>>,
     /// Explicit shot fixture; never set on the live launch path.
     capture_agent_presence: Option<PresenceCtx>,
     /// The direct conversations that hold messages, by conversation id: the
@@ -760,7 +770,9 @@ impl ChatApp {
             workspace_labels: ui::presence::ParticipantLabels::default(),
             own_label: None,
             workspace_colors: HashMap::new(),
-            workspace_agents: Vec::new(),
+            workspace_agent_names: HashMap::new(),
+            workspace_agent_colours: HashMap::new(),
+            agents_record: None,
             capture_agent_presence: None,
             direct_held: std::collections::HashSet::new(),
             recorded_channels: std::collections::HashSet::new(),
@@ -1060,7 +1072,9 @@ impl ChatApp {
     pub fn held_messages(&self) -> crate::messages::Messages {
         self.chain
             .as_ref()
-            .map(|chain| crate::messages::Messages::new(chain.parts()))
+            .map(|chain| {
+                crate::messages::Messages::new(chain.parts()).with_sending(chain.unwritten())
+            })
             .unwrap_or_default()
             .with_kept(
                 self.kept_messages
@@ -1276,15 +1290,6 @@ impl ChatApp {
         id == self.me.id || self.former_ids.iter().any(|f| f == id)
     }
 
-    pub(crate) fn agent_display_name(&self, agent: &str) -> String {
-        self.workspace_names
-            .get(&format!("agent:{agent}"))
-            .or_else(|| self.workspace_names.get(agent))
-            .filter(|name| !name.trim().is_empty())
-            .cloned()
-            .unwrap_or_else(|| crate::i18n::t("chat-agent-kind"))
-    }
-
     pub(crate) fn main_composer_can_edit(&self) -> bool {
         self.can_participate()
     }
@@ -1294,7 +1299,10 @@ impl ChatApp {
     pub(crate) fn conversation_placeholder(&self, channel: &str) -> String {
         match self.channel(channel) {
             Some(row) if row.direct => crate::i18n::t("chat-person-chat-placeholder"),
-            Some(row) => format!("Message #{}", row.name),
+            Some(row) => crate::i18n::t_args(
+                "chat-channel-composer-placeholder",
+                &[("channel", row.name.as_str().into())],
+            ),
             None => String::new(),
         }
     }
@@ -1327,6 +1335,15 @@ impl ChatApp {
     }
     pub(crate) fn message(&self, id: &str) -> Option<&Message> {
         self.messages.iter().find(|m| m.id == id)
+    }
+
+    /// Whether the open conversation keeps its replies in threads: the
+    /// workspace's channels do, and a direct conversation shows every answer
+    /// where it was written instead, among the messages around it.
+    pub(crate) fn keeps_threads(&self) -> bool {
+        !self
+            .channel(&self.active_channel)
+            .is_some_and(|conversation| conversation.direct)
     }
 
     /// The workspace's channels, ordered. Archived channels are hidden from the
@@ -1991,7 +2008,7 @@ impl Widget for ChatApp {
             parts.draw(scene, "chat-call", window, |scene| {
                 self.draw_call_overlay_bg(scene, tf, tr, theme);
                 if host_has_frame {
-                    self.video.draw(scene, tf, tr, theme, presence);
+                    self.video.draw_child(scene, tf, tr, theme, presence);
                 }
                 self.draw_host_camera_off(scene, tf, tr, theme);
                 self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
@@ -2697,7 +2714,7 @@ impl ChatApp {
         if self.huddle_features_me() {
             if self.video.latest_frame().is_some() {
                 self.video
-                    .draw(scene, transform, text_renderer, theme, presence);
+                    .draw_child(scene, transform, text_renderer, theme, presence);
             }
             self.draw_host_camera_off(scene, transform, text_renderer, theme);
         } else {

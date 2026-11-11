@@ -503,9 +503,10 @@ fn capture_replays_governance_and_the_shared_desktop_before_other_records() {
     let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
     // A record whose channel orders before any other by hash.
     let other = raw_generation(&store, 0, 0x00);
-    store.learn_record([0x00; 32], "note-1");
+    store.learn_record([0x00; 32], "notes", "note-1");
     store.learn_record(
         neighbour_wire::app_document_channel(DESKTOP_APP, DESKTOP_RECORD),
+        DESKTOP_APP,
         DESKTOP_RECORD,
     );
     fs::write(other.join("checkpoint.delta"), frame(1, 8, 10)).unwrap();
@@ -1110,4 +1111,58 @@ fn captures_remember_each_lineage_until_it_changes() {
     let mut relisted = snapshot(&store);
     assert_eq!(prepare(&store, &mut relisted).total_frames, 3);
     assert_eq!(listing_hits() - before, 3);
+}
+
+/// A device the workspace no longer admits is sent to no one, so the host
+/// forgets the hello it retained: a workspace many people pass through keeps
+/// none of theirs. Another device's hello stays.
+#[test]
+fn a_hello_the_workspace_forgets_is_replayed_no_more() {
+    let tmp = tempfile::tempdir().unwrap();
+    let store = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    let hello = |author: [u8; 32], stamp: u64| {
+        let channel = crate::store::compaction::hello_channel(&author);
+        let lineage = store.root.join("retained/v2").join(format!(
+            "{}-{}",
+            hex::encode(author),
+            hex::encode(channel)
+        ));
+        let name = "00000000000000000000000000000000";
+        fs::create_dir_all(lineage.join(name)).unwrap();
+        fs::write(lineage.join("CURRENT"), name).unwrap();
+        fs::write(
+            lineage.join(name).join("checkpoint.delta"),
+            frame(2, 8, stamp),
+        )
+        .unwrap();
+    };
+    hello([0xf1; 32], 50);
+    hello([0xf2; 32], 51);
+    let stamps = |store: &WorkspaceStore| {
+        let mut snapshot = snapshot(store);
+        prepare(store, &mut snapshot);
+        let budget = ReplayBudget::new(DEFAULT_OUTPUT_BYTES);
+        let mut stamps = Vec::new();
+        loop {
+            let batch = store
+                .read_replay_batch(&mut snapshot, ReplayLimits::default(), &budget)
+                .unwrap();
+            for frame in &batch.frames {
+                if let Envelope::Delta { authored_at_ns, .. } = frame {
+                    stamps.push(*authored_at_ns);
+                }
+            }
+            if batch.eof {
+                break;
+            }
+        }
+        stamps.sort_unstable();
+        stamps
+    };
+    assert_eq!(stamps(&store), vec![50, 51]);
+    assert_eq!(store.forget_hellos(&[[0xf1; 32], [0xf3; 32]]).unwrap(), 1);
+    assert_eq!(stamps(&store), vec![51]);
+    let reopened = WorkspaceStore::open(tmp.path(), 7, false).unwrap();
+    assert_eq!(stamps(&reopened), vec![51], "forgotten for good");
+    assert_eq!(reopened.forget_hellos(&[[0xf1; 32]]).unwrap(), 0);
 }

@@ -289,7 +289,8 @@ impl ChannelDirectory for Directory {
         route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at =
+            UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         // Governance that cannot be read says nothing of who reads it.
         let readers = state
@@ -310,7 +311,8 @@ impl ChannelDirectory for Directory {
         route: &ChannelRoute,
         now: u64,
     ) -> Option<ChannelId> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at =
+            UNIX_EPOCH.checked_add(tilo_action_broker::channel_encryption::policy_instant(now))?;
         let state = lock(&self.states).get(&workspace.to_string())?.clone();
         state.governance().unit_scope(at, route).ok()
     }

@@ -186,8 +186,10 @@ impl TabBar {
             ));
             // Guard against `tabs`/`tab_rects` desyncing mid-frame.
             if let Some(tab) = self.tabs.get(idx) {
-                self.active_id = tab.id;
-                self.pending_activation = Some(tab.id);
+                let id = tab.id;
+                self.active_id = id;
+                self.pending_activation = Some(id);
+                self.note_tab_press(id);
             }
             *handled = true;
         }

@@ -30,6 +30,7 @@ use ui::ImageStore;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::{
     FullscreenProvider, MediaArt, MediaAspect, MediaCardFace, MediaSource, TaffyTreeExt,
     VideoPlayer, Widget, layout_rect,
@@ -212,7 +213,7 @@ impl Widget for PlayerHost {
     ) {
         self.player
             .borrow_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.paint_captions(scene, transform, text_renderer, theme);
     }
 

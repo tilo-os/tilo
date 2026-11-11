@@ -37,6 +37,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{ControlSize, TextInput, Widget};
 
@@ -86,10 +87,11 @@ impl PromptBody {
     /// what will happen, the field asks for the phrase by name. Gate the
     /// dialog's primary action on [`Self::confirms`].
     pub fn confirm_phrase(message: &str, phrase: &str) -> Self {
-        let mut body =
-            Self::new(&format!("Type {phrase} to confirm"), phrase).with_caption(message);
-        body.input = std::mem::replace(&mut body.input, TextInput::local())
-            .with_accessible_name(format!("Type {phrase} to confirm"));
+        let ask =
+            crate::i18n::widget_format("widget-type-to-confirm", &[("phrase", phrase.into())]);
+        let mut body = Self::new(&ask, phrase).with_caption(message);
+        body.input =
+            std::mem::replace(&mut body.input, TextInput::local()).with_accessible_name(ask);
         body.phrase = Some(phrase.to_string());
         body
     }
@@ -310,7 +312,7 @@ impl Widget for PromptBody {
                 &theme.text(TextRole::Label),
             );
         }
-        self.input.draw(scene, transform, tr, theme, presence);
+        self.input.draw_child(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

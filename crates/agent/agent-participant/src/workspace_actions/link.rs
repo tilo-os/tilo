@@ -128,6 +128,18 @@ pub trait WorkspaceRecordsLink: Send + Sync {
     ) -> Option<Result<channel_crypto::ChannelContentKeys, String>> {
         None
     }
+    /// Every record this host holds of the workspace whose channels are
+    /// `channel`, by the app whose document it is and its id, with the parts
+    /// of a chain left to the record that keeps them.
+    ///
+    /// A public workspace sends a device its records only when it opens one,
+    /// so this member's replica holds a handful of them: what is listed here
+    /// and absent from it is a record the host is asked for when a request
+    /// names it. `None` when the host cannot say, which leaves the replica's
+    /// own records the only ones the service knows.
+    fn records(&self, _channel: &str) -> Option<Vec<(String, String)>> {
+        None
+    }
     /// The listener-owned public locator; absence cannot mint a browser link.
     fn view_locator(
         &self,

@@ -29,6 +29,7 @@ use winit::event::WindowEvent;
 use crate::presence::{PathSegment, PresenceCtx, PresenceKey};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{TextInput, TextInputKind, Widget};
 
@@ -491,7 +492,7 @@ impl CodeEditor {
     ) {
         let presence = PresenceCtx::default();
         self.inner
-            .draw(scene, transform, text_renderer, theme, &presence);
+            .draw_child(scene, transform, text_renderer, theme, &presence);
         self.draw_diagnostics(scene, transform, theme);
     }
 
@@ -632,7 +633,7 @@ impl Widget for CodeEditor {
         presence: &PresenceCtx,
     ) {
         self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.draw_diagnostics(scene, transform, theme);
     }
 

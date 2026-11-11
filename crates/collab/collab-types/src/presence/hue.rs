@@ -181,6 +181,15 @@ impl PresenceHue {
             .as_str()
             .and_then(Self::from_id)
     }
+
+    /// The hue a person wears, as the settings document they keep says: the one
+    /// they chose ([`Self::chosen_in`]), else the one their identity derives
+    /// ([`Self::of_identity`]). The one lookup every surface asks, so one person
+    /// is one colour, here, on the bar and in every app they edit in.
+    #[must_use]
+    pub fn worn_in(settings: &serde_json::Value, identity: &str) -> Self {
+        Self::chosen_in(settings).unwrap_or_else(|| Self::of_identity(identity))
+    }
 }
 
 /// Stable identity colour for a collaborator who has not chosen one: the
@@ -351,5 +360,24 @@ mod agent_client_tests {
             PresenceHue::of_agent("Jane Doe's agent"),
             "every run of an agent wears one colour"
         );
+    }
+
+    /// The colour a person wears is the one they chose, and the one their
+    /// identity derives only while they have chosen none.
+    #[test]
+    fn a_person_wears_what_they_chose_and_derives_it_until_they_do() {
+        let chosen = serde_json::json!({"identity": {"colour": "violet"}});
+        assert_eq!(PresenceHue::worn_in(&chosen, "ada"), PresenceHue::Violet);
+        for unset in [
+            serde_json::json!({"identity": {"colour": null}}),
+            serde_json::json!({"identity": {}}),
+            serde_json::json!({}),
+        ] {
+            assert_eq!(
+                PresenceHue::worn_in(&unset, "ada"),
+                PresenceHue::of_identity("ada"),
+                "no choice stored: {unset}"
+            );
+        }
     }
 }

@@ -15,6 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::store::doc_of;
 
 use super::reading::{build, everything, mirror_of, scan};
 use super::{Doc, Inner, Nested, TiloStore};
@@ -359,6 +360,15 @@ impl TiloStore {
         let inner = self.held();
         let held = inner.apps.get(app).filter(|held| held.ready())?;
         held.snapshot.contents().ok()
+    }
+
+    /// Whether the store reads nothing over its indexes: no write of its own is pending, and the
+    /// index each app reads from reflects every write the record took. What tests check once
+    /// the record holds every write and the indexes caught up.
+    #[must_use]
+    pub fn overlay_empty(&self) -> bool {
+        let inner = self.held();
+        inner.overlay.is_empty() && inner.accepted.is_empty()
     }
 
     /// Wait for the commits to the indexes so far to reach the disk: when a window closes.
@@ -940,6 +950,14 @@ fn derive(
         }
     };
     let now = stamps_after(chunks, from, part);
+    // An index with nothing of the changes in it derives no row: a change one app made is that
+    // app's, whatever else the store holds. What it has taken in is not a row but the heads, and
+    // they are written: an index that kept the heads it had catches up from these chunks again
+    // at every open.
+    if !reached_app(docs, app, &reached, &ends) {
+        index.write(|writer| writer.set_heads(&now))?;
+        return Ok((now, DocReads::default()));
+    }
     // The chunks the step derives from their first change: a step of a build, or a chunk read
     // since the index was. Their items are read once, and each change the step takes in reads
     // the one it names from them. A chunk the index reflects up to a few changes ago is not:
@@ -965,6 +983,35 @@ fn derive(
         Ok(derive.reads)
     })?;
     Ok((now, written))
+}
+
+/// Whether a change gave `app`'s index anything to take in: a document of it the change
+/// reached, or a resource of it the change made a version of. A version is not always of the
+/// app that made the change: what an action was made from changed too, so a comment made from a
+/// task is a version of the task, and the tasks' index takes it in. A document no index names —
+/// one just removed — may be any app's, so every app is derived for it.
+pub(crate) fn reached_app(
+    docs: &BTreeMap<DocId, (AppId, TypeId)>,
+    app: &str,
+    reached: &Reached,
+    made: &BTreeMap<String, idx::reflect::Ends>,
+) -> bool {
+    let mut unknown = false;
+    for doc in reached.docs.keys().chain(reached.placed.keys()) {
+        match docs.get(doc) {
+            Some((held, _)) if held == app => return true,
+            Some(_) => {}
+            None => unknown = true,
+        }
+    }
+    for resource in made.keys() {
+        match docs.get(doc_of(resource)) {
+            Some((held, _)) if held == app => return true,
+            Some(_) => {}
+            None => unknown = true,
+        }
+    }
+    unknown
 }
 
 /// The stamps `from` brought up to what the chunks `part` hold now, and the stamps of the chunks

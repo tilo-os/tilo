@@ -56,6 +56,26 @@ Object.defineProperty(globalThis,'__tiloLinkSecrets',{value:Object.freeze(found)
 </script>
 <script>
 (()=>{
+// The entry pages' start of the runtime, inlined verbatim into each right
+// after the link scrubber, before any module loads. The runtime module is
+// most of a first visit's download. Left to the page's modules (host.mjs
+// calls init once they all loaded and ran), its compile starts only then;
+// streamed from here it compiles while it downloads and while the modules
+// load. host.mjs takes the compiled module; where this did not run or
+// failed, init fetches and compiles the module itself as before.
+try{
+ var hint=document.querySelector('link[rel="preload"][href$="tilo_browser_runtime_bg.wasm"]');
+ if(!hint||typeof WebAssembly!=='object'||typeof WebAssembly.compileStreaming!=='function')return;
+ // The preload's own request (cors, same-origin credentials), so this takes
+ // its response rather than downloading the module a second time.
+ var compiled=WebAssembly.compileStreaming(fetch(hint.href,{mode:'cors',credentials:'same-origin'}));
+ compiled.catch(function(){});
+ globalThis.__tiloStartModule=compiled;
+}catch(error){}
+})();
+</script>
+<script>
+(()=>{
 // The entry pages' way out while their modules load, inlined verbatim into
 // each after the link scrubber: before the arrival screen (arrival.mjs)
 // runs, nothing else on the page can say that loading stopped. A module
@@ -76,22 +96,72 @@ addEventListener('click',function(event){if(event.target&&event.target.id==='arr
 </script>
 <script>
 (()=>{
-// Whether the entry page opens on its first screen (first-run.mjs), inlined
-// verbatim after the link scrubber so the screen is there at the first
-// paint, before any module loads. Only a browser new here sees it: one that
-// keeps nothing from an earlier visit (no first screen seen, no host that
-// let it in, no workspace entered), opening the site itself rather than a
-// link (no secrets, no route, no workspace named) and not inside another
-// site. Without storage the page opens as it always did.
+// Whether the entry page opens on its first screen (first-run.mjs), and at
+// which step, inlined verbatim after the link scrubber so the screen is there
+// at the first paint, before any module loads. It is decided by the person's
+// setup this browser keeps (`tilo-setup`, first-run.mjs `SETUP`), and by
+// nothing else: a setup under way opens on its step whatever else the page
+// did meanwhile (joining the site's home workspace behind the screen, say),
+// and one that is done never shows the screen again. That holds whatever
+// workspace the address names: once the home workspace lets the page in it
+// writes its own link there, and a reload must not take that for a link the
+// person opened. A browser that keeps no setup sees the screen only when it
+// is new here (no host let it in, no workspace entered) and opens the site
+// itself (no route), and its setup starts now. A link with secrets (an
+// invitation, a pairing) and a page inside another site never show it.
+// Without storage the page opens as it always did.
 var root=document.documentElement,secrets=globalThis.__tiloLinkSecrets||{};
 if(Object.keys(secrets).length)return;
-if(location.hash.length>1&&location.hash!=='#/')return;
 if(/[?&](embed|workspace|room|invite)(=|&|$)/.test(location.search))return;
+var setup=null;
 try{
- var kept=['tilo-first-run','tilo-host-memberships','tilo-entered-workspaces'];
- for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return;
+ setup=JSON.parse(localStorage.getItem('tilo-setup')||'null');
+ if(!setup||typeof setup!=='object'||typeof setup.step!=='string'){
+  setup=null;
+  if(location.hash.length>1&&location.hash!=='#/')return;
+  var kept=['tilo-host-memberships','tilo-entered-workspaces'];
+  for(var i=0;i<kept.length;i++)if(localStorage.getItem(kept[i]))return;
+  setup={step:'start',at:Date.now()};
+  localStorage.setItem('tilo-setup',JSON.stringify(setup));
+ }
 }catch(e){return;}
-root.setAttribute('data-first-run','');
+if(setup.step==='done')return;
+var now=Date.now(),code=setup.code,offer=setup.offer,step=setup.step;
+// A code that ran out while nobody looked has run out now.
+if(step==='waiting'&&code&&!(setup.polled&&setup.polled.resolved)&&code.expiresAt<=now)step='expired';
+if(step!=='waiting'&&step!=='expired'&&step!=='connected'&&step!=='opening')step='';
+root.setAttribute('data-first-run',step==='opening'?'connected':step);
+// What the screen showed last, painted once its markup is parsed
+// (index.html calls this right after it), so a resumed setup shows its
+// step at the first frame; first-run.mjs takes over and asks the host.
+globalThis.__tiloSetupPaint=function(){
+ var $=function(id){return document.getElementById(id);},screen=$('first-run'),shown=setup.shown||{};
+ if(!screen)return;
+ var fresh=offer&&offer.expiresAt-now>60000&&shown.offer?shown.offer:'';
+ screen.dataset.mode=shown.mode==='sign-in'?'sign-in':'setup';
+ if(step===''){if(fresh){$('first-run-offer').textContent=fresh;$('first-run-offer-note').textContent='';}return;}
+ if(step==='connected'||step==='opening'){
+  screen.dataset.skipped=String(!shown.heading);
+  $('first-run-connected').textContent=shown.heading||'Opening your workspace';
+  if(!shown.heading)$('first-run-done-lead').textContent='';
+  return;
+ }
+ screen.dataset.manual=String(setup.manual===true);
+ if(step==='expired'){$('first-run-prompt').textContent=fresh;return;}
+ $('first-run-prompt').textContent=shown.prompt||'';
+ screen.dataset.copied=String(setup.copied===true);
+ var lines=shown.lines||[],list=$('first-run-steps');
+ for(var i=0;i<lines.length;i++){
+  var line=lines[i],item=document.createElement('li');
+  item.className=line.done?'done':line.act?'act':line.wait?'wait':line.failed?'failed':'now';
+  item.textContent=line.text;list.appendChild(item);
+ }
+ if(code&&!(setup.polled&&setup.polled.resolved)){
+  var minutes=Math.max(1,Math.ceil((code.expiresAt-now)/60000));
+  $('first-run-left').textContent='Works once, for '+(minutes===1?'1 more minute':minutes+' more minutes')+'.';
+ }
+ $('first-run-net').textContent='Checking with '+location.host+'…';
+};
 // The screen is here before its module is: a press on one of its buttons
 // before then is kept, and the module presses it again once it can answer,
 // so a person who clicks at once is not ignored.
@@ -148,6 +218,23 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .tilo-invite-role { font-size: 13px; color: #b9b9c0; }
     .tilo-invite-role strong { font-weight: 600; color: #e6e6e9; }
     .tilo-invite .tilo-entry-actions { margin-top: 4px; }
+    /* Who waits to join and the workspace's wait list (entry-page.mjs
+       `waitingCard`): a row each, the person or address, then its answers. */
+    .tilo-waiting { width: min(480px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
+    .tilo-waiting h2 { margin: 0; font-size: 17px; font-weight: 600; color: #f2f2f4; }
+    .tilo-waiting h3 { margin: 0 0 4px; font-size: 14px; font-weight: 600; color: #e6e6e9; }
+    .tilo-waiting ul { display: grid; gap: 2px; margin: 0; padding: 0; list-style: none; }
+    .tilo-waiting ul[hidden] { display: none; }
+    .tilo-waiting li { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 0; border-top: 1px solid #2a2c32; }
+    .tilo-waiting li:first-child { border-top: 0; }
+    .tilo-waiting .tilo-waiting-who { display: grid; flex: 1; min-width: 0; color: #e6e6e9; }
+    .tilo-waiting .tilo-waiting-contact { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tilo-waiting time { font-size: 12px; color: #8f8f99; }
+    .tilo-waiting time.tilo-waiting-invited { color: #9fd3ae; }
+    .tilo-waiting li button { flex: none; padding: 6px 12px; }
+    .tilo-waiting .tilo-waiting-none { color: #9b9ba3; }
+    .tilo-waiting section:empty { display: none; }
+    .tilo-waiting .tilo-waiting-note { margin: 0 0 8px; font-size: 13px; color: #9b9ba3; }
     /* Pairing a device: the link's sheet, the ask on the device that sent
        it, and the code a new device shows while it waits (entry-page.mjs). */
     .tilo-pair { width: min(400px, calc(100vw - 32px)); gap: 16px; max-height: calc(100% - 32px); overflow: auto; }
@@ -196,8 +283,10 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     /* Turned away for coming without an invitation: a door of its own
        (entry-page.mjs `offerDoor`). One calm group, its top fixed a little
        above the middle so nothing it reveals moves what is above: the mark,
-       a heading, one line, and the invite link's field; then signing in
-       with an identity the person already has. Trying Tilo on their own sits at the foot of the page.
+       a heading, one line, the wait list's field (or, without a wait list,
+       the invite link's), a quiet note under it; then signing in with an
+       identity the person already has, and an invite link behind a small
+       toggle. Trying Tilo on their own sits at the foot of the page.
        #status keeps the words for screen readers. */
     #arrival-door { display: none; }
     [data-arrival=stopped][data-entry=refused][data-door] #arrival-door { position: fixed; inset: 0; z-index: 2; display: flex; flex-direction: column; align-items: center; box-sizing: border-box; padding: max(40px, calc(50vh - 230px)) 24px 0; overflow-y: auto; text-align: center; background: #121214; }
@@ -215,6 +304,23 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .door-field button:hover { background: #ffffff; }
     .door-field button:disabled { cursor: default; opacity: .6; }
     .door-field button:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 2px; }
+    /* The wait list once it took the address: the same height as the field
+       it replaces. */
+    #arrival-wait-done { display: none; box-sizing: border-box; width: 100%; min-height: 40px; margin: 0; padding: 9px 12px; border-radius: 8px; background: #1a2a20; color: #cfe9d6; font-size: 15px; line-height: 1.45; overflow-wrap: anywhere; }
+    [data-wait-listed] #arrival-wait { display: none; }
+    [data-wait-listed] #arrival-wait-done { display: block; }
+    /* Taking the address off again, under the confirmation; the note under
+       it shows only to say what went wrong. */
+    #arrival-wait-off { display: none; min-height: 0; }
+    [data-wait-listed] #arrival-wait-off { display: block; }
+    [data-wait-listed] #arrival-wait-off:has(#arrival-wait-leave:empty) { display: none; }
+    [data-wait-listed] #arrival-wait-note:empty { display: none; }
+    #arrival-wait-off .door-link, #arrival-wait-again-line .door-link { font-size: 13px; }
+    #arrival-wait-again-line { min-height: 0; }
+    #arrival-wait-again-line[hidden] { display: none; }
+    /* Where questions go, when the host names it. */
+    #arrival-wait-contact { min-height: 0; margin-top: 4px; }
+    #arrival-wait-contact:empty { display: none; }
     .door-note { width: 100%; margin: 10px 0 0; min-height: 3em; font-size: 13px; line-height: 1.5; color: #7f7f89; text-wrap: pretty; }
     .door-note a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
     .door-note a:hover { color: #c4c4cc; }
@@ -227,8 +333,14 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     .door-link:focus-visible { outline: 2px solid #9ab4ff; outline-offset: 3px; border-radius: 2px; }
     .door-link:disabled { cursor: default; opacity: .6; }
     #arrival-sign-in-note:empty, #arrival-invite-error:empty { display: none; }
+    #arrival-invite-toggle { font-size: 13px; color: #8f8f99; text-decoration-color: rgb(143 143 153 / 35%); }
+    #arrival-invite-toggle:hover { color: #c4c4cc; }
+    #arrival-invite { margin-top: 12px; }
+    #arrival-invite[hidden] { display: none; }
     #arrival-invite-error { grid-column: 1 / -1; margin: 0; font-size: 13px; line-height: 1.5; color: #ff8a80; text-align: center; }
-    #arrival-invite { margin-top: 0; }
+    /* A door without a wait list: the invite link is the way in, shown. */
+    [data-door=invite] #arrival-wait, [data-door=invite] #arrival-wait-note, [data-door=invite] #arrival-wait-off, [data-door=invite] #arrival-wait-again-line, [data-door=invite] #arrival-wait-contact, [data-door=invite] #arrival-invite-toggle { display: none; }
+    [data-door=invite] #arrival-invite { margin-top: 0; }
     [data-door=invite] .door-alt { margin-top: 24px; }
     .door-foot { margin-top: auto; padding: 32px 0 24px; }
     #arrival-door #arrival-own { display: block; visibility: hidden; position: static; transform: none; padding: 0; border: 0; border-radius: 2px; background: none; font-size: 13px; color: #8f8f99; text-decoration: underline; text-decoration-color: rgb(143 143 153 / 35%); text-underline-offset: 3px; }
@@ -330,7 +442,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run .fr-quiet { min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--fr-muted); font-size: 15px; }
     #first-run .fr-quiet:hover, #first-run .fr-quiet[aria-expanded=true] { background: var(--fr-quiet-hover); color: var(--fr-ink); }
     #first-run .fr-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 16px; border: 1px solid var(--fr-edge); border-radius: 10px; background: var(--fr-well); font-weight: 500; }
-    #first-run .fr-secondary + .fr-secondary { margin-top: 10px; }
+    #first-run .fr-secondary ~ .fr-secondary { margin-top: 10px; }
     #first-run .fr-secondary:hover { border-color: var(--fr-faint); }
     .fr-aside { padding-top: 28px; border-top: 1px solid var(--fr-line); }
     .fr-eyebrow { margin: 0 0 4px; font-size: 13px; color: var(--fr-faint); }
@@ -394,6 +506,19 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run-steps .act { font-weight: 600; }
     #first-run-steps .act::before { border: 2px solid var(--fr-core); }
     #first-run-steps .wait { color: var(--fr-muted); }
+    #first-run-steps .failed { color: var(--fr-problem); }
+    #first-run-steps .failed::before { border: 2px solid var(--fr-problem); }
+    /* Why nothing new shows: offline, a host not answering, an agent quiet for long. */
+    #first-run-net { margin: 10px 0 0 28px; font-size: 13px; color: var(--fr-muted); }
+    #first-run-net:empty { display: none; }
+    /* The agent stopped: a new prompt to try again, under its reason. */
+    #first-run[data-agent-failed=true] #first-run-retry { display: inline-flex; }
+    #first-run[data-agent-failed=true] .fr-copied { display: none; }
+    /* Opening after Skip: nothing succeeded, so no check, only the wait. */
+    #first-run .fr-opening { display: none; width: 28px; height: 28px; margin-bottom: 20px; border-width: 3px; }
+    #first-run[data-skipped=true] .fr-check { display: none; }
+    #first-run[data-skipped=true] .fr-opening { display: block; }
+    #first-run-done-lead:empty { display: none; }
     #first-run-steps .wait::before { border: 2px solid var(--fr-edge); }
     .fr-spinner { flex: none; box-sizing: border-box; width: 14px; height: 14px; border-radius: 50%; }
     #first-run-left { margin: 6px 0 0 28px; font-size: 13px; color: var(--fr-faint); font-variant-numeric: tabular-nums; }
@@ -443,7 +568,8 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
         <p id="first-run-problem" class="fr-for-wait"></p>
         <ol id="first-run-steps" class="fr-for-wait" aria-label="What your agent did"></ol>
         <p id="first-run-left" class="fr-for-wait"></p>
-        <p class="fr-expired">This prompt expired before an agent used it.</p>
+        <p id="first-run-net" class="fr-for-wait"></p>
+        <p class="fr-expired">That prompt ran out before an agent used it. Here is a fresh one.</p>
         <button id="first-run-retry" class="fr-primary" type="button">Copy a new prompt</button>
         <div class="fr-links fr-for-start"><button id="first-run-manual-toggle" class="fr-quiet" type="button" aria-expanded="false" aria-controls="first-run-manual">Set up manually</button><button id="first-run-skip" class="fr-quiet" type="button">Skip for now</button></div>
         <div class="fr-links fr-for-wait"><button id="first-run-back" class="fr-quiet" type="button">Back</button><button id="first-run-skip-wait" class="fr-quiet fr-for-setup" type="button">Skip for now</button></div>
@@ -455,7 +581,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
           <p id="first-run-manual-left" class="fr-caption"></p>
         </div>
       </div>
-      <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><h1 id="first-run-connected">Your agent is in your workspace</h1><p class="fr-lead">Opening your workspace…</p></div>
+      <div class="fr-done"><span class="fr-check" aria-hidden="true"></span><span class="fr-spinner fr-opening" aria-hidden="true"></span><h1 id="first-run-connected">Your agent is in your workspace</h1><p id="first-run-done-lead" class="fr-lead">Opening your workspace…</p></div>
     </div>
     <aside class="fr-aside" aria-labelledby="first-run-sign-in">
       <p class="fr-eyebrow">Returning?</p>
@@ -467,6 +593,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     </aside>
     <p id="first-run-status" class="fr-said" role="status"></p>
   </div></main>
+  <script>globalThis.__tiloSetupPaint&&globalThis.__tiloSetupPaint();</script>
   <!-- The first screen works as soon as this small module is in, not after
        the entry page's modules: `async` runs it the moment it arrives. -->
   <script type="module" async src="./first-run.mjs"></script>
@@ -475,7 +602,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
   <p id="arrival-note" role="status" hidden></p>
   <button id="arrival-retry" type="button">Try again</button>
   <button id="arrival-own" type="button">Open your own desktop</button>
-  <section id="arrival-door" aria-labelledby="arrival-door-heading"><div class="door-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><div class="door-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <button id="arrival-sign-in-button" class="door-link" type="button">Sign in</button></p><p id="arrival-sign-in-note" role="alert"></p><form id="arrival-invite" class="door-field"><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="door-foot"></div></section>
+  <section id="arrival-door" aria-labelledby="arrival-door-heading"><div class="door-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-door-heading"></h1><p id="arrival-door-body"></p><form id="arrival-wait" class="door-field" novalidate><input id="arrival-wait-email" name="email" type="email" inputmode="email" autocomplete="email" spellcheck="false" autocapitalize="off" maxlength="254" placeholder="you@example.com" aria-label="Email" aria-describedby="arrival-wait-note"><button type="submit">Join the wait list</button></form><p id="arrival-wait-done" role="status"></p><p id="arrival-wait-again-line" class="door-note" hidden><span id="arrival-wait-again-prompt"></span> <button id="arrival-wait-again" class="door-link" type="button"></button></p><p id="arrival-wait-off" class="door-note"><span id="arrival-wait-change"></span> <button id="arrival-wait-leave" class="door-link" type="button"></button></p><p id="arrival-wait-note" class="door-note"></p><p id="arrival-wait-contact" class="door-note"></p><div class="door-alt"><p id="arrival-sign-in"><span id="arrival-sign-in-ask">Already have a Tilo identity?</span> <button id="arrival-sign-in-button" class="door-link" type="button">Sign in</button></p><p id="arrival-sign-in-note" role="alert"></p><p><button id="arrival-invite-toggle" class="door-link" type="button" aria-expanded="false" aria-controls="arrival-invite">Have an invite link?</button></p><form id="arrival-invite" class="door-field" hidden><input id="arrival-invite-link" type="text" inputmode="url" autocomplete="off" spellcheck="false" placeholder="Paste an invite link" aria-label="Invite link"><button type="submit">Open</button><p id="arrival-invite-error" role="alert"></p></form></div></div><div class="door-foot"></div></section>
   <section id="arrival-reconnect" aria-labelledby="arrival-reconnect-heading"><div class="reconnect-main"><svg aria-hidden="true" viewBox="0 0 100 100" width="44" height="44"><path d="M10.98 31.85 Q10.979892448752274 27.96648782251284 14.4 26.12 L20.26 22.97 Q24.843373493975903 20.50602409638554 24.84 25.71 L24.84 74.29 Q24.843373493975903 79.49397590361446 20.26 77.03 L14.4 73.88 Q10.979892448752274 72.03351217748715 10.98 68.15 Z" fill="#3b4376"/><path d="M89.02 31.85 Q89.02010755124772 27.96648782251284 85.6 26.12 L79.74 22.97 Q75.1566265060241 20.50602409638554 75.16 25.71 L75.16 74.29 Q75.1566265060241 79.49397590361446 79.74 77.03 L85.6 73.88 Q89.02010755124772 72.03351217748715 89.02 68.15 Z" fill="#3b4376"/><rect x="29" y="16" width="42" height="68" rx="6" fill="#6f82ff"/></svg><h1 id="arrival-reconnect-heading"></h1><p id="arrival-reconnect-body"></p><p id="arrival-reconnect-next" aria-hidden="true"></p><p id="arrival-reconnect-said" class="reconnect-said" role="status" aria-live="polite"></p><button id="arrival-reconnect-now" type="button" aria-busy="false"><span class="reconnect-spinner" aria-hidden="true"></span><span id="arrival-reconnect-now-label">Try now</span></button><details id="arrival-reconnect-details"><summary id="arrival-reconnect-summary">Technical details</summary><pre id="arrival-reconnect-text"></pre><button id="arrival-reconnect-copy" class="reconnect-copy" type="button">Copy details</button></details></div></section>
   <div id="bar"><span id="status" role="status">Loading Tilo…</span></div>
   <script type="module">

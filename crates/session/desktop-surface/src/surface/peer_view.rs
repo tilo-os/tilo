@@ -59,6 +59,7 @@ use tilo_actions::{
     ActionOutput, ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType,
     ResourcePresentation, ResourceSpec,
 };
+use ui::widget::DrawChild;
 
 /// The kind of resource a shared surface's tile publishes.
 pub const KIND: &str = "desktop.peer-surface";
@@ -1425,7 +1426,7 @@ impl Widget for PeerView {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.child
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     /// A person's pointer and keys are the tile's own actions, asked exactly as anything else

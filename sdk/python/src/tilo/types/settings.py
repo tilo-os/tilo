@@ -732,11 +732,19 @@ class Display(Resource):
     def auto_brightness(self) -> bool:
         """Read only."""
         return self.fields["auto_brightness"]
+    @property
+    def rotation_lock(self) -> bool:
+        """Read only."""
+        return self.fields["rotation_lock"]
     scale: float
 
     def set_automatic_brightness(self, *, on: bool) -> Run | None:
         """Runs the app's action."""
         return self.action("set-automatic-brightness", on=on)
+
+    def set_rotation_lock(self, *, locked: bool) -> Run | None:
+        """Runs the app's action."""
+        return self.action("set-rotation-lock", locked=locked)
 
 
 class NightLight(Resource):

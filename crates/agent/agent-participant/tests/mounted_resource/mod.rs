@@ -3,6 +3,7 @@ use super::{
     enrol, record_provider, start_browser,
 };
 use tilo_agent_participant::ReplicaActor;
+use tilo_session_client::{Cmd, Outbox};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
 
@@ -250,14 +251,14 @@ pub async fn run() {
     } else {
         native
             .peer
-            .publish(route.clone(), &source.take_mutation().unwrap())
+            .write(route.clone(), &source.take_mutation().unwrap())
             .unwrap();
     }
     for (changed, mutation) in source.take_record_mutations() {
         assert_eq!(changed, part, "every message is in the first part");
         native
             .peer
-            .publish(messages_route.clone(), &mutation)
+            .write(messages_route.clone(), &mutation)
             .unwrap();
     }
     if voice_journey {
@@ -304,10 +305,11 @@ pub async fn run() {
     .await;
     let voice_channel = common::channel(&doc, chat::model::ChannelKind::Voice);
     if voice_journey {
-        use tilo_session_host::{PeerEvent, VoiceEvent};
+        use tilo_session_client::Event;
+        use tilo_session_client::VoiceEvent;
         native
             .peer
-            .voice_call(
+            .send(Cmd::VoiceCall(
                 native.workspace,
                 [40; 16],
                 tilo_relay_protocol::voice::CallOperation::Start {
@@ -319,12 +321,12 @@ pub async fn run() {
                         subscribe: true,
                     },
                 },
-            )
+            ))
             .unwrap();
         tilo_test_env::within("the governor answers the mounted Chat call", async {
             loop {
                 for event in native.events.drain() {
-                    if let PeerEvent::Voice(VoiceEvent::CallResult {
+                    if let Event::Voice(VoiceEvent::CallResult {
                         request, result, ..
                     }) = event
                         && request == [40; 16]
@@ -413,13 +415,13 @@ pub async fn run() {
                         "text": "Native fixture while browser disconnected"}),
                 );
                 if let Some(mutation) = source.take_mutation() {
-                    native.peer.publish(route.clone(), &mutation).unwrap();
+                    native.peer.write(route.clone(), &mutation).unwrap();
                 }
                 for (changed, mutation) in source.take_record_mutations() {
                     assert_eq!(changed, part, "the post is in the first part");
                     native
                         .peer
-                        .publish(messages_route.clone(), &mutation)
+                        .write(messages_route.clone(), &mutation)
                         .unwrap();
                 }
                 let durable = native.peer.barrier().unwrap();
@@ -430,10 +432,10 @@ pub async fn run() {
                                 result.unwrap();
                                 break;
                             }
-                            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                            Err(tilo_session_client::TryRecvError::Empty) => {
                                 tokio::time::sleep(Duration::from_millis(20)).await;
                             }
-                            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            Err(tilo_session_client::TryRecvError::Disconnected) => {
                                 panic!("native durability barrier closed before acknowledgement");
                             }
                         }

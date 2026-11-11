@@ -26,6 +26,9 @@ const CONVERSATION_PREFIX: &str = "chat.workspace/channels/";
 const MESSAGES: &str = "/messages/";
 /// The chat action that records a turn on the reply to its message.
 const RECORD_WORK: &str = "record-work";
+/// How long a turn waits for its conversation to offer `record-work` on its message: an agent
+/// started for the turn reads Chat's catalogue before Chat has republished the message it answers.
+const RECORD_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// The longest id a conversation or a message may have.
 const MAX_ID_CHARS: usize = 256;
 /// The state that ends a turn: the reply's work is finished, and the turn is
@@ -286,17 +289,18 @@ impl Session {
     }
 
     /// The chat action that records work on the reply to the turn's message,
-    /// as the broker publishes it to this agent: absent when the agent's
-    /// catalogue offers no `record-work` on that reply, which is what a
-    /// workspace whose Chat is closed — or whose agent was admitted without
-    /// the chat app's actions — leaves, and the reason the reply a person
-    /// asked for never appears.
+    /// as the broker publishes it to this agent, once it does: an agent started
+    /// for the turn may read the catalogue before Chat republished the message.
+    /// Absent when the catalogue still offers no `record-work` on that reply
+    /// after [`RECORD_WAIT`], which is what a workspace whose Chat is closed —
+    /// or whose agent was admitted without the chat app's actions — leaves,
+    /// and the reason the reply a person asked for never appears.
     fn record_work_action(&mut self, arguments: &Map<String, Value>) -> Option<TaskAction> {
         let message = arguments.get("message").and_then(Value::as_str)?;
         let reply = format!("{MESSAGES}{message}");
-        let offer = {
-            let catalogue = self.task_catalogue();
-            catalogue
+        let offer = |session: &mut Self| {
+            session
+                .task_catalogue()
                 .offers
                 .iter()
                 .find(|offer| {
@@ -305,7 +309,8 @@ impl Session {
                 })
                 .cloned()
         };
-        let Some(offer) = offer else {
+        self.await_catalogue(RECORD_WAIT, |session| offer(session).is_some());
+        let Some(offer) = offer(self) else {
             tracing::warn!(
                 reply = %reply,
                 action = RECORD_WORK,

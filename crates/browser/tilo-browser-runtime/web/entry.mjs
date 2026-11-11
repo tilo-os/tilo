@@ -23,6 +23,7 @@ import {takeLinkSecrets} from './link-secrets.mjs';
 import {UNAVAILABLE, openTarget} from './open-target.mjs';
 import {startRouter} from './router.mjs';
 import {sealedHandle, sealedLink} from './sealed-link.mjs';
+import {nameSiteHost} from './site-host.mjs';
 import {listedAt, listedWorkspaces, workspaceAt} from './workspaces.mjs';
 
 const PRIMARY_RECORD = '@tilo:package-primary';
@@ -300,6 +301,8 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // and the route chosen; admission waits for it, as the way in is its to say.
   const loaded = deps.loadRuntime();
   const entry = await readEntry({mode, location: window.location, fetch: deps.fetch});
+  // The host the site names with its home workspace: the page dials it as named.
+  nameSiteHost(entry.home);
   const linked = loaded.then(runtime => grammar(runtime, entry));
   // Awaited below; a failure is the first door's to report.
   void linked.catch(() => {});
@@ -319,6 +322,9 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   // link it did not use.
   const {damaged = null, ...named} = route;
   route = named;
+  // What a desktop's first frame needs beyond the runtime is fetched while
+  // the page is let in, not once the desktop mounts and lays out.
+  if (route.mode === 'desktop') deps.prefetchDesktop?.();
   const workspaces = listedWorkspaces({home: entry.home, stored: deps.storedWorkspaces?.() ?? []});
   // The page hears which workspace it is getting into, under which entry,
   // and how its links read once the runtime is in, before admission.
@@ -368,9 +374,14 @@ export async function boot({mode, window = globalThis, surface, status, deps, di
   if (damaged) window.history.replaceState(window.history.state, '', link.format(route));
   if (peer && route.target.scope.kind === 'room' && (sealedAdmitted || !route.target.scope.room)) {
     // The workspace is known now: show its canonical link, in place of the
-    // address the link reached the page at.
+    // address the link reached the page at. Not while the first screen of a
+    // setup covers it (first-run.mjs): this workspace is not in front of
+    // the person then, and a reload or Back must not take its link for one
+    // they opened.
     route = {...route, target: {...route.target, scope: {...route.target.scope, room: peer.workspace}}};
-    window.history.replaceState(window.history.state, '', link.format(route));
+    if (window.document?.documentElement?.dataset?.firstRun === undefined) {
+      window.history.replaceState(window.history.state, '', link.format(route));
+    }
   }
   // A listed workspace is shown under its listed name, not its workspace id.
   const scope = route.target.scope;

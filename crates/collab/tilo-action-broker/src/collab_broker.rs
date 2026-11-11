@@ -399,6 +399,14 @@ impl AppActionBroker {
         crate::collab_app_broker::device_host(Arc::clone(&self.state))
     }
 
+    /// The hosts of the workspaces this device takes part in but does not
+    /// host, reached on the sessions the broker sends their actions on: what
+    /// asks such a host its own operations for the person.
+    #[must_use]
+    pub fn hosted_workspaces(&self) -> Option<Arc<dyn crate::services::HostedWorkspaces>> {
+        self.state.hosted_workspaces()
+    }
+
     /// Exact current owner-backed agent identity while the session is live.
     pub fn certified_agent_identity(
         &self,
@@ -998,7 +1006,7 @@ impl BrokerHandle {
     ) -> Result<
         (
             std::os::unix::net::UnixStream,
-            ui::host_worker::PublishedInvocationAuthorizer,
+            ui::invocation_scope::PublishedInvocationAuthorizer,
         ),
         String,
     > {

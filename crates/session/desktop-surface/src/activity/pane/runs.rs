@@ -2,11 +2,11 @@
 //! printed ([`wire::RUN_OUTPUT`]).
 //!
 //! A run is either a recorded marker (an instruction an agent worked across records, with its
-//! steps) or an agent connection's work group (every invocation of one MCP session, which the
-//! history groups as `agent-run`). Both read as the same timeline: each action is one record's
-//! share of the run, opening as what that record is. Both undo the same way: by asking each
-//! changed document's own history to undo the run it grouped under, so a task and a connection's
-//! group are named alike.
+//! steps) or a work group the history keeps (every invocation of one agent connection, or every
+//! step of one agent's run of a task, which the history groups as `agent-run` and `task`). Both
+//! read as the same timeline: each action is one record's share of the run, opening as what that
+//! record is. Both undo the same way: by asking each changed document's own history to undo the
+//! run it grouped under, so a task and a connection's group are named alike.
 //!
 //! A command is never copied into the history. An agent asks a shell session to run a command
 //! line, which queues a request in the session's record; the shell runs it and records the run as
@@ -39,6 +39,8 @@ const REQUESTS: &str = "requests";
 const RUNS: &str = "runs";
 /// The group kind of an agent connection's invocations.
 const AGENT_RUN: &str = ui::history_source::steps::AGENT_RUN;
+/// The group kind of an agent's run of a task.
+const TASK_RUN: &str = ui::history_source::steps::TASK_RUN;
 /// The most bytes of a command's output an action carries.
 const COMMAND_TAIL_BYTES: usize = 4 * 1024;
 /// The most bytes of a command's output a [`wire::RUN_OUTPUT`] read answers: as much as a shell
@@ -90,13 +92,16 @@ struct Segment<'a> {
     entries: Vec<&'a HistoryEntry>,
 }
 
-/// The agent connection whose run `entry` is a change of, when it is one.
-fn agent_run_group(entry: &HistoryEntry) -> Option<&tilo_actions::WorkGroup> {
+/// The run `entry` is a change of, when it is one Activity lists every change of: an agent
+/// connection's work group, or an agent's run of a task. Both are named by their group, which is
+/// what each document's history undoes, and a run a marker records is listed as that marker
+/// rather than again here.
+fn run_group(entry: &HistoryEntry) -> Option<&tilo_actions::WorkGroup> {
     entry
         .context
         .as_ref()
         .and_then(|context| context.group.as_ref())
-        .filter(|group| group.kind == AGENT_RUN)
+        .filter(|group| group.kind == AGENT_RUN || group.kind == TASK_RUN)
 }
 
 impl WorkspaceActivityPane {
@@ -203,9 +208,9 @@ impl WorkspaceActivityPane {
         })
     }
 
-    /// Every agent connection's work no recorded run holds: each MCP session is one run, named as
-    /// its connection named it ("Claude Code #2"), its actions the records it changed in the
-    /// order it changed them.
+    /// Every run the history keeps as a work group that no recorded run holds: one agent
+    /// connection's work, or one agent's run of a task, named as the history names it ("Claude
+    /// Code #2"), its actions the records it changed in the order it changed them.
     fn group_runs(
         &self,
         entries: &[HistoryEntry],
@@ -217,7 +222,7 @@ impl WorkspaceActivityPane {
             if covered.contains(&entry.id) {
                 continue;
             }
-            let Some(group) = agent_run_group(entry) else {
+            let Some(group) = run_group(entry) else {
                 continue;
             };
             match groups.iter_mut().find(|(held, _)| held.id == group.id) {
@@ -345,13 +350,13 @@ impl WorkspaceActivityPane {
         app != TERMINAL_APP && !record.is_empty()
     }
 
-    /// The agent connection whose run the timeline selection names, with the documents its changes
-    /// in the selection are: the selection is one connection's work.
+    /// The run whose work group the timeline selection names, with the documents its changes in
+    /// the selection are: the selection is one run's work.
     pub(super) fn selected_group_run(&self) -> Option<UndoRun> {
         let entries = self.selected_entries();
         let mut id: Option<String> = None;
         for entry in entries {
-            let Some(group) = agent_run_group(entry) else {
+            let Some(group) = run_group(entry) else {
                 continue;
             };
             match &id {
@@ -362,7 +367,7 @@ impl WorkspaceActivityPane {
         let id = id?;
         let members = entries
             .iter()
-            .filter(|entry| agent_run_group(entry).is_some_and(|group| group.id == id))
+            .filter(|entry| run_group(entry).is_some_and(|group| group.id == id))
             .collect::<Vec<_>>();
         Some(UndoRun {
             steps: self.run_steps(&members),

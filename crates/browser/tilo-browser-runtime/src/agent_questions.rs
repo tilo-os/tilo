@@ -15,7 +15,6 @@
 use std::cell::RefCell;
 use std::collections::{HashSet, VecDeque};
 
-use tilo_relay_client::MemberApprover;
 use tilo_relay_client::questions::{Answered, MemberQuestions, QuestionSheet, answer_questions};
 use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_sheets::Seat as _;
@@ -25,7 +24,7 @@ use wasm_bindgen::prelude::*;
 
 use crate::browser::sleep_ms;
 use crate::over_page::OverSheet;
-use crate::peer::{PageSigner, host_at};
+use crate::peer::PageSigner;
 
 /// How often the page asks a host for new questions.
 const POLL_MS: u32 = 2_000;
@@ -41,32 +40,35 @@ struct Waiting {
 thread_local! {
     /// The questions waiting, oldest first: the sheet shows the first.
     static WAITING: RefCell<VecDeque<Waiting>> = RefCell::default();
-    /// The hosts this page answers, by their endpoint.
-    static HOSTS: RefCell<HashSet<iroh::EndpointId>> = RefCell::default();
+    /// The sessions (`WasmPeer::id`) whose host this page answers.
+    static PEERS: RefCell<HashSet<u32>> = RefCell::default();
 }
 
-/// Answer what the person's agents on the host at `address`
-/// (`hostInfo().address`, JSON) ask them, as the person whose root custody
-/// the page holds (`root`) — the same rule as a native device's: a page
-/// without the root is no approver, and the host refuses it. Once per host;
-/// asking again for a host already answered does nothing.
+/// Answer what the person's agents on the host of the page's session `peer`
+/// (`WasmPeer::id`) ask them, as the person whose root custody the page holds
+/// (`root`) — the same rule as a native device's: a page without the root is
+/// no approver, and the host refuses it. Every question and answer goes over
+/// that session's own endpoint; the page dials nothing else for them. Once
+/// per session, until it closes; asking again does nothing.
 ///
 /// # Errors
-/// `address` names no host, or `root` is no custody.
-pub(crate) fn answer_for_root(address: &str, root: &JsValue) -> Result<(), JsError> {
-    let host = host_at(address)?;
+/// `root` is no custody.
+pub(crate) fn answer_for_root(peer: u32, root: &JsValue) -> Result<(), JsError> {
     let root = PageSigner::from_js(root)?;
-    if !HOSTS.with_borrow_mut(|hosts| hosts.insert(host.addr().id)) {
+    if crate::peer_sync::handle_of(peer).is_none()
+        || !PEERS.with_borrow_mut(|peers| peers.insert(peer))
+    {
         return Ok(());
     }
     wasm_bindgen_futures::spawn_local(async move {
-        let approver = MemberApprover::new(host);
         let mut retry = POLL_MS;
-        loop {
+        // A session the page closed is asked nothing more.
+        while let Some(session) = crate::peer_sync::handle_of(peer) {
             let began = web_time::Instant::now();
             let (answered, mut answers) = mpsc::unbounded_channel();
+            let member_host = tilo_session_client::member_host(&session);
             let mut host = MemberQuestions {
-                host: &approver,
+                host: &member_host,
                 root: &root,
             };
             let error =
@@ -74,6 +76,8 @@ pub(crate) fn answer_for_root(address: &str, root: &JsValue) -> Result<(), JsErr
                     sleep_ms(POLL_MS)
                 })
                 .await;
+            drop(member_host);
+            drop(session);
             tracing::debug!(%error, retry_in_ms = retry, "agent questions: the host was not reached");
             // A session that ran a while starts its backoff afresh.
             if began.elapsed().as_millis() > u128::from(RETRY_MAX_MS) {
@@ -82,6 +86,7 @@ pub(crate) fn answer_for_root(address: &str, root: &JsValue) -> Result<(), JsErr
             sleep_ms(retry).await;
             retry = retry.saturating_mul(2).min(RETRY_MAX_MS);
         }
+        PEERS.with_borrow_mut(|peers| peers.remove(&peer));
     });
     Ok(())
 }

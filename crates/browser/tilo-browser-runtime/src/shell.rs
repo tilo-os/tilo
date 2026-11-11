@@ -49,6 +49,7 @@ use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::vello::Scene;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use ui::winit::event::{ElementState, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -78,15 +79,16 @@ pub(crate) enum HostRequest {
     /// profile names them, and wears an account's picture until the person
     /// uploads their own (`onHostAction('set-linked', {accounts})`).
     Linked(Vec<tilo_app::linked_accounts::ProfileLink>),
-    /// The directory's door let this person into a workspace
-    /// (`mountDesktop({onJoinGranted})`): the invitation it granted them, the
-    /// one-time token the page redeems it with at `origin`, and the workspace
-    /// to open.
+    /// The person chose a workspace in the directory
+    /// (`mountDesktop({onJoinGranted})`): the page enters it through its
+    /// `door` on the session it opens with the door's host at `origin`, or
+    /// redeems the `invitation` a pasted link brought, and opens it.
     Joined {
         origin: String,
-        invitation: String,
-        #[serde(rename = "admissionToken")]
-        admission_token: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        door: Option<String>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        invitation: Option<String>,
         workspace: String,
         name: String,
     },
@@ -384,6 +386,12 @@ fn mount_people(
             ),
             handle: handle.clone(),
             sync: peer.and_then(crate::peer_sync::client),
+            // Who is here as the bar's faces are drawn from them: the page's own roster, which
+            // also holds the runs the workspace's host speaks for on a track of its own.
+            here: {
+                let chrome = Rc::clone(chrome);
+                Rc::new(move |tree: &mut DesktopTree| chrome.place_people(tree))
+            },
             intents: Rc::clone(intents),
             invitable,
         },
@@ -501,7 +509,7 @@ pub(crate) struct BrowserShell {
     /// waits: the session's own question sheet, made once its code is in.
     questions: crate::over_page::OverPage<crate::over_page::LazyQuestions>,
     /// The window menu a secondary click on a window's bar opens, over everything.
-    window_menu: crate::window_menu::PageWindowMenu,
+    window_menu: tilo_desktop_surface::surface::window_menu::popup::WindowMenuPopup,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -647,13 +655,15 @@ impl BrowserShell {
         let tree = handle.read(Clone::clone);
         let bar = TopBarChrome::from_tree(&tree)
             .with_chrome(source.clone())
-            .with_tilo_mark();
+            .with_tilo_mark()
+            // A phone shows the time above the page: the bar's own would say it twice.
+            .with_device_clock();
         let mut tilo_menu = TiloMenu::new(AboutVariant::Browser, &offers.about);
         // Offered only where the page holds a destination for reports.
         if chrome.shared.feedback.borrow().is_some() {
             tilo_menu = tilo_menu.with_feedback();
         }
-        let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
+        let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
         // The page has one window and no compositor to give an app's card one
         // of its own: the desk hosts the cards itself, at the place its
         // floating column gives them.
@@ -679,6 +689,9 @@ impl BrowserShell {
         );
         let walk = tilo_session::switcher::WindowWalk::new(handle.clone());
         top.set_switcher(walk.panel());
+        // What a secondary click on a window's bar offers, over everything.
+        let window_menu =
+            tilo_desktop_surface::surface::window_menu::popup::WindowMenuPopup::new(handle.clone());
         // The page's directory: over the desk, from this page's own site,
         // person and workspaces (`mountDesktop({directory})`).
         let directory = crate::over_page::OverPage::new(crate::over_page::LazySheet::directory(
@@ -728,7 +741,7 @@ impl BrowserShell {
             invite,
             guide,
             questions: crate::over_page::OverPage::new(crate::over_page::LazyQuestions::new()),
-            window_menu: crate::window_menu::PageWindowMenu::new(),
+            window_menu,
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -792,6 +805,16 @@ impl BrowserShell {
         self.window_menu
             .handle_event(event, &mut ctx.reborrow(ctx.path, node));
         *ctx.handled
+    }
+
+    /// Open the menu a window's bar asked for, and do the row the person chose in it. Whether
+    /// anything changed.
+    fn follow_window_menu(&mut self) -> bool {
+        let followed = self.window_menu.follow();
+        if let (Some(row), Some(error)) = (&followed.chosen, &followed.refused) {
+            tracing::warn!(%error, row, "the window menu's row was refused");
+        }
+        followed.changed
     }
 
     /// Whose view this page follows, as the person's own presence says it: the roster's banner
@@ -1135,9 +1158,11 @@ impl BrowserShell {
     /// back.
     fn page_intent(&mut self, intent: ChromeIntent) -> Option<ChromeIntent> {
         match intent {
-            ChromeIntent::ToggleQuickSettings | ChromeIntent::ShowQuickSettings => {
-                // The page has no quick settings: the cluster opens the
-                // notification centre.
+            ChromeIntent::ToggleQuickSettings
+            | ChromeIntent::ShowQuickSettings
+            | ChromeIntent::ToggleNotifications => {
+                // The page has no quick settings: the cluster and its bell open
+                // the notification centre.
                 let open = self
                     .handle
                     .presentation()
@@ -1229,22 +1254,7 @@ impl BrowserShell {
                 DesktopAsk::Intent(intent) => {
                     let _ = self.page_intent(intent);
                 }
-                // The workspace menu's "Join a workspace…", which the page
-                // offers with the session's host actions: the directory the
-                // session's shell opens, over the page's own site.
-                DesktopAsk::HostAction(id) if id == tilo_desktop::desktop_host::JOIN_WORKSPACE => {
-                    self.directory.open();
-                }
-                DesktopAsk::HostAction(id) => {
-                    // The empty desk's welcome verbs are the desktop's own,
-                    // carried out here; every other host action goes to the
-                    // page that published it.
-                    if let Some(card) = LaunchpadAction::from_host_id(&id) {
-                        self.launchpad(card);
-                    } else {
-                        self.requests.borrow_mut().push(HostRequest::Action(id));
-                    }
-                }
+                DesktopAsk::HostAction(id) => self.host_action(id),
                 DesktopAsk::ReportProblem => self.report_problem(),
                 // The person's account, billing beside who they are, is Settings' Billing page.
                 DesktopAsk::AccountSettings => {
@@ -1617,6 +1627,23 @@ impl BrowserShell {
         offered
     }
 
+    /// Carry out the host action `id`, however it was chosen: a card on the
+    /// empty desk, the workspace menu, or its row in search.
+    fn host_action(&self, id: String) {
+        // The workspace menu's "Join a workspace…": the directory the
+        // session's shell opens, over the page's own site.
+        if id == tilo_desktop::desktop_host::JOIN_WORKSPACE {
+            self.directory.open();
+        } else if let Some(card) = LaunchpadAction::from_host_id(&id) {
+            // The empty desk's welcome verbs are the desktop's own, carried
+            // out here.
+            self.launchpad(card);
+        } else {
+            // Every other host action goes to the page that published it.
+            self.requests.borrow_mut().push(HostRequest::Action(id));
+        }
+    }
+
     /// A verb of the empty desk's launchpad, as its card, its host action
     /// and its resource action all ask for it: the app action the verb
     /// declares, what only the page can do, and else the app itself.
@@ -1641,17 +1668,15 @@ impl BrowserShell {
 }
 
 /// The launchpad's words in the page: what Tilo is and that work is kept
-/// safe, and the page's own search chord.
-fn welcome_copy(mac: bool) -> LaunchpadCopy {
+/// safe, and how its cards are walked. The page's search chord is taught once,
+/// by the floating hint at the search ([`tilo_desktop::control_hints`]), not
+/// again in these words.
+fn welcome_copy() -> LaunchpadCopy {
     let t = tilo_desktop_surface::i18n::t;
     LaunchpadCopy {
         title: Some(t("browser-welcome-title")),
         subtitle: Some(t("browser-welcome-subtitle")),
-        keyboard_hint: Some(t(if mac {
-            "browser-welcome-hint-mac"
-        } else {
-            "browser-welcome-hint"
-        })),
+        keyboard_hint: Some(t("browser-welcome-hint")),
     }
 }
 
@@ -1671,7 +1696,7 @@ impl Widget for BrowserShell {
         changed |= self.follow_people();
         changed |= self.follow_arrived_agents();
         // A window's bar asked for its menu, or the person chose one of its rows.
-        changed |= self.window_menu.follow(&self.handle);
+        changed |= self.follow_window_menu();
         changed |= self.follow_followed();
         // Whether the person may invite someone here, as the roster's footer offers it, and whom
         // they follow, which the windows they are in come forward with.
@@ -1733,9 +1758,9 @@ impl Widget for BrowserShell {
         // performs them when it reads this frame's status.
         let choices = self.handle.take_host_choices();
         changed |= !choices.is_empty();
-        self.requests
-            .borrow_mut()
-            .extend(choices.into_iter().map(HostRequest::Action));
+        for id in choices {
+            self.host_action(id);
+        }
         changed
     }
 
@@ -1822,26 +1847,31 @@ impl Widget for BrowserShell {
     ) {
         let started = ui::time::now();
         self.drawn_minute.set(minute());
-        self.desk.draw(scene, transform, text, theme, presence);
+        self.desk
+            .draw_child(scene, transform, text, theme, presence);
         // Last of the desktop, so what the bar opens below its band stays
         // above windows.
-        self.top.draw(scene, transform, text, theme, presence);
+        self.top.draw_child(scene, transform, text, theme, presence);
         // Who is here, over the desk: the session's roster, its cards and every other person's
         // pointer, on the layer it placed.
         for layer in self.layers.iter_mut() {
-            layer.draw(scene, transform, text, theme, presence);
+            layer.draw_child(scene, transform, text, theme, presence);
         }
         // Over everything but the picker, while the person invites someone
         // or browses the directory.
-        self.invite.draw(scene, transform, text, theme, presence);
-        self.directory.draw(scene, transform, text, theme, presence);
+        self.invite
+            .draw_child(scene, transform, text, theme, presence);
+        self.directory
+            .draw_child(scene, transform, text, theme, presence);
         // Over everything, while the person reads or changes the keys.
-        self.guide.draw(scene, transform, text, theme, presence);
+        self.guide
+            .draw_child(scene, transform, text, theme, presence);
         // Over everything, while an agent waits on the person's answer.
-        self.questions.draw(scene, transform, text, theme, presence);
+        self.questions
+            .draw_child(scene, transform, text, theme, presence);
         // A window's menu, where its bar was clicked.
         self.window_menu
-            .draw(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);

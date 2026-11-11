@@ -85,8 +85,8 @@ pub struct WorkspaceShells {
     files_of: Option<Box<FilesOf>>,
     /// Where Linux programs run, when this host runs them.
     vms: Option<HostedTarget>,
-    /// The hosted-VM service browser environments start on, when it is not
-    /// the one the environment names.
+    /// The hosted-VM service the workspaces' Browser starts on, when it is
+    /// not the one the environment names.
     browsers: Option<PathBuf>,
     sessions: Mutex<HashMap<(String, String), Shared>>,
 }
@@ -169,7 +169,7 @@ impl WorkspaceShells {
         self.vms.is_some()
     }
 
-    /// The same shells, whose browser environments start on the hosted-VM
+    /// The same shells, whose workspaces' Browser starts on the hosted-VM
     /// service at `socket` (the one the environment names, unless a host
     /// names it another way).
     #[must_use]
@@ -179,12 +179,21 @@ impl WorkspaceShells {
     }
 
     /// Where this host's hosted-VM service listens, when it runs one: the
-    /// programs' VMs and the workspaces' browser environments are its.
+    /// workspaces' VMs, which run their programs and their Browser, are its.
     #[must_use]
     pub fn hosted_socket(&self) -> Option<PathBuf> {
         self.browsers
             .clone()
             .or_else(|| self.vms.as_ref().map(|target| target.socket.clone()))
+    }
+
+    /// The size the workspaces' VMs run at.
+    #[must_use]
+    pub fn hosted_size(&self) -> legacy_vm::hosted::size::VmSize {
+        self.vms
+            .as_ref()
+            .map(|target| target.size)
+            .unwrap_or_default()
     }
 
     /// The directory `workspace`'s shells work in: its files on this host.

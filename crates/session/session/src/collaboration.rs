@@ -66,11 +66,8 @@ impl Session {
             y,
         });
         let own = sync.own();
-        let (r, g, b) = sync
-            .here()
-            .borrow()
-            .own_rgb()
-            .unwrap_or(ui::presence::UNSETTLED_RGB);
+        let (label, identity) = crate::people::own_face(&own, &self.shared.person);
+        let (r, g, b) = crate::people::own_rgb(&identity);
         let shell = self.shared.handle.read(|tree| {
             shell(
                 tree,
@@ -80,7 +77,7 @@ impl Session {
                 &Focus {
                     place,
                     focused,
-                    label: own.label.trim().to_owned(),
+                    label: label.clone(),
                     colour: format!("#{r:02x}{g:02x}{b:02x}"),
                 },
             )

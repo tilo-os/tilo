@@ -23,14 +23,17 @@
     reason = "in a test these are the assertion, not a hazard; one scenario in order"
 )]
 
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 pub(crate) mod support;
 
 #[cfg(test)]
 #[path = "workspace_actions/agent_mcp.rs"]
 mod agent_mcp;
+#[cfg(test)]
+#[path = "workspace_actions/chat_post.rs"]
+mod chat_post;
 mod common;
 #[cfg(test)]
 #[path = "workspace_actions/delete_workspace.rs"]
@@ -80,6 +83,9 @@ mod member_roles;
 #[cfg(test)]
 #[path = "workspace_actions/own_agent.rs"]
 mod own_agent;
+#[cfg(test)]
+#[path = "workspace_actions/public_records.rs"]
+mod public_records;
 #[path = "workspace_actions/resource_support.rs"]
 mod resource_support;
 #[cfg(test)]
@@ -104,6 +110,9 @@ use std::sync::Arc;
 use std::time::Duration;
 #[cfg(test)]
 use std::time::Instant;
+#[cfg(test)]
+use tilo_session_client::Cmd;
+use tilo_session_client::Outbox;
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::InvocationId;
@@ -116,7 +125,7 @@ use tilo_actions::{
 };
 use tilo_agent_participant::{ModelChoice, Replica, ReplicaActor, Seed, record_provider};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_host::Host;
+use tilo_relay_client::Host;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use harness::hosted::{Hosted, Options};
@@ -209,13 +218,13 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
     };
     browser
         .peer
-        .publish(record, &source.take_mutation().unwrap())
+        .write(record, &source.take_mutation().unwrap())
         .unwrap();
     // The message's own record is the part, published on its own route.
     let route = resource_support::part_route(&workspace.workspace, &part);
     for (changed, mutation) in source.take_record_mutations() {
         assert_eq!(changed, part);
-        browser.peer.publish(route.clone(), &mutation).unwrap();
+        browser.peer.write(route.clone(), &mutation).unwrap();
     }
     let provider = record_provider(&route);
     let policy = ui::permissions::PermissionContext::member_of(
@@ -304,9 +313,14 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         elsewhere.rows.is_empty(),
         "another app's rows cannot be this record's views"
     );
-    assert!(
-        elsewhere.locator.is_none(),
-        "an answer that found nothing names no page to browse"
+    // Where the record opens is the caller's to know once they may read it, views or not.
+    assert_eq!(
+        elsewhere
+            .locator
+            .as_ref()
+            .map(|locator| locator.provider.as_str()),
+        Some(provider.as_str()),
+        "an answer with no views still names where the record opens"
     );
     let unscoped = browser.catalogue(query.clone()).await.unwrap();
     assert_eq!(
@@ -342,7 +356,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             .await
             .unwrap();
         assert!(empty.rows.is_empty());
-        assert!(empty.locator.is_none());
+        assert_eq!(
+            empty.locator.map(|locator| locator.provider),
+            Some(provider.clone()),
+            "the record opens whether or not it holds the views asked for"
+        );
     }
     assert!(
         browser
@@ -594,7 +612,7 @@ impl Page {
         };
         let mutation = page.take_mutation().unwrap();
         before_publish(&route);
-        self.peer.publish(route.clone(), &mutation).unwrap();
+        self.peer.write(route.clone(), &mutation).unwrap();
         // The host never echoes a device's own change back to it.
         let bytes = match mutation {
             collab_types::DocumentMutation::Snapshot(bytes)
@@ -754,7 +772,7 @@ async fn a_page_whose_keys_have_not_arrived_holds_back_no_other() {
     };
     // The page opens the record the host made for it, as a person opening the
     // record does: without keys it holds that open record sealed.
-    browser.peer.open_route(created.clone()).unwrap();
+    browser.peer.send(Cmd::OpenRoute(created.clone())).unwrap();
     let provider = record_provider(&created);
     let new_sheet = browser
         .catalogue(CatalogueQuery {

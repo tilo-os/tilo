@@ -23,6 +23,7 @@ use tilo_desktop::launchpad::LaunchpadAppAction;
 use tilo_desktop::profile_card::{
     OtherPerson, ProfileAction, ProfileCard, ProfileChoice, ProfileGroup, ProfileModel,
 };
+use tilo_desktop_model::DesktopTree;
 use tilo_desktop_surface::DesktopHandle;
 use tilo_desktop_surface::navigation::{ActivityView, ChromeEffect, DeskEffect};
 use tilo_session_core::door::{Look, Published};
@@ -71,12 +72,22 @@ pub enum PeopleAsk {
 /// identity derives, so their face is the same on every surface and on every device that paints
 /// them.
 pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
-    let chosen = settings_store::identity::COLOUR
-        .get()
-        .as_deref()
-        .and_then(ui::tokens::PresenceHue::from_id);
-    let hue = chosen.unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity));
-    ui::presence::identity_rgb(hue)
+    ui::presence::identity_rgb(own_hue(identity))
+}
+
+/// The hue of [`own_rgb`].
+pub(crate) fn own_hue(identity: &str) -> ui::tokens::PresenceHue {
+    ui::local_identity::own_colour()
+        .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity))
+}
+
+/// The colour this person's own avatar and card wear: in a live room, the one everyone here draws
+/// them in (`HereState::own_rgb`, settled over the whole room and published on their pointer), so
+/// they see themselves in the colour everyone else sees; with no room settled yet, [`own_rgb`].
+pub(crate) fn own_live_rgb(sync: Option<&crate::sync::Client>, identity: &str) -> (u8, u8, u8) {
+    sync.and_then(|sync| sync.here().borrow().own_rgb())
+        .filter(|rgb| *rgb != ui::presence::UNSETTLED_RGB)
+        .unwrap_or_else(|| own_rgb(identity))
 }
 
 /// This person as their own surfaces show them: the name they go by here, and the identity their
@@ -318,6 +329,17 @@ impl People {
     /// Open the roster at the person `person` , their card in the roster's place: a press on them
     /// elsewhere (a face in the bar, a wave, the launcher) lands here.
     pub fn show_person(&self, person: &str) {
+        // Their card stands already: the press asks for everyone here, in the card's place. The bar
+        // has no people button while it shows a face, so this is how a pointer reaches the roster.
+        if self.open.get() && self.shown.borrow().card_open.as_deref() == Some(person) {
+            let mut shown = self.shown.borrow_mut();
+            shown.own_card = false;
+            shown.card_of = None;
+            shown.close_card = true;
+            drop(shown);
+            self.redraw();
+            return;
+        }
         // A row this roster has not read yet still opens: the next frame reads it and the card
         // comes up under it.
         {
@@ -493,6 +515,11 @@ pub struct Given {
     pub handle: DesktopHandle,
     /// Who is here, when this session takes part in the collaboration plane.
     pub sync: Option<Rc<crate::sync::Client>>,
+    /// Who is here, written into a copy of the desk's tree as its collaborators: what the bar's
+    /// faces are drawn from, so the roster they open lists the same people. A host that hears
+    /// some of them on a track of its own (the runs a workspace's host speaks for) writes them
+    /// in here as it does for the bar.
+    pub here: Rc<dyn Fn(&mut DesktopTree)>,
     /// Where the chrome takes the intents the roster raises.
     pub intents: Rc<RefCell<Vec<ChromeIntent>>>,
     /// Whether the person may invite someone into the workspace in front.
@@ -520,6 +547,7 @@ pub fn mount(
         drawn: Cell::new(0),
         seated: given.seated,
         sync: given.sync,
+        here: given.here,
         notes: given.notes,
         apps: given.apps,
         intents: given.intents,
@@ -575,6 +603,9 @@ struct Panel {
     /// names the root key they are here by.
     seated: String,
     sync: Option<Rc<crate::sync::Client>>,
+    /// Who is here, written into the desk's collaborators as the bar's faces read them
+    /// ([`Given::here`]).
+    here: Rc<dyn Fn(&mut DesktopTree)>,
     /// What each window of the desk shows, by its tab: where a person's record stands, so the
     /// roster places them in the window they work in.
     notes: Rc<dyn Fn() -> std::collections::BTreeMap<u64, String>>,
@@ -637,19 +668,18 @@ impl Panel {
         self.open.set(false);
     }
 
-    /// Open the card a face, a wave or the launcher asked for where the roster stands, and draw it:
-    /// the person's card, as the web desk shows it, from the same model. The card is the roster's
-    /// detail — the person, with their devices — not a second panel beside it. Answers whether the
-    /// card now stands there.
-    fn draw_card(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        shown: &mut Shown,
-    ) -> bool {
+    /// Open the card a face, a wave or the launcher asked for where the roster stands, or close the
+    /// one the roster came back in place of: the person's card, as the web desk shows it, from the
+    /// same model. The card is the roster's detail — the person, with their devices — not a second
+    /// panel beside it.
+    ///
+    /// Opening a card builds its widgets anew and drops the ones that stood there, so it is done
+    /// as the panel is laid out, never while it draws: the frame's layout maps point at the
+    /// widgets it laid out, and input read through them until the next frame (the pointer's
+    /// shape, a tooltip) would reach freed ones.
+    fn settle_card(&mut self, theme: &Theme) {
+        let roster = Rc::clone(&self.shown);
+        let mut shown = roster.borrow_mut();
         if shown.close_card {
             shown.close_card = false;
             self.profile.close();
@@ -676,6 +706,24 @@ impl Panel {
                 shown.card_open = self.profile.is_open().then_some(who);
             }
         }
+    }
+
+    /// Whether a card was asked to open or close since the panel was last laid out
+    /// ([`Self::settle_card`]).
+    fn card_asked(&self) -> bool {
+        let shown = self.shown.borrow();
+        shown.close_card || shown.own_card || shown.card_of.is_some()
+    }
+
+    /// Draw the card standing in the roster's place. Answers whether one stands there.
+    fn draw_card(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) -> bool {
         if self.profile.is_open() {
             self.profile
                 .draw_overlay(scene, transform, text, theme, presence);
@@ -752,7 +800,7 @@ impl Panel {
         // The identity's key is the person's on every device: the card shows it short, with Copy,
         // and the roster looks every face up by it.
         let key = own.user.clone();
-        let (red, green, blue) = own_rgb(&identity);
+        let (red, green, blue) = own_live_rgb(self.sync.as_deref(), &identity);
         ProfileModel {
             name,
             identity,
@@ -889,12 +937,9 @@ impl Panel {
             .sync
             .as_ref()
             .map_or_else(String::new, |sync| sync.publisher().to_string());
-        let app_name = |_: &str| None;
         let records = (self.notes)();
         let mut tree = self.handle.read(Clone::clone);
-        if let Some(sync) = &self.sync {
-            sync.show(&mut tree, &records, &app_name);
-        }
+        (self.here)(&mut tree);
         let (rows, _) = collaborator_roster_rows_named(&tree, &own, None);
         let workspace = tree
             .active_workspace()
@@ -1309,11 +1354,7 @@ impl Panel {
         shown: &mut Shown,
         panel: Option<Rect>,
     ) {
-        let card_stands = if shown.card_of.is_some() || shown.own_card || self.profile.is_open() {
-            self.draw_card(scene, transform, text, theme, presence, shown)
-        } else {
-            false
-        };
+        let card_stands = self.draw_card(scene, transform, text, theme, presence);
         if card_stands {
             return;
         }
@@ -1498,6 +1539,7 @@ impl Widget for Panel {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt;
+        self.settle_card(theme);
         // The card belongs to the roster: a roster that closed took it with it, and the card's
         // place among these children with that.
         if !self.open.get() {
@@ -1610,7 +1652,7 @@ impl Widget for Panel {
     fn take_structure_dirty(&mut self) -> bool {
         let open = self.profile.is_open();
         let card = self.profile.take_structure_dirty();
-        card || open != self.card_node.is_some()
+        card || open != self.card_node.is_some() || self.card_asked()
     }
 
     fn draw(

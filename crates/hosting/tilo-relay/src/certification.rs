@@ -25,6 +25,7 @@ use std::time::Duration;
 use iroh::endpoint::Connection;
 use iroh::protocol::{AcceptError, ProtocolHandler};
 use tilo_clock::unix_now_ns;
+use tilo_relay_client::link::{Link, LinkSend};
 use tilo_user_identity::{
     CertificationPolicy, CertificationRequest, DeviceCert, RevocationList, verify_issued_cert,
 };
@@ -87,6 +88,10 @@ type AnsweredInvites = std::collections::HashSet<([u8; 32], [u8; 16])>;
 /// (`crate::web`'s login codes): only a request whose person and invite a
 /// claim of a sign-in code named, once.
 pub(crate) trait StandInApprover: Send + Sync {
+    /// Whether a computer resolving a setting-up code here made `request`,
+    /// so its tab, which wrote the link the code names, answers it: queued
+    /// even before that person was let into a workspace this host serves.
+    fn sets_up(&self, request: &CertificationRequest, now_ns: u64) -> bool;
     /// Whether a claim on this host expects `request`, and that person's
     /// stand-in may approve it now.
     fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool;
@@ -416,8 +421,8 @@ impl CertificationProtocol {
     /// One approver command from a member's root, answered once.
     async fn serve_member(
         &self,
-        connection: &Connection,
-        mut send: iroh::endpoint::SendStream,
+        connection: &Link,
+        mut send: LinkSend,
         approval: MemberApproval,
     ) -> Result<(), AcceptError> {
         let reply = if self.admits(approval.user_public_key).await {
@@ -435,16 +440,23 @@ impl CertificationProtocol {
 
     async fn serve_requester(
         &self,
-        connection: &Connection,
-        mut send: iroh::endpoint::SendStream,
+        connection: &Link,
+        mut send: LinkSend,
         request: CertificationRequest,
     ) -> Result<(), AcceptError> {
         let expires_at_ns = request.expires_at_ns;
         let now = unix_now_ns();
         // A member of a workspace this host serves queues their own devices
         // beside the host's own, answered by their root rather than the
-        // owner's.
-        let member = self.admits(request.user_public_key).await;
+        // owner's. A person's tab shows its agent a setting-up code before
+        // the Lounge has let it into a workspace here, so a computer that
+        // resolves that code is queued the same way: once its request
+        // arrives, the tab is the one that answers it.
+        let member = self.admits(request.user_public_key).await
+            || self
+                .stand_in
+                .get()
+                .is_some_and(|codes| request.invite != [0; 16] && codes.sets_up(&request, now));
         // A request a person's stand-in here expects is queued like theirs,
         // whether or not they are a member of a workspace this host serves.
         let stand_in = self
@@ -471,7 +483,7 @@ impl CertificationProtocol {
         let wait = Duration::from_nanos(expires_at_ns.saturating_sub(now));
         let reply = tokio::select! {
             reply = answered(answer, wait) => reply,
-            _ = connection.closed() => {
+            () = connection.closed() => {
                 self.lock().remove(&digest);
                 return Ok(());
             }
@@ -485,9 +497,9 @@ impl CertificationProtocol {
 
     async fn serve_approver(
         &self,
-        connection: &Connection,
-        mut send: iroh::endpoint::SendStream,
-        mut recv: iroh::endpoint::RecvStream,
+        connection: &Link,
+        mut send: LinkSend,
+        mut recv: tilo_relay_client::link::LinkRecv,
         hello: auth::Hello,
     ) -> Result<(), AcceptError> {
         // Only the owner's devices that may admit devices approve, checked
@@ -694,27 +706,37 @@ impl CertificationProtocol {
     }
 }
 
-async fn finish(
-    connection: &Connection,
-    mut send: iroh::endpoint::SendStream,
-) -> Result<(), AcceptError> {
-    send.finish().map_err(|error| io(&error))?;
+async fn finish(connection: &Link, mut send: LinkSend) -> Result<(), AcceptError> {
+    send.finish();
     let _ = tokio::time::timeout(CLOSE_GRACE, connection.closed()).await;
     Ok(())
 }
 
 impl ProtocolHandler for CertificationProtocol {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
-        let (send, mut recv) = connection.accept_bi().await?;
+        self.serve(&Link::iroh(connection)).await
+    }
+}
+
+impl CertificationProtocol {
+    /// Serve the one conversation `connection` opens with, whichever carrier
+    /// it came over: a connection on the certification ALPN, or a
+    /// WebTransport session at its path.
+    ///
+    /// # Errors
+    ///
+    /// The conversation did not decode, or its stream failed.
+    pub(crate) async fn serve(&self, connection: &Link) -> Result<(), AcceptError> {
+        let (send, mut recv) = connection.accept_bi().await.map_err(|error| io(&error))?;
         let open: CertifyOpen =
             postcard::from_bytes(&read_frame(&mut recv, MAX_CERTIFY_FRAME_BYTES).await?)
                 .map_err(|error| io(&error))?;
         match open {
-            CertifyOpen::Request(request) => self.serve_requester(&connection, send, request).await,
+            CertifyOpen::Request(request) => self.serve_requester(connection, send, request).await,
             CertifyOpen::Approver(hello) => {
-                self.serve_approver(&connection, send, recv, hello).await
+                self.serve_approver(connection, send, recv, hello).await
             }
-            CertifyOpen::Member(approval) => self.serve_member(&connection, send, approval).await,
+            CertifyOpen::Member(approval) => self.serve_member(connection, send, approval).await,
         }
     }
 }

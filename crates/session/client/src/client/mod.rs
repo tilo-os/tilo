@@ -9,7 +9,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use collab_types::presence::Presence as Frame;
-use iroh::{EndpointAddr, EndpointId};
+use iroh_base::{EndpointAddr, EndpointId};
 use neighbour_wire::NeighbourMsg;
 use tilo_desktop_model::DesktopTree;
 
@@ -47,6 +47,7 @@ pub trait Host: 'static {
 
     /// The device `workspace`'s governance pins as its host, as this device verified it: the only
     /// one whose word for the runs it executes this session hears ([`Client::set_workspace_host`]).
+    /// `None` when this host cannot tell, which leaves the host the board has.
     fn workspace_host(&self, _workspace: &str) -> Option<[u8; 32]> {
         None
     }
@@ -95,6 +96,7 @@ pub struct Client {
     endpoint: EndpointAddr,
     /// This device's endpoint itself, once it has bound: what the session's traffic runs on, and
     /// what names this device.
+    #[cfg(not(target_arch = "wasm32"))]
     endpoint_handle: std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>>,
     /// The protocols this session was handed to serve beside its own, by ALPN: what it answers on
     /// this device's endpoint, so the client can say whether it serves one.
@@ -145,6 +147,7 @@ impl Client {
             sibling_arrived: Cell::new(false),
             personal: RefCell::new(Vec::new()),
             endpoint: device.endpoint,
+            #[cfg(not(target_arch = "wasm32"))]
             endpoint_handle: std::sync::Arc::new(std::sync::OnceLock::new()),
             beside: Vec::new(),
         }
@@ -170,6 +173,7 @@ impl Client {
 
     /// The endpoint this device bound, for a host that serves more on it than the plane's own
     /// traffic.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn bound_to(
         mut self,
@@ -229,11 +233,14 @@ impl Client {
                 let _ = outgoing.send(Cmd::Leave(topic));
             },
         );
-        // Each workspace's board hears the runs its host speaks for from that host alone.
+        // Each workspace's board hears the runs its host speaks for from that host alone. A host
+        // that cannot tell (a page's session, which holds no workspace of its own and names the
+        // host it was admitted by itself) leaves the board's host as it is: taking its "don't
+        // know" for "nobody" dropped every run that host speaks for on each pass.
         let hosted = self.host.borrow().clone().is_some_and(|host| {
             live.iter().fold(false, |moved, (_, workspace)| {
-                self.presence
-                    .set_host(workspace, host.workspace_host(workspace))
+                host.workspace_host(workspace)
+                    .is_some_and(|device| self.presence.set_host(workspace, Some(device)))
                     || moved
             })
         });
@@ -323,7 +330,7 @@ impl Client {
 
     /// Say `command` to the plane.
     pub fn say(&self, command: Cmd) -> bool {
-        self.outgoing.send(command)
+        self.outgoing.send(command).is_ok()
     }
 
     /// Take what became of the enrollments and entries asked for since the last call.
@@ -458,6 +465,7 @@ impl Client {
 
     /// This device's collaboration endpoint, once it has bound: where what a call carries runs,
     /// beside the workspaces' own traffic. `None` on a client taking part in no transport.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn endpoint(&self) -> Option<iroh::Endpoint> {
         self.endpoint_handle.get().cloned()
@@ -465,6 +473,7 @@ impl Client {
 
     /// Where that endpoint lands, for what starts before it has bound: a call joins the endpoint
     /// the moment the plane has it.
+    #[cfg(not(target_arch = "wasm32"))]
     #[must_use]
     pub fn endpoint_handle(&self) -> std::sync::Arc<std::sync::OnceLock<iroh::Endpoint>> {
         std::sync::Arc::clone(&self.endpoint_handle)

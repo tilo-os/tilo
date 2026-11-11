@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>An app as HTML</title>
+<style>
+  html,body{margin:0;height:100%;background:#fff}
+  @media (prefers-color-scheme:dark){html,body{background:#111}}
+  #app{position:fixed;inset:0}
+</style>
+</head>
+<body>
+<main id="app"></main>
+<script type="module">
+// One app of the bundle (`?app=`) mounted alone, shown as HTML (`?render=dom`,
+// the default) or on the WebGPU canvas (`?render=gpu`), for comparing the two.
+const params = new URLSearchParams(location.search);
+const dom = params.get('render') !== 'gpu';
+const marks = window.renderMarks = {navigationStart: 0, presented: []};
+const {mountDesktop} = await import('./host.mjs');
+window.mount = await mountDesktop(document.getElementById('app'), {
+  app: params.get('app') ?? 'so.tilo.notes',
+  profile: params.get('profile') ?? 'html-renderer',
+  device: 'browser',
+  dom,
+  // Light or dark is the person's Tilo setting when the page names one;
+  // otherwise HTML follows the browser's colour scheme.
+  ...(params.get('theme') ? {settings: {appearance: {mode: params.get('theme')}}} : {}),
+  onStatus: state => {
+    if (state.presentation === true || state.observedPresentedAtMs) marks.presented.push(performance.now());
+    if (state.phase && marks.firstPhase === undefined) marks.firstPhase = performance.now();
+  },
+  onDomFrame: stats => {
+    marks.presented.push(performance.now());
+    marks.dom = {...stats};
+    (marks.domFrames ??= []).push([stats.writes, stats.created, stats.lastMs]);
+  },
+});
+marks.mounted = performance.now();
+</script>
+</body>
+</html>

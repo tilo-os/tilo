@@ -183,6 +183,9 @@ fn shape_of(steps: &[Step], out: &mut String) {
             StepKind::Task { allow, output, .. } => {
                 let _ = write!(out, "task {} {output:?}", allow.len());
             }
+            StepKind::Read { app, joined, .. } => {
+                let _ = write!(out, "read {app} {joined}");
+            }
         }
         out.push(')');
     }
@@ -470,7 +473,8 @@ fn step_count(steps: &[Step]) -> usize {
                 | StepKind::SetVar { .. }
                 | StepKind::Ask { .. }
                 | StepKind::Ai { .. }
-                | StepKind::Task { .. } => 0,
+                | StepKind::Task { .. }
+                | StepKind::Read { .. } => 0,
             }
         })
         .sum()
@@ -2685,6 +2689,8 @@ fn step_fields(at: &StepEditor<'_>, step: &Step) -> (Column, Vec<Element>) {
                 },
             ));
         }
+        // A record read is written in the program's text; its heading says it.
+        StepKind::Read { .. } => {}
     }
     (body, nested)
 }

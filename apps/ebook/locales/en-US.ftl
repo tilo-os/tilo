@@ -72,3 +72,12 @@ ebook-mark-excerpt = Moved an annotation to “{ $new }”
 ebook-mark-text = Wrote on “{ $item }”
 ebook-mark-color = Recoloured “{ $item }”
 ebook-mark-created = Finished a note on “{ $item }”
+
+## What the reader and its panels are called for assistive technology
+
+ebook-a11y-reading-page = Current reading page
+ebook-a11y-progress-hint = Drag or use left and right arrow keys to move through the book
+ebook-field-name = Name
+ebook-a11y-comments = Highlight comments
+ebook-a11y-edit-note = Edit note
+ebook-a11y-choose-colour = Choose colour

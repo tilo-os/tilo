@@ -35,6 +35,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
@@ -49,7 +50,7 @@ use tilo_relay_client::Host;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
-use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerHandle};
+use tilo_session_client::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::directory::{ListingAction, Status};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -150,6 +151,11 @@ impl Room {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        // eu1 keeps a wait list at its door. The list is what a door taking people by invitation
+        // offers those it turns away: the image refuses to start an open door with one.
+        if admission == "invite" {
+            command.env("TILO_ROOMS_WAIT_LIST_MAX", "16");
+        }
         let mut child = command.spawn_locked().expect("the room service starts");
         let stdin = Some(child.stdin.take().expect("the room's operator input"));
         let stdout = child.stdout.take().expect("the room's operator output");
@@ -327,9 +333,9 @@ fn host_info(
 
 /// A page of `member` 's device on the room's iroh endpoint, in the room's workspace: the same
 /// session a member's browser runs.
-fn page(room: &Room, member: &Member) -> PeerHandle {
+fn page(room: &Room, member: &Member) -> Link {
     let _entered = room.runtime.enter();
-    let page = PeerHandle::start(
+    let page = tilo_session_client::start_session(
         PeerConfig {
             host: room.host.clone(),
             cert: member.cert.clone(),
@@ -697,7 +703,7 @@ fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
 #[track_caller]
 fn wait_until_their_pointer(
     session: &mut Session,
-    member_page: &PeerHandle,
+    member_page: &Link,
     room: &Room,
     tab: u64,
     at: (f32, f32),
@@ -710,7 +716,7 @@ fn wait_until_their_pointer(
         .expect("the wait's bound fits in an Instant");
     loop {
         member_page
-            .publish_presence(
+            .send(Cmd::Presence(
                 workspace_id,
                 vec![collab_types::presence::Presence::pointing(
                     &room.workspace,
@@ -718,7 +724,7 @@ fn wait_until_their_pointer(
                     at.0,
                     at.1,
                 )],
-            )
+            ))
             .expect("the member says where they are");
         if common::steps_within(session, Duration::from_millis(200), |session| {
             pointer_here(session, tab, at).then_some(())
@@ -753,7 +759,7 @@ fn window_in_front(session: &Session) -> Option<u64> {
 
 /// The member's pointer is drawn on the desk where they put it, and follows when they move it.
 #[track_caller]
-fn the_pointer_follows(session: &mut Session, member_page: &PeerHandle, room: &Room) {
+fn the_pointer_follows(session: &mut Session, member_page: &Link, room: &Room) {
     // Their pointer, over a window they work in: the desk draws it there,
     // without the roster being opened.
     let shown =
@@ -790,25 +796,19 @@ fn the_pointer_follows(session: &mut Session, member_page: &PeerHandle, room: &R
 
 /// The invitation the room issues for `person` , as its own API does: a page's `invite` over the
 /// host's session, made by a member of the workspace.
-fn invite(room: &Room, member_page: &PeerHandle, person: [u8; 32]) -> String {
-    let (answer, reply) = std::sync::mpsc::sync_channel(1);
-    member_page
-        .rooms_then(
-            tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
-                workspace: room.workspace.clone(),
-                request_id: random_key(),
-                role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
-                expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
-                inviter_name: Some("The Lounge".to_owned()),
-                retired_wait_list_entry: None,
-                // The invitation names the person it is for: a workspace taking people by
-                // invitation answers its door with it when they ask.
-                recipient: Some(person),
-            },
-            Box::new(move |reply| {
-                let _ = answer.send(reply);
-            }),
-        )
+fn invite(room: &Room, member_page: &Link, person: [u8; 32]) -> String {
+    let reply = member_page
+        .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
+            workspace: room.workspace.clone(),
+            request_id: random_key(),
+            role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
+            inviter_name: Some("The Lounge".to_owned()),
+            wait_list_entry: None,
+            // The invitation names the person it is for: a workspace taking people by
+            // invitation answers its door with it when they ask.
+            recipient: Some(person),
+        })
         .expect("the member's page asks the host to invite");
     let reply = reply
         .recv_timeout(Duration::from_secs(60))
@@ -854,7 +854,7 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
             ),
         );
         member_page
-            .publish(
+            .write(
                 desktop_route(&room),
                 &DocumentMutation::Snapshot(doc.save()),
             )
@@ -902,14 +902,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         &mut session,
         "the refusal is said where the person is",
         |session| {
-            session
-                .notifications()
-                .log()
-                .history()
-                .iter()
-                .any(|notice| {
-                    notice.body.contains("Lounge") && notice.body.contains("joined by invitation")
-                })
+            // A refusal is a banner that stays until the person acts on it, and is kept behind it
+            // in the centre once it left: either is where the person reads it.
+            let desk = session.notifications();
+            let log = desk.log();
+            log.active().iter().chain(log.history()).any(|notice| {
+                notice.body.contains("Lounge") && notice.body.contains("joined by invitation")
+            })
         },
     );
     assert!(

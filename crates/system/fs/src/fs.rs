@@ -2055,10 +2055,10 @@ impl QuickFS {
         // The version records the written bytes by the content id the store
         // serves them under, like any other file's, so history can read and
         // restore it. A failed ingest fails the write before anything changes.
-        let content = self
+        let stored = self
             .write_content_blocking(data)
-            .map_err(|error| commit_errno(&error))?
-            .map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
+            .map_err(|error| commit_errno(&error))?;
+        let content = stored.map(|hash| fs_protocol::ContentHash(*hash.as_bytes()));
         // The version's metadata finds these facts by its content id.
         self.remember_rich_metadata_as(
             ino,
@@ -2071,6 +2071,13 @@ impl QuickFS {
             let mut ns = self.ns();
             let imported = ns.import_document(ino, data, now_ms(), &self.document_content);
             if imported {
+                // The file reads back as written, though its codec would normalize it, until the
+                // document is edited ([`Self::document_export`]).
+                if let Some(written) = &stored
+                    && let Some(projected) = ns.export_document(ino, &self.document_content)
+                {
+                    ns.set_document_written(ino, written, data, &projected);
+                }
                 ns.note_change();
             }
             imported
@@ -2166,9 +2173,22 @@ impl QuickFS {
             }
             return Some(bytes);
         }
-        let bytes: Arc<[u8]> = ns.export_document(ino, &self.document_content)?.into();
+        let projected = ns.export_document(ino, &self.document_content)?;
+        let written = ns
+            .document_written(ino)
+            .filter(|(_, reads)| *reads == tilo_content::hash_bytes(&projected));
         let heads = ns.heads();
         drop(ns);
+        // The bytes last written while the document still projects as it did then: a program's
+        // README.md reads back as it wrote it; an edit of the document is what changes the file.
+        let bytes: Arc<[u8]> = written
+            .and_then(|(hash, _)| {
+                self.hydrator
+                    .block_on(self.hydrator.read(hash, 0, u64::MAX))
+                    .ok()
+            })
+            .unwrap_or(projected)
+            .into();
         self.doc_export_cache()
             .insert(ino, (heads, Arc::clone(&bytes)));
         Some(bytes)

@@ -52,18 +52,40 @@ pub(crate) struct Authority {
     /// The replay covers only these record channels: a browser environment's
     /// device reaches its own record and nothing else of the workspace.
     channels: Option<std::collections::BTreeSet<[u8; 32]>>,
-    // The owner keeps admission during abandoned-spool reclamation.
-    _permit: OwnedSemaphorePermit,
+    /// The host's replay slot this replay holds while it is captured
+    /// ([`Self::release_slot`]). A capture given up before then keeps it
+    /// until the owner has reclaimed its work, so abandoned captures never
+    /// outrun their reclamation.
+    slot: Mutex<Option<OwnedSemaphorePermit>>,
 }
 impl Drop for Authority {
     fn drop(&mut self) {
-        // The slot is free again only now, once the owner reclaimed the
-        // entry that held this authority as well.
-        crate::timing::event("join.ticket_held", self.reserved, 0);
+        // A capture given up holds its slot until now, once the owner
+        // reclaimed the entry that held this authority as well.
+        let held = match self.slot.get_mut() {
+            Ok(slot) => slot.is_some(),
+            Err(poisoned) => poisoned.into_inner().is_some(),
+        };
+        if held {
+            crate::timing::event("join.ticket_held", self.reserved, 0);
+        }
         crate::timing::event("join.reclaim_lag", self.released.get().copied(), 0);
     }
 }
 impl Authority {
+    /// Give the host's replay slot back: the replay is captured. A slot
+    /// admits a capture, which is the host's own work. Held until the replay
+    /// was written, a slot waited on its page's network: a few pages on
+    /// stalled networks held every slot, and a crowd entering behind them
+    /// waited until their sessions gave up and asked for the whole workspace
+    /// again. What the replay still costs the host is bounded where it is
+    /// spent: its preparation by the replay workers, its batches by the
+    /// output budget, its final cut by the owner.
+    pub(crate) fn release_slot(&self) {
+        if self.slot.lock_recover().take().is_some() {
+            crate::timing::event("join.ticket_held", self.reserved, 0);
+        }
+    }
     /// The bound session flag. A poisoned lock still holds a coherent
     /// `Option`, so recover it instead of propagating another thread's panic.
     fn session_guard(&self) -> std::sync::MutexGuard<'_, Option<Arc<AtomicBool>>> {
@@ -109,9 +131,14 @@ impl Authority {
     pub(crate) fn bound_active(&self) -> bool {
         self.active() && self.session_guard().is_some()
     }
+    /// Whether the replay carries all of the workspace: its subscriber is a
+    /// peer relay, which keeps every frame it is sent.
+    pub(crate) const fn every_record(&self) -> bool {
+        self.every_record
+    }
 }
 /// How long a subscription waits for one of the host's replay slots before
-/// its session gives up. A join burst queues behind the replays in flight
+/// its session gives up. A join burst queues behind the captures in flight
 /// instead of ending every session past the slot count.
 const TICKET_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -175,7 +202,7 @@ impl ReplayTicket {
                 released: OnceLock::new(),
                 every_record: false,
                 channels: None,
-                _permit: permit,
+                slot: Mutex::new(Some(permit)),
             }),
         }
     }
@@ -874,6 +901,20 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_captured_replay_gives_its_slot_back() {
+        let slots = Arc::new(Semaphore::new(1));
+        let ticket = ReplayTicket::reserve_from([2; 32], None, slots.clone()).unwrap();
+        assert!(ReplayTicket::reserve_from([2; 32], None, slots.clone()).is_err());
+        ticket.authority.release_slot();
+        assert_eq!(
+            slots.available_permits(),
+            1,
+            "a captured replay held its slot while its page took it"
+        );
+        drop(ticket);
+        assert_eq!(slots.available_permits(), 1);
+    }
     #[test]
     fn ticket_admission_includes_cancelled_work_until_bounded_disposal_finishes() {
         // Exercise the production admission primitive with a local pool so this

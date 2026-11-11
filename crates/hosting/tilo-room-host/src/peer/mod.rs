@@ -14,6 +14,7 @@ mod actions;
 mod admin;
 mod admission;
 mod agent_run;
+mod arriving;
 mod checkpoint;
 mod commit;
 mod compaction;
@@ -34,6 +35,7 @@ mod test_hooks;
 pub use admission::enqueue_from_host;
 pub(crate) use admission::{HostAdmission, enqueue_host_state};
 use admission::{enqueue_state, enqueue_state_inner};
+pub(crate) use arriving::Arriving;
 #[cfg(test)]
 use checkpoint::buffered_retention_prefix_with_limits;
 use checkpoint::{
@@ -46,6 +48,7 @@ use delivery::{
     STATE_RUN, SessionCoding, delivery_room, encode_charged, write_presence, write_state_deliveries,
 };
 use fanout::{LiveFanout, LiveFrame, live_budget};
+pub(crate) use replay::GovernanceCertificates;
 use replay::{
     ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
     finish_replay_write, resume_record,
@@ -264,6 +267,10 @@ struct SessionCtx<'a> {
     /// person, as the session's caller. Said once, it stays: a session
     /// handed to an agent is never handed back.
     agent: &'a std::sync::OnceLock<String>,
+    /// The connection's device only follows its channel groups
+    /// ([`Envelope::ChannelReader`]): its replays carry no device's request
+    /// to be admitted to one. Said once, it stays.
+    channel_reader: &'a std::sync::atomic::AtomicBool,
     /// The execution the host minted for this connection: an agent's or a
     /// key's requests on it are one run, whatever the client says
     /// ([`tilo_actions::remote::Caller::agent_run`]). Closed when the
@@ -301,7 +308,7 @@ impl SessionCtx<'_> {
     /// environments' devices ([`crate::environment`]): its one workspace and
     /// the one record there. `None` for every other device.
     fn environment(&self, device: &[u8; 32]) -> Option<crate::environment::EnvironmentScope> {
-        crate::environment::scope_of(self.environments, device)
+        crate::environment::environment_of(self.environments, device)?.placed()
     }
 
     /// The workspace admission decision for `peer` on `op`.

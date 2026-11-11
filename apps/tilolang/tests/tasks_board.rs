@@ -769,9 +769,19 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
             .next_wake_deadline
             .is_some_and(|deadline| deadline <= ui::time::now());
         assert!(due, "the window's deadline is due past midnight");
-        app.frame();
+        // The frame the deadline asks for serves it, and what the view reads
+        // again comes back from the view's own thread: the host idles until
+        // the list shows the new day, as a live window draws when it wakes.
+        let shown = app
+            .harness()
+            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                harness.a11y_nodes().into_iter().any(|(_, node)| {
+                    node.label()
+                        .is_some_and(|label| label.contains("Reply to Mia"))
+                })
+            });
         assert!(
-            shows(&mut app, "Reply to Mia"),
+            shown && shows(&mut app, "Reply to Mia"),
             "the task due on the new day is listed once midnight passed"
         );
         // And the window waits again, for the next midnight or the history's moment reading
@@ -824,5 +834,282 @@ fn shots() {
             drag(&mut app, "Pack the kitchen", "Order boxes and tape", false);
             app.harness().render_png(&name("moved"));
         }
+    }
+}
+
+/// What an agent's action looks like to a person watching the window, as the broker shows an
+/// agent at work: `action` of the published `resource`, applying, by the run's agent.
+fn agent_acting(
+    app: &mut ui::framework::testing::HostedApp,
+    resource: &str,
+    action: &str,
+) -> ui::tilo_actions::SemanticInteraction {
+    let resources = app.harness().resources();
+    let descriptor = ui::tilo_actions::door::survey(&resources)
+        .into_iter()
+        .find(|descriptor| {
+            descriptor.address.resource == resource && descriptor.address.action == action
+        })
+        .unwrap_or_else(|| panic!("the window publishes {action} of {resource}"));
+    let (agent, _) = change_marks::run();
+    ui::tilo_actions::SemanticInteraction {
+        version: ui::tilo_actions::INTERACTION_VERSION,
+        invocation: ui::tilo_actions::InvocationId::new(),
+        sequence: 1,
+        actor: ui::tilo_actions::InteractionActor {
+            id: agent.actor,
+            kind: ui::tilo_actions::ActorKind::Agent,
+            for_person: None,
+        },
+        phase: ui::tilo_actions::InteractionPhase::Applying,
+        action: ui::tilo_actions::InteractionAction {
+            id: descriptor.address.action.clone(),
+            label: descriptor.action_label.clone(),
+            app: None,
+        },
+        resource: ui::tilo_actions::ActionResource {
+            id: descriptor.address.resource.clone(),
+            kind: descriptor.resource_kind.clone(),
+            label: descriptor.resource_label,
+        },
+        anchor: ui::tilo_actions::InteractionAnchor::Resource,
+        group: None,
+    }
+}
+
+/// Shows `event` in the window and lets the agent's mark come to rest, as a frame does.
+fn show_acting(
+    app: &mut ui::framework::testing::HostedApp,
+    event: ui::tilo_actions::SemanticInteraction,
+) {
+    let (agent, _) = change_marks::run();
+    let shown = app.harness().update_presence(|presence| {
+        presence.names.insert(
+            ui::permissions::UserId(agent.actor.clone()),
+            "Helper".into(),
+        );
+        presence
+            .apply_interaction(event)
+            .expect("a well-formed interaction applies")
+    });
+    assert!(shown, "the agent's action shows");
+    assert!(
+        app.harness()
+            .settle_for_capture(ui::time::Duration::from_secs(30)),
+        "the agent's mark comes to rest"
+    );
+    app.harness().poll_frame().expect("a frame is drawn");
+    app.harness().relayout();
+    let faults = ui::presence::tag_faults(&app.harness().inspection().root);
+    assert!(faults.is_empty(), "the agent's tag: {faults:?}");
+}
+
+/// The id a task's title is kept under: what an edit of it and a caret in it name.
+fn title_field() -> String {
+    let ids = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tl/tasks/app.ids"),
+    )
+    .expect("the package's ids");
+    ids.lines()
+        .find_map(|line| line.strip_prefix("Task.title = "))
+        .expect("the title's id")
+        .trim()
+        .to_owned()
+}
+
+/// The window's tasks, opened: Ada's own task in her inbox, and the published tasks list.
+fn a_task_of_adas(title: &str) -> (ui::framework::testing::HostedApp, String) {
+    use change_marks::{action_id, settle};
+    let mut app =
+        ui::framework::testing::HostedApp::open(support::installed("tasks"), "ada").unwrap();
+    settle(&mut app);
+    change_marks::choose(&mut app, "Inbox");
+    let root = app
+        .read(|doc| tilolang_tilo::action::resource_ids(doc, "so.tilo.lang.tasks"))
+        .remove(0);
+    let tasks = format!("tl:so.tilo.lang.tasks:{root}");
+    let add = action_id(&mut app, &tasks, "New task");
+    let mut args = serde_json::Map::new();
+    args.insert("title".to_owned(), title.into());
+    app.invoke(None, None, &tasks, &add, &args, false).unwrap();
+    settle(&mut app);
+    let task = change_marks::published_with(&mut app, &tasks, "Complete");
+    (app, task)
+}
+
+/// An agent checking off a task is seen at the check box a person would press: its pointer
+/// rests on the row's box, in the agent's colour, and on no other row's.
+#[test]
+fn an_agent_completing_a_task_is_seen_at_its_check_box() {
+    let (mut app, task) = a_task_of_adas("Buy oat milk");
+    let complete = change_marks::action_id(&mut app, &task, "Complete");
+    let event = agent_acting(&mut app, &task, &complete);
+    show_acting(&mut app, event);
+    let (_, row, _) = change_marks::rows(&mut app)
+        .into_iter()
+        .find(|(name, _, _)| name.starts_with("Buy oat milk"))
+        .expect("the inbox lists the task");
+    let row = ui::kurbo::Rect::new(row[0], row[1], row[0] + row[2], row[1] + row[3]);
+    let check = app
+        .harness()
+        .controls()
+        .iter()
+        .filter(|shown| shown.role == ui::accesskit::Role::CheckBox)
+        .filter_map(|shown| shown.bounds)
+        .find(|bounds| row.contains(bounds.center()))
+        .expect("the row holds its check box");
+    let [marker] = app.harness().drawn_action_markers() else {
+        panic!(
+            "the frame paints one mark of the agent: {:?}",
+            app.harness().drawn_action_markers()
+        );
+    };
+    let [x0, y0, x1, y1] = marker.locus;
+    let locus = ui::kurbo::Rect::new(x0, y0, x1, y1);
+    assert!(
+        row.contains(locus.center()),
+        "the mark rests on the task's row: {locus:?} in {row:?}"
+    );
+    let [x0, y0, x1, y1] = marker.marker;
+    let pointer = ui::kurbo::Rect::new(x0, y0, x1, y1);
+    assert!(
+        pointer.inflate(4.0, 4.0).contains(check.center())
+            || check.contains(pointer.origin())
+            || locus.contains(check.center()),
+        "the agent's pointer rests on the task's check box: {pointer:?}, {check:?}"
+    );
+    if let Some(dir) = change_marks::shots_dir() {
+        app.harness()
+            .render_png(&dir.join("tasks-agent-completes.png"));
+    }
+    // The person's press of the box runs the same action, through the same door.
+    app.harness().click_at(check.center().x, check.center().y);
+    change_marks::settle(&mut app);
+    assert!(
+        !change_marks::rows(&mut app)
+            .iter()
+            .any(|(name, _, _)| name.starts_with("Buy oat milk")),
+        "pressing the box completes the task: {:?}",
+        change_marks::rows(&mut app)
+    );
+}
+
+/// An agent renaming a task is seen writing in its title, as a person typing there would be:
+/// what it wrote stands in its colour and its caret, named with what it is doing, ends it.
+#[test]
+fn an_agent_editing_a_title_is_seen_writing_in_it() {
+    use change_marks::{action_id, chroma_in, settle, text_field};
+    let (mut app, task) = a_task_of_adas("Buy oat milk");
+    let (_, row, _) = change_marks::rows(&mut app)
+        .into_iter()
+        .find(|(name, _, _)| name.starts_with("Buy oat milk"))
+        .expect("the inbox lists the task");
+    app.harness()
+        .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
+    settle(&mut app);
+    let edit = action_id(&mut app, &task, "Edit a text field");
+    let (agent, ambient) = change_marks::run();
+    let mut args = serde_json::Map::new();
+    args.insert("field".to_owned(), title_field().into());
+    args.insert("value".to_owned(), "Buy oat milk and bread".into());
+    let event = agent_acting(&mut app, &task, &edit);
+    app.invoke(
+        Some(agent.clone()),
+        Some(&ambient),
+        &task,
+        &edit,
+        &args,
+        false,
+    )
+    .unwrap();
+    settle(&mut app);
+    show_acting(&mut app, event);
+    if let Some(dir) = change_marks::shots_dir() {
+        app.harness()
+            .render_png(&dir.join("tasks-agent-writes.png"));
+    }
+    let field = text_field(&mut app, "Buy oat milk and bread");
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let caret = all
+        .iter()
+        .find(|node| node.path == format!("presence-mark-{}", agent.actor))
+        .unwrap_or_else(|| panic!("the agent's caret is drawn in the title"));
+    let named = caret
+        .semantics
+        .as_ref()
+        .and_then(|access| access.name.clone())
+        .unwrap_or_default();
+    assert!(
+        named.starts_with("Helper: editing Title"),
+        "a reader is told who writes there and what: {named}"
+    );
+    let [cx, cy, _, ch] = caret.rect;
+    assert!(
+        cx > field[0] + field[2] / 3.0
+            && cx < field[0] + field[2]
+            && cy >= field[1] - 1.0
+            && cy + ch <= field[1] + field[3] + 1.0,
+        "the caret ends what the agent wrote, inside the title: {:?} in {field:?}",
+        caret.rect
+    );
+    // What it wrote stands in its colour beside the words that were there before.
+    // Inside the line, clear of the field's edge.
+    let line = [cy + 4.0, (ch - 8.0).max(1.0)];
+    let kept = chroma_in(&mut app, [field[0] + 12.0, line[0], 24.0, line[1]]);
+    let written = chroma_in(&mut app, [cx - 30.0, line[0], 24.0, line[1]]);
+    assert!(
+        written > kept.saturating_add(8),
+        "the words the agent wrote stand in its colour: {written} vs {kept}"
+    );
+}
+
+/// Someone else writing in a task's title is seen there: their caret, with their name, at the
+/// place in the words their own window says they are.
+#[test]
+fn a_person_writing_in_a_title_is_seen_there() {
+    use change_marks::{settle, text_field};
+    let (mut app, task) = a_task_of_adas("Buy oat milk");
+    let (_, row, _) = change_marks::rows(&mut app)
+        .into_iter()
+        .find(|(name, _, _)| name.starts_with("Buy oat milk"))
+        .expect("the inbox lists the task");
+    app.harness()
+        .click_at(row[0] + row[2] / 2.0, row[1] + row[3] / 2.0);
+    settle(&mut app);
+    // Where Bo's window keys the title: the task and the field it is bound to.
+    let target = task
+        .strip_prefix("tl:so.tilo.lang.tasks:")
+        .expect("a tasks resource");
+    let key = ui::presence::PresenceKey::Widget {
+        path: ["tilolang", target, title_field().as_str()]
+            .map(|segment| ui::presence::PathSegment::Field(segment.to_owned()))
+            .to_vec(),
+    };
+    app.harness().update_presence(|presence| {
+        let bo = ui::permissions::UserId("bo".into());
+        presence.names.insert(bo.clone(), "Bo".into());
+        presence.set_caret(&key, bo, "Buy oat".len());
+        true
+    });
+    settle(&mut app);
+    let field = text_field(&mut app, "Buy oat milk");
+    let snapshot = app.harness().inspection();
+    let mut all = Vec::new();
+    walk(&snapshot.root, &mut all);
+    let caret = all
+        .iter()
+        .find(|node| node.path == "presence-mark-bo")
+        .unwrap_or_else(|| panic!("Bo's caret is drawn in the title"));
+    let [cx, cy, _, _] = caret.rect;
+    assert!(
+        cx > field[0] && cx < field[0] + field[2] * 0.8 && cy >= field[1] - 1.0,
+        "Bo's caret stands in the title's words: {:?} in {field:?}",
+        caret.rect
+    );
+    if let Some(dir) = change_marks::shots_dir() {
+        app.harness()
+            .render_png(&dir.join("tasks-person-writes.png"));
     }
 }

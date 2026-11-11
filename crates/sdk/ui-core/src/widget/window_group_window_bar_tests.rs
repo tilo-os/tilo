@@ -712,10 +712,11 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
         "at its trailing end: {held:?} in {content:?}"
     );
 
-    // A header row that stands as the window's bar's slots draws none of its own: the window
+    // An app that declares its toolbar in the window's bar draws no row of its own: the window
     // keeps its bar, and its content stands under it.
     let (mut plain, _window) = shell_window(
         crate::widget::NavShell::new()
+            .with_window_toolbar()
             .content(Box::new(crate::widget::Text::new("Body")))
             .content_header(
                 "Design",
@@ -887,7 +888,7 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
     };
     let search = frame.root_mut::<WindowGroup>().window_search().anchor();
     let names = (
-        crate::widget::tabs::NEW_TAB.to_owned(),
+        crate::widget::tabs::new_tab_name(),
         window_control_name("host-window-maximize"),
         window_control_name("host-window-close"),
         crate::i18n::I18nManager::lookup_plain("window-search-name"),
@@ -968,14 +969,15 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
     );
 }
 
-/// A window whose row stands as the bar's slots keeps the same functions, so a person gets one
-/// answer either way: the search and the window's controls stand at the bar's trailing end, and
-/// the bar's ground moves the window.
+/// A window whose app declares its toolbar in the bar keeps the same functions as one whose row
+/// holds the bar, so a person gets one answer either way: the search and the window's controls
+/// stand at the bar's trailing end, and the bar's ground moves the window.
 #[test]
 fn a_row_standing_as_slots_keeps_the_windows_functions() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
+            .with_window_toolbar()
             .content(Box::new(crate::widget::Text::new("Body")))
             .content_header(
                 "Design",
@@ -1443,7 +1445,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(holding_row_shell());
     let names = [
-        crate::widget::tabs::NEW_TAB.to_owned(),
+        crate::widget::tabs::new_tab_name(),
         window_control_name("host-window-maximize"),
         window_control_name("host-window-close"),
     ];
@@ -1558,6 +1560,7 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
+            .with_window_toolbar()
             .content(Box::new(crate::widget::Text::new("Body")))
             .content_header(
                 "Design",
@@ -1593,7 +1596,7 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
     assert!(
         !stops
             .iter()
-            .any(|stop| stop.as_deref() == Some(crate::widget::tabs::NEW_TAB)),
+            .any(|stop| stop.as_deref() == Some(crate::widget::tabs::new_tab_name().as_str())),
         "the band bar's door is no stop of its own: {stops:?}"
     );
 }
@@ -1696,4 +1699,28 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
         Some((1, "agent-run:7".to_owned())),
         "Enter on the mark opens its run, as a press does"
     );
+}
+
+/// The window's own keyboard stops (the agent's mark, the furniture of a row holding the bar) take
+/// no room and measure nothing: they never ask the layout to measure again, whatever the keyboard
+/// or the bar does with them. Were they to, every frame of the window, a keystroke's included,
+/// would re-measure its whole path to the root.
+#[test]
+fn the_windows_own_stops_never_ask_for_a_measure() {
+    let mut stop = OpenedByStop::default();
+    let mut controls = crate::widget::window_header::ROW_CONTROLS.map(HeldControl::new);
+    let mut stops: Vec<&mut dyn Widget> = vec![&mut stop];
+    stops.extend(
+        controls
+            .iter_mut()
+            .map(|control| control as &mut dyn Widget),
+    );
+    for stop in stops {
+        stop.set_focus(true);
+        assert!(
+            !stop.is_layout_dirty() && !stop.layout_needs_measure(),
+            "{} asks for a measure",
+            stop.name()
+        );
+    }
 }

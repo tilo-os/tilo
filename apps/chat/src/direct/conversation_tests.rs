@@ -169,25 +169,6 @@ fn two_peoples_chat_is_the_workspaces_own_messages() {
         ["hello from Ada", "hello from Bob"],
         "both people's messages are in the one conversation"
     );
-
-    // An agent reads it as any conversation: `read-messages` on its id.
-    let id = Chat::direct_id([Participant::person(ada), Participant::person(bob)]);
-    let page = ada_window
-        .effect(&crate::effects::ChatEffect::ReadMessages {
-            channel: id.to_string(),
-            page_size: None,
-            cursor: None,
-        })
-        .expect("the conversation reads as a channel does")
-        .value
-        .expect("a page");
-    let read: Vec<&str> = page["messages"]
-        .as_array()
-        .expect("its messages")
-        .iter()
-        .filter_map(|message| message["text"].as_str())
-        .collect();
-    assert_eq!(read, said, "the same messages, in the same order");
 }
 
 /// What a window's box sends goes to the conversation Chat already keeps with
@@ -216,6 +197,7 @@ fn a_box_send_reaches_the_conversation_the_two_already_have() {
             to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
             attached: vec![carried],
             text: "can you look?".into(),
+            opens: Some(true),
         })
         .expect("Bob's box sends");
     let value = sent.value.expect("the send says where the message went");
@@ -279,6 +261,7 @@ fn a_box_send_of_a_subject_alone_posts_the_message_without_words() {
             to: vec![Recipient::found(RecipientKind::Person, ada, "Ada")],
             attached: vec![carried.clone()],
             text: String::new(),
+            opens: Some(true),
         })
         .expect("Bob's box sends the task alone");
 
@@ -314,6 +297,7 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
             to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
             attached: Vec::new(),
             text: "please look".into(),
+            opens: Some(true),
         })
         .expect("Bob's box sends");
     let value = sent.value.expect("the send says where the message went");
@@ -330,6 +314,61 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     let rows = crate::testing::mounted_rows(&mut bob_window, &conversation.to_string());
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text, "please look");
+    bob_window.harness().relayout();
+    bob_window.with_chat(|chat| {
+        assert!(
+            chat.direct_contacts()
+                .iter()
+                .any(|row| row.id == conversation.to_string()),
+            "the conversation is listed with the person's others, though the record keeps no row for it"
+        );
+    });
+}
+
+/// The window a box's send floats over the desk opens on the item the send answered, as a
+/// window launched to reveal it does: a conversation with an agent is one by its id, listed in
+/// the sidebar or not, so the window shows the message that was sent instead of the first channel.
+#[test]
+fn the_conversation_a_send_answers_opens_in_a_window() {
+    use crate::effects::ChatEffect;
+    use ui::floating_surface::{Recipient, RecipientKind};
+
+    const WORKSPACE: &str = "00000000-0000-4000-8000-00000000000f";
+    let ada = "ad".repeat(32);
+    let bob = "b0".repeat(32);
+    let (_, mut bob_window) = a_pair_of_windows(WORKSPACE, &ada, &bob);
+    let agent = "a5".repeat(16);
+    let sent = bob_window
+        .effect(&ChatEffect::Send {
+            to: vec![Recipient::found(RecipientKind::Agent, agent, "Ada")],
+            attached: Vec::new(),
+            text: "please look".into(),
+            opens: Some(true),
+        })
+        .expect("Bob's box sends");
+    let anchor = sent.value.expect("the send answers its conversation")["anchor"]
+        .as_str()
+        .expect("an item")
+        .to_owned();
+    let Some((_, conversation)) = ui::tilo_resource::items::item_of_resource::<Chat>(&anchor)
+    else {
+        panic!("the anchor names an item of the chat: {anchor}");
+    };
+
+    // The window opens the item as one launched to reveal it does.
+    bob_window.with_chat(|chat| chat.opener()(&anchor));
+    bob_window.harness().relayout();
+    bob_window.with_chat(|chat| {
+        assert_eq!(chat.active_channel, conversation.to_string());
+        assert_eq!(
+            chat.messages
+                .iter()
+                .map(|m| m.text.as_str())
+                .collect::<Vec<_>>(),
+            ["please look"],
+            "it shows the message that was sent"
+        );
+    });
 }
 
 /// A send made in a box answers the conversation it landed in as the item
@@ -356,6 +395,7 @@ fn a_box_send_answers_the_conversation_it_landed_in() {
             )],
             attached: Vec::new(),
             text: "look at this".into(),
+            opens: Some(true),
         })
         .expect("Bob's box sends");
     let value = sent.value.expect("the send says where the message went");
@@ -403,7 +443,6 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
         for operation in [
             ChatEffect::OPEN_DIRECT_CONVERSATION.id,
             ChatEffect::SEND_DIRECT_MESSAGE.id,
-            ChatEffect::READ_MESSAGES.id,
         ] {
             assert!(
                 offered.contains(&operation),

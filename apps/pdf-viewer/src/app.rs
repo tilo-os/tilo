@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use ui::chrome::{NavCount, NavRowFace};
 use ui::icons::Icon;
 use ui::tokens::TextRole;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -1042,14 +1043,16 @@ impl PdfApp {
         // A recognisable swatch (diagonal split, bright colours) written to a
         // temp PNG and imported through the real code path.
         let (w, h) = (480u32, 360u32);
-        let mut img = image::RgbaImage::new(w, h);
-        for (x, y, px) in img.enumerate_pixels_mut() {
-            let above = (x as f32 / w as f32) > (y as f32 / h as f32);
-            *px = if above {
-                image::Rgba([64, 132, 246, 255])
-            } else {
-                image::Rgba([246, 132, 64, 255])
-            };
+        let mut img = Vec::with_capacity((w * h * 4) as usize);
+        for y in 0..h {
+            for x in 0..w {
+                let above = (x as f32 / w as f32) > (y as f32 / h as f32);
+                img.extend_from_slice(if above {
+                    &[64, 132, 246, 255]
+                } else {
+                    &[246, 132, 64, 255]
+                });
+            }
         }
         let Some(png) = tilo_paths::temp_dir().map(|dir| dir.join("tilo_pdf_demo_import.png"))
         else {
@@ -1058,7 +1061,7 @@ impl PdfApp {
         // Encoded by the shared runtime's PNG encoder: `DynamicImage::save`
         // is generic over the path and picks the format at run time, so it
         // compiled every encoder the image crate has into this app.
-        let written = ui::png::encode_rgba8(w, h, img.as_raw()).is_ok_and(|bytes| {
+        let written = ui::png::encode_rgba8(w, h, &img).is_ok_and(|bytes| {
             tilo_files::file_at(&png)
                 .and_then(|(dir, name)| tilo_files::blocking::write(&dir, &name, &bytes))
                 .is_ok()
@@ -1802,7 +1805,10 @@ impl PdfApp {
             .right()
             .docked_width(f64::from(m.inspector_width))
             .overlay_width(f64::from(m.inspector_width))
-            .content_min_width(f64::from(m.detail_min_width))
+            // The pages are paper drawn to the room they get, not a column
+            // of text: the panel stands beside them down to their own
+            // narrowest.
+            .content_surface(f64::from(m.detail_min_width))
     }
 
     /// The strip the review panel docks in: the window's height, beside the
@@ -5012,7 +5018,7 @@ impl Widget for PdfApp {
             if opening {
                 children.push(
                     AccessNode::new(Role::StaticText)
-                        .with_name("Opening PDF")
+                        .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-opening"))
                         .with_hashed_key("pdf.empty.loading")
                         .with_live(Politeness::Polite),
                 );
@@ -5051,7 +5057,7 @@ impl Widget for PdfApp {
             }
             return Some(
                 AccessNode::new(Role::Window)
-                    .with_name("PDF Viewer")
+                    .with_name(ui::i18n::I18nManager::lookup_plain("pdf-title"))
                     .with_bounds(self.rect)
                     .with_children(children),
             );
@@ -5088,7 +5094,7 @@ impl Widget for PdfApp {
             })
             .collect();
         let page_list = AccessNode::new(Role::List)
-            .with_name("Pages")
+            .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-pages"))
             .with_hashed_key("pdf.pages")
             .with_children(page_nodes);
 
@@ -5100,9 +5106,7 @@ impl Widget for PdfApp {
             }),
             AccessNode::new(Role::Document)
                 .with_name(format!("Page {current} of {pages}"))
-                .with_description(
-                    "PDF page canvas. Arrow keys scroll; Page Up and Page Down change pages.",
-                )
+                .with_description(ui::i18n::I18nManager::lookup_plain("pdf-a11y-canvas"))
                 .with_value(format!("Zoom {:.0}%", self.zoom() * 100.0))
                 .with_bounds(self.canvas_rect)
                 .with_state(focusable()),
@@ -5124,7 +5128,9 @@ impl Widget for PdfApp {
                 .collect();
             content_children.push(
                 AccessNode::new(Role::List)
-                    .with_name("Search results")
+                    .with_name(ui::i18n::I18nManager::lookup_plain(
+                        "pdf-a11y-search-results",
+                    ))
                     .with_hashed_key("pdf.search.results")
                     .with_children(result_nodes),
             );
@@ -5217,16 +5223,20 @@ impl Widget for PdfApp {
                 SidebarTab::Signatures => {
                     let mut nodes: Vec<AccessNode> = vec![
                         AccessNode::new(Role::TextInput)
-                            .with_name("Signer name")
+                            .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-signer-name"))
                             .with_value(self.signer())
                             .with_action_target("pdf.signer")
                             .with_state(focusable()),
                         AccessNode::new(Role::RadioButton)
-                            .with_name("Type signature")
+                            .with_name(ui::i18n::I18nManager::lookup_plain(
+                                "pdf-a11y-type-signature",
+                            ))
                             .with_action_target("pdf.signature-mode:type")
                             .with_state(focusable().checked(self.sig_mode == SigMode::Type)),
                         AccessNode::new(Role::RadioButton)
-                            .with_name("Draw signature")
+                            .with_name(ui::i18n::I18nManager::lookup_plain(
+                                "pdf-a11y-draw-signature",
+                            ))
                             .with_action_target("pdf.signature-mode:draw")
                             .with_state(focusable().checked(self.sig_mode == SigMode::Draw)),
                         button("Use signature on page", "pdf.signature.use", Rect::ZERO),
@@ -5253,10 +5263,14 @@ impl Widget for PdfApp {
             };
             content_children.push(
                 AccessNode::new(Role::Group)
-                    .with_name("Review sidebar")
+                    .with_name(ui::i18n::I18nManager::lookup_plain(
+                        "pdf-a11y-review-sidebar",
+                    ))
                     .with_children(vec![
                         AccessNode::new(Role::TabBar)
-                            .with_name("Review panels")
+                            .with_name(ui::i18n::I18nManager::lookup_plain(
+                                "pdf-a11y-review-panels",
+                            ))
                             .with_children(tabs),
                         AccessNode::new(Role::TabPanel)
                             .with_name(match self.sidebar_tab {
@@ -5277,12 +5291,14 @@ impl Widget for PdfApp {
         }
         let mut window_children = vec![
             AccessNode::new(Role::Group)
-                .with_name("Page controls")
+                .with_name(ui::i18n::I18nManager::lookup_plain(
+                    "pdf-a11y-page-controls",
+                ))
                 .with_hashed_key("pdf.page-controls")
                 .with_children(controls),
             page_list,
             AccessNode::new(Role::Group)
-                .with_name("Document")
+                .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-document"))
                 .with_hashed_key("pdf.content")
                 .with_children(content_children),
         ];
@@ -5293,7 +5309,7 @@ impl Widget for PdfApp {
         }
         Some(
             AccessNode::new(Role::Window)
-                .with_name("PDF Viewer")
+                .with_name(ui::i18n::I18nManager::lookup_plain("pdf-title"))
                 .with_bounds(self.rect)
                 .with_children(window_children),
         )
@@ -5863,7 +5879,6 @@ impl PdfApp {
         page: usize,
         size: Option<u32>,
     ) -> Result<ui::tilo_actions::ActionOutput, String> {
-        use image::ImageEncoder as _;
         let size = size.unwrap_or(1024);
         if !(64..=1536).contains(&size) {
             return Err("size must be within 64..=1536".into());
@@ -5889,14 +5904,7 @@ impl PdfApp {
         let bitmap = document
             .render(page - 1, &options)
             .map_err(|error| format!("page {page} cannot be drawn: {error}"))?;
-        let mut png = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut png)
-            .write_image(
-                bitmap.pixels(),
-                bitmap.width(),
-                bitmap.height(),
-                image::ExtendedColorType::Rgba8,
-            )
+        let png = ui::png::encode_rgba8(bitmap.width(), bitmap.height(), bitmap.pixels())
             .map_err(|error| format!("page {page} cannot be encoded: {error}"))?;
         let hash = self
             .content
@@ -9097,7 +9105,7 @@ pub(crate) mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw(
+                app.draw_child(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,
@@ -9185,7 +9193,7 @@ pub(crate) mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw(
+                app.draw_child(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,

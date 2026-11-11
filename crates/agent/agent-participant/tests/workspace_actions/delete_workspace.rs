@@ -10,6 +10,7 @@ use super::hosted_documents::application_pdf;
 use super::*;
 use serde_json::{Value, json};
 use std::path::PathBuf;
+use tilo_session_client::{Cmd, Outbox};
 
 /// Every path under `root` that is `workspace`'s, as the relay names what it
 /// keeps of one: its id, first in a file's name, or its relay workspace.
@@ -97,7 +98,7 @@ async fn invite(
 
 /// Wait until `page` heard that `workspace_id` was deleted, and stopped
 /// holding it: it says `workspace-deleted`, never that it was not admitted.
-async fn heard_deleted(page: &tilo_session_host::session::PeerHandle, workspace_id: u64) {
+async fn heard_deleted(page: &tilo_session_client::Link, workspace_id: u64) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = page.status();
@@ -116,7 +117,7 @@ async fn heard_deleted(page: &tilo_session_host::session::PeerHandle, workspace_
             assert!(!status.workspaces.contains_key(&workspace_id), "{status:?}");
             assert_eq!(
                 status.phase,
-                tilo_session_host::session::TransportPhase::Failed,
+                tilo_session_client::TransportPhase::Failed,
                 "a page holding only it is done: {status:?}"
             );
             return;
@@ -145,7 +146,7 @@ async fn only_member_hears_deleted(
         on_relay.host.cert.clone(),
         page.key.clone(),
     );
-    back.join(workspace_id).unwrap();
+    back.send(Cmd::Join(workspace_id)).unwrap();
     let deadline = tilo_test_env::hang_deadline();
     while !back
         .status()
@@ -164,20 +165,20 @@ async fn only_member_hears_deleted(
     let client = tilo_net::Client::builder().build().unwrap();
     let host = tilo_relay_client::https::Origin::new(&client, &on_relay.relay);
     assert!(
-        tilo_session_host::workspace_deleted(&host, workspace)
+        tilo_relay_client::https::workspace_deleted(&host, workspace)
             .await
             .unwrap(),
         "the host's address says the workspace was deleted"
     );
     // The device settles what it remembered by that answer: forgotten.
     let host_device = hex::encode(on_relay.host.cert.device_public_key);
-    let place = tilo_session_host::entered::Place {
+    let place = tilo_session_client::entered::Place {
         origin: on_relay.relay.clone(),
         room: workspace.to_owned(),
     };
-    let remembered = tilo_session_host::entered::remember(
+    let remembered = tilo_session_client::entered::remember(
         Vec::new(),
-        tilo_session_host::entered::Entered {
+        tilo_session_client::entered::Entered {
             origin: place.origin.clone(),
             room: place.room.clone(),
             host_device: host_device.clone(),
@@ -185,13 +186,13 @@ async fn only_member_hears_deleted(
             unavailable: false,
         },
     );
-    let (changed, settled) = tilo_session_host::entered::settle_failed(
+    let (changed, settled) = tilo_session_client::entered::settle_failed(
         remembered.entered,
         &place,
         Some(&host_device),
         true,
     );
-    assert_eq!(settled, tilo_session_host::entered::Settled::Deleted);
+    assert_eq!(settled, tilo_session_client::entered::Settled::Deleted);
     assert!(changed.entered.is_empty(), "{changed:?}");
     assert_eq!(changed.unchoose, [place]);
 }
@@ -260,7 +261,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         rosa_page.key.clone(),
     );
-    page.join(workspace_id).unwrap();
+    page.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&page]).await;
     // Another reviewer, who works in the other customer's workspace too,
     // had it open earlier and is away while it is deleted.
@@ -273,7 +274,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         sam_page.key.clone(),
     );
-    away.join(workspace_id).unwrap();
+    away.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&away]).await;
     away.close();
     // A customer, invited to only this workspace, had it open earlier too.
@@ -285,7 +286,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         lin_page.key.clone(),
     );
-    lin_away.join(workspace_id).unwrap();
+    lin_away.send(Cmd::Join(workspace_id)).unwrap();
     ready(&[&lin_away]).await;
     lin_away.close();
 
@@ -366,7 +367,7 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         on_relay.host.cert.clone(),
         sam_page.key.clone(),
     );
-    back.join(workspace_id).unwrap();
+    back.send(Cmd::Join(workspace_id)).unwrap();
     heard_deleted(&back, workspace_id).await;
     only_member_hears_deleted(&on_relay, &lin_page, &workspace, workspace_id).await;
     // Deleting it again finds no such workspace.

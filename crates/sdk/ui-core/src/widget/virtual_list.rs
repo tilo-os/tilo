@@ -284,8 +284,8 @@ type ReorderValidator<M> =
 type ReorderCommit<M> = Box<dyn FnMut(&mut M, ReorderDrop<<M as ListModel>::Key>) -> bool>;
 use super::row_selection::selection_sink;
 pub use super::row_selection::{
-    PaintedRowLifts, RowBuild, RowContentBox, RowLift, RowSelection, RowSelectionSink,
-    row_content_box,
+    PaintedRowChevrons, PaintedRowLifts, RowBuild, RowChevron, RowContentBox, RowLift,
+    RowSelection, RowSelectionSink, row_content_box,
 };
 
 struct MountedRow<K> {
@@ -374,7 +374,7 @@ pub trait RowActionRects {
 
 /// Where a list's rows stand between its edges.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RowStance {
+pub(super) enum RowStance {
     /// One lift's bleed in, so their lift fills the list.
     Bleed,
     /// Edge to edge: rows that bring their own insets ([`VirtualList::flush`]).
@@ -503,6 +503,11 @@ pub struct VirtualList<M: ListModel> {
     bleed: f64,
     /// Where the rows' content starts in from the list's edge: its bleed, or a disclosure gutter.
     lead: f64,
+    /// The column the list keeps for its tree's chevrons, in front of the rows' content and
+    /// inside its own box: one disclosure step where the list is a column's body and its rows
+    /// have something to fold, nothing otherwise (settled by `settle_lead` with the rows'
+    /// column).
+    chevron_column: f64,
     /// The gutter a disclosure chevron hangs in, one step of nesting.
     disclosure: f64,
     /// How far a row's lift bleeds past its text ([`crate::chrome::row_bleed`]).
@@ -510,6 +515,9 @@ pub struct VirtualList<M: ListModel> {
     /// The selection lifts the last painted frame drew for its rows, and what those rows show
     /// ([`crate::widget::RowLift`]): an audit holds a lift to the row it selects.
     painted_lifts: Vec<crate::widget::RowLift>,
+    /// The chevrons the last painted frame drew for the rows of its tree, and the line of the row
+    /// each folds ([`crate::widget::RowChevron`]): an audit holds a chevron to its row's line.
+    painted_chevrons: Vec<crate::widget::virtual_list::RowChevron>,
     /// Whether a row with an item opens into it where it stands, or the item opens in front of
     /// the list ([`Self::in_place`]).
     in_place: bool,
@@ -733,11 +741,13 @@ impl<M: ListModel> VirtualList<M> {
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
             bleed: f64::from(crate::tokens::Spacing::BASE.s2),
             lead: f64::from(crate::tokens::Spacing::BASE.s2),
+            chevron_column: 0.0,
             disclosure: f64::from(
                 crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
             ),
             lift: f64::from(crate::tokens::Spacing::BASE.s2),
             painted_lifts: Vec::new(),
+            painted_chevrons: Vec::new(),
             in_place: true,
             row_line: f64::from(crate::tokens::Metrics::BASE.row_single),
             stance: RowStance::Bleed,
@@ -1731,6 +1741,12 @@ where
     }
 }
 
+impl<M: ListModel> crate::widget::virtual_list::PaintedRowChevrons for VirtualList<M> {
+    fn painted_row_chevrons(&self) -> Vec<crate::widget::virtual_list::RowChevron> {
+        self.painted_chevrons.clone()
+    }
+}
+
 impl<M: ListModel> crate::widget::PaintedRowLifts for VirtualList<M> {
     fn painted_row_lifts(&self) -> Vec<crate::widget::RowLift> {
         self.painted_lifts.clone()
@@ -1742,7 +1758,8 @@ impl<M: ListModel + 'static> Widget for VirtualList<M> {
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
         dyn crate::widget::ResourceOperations,
-        dyn crate::widget::PaintedRowLifts
+        dyn crate::widget::PaintedRowLifts,
+        dyn crate::widget::virtual_list::PaintedRowChevrons
     );
 
     fn set_interaction_environment(

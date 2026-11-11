@@ -29,6 +29,7 @@ use ui::widget::{AppModel, Continuable, Element, ModelPath, Queryable, TaffyTree
 use super::{Music, Page};
 use crate::actions::MusicEffect;
 use crate::model::Library;
+use ui::widget::DrawChild;
 
 /// The [`Music`] as the window and the view's effect handler share it.
 type Shared = Rc<RefCell<Music>>;
@@ -79,7 +80,7 @@ impl MusicApp {
         std::mem::swap(&mut music.page, &mut self.page);
         let out = step(&mut music);
         std::mem::swap(&mut music.page, &mut self.page);
-        self.tooltip = Widget::tooltip(&*music).map(str::to_owned);
+        self.tooltip = Widget::tooltip(&*music).map(std::borrow::Cow::into_owned);
         out
     }
 }
@@ -263,7 +264,7 @@ impl Widget for MusicApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.lend(|music| music.draw(scene, transform, text_renderer, theme, presence));
+        self.lend(|music| music.draw_child(scene, transform, text_renderer, theme, presence));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -296,8 +297,8 @@ impl Widget for MusicApp {
         self.lend(|music| music.perform_semantic_action(target, action, state, path))
     }
 
-    fn tooltip(&self) -> Option<&str> {
-        self.tooltip.as_deref()
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
+        self.tooltip.as_deref().map(Into::into)
     }
 
     fn needs_animation_frame(&self) -> bool {

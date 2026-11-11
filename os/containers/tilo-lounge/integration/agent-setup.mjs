@@ -23,9 +23,9 @@
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
 import {execFile, spawn} from 'node:child_process';
-import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {connect} from 'node:tls';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
@@ -108,7 +108,31 @@ const relayCertificate = () => new Promise((resolve, reject) => {
 const computer = join(out, 'computer');
 mkdirSync(join(computer, 'bin'), {recursive: true});
 const claudeCalls = join(computer, 'claude-calls.txt');
-writeFileSync(join(computer, 'bin', 'claude'), `#!/bin/sh\nprintf '%s\\n' "$*" >> '${claudeCalls}'\nexit 0\n`);
+// The `claude` the command finds: it records what it was asked, and does what
+// the real one does about a server — writes it into the user configuration
+// (`~/.claude.json`, `mcpServers`), which is where the command then looks for
+// it and where a restarted agent loads it from.
+writeFileSync(join(computer, 'bin', 'claude'), `#!/bin/sh
+printf '%s\\n' "$*" >> '${claudeCalls}'
+[ "$1 $2" = "mcp add" ] || exit 0
+shift 2
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --scope|-s) shift 2 ;;
+    --*) shift ;;
+    *) break ;;
+  esac
+done
+name=$1; shift
+[ "$1" = "--" ] && shift
+command=$1; shift
+args=
+for arg in "$@"; do args="$args\\"$arg\\","; done
+printf 'wrote name=%s command=%s args=%s\n' "$name" "$command" "$args" >> '${claudeCalls}'
+printf '{"mcpServers":{"%s":{"type":"stdio","command":"%s","args":[%s],"env":{}}}}\\n' \
+  "$name" "$command" "\${args%,}" > "$HOME/.claude.json"
+printf 'wrote %s: %s\n' "$HOME/.claude.json" "$(cat "$HOME/.claude.json")" >> '${claudeCalls}'
+`);
 chmodSync(join(computer, 'bin', 'claude'), 0o755);
 const relayPem = join(computer, 'relay.pem');
 writeFileSync(relayPem, await relayCertificate().catch(error => fail(`the relay's certificate: ${error.message}`)));
@@ -237,11 +261,42 @@ if (loggedIn.code !== 0) await fail(`tilo login failed (${loggedIn.code}): ${log
 if (!/restart/.test(loggedIn.stdout) || !/\btilo_[a-z]+\b/.test(loggedIn.stdout)) {
   await fail(`tilo login did not tell the agent to restart and which tool to call: ${loggedIn.stdout}`);
 }
+if (!/agent check/.test(loggedIn.stdout)) await fail(`tilo login did not leave the agent the check that confirms its tools: ${loggedIn.stdout}`);
 if (/failed/i.test(loggedIn.stdout)) await fail(`tilo login said something failed: ${loggedIn.stdout}`);
 const registered = (() => { try { return readFileSync(claudeCalls, 'utf8'); } catch { return ''; } })();
 report.claude = registered;
 if (!/mcp add .*tilo .*-- \S*tilo mcp/.test(registered)) await fail(`tilo login did not add its MCP server to Claude Code: ${registered || 'never asked'}`);
+// What the agent's own configuration holds afterwards: the server, running
+// this commit's command with its argument.
+const claudeConfiguration = (() => {
+  try { return JSON.parse(readFileSync(join(computer, '.claude.json'), 'utf8')); } catch { return null; }
+})();
+report.claudeConfiguration = claudeConfiguration;
+const written = claudeConfiguration?.mcpServers?.tilo;
+if (!written || JSON.stringify(written.args) !== '["mcp"]' || resolve(written.command ?? '') !== resolve(tiloBin)) {
+  await fail(`the fake agent wrote no server running Tilo's command: ${JSON.stringify(claudeConfiguration)}`);
+}
 if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
+// The tools the tab says are added are the ones the check found in the
+// agent's own configuration; a step the command did not report is never
+// claimed there.
+if (!steps.some(line => line.includes('Tilo’s tools are added to Claude Code'))) {
+  report.claudeConfiguration = (() => {
+    try { return readFileSync(join(computer, '.claude.json'), 'utf8'); } catch (error) { return `not read: ${error.message}`; }
+  })();
+  report.computer = (() => {
+    try { return readdirSync(computer).join(' '); } catch (error) { return `not read: ${error.message}`; }
+  })();
+  await fail(`the tab never showed Tilo's tools added, though the command confirmed them: ${JSON.stringify(steps)}`);
+}
+// The agent's own confirmation, as the prompt leaves it to run: the server is
+// in its configuration, and it answers.
+const checked = await tilo(['agent', 'check']);
+report.check = checked;
+if (checked.code !== 0) await fail(`tilo agent check did not confirm Tilo's server (${checked.code}): ${checked.stderr}${checked.stdout}`);
+if (!/is in .*\.claude\.json/.test(checked.stdout) || !/tilo_ls/.test(checked.stdout)) {
+  await fail(`tilo agent check did not say where the server is and what it answers: ${checked.stdout}`);
+}
 
 // The screen leaves for the person's own workspace.
 await until(first, `document.documentElement.dataset.firstRun === undefined`, 'the first screen leaving', 60_000);

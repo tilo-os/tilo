@@ -348,8 +348,9 @@ impl ListRowFace<'_> {
         // A nested row indents its content one step per depth, its lift still filling the row.
         // A tree's chevron hangs in the step in front of its row's content: the list leads every
         // row's depth's column by one step, so the top level stands where the list's own column
-        // starts and nothing indents it twice.
-        let left = rect.x0 + m.bleed + f64::from(self.depth) * m.nest;
+        // starts and nothing indents it twice. A row that keeps a chevron column inside its own
+        // box holds that column first, and its content starts past it.
+        let left = rect.x0 + m.bleed + self.chevron_column + f64::from(self.depth) * m.nest;
         let mut right = rect.x1 - m.bleed;
         let cy = rect.center().y;
         let mut geo = RowGeometry::default();

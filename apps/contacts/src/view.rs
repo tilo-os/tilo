@@ -521,9 +521,9 @@ impl Widget for ContactList {
         self.scroller.is_dragging()
     }
 
-    fn tooltip(&self) -> Option<&str> {
+    fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         self.hovered
-            .map(|_| "Double-click to edit; right-click for more actions")
+            .map(|_| "Double-click to edit; right-click for more actions".into())
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
@@ -571,7 +571,7 @@ impl Widget for ContactList {
         };
         Some(
             AccessNode::new(Role::List)
-                .with_name("Contacts")
+                .with_name(ui::i18n::I18nManager::lookup_plain("contacts-title"))
                 .with_bounds(self.rect)
                 .with_children(children),
         )

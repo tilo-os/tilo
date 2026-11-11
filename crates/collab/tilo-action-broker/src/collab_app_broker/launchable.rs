@@ -1596,7 +1596,8 @@ mod tests {
     /// alias (as the session's windowless Tasks does): an application target
     /// written with the app's own resource id reaches it, handed over under
     /// the alias it published, rather than waiting for a publisher of the
-    /// plain id that never comes.
+    /// plain id that never comes; so does one naming the alias of a window
+    /// of the app that closed.
     #[test]
     fn an_application_target_reaches_an_instance_publishing_an_alias() {
         let (state, workspace) = broker(&workspace());
@@ -1640,6 +1641,23 @@ mod tests {
             ),
             Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
             "the instance publishing the alias is the one ready"
+        );
+        // A target kept from a window of the app that has since closed names
+        // that window's alias; the running instance takes it under its own.
+        let ended = format!(
+            "{}0b7c4e52-1f0a-4d7e-9a43-6c1d2e8f7a90:{}",
+            tilo_actions::BOUND_RESOURCE_PREFIX,
+            hex::encode("files.app")
+        );
+        assert_eq!(
+            state.ready_delivery(
+                APP,
+                &workspace,
+                None,
+                &tilo_actions::ActionAddress::new(&ended, "new-window"),
+            ),
+            Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+            "an alias of an instance that ended reaches the one running"
         );
         invoke(&state, &owner, &target.provider, "new-window", None)
             .expect("the instance publishing the alias takes it");
@@ -1714,6 +1732,99 @@ mod tests {
             windowless.try_recv().is_err(),
             "the windowless instance took no open"
         );
+    }
+
+    /// The workspace's `start` of `APP`, as `caller` asks it: its answer.
+    fn start(
+        state: &Arc<AppBrokerState>,
+        caller: &Caller,
+        workspace: &str,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionHostError> {
+        state
+            .action_invoke(
+                caller,
+                None,
+                None,
+                &InvokeRequest {
+                    on_behalf_of: None,
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: tilo_actions::remote::workspace_provider(workspace),
+                        address: tilo_actions::ActionAddress::new(
+                            format!("{}{APP}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
+                            tilo_actions::remote::APPLICATION_START_ACTION,
+                        ),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                },
+            )
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                Err(ActionHostError::Unavailable {
+                    reason: "the start never answered".into(),
+                })
+            })
+    }
+
+    /// The peer an app's `start` answered with.
+    fn started_peer(receipt: &tilo_actions::remote::InvocationReceipt) -> Option<u64> {
+        match &receipt.status {
+            tilo_actions::remote::ReceiptStatus::Completed { output } => output
+                .value
+                .as_ref()?
+                .get(super::super::workspace_open::OPENED_PEER_FIELD)?
+                .as_u64(),
+            _ => None,
+        }
+    }
+
+    /// A workspace's `start` of a closed app (an agent's step that shows
+    /// nothing, asking for the app first) runs it with no window and answers
+    /// with that instance; asked again while it runs, it answers with the
+    /// same one and starts nothing.
+    #[test]
+    fn a_start_runs_the_app_without_a_window_and_names_that_instance() {
+        let (state, workspace) = broker(&workspace());
+        let launches = app_comes_up_later(&state);
+        let (_windowless, asked) = app_runs_windowless(&state, 9);
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
+
+        let receipt = start(&state, &owner, &workspace).expect("started");
+        assert_eq!(started_peer(&receipt), Some(9), "{receipt:?}");
+        assert!(
+            launches.lock().expect("launches").is_empty(),
+            "no window was launched"
+        );
+        assert_eq!(
+            *asked.lock().expect("asked"),
+            [(APP.to_owned(), workspace.clone())]
+        );
+
+        let again = start(&state, &owner, &workspace).expect("running");
+        assert_eq!(started_peer(&again), Some(9));
+        assert_eq!(asked.lock().expect("asked").len(), 1, "asked for once");
+    }
+
+    /// Where the host runs no app without a window, its `start` launches a
+    /// window as an action of it would, and names that.
+    #[test]
+    fn a_start_where_nothing_runs_without_a_window_launches_as_before() {
+        let (state, workspace) = broker(&workspace());
+        let (_streams, launches) = app_comes_up_as(&state, 8);
+        state
+            .launchable
+            .replace_windowless_for_test(Arc::new(|_, _| Ok(None)));
+        let owner = Caller::local_person("owner").in_workspace(&workspace);
+        let receipt = start(&state, &owner, &workspace).expect("launched");
+        assert_eq!(*launches.lock().expect("launches"), [APP]);
+        assert_eq!(started_peer(&receipt), Some(8), "{receipt:?}");
     }
 
     /// An app the host runs no windowless instance of launches as before.

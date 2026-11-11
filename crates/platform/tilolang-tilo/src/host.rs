@@ -563,7 +563,9 @@ impl HostInner {
 
     fn plan(&self, request: &PlanRequest<'_>) -> Result<DynAction, String> {
         // Planning is a trial run: whatever it wrote into the mirror is taken back, so asking
-        // for an action (to describe it, to offer it) never changes the workspace.
+        // for an action (to describe it, to offer it) never changes the workspace. It runs the
+        // action, so it is counted: a frame that shows controls plans none.
+        let _phase = tilo_resource::profiling::Phase::start("tl.plan");
         let checkpoint = self.store.checkpoint();
         let planned = self.plan_in_mirror(request);
         self.store.rewind(checkpoint);

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "@tilo/sdk",
+      "name": "tilo-sdk",
       "devDependencies": {
         "@types/bun": "^1.2.0",
         "typescript": "^5.7.0",

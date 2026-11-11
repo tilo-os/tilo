@@ -32,7 +32,7 @@ export const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
  * so a test that opens the site in a fresh profile gets the desktop it drives,
  * as a returning person does. A test of the first screen opts out
  * (`tab({firstRun: true})`). */
-export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-first-run', '1'); } catch {}";
+export const FIRST_RUN_SEEN = "try { localStorage.setItem('tilo-setup', JSON.stringify({step: 'done'})); } catch {}";
 
 /** Compressed copies by path, kept until the file they were made from changes:
  * a bundle's start module is tens of megabytes and a page load asks for it
@@ -313,7 +313,11 @@ export async function launch({args = []} = {}) {
         const details = message.params.exceptionDetails;
         // The whole stack: a Wasm trap's first frames are the panic or
         // allocation machinery, and the frame that caused it comes later.
-        log.push(`EXC ${(details.exception?.description ?? details.text).slice(0, 8000)}`);
+        // A thrown value that is not an Error has no description: show the
+        // value, and where it was thrown.
+        const thrown = details.exception?.description ?? `${details.text} ${JSON.stringify(details.exception?.value ?? details.exception?.className ?? null)}`;
+        const at = details.stackTrace?.callFrames?.slice(0, 4).map(f => `${f.functionName}@${f.url.split('/').pop()}:${f.lineNumber}`).join(' < ') ?? `${details.url ?? ''}:${details.lineNumber}`;
+        log.push(`EXC ${thrown.slice(0, 8000)} at ${at}`);
       }
       if (message.method === 'Runtime.consoleAPICalled' && ['error', 'warning'].includes(message.params.type)) {
         log.push(`${message.params.type.toUpperCase()} ${message.params.args.map(a => a.value ?? a.description ?? '').join(' ').slice(0, 2000)}`);

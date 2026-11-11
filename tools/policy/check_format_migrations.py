@@ -14,10 +14,6 @@ updates still holds a file of an older version, so the chain only grows:
 declared at BASE now brings up fewer versions: its ``oldest`` rose, or the
 declaration is gone while its file may still be on disk.
 
-A format whose feature is deleted is no longer read by anything, so nothing
-is lost by not bringing it up: it is named, with the reason, in
-``tools/policy/format_retirements.toml``, in the commit that deletes it.
-
 Each step is tested against a file its previous version wrote, and only that
 (``assert_step_reads_previous``, beside each declaration).
 """
@@ -28,11 +24,9 @@ import argparse
 import re
 import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-RETIREMENTS = Path("tools/policy/format_retirements.toml")
 DECLARATION = re.compile(
     r"(?<!\w)Format\s*\{\s*name:\s*\"(?P<name>[^\"]+)\"\s*,\s*version:\s*[^,]+,\s*"
     r"oldest:\s*(?P<oldest>[^,]+?)\s*,",
@@ -116,24 +110,12 @@ def check(root: Path = ROOT) -> list[str]:
     return problems
 
 
-def retired(root: Path = ROOT) -> set[str]:
-    """The formats `RETIREMENTS` names: no program reads them any more."""
-    path = root / RETIREMENTS
-    if not path.is_file():
-        return set()
-    entries = tomllib.loads(path.read_text()).get("retired", [])
-    return {entry["name"] for entry in entries if entry.get("reason", "").strip()}
-
-
 def against(base: str, root: Path = ROOT) -> list[str]:
     problems = []
     then = sources_at(root, base)
     before = declarations(then)
     now = declarations(sources_since(root, base, then))
-    gone = retired(root)
     for name, (path, oldest) in before.items():
-        if name not in now and name in gone:
-            continue
         if name not in now:
             problems.append(
                 f"{path}: format {name!r} is no longer declared; files a machine holds in it "

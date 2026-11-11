@@ -67,8 +67,6 @@ impl WindowGroup {
         let app = app as &mut dyn Widget;
         let bar = hands_its_bar.then(|| crate::widget::WindowBar {
             controls_width: crate::widget::window_header::merged_row_width_in(self.rect.width()),
-            revealed: true,
-            top_inset: 0.0,
             lists_actions: false,
         });
         crate::widget::window_header::offer_window_bar(app, bar);
@@ -111,7 +109,7 @@ impl WindowGroup {
             });
         let state = crate::widget::window_header::RowFurnitureState {
             controls: ControlsState {
-                maximized: self.maximized,
+                resize: self.resize(),
                 hovered: self.held_hover,
                 pressed: self.held_pressed,
                 lifts,
@@ -167,6 +165,67 @@ impl WindowGroup {
         Some(true)
     }
 
+    /// What the window's maximize control does where the window stands now.
+    #[must_use]
+    pub fn resize(&self) -> crate::widget::window_controls::Resize {
+        crate::widget::window_controls::Resize::of_window(
+            self.maximized,
+            self.floating,
+            self.collapsed,
+        )
+    }
+
+    /// The card stood in the floating layer's column folded to its header, or opened again: its
+    /// collapse control points the way the control folds it.
+    pub fn set_collapsed(&mut self, collapsed: bool) {
+        let collapsed = collapsed && self.floating;
+        if self.collapsed != collapsed {
+            self.collapsed = collapsed;
+            self.held_dirty = true;
+            self.bar.set_resize(self.resize());
+        }
+    }
+
+    /// The window floats over the desk, or stands in its strip: its row says so as it lays it out.
+    /// A floating window is a card: it keeps no door to a new tab.
+    pub fn set_floating(&mut self, floating: bool) {
+        if self.floating != floating {
+            self.floating = floating;
+            self.held_dirty = true;
+            self.bar.set_new_tab(self.opens_tabs && !floating);
+            self.bar.set_card(floating);
+            self.bar.set_resize(self.resize());
+            self.bar
+                .set_search_control((!floating).then_some(super::SEARCH_CONTROL_ROOM));
+        }
+    }
+
+    /// Whether the window floats over the desk ([`Self::set_floating`]).
+    #[must_use]
+    pub fn is_floating(&self) -> bool {
+        self.floating
+    }
+
+    /// The person folded the floating card to its header, or opened it again, once.
+    pub fn take_pending_collapse(&mut self) -> bool {
+        self.bar.take_collapse()
+    }
+
+    /// The person asked the floating window back into its strip, once.
+    pub fn take_pending_snap(&mut self) -> bool {
+        std::mem::take(&mut self.pending_snap)
+    }
+
+    /// A press on the window's maximize control: a floating window snaps back into its strip, any
+    /// other fills it or takes its width back.
+    pub(super) fn press_resize(&mut self) {
+        if self.floating {
+            self.pending_snap = true;
+        } else {
+            self.toggle_maximized();
+        }
+    }
+
     /// Run a press on the window's controls in a held bar's row: close ends the window, restore
     /// and maximize change its place, as the bar's own controls do.
     pub(super) fn run_held_control(&mut self, control: WindowControl) {
@@ -185,12 +244,7 @@ impl WindowGroup {
                     self.start_closing();
                 }
             }
-            WindowControl::Maximize => {
-                self.begin_rect_spring_from_current();
-                self.maximized = !self.maximized;
-                self.style_dirty = true;
-                self.pending_maximize_change = Some(self.maximized);
-            }
+            WindowControl::Maximize => self.press_resize(),
             // The strip closes and restores; the desktop's window menu minimizes.
             WindowControl::Minimize => {}
         }

@@ -207,18 +207,6 @@ pub trait CollabTransport: Send {
         let _ = wake;
     }
 
-    /// The whole action the change `change` was part of, when this transport
-    /// keeps the index of the actions it carries in `workspace`: every unit
-    /// the action wrote, which is what one undo takes back. Transports with no
-    /// such index answer none.
-    fn action_of(
-        &self,
-        _workspace: &str,
-        _change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        None
-    }
-
     /// Crate-internal access to the concrete transport behind the seam, for
     /// facilities that share the built-in worker's queues.
     #[doc(hidden)]

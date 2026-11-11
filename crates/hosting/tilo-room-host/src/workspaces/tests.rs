@@ -12,6 +12,7 @@ pub(crate) use super::fixtures::{
     test_host, test_host_with_grants,
 };
 
+pub(crate) mod admission_cost;
 #[cfg(feature = "agents")]
 pub(crate) mod bots;
 
@@ -61,14 +62,13 @@ pub(crate) fn guest_device() -> (SigningKey, DeviceCert) {
 
 #[tokio::test]
 async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_refused_alone() {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+    use tilo_relay_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
     let created = workspaces.create("Public").await.unwrap();
-    let mut proofs = Vec::new();
+    let mut redemptions = Vec::new();
     let mut people = Vec::new();
     for index in 0..6_u8 {
         let token = [index + 1; 8];
@@ -84,35 +84,39 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
             )
             .await
             .unwrap();
-        let (device, device_cert) = guest_device();
+        let (_, device_cert) = guest_device();
         people.push(device_cert.user_public_key);
-        let JoinReply::Challenge { challenge } = workspaces
-            .page_join(JoinStep::Ask {
-                invitation: issued.signed_invitation,
-                device_cert,
-                request_id: rand::random(),
-            })
-            .await
-        else {
-            panic!("no challenge");
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
         // The last guest presents someone else's token.
         let token = if index == 5 { [1; 8] } else { token };
-        proofs.push(JoinStep::ProvePreAdmitted {
-            challenge,
-            signature,
-            name: format!("Guest {index}"),
-            token: token.to_vec(),
-        });
+        redemptions.push((
+            issued.signed_invitation,
+            device_cert,
+            format!("Guest {index}"),
+            token,
+        ));
     }
     let before = workspaces
         .summary(&created.workspace)
         .await
         .unwrap()
         .generation;
-    let answers =
-        n0_future::join_all(proofs.into_iter().map(|proof| workspaces.page_join(proof))).await;
+    let answers = n0_future::join_all(redemptions.into_iter().map(
+        |(invitation, device_cert, name, token)| {
+            let workspaces = workspaces.clone();
+            async move {
+                workspaces
+                    .admit_proven(
+                        invitation,
+                        device_cert,
+                        rand::random(),
+                        &name,
+                        Some(token.as_slice()),
+                    )
+                    .await
+            }
+        },
+    ))
+    .await;
     for answer in answers.iter().take(5) {
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }
@@ -132,16 +136,27 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
         assert!(members.contains(person));
     }
     assert!(!members.contains(&people[5]));
+    // Each is named as they named themself coming in, in that same change.
+    for (index, person) in people.iter().take(5).enumerate() {
+        let member = summary
+            .members
+            .iter()
+            .find(|member| member.user_public_key == *person)
+            .unwrap();
+        assert_eq!(
+            member.display_name.as_deref(),
+            Some(format!("Guest {index}").as_str())
+        );
+    }
     relay.shutdown().await;
 }
 
-/// Concurrent pre-admissions and challenges share their workspace's writes, and
-/// every one of them is written before it is answered: after a restart each
-/// guest still proves its challenge and is admitted.
+/// Concurrent pre-admissions share their workspace's writes, and every one of
+/// them is written before it is answered: after a restart each invitation
+/// still admits its guest.
 #[tokio::test]
-async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_a_restart() {
-    use ed25519_dalek::Signer as _;
-    use tilo_relay_protocol::workspaces::{JoinReply, JoinStep, join_proof_digest};
+async fn a_crowds_shared_writes_hold_each_invitation_grant_across_a_restart() {
+    use tilo_relay_protocol::workspaces::JoinReply;
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = test_host(dir.path(), &key, &cert).await;
@@ -168,32 +183,19 @@ async fn a_crowds_shared_writes_hold_each_invitation_grant_and_challenge_across_
     }))
     .await;
     let guests: Vec<_> = issued.iter().map(|_| guest_device()).collect();
-    let asked = n0_future::join_all(issued.iter().zip(&guests).map(
-        |(issued, (_, device_cert))| {
-            workspaces.page_join(JoinStep::Ask {
-                invitation: issued.signed_invitation.clone(),
-                device_cert: device_cert.clone(),
-                request_id: rand::random(),
-            })
-        },
-    ))
-    .await;
     relay.shutdown().await;
     let relay = test_host(dir.path(), &key, &cert).await;
     let workspaces = relay.workspaces();
-    for (index, (asked, (device, _))) in asked.into_iter().zip(&guests).enumerate() {
-        let JoinReply::Challenge { challenge } = asked else {
-            panic!("no challenge: {asked:?}");
-        };
-        let signature = device.sign(&join_proof_digest(&challenge)).to_bytes();
+    for (index, (issued, (_, device_cert))) in issued.iter().zip(&guests).enumerate() {
         let token = u8::try_from(index + 1).unwrap();
         let answer = workspaces
-            .page_join(JoinStep::ProvePreAdmitted {
-                challenge,
-                signature,
-                name: format!("Guest {index}"),
-                token: vec![token; 8],
-            })
+            .admit_proven(
+                issued.signed_invitation.clone(),
+                device_cert.clone(),
+                rand::random(),
+                &format!("Guest {index}"),
+                Some(&[token; 8][..]),
+            )
             .await;
         assert!(matches!(answer, JoinReply::Admitted { .. }), "{answer:?}");
     }
@@ -814,7 +816,7 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     workspace.record.published = workspace.record.outgoing.len();
     for index in 0..=MAX_PUBLICATION_TAIL {
         workspace.record.outgoing.push(Publication {
-            bytes: vec![u8::try_from(index % 200).unwrap()],
+            bytes: vec![u8::try_from(index % 200).unwrap()].into(),
             checkpoint: false,
         });
     }
@@ -837,31 +839,31 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     assert_eq!(workspace.record.generation, 2);
 }
 
-/// A few changes heavier than the workspace's base start it over, however few
-/// they are; many light ones do not until they weigh as much.
+/// A few changes weighing half the workspace's base start it over, however
+/// few they are; many light ones do not until they weigh as much.
 #[test]
 fn a_heavy_tail_compacts_and_a_light_one_does_not() {
     let base = Publication {
-        bytes: vec![0; 2 * MIN_PUBLICATION_TAIL_BYTES],
+        bytes: vec![0; 4 * MIN_PUBLICATION_TAIL_BYTES].into(),
         checkpoint: true,
     };
     let change = |len: usize| Publication {
-        bytes: vec![1; len],
+        bytes: vec![1; len].into(),
         checkpoint: false,
     };
     let light: Vec<Publication> = std::iter::once(base.clone())
         .chain((0..100).map(|_| change(1024)))
         .collect();
-    assert!(!starts_over(&light), "100 KiB of changes on a 128 KiB base");
+    assert!(!starts_over(&light), "100 KiB of changes on a 256 KiB base");
     let heavy = vec![
         base,
         change(MIN_PUBLICATION_TAIL_BYTES),
         change(MIN_PUBLICATION_TAIL_BYTES),
     ];
-    assert!(starts_over(&heavy), "two changes as heavy as the base");
+    assert!(starts_over(&heavy), "two changes as heavy as half the base");
     let small = vec![
         Publication {
-            bytes: vec![0; 1024],
+            bytes: vec![0; 1024].into(),
             checkpoint: true,
         },
         change(2048),
@@ -1564,6 +1566,15 @@ struct AskedForAChannel {
 /// a member device of the person, and hand the workspace that device's MLS
 /// access request for a fresh record channel, as its runtime sends one.
 async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedForAChannel {
+    a_member_asks_for_a_channel_through(capabilities, super::Carried::Unkept).await
+}
+
+/// [`a_member_asks_for_a_channel`], the request reaching the host as `carried`
+/// says.
+async fn a_member_asks_for_a_channel_through(
+    capabilities: DeviceCapabilities,
+    carried: super::Carried,
+) -> AskedForAChannel {
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = governor_with(capabilities);
     let relay = test_host(&dir.path().join("relay"), &key, &cert).await;
@@ -1600,7 +1611,7 @@ async fn a_member_asks_for_a_channel(capabilities: DeviceCapabilities) -> AskedF
     })
     .unwrap();
     workspaces
-        .absorb(&created.workspace, member.device_public_key, &body)
+        .absorb_carried(&created.workspace, member.device_public_key, &body, carried)
         .await
         .unwrap();
     AskedForAChannel {
@@ -1671,6 +1682,21 @@ async fn a_store_host_retains_what_its_members_send_for_a_channels_group() {
     asked.shut_down().await;
 }
 
+/// A member's request that reached the host over the member's relay session
+/// is kept there already, as the member's own write: the host keeps no copy of
+/// its own. Each request a crowd sent was kept twice, a second job on the
+/// workspace's one-at-a-time queue for every one.
+#[tokio::test]
+async fn a_request_the_relay_kept_is_not_kept_again_as_the_hosts() {
+    let asked =
+        a_member_asks_for_a_channel_through(DeviceCapabilities::host(), super::Carried::Kept).await;
+    assert!(
+        !asked.retains_the_request().await,
+        "the host kept a second copy of a request its relay keeps as the member's"
+    );
+    asked.shut_down().await;
+}
+
 /// A decision does not wait for workspace in its workspace owner's queue. With
 /// the owner stalled on the workspace's first change and more changes behind it
 /// than its queue holds, every decision still settles and answers, and a
@@ -1732,7 +1758,7 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
             .outgoing
             .iter()
             .filter(|publication| !publication.checkpoint)
-            .map(|publication| publication.bytes.clone())
+            .map(|publication| publication.bytes.to_vec())
             .collect()
     };
     assert!(
@@ -2736,8 +2762,8 @@ async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
 /// every member once per arrival. A change that takes something back starts
 /// the workspace over at the next arrival, so a newcomer is never given what
 /// was withdrawn before they came. Otherwise the workspace starts over from a
-/// fresh base only once the changes since its last one weigh as much as that
-/// base, and the base holds its state in one compressed change: what a
+/// fresh base only once the changes since its last one weigh half as much as
+/// that base, and the base holds its state in one compressed change: what a
 /// newcomer fetches stays near the size of the workspace as it stands, not of
 /// its history.
 #[allow(
@@ -2791,7 +2817,7 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     );
     let mut before = publication_shape(&workspaces, &workspace).await;
 
-    // Arrivals go on until the changes since the base outweigh it.
+    // Arrivals go on until the changes since the base weigh half of it.
     let mut started = None;
     for seed in 31..=250 {
         let (guest, guest_cert) = guest_device();
@@ -2804,10 +2830,11 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
         }
         before = shape;
     }
-    let before = started.expect("the room starts over once its changes outweigh its base");
+    let before = started.expect("the room starts over once its changes weigh half its base");
     assert!(
-        before.tail_bytes >= before.base_bytes.max(MIN_PUBLICATION_TAIL_BYTES),
-        "the room started over before its changes outweighed its base: {} B of changes on a {} B base",
+        before.tail_bytes >= (before.base_bytes / 2).max(MIN_PUBLICATION_TAIL_BYTES),
+        "the room started over before its changes weighed half its base: {} B of changes on a \
+         {} B base",
         before.tail_bytes,
         before.base_bytes
     );

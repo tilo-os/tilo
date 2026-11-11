@@ -39,13 +39,13 @@ moq-net = { workspace = true, optional = true }
 # Plain future polling: the client carrier runs in a page as it does natively.
 n0-future = { version = "0.3", optional = true }
 hex = { workspace = true, optional = true }
-iroh = { workspace = true, optional = true }
 # A track is sealed and opened under the scope's channel keys, as a call's
 # frames are: the sealing is this crate's, and the keys are the channel's.
 channel-crypto = { version = "0.1.0", path = "../channel-crypto" }
 tilo-seal = { version = "0.1.0", path = "../../system/tilo-seal" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh = { workspace = true, optional = true }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

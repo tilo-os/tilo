@@ -2,9 +2,8 @@
 //! change or a Discord event, means for both sides.
 //!
 //! The bot's program only sequences steps, so everything it does comes from
-//! two effects. `plan-route` names the Chat message an event is about, for
-//! the program to read with Chat's `read-workspace`. `plan-event` answers
-//! a [`BridgePlan`]: one list per verb, each element holding exactly that
+//! one effect. The program reads Chat's records through the record door, and
+//! `plan-event` answers a [`BridgePlan`]: one list per verb, each element holding exactly that
 //! verb's arguments, so the program is a fixed run of loops with no
 //! conditions. Work that needs an earlier result (a thread before the reply
 //! in it, an avatar before the post shown with it, a category before its
@@ -287,19 +286,6 @@ fn posts(verb: &str) -> bool {
     POSTS.contains(&verb)
 }
 
-/// The channel whose latest messages the program reads with `event`: a
-/// post names its channel, not the message it made, so the plan finds that
-/// message among the channel's newest. Empty for any other event.
-#[must_use]
-pub fn route_channel(event: &Value) -> String {
-    match fired(event) {
-        Fired::Chat {
-            verbs, item, event, ..
-        } if verbs.iter().any(|verb| posts(verb)) => channel_of(item, event).to_owned(),
-        _ => String::new(),
-    }
-}
-
 /// The channel a Chat change names: its `channel` argument, else the item
 /// it addressed (a post is made on its channel).
 fn channel_of<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
@@ -312,7 +298,12 @@ fn channel_of<'a>(item: Option<&'a str>, event: &'a Value) -> &'a str {
 
 /// The message a post made: the newest message in its channel by its
 /// author with its text that the bridge has not sent yet.
-fn posted(guild: &Guild, chat: &Value, item: Option<&str>, event: &Value) -> Option<String> {
+fn posted(
+    guild: &Guild,
+    chat: &tilo::ChatRead,
+    item: Option<&str>,
+    event: &Value,
+) -> Option<String> {
     let named = about(item, event);
     // A reply in a thread is made on the message it answers, which its
     // change names: that one is not the post.
@@ -342,40 +333,6 @@ fn payload<T: serde::de::DeserializeOwned>(payload: &Value) -> Option<T> {
     serde_json::from_value(payload.clone()).ok()
 }
 
-/// The Chat message `event` is about, for the program to read; empty when
-/// it is about none.
-#[must_use]
-pub fn route(guild: &Guild, event: &Value) -> String {
-    match fired(event) {
-        Fired::Chat {
-            verbs,
-            reactions,
-            item,
-            event,
-        } => reactions.first().map_or_else(
-            || {
-                verbs
-                    .iter()
-                    .any(|verb| verb == SUBMIT_FEEDBACK)
-                    .then(|| filed_report(event))
-                    .flatten()
-                    .unwrap_or_else(|| about(item, event).to_owned())
-            },
-            |reacted| reacted.message.clone(),
-        ),
-        // A reaction is read with the message it is on, for the spelling
-        // of the emoji its reactions already use.
-        Fired::Discord {
-            source: source::REACTION_ADDED | source::REACTION_REMOVED,
-            payload: body,
-        } => payload::<ReactionChanged>(body)
-            .and_then(|event| guild.by_discord(MappedKind::Message, &event.message_id))
-            .map(|mapped| mapped.tilo.clone())
-            .unwrap_or_default(),
-        _ => String::new(),
-    }
-}
-
 fn values<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<Value> {
     items
         .into_iter()
@@ -383,12 +340,12 @@ fn values<T: Serialize>(items: impl IntoIterator<Item = T>) -> Vec<Value> {
         .collect()
 }
 
-/// What a plan reads: the guild, Chat's `read-workspace` answer for the workspace
-/// and the routed message, and where links point.
+/// What a plan reads: the guild, Chat's records of the workspace, and where
+/// links point.
 #[derive(Clone, Copy)]
 pub struct Reading<'a> {
     pub guild: &'a Guild,
-    pub chat: &'a Value,
+    pub chat: &'a tilo::ChatRead,
     pub context: &'a Context,
     /// The workspace's members with their roles (`{"members": [{"person",
     /// "role"}]}`), for a Discord-side moderator's standing in Tilo; `null`
@@ -505,7 +462,13 @@ fn tilo_change(plan: &mut BridgePlan, read: Reading<'_>, verb: &str, message: &s
     }
 }
 
-fn post(plan: &mut BridgePlan, guild: &Guild, chat: &Value, message: &str, context: &Context) {
+fn post(
+    plan: &mut BridgePlan,
+    guild: &Guild,
+    chat: &tilo::ChatRead,
+    message: &str,
+    context: &Context,
+) {
     let post = outbound::plan_post(guild, chat, message, context);
     plan.threads.extend(values(post.threads));
     plan.sends.extend(values(post.sends));

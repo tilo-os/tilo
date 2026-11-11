@@ -5,27 +5,36 @@
 //! request, presents it to its host and waits for a root holder to hand over
 //! a certificate. [`request_certification`] is the same conversation over an
 //! endpoint the caller already has, [`Approver`] what a root-holding device
-//! runs to list and answer pending requests, and [`MemberApprover`] what a
-//! page holding a member's root runs to do the same for that member's own
-//! devices.
+//! runs to list and answer pending requests, and [`MemberHost`] where a
+//! page holding a member's root does the same for that member's own devices:
+//! over the session it holds, or [`MemberApprover`] before it holds one.
 
+#[cfg(not(target_arch = "wasm32"))]
 use iroh::endpoint::{Connection, Endpoint, RecvStream, SendStream};
+#[cfg(not(target_arch = "wasm32"))]
 use iroh_base::EndpointAddr;
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_protocol::auth::{self, Hello, HelloAck};
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_relay_protocol::certify::{
-    ApproverDecision, ApproverReply, ApproverRequest, CERTIFY_ALPN, CertifyOpen, CertifyReply,
-    ConfirmationAnswer, MAX_CERTIFY_FRAME_BYTES, MemberApproval, PendingCertification,
+    ApproverDecision, ApproverRequest, CERTIFY_ALPN, ConfirmationAnswer, PendingCertification,
     PendingConfirmation, PendingDelegate,
+};
+use tilo_relay_protocol::certify::{
+    ApproverReply, CertifyOpen, CertifyReply, MAX_CERTIFY_FRAME_BYTES, MemberApproval,
 };
 use tilo_user_identity::{
     CERTIFICATION_SCHEMA_VERSION, CertificationPolicy, CertificationRequest, DeviceCapabilities,
     DeviceCert, RevocationList, verify_device_cert_at, verify_issued_cert,
 };
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::error::CertifyError;
 use crate::frame::{read_frame, write_frame};
 use crate::host::Host;
+use crate::link::{Dialer, Link, Purpose};
 use crate::signer::DeviceSigner;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::signer::signed_ack2;
 
 /// Longest a certification request waits for an approver.
@@ -60,17 +69,20 @@ fn codec(error: &impl ToString) -> CertifyError {
     CertifyError::Codec(error.to_string())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 fn iroh(error: &impl ToString) -> CertifyError {
     CertifyError::Iroh(error.to_string())
 }
 
-async fn read<T: serde::de::DeserializeOwned>(recv: &mut RecvStream) -> Result<T, CertifyError> {
+async fn read<T: serde::de::DeserializeOwned>(
+    recv: &mut (impl AsyncRead + Unpin),
+) -> Result<T, CertifyError> {
     postcard::from_bytes(&read_frame(recv, MAX_CERTIFY_FRAME_BYTES).await?)
         .map_err(|error| codec(&error))
 }
 
 async fn write<T: serde::Serialize + Sync>(
-    send: &mut SendStream,
+    send: &mut (impl AsyncWrite + Unpin),
     value: &T,
 ) -> Result<(), CertifyError> {
     write_frame(
@@ -101,9 +113,16 @@ pub async fn certify(
     on_pending: impl FnOnce(&str),
 ) -> Result<(DeviceCert, DeviceCert), CertifyError> {
     let request = signed_request(user_public_key, label, invite, signer).await?;
-    let endpoint = host.bind(None).await?;
-    let outcome = request_certification(&endpoint, host.addr(), request, on_pending).await;
-    endpoint.close().await;
+    let dialer = Dialer::new(host.clone(), None);
+    let outcome = async {
+        let link = dialer.link(Purpose::Certify).await?;
+        let (mut send, mut recv) = link.open_bi().await?;
+        let outcome = request_over(&mut send, &mut recv, request, on_pending).await;
+        link.close("");
+        outcome
+    }
+    .await;
+    dialer.close().await;
     match outcome? {
         CertificationOutcome::Issued { cert, host_cert } => Ok((cert, host_cert)),
         CertificationOutcome::Denied(reason) => Err(CertifyError::Denied(reason)),
@@ -160,6 +179,7 @@ fn checked_at(now_ns: u64, issued_at_ns: u64) -> u64 {
 /// browser [`CertificationPolicy`], and the host certificate must be a valid
 /// host certificate of the same user: a host cannot hand back a certificate
 /// for another key, another user or wider capabilities.
+#[cfg(not(target_arch = "wasm32"))]
 pub async fn request_certification(
     endpoint: &Endpoint,
     host: EndpointAddr,
@@ -171,13 +191,25 @@ pub async fn request_certification(
         .await
         .map_err(|error| iroh(&error))?;
     let (mut send, mut recv) = connection.open_bi().await.map_err(|error| iroh(&error))?;
-    write(&mut send, &CertifyOpen::Request(request.clone())).await?;
-    let mut reply: CertifyReply = read(&mut recv).await?;
+    let outcome = request_over(&mut send, &mut recv, request, on_pending).await;
+    connection.close(0u32.into(), b"");
+    outcome
+}
+
+/// [`request_certification`]'s conversation, on a stream already open to the
+/// host's certification.
+async fn request_over(
+    send: &mut (impl AsyncWrite + Unpin),
+    recv: &mut (impl AsyncRead + Unpin),
+    request: CertificationRequest,
+    on_pending: impl FnOnce(&str),
+) -> Result<CertificationOutcome, CertifyError> {
+    write(send, &CertifyOpen::Request(request.clone())).await?;
+    let mut reply: CertifyReply = read(recv).await?;
     if let CertifyReply::Pending { pairing_code } = &reply {
         on_pending(pairing_code);
-        reply = read(&mut recv).await?;
+        reply = read(recv).await?;
     }
-    connection.close(0u32.into(), b"");
     match reply {
         CertifyReply::Issued { cert, host_cert } => {
             let now = tilo_clock::unix_now_ns();
@@ -205,12 +237,14 @@ pub async fn request_certification(
 }
 
 /// An authenticated approver session with a host.
+#[cfg(not(target_arch = "wasm32"))]
 pub struct Approver {
     connection: Connection,
     send: SendStream,
     recv: RecvStream,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl Approver {
     /// Open an approver session. The host must chain to `own_cert`'s user
     /// root; the host refuses devices without `can_admit_devices`.
@@ -329,14 +363,45 @@ impl Approver {
     }
 }
 
-/// A member's root asking one host its approver commands
-/// ([`MemberApproval`]s): what a page holding the root runs to pair the
-/// person's new devices through any host they share. It reaches the host as
-/// [`Host`] says, from one endpoint bound on the first command, each command on
-/// a connection of its own.
+/// Where a member's root-signed approver commands ([`MemberApproval`]s)
+/// reach a host. A device already holding a session to the host asks over
+/// that session's endpoint (`tilo_session_client::Link`); a device with
+/// none yet binds one of its own ([`MemberApprover`]).
+pub trait MemberHost: Sync {
+    /// The host's answer to `approval`.
+    ///
+    /// # Errors
+    ///
+    /// The host was not reached, or its answer did not decode. A host that
+    /// turns the command away answers [`ApproverReply::Refused`].
+    fn ask(
+        &self,
+        approval: &MemberApproval,
+    ) -> impl std::future::Future<Output = Result<ApproverReply, CertifyError>> + Send;
+}
+
+/// Ask the host `approval` on `link`, a link to its certification
+/// ([`Purpose::Certify`]), on a stream of its own.
+///
+/// # Errors
+///
+/// As [`MemberHost::ask`].
+pub async fn ask_member(
+    link: &Link,
+    approval: &MemberApproval,
+) -> Result<ApproverReply, CertifyError> {
+    let (mut send, mut recv) = link.open_bi().await?;
+    write(&mut send, &CertifyOpen::Member(approval.clone())).await?;
+    read(&mut recv).await
+}
+
+/// A member's root asking one host its approver commands before the device
+/// holds any session there: what a page runs to pair an agent's device
+/// through a host it is not yet let into. It reaches the host as [`Host`]
+/// says, from one endpoint bound on the first command, each command on a
+/// connection of its own.
 pub struct MemberApprover {
-    host: Host,
-    endpoint: tokio::sync::OnceCell<Endpoint>,
+    dialer: Dialer,
 }
 
 impl MemberApprover {
@@ -344,37 +409,21 @@ impl MemberApprover {
     #[must_use]
     pub fn new(host: Host) -> Self {
         Self {
-            host,
-            endpoint: tokio::sync::OnceCell::new(),
+            dialer: Dialer::new(host, None),
         }
     }
 
-    /// The host's answer to `approval`.
-    ///
-    /// # Errors
-    ///
-    /// The host was not reached, or its answer did not decode. A host that
-    /// turns the command away answers [`ApproverReply::Refused`].
-    pub async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
-        let endpoint = self
-            .endpoint
-            .get_or_try_init(|| self.host.bind(None))
-            .await?;
-        let connection = endpoint
-            .connect(self.host.addr(), CERTIFY_ALPN)
-            .await
-            .map_err(|error| iroh(&error))?;
-        let (mut send, mut recv) = connection.open_bi().await.map_err(|error| iroh(&error))?;
-        write(&mut send, &CertifyOpen::Member(approval.clone())).await?;
-        let reply = read(&mut recv).await;
-        connection.close(0u32.into(), b"");
-        reply
-    }
-
-    /// Close the endpoint, waiting for the host to hear it.
+    /// Let go of the host, waiting for it to hear.
     pub async fn close(&self) {
-        if let Some(endpoint) = self.endpoint.get() {
-            endpoint.close().await;
-        }
+        self.dialer.close().await;
+    }
+}
+
+impl MemberHost for MemberApprover {
+    async fn ask(&self, approval: &MemberApproval) -> Result<ApproverReply, CertifyError> {
+        let link = self.dialer.link(Purpose::Certify).await?;
+        let reply = ask_member(&link, approval).await;
+        link.close("");
+        reply
     }
 }

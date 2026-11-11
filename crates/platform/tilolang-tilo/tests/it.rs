@@ -28,6 +28,7 @@ mod done_days;
 mod engines;
 mod fixtures;
 mod foreign;
+mod headings;
 #[cfg(feature = "record")]
 mod history_views;
 mod incremental;

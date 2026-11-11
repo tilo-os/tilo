@@ -1,63 +1,45 @@
-//! Browser environments: one microVM per workspace that runs a headless Tilo
-//! session with Browser, and the spares kept booted for the next one.
+//! Browser in a workspace's VM: the headless Tilo session that holds the
+//! workspace's Browser window, run as a process in the same VM as its Linux
+//! programs.
 //!
 //! A workspace hosted on a relay opens Browser like any app, and in a hosted
-//! workspace the page has to run somewhere: not on the relay (it runs no
-//! apps) and not in the workspace's Linux VM (which holds a compiler, not an
-//! engine). So a workspace gets a **browser environment**: the same
-//! Firecracker VM of this service, on the browser guest image
-//! ([`Guest::Browser`](super::guest::Guest)), with these differences:
-//!
-//! - **Its disk is fresh from the image every boot**, it is never
-//!   snapshotted, and when it stops its disk, meter and state are deleted:
-//!   cookies, storage and downloads go with it.
-//! - **It is started directly**, by the relay's request
-//!   ([`BrowserOpen`](super::control::Request)), not by a shell run.
-//! - **Its size is [`VmSize::Browser`](super::size::VmSize)** (2 vCPU, 2 GiB,
-//!   an 8 GiB disk), so the placer and the host's memory budget weigh it like
-//!   any other VM while no account's plan admits it.
-//! - **It ends by itself**: ten minutes without page activity, two hours
-//!   alive, or its session ending.
+//! workspace the page has to run somewhere: not on the relay, which runs no
+//! apps. The workspace's VM boots one image that carries both its Linux
+//! programs and a headless session with Browser and Chromium, so the first
+//! browser action starts that session in the VM the workspace already has
+//! ([`Request::OpenBrowser`](super::control::Request)), waking it if it
+//! sleeps. Opening Browser needs no card; a Linux command in the same VM does
+//! ([`super::plan`]).
 //!
 //! # The session in the guest
 //!
 //! The host starts the guest's session through the guest agent
 //! ([`legacy_agent_protocol::Launch`]), relaying its stdio; there is no other
-//! channel, and no addition to the agent's protocol. What the guest image
-//! must therefore ship, and what the joining code must do, is exactly this:
+//! channel, and no addition to the agent's protocol:
 //!
-//! - **argv** [`SESSION`], the guest image's own entry: the script that makes
-//!   the runtime directory, points the session at the image's software Vulkan
-//!   driver and starts it on its own bus, headless and with no X11
-//!   (`os/hosted-browser-guest/browser-session`). [`MARK`] is set in its
-//!   environment: a session that shows its window nowhere and knows it serves
-//!   a hosted browser environment.
+//! - **argv** [`SESSION`], the guest image's own entry: the script that runs
+//!   the session as the image's unprivileged browser user, with Chromium's
+//!   sandbox on, on its own bus, headless and with no X11
+//!   (`os/hosted-guest/browser-session`). [`MARK`] is set in its environment.
 //! - **stdout, one line each, nothing else**
 //!   ([`Report`](tilo_actions::remote::browser::Report)): `ready` once it has
-//!   taken the identity it was handed, and before it is due to wait for
-//!   anything; then `up <provider>` once it has joined the workspace and
-//!   opened the workspace's Browser window, with the provider token the
-//!   window publishes under; then `used` whenever a page action runs on it or
-//!   somebody views the page. The host counts the idle limit from the last of
-//!   them, and hands the provider to the relay, which routes page actions to
-//!   that window.
-//! - **stdin, one line** at hand-off, written before it is told anything else:
-//!   the material the relay gives, opaque here — the JSON that names the
-//!   workspace, the record to open and the device certificate the session
-//!   joins with ([`tilo_relay_protocol::hosted::Material`]) — with the relay's
-//!   address replaced by the one this VM dials ([`hand_off`]). One line, and
-//!   well under a megabyte: the host relays it as the session's input, one
-//!   line at a time. Its identity is read once, before it builds anything, so
-//!   the session of an environment starts at that hand-off and never before.
-//! - **stderr** is the environment's log, nothing else.
+//!   taken the identity it was handed; `up <provider>` once it has joined the
+//!   workspace and opened its Browser window; `used` whenever a page action
+//!   runs on it or somebody views the page. The host counts the idle limit
+//!   from the last of them, and hands the provider to the relay, which routes
+//!   page actions to that window.
+//! - **stdin, one line** at hand-off: the material the relay gives, opaque
+//!   here ([`tilo_relay_protocol::hosted::Material`]), with the relay's
+//!   address replaced by the one this VM dials ([`hand_off`]). The session
+//!   reads its identity once, before it builds anything, so it starts at the
+//!   hand-off and never before: nothing of a workspace's identity is in the
+//!   image or in the template a VM is cloned from.
+//! - **stderr** is the session's log, nothing else.
 //!
-//! A spare is a booted VM whose session has not started: opening Browser
-//! starts it, with the material as the first line instead of a boot. A spare
-//! keeps the name it booted with (`spare/browser-<n>`) when it serves a
-//! workspace; the placer's and the relay's name for that environment is
-//! `<workspace>/browser`, which is what places and routes it. An environment
-//! serves one workspace, is never handed back, and never shares a disk, a
-//! device or a process with another.
+//! The session ends after [`Limits::idle_stop`] without page activity, or at
+//! [`Limits::lifetime`] (its device's certificate lasts that long). It is
+//! asked to end with `SIGTERM`, so Chromium writes its profile to the VM's
+//! disk; the VM then sleeps like any idle VM, and the profile wakes with it.
 
 use std::fmt;
 use std::io::{self, Read, Write};
@@ -75,18 +57,16 @@ use thiserror::Error;
 use tilo_actions::remote::browser::{MARK, Report, UP};
 use tilo_relay_protocol::hosted::Material;
 
-use super::firecracker::Machine;
 use super::network::Endpoint;
 
-/// The session a browser environment runs, as the guest image ships it: the
-/// script that sets the environment up and starts the session on it.
+/// The browser session's entry, as the guest image ships it.
 pub const SESSION: &str = "/usr/libexec/tilo/browser-session";
 
 /// How long the guest agent is given to start a session it was asked for.
 pub const READY_PATIENCE: Duration = Duration::from_secs(120);
 
-/// How long an environment's session is given to report `up` after the
-/// material was handed to it.
+/// How long a session is given to report `up` after the material was handed
+/// to it.
 pub const UP_PATIENCE: Duration = Duration::from_secs(60);
 
 /// The line a session is handed at hand-off: `material`, the relay's, with
@@ -144,59 +124,24 @@ fn test_relay_id() -> iroh_base::EndpointId {
     iroh_base::SecretKey::from_bytes(&[7; 32]).public()
 }
 
-/// The browser environments a host runs: what it boots them with, the relay
-/// their sessions join the workspace through, how many spares it keeps, and
-/// how long one lives.
-#[derive(Clone, Debug)]
-pub struct BrowserGuest {
-    /// The browser guest image: its kernel and the disk every environment
-    /// starts as a copy of.
-    pub machine: Machine,
-    /// Where the relay is, as the host reaches it: the one destination an
-    /// environment's VM may reach besides the internet. A relay on the
-    /// host's own loopback (a local stack) is reached through
-    /// [`super::network::HOST_LOOPBACK`]; anywhere else (a cluster address),
-    /// the VM dials it as it is.
-    pub relay: Endpoint,
-    /// Spares kept booted with a session waiting for a workspace.
-    pub spares: usize,
-    /// No page activity for this long ends an environment.
-    pub idle_stop: Duration,
-    /// Alive for this long ends an environment, whatever happens.
-    pub lifetime: Duration,
-}
-
-impl BrowserGuest {
-    /// The defaults of a host that runs browser environments: two spares,
-    /// ten minutes idle, two hours alive.
-    #[must_use]
-    pub fn new(machine: Machine, relay: Endpoint) -> Self {
-        Self {
-            machine,
-            relay,
-            spares: 2,
-            idle_stop: Duration::from_secs(600),
-            lifetime: Duration::from_secs(2 * 60 * 60),
-        }
-    }
-
-    #[must_use]
-    pub const fn limits(&self) -> Limits {
-        Limits {
-            idle_stop: self.idle_stop,
-            lifetime: self.lifetime,
-        }
-    }
-}
-
-/// How long a browser environment may live, and be idle.
+/// How long a workspace's browser session may live, and be idle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Limits {
     pub idle_stop: Duration,
     pub lifetime: Duration,
 }
 
-/// Why a browser environment ended.
+impl Default for Limits {
+    /// Ten minutes idle, two hours alive.
+    fn default() -> Self {
+        Self {
+            idle_stop: Duration::from_secs(600),
+            lifetime: Duration::from_secs(2 * 60 * 60),
+        }
+    }
+}
+
+/// Why a browser session ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum End {
     /// No page activity for the idle limit.
@@ -205,8 +150,6 @@ pub enum End {
     Lifetime,
     /// Its session ended.
     Session,
-    /// A spare no workspace took, and no spare is wanted.
-    Surplus,
 }
 
 impl fmt::Display for End {
@@ -215,7 +158,6 @@ impl fmt::Display for End {
             Self::Idle => "no page activity",
             Self::Lifetime => "alive for its lifetime",
             Self::Session => "its session ended",
-            Self::Surplus => "a spare nobody took",
         })
     }
 }
@@ -230,9 +172,9 @@ pub enum SessionError {
     Io(#[from] io::Error),
 }
 
-/// One browser environment's life, as its session reports it: when it booted,
-/// when it was last used, whether it is up, whether it is being handed a
-/// workspace, and whether its session ended.
+/// One browser session's life, as it reports it: when it started, when it
+/// was last used, whether it is up, whether it is being handed its
+/// workspace, and whether it ended.
 #[derive(Debug, Default)]
 pub struct Life {
     state: Mutex<State>,
@@ -242,7 +184,7 @@ pub struct Life {
 
 #[derive(Debug, Default)]
 struct State {
-    booted_ms: u64,
+    started_ms: u64,
     ready_ms: Option<u64>,
     used_ms: u64,
     up: bool,
@@ -258,11 +200,11 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Life {
     #[must_use]
-    pub fn new(booted_ms: u64) -> Self {
+    pub fn new(started_ms: u64) -> Self {
         Self {
             state: Mutex::new(State {
-                booted_ms,
-                used_ms: booted_ms,
+                started_ms,
+                used_ms: started_ms,
                 ..State::default()
             }),
             moved: Condvar::new(),
@@ -293,7 +235,7 @@ impl Life {
         self.moved.notify_all();
     }
 
-    /// The session in this environment ended: it can serve no workspace.
+    /// The session ended: it serves the workspace no more.
     pub fn ended(&self, why: String) {
         lock(&self.state).ended = Some(why);
         self.moved.notify_all();
@@ -316,8 +258,8 @@ impl Life {
         lock(&self.state).up
     }
 
-    /// The provider token of the window this environment holds, once its
-    /// session opened it: what page actions on it name.
+    /// The provider token of the window the session holds, once it opened
+    /// it: what page actions on it name.
     #[must_use]
     pub fn provider(&self) -> Option<String> {
         lock(&self.state).provider.clone()
@@ -328,8 +270,8 @@ impl Life {
         lock(&self.state).ended.clone()
     }
 
-    /// Take the hand-off if nobody else has: whether this caller hands this
-    /// environment the workspace's material.
+    /// Take the hand-off if nobody else has: whether this caller hands the
+    /// session the workspace's material.
     fn begin_opening(&self) -> bool {
         let mut state = lock(&self.state);
         if state.up || state.opening {
@@ -360,7 +302,7 @@ impl Life {
                 .filter(|left| !left.is_zero())
             else {
                 return Err(format!(
-                    "the browser environment's session did not report {what} within {patience:?}"
+                    "the browser session did not report {what} within {patience:?}"
                 ));
             };
             let (again, _) = self
@@ -376,16 +318,16 @@ impl Life {
         self.wait_for(patience, &|state| state.up, UP)
     }
 
-    /// Whether this environment is at its end by now, and why.
+    /// Whether this session is at its end by now, and why.
     #[must_use]
     pub fn expired(&self, now_ms: u64, limits: Limits) -> Option<End> {
-        let (ended, up, used_ms, booted_ms) = {
+        let (ended, up, used_ms, started_ms) = {
             let state = lock(&self.state);
             (
                 state.ended.is_some(),
                 state.up,
                 state.used_ms,
-                state.booted_ms,
+                state.started_ms,
             )
         };
         if ended {
@@ -395,16 +337,16 @@ impl Life {
         if up && now_ms.saturating_sub(used_ms) >= millis(limits.idle_stop) {
             return Some(End::Idle);
         }
-        if now_ms.saturating_sub(booted_ms) >= millis(limits.lifetime) {
+        if now_ms.saturating_sub(started_ms) >= millis(limits.lifetime) {
             return Some(End::Lifetime);
         }
         None
     }
 }
 
-/// The session running in one browser environment, driven through the guest
+/// The browser session running in a workspace's VM, driven through the guest
 /// agent: its stdin is where the workspace's material goes, its stdout is
-/// what it reports ([`Report`]), and its stderr is the environment's log.
+/// what it reports ([`Report`]), and its stderr is its log.
 pub struct Session {
     /// Its process, to end it.
     signals: Option<LaunchSignals<AgentStream>>,
@@ -469,11 +411,16 @@ impl Session {
         })
     }
 
-    /// End the session in the guest.
-    pub fn kill(&self) {
+    /// Send the session in the guest `signal`.
+    fn signal(&self, signal: Signal) {
         if let Some(signals) = &self.signals {
-            let _ = signals.send(Signal::Kill);
+            let _ = signals.send(signal);
         }
+    }
+
+    /// End the session in the guest now.
+    pub fn kill(&self) {
+        self.signal(Signal::Kill);
     }
 
     /// Whether the session's process ended.
@@ -562,7 +509,7 @@ impl Write for Reporter {
     }
 }
 
-/// A session's stderr: the environment's log.
+/// A session's stderr: its log.
 struct Log {
     file: Option<std::fs::File>,
 }
@@ -597,8 +544,8 @@ impl Write for Log {
     }
 }
 
-/// What starts the session in a booted environment: a spare's guest agent is
-/// answered here, and its session starts when a workspace is handed to it.
+/// What starts the session in a workspace's VM, once the workspace's material
+/// is handed to it.
 pub trait Starts: Send + Sync {
     /// Start the session with `material` as the first line of its input.
     ///
@@ -608,8 +555,7 @@ pub trait Starts: Send + Sync {
     fn start(&self, material: &str) -> Result<Session, SessionError>;
 }
 
-/// The session of one booted environment, started through the guest agent of
-/// the VM it runs in.
+/// The session started through the guest agent of the workspace's VM.
 pub struct Launcher {
     link: AgentLink,
     life: Arc<Life>,
@@ -641,8 +587,8 @@ impl Starts for Launcher {
     }
 }
 
-/// One browser environment as the host holds it: its life, what starts its
-/// session, and the session once a workspace was handed to it.
+/// A workspace's browser session as the host holds it: its life, what starts
+/// it, and the session once the workspace's material was handed to it.
 pub struct Browser {
     life: Arc<Life>,
     launcher: Mutex<Option<Box<dyn Starts>>>,
@@ -659,19 +605,18 @@ impl fmt::Debug for Browser {
 }
 
 impl Browser {
-    /// An environment that booted at `booted_ms`, whose session has not
-    /// started yet.
+    /// A session that cannot start: its VM's agent was never reached.
     #[must_use]
-    pub fn new(booted_ms: u64) -> Self {
+    pub fn new(started_ms: u64) -> Self {
         Self {
-            life: Arc::new(Life::new(booted_ms)),
+            life: Arc::new(Life::new(started_ms)),
             launcher: Mutex::new(None),
             session: Mutex::new(None),
         }
     }
 
-    /// An environment whose life is `life`, whose guest agent answers, and
-    /// whose session `starts` when a workspace is handed to it.
+    /// A session whose life is `life`, which `starts` when the workspace's
+    /// material is handed to it.
     #[must_use]
     pub fn booted(life: Arc<Life>, starts: Box<dyn Starts>) -> Self {
         Self {
@@ -686,15 +631,10 @@ impl Browser {
         &self.life
     }
 
-    /// The session in this environment started.
-    pub fn attach(&self, session: Session) {
-        *lock(&self.session) = Some(session);
-    }
-
-    /// Hand this environment `material` and wait until its session reports it
-    /// is up: the session starts here, with the material as the first line of
-    /// its input. `None` when it was already up: this request attached to the
-    /// environment a person already opened.
+    /// Hand the session `material` and wait until it reports it is up: it
+    /// starts here, with the material as the first line of its input. `None`
+    /// when it was already up: this request attached to the session someone
+    /// already opened.
     pub fn open(&self, material: &str, patience: Duration) -> Result<Option<u64>, String> {
         if !self.life.begin_opening() {
             // Someone else handed it over: follow that one in.
@@ -704,13 +644,12 @@ impl Browser {
         let started = Instant::now();
         let handed = match lock(&self.launcher).as_ref() {
             Some(starts) => starts.start(material).map_err(|error| error.to_string()),
-            None => Err("the browser environment has no session".to_owned()),
+            None => Err("the workspace's VM has no browser session".to_owned()),
         };
         match handed {
             Ok(session) => *lock(&self.session) = Some(session),
             Err(error) => {
-                // It cannot serve a workspace without a session: it is at its
-                // end, and the workspace opens a fresh one.
+                // It is at its end, and the next open starts a fresh one.
                 self.life.ended(error.clone());
                 return Err(error);
             }
@@ -724,152 +663,27 @@ impl Browser {
         ))
     }
 
-    /// End its session in the guest.
-    pub fn kill_session(&self) {
-        if let Some(session) = lock(&self.session).as_ref() {
-            session.kill();
-        } else {
-            self.life.ended("the environment stopped".to_owned());
+    /// End the session in the guest: asked with `SIGTERM`, so Chromium
+    /// writes its profile to the VM's disk, and killed when it has not ended
+    /// within `grace`.
+    pub fn end(&self, grace: Duration) {
+        let session = lock(&self.session).take();
+        let Some(session) = session else {
+            self.life.ended("its VM stopped".to_owned());
+            return;
+        };
+        session.signal(Signal::Terminate);
+        let started = Instant::now();
+        while !session.ended() && started.elapsed() < grace {
+            std::thread::sleep(Duration::from_millis(20));
         }
+        session.kill();
     }
 
-    /// Whether this environment is at its end by now, and why.
+    /// Whether this session is at its end by now, and why.
     #[must_use]
     pub fn expired(&self, now_ms: u64, limits: Limits) -> Option<End> {
         self.life.expired(now_ms, limits)
-    }
-}
-
-/// One environment the pool holds, with the name its VM has on the host.
-#[derive(Clone)]
-pub struct Named {
-    /// `<workspace>/<environment>`, as the service names its VMs.
-    pub environment: String,
-    pub browser: Arc<Browser>,
-}
-
-/// The browser environments of one host: the spares booted for the next
-/// workspace, and which environment serves which workspace.
-#[derive(Default)]
-pub struct Pool {
-    spares: Vec<Named>,
-    open: std::collections::BTreeMap<String, Named>,
-    /// Spares booting now, so no more are started than wanted.
-    booting: usize,
-    /// The number the next spare's name takes.
-    next: u64,
-}
-
-/// What the host has to do for its browser environments now.
-#[derive(Debug, Default)]
-pub struct Work {
-    /// Spares to boot.
-    pub boot: usize,
-    /// Environments to end and delete: their names, and why.
-    pub end: Vec<(String, End)>,
-}
-
-/// The environment name a workspace's browser environment has, the name the
-/// placer and the relay use for it.
-#[must_use]
-pub fn environment(workspace: &str) -> String {
-    format!("{workspace}/{BROWSER}")
-}
-
-/// What a workspace's browser environment is called after the workspace.
-pub const BROWSER: &str = "browser";
-
-impl Pool {
-    /// The environment serving `workspace`, when it has one.
-    #[must_use]
-    pub fn serving(&self, workspace: &str) -> Option<Named> {
-        self.open.get(workspace).cloned()
-    }
-
-    /// The environment that serves `workspace` from now on: the one already
-    /// serving it, or a spare it takes. `None` when no spare is free, and the
-    /// workspace boots its own.
-    pub fn claim(&mut self, workspace: &str) -> Option<Named> {
-        if let Some(serving) = self.open.get(workspace) {
-            return Some(serving.clone());
-        }
-        let spare = self.spares.pop()?;
-        self.open.insert(workspace.to_owned(), spare.clone());
-        Some(spare)
-    }
-
-    /// `named` serves `workspace`, unless another request got there first:
-    /// whether it did.
-    pub fn serve(&mut self, workspace: &str, named: Named) -> bool {
-        if self.open.contains_key(workspace) {
-            return false;
-        }
-        self.open.insert(workspace.to_owned(), named);
-        true
-    }
-
-    /// The name the next spare booted gets: `spare/browser-<n>`, counted as
-    /// booting until [`Self::spare_booted`] or [`Self::spare_failed`].
-    pub fn spare_opening(&mut self) -> String {
-        self.booting = self.booting.saturating_add(1);
-        self.next = self.next.saturating_add(1);
-        format!("spare/{BROWSER}-{}", self.next)
-    }
-
-    /// A spare booted, waiting for a workspace.
-    pub fn spare_booted(&mut self, named: Named) {
-        self.booting = self.booting.saturating_sub(1);
-        self.spares.push(named);
-    }
-
-    /// A spare that could not be booted.
-    pub fn spare_failed(&mut self) {
-        self.booting = self.booting.saturating_sub(1);
-    }
-
-    /// Stop serving `workspace`: its environment, which the host ends.
-    pub fn close(&mut self, workspace: &str) -> Option<Named> {
-        self.open.remove(workspace)
-    }
-
-    /// Every open environment, for a host that is being taken back.
-    #[must_use]
-    pub fn opened(&self) -> Vec<Named> {
-        self.open.values().cloned().collect()
-    }
-
-    #[must_use]
-    pub fn spares(&self) -> usize {
-        self.spares.len()
-    }
-
-    /// End what is at its end, drop spares nobody should have, and boot the
-    /// spares that are wanted and missing.
-    pub fn maintain(&mut self, now_ms: u64, limits: Limits, wanted: usize) -> Work {
-        let mut work = Work::default();
-        let mut ending = Vec::new();
-        for (workspace, named) in &self.open {
-            if let Some(end) = named.browser.expired(now_ms, limits) {
-                ending.push((workspace.clone(), named.environment.clone(), end));
-            }
-        }
-        for (workspace, environment, end) in ending {
-            self.open.remove(&workspace);
-            work.end.push((environment, end));
-        }
-        let mut kept = Vec::new();
-        for named in self.spares.drain(..) {
-            if let Some(end) = named.browser.expired(now_ms, limits) {
-                work.end.push((named.environment, end));
-            } else if kept.len() < wanted {
-                kept.push(named);
-            } else {
-                work.end.push((named.environment, End::Surplus));
-            }
-        }
-        self.spares = kept;
-        work.boot = wanted.saturating_sub(self.spares.len().saturating_add(self.booting));
-        work
     }
 }
 
@@ -881,13 +695,6 @@ mod tests {
         idle_stop: Duration::from_secs(600),
         lifetime: Duration::from_secs(7_200),
     };
-
-    fn environment(name: &str) -> Named {
-        Named {
-            environment: name.to_owned(),
-            browser: Arc::new(Browser::new(1_000_000)),
-        }
-    }
 
     #[test]
     fn the_line_handed_to_a_session_keeps_the_relays_id_and_its_dialable_address() {
@@ -935,11 +742,11 @@ mod tests {
         life.report(Report::Ready, 2_000);
         life.report(Report::Used, 3_000);
         assert!(life.ready());
-        assert!(!life.up(), "a spare is not up: it serves no workspace");
+        assert!(!life.up(), "not up until its window is");
         assert_eq!(
             life.expired(8_000_000, LIMITS),
             Some(End::Lifetime),
-            "a spare that was never taken still ends when its lifetime is up"
+            "a session that never came up still ends when its lifetime is up"
         );
         life.report(
             Report::Up {
@@ -1050,10 +857,10 @@ mod tests {
         assert_eq!(browser.life().expired(3_100, LIMITS), None);
     }
 
-    /// A session that never comes up takes the environment with it, so the
-    /// workspace opens a fresh one instead of waiting for a wedged spare.
+    /// A session that never comes up is at its end, so the next open starts
+    /// a fresh one instead of waiting for a wedged one.
     #[test]
-    fn a_session_that_never_reports_up_ends_the_environment() {
+    fn a_session_that_never_reports_up_is_at_its_end() {
         let life = Arc::new(Life::new(1_000));
         let browser = Browser::booted(
             Arc::clone(&life),
@@ -1071,87 +878,20 @@ mod tests {
     }
 
     #[test]
-    fn an_environment_whose_session_is_gone_never_serves_a_workspace() {
+    fn a_vm_whose_agent_was_never_reached_starts_no_session() {
         let browser = Browser::new(1_000);
         assert_eq!(
             browser
                 .open("{}", Duration::from_millis(1))
                 .err()
                 .as_deref(),
-            Some("the browser environment has no session")
+            Some("the workspace's VM has no browser session")
         );
         assert_eq!(
             browser.life().expired(1_100, LIMITS),
             Some(End::Session),
-            "and it is ended, so the workspace opens a fresh one"
+            "and it is ended, so the next open starts a fresh one"
         );
-    }
-
-    #[test]
-    fn a_spare_is_taken_once_and_replaced() {
-        let mut pool = Pool::default();
-        let spare = pool.spare_opening();
-        assert_eq!(spare, "spare/browser-1");
-        pool.spare_booted(environment(&spare));
-        assert_eq!(pool.spares(), 1);
-        assert!(pool.claim("ws1").is_some(), "the spare is handed over");
-        assert_eq!(pool.spares(), 0);
-        assert_eq!(
-            pool.claim("ws1").map(|named| named.environment),
-            Some(spare),
-            "the workspace keeps the environment it was handed"
-        );
-        assert!(pool.claim("ws2").is_none(), "a taken spare is never shared");
-        assert!(pool.serving("ws2").is_none());
-        // phase: a replacement spare is wanted, and no more than wanted
-        let work = pool.maintain(1_000_000, LIMITS, 2);
-        assert_eq!(work.boot, 2);
-        assert!(work.end.is_empty());
-        pool.spare_booted(environment("spare/browser-2"));
-        pool.spare_booted(environment("spare/browser-3"));
-        let work = pool.maintain(1_000_000, LIMITS, 1);
-        assert_eq!(
-            work.end,
-            [("spare/browser-3".to_owned(), End::Surplus)],
-            "one too many"
-        );
-        assert_eq!(pool.spares(), 1);
-        assert_eq!(
-            pool.maintain(1_000_000, LIMITS, 1).boot,
-            0,
-            "it has its spare"
-        );
-    }
-
-    #[test]
-    fn an_environment_ends_by_itself_and_the_workspace_may_open_again() {
-        let mut pool = Pool::default();
-        assert!(pool.serve("ws1", environment("ws1/browser")));
-        assert!(
-            !pool.serve("ws1", environment("ws1/browser")),
-            "one per workspace"
-        );
-        pool.spare_booted(environment("spare/browser-1"));
-        let browser = pool.serving("ws1").unwrap().browser;
-        browser.life().report(Report::Ready, 1_000_000);
-        browser.life().report(
-            Report::Up {
-                provider: "42".into(),
-            },
-            1_000_000,
-        );
-        assert_eq!(pool.maintain(1_000_100, LIMITS, 1).end, Vec::new());
-        let work = pool.maintain(1_600_000, LIMITS, 1);
-        assert_eq!(
-            work.end,
-            [("ws1/browser".to_owned(), End::Idle)],
-            "ten minutes without a page ends it, and its disk with it"
-        );
-        assert!(
-            pool.serving("ws1").is_none(),
-            "the workspace opens a new one"
-        );
-        assert_eq!(pool.spares(), 1, "the spare is untouched");
     }
 
     #[test]
@@ -1171,7 +911,7 @@ mod tests {
             std::fs::read_to_string(&log)
                 .unwrap()
                 .contains("booting\nready\nup 42\n"),
-            "everything it printed is the environment's log"
+            "everything it printed is its log"
         );
         // phase: only whole lines that are reports count
         let life = Arc::new(Life::new(0));

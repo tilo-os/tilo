@@ -182,3 +182,28 @@ reason = "one JSON frame over the daemon's local control socket, written and rea
 file = "crates/collab/tilo-peer-state/src/workspace/rows.rs"
 enum = "GovernanceRow"
 reason = "the rows a writer's operation names are new in this type and no build writes an operation naming `Layout`: the workspace's shared arrangement is no longer a governed row, and every operation stored before it is one that names a row that still exists"
+
+[[break]]
+file = "crates/runtime/legacy-vm/src/hosted/size.rs"
+enum = "VmSize"
+reason = "drops `Browser`, its last variant, so every other variant keeps its position: only a browser environment's VM was of that size, and its meter was deleted with it when it stopped and it billed no ledger, so no stored byte names it; the hosted-VM socket that carried it is between one host's service and its member, which ship together"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
+enum = "WorkspacesRequest"
+reason = "puts the wait-list requests back at the places they kept when retired: a page and the host it asks are the same build (the relay serves the page's own assets), and these requests are live messages of a session or a door, never bytes kept anywhere, so nothing written under the retirement is read back"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
+enum = "WorkspacesReply"
+reason = "the answers to those requests, live on the same session and kept nowhere, so the retired placeholder takes the meaning its position always had"
+
+[[break]]
+file = "crates/lang/tilolang-cli/src/layout_check/audit/kind.rs"
+enum = "Kind"
+reason = "a layout check's finding kinds are written only into the report of the run that found them and read back by nobody: `sidebar-header-on-reveal` becomes `header-on-reveal`, now held for every column, beside the new `offered-twice`"
+
+[[break]]
+file = "crates/hosting/tilo-relay-protocol/src/workspaces.rs"
+enum = "JoinReply"
+reason = "drops the challenge, waiting and declined answers of the HTTP join steps that redeeming an invitation no longer takes (it is an entry on the device's session now): what is left is the host's answer to `/invitation`, which a page reads from the host that served it, from the same build, and the host's own answer to a redemption in its process; no byte of it is kept"

@@ -94,6 +94,11 @@ pub struct UsageRecord {
 pub struct OpenRun {
     pub start_ms: u64,
     pub last_seen_ms: u64,
+    /// When the first Linux action of this run came: the run is billed from
+    /// then. A run that only held the workspace's Browser is not billed, as
+    /// its page actions are counted instead.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub billed_from_ms: Option<u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -139,14 +144,23 @@ impl Meter {
         self.open.is_some()
     }
 
-    /// The hypervisor was started at `now`. A run already open stays open:
-    /// starting twice is still one run.
-    pub fn started(&mut self, now: u64) {
+    /// The hypervisor was started at `now`, for a Linux action when
+    /// `billed`. A run already open stays open: starting twice is still one
+    /// run.
+    pub fn started(&mut self, now: u64, billed: bool) {
         if self.open.is_none() {
             self.open = Some(OpenRun {
                 start_ms: now,
                 last_seen_ms: now,
+                billed_from_ms: billed.then_some(now),
             });
+        }
+    }
+
+    /// A Linux action ran at `now`: the open run is billed from its first.
+    pub fn billed(&mut self, now: u64) {
+        if let Some(open) = self.open.as_mut() {
+            open.billed_from_ms.get_or_insert(now);
         }
     }
 
@@ -157,17 +171,18 @@ impl Meter {
         }
     }
 
-    /// The hypervisor is gone since `now`. `None` when nothing ran.
+    /// The hypervisor is gone since `now`. `None` when nothing billed ran.
     pub fn stopped(&mut self, now: u64, ended: RunEnd) -> Option<UsageRecord> {
         let open = self.open.take()?;
-        let end = now.max(open.start_ms);
-        Some(self.run_record(open.start_ms, end, ended))
+        let start = open.billed_from_ms?;
+        Some(self.run_record(start, now.max(start), ended))
     }
 
     /// Close a run the service left open, at the last moment it was seen.
     pub fn recover(&mut self) -> Option<UsageRecord> {
         let open = self.open.take()?;
-        Some(self.run_record(open.start_ms, open.last_seen_ms, RunEnd::Recovered))
+        let start = open.billed_from_ms?;
+        Some(self.run_record(start, open.last_seen_ms.max(start), RunEnd::Recovered))
     }
 
     fn run_record(&mut self, start_ms: u64, end_ms: u64, ended: RunEnd) -> UsageRecord {
@@ -350,8 +365,8 @@ mod tests {
             let mut seconds = Vec::new();
             for wake in 0..10_u64 {
                 let start = 1_000_000 + wake * 60_000;
-                meter.started(start);
-                meter.started(start + 200);
+                meter.started(start, true);
+                meter.started(start + 200, true);
                 let record = meter.stopped(start + 1_500, RunEnd::Suspended).unwrap();
                 assert_eq!((record.start_ms, record.millis), (start, 1_500));
                 seconds.push(record.seconds);
@@ -368,7 +383,7 @@ mod tests {
         // phase: a run the service lost is closed where it was last seen
         {
             let mut meter = Meter::new(identity(VmSize::Default));
-            meter.started(10_000);
+            meter.started(10_000, true);
             meter.seen(14_000);
             meter.seen(13_000);
             let saved = serde_json::to_vec(&meter).unwrap();
@@ -383,10 +398,31 @@ mod tests {
         // phase: a clock that steps back never bills negative time
         {
             let mut meter = Meter::new(identity(VmSize::Small));
-            meter.started(50_000);
+            meter.started(50_000, true);
             let record = meter.stopped(49_000, RunEnd::Crashed).unwrap();
             assert_eq!((record.millis, record.seconds), (0, 0));
         }
+    }
+
+    #[test]
+    fn a_run_is_billed_from_its_first_linux_action_and_a_browser_alone_is_not() {
+        let mut meter = Meter::new(identity(VmSize::Small));
+        meter.started(10_000, false);
+        meter.seen(70_000);
+        assert_eq!(
+            meter.stopped(70_000, RunEnd::Suspended),
+            None,
+            "a VM that only held Browser bills no time: its page actions are counted"
+        );
+        meter.started(100_000, false);
+        meter.billed(130_000);
+        meter.billed(140_000);
+        let record = meter.stopped(190_000, RunEnd::Suspended).unwrap();
+        assert_eq!(
+            (record.start_ms, record.seconds),
+            (130_000, 60),
+            "from the first Linux action until it slept"
+        );
     }
 
     #[test]
@@ -403,7 +439,7 @@ mod tests {
         assert_eq!(dropped.seconds, 43_200);
         assert_eq!(meter.snapshot_dropped(0), None);
 
-        meter.started(0);
+        meter.started(0, true);
         let run = meter.stopped(90_500, RunEnd::Suspended).unwrap();
         let usage = summarize(&[replaced, dropped, run], 0, u64::MAX);
         assert_eq!(usage.len(), 1);
@@ -421,15 +457,15 @@ mod tests {
             account: "acct-2".into(),
             ..identity(VmSize::Xlarge)
         });
-        small.started(0);
-        other.started(0);
+        small.started(0, true);
+        other.started(0, true);
         ledger
             .append(&small.stopped(3_000, RunEnd::Suspended).unwrap())
             .unwrap();
         ledger
             .append(&other.stopped(5_000, RunEnd::Stopped).unwrap())
             .unwrap();
-        small.started(10_000);
+        small.started(10_000, true);
         ledger
             .append(&small.stopped(12_000, RunEnd::Suspended).unwrap())
             .unwrap();

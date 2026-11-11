@@ -603,6 +603,36 @@ pub fn verify_transport_hint_at(
     verify_transport_hint(hint)
 }
 
+/// The runs of `signed_invitation`'s bytes that invitations from one issuer
+/// over one host share: the issuer's certificate and the signed transport
+/// details, each as it is encoded there. Read, not verified: a keeper of
+/// many invitations names these runs once, and checks each invitation whole
+/// when it puts it back together. An invitation of an earlier layout, or
+/// one that does not decode, shares nothing.
+#[must_use]
+pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
+    let grant = match postcard::take_from_bytes::<u32>(signed_invitation) {
+        Ok((INVITATION_VERSION, _)) => {
+            postcard::from_bytes::<SignedInvitation>(signed_invitation).map(|signed| signed.grant)
+        }
+        Ok((INVITATION_WITH_INVITER_VERSION, _)) => {
+            postcard::from_bytes::<SignedInvitationWithInviter>(signed_invitation)
+                .map(|signed| signed.grant)
+        }
+        _ => return Vec::new(),
+    };
+    let Ok(grant) = grant else {
+        return Vec::new();
+    };
+    [
+        postcard::to_stdvec(&grant.issuer),
+        postcard::to_stdvec(&grant.transport),
+    ]
+    .into_iter()
+    .filter_map(Result::ok)
+    .collect()
+}
+
 /// The text an invitation is handed over in: its signed bytes as base64.
 pub fn encode_invitation_text(signed_invitation: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signed_invitation)
@@ -658,8 +688,6 @@ pub fn decode_and_verify_invitation(
         _ => return Err("unsupported invitation version".into()),
     };
     validate_decoded(&grant, recipient_user_public_key, revocations, now_ns)?;
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&grant.issuer.device_public_key)
-        .map_err(|_| "invalid invitation issuer device key".to_string())?;
     let digest = match &inviter {
         None => tagged_digest(
             INVITATION_DOMAIN,
@@ -677,8 +705,22 @@ pub fn decode_and_verify_invitation(
             },
         )?,
     };
-    key.verify(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
-        .map_err(|_| "invitation signature did not verify".to_string())?;
+    // A workspace re-reads every invitation its members redeemed whenever its
+    // governance changes: one that verified before is remembered.
+    tilo_user_identity::verify_remembered(
+        &grant.issuer.device_public_key,
+        &digest,
+        &signature,
+        false,
+    )
+    .map_err(|refused| match refused {
+        tilo_user_identity::RememberedRefusal::Key => {
+            "invalid invitation issuer device key".to_string()
+        }
+        tilo_user_identity::RememberedRefusal::Signature => {
+            "invitation signature did not verify".to_string()
+        }
+    })?;
     Ok(VerifiedJoin {
         invite_id: *blake3::hash(signed_invitation).as_bytes(),
         grant,
@@ -774,6 +816,39 @@ pub fn verify_join_proof(
         join,
         certificate: device_cert.clone(),
         request_id: proof.challenge.request_id,
+    })
+}
+
+/// Verify the redemption of `signed_invitation` by the device `device_cert`
+/// certifies, which already proved it holds its key on the connection that
+/// carries the redemption: a signature over keying material exported from
+/// that connection's TLS session, which its host checked. That proof is fresh
+/// and unique to the connection as a host challenge's answer is to the
+/// challenge, so no challenge is issued: the invitation and the certificate
+/// are checked as [`verify_join_proof`] checks them.
+///
+/// # Errors
+///
+/// The certificate does not verify or is revoked, or the invitation does not
+/// verify for its person.
+pub fn verify_connection_redemption(
+    signed_invitation: &[u8],
+    device_cert: &DeviceCert,
+    request_id: [u8; 32],
+    revocations: &RevocationList,
+    now_ns: u64,
+) -> Result<VerifiedRedemption, String> {
+    validate_certificate(device_cert, revocations, now_ns)?;
+    let join = decode_and_verify_invitation(
+        signed_invitation,
+        Some(device_cert.user_public_key),
+        revocations,
+        now_ns,
+    )?;
+    Ok(VerifiedRedemption {
+        join,
+        certificate: device_cert.clone(),
+        request_id,
     })
 }
 

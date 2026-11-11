@@ -8,7 +8,8 @@ use super::{
 use crate::services::{LaunchPlace, NativeTaskActionRequirement};
 use std::sync::{Arc, atomic::Ordering};
 use tilo_actions::remote::{
-    Caller, InvokeArgument, InvokeRequest, RemoteActionTarget, application_provider, pending,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, APPLICATION_START_ACTION, Caller,
+    InvokeArgument, InvokeRequest, RemoteActionTarget, application_provider, pending,
     provider_workspace,
 };
 
@@ -171,23 +172,9 @@ impl NativeLaunch {
                 &tilo_actions::ActionAddress::new(&self.resource, &self.action),
             );
         }
-        let subscribers = state.invocation_subscribers.lock().ok()?;
-        state
-            .surfaces
-            .lock()
-            .ok()?
-            .values()
-            .filter(|surface| {
-                surface.live
-                    // Opening the app shows it: never an instance with no window.
-                    && state.shows(surface.peer_id, tilo_actions::remote::APPLICATION_OPEN_ACTION)
-                    && surface.app_id == self.app
-                    && surface.route.cluster_id == self.run.cluster_id
-                    && subscribers.contains_key(&surface.peer_id)
-                    && !surface.actions.is_empty()
-            })
-            .map(|surface| surface.peer_id)
-            .min()
+        // Opening the app shows it, so only a window answers an `open`; any
+        // instance answers a `start`.
+        state.running_instance(&self.app, &self.run.cluster_id, &self.action)
     }
 
     fn launch_key(&self, state: &AppBrokerState) -> Result<InvocationKey, String> {
@@ -285,20 +272,23 @@ impl NativeLaunch {
                         // Recheck before consuming one-use authority, so this
                         // invocation cannot revoke its own launch permission.
                         state.spend_once_grants(&self.run.cluster_id, &spent);
-                        if self.ready(state).is_some() {
-                            return Ok(());
+                        // The instance that runs already answers it, by peer id.
+                        if let Some(peer) = self.ready(state) {
+                            return Ok(Some(peer));
                         }
-                        state.launch_retained(
-                            &self.app,
-                            &workspace,
-                            self.record.as_deref().filter(|record| !record.is_empty()),
-                            place,
-                        )
+                        state
+                            .launch_retained(
+                                &self.app,
+                                &workspace,
+                                self.record.as_deref().filter(|record| !record.is_empty()),
+                                place,
+                            )
+                            .map(|()| None)
                     })();
                     let update = match &result {
-                        Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                        Ok(peer) => tilo_actions::InvocationUpdate::Succeeded {
                             invocation: key.invocation,
-                            output: tilo_actions::ActionOutput::default(),
+                            output: peer.map(super::windowless_instances::started_output).unwrap_or_default(),
                         },
                         Err(message) => tilo_actions::InvocationUpdate::Failed {
                             invocation: key.invocation,
@@ -320,7 +310,7 @@ impl NativeLaunch {
                         .ok_or("durable launch journal absent")?
                         .record_update(&key, update, false)?;
                     finished.wait_blocking()?;
-                    result
+                    result.map(|_| ())
                 },
             )
     }
@@ -415,11 +405,7 @@ impl NativeLaunch {
             return Ok(id);
         }
         let offered = state
-            .surfaces
-            .lock()
-            .map_err(|_| "fresh task surface unavailable")?
-            .get(&peer)
-            .and_then(|surface| surface.action_projection(&self.resource, &self.action))
+            .offered_by(peer, &self.resource, &self.action)
             .ok_or("fresh task action unavailable")?;
         if self.retained.as_ref().is_some_and(|retained| {
             retained.contract != offered.1.contract || retained.params != offered.1.params
@@ -480,6 +466,12 @@ impl NativeLaunch {
     }
 }
 
+/// Whether `action`, on a workspace's application resource, starts the app:
+/// its `open`, with a window, or its `start`, without one.
+fn starts_app(action: &str) -> bool {
+    action == APPLICATION_OPEN_ACTION || action == APPLICATION_START_ACTION
+}
+
 fn host_activation_key(
     state: &AppBrokerState,
     run: &PendingTaskRun,
@@ -513,7 +505,7 @@ impl AppBrokerState {
         invocation: tilo_actions::InvocationId,
     ) -> Result<Option<(u64, tilo_actions::InvocationUpdate)>, String> {
         if provider_workspace(target.provider) != Some(run.cluster_id.as_str())
-            || target.action != "open"
+            || !starts_app(target.action)
         {
             return Ok(None);
         }
@@ -552,7 +544,8 @@ impl AppBrokerState {
             app: app.into(),
             resource_kind: "applications.app".into(),
             resource: target.resource.into(),
-            action: target.action.into(),
+            // Starting the app without a window takes the leave opening it does.
+            action: APPLICATION_OPEN_ACTION.into(),
             need: tilo_actions::ActionNeed::of(tilo_actions::ActionKind::Undoable),
             consequential: false,
             attended: false,
@@ -576,8 +569,8 @@ impl AppBrokerState {
         let target = reask.target;
         let bootstrap = provider_workspace(target.provider)
             .is_some_and(|workspace| workspace == run.cluster_id)
-            && target.action == "open"
-            && target.resource.starts_with("app.");
+            && starts_app(target.action)
+            && target.resource.starts_with(APPLICATION_RESOURCE_PREFIX);
         let (app, record, retained) = if bootstrap {
             (
                 target

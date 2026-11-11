@@ -783,7 +783,7 @@ fn lounge_bot_and_host(
     doc.put(
         &identities,
         hex::encode(bot_device.device_public_key),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        automerge::ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     let hosts = doc.put_object(ROOT, "hosts_v1", ObjType::Map).unwrap();

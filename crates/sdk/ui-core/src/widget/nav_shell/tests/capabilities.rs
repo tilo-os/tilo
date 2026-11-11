@@ -552,7 +552,8 @@ fn back_follows_the_apps_page_stack() {
     settle(&mut h, 1024, 700);
     assert_eq!(geometry(&h).back, Rect::ZERO);
 
-    // Beside a hidden sidebar's toggle, Back comes second.
+    // A page that went deeper has one way back at the leading edge: a hidden sidebar's toggle
+    // stands aside for it, and comes back with the first page.
     let pages = LocalState::new(crate::NavStack::new("watch"));
     pages.update(|stack| stack.push("creator"));
     let shell = NavShell::new()
@@ -563,7 +564,15 @@ fn back_follows_the_apps_page_stack() {
     let mut h = harness(shell, 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     let g = geometry(&h);
-    assert!(g.toggle.width() > 0.0 && g.back.x0 > g.toggle.x1);
+    assert!(g.back.width() > 0.0, "Back leads: {g:?}");
+    assert_eq!(g.toggle, Rect::ZERO, "the toggle stands aside for it");
+    assert!(h.root_mut::<NavShell>().back());
+    settle(&mut h, 1280, 800);
+    let g = geometry(&h);
+    assert!(
+        g.toggle.width() > 0.0 && g.back == Rect::ZERO,
+        "the first page brings the toggle back"
+    );
 }
 
 /// Beside an open drawer the other columns stay laid out, painted and live:

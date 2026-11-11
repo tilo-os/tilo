@@ -153,12 +153,31 @@ fn a_refused_launch_leaves_no_tab() {
     assert_eq!(handle.snapshot("g", vec![]).entries.len(), before.len());
 }
 
-/// A window an app opens floating stands over the desk beside the window it opened next to, where
-/// the strip gives it room: the card the desk draws covers nothing the person was reading, and
-/// every member's record keeps its place.
+/// A window an app opens floating stands as a card in the floating layer's column, and the window
+/// it opened next to stands clear of it: the card covers nothing the person was reading, and every
+/// member's record keeps its place.
 #[test]
 fn a_window_an_app_opens_floating_stands_beside_the_window_it_opened_next_to() {
     let (mut frame, handle) = mount();
+    floats_beside(&mut frame, &handle);
+}
+
+/// The window in use is the last of a strip whose windows fill the display: the strip ends past it
+/// by the column's room, so it still stands clear of the card.
+#[test]
+fn a_float_opened_beside_the_last_window_of_a_full_strip_stands_clear_of_its_card() {
+    let (mut frame, handle) = mount();
+    let last = handle.snapshot("g", vec![]).entries[1].route.clone();
+    handle
+        .dispatch(crate::navigation::DeskEffect::Focus { tab: last.tab })
+        .unwrap();
+    frame.relayout();
+    floats_beside(&mut frame, &handle);
+}
+
+/// Open a window floating beside the one in front, and check it stands in the column, never over
+/// that window, and moves where the layer puts it.
+fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle) {
     let beside = handle
         .snapshot("g", vec![])
         .active
@@ -221,8 +240,8 @@ fn a_window_an_app_opens_floating_stands_beside_the_window_it_opened_next_to() {
     };
     assert_eq!(
         card.size(),
-        ui::kurbo::Size::new(ui::widget::FLOAT_SIZE.0, ui::widget::FLOAT_SIZE.1),
-        "it stands at the size a floating window takes"
+        ui::kurbo::Size::new(ui::widget::FLOAT_CARD_SIZE.0, ui::widget::FLOAT_CARD_SIZE.1),
+        "it stands as a conversation card, not a window lifted whole"
     );
     assert_eq!(
         floats::rect_of(float.resolved(area)),
@@ -231,7 +250,25 @@ fn a_window_an_app_opens_floating_stands_beside_the_window_it_opened_next_to() {
     );
     assert!(
         !card.overlaps(sender),
-        "it stands beside the window it opened next to, never over what the person was reading: \
+        "the window it opened next to stands clear of it, never under it: \
          card {card:?}, that window {sender:?}"
+    );
+    let docked = handle.docked_cards();
+    assert_eq!(
+        docked.iter().map(|card| card.group).collect::<Vec<_>>(),
+        [group],
+        "it stands in the floating layer's column"
+    );
+    // The layer stacks it with the other cards: the desk stands it where the layer put it.
+    let slot = ui::kurbo::Rect::new(904.0, 120.0, 1264.0, 560.0);
+    handle.dock_at(std::iter::once((group, slot)).collect());
+    frame.relayout();
+    let row = frame
+        .widget_mut::<ui::widget::GroupRow>()
+        .expect("the shown strip");
+    assert_eq!(
+        row.floats().get(&group),
+        Some(&slot),
+        "where the layer put it"
     );
 }

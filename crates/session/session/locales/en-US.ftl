@@ -89,11 +89,11 @@ desk-window-did-not-open = { $app } started but did not open a window
 ## A window the person's record kept whose saved state this version cannot
 ## read: its tab says why the window is not here instead of the place being
 ## dropped.
-desk-place-not-read = Its saved window could not be read, so it is not here. Close this tab when you are done with it; the app opens again next time you sign in.
-
 ## The "Always allow" answers this computer kept for the agents at its door,
 ## which could not be read: each agent whose answer it was is asked again.
 agent-bindings-app-name = Agents
+send-to-agent-unnamed = Agent
+send-to-resource = Send to
 agent-bindings-lost-title = { $agent } is asked again
 agent-bindings-lost-body = This computer could not read that you let { $agent } work here, so it asks you again the next time { $agent } connects. Nothing else was removed.
 agent-bindings-unreadable-title = Your answers about agents could not be read
@@ -191,6 +191,7 @@ session-displays-close-sheet = Put the display sheet away
 session-display-builtin = Built-in display
 session-display-external = External display
 session-clipboard = Clipboard
+session-quick-settings = Quick Settings
 session-devices = Devices
 session-devices-press = Press one of the person's devices
 session-bluetooth-app = Bluetooth
@@ -217,11 +218,14 @@ session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
 session-notifications-open = Open the notification
-session-notifications-hand-to-agent = Hand the notification to an agent
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } from { $device }
 notification-from-device-only = From { $device }
+## A notification a program sent from a terminal, with no app this device
+## knows behind it: the person reads where it came from, never a bare
+## command name.
+notification-sender-terminal = Terminal
 ## The person asked to report a problem and this computer has nowhere to
 ## send one: the report box says so where they asked, rather than opening
 ## on an address that would never carry it.
@@ -316,9 +320,6 @@ session-desk-stop-agent = Stop
 session-people = People
 
 ## What a person's private conversations are called, and the one action they offer.
-session-messages = Private messages
-session-messages-send = Send a private message
-
 ## What the lock screen is called while it is up.
 session-lock-screen = Lock screen
 
@@ -390,9 +391,6 @@ capture-target-region = An area of the desktop
 # The agent the session makes in a workspace that keeps none, when a person
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistant
-# The conversation a person asks in, made with Chat's own actions on the
-# first ask (shell.md §8.1).
-session-ask-conversation = Assistant
 
 desk-style-failed-app-name = Desk
 desk-style-failed-title = Your desk style could not be shown

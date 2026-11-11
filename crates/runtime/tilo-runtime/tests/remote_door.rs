@@ -32,7 +32,7 @@ use tilo_actions::remote::{
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::remote_door::{
     ALPN, Arrival, Arrivals, Doors, Forward, Origin, PersonalDevices, RemoteDoor, agent_id,
-    ask_forward, forward_request, open,
+    ask_forward, forward_request, open, read_list,
 };
 use tilo_runtime::session_door::{Beside, Consent, read_first_line, serve_with};
 use tilo_user_identity::{
@@ -245,6 +245,8 @@ struct Door {
     arrived: Arc<Mutex<Vec<Origin>>>,
     /// Each connection's serving thread, which ends when it does.
     served: Arc<Mutex<Vec<std::thread::JoinHandle<std::io::Result<()>>>>>,
+    /// The person's workspace list, as B holds it.
+    list: Arc<Mutex<Option<tilo_relay_session::workspaces::PersonalList>>>,
 }
 
 impl Arrivals for Door {
@@ -271,6 +273,10 @@ impl Arrivals for Door {
         });
         self.served.lock().unwrap().push(serving);
         Ok(())
+    }
+
+    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+        self.list.lock().unwrap().clone()
     }
 }
 
@@ -607,4 +613,237 @@ async fn a_device_the_person_has_none_of_is_named_back_with_theirs() {
     };
     assert!(this.contains("this device"), "{this}");
     assert!(b.door.arrived.lock().unwrap().is_empty());
+}
+
+/// A grant of the person `root`'s for an agent, reaching `scope`, keyed `n`.
+fn grant(
+    root: &SigningKey,
+    n: u8,
+    scope: tilo_user_identity::AgentScope,
+) -> (SigningKey, DeviceCert) {
+    let key = SigningKey::from_bytes(&[n; 32]);
+    let now = tilo_clock::unix_now_ns();
+    let mut cert = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: key.verifying_key().to_bytes(),
+        device_label: "an agent".into(),
+        capabilities: DeviceCapabilities::agent_grant(scope),
+        issued_at_ns: now,
+        expires_at_ns: Some(now.saturating_add(60 * 60 * 1_000_000_000)),
+        signature: [0; 64],
+        issuer: None,
+    };
+    sign_device_cert(&mut cert, root).unwrap();
+    (key, cert)
+}
+
+const DESK: &str = "11111111-1111-4111-8111-111111111111";
+const ON_RELAY: &str = "22222222-2222-4222-8222-222222222222";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_of_the_persons_reads_their_workspace_list_from_a_device_and_no_one_else_does() {
+    use tilo_relay_session::workspaces::{PersonalList, PersonalWorkspace, WorkspaceHostAddress};
+    let person = Person::new();
+    let b = b(&person, &[]).await;
+    let all = grant(
+        &person.root,
+        5,
+        tilo_user_identity::AgentScope::AllWorkspaces,
+    );
+    // Before B holds a list, it says so.
+    let dialing = endpoint(&all.0).await;
+    let refused = read_list(&dialing, addr(&b.endpoint), &all.1)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("no workspace list"), "{refused}");
+    let entry = |workspace: &str, host: &str| PersonalWorkspace {
+        workspace: workspace.into(),
+        name: workspace.into(),
+        host: Some(WorkspaceHostAddress {
+            name: host.into(),
+            hint: Some("00".into()),
+        }),
+        role: Some("owner".into()),
+    };
+    let held = PersonalList {
+        workspaces: vec![entry(DESK, "Build box"), entry(ON_RELAY, "eu1.tilo.sh")],
+    };
+    *b.door.list.lock().unwrap() = Some(held.clone());
+    // A key reaching all their workspaces reads all of them, each with its
+    // host; nobody is asked, and nothing is admitted.
+    assert_eq!(
+        read_list(&dialing, addr(&b.endpoint), &all.1)
+            .await
+            .unwrap(),
+        held
+    );
+    assert!(b.door.arrived.lock().unwrap().is_empty());
+    // A key for one workspace reads that one.
+    let one = grant(
+        &person.root,
+        6,
+        tilo_user_identity::AgentScope::parse(DESK).unwrap(),
+    );
+    let listed = read_list(&endpoint(&one.0).await, addr(&b.endpoint), &one.1)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed
+            .workspaces
+            .iter()
+            .map(|one| one.workspace.as_str())
+            .collect::<Vec<_>>(),
+        [DESK]
+    );
+    // Someone else's key reads nothing.
+    let stranger = SigningKey::from_bytes(&[0x33; 32]);
+    let theirs = grant(&stranger, 7, tilo_user_identity::AgentScope::AllWorkspaces);
+    let refused = read_list(&endpoint(&theirs.0).await, addr(&b.endpoint), &theirs.1)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("someone else"), "{refused}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_revoked_key_reads_no_workspace_list() {
+    let person = Person::new();
+    let revoked = grant(
+        &person.root,
+        8,
+        tilo_user_identity::AgentScope::AllWorkspaces,
+    );
+    let b = b(&person, &[&revoked.1]).await;
+    *b.door.list.lock().unwrap() = Some(tilo_relay_session::workspaces::PersonalList::default());
+    let refused = read_list(&endpoint(&revoked.0).await, addr(&b.endpoint), &revoked.1)
+        .await
+        .unwrap_err();
+    assert!(refused.contains("removed"), "{refused}");
+}
+
+/// B's own signed address for `workspace`, as the person's list carries it.
+fn address_on_b(
+    person: &Person,
+    b: &B,
+    workspace: &str,
+) -> tilo_relay_session::workspaces::WorkspaceHostAddress {
+    let hint = tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+        version: 1,
+        mode: tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner,
+        workspace_id: tilo_peer_state::join::room_workspace_id(workspace).unwrap(),
+        room: workspace.to_owned(),
+        endpoint_addr: addr(&b.endpoint),
+        host_user_public_key: person.b.1.user_public_key,
+        host_device_certificate: person.b.1.clone(),
+        packet_relay_url: "iroh:direct".into(),
+    }
+    .transport_hint(&person.b.0)
+    .unwrap();
+    tilo_relay_session::workspaces::WorkspaceHostAddress::of_hint(
+        &postcard::to_stdvec(&hint).unwrap(),
+    )
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_key_enters_a_workspace_its_persons_device_hosts_at_the_address_their_list_names() {
+    use tilo_runtime::enter::{Key, enter};
+    let person = Person::new();
+    let b = b(&person, &[]).await;
+    let all = grant(
+        &person.root,
+        9,
+        tilo_user_identity::AgentScope::AllWorkspaces,
+    );
+    let key = Key {
+        key: all.0.clone(),
+        cert: all.1.clone(),
+    };
+    let address = address_on_b(&person, &b, DESK);
+    assert_eq!(
+        address.name, "Build box",
+        "the list names the device that hosts it"
+    );
+    let dialing = endpoint(&all.0).await;
+    let entered = enter(&dialing, &key, DESK, &address, "Visa backend #1")
+        .await
+        .expect("the person's device lets their key in");
+    let introduced = entered.handle(initialize()).await.unwrap();
+    assert!(
+        introduced.pointer("/result/serverInfo").is_some(),
+        "{introduced}"
+    );
+    let apps = entered
+        .handle(tool(2, "tilo_ls", &json!({})))
+        .await
+        .unwrap();
+    assert_eq!(apps["result"]["isError"], false, "{apps}");
+    assert!(text(&apps).contains("notes"), "{apps}");
+    let done = entered
+        .handle(tool(3, "tilo_do", &json!({"path": "notes/Notebook#pin"})))
+        .await
+        .unwrap();
+    assert_eq!(done["result"]["isError"], false, "{done}");
+    assert_eq!(b.door.host.invoked.lock().unwrap().len(), 1, "it ran on B");
+    let arrived = b.door.arrived.lock().unwrap().clone();
+    assert_eq!(arrived.len(), 1);
+    assert_eq!(arrived[0].device, all.1, "B knows which key came in");
+    assert_eq!(arrived[0].workspace.as_deref(), Some(DESK));
+
+    // An address names one workspace: another's is not entered with it.
+    assert!(
+        enter(&dialing, &key, ON_RELAY, &address, "Visa backend #1")
+            .await
+            .is_err()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_key_for_another_workspace_or_a_revoked_key_is_refused_at_the_device() {
+    use tilo_runtime::enter::{Key, enter};
+    let person = Person::new();
+    let revoked = grant(
+        &person.root,
+        10,
+        tilo_user_identity::AgentScope::AllWorkspaces,
+    );
+    let b = b(&person, &[&revoked.1]).await;
+    // A key for one workspace does not reach another the same device hosts.
+    let elsewhere = grant(
+        &person.root,
+        11,
+        tilo_user_identity::AgentScope::parse(ON_RELAY).unwrap(),
+    );
+    let refused = enter(
+        &endpoint(&elsewhere.0).await,
+        &Key {
+            key: elsewhere.0.clone(),
+            cert: elsewhere.1.clone(),
+        },
+        DESK,
+        &address_on_b(&person, &b, DESK),
+        "elsewhere",
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(refused.contains("reaches only"), "{refused}");
+    // A key the person revoked is refused.
+    let refused = enter(
+        &endpoint(&revoked.0).await,
+        &Key {
+            key: revoked.0.clone(),
+            cert: revoked.1.clone(),
+        },
+        DESK,
+        &address_on_b(&person, &b, DESK),
+        "revoked",
+    )
+    .await
+    .err()
+    .expect("refused");
+    assert!(refused.contains("removed"), "{refused}");
+    assert!(
+        b.door.arrived.lock().unwrap().is_empty(),
+        "nobody was asked"
+    );
 }

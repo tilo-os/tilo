@@ -347,9 +347,68 @@ pub fn stamp_of(change: &automerge::Change) -> Option<(Stamp, Vec<String>)> {
 /// The version `change` made, its action and its run, when it is a tilolang action's
 /// change.
 fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
+    parsed(change).read.clone()
+}
+
+/// What a change's message says: the context it records and, for a package action's change,
+/// [`read`]'s version, action and run.
+struct Parsed {
+    context: Option<tilo_actions::ActionContext>,
+    read: Option<(Stamp, DynAction, Option<Run>)>,
+}
+
+/// How many changes' messages [`parsed`] keeps: those of the changes one sync takes in.
+const PARSED_KEPT: usize = 32;
+
+thread_local! {
+    /// The messages of the changes read last, by hash, newest last.
+    static PARSED: std::cell::RefCell<std::collections::VecDeque<(automerge::ChangeHash, std::rc::Rc<Parsed>)>> =
+        const { std::cell::RefCell::new(std::collections::VecDeque::new()) };
+}
+
+/// The message of `change`, parsed once: a change never changes, and taking one in reads it
+/// for the edits it holds, the items it placed, the versions it made and whether it is a step,
+/// each a parse of its message and its action otherwise.
+fn parsed(change: &automerge::Change) -> std::rc::Rc<Parsed> {
+    let hash = change.hash();
+    let kept = PARSED.with(|kept| {
+        kept.borrow()
+            .iter()
+            .find(|(held, _)| *held == hash)
+            .map(|(_, parsed)| std::rc::Rc::clone(parsed))
+    });
+    if let Some(parsed) = kept {
+        return parsed;
+    }
     let context = change
         .message()
-        .and_then(tilo_actions::ActionContext::from_change_message)?;
+        .and_then(tilo_actions::ActionContext::from_change_message);
+    let read = context
+        .as_ref()
+        .and_then(|context| read_context(change, context));
+    let parsed = std::rc::Rc::new(Parsed { context, read });
+    PARSED.with(|kept| {
+        let mut kept = kept.borrow_mut();
+        if kept.len() >= PARSED_KEPT {
+            kept.pop_front();
+        }
+        kept.push_back((hash, std::rc::Rc::clone(&parsed)));
+    });
+    parsed
+}
+
+/// The person `change` names as the one who made it, when its message names one.
+pub(crate) fn maker_of(change: &automerge::Change) -> Option<String> {
+    let parsed = parsed(change);
+    let invoker = parsed.context.as_ref()?.invoker.as_ref()?;
+    Some(invoker.actor.clone())
+}
+
+/// [`read`] of the context `context` that `change` records.
+fn read_context(
+    change: &automerge::Change,
+    context: &tilo_actions::ActionContext,
+) -> Option<(Stamp, DynAction, Option<Run>)> {
     let encoded = context.action.as_ref()?;
     if encoded.type_id != ACTION_TYPE {
         return None;
@@ -372,7 +431,7 @@ fn read(change: &automerge::Change) -> Option<(Stamp, DynAction, Option<Run>)> {
         .at
         .clone()
         .unwrap_or_else(|| tilolang::calendar::time_text(change.timestamp()));
-    let run = run_of(&context);
+    let run = run_of(context);
     let hash = change.hash().to_string();
     let stamp = Stamp {
         version: Version {
@@ -683,9 +742,8 @@ pub fn ends_of<'c>(
 /// effect settling).
 #[must_use]
 pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
-    let context = change
-        .message()
-        .and_then(tilo_actions::ActionContext::from_change_message)?;
+    let parsed = parsed(change);
+    let context = parsed.context.as_ref()?;
     if context
         .action
         .as_ref()
@@ -700,7 +758,7 @@ pub fn step_stamp(change: &automerge::Change) -> Option<Stamp> {
             who: invoker.actor.clone(),
             at: tilolang::calendar::time_text(change.timestamp()),
             action: STEP_ACTION.to_owned(),
-            run: run_of(&context),
+            run: run_of(context),
             change: hash,
             op: change.start_op().get(),
             count: 1,

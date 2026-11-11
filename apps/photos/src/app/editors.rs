@@ -23,6 +23,7 @@ use super::paint::OFFLINE_WORLD_LANDMASSES;
 use super::{
     AlbumEditorHit, LibraryDestination, MetadataEditorHit, MetadataEditorSection, Photos, bound,
 };
+use ui::widget::DrawChild;
 
 impl Photos {
     /// Pose the ordinary library editor for deterministic offscreen coverage.
@@ -1067,7 +1068,7 @@ impl Photos {
             );
             self.album_name_input.apply_layout_external(name);
             self.album_name_input
-                .draw(scene, transform, text_renderer, &local, presence);
+                .draw_child(scene, transform, text_renderer, &local, presence);
             PaintCtx::new(scene, transform, text_renderer, &local).text_role(
                 &guidance,
                 ui::TextRole::Body,
@@ -1343,7 +1344,7 @@ impl Photos {
                 }
                 button.set_focus(focused);
                 button.apply_layout_external(rect);
-                button.draw(scene, transform, text_renderer, &local, presence);
+                button.draw_child(scene, transform, text_renderer, &local, presence);
             }
         }
         self.metadata_editor_hits = hits;
@@ -1388,7 +1389,7 @@ impl Photos {
                 rect.x1,
                 rect.y0 + place.label_h + place.tight + place.control_h,
             ));
-            input.draw(scene, transform, text_renderer, local, presence);
+            input.draw_child(scene, transform, text_renderer, local, presence);
         };
         let region = place.region;
         let column = |index: f64| {

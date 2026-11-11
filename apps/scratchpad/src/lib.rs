@@ -78,7 +78,9 @@ impl ResourceApp for Scratchpad {
             .with_accessible_name(ui::i18n::I18nManager::lookup_plain("scratchpad-note-name"))
             .with_plain_chrome()
             .with_text_role(NOTE_ROLE)
-            .with_placeholder("Start writing…")
+            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
+                "scratchpad-placeholder",
+            ))
             .multiline(true);
         // The note is a centred column at the readable measure, inset from
         // the window by the page gutter: a wide window keeps lines short

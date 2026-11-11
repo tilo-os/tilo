@@ -1135,22 +1135,6 @@ impl CollaborationManager {
         self.sync_expected && matches!(self.state(), CollaborationState::Offline(_))
     }
 
-    /// The whole action the change `change` was part of, when this endpoint's
-    /// transport keeps the index of actions it carries in `workspace`: every
-    /// unit the action wrote, which is what one undo takes back. None for a
-    /// manager with no such index.
-    #[must_use]
-    pub fn action_of(
-        &self,
-        workspace: &str,
-        change: &[u8; 32],
-    ) -> Option<crate::commit_log::CommitHistory> {
-        let Backend::Transport(transport) = &self.backend else {
-            return None;
-        };
-        transport.action_of(workspace, change)
-    }
-
     /// The current state when it differs from the one this method last
     /// returned (initially, the state the manager was constructed in). Lets
     /// an owner run connect-time work once, when the manager becomes ready.
@@ -1192,7 +1176,7 @@ impl CollaborationManager {
             cluster_id: pending.cluster_id,
             record,
             record_kind: Some(checkout.kind.as_str().to_owned()),
-            handle: presence_handle_env(),
+            handle: crate::local_identity::own_name(),
         }) {
             return Err("native route queue unavailable".into());
         }
@@ -1838,16 +1822,6 @@ impl CollaborationManager {
     }
 }
 
-/// The presence handle announced on `Hello`. `TILO_PRESENCE_HANDLE` wins,
-/// then `TILO_USER_ID`; absent both, the broker's synthetic name.
-pub fn presence_handle_env() -> Option<String> {
-    let environment = crate::host::environment();
-    let identity = &environment.identity;
-    [&identity.presence_handle, &identity.user_id]
-        .into_iter()
-        .find_map(|handle| handle.clone().filter(|v| !v.trim().is_empty()))
-}
-
 pub use runtime_collab::route::channel_key;
 
 /// The `(app_id, cluster_id)` pair this process announces in
@@ -2086,6 +2060,7 @@ mod local_document_report_tests {
                     id: "private-group".into(),
                     label: "Private work".into(),
                     kind: "task".into(),
+                    title: None,
                 }),
                 source_invocation: Some(tilo_actions::InvocationId(uuid::Uuid::from_bytes(
                     [2; 16],

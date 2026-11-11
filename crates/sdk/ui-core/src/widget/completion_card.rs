@@ -90,7 +90,7 @@ pub(crate) fn paint(
         y + (head + mark) / 2.0,
     );
     if let Some(person) = &candidate.person {
-        let colour = tokens.colors.presence.of_rgb(person.color);
+        let colour = tokens.colors.presence.hue(person.hue);
         crate::widget::AvatarFace::new(&candidate.name, &person.identity)
             .presence(colour)
             .paint(&mut PaintCtx::new(scene, transform, text, theme), mark_rect);

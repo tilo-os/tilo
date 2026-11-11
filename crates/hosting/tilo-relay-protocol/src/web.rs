@@ -8,7 +8,7 @@
 //! | Route | Body | Answer |
 //! |---|---|---|
 //! | `/host` | — | [`HostInfo`] |
-//! | `/join` | [`JoinStep`](crate::workspaces::JoinStep) | [`JoinReply`](crate::workspaces::JoinReply) |
+//! | `/invitation` ([`INVITATION_PATH`]) | a signed invitation (`Vec<u8>`) | [`JoinReply`](crate::workspaces::JoinReply) |
 //! | `/workspace-deleted` ([`WORKSPACE_DELETED_PATH`]) | a workspace's id (`String`) | `bool` |
 //! | `/fetch` ([`FETCH_PATH`]) | any method: `tilo_net::proxy` wire protocol v1 | the target's response, or the proxy's failure |
 //!
@@ -26,10 +26,11 @@
 //! node, the key of the session beside it, which the root certifies at the
 //! same time as one of the person's devices.
 //!
-//! `/join` is the route a device calls without a session: a person a host
-//! does not know yet joins through it. A device certifies itself, and a
-//! member's root answers their own device's request, over the host's
-//! certification ALPN (`crate::certify`).
+//! A person a host does not know yet comes in on their device's session
+//! ([`crate::entering`]), through a workspace's door or with an invitation,
+//! not on a route here. A device certifies itself, and a member's root
+//! answers their own device's request, over the host's certification ALPN
+//! (`crate::certify`).
 
 use serde::{Deserialize, Serialize};
 
@@ -111,13 +112,135 @@ pub struct HostAddress {
     /// The packet relay it is reached through, when it names one; a page dials
     /// the endpoint through it rather than over the network's own relays.
     pub relay_url: Option<String>,
+    /// Where the host takes WebTransport sessions: how a page reaches it,
+    /// with the browser's own transport. `None` from a host that serves no
+    /// browsers.
+    #[serde(default)]
+    pub web: Option<WebLink>,
 }
+
+/// [`HostInfo`] as a page reads it (JSON): what `hostInfo()` in the page's
+/// runtime resolves to, and what a site hands its page about the host it
+/// opens (`entry.json`, from the web entry's `TILO_WEB_HOME_HOST_INFO`), so the
+/// page dials that host without asking it first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageHost {
+    /// The host's device certificate.
+    pub host_cert: tilo_user_identity::DeviceCert,
+    /// Where the host listens on iroh, when it names an endpoint.
+    pub address: Option<PageHostAddress>,
+}
+
+/// [`HostAddress`] as a page reads it (JSON).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageHostAddress {
+    /// The endpoint's key and the addresses it answers at.
+    pub endpoint_addr: iroh_base::EndpointAddr,
+    /// The packet relay the host is reached through, when it names one.
+    #[serde(default)]
+    pub relay_url: Option<String>,
+    /// The host's WebTransport listener: how a page reaches it.
+    #[serde(default)]
+    pub web: Option<WebLink>,
+}
+
+impl From<HostAddress> for PageHostAddress {
+    fn from(address: HostAddress) -> Self {
+        Self {
+            endpoint_addr: address.endpoint_addr,
+            relay_url: address.relay_url,
+            web: address.web,
+        }
+    }
+}
+
+impl From<PageHostAddress> for HostAddress {
+    fn from(address: PageHostAddress) -> Self {
+        Self {
+            endpoint_addr: address.endpoint_addr,
+            relay_url: address.relay_url,
+            web: address.web,
+        }
+    }
+}
+
+impl From<HostInfo> for PageHost {
+    fn from(info: HostInfo) -> Self {
+        Self {
+            host_cert: info.host_cert,
+            address: info.address.map(Into::into),
+        }
+    }
+}
+
+impl HostInfo {
+    /// What a site hands its page about this host: its certificate, its
+    /// endpoint's key, the packet relay and the WebTransport listener a page
+    /// reaches it at, without the network addresses its endpoint answers at.
+    /// Those change whenever the host starts somewhere else, while the rest
+    /// stays as long as the host keeps its identity (and, for a pinned
+    /// certificate, until it renews it).
+    #[must_use]
+    pub fn for_site(&self) -> PageHost {
+        let address = self.address.as_ref().map(|address| {
+            let mut endpoint_addr = iroh_base::EndpointAddr::new(address.endpoint_addr.id);
+            if let Some(relay) = address
+                .relay_url
+                .as_deref()
+                .and_then(|url| url.parse::<iroh_base::RelayUrl>().ok())
+            {
+                endpoint_addr = endpoint_addr.with_relay_url(relay);
+            }
+            PageHostAddress {
+                endpoint_addr,
+                relay_url: address.relay_url.clone(),
+                web: address.web.clone(),
+            }
+        });
+        PageHost {
+            host_cert: self.host_cert.clone(),
+            address,
+        }
+    }
+}
+/// A host's WebTransport listener: HTTP/3 on the UDP port of its HTTPS
+/// origin, presenting the same certificate. A device opens one session per
+/// thing it asks, at that thing's path ([`LINK_SESSION_PATH`],
+/// [`LINK_CERTIFY_PATH`], [`LINK_PLANE_PATH`]): the same conversations a
+/// native device holds over the host's iroh endpoint on their ALPNs.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebLink {
+    /// `https://host:port`, the origin the sessions open at.
+    pub origin: String,
+    /// SHA-256 of the certificate a development host generated for itself,
+    /// which a device pins (a browser's `serverCertificateHashes`); `None`
+    /// for a certificate the system trust bundle verifies.
+    pub certificate_sha256: Option<[u8; 32]>,
+}
+
+/// The session with the host (the relay ALPN's): its first stream carries
+/// the handshake and then the session, as over iroh.
+pub const LINK_SESSION_PATH: &str = "/peer/v1/link/session";
+/// Certification: each stream one conversation, as each connection on
+/// the certification ALPN.
+pub const LINK_CERTIFY_PATH: &str = "/peer/v1/link/certify";
+/// A workspace's live plane: the first stream proves which device opened
+/// the session (the relay handshake, `crate::auth`), then the plane's own
+/// admission and `moq-lite` follow, as over iroh.
+pub const LINK_PLANE_PATH: &str = "/peer/v1/link/plane";
 
 /// Whether its owner deleted the workspace a device names by its id, below
 /// [`API_PREFIX`]: what a device the host no longer lets in (it was a member
 /// of only that workspace) learns about it. Any device that names it is told:
 /// the id is random, so naming it says the device already knew it.
 pub const WORKSPACE_DELETED_PATH: &str = "/workspace-deleted";
+
+/// What an invitation offers, below [`API_PREFIX`]: answered to anyone who
+/// holds it, before they have a device to enter with
+/// ([`crate::workspaces`]).
+pub const INVITATION_PATH: &str = "/invitation";
 
 /// The host's fetch proxy, below [`API_PREFIX`].
 pub const FETCH_PATH: &str = "/fetch";

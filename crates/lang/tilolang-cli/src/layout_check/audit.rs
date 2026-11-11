@@ -8,7 +8,7 @@ mod kind;
 mod text;
 mod words;
 
-pub use bar::{bar, bar_primary, stacked_header_rows};
+pub use bar::{bar, bar_primary, column_headers_at_rest, offered_twice, stacked_header_rows};
 pub use kind::Kind;
 pub use text::clipped_text;
 use text::header_row_problem;
@@ -54,6 +54,16 @@ const LINE: &str = "Row";
 /// A heading's widget: the band a section goes by, over what the section holds.
 const HEADING: &str = "SectionHeader";
 
+/// A section's widget: the groups a page is made of, each under its heading.
+const SECTION: &str = "Section";
+
+/// The writing a page holds: the editable text a person writes, which the page's own sections
+/// stand after.
+const WRITING: &str = "BlockEditor";
+
+/// A rule's widget: the line that says one part of a page ends and the next begins.
+const RULE: &str = "Divider";
+
 /// A page's widget: the readable column a screen's content stands on.
 const PAGE: &str = "Page";
 
@@ -78,6 +88,17 @@ fn rect(r: [f64; 4]) -> Rect {
 
 fn has_area(r: Rect) -> bool {
     r.width() > EPSILON && r.height() > EPSILON
+}
+
+/// Whether a block takes room a person reads. A rule says one part of a page ends and the next
+/// begins although it is a single device pixel tall, so it counts wherever a box of the page's
+/// own does.
+fn stands(widget: &str, r: Rect) -> bool {
+    if widget == RULE {
+        r.width() > EPSILON && r.height() > 0.0
+    } else {
+        has_area(r)
+    }
 }
 
 /// Whether a box, or anything it holds, gives a screen reader words to announce.
@@ -520,6 +541,15 @@ pub fn inspect(
     walk.repeated_titles();
     walk.double_navigation();
     walk.placeholder_panes(root, &mut Vec::new());
+    for fault in ui::presence::tag_faults(root) {
+        out.push(Problem {
+            kind: Kind::PresenceTag,
+            keys: Vec::new(),
+            widget: ui::presence::TAG_WIDGET.to_owned(),
+            id: None,
+            detail: fault,
+        });
+    }
     out
 }
 
@@ -598,6 +628,87 @@ fn heading_rooms_in(
     }
     for child in &node.children {
         heading_rooms_in(child, keys, band, out);
+    }
+    if pushed {
+        keys.pop();
+    }
+}
+
+/// The room a page's body keeps from the page's own gutter: the body of a page whose heading
+/// leads with a control stands one row lead in, under the text that control leads to — the
+/// control's cell and the gap after it. That width is only worth taking where the column it
+/// leaves is a column: a page on a phone's screen starts its body on the gutter, and only the
+/// heading keeps its control beside its title. A page's own sections are read to find it, since
+/// they are what the body stands of the page's own.
+pub fn indented_bodies(
+    root: &InspectionNode,
+    theme: &ui::Theme,
+    min_target: Option<f64>,
+) -> Vec<Problem> {
+    let target = min_target.unwrap_or_else(|| {
+        f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target())
+    });
+    let lead = target + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
+    let rem = f64::from(ui::widget::arrange::rem_of(theme));
+    let mut out = Vec::new();
+    let above = rect(root.rect);
+    indented_bodies_in(root, &mut Vec::new(), lead, rem, None, above, &mut out);
+    out
+}
+
+/// Whether a column `width` logical pixels wide, at `rem` pixels to the text size, is a phone's
+/// screen: narrower than the width class a column starts at.
+fn phone_screen(width: f64, rem: f64) -> bool {
+    let (_, column) = ui::widget::arrange::WidthClass::Compact.band();
+    width / rem < f64::from(column)
+}
+
+fn indented_bodies_in(
+    node: &InspectionNode,
+    keys: &mut Vec<String>,
+    lead: f64,
+    rem: f64,
+    page: Option<f64>,
+    above: Rect,
+    out: &mut Vec<Problem>,
+) {
+    let pushed = node.test_id.clone().map(|id| keys.push(id)).is_some();
+    let own = rect(node.rect);
+    // The gutter the page's content starts on: what its blocks stand at, the header that leads
+    // them included.
+    let gutter = if node.widget == PAGE {
+        node.children
+            .iter()
+            .map(|child| rect(child.rect))
+            .filter(|child| has_area(*child))
+            .map(|child| child.x0)
+            .reduce(f64::min)
+    } else {
+        page
+    };
+    // A block standing one lead in from the box that holds it, that box on the page's own
+    // gutter: what the page's body holds, not a cell a grid places far across the page.
+    if let (Some(gutter), "Section") = (gutter, node.widget.as_str())
+        && (own.x0 - above.x0 - lead).abs() <= 0.5
+        && above.x0 <= gutter + 0.5
+        && phone_screen(own.width(), rem)
+    {
+        out.push(Problem {
+            kind: Kind::IndentedBody,
+            keys: keys.iter().rev().cloned().collect(),
+            widget: node.widget.clone(),
+            id: node.test_id.clone(),
+            detail: format!(
+                "it starts {:.0} px in from the page's gutter at x {gutter:.0}, {:.0} wide: a \
+                 page on a phone's screen starts its body on the gutter",
+                own.x0 - gutter,
+                own.width()
+            ),
+        });
+    }
+    let above = if has_area(own) { own } else { above };
+    for child in &node.children {
+        indented_bodies_in(child, keys, lead, rem, gutter, above, out);
     }
     if pushed {
         keys.pop();
@@ -734,6 +845,7 @@ impl Walk<'_> {
         self.cramped_card(node, keys);
         self.shown_twice(node, keys);
         self.heading_rhythm(node, keys);
+        self.unruled_body(node, keys);
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
@@ -1120,6 +1232,64 @@ impl Walk<'_> {
                      its own content: a heading keeps clearly more room over it than under it, \
                      so it reads with what it opens"
                 ),
+            );
+        }
+    }
+
+    /// A page's own sections standing straight under the writing it holds: a section's heading is
+    /// set like the writing's headings and stands no further from the writing than they stand
+    /// from each other, so what the page says of itself reads as one more line of what was
+    /// written. A rule says where the writing ends.
+    fn unruled_body(&mut self, node: &InspectionNode, keys: &[String]) {
+        // A page's writing and its own parts read at the page's rhythm; a section inside a card
+        // is the box's to space.
+        if self.page.is_none() {
+            return;
+        }
+        let standing: Vec<&InspectionNode> = node
+            .children
+            .iter()
+            .filter(|child| stands(&child.widget, rect(child.rect)) && !floats(&child.widget))
+            .collect();
+        for (index, child) in standing.iter().enumerate() {
+            if child.widget != WRITING {
+                continue;
+            }
+            let Some(next) = index.checked_add(1).and_then(|after| standing.get(after)) else {
+                continue;
+            };
+            // What a person reads straight after the writing: the box that follows it, or the
+            // first block in that box.
+            let opens = if next.widget == SECTION {
+                *next
+            } else {
+                let Some(first) = next.children.iter().find(|child| {
+                    stands(&child.widget, rect(child.rect)) && !floats(&child.widget)
+                }) else {
+                    continue;
+                };
+                first
+            };
+            if opens.widget != SECTION {
+                continue;
+            }
+            let at = opens
+                .children
+                .iter()
+                .find(|child| child.widget == HEADING)
+                .unwrap_or(opens);
+            let mut told = keys.to_vec();
+            if let Some(id) = opens.test_id.clone() {
+                told.push(id);
+            }
+            self.push(
+                Kind::UnruledBody,
+                at,
+                &told,
+                "it stands straight under the writing, with nothing between them: a rule over the \
+                 page's own sections says where the writing ends, so its headings never read as \
+                 another line of the text"
+                    .to_owned(),
             );
         }
     }

@@ -469,13 +469,15 @@ pub fn localise_tile(
             }
         }
         // A governed workspace's owner places in-process kinds; a member that bound
-        // its own instance of that app to the tab keeps it.
+        // its own instance of that app to the tab keeps it, as does a device whose
+        // saved window of that app waits for the app to open it again.
         placeholder @ (TileContent::AppPlaceholder { .. } | TileContent::Stub { .. }) => {
             let app = crate::apps::canonical_app_id(&placeholder);
             match current {
                 Some(
                     bound @ (TileContent::Foreign { app_id, .. }
-                    | TileContent::PeerWindow { app_id, .. }),
+                    | TileContent::PeerWindow { app_id, .. }
+                    | TileContent::LocalApp { app_id, .. }),
                 ) if app
                     .as_deref()
                     .is_some_and(|app| app.eq_ignore_ascii_case(app_id)) =>
@@ -751,6 +753,16 @@ mod tests {
         assert_eq!(
             localise_tile(placeholder.clone(), Some(&other), "Notes"),
             placeholder
+        );
+        let saved = TileContent::LocalApp {
+            app_id: "so.tilo.notes".into(),
+            label: "Notes".into(),
+            note: String::new(),
+        };
+        assert_eq!(
+            localise_tile(placeholder.clone(), Some(&saved), "Notes"),
+            saved,
+            "a window this device saved keeps waiting for its app"
         );
         assert_eq!(
             localise_tile(placeholder.clone(), None, "Notes"),

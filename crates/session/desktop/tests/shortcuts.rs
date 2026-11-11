@@ -406,6 +406,14 @@ fn the_fixed_chords_close_duplicate_and_ask_the_session() {
     assert!(chrome.fixed_shortcut(FixedAction::DuplicateTab));
     assert!(chrome.take_asks().is_empty(), "the desk opens the window");
 
+    // A new window is the app picker: search over the apps opens on the desk.
+    assert!(!handle.search_open());
+    let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
+    assert!(chrome.fixed_shortcut(FixedAction::NewWindow));
+    assert!(chrome.take_asks().is_empty(), "the desk opens the picker");
+    desk.relayout();
+    assert!(handle.search_open(), "Super+N opens the app picker");
+
     // The capture studio, the guide and the remote control are the session's: the desk asks for
     // them rather than doing nothing.
     let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
@@ -425,6 +433,21 @@ fn the_fixed_chords_close_duplicate_and_ask_the_session() {
             "{action:?} reaches the session once"
         );
     }
+}
+
+/// On a desk with no window, Super+T has no app to open another window of: it opens the app
+/// picker, as Super+N does.
+#[test]
+fn a_new_tab_on_an_empty_desk_opens_the_app_picker() {
+    let (mut desk, mut frame, handle) = desk_and_chrome(&desk_tree(vec![Strip {
+        id: StripId(2),
+        name: "Main".into(),
+        window_groups: Vec::new(),
+    }]));
+    let chrome = frame.widget_mut::<DesktopChrome>().expect("the chrome");
+    assert!(chrome.fixed_shortcut(FixedAction::DuplicateTab));
+    desk.relayout();
+    assert!(handle.search_open(), "the app picker is open");
 }
 
 /// A browser page runs the fixed chords the desk shares with the native

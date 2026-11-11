@@ -41,6 +41,7 @@ use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
 use tilo_ui::tokens::{Density, TextRole};
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::toggle_group::SegmentedFace;
 use tilo_ui::widget::{
     AvatarFace, BannerContent, BannerKind, BarControlFace, Button, ButtonFace, ButtonRole,
@@ -590,7 +591,7 @@ fn stamp(p: &mut Page, mut widget: Box<dyn Widget>, area: Rect) -> f64 {
     );
     widget.apply_layout(&taffy, root, area.origin());
     let presence = PresenceCtx::default();
-    widget.draw(
+    widget.draw_child(
         &mut p.scene,
         Affine::IDENTITY,
         &mut p.tr,

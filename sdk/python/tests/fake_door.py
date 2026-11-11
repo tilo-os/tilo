@@ -47,6 +47,8 @@ class FakeDoor:
             },
         ]
         self.hosts = [{"name": "eu1", "default": True}]
+        # Records the record door answers, by app and record id.
+        self.records: dict[tuple[str, str], Any] = {}
         self.fields: dict[str, dict[str, Any]] = {
             TODO: {"title": "Todo", "pinned": False},
             PDF: {
@@ -515,6 +517,12 @@ class FakeDoor:
 
     def read(self, arguments: dict[str, Any]) -> Any:
         path = arguments.get("path", "")
+        if path.startswith("record:"):
+            _, app, record = path.split(":", 2)
+            value = self.records.get((app, record))
+            if value is None:
+                return {"revision": "r0", "records": [{"record": record, "absent": True}]}
+            return {"revision": "r1", "records": [{"record": record, "value": value}]}
         if path not in self.fields:
             return self.failed(path, "not_found", f"no resource {path}", "tilo_ls lists what is here")
         return {

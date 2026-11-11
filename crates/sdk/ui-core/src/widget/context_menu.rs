@@ -2085,6 +2085,10 @@ impl Widget for ContextMenu {
             return false;
         }
         if self.send_to.perform_semantic_action(target, action) {
+            // A send pressed by assistive technology or an agent ends the box as a press does.
+            if self.send_to.take_sent() {
+                self.close();
+            }
             return true;
         }
         if target == "context-menu:query" {

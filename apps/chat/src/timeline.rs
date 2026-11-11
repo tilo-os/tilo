@@ -92,8 +92,9 @@ struct KeptRow {
 #[derive(Default)]
 pub(crate) struct Timeline {
     /// The messages the fingerprints were taken of: their revision, where
-    /// they lie and how many there are.
-    seen: Option<(u64, usize, usize)>,
+    /// they lie, how many there are, and whether their replies stand in
+    /// threads.
+    seen: Option<(u64, usize, usize, bool)>,
     /// Each message as last seen, and a number that changes whenever it
     /// does: what a kept row is checked against.
     fingerprints: HashMap<String, (Message, u64)>,
@@ -152,9 +153,10 @@ impl Timeline {
         &self.shown
     }
 
-    /// Fingerprint the messages again when they changed.
-    fn refresh(&mut self, revision: u64, messages: &[Message]) {
-        let seen = (revision, messages.as_ptr().addr(), messages.len());
+    /// Fingerprint the messages again when they changed, or when the open
+    /// conversation shows them another way (its replies in threads or inline).
+    fn refresh(&mut self, revision: u64, messages: &[Message], threads: bool) {
+        let seen = (revision, messages.as_ptr().addr(), messages.len(), threads);
         if self.seen == Some(seen) {
             return;
         }
@@ -176,7 +178,7 @@ impl Timeline {
             }
             self.fingerprints.insert(m.id.clone(), (kept, fingerprint));
         }
-        self.groups = model::group_messages(messages);
+        self.groups = model::group_messages(messages, threads);
         let fingerprints = &self.fingerprints;
         self.rows.retain(|id, _| fingerprints.contains_key(id));
     }
@@ -197,7 +199,7 @@ impl ChatApp {
     /// its messages, and the timeline's counts restarted for a frame.
     pub(crate) fn timeline_groups(&self) -> Vec<model::MessageGroup> {
         let mut timeline = self.timeline.borrow_mut();
-        timeline.refresh(self.messages_revision, &self.messages);
+        timeline.refresh(self.messages_revision, &self.messages, self.keeps_threads());
         timeline.frame += 1;
         timeline.counts = TimelineCounts::default();
         timeline.shown.clear();
@@ -220,7 +222,7 @@ impl ChatApp {
         }
         let key = {
             let mut timeline = self.timeline.borrow_mut();
-            timeline.refresh(self.messages_revision, &self.messages);
+            timeline.refresh(self.messages_revision, &self.messages, self.keeps_threads());
             let checked = (
                 timeline.frame,
                 text_w.to_bits(),
@@ -287,7 +289,16 @@ impl ChatApp {
         for agent in &agents {
             agent.hash(&mut people);
         }
-        self.workspace_agents.hash(&mut people);
+        let mut named: Vec<_> = self.workspace_agent_names.iter().collect();
+        named.sort_unstable();
+        for agent in &named {
+            agent.hash(&mut people);
+        }
+        let mut worn: Vec<_> = self.workspace_agent_colours.iter().collect();
+        worn.sort_unstable();
+        for agent in &worn {
+            agent.hash(&mut people);
+        }
         let look = PaintLook {
             theme: theme.clone(),
             transform: tf,
@@ -434,9 +445,6 @@ impl ChatApp {
             if !matches!(attached, tilo_reference::Attached::Resource { .. }) {
                 continue;
             }
-            self.resource_navigation
-                .label(&m.id, index, false)
-                .hash(&mut hasher);
             match self.resource_navigation.status(&m.id, index) {
                 None => 0.hash(&mut hasher),
                 Some(Ok(())) => 1.hash(&mut hasher),

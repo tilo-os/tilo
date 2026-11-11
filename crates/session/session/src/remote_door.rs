@@ -13,6 +13,10 @@
 //! nobody sits at — with this device's `agent_door` setting
 //! ([`settings_store::agent_door`]), which is off unless they turn it on.
 //!
+//! A key of the person's that dials the door only to read their workspace list is answered it
+//! without anyone being asked ([`Remote::show_list`]): the workspaces it reaches, each with its
+//! host's signed address.
+//!
 //! The other way round, a `--connect --device NAME` client of this login asks
 //! this session to carry it to another device's door ([`Remote::forward`]),
 //! and an agent lists the person's devices with
@@ -40,6 +44,9 @@ pub(crate) struct Remote {
     /// The person's other devices' doors, once this device's endpoint has bound and its store is
     /// open.
     doors: OnceLock<Arc<Doors>>,
+    /// The person's workspace list as this device holds it, for a key of theirs that dials the door
+    /// to read it.
+    list: Mutex<Option<tilo_relay_session::workspaces::PersonalList>>,
 }
 
 impl Remote {
@@ -49,6 +56,7 @@ impl Remote {
             wake,
             serving: AtomicBool::new(false),
             doors: OnceLock::new(),
+            list: Mutex::default(),
         })
     }
 
@@ -77,6 +85,11 @@ impl Remote {
     /// The agent door serves what arrives from now on.
     pub(crate) fn serve(&self) {
         self.serving.store(true, Ordering::Relaxed);
+    }
+
+    /// Answer `list` to the person's keys that dial the door to read where their workspaces are.
+    pub(crate) fn show_list(&self, list: tilo_relay_session::workspaces::PersonalList) {
+        *self.list.lock_recover() = Some(list);
     }
 
     /// Every connection that arrived since the last pass.
@@ -113,6 +126,10 @@ impl Arrivals for Remote {
         self.arrivals.lock_recover().push(arrival);
         (self.wake)();
         Ok(())
+    }
+
+    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+        self.list.lock_recover().clone()
     }
 }
 

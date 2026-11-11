@@ -25,11 +25,18 @@
 //! route a change travels on, sealed or not.
 //!
 //! A workspace can also send all of its records on demand: a public one,
-//! which anyone may walk into, replays a newcomer only its governance, its
-//! shared desktop and the heads of its chains, whatever its records' ids say.
-//! Its host decides that for the workspace and says so in the `Ready` that
-//! ends a device's replay; the device then asks for every record it opens,
-//! and takes one as new only once the host answered it holds none of it.
+//! which anyone may walk into, replays a newcomer only its governance and its
+//! shared desktop, whatever its records' ids say. Its host decides that for
+//! the workspace and says so in the `Ready` that ends a device's replay; the
+//! device then asks for every record it opens, and takes one as new only once
+//! the host answered it holds none of it.
+//!
+//! A device that holds no part of a chain finds its head by opening the
+//! chain's *head* (`derived:head@<base>`, [`chain_head`]): a name for
+//! whichever part is the head, which holds nothing of its own. The host sends
+//! the head part's history in answer, and the device follows the chain from
+//! then on, each later head included: one round trip, whichever part the head
+//! is. Answered with nothing, the chain has no part yet.
 
 /// Role of a part of a chained record, in `derived:part.<n>@<base>`.
 const PART_ROLE: &str = "part.";
@@ -37,6 +44,8 @@ const PART_ROLE: &str = "part.";
 const CHUNK_ROLE: &str = "chunk.";
 /// Role of a record declared on-demand, in `derived:on-demand@<base>`.
 const ON_DEMAND_ROLE: &str = "on-demand";
+/// Role of a chain's head, in `derived:head@<base>`.
+const HEAD_ROLE: &str = "head";
 
 /// How a record reaches the devices of a workspace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +70,12 @@ pub enum RecordSync<'a> {
         /// The chunk's number, from `1`.
         number: u64,
     },
+    /// The head of the chain `base`, whichever part that is: opened, it
+    /// sends that part and follows the chain. No document lives under it.
+    ChainHead {
+        /// The record the chain belongs to.
+        base: &'a str,
+    },
 }
 
 /// How `record` (a route's record id) is synced.
@@ -74,6 +89,9 @@ pub fn record_sync(record: &str) -> RecordSync<'_> {
     };
     if role == ON_DEMAND_ROLE {
         return RecordSync::OnDemand;
+    }
+    if role == HEAD_ROLE {
+        return RecordSync::ChainHead { base };
     }
     if let Some(index) = role.strip_prefix(PART_ROLE) {
         return match numbered(index) {
@@ -107,6 +125,13 @@ fn numbered(index: &str) -> Option<u64> {
 #[must_use]
 pub fn record_part(base: &str, index: u64) -> String {
     format!("derived:{PART_ROLE}{index}@{base}")
+}
+
+/// The id of the head of the chained record `base`: opening it sends the
+/// chain's newest part, whichever that is, and follows the chain.
+#[must_use]
+pub fn chain_head(base: &str) -> String {
+    format!("derived:{HEAD_ROLE}@{base}")
 }
 
 /// The id of chunk `number` of the split record `base` (`number` from `1`;
@@ -147,6 +172,10 @@ mod tests {
         assert_eq!(
             record_sync(&record_part("", 0)),
             RecordSync::Part { base: "", index: 0 }
+        );
+        assert_eq!(
+            record_sync(&chain_head("chat")),
+            RecordSync::ChainHead { base: "chat" }
         );
         // One part, one id: anything else is an ordinary record.
         for other in [

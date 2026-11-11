@@ -1,23 +1,18 @@
-//! A workspace's browser environment, opened on the VM host that runs its
-//! VMs (`docs/hosted-browser.md`, "Placement and routing").
+//! A workspace's Browser, opened in the workspace's VM on the VM host that
+//! runs it (`docs/hosted-browser.md`, "Placement and routing").
 //!
-//! Browser runs in a microVM of the workspace's own on a VM host, beside the
-//! workspace's Linux VM ([`legacy_vm::hosted::browser`]). This host only
-//! routes: it asks the placer for the host of `<workspace>/browser`
-//! ([`Request::Place`]), and asks that host's member device, over the device
-//! plane as this host's own device, to open it
-//! ([`tilo_actions::remote::browser`]), handing it what the session in the VM
-//! joins the workspace with.
-//!
-//! It is [`PlacedShells`]' sibling and shares its placer, its members file and
-//! its account: what a workspace's shell is to its Linux VM, its Browser is to
-//! its browser environment. While every host is full the open waits, and says
-//! so once; after [`OPEN_PATIENCE`] it says why instead of waiting forever.
+//! Browser runs as a headless session in the workspace's own VM, the one its
+//! shells run in ([`legacy_vm::hosted::browser`]). This host only routes: it
+//! asks the placer for the host of that VM, as a shell does, and asks that
+//! host's member device, over the device plane as this host's own device, to
+//! open Browser there ([`tilo_actions::remote::browser`]), handing it what the
+//! session joins the workspace with. While every host is full the open waits,
+//! and says so once; after [`OPEN_PATIENCE`] it says why instead of waiting
+//! forever.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use legacy_vm::hosted::size::VmSize;
 use tilo_actions::remote::browser::{self, OpenBrowser, OpenedBrowser};
 use tilo_actions::remote::{ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_actions::{InvocationId, InvocationUpdate};
@@ -27,26 +22,23 @@ use tilo_relay_protocol::hosted::Material;
 use super::hosted_browser::Window;
 use super::placed_shells::{self, PlacedShells};
 
-/// The environment of a workspace that holds its Browser.
-const ENVIRONMENT: &str = legacy_vm::hosted::browser::BROWSER;
-
 /// How long an open waits for a host with room.
 const OPEN_PATIENCE: Duration = Duration::from_secs(5 * 60);
 
-/// A workspace's browser environment, up.
+/// A workspace's Browser, up.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Opened {
     /// The VM host running it.
     pub host: String,
     /// What opening took, when this call opened it; `None` when it attached to
-    /// the environment already serving the workspace.
+    /// the session already running.
     pub opened_ms: Option<u64>,
-    /// The provider token of the window the session in the VM opened, which
+    /// The provider token of the window the session opened, which
     /// page actions on it name.
     pub provider: String,
 }
 
-/// Why a workspace's browser environment did not open.
+/// Why a workspace's Browser did not open.
 #[derive(Debug)]
 pub enum OpenError {
     /// It will not open: in words for the person who asked.
@@ -63,7 +55,8 @@ impl std::fmt::Display for OpenError {
     }
 }
 
-/// Where a workspace's Browser runs when its host has VM hosts.
+/// Where a workspace's Browser runs when its host has VM hosts: the
+/// workspace's VM, wherever its shells run.
 pub struct PlacedBrowsers {
     placed: Arc<PlacedShells>,
     /// How long an open waits for room.
@@ -101,9 +94,9 @@ impl PlacedBrowsers {
         self.placed.ask_from(plane, endpoint);
     }
 
-    /// Open `workspace`'s browser environment, handing its session `material`
-    /// (what it joins the workspace with, opaque here). An environment already
-    /// serving the workspace is attached to instead.
+    /// Open `workspace`'s Browser in its VM, handing the session `material`
+    /// (what it joins the workspace with, opaque here). A session already
+    /// running is attached to instead.
     ///
     /// # Errors
     ///
@@ -115,13 +108,7 @@ impl PlacedBrowsers {
         let mut waited = None;
         let host = self
             .placed
-            .placed(
-                workspace,
-                ENVIRONMENT,
-                VmSize::Browser,
-                &mut waited,
-                Some(&stopping),
-            )
+            .placed(workspace, &mut waited, Some(&stopping))
             .map_err(OpenError::Error)?
             .ok_or_else(|| {
                 OpenError::Refused(format!(
@@ -148,7 +135,7 @@ impl PlacedBrowsers {
         })
     }
 
-    /// End `workspace`'s browser environment now, with everything it wrote.
+    /// End the browser session in `workspace`'s VM now.
     ///
     /// # Errors
     ///
@@ -156,7 +143,7 @@ impl PlacedBrowsers {
     pub fn stop(&self, workspace: &str) -> Result<(), String> {
         let host = self
             .placed
-            .placed(workspace, ENVIRONMENT, VmSize::Browser, &mut None, None)?
+            .placed(workspace, &mut None, None)?
             .ok_or_else(|| "the placer named no host".to_owned())?;
         let address = self.member(&host)?;
         let (plane, endpoint) = self.placed.asking()?;
@@ -195,13 +182,13 @@ enum OnMember {
     Error(String),
 }
 
-/// Open `asked`'s workspace's browser environment on `device`, and what its
-/// session said.
+/// Open `asked`'s workspace's Browser on `device`, and what its session
+/// said.
 fn open_on(device: &RemoteDevice, asked: &OpenBrowser) -> Result<OpenedBrowser, OnMember> {
     follow(device, asked, browser::target()).map(Option::unwrap_or_default)
 }
 
-/// End `workspace`'s browser environment on `device`.
+/// End the browser session in `workspace`'s VM on `device`.
 fn stop_on(device: &RemoteDevice, workspace: &str) -> Result<(), String> {
     let asked = OpenBrowser {
         workspace: workspace.to_owned(),
@@ -224,9 +211,7 @@ fn follow(
     let serde_json::Value::Object(argument) =
         serde_json::to_value(asked).map_err(|error| OnMember::Error(error.to_string()))?
     else {
-        return Err(OnMember::Error(
-            "a browser environment is an object".to_owned(),
-        ));
+        return Err(OnMember::Error("a Browser open is an object".to_owned()));
     };
     let invocation = InvocationId::new();
     let request = InvokeRequest {
@@ -285,27 +270,27 @@ fn follow(
     }
 }
 
-/// The environments a host places: what the relay's Browser asks for a
-/// workspace's environment, on the VM host the placer names.
-impl super::hosted_browser::BrowserEnvironments for PlacedBrowsers {
-    /// Hand `material` to the workspace's environment on its VM host, and
-    /// answer its window once the session in it is up.
+/// What the relay's Browser asks of a workspace's VM, on the VM host the
+/// placer names.
+impl super::hosted_browser::BrowserSessions for PlacedBrowsers {
+    /// Hand `material` to the session in the workspace's VM, and answer its
+    /// window once it is up.
     fn start(&self, material: &Material) -> Result<Window, String> {
         let written = serde_json::to_string(material)
-            .map_err(|error| format!("a browser environment's material: {error}"))?;
+            .map_err(|error| format!("Browser's material: {error}"))?;
         let opened = self
             .open(&material.workspace, &written)
-            .map_err(|error| format!("a browser environment did not open: {error}"))?;
+            .map_err(|error| format!("Browser did not open: {error}"))?;
         Ok(Window {
             device: material.device.device_public_key,
             provider: opened.provider,
         })
     }
 
-    /// End the workspace's environment now, with everything it wrote.
+    /// End the browser session in the workspace's VM now.
     fn stop(&self, workspace: &str) {
         if let Err(words) = PlacedBrowsers::stop(self, workspace) {
-            tracing::warn!(%workspace, %words, "a browser environment did not stop");
+            tracing::warn!(%workspace, %words, "a browser session did not stop");
         }
     }
 }

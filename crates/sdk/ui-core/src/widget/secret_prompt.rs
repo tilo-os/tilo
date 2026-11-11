@@ -62,6 +62,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::control_size::ControlSize;
 use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
 use crate::widget::{
@@ -2145,7 +2146,9 @@ impl SecretPrompt {
                 None,
                 &label_style,
             );
-            field.input.draw(scene, transform, text, theme, &presence);
+            field
+                .input
+                .draw_child(scene, transform, text, theme, &presence);
         }
         if self.busy.is_some() {
             for rect in &self.layout.fields {

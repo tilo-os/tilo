@@ -50,7 +50,8 @@ pub struct Recipient {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub id: String,
     /// The name the chip shows: the agent's or the person's, the
-    /// conversation's, or the name the new agent takes.
+    /// conversation's, or the name the new agent takes — empty for a new
+    /// agent nobody named, which the shell names by what it is asked.
     pub name: String,
     /// A line under the name in the search's rows (who keeps an agent, who
     /// is in a conversation); never on the chip.

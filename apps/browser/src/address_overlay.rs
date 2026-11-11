@@ -447,7 +447,7 @@ impl Widget for AddressSuggestions {
             .collect();
         Some(
             AccessNode::new(Role::List)
-                .with_name("Address suggestions")
+                .with_name(crate::resource::CATALOG.t("browser-address-suggestions"))
                 .with_bounds(self.get_rect())
                 .with_state(AccessState {
                     hidden: self.accessibility_hidden(),

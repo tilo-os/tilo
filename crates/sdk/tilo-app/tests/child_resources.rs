@@ -11,7 +11,7 @@ use tilo_app::Role;
 use tilo_app::automerge::transaction::Transactable;
 use tilo_app::automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use tilo_app::prelude::*;
-use tilo_resource::{Doc, Invoke, ModelError, child_resource_id, publish_child};
+use tilo_resource::{Doc, Invoke, ModelError, child_resource_id};
 
 const ACTION_TYPE: &str = "child-resources.query";
 
@@ -70,15 +70,6 @@ impl Resource for Query {
         doc.put_object(ROOT, "sql", ObjType::Text)?;
         doc.put(ROOT, "name", "untitled")?;
         Ok(())
-    }
-
-    fn children(_state: &String) -> Vec<tilo_actions::ResourceSpec> {
-        vec![publish_child::<PlainText, Self>(
-            &sql_id(),
-            "SQL",
-            None,
-            QueryAction::EditSql,
-        )]
     }
 }
 

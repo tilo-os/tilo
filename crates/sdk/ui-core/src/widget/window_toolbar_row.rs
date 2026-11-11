@@ -59,7 +59,9 @@ mod paint;
 mod reactions;
 mod slot_change;
 mod strip;
-use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
+use layout::{
+    LocationForms, LocationLead, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome,
+};
 #[cfg(test)]
 use location_label::edited_word;
 use location_label::{LocationLabel, trailing_word};
@@ -581,9 +583,7 @@ impl ToolbarRow {
             editable: location.is_some_and(|location| location.editable),
             picker: location
                 .is_some_and(|location| !location.editable && !location.choices.is_empty()),
-            icon: location.is_some_and(|location| {
-                location.icon.as_deref().and_then(Icon::from_name).is_some()
-            }),
+            lead: location.map_or(LocationLead::None, LocationLead::of),
             notice: self
                 .toolbar()
                 .and_then(|toolbar| toolbar.notice.as_ref())
@@ -595,6 +595,7 @@ impl ToolbarRow {
                         .collect()
                 })
                 .unwrap_or_default(),
+            trailing: location.and_then(trailing_word),
             text_scale: theme.text_scale.to_bits(),
         };
         if key.labels.is_empty()
@@ -628,8 +629,12 @@ impl ToolbarRow {
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
             let forms = LocationForms {
                 text: key.forms.iter().map(|form| width(form)).collect(),
-                chrome: location_chrome((key.editable, key.picker, key.icon), theme),
+                chrome: location_chrome((key.editable, key.picker, key.lead), theme),
                 actions,
+                trailing: key
+                    .trailing
+                    .as_deref()
+                    .map(|word| (width(word), f64::from(theme.tokens.spacing.s2))),
             };
             let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);
             let views = (!labels.is_empty()).then_some(ViewsMeasure {
@@ -936,8 +941,8 @@ impl ToolbarRow {
         self.row
     }
 
-    /// Where what the location shows at rest ends: its label as measured,
-    /// and the notice's buttons after it. `None` with no location, or
+    /// Where what the location shows at rest ends: its label as measured with the word that
+    /// follows it, and the notice's buttons after it. `None` with no location, or
     /// before it is measured.
     pub(crate) fn location_content_end(&self) -> Option<f64> {
         let location = self.slots.location;
@@ -945,7 +950,14 @@ impl ToolbarRow {
             return None;
         }
         let forms = &self.views_size.as_ref()?.forms;
-        let label = location.x0 + forms.text.get(self.slots.form)? + forms.chrome;
+        let mut label = location.x0 + forms.text.get(self.slots.form)? + forms.chrome;
+        // The word after the label stands where it fits beside it ([`LocationLabel::measure`]),
+        // the label cut short before it.
+        if let Some((word, gap)) = forms.trailing
+            && location.width() - forms.chrome - word - gap >= word
+        {
+            label += gap + word;
+        }
         let notice = self.slots.notice.iter().map(|rect| rect.x1);
         Some(notice.fold(label, f64::max).min(location.x1))
     }
@@ -1737,6 +1749,16 @@ impl ToolbarRow {
 
     pub(crate) fn hit(&self, p: Point) -> bool {
         self.hit_slot(p).is_some()
+    }
+
+    /// Whether a secondary press at `p` is the app's: on a control it put in the row, or in its
+    /// location while that is being edited. The location at rest names the window, as a tab's
+    /// title does, so a secondary press there opens the window's menu.
+    pub(crate) fn owns_secondary_press(&self, p: Point) -> bool {
+        match self.hit_slot(p) {
+            Some(Slot::Location) => self.field.is_some(),
+            slot => slot.is_some(),
+        }
     }
 
     /// A left press at `p`. Returns whether a slot took it. A press

@@ -196,3 +196,4 @@ notes-status-counts = { $notes ->
 notes-outline = Gliederung
 notes-outline-empty = Keine Überschriften
 notes-outline-untitled = Unbenannte Überschrift
+notes-window-name = Notizen

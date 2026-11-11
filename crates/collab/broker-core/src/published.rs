@@ -43,6 +43,38 @@ impl PublishedSurface {
             descriptor.clone(),
         ))
     }
+
+    /// The resource `action` is published on now for a caller that named it
+    /// on `resource`: `resource` itself, or, where a window's component
+    /// published the same app resource again under a new alias (it is
+    /// mounted anew as the window settles), the one alias carrying `action`
+    /// for it now. `None` when nothing here carries it.
+    #[must_use]
+    pub fn current_resource<'a>(&'a self, resource: &'a str, action: &str) -> Option<&'a str> {
+        let carries = |descriptor: &&PublishedAction| descriptor.action == action;
+        if self
+            .actions
+            .iter()
+            .filter(carries)
+            .any(|descriptor| descriptor.resource == resource)
+        {
+            return Some(resource);
+        }
+        if !resource.starts_with(tilo_actions::BOUND_RESOURCE_PREFIX) {
+            return None;
+        }
+        let logical = tilo_actions::selection::logical_resource_id(resource);
+        let mut now = self.actions.iter().filter(carries).filter(|descriptor| {
+            descriptor
+                .resource
+                .starts_with(tilo_actions::BOUND_RESOURCE_PREFIX)
+                && tilo_actions::selection::logical_resource_id(&descriptor.resource) == logical
+        });
+        match (now.next(), now.next()) {
+            (Some(only), None) => Some(only.resource.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// Spelling of the package-primary record (route record `""`).

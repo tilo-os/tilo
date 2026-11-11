@@ -21,7 +21,7 @@ use crate::over_page::OverSheet;
 #[derive(Clone, Copy)]
 pub struct QuestionsCode {
     pub(crate) sheet: fn() -> Box<dyn OverSheet>,
-    pub(crate) answer: fn(&str, &JsValue) -> Result<(), JsError>,
+    pub(crate) answer: fn(u32, &JsValue) -> Result<(), JsError>,
 }
 
 /// The agent questions' code this build links.
@@ -39,10 +39,10 @@ ui::lazy_code! {
 }
 
 thread_local! {
-    /// The hosts whose questions the page was asked to answer while the code
-    /// was still to come: an address (`hostInfo().address`, JSON) and the
-    /// root the page answers as.
-    static ASKED: RefCell<Vec<(String, JsValue)>> = RefCell::new(Vec::new());
+    /// The sessions whose host's questions the page was asked to answer
+    /// while the code was still to come: the session (`WasmPeer::id`) and
+    /// the root the page answers as.
+    static ASKED: RefCell<Vec<(u32, JsValue)>> = const { RefCell::new(Vec::new()) };
     /// Whether the page was asked to answer at all, under any host: only
     /// then is the sheet worth drawing, and its code worth fetching.
     static ANSWERING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -53,24 +53,22 @@ pub(crate) fn answering() -> bool {
     ANSWERING.with(std::cell::Cell::get)
 }
 
-/// Answer what the person's agents on the host at `address`
-/// (`hostInfo().address`, JSON) ask them, as the person whose root custody
-/// the page holds (`root`). Once per host; asking again for a host already
-/// answered does nothing. The code is fetched if it is not in yet, and the
-/// requests kept meanwhile are answered as it arrives.
+/// Answer what the person's agents on the host of session `peer`
+/// (`WasmPeer::id`) ask them, over that session, as the person whose root
+/// custody the page holds (`root`) ([`crate::peer::WasmPeer`]'s
+/// `answerAgentQuestions`). Once per session; asking again does nothing. The
+/// code is fetched if it is not in yet, and the requests kept meanwhile are
+/// answered as it arrives.
 ///
 /// # Errors
-/// `address` is not a host's address, or `root` is no custody.
-#[wasm_bindgen(js_name = answerAgentQuestions)]
-pub fn answer_agent_questions(address: &str, root: &JsValue) -> Result<(), JsError> {
+/// `root` is no custody.
+pub(crate) fn answer_agent_questions(peer: u32, root: &JsValue) -> Result<(), JsError> {
     ANSWERING.with(|answering| answering.set(true));
-    match QUESTIONS.get() {
-        Some(code) => (code.answer)(address, root),
-        None => {
-            ASKED.with_borrow_mut(|asked| asked.push((address.to_owned(), root.clone())));
-            Ok(())
-        }
+    if let Some(code) = QUESTIONS.get() {
+        return (code.answer)(peer, root);
     }
+    ASKED.with_borrow_mut(|asked| asked.push((peer, root.clone())));
+    Ok(())
 }
 
 /// The code is in: answer what the page was asked until then.
@@ -79,8 +77,8 @@ pub fn code_arrived() {
         return;
     };
     let asked = ASKED.with_borrow_mut(std::mem::take);
-    for (address, root) in asked {
-        if let Err(error) = (code.answer)(&address, &root) {
+    for (peer, root) in asked {
+        if let Err(error) = (code.answer)(peer, &root) {
             tracing::debug!(?error, "agent questions: this page cannot answer them");
         }
     }

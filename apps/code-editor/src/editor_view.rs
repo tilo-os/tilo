@@ -50,6 +50,7 @@ use crate::model::Language;
 use crate::row_viewport::RowViewportIndex;
 use lsp_types::CompletionItemKind;
 use std::sync::Arc;
+use ui::widget::DrawChild;
 
 #[path = "editor_scroll.rs"]
 mod scroll;
@@ -2852,7 +2853,7 @@ impl Widget for EditorView {
             // the portal picker.
             self.empty.apply_layout_external(self.rect);
             self.empty
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             self.forget_shown();
             return;
         }
@@ -3220,7 +3221,7 @@ mod tests {
         for column in [0, 200_000] {
             view.scroll_x = f64::from(column) * view.cell_w;
             let mut scene = Scene::new();
-            view.draw(
+            view.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut renderer,
@@ -3241,7 +3242,7 @@ mod tests {
             "composition uses scalar columns without copying the full row"
         );
         let mut scene = Scene::new();
-        view.draw(
+        view.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,

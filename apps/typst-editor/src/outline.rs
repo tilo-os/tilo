@@ -231,7 +231,7 @@ impl Outline {
             return;
         }
         let panel = self.drawer.paint_panel(scene, transform, theme);
-        Widget::draw(&mut self.list, scene, transform, tr, &panel, presence);
+        ui::widget::DrawChild::draw_child(&mut self.list, scene, transform, tr, &panel, presence);
     }
 
     /// A floating drawer gets out of the way once a heading was chosen.

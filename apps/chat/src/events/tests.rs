@@ -3,6 +3,7 @@ use crate::model;
 use taffy::{NodeId, TaffyTree};
 use tilo_automerge::ApplyIncoming;
 use ui::Widget;
+use ui::widget::DrawChild;
 
 fn service_streams(app: &mut ChatApp, channel: &str, count: usize) {
     app.native_voice
@@ -2162,7 +2163,6 @@ fn call_tiles_and_controls_stay_honest_and_live_when_detached() {
 // path). These helpers drive that and the raw winit input path.
 
 fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
-    use ui::Widget;
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
@@ -2173,7 +2173,7 @@ fn render_frame(app: &mut ChatApp, w: f64, h: f64) {
     let presence = PresenceCtx::empty();
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
 fn stage_agent_work(app: &mut ChatApp, doc: &mut crate::testing::Workspace) {
@@ -2210,7 +2210,7 @@ fn a_typed_character_damages_the_composer_and_a_resize_the_window() {
     let mut frame = |app: &mut ChatApp, w: f64, h: f64| {
         app.rect = Rect::new(0.0, 0.0, w, h);
         let mut scene = vello::Scene::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut tr,
@@ -2956,4 +2956,39 @@ fn the_attach_action_refuses_a_relative_path() {
         ),
         "{refused}"
     );
+}
+
+/// The bar names the conversation with who or what it is: the face of the agent a direct
+/// conversation is with, the channel's mark for a channel.
+#[test]
+fn the_bar_leads_the_conversation_with_who_it_is_with() {
+    let (mut app, _doc) = app_with_doc();
+    app.active_channel = crate::record::Chat::direct_id([
+        crate::record::Participant::person(app.me.id.clone()),
+        crate::record::Participant::agent("assistant"),
+    ])
+    .to_string();
+    render_frame(&mut app, 360.0, 520.0);
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the conversation is the window's location");
+    let avatar = location.avatar.expect("the agent's face leads it");
+    assert!(avatar.agent);
+    assert_eq!(avatar.identity, "agent:assistant");
+    assert_eq!(location.icon, None);
+
+    let channel = app
+        .channels
+        .iter()
+        .find(|channel| !channel.direct && channel.kind == crate::model::ChannelKind::Text)
+        .expect("a text channel")
+        .id
+        .clone();
+    app.active_channel = channel;
+    render_frame(&mut app, 360.0, 520.0);
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the channel is the window's location");
+    assert_eq!(location.icon.as_deref(), Some("hash"));
+    assert!(location.avatar.is_none());
 }

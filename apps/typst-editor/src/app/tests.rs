@@ -8,6 +8,7 @@ use ui::framework::ResourceApp as _;
 use ui::tilo_resource::{Replica, Resource as _};
 
 use crate::resource::{TypstEditorShell, Workspace};
+use ui::widget::DrawChild;
 
 /// A workspace of the bundled examples, presented to an editor showing
 /// the first, synced once so it compiled.
@@ -494,7 +495,7 @@ fn render_once(app: &mut TypstApp) {
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
     let presence = PresenceCtx::empty();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
 #[test]
@@ -1118,7 +1119,7 @@ fn text_scale_compacts_before_the_panes_collide() {
     tr.set_text_scale(2.0);
     let mut theme = Theme::dark();
     theme.text_scale = 2.0;
-    app.draw(
+    app.draw_child(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut tr,

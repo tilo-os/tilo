@@ -40,8 +40,8 @@ pub(crate) trait RecordSource: Send + Sync + 'static {
     /// The workspace is not held here, or its documents cannot be listed.
     fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String>;
 
-    /// What `workspace` holds of `app`'s `record` now, or `None` when there
-    /// is nothing new to read or the device may not read it.
+    /// What `workspace` holds of `app`'s `record` now, or `None` while the keys that open it
+    /// are not here.
     ///
     /// # Errors
     /// The record cannot be read now.
@@ -71,8 +71,19 @@ pub(crate) trait RecordReader: Send + Sync + 'static {
     /// What `app`'s record `doc` holds for search.
     ///
     /// # Errors
-    /// The app cannot read the document now.
-    fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, String>;
+    /// [`Unread::Stopped`] for a reader that was stopped before it answered, and
+    /// [`Unread::Refused`] for a record the app cannot read.
+    fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, Unread>;
+}
+
+/// Why an app's reader did not say what a record of its holds.
+#[derive(Debug)]
+pub(crate) enum Unread {
+    /// Whoever read it was stopped before it answered — a session ending, the app closed for
+    /// memory — so nothing is known of the record's content: not a record that holds nothing.
+    Stopped(String),
+    /// The app cannot read the record: it says why.
+    Refused(String),
 }
 
 /// The reader this device asks: the app's own binary in its record mode, as every app of a
@@ -92,17 +103,17 @@ impl AppReader {
 }
 
 impl RecordReader for AppReader {
-    fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, String> {
+    fn entries(&self, app: &str, doc: &[u8]) -> Result<Vec<IndexEntry>, Unread> {
         use std::io::Write as _;
+        use std::os::unix::process::ExitStatusExt as _;
         use std::process::{Command, Stdio};
 
-        let launcher = self
-            .launcher
-            .as_deref()
-            .ok_or("no tilo-launcher is installed, so no app's records are read")?;
+        let launcher = self.launcher.as_deref().ok_or_else(|| {
+            Unread::Refused("no tilo-launcher is installed, so no app's records are read".into())
+        })?;
         let installed = app_catalogue::apps::read_one_from_env(app)
-            .map_err(|error| error.to_string())?
-            .ok_or_else(|| format!("{app} is not installed here"))?;
+            .map_err(|error| Unread::Refused(error.to_string()))?
+            .ok_or_else(|| Unread::Refused(format!("{app} is not installed here")))?;
         let mut child = Command::new(launcher)
             .arg("run")
             .arg("--manifest")
@@ -118,25 +129,43 @@ impl RecordReader for AppReader {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|error| format!("{app} cannot read its record: {error}"))?;
+            .map_err(|error| Unread::Refused(format!("{app} cannot read its record: {error}")))?;
         if let Some(mut stdin) = child.stdin.take() {
-            stdin
-                .write_all(doc)
-                .map_err(|error| format!("{app} reads none of its record: {error}"))?;
+            // A reader stopped before it read any of the record leaves the pipe it writes to
+            // closed: nothing read, rather than anything about the record.
+            let read = stdin.write_all(doc).and_then(|()| stdin.flush());
+            if let Err(error) = read {
+                if error.kind() == std::io::ErrorKind::BrokenPipe {
+                    return Err(Unread::Stopped(format!(
+                        "{app} was stopped before it read its record"
+                    )));
+                }
+                return Err(Unread::Refused(format!(
+                    "{app} reads none of its record: {error}"
+                )));
+            }
         }
-        let out = child
-            .wait_with_output()
-            .map_err(|error| format!("{app} stops without reading its record: {error}"))?;
+        let out = child.wait_with_output().map_err(|error| {
+            Unread::Refused(format!("{app} stops without reading its record: {error}"))
+        })?;
         if !out.status.success() {
             let said = String::from_utf8_lossy(&out.stderr);
-            return Err(format!(
+            let said = format!(
                 "{app} reads none of its record ({}): {}",
                 out.status,
                 said.trim()
-            ));
+            );
+            // What ends a reader from outside — the session going away, an app closed for
+            // memory — says nothing about the record it was reading.
+            return Err(match out.status.signal() {
+                Some(libc::SIGTERM | libc::SIGINT | libc::SIGHUP | libc::SIGKILL) => {
+                    Unread::Stopped(said)
+                }
+                _ => Unread::Refused(said),
+            });
         }
         serde_json::from_slice(&out.stdout)
-            .map_err(|error| format!("{app} answers no entries: {error}"))
+            .map_err(|error| Unread::Refused(format!("{app} answers no entries: {error}")))
     }
 }
 
@@ -148,6 +177,9 @@ pub(crate) struct RecordIndex {
     content: Option<Arc<AppContentIndex>>,
     /// The records to read, each once however often it changed.
     queued: Mutex<BTreeSet<(String, String, String)>>,
+    /// The records whose keys were not here when they were read: read again once the channels
+    /// settled.
+    sealed: Mutex<BTreeSet<(String, String, String)>>,
     /// Wakes the worker: a record is waiting.
     wake: std::sync::mpsc::Sender<()>,
     /// What a change of a record reached besides the index: the one stream the roles that follow
@@ -171,6 +203,7 @@ impl RecordIndex {
             reader,
             content,
             queued: Mutex::new(BTreeSet::new()),
+            sealed: Mutex::new(BTreeSet::new()),
             wake,
             changes,
         });
@@ -190,13 +223,13 @@ impl RecordIndex {
         if let Err(error) = started {
             tracing::warn!(%error, "the records are not indexed");
         }
-        index.sweep();
         index
     }
 
-    /// Read what this device already holds, once: the records of every workspace it keeps, so
-    /// search finds them before anything changes. What it holds is not news to the roles
-    /// following records: these reached them with the workspace's own replay.
+    /// Read what this device already holds, once the channel service that opens its sealed
+    /// records runs: the records of every workspace it keeps, so search finds them before
+    /// anything changes. What it holds is not news to the roles following records: these reached
+    /// them with the workspace's own replay.
     pub(crate) fn sweep(&self) {
         for workspace in self.source.workspaces() {
             match self.source.records(&workspace) {
@@ -212,6 +245,17 @@ impl RecordIndex {
                 ),
             }
         }
+    }
+
+    /// The channels settled: the records whose keys were not here are read again, and those whose
+    /// keys still are not wait for the next settling.
+    pub(crate) fn settled(&self) {
+        let sealed = std::mem::take(&mut *self.sealed.lock_recover());
+        if sealed.is_empty() {
+            return;
+        }
+        self.queued.lock_recover().extend(sealed);
+        let _ = self.wake.send(());
     }
 
     /// Queue `record` for the next pass, once, however often it changed, and note the change in
@@ -248,9 +292,11 @@ impl RecordIndex {
         for (workspace, app, record) in queued {
             let doc = match self.source.record(&workspace, &app, &record) {
                 Ok(Some(doc)) => doc,
-                // Unchanged since it was last read, or nothing this device holds: what search keeps
-                // of it is what it holds.
-                Ok(None) => continue,
+                // Its keys are not here yet: it is read once the channels settled.
+                Ok(None) => {
+                    self.sealed.lock_recover().insert((workspace, app, record));
+                    continue;
+                }
                 Err(error) => {
                     tracing::warn!(%error, %workspace, %app, %record, "a record is not indexed");
                     continue;
@@ -258,7 +304,16 @@ impl RecordIndex {
             };
             let entries = match self.reader.entries(&app, &doc) {
                 Ok(entries) => entries,
-                Err(error) => {
+                // Stopped before it answered: nothing is known of what the record holds, so it is
+                // read again on the next change or settling rather than kept as a record holding
+                // nothing.
+                Err(Unread::Stopped(reason)) => {
+                    // ignored-failure: nobody answered yet, and the record waits to be read
+                    tracing::debug!(%reason, %app, %record, "a record's reading was stopped");
+                    self.queued.lock_recover().insert((workspace, app, record));
+                    continue;
+                }
+                Err(Unread::Refused(error)) => {
                     tracing::warn!(%error, %app, %record, "a record's app reads none of it");
                     continue;
                 }

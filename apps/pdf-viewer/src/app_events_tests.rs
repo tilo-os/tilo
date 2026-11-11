@@ -1050,7 +1050,10 @@ fn delete_affordances_and_the_context_menu_dispatch_the_palette_action() {
     let before = rig.app.annotations.len();
     let ic = centre(item);
     rig.move_to((ic.x, ic.y));
+    // A menu row lights on the press and runs when the button comes up on it: a press alone
+    // leaves the menu open, as letting go anywhere else cancels the command.
     rig.press();
+    rig.release();
     assert!(
         rig.app.context_menu.is_none(),
         "the menu closes after the delete"

@@ -80,6 +80,7 @@ mod tests {
             following: following.map(str::to_owned),
             availability: None,
             call: None,
+            colour: String::new(),
         }
     }
 

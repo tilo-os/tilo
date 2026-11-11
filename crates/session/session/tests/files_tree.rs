@@ -63,17 +63,8 @@ fn a_tree_changed_here_reaches_the_persons_other_devices() {
     let cluster = laptop.cluster();
     tilo_action_broker::register_package_surface(FILES, SURFACE);
     let state = tempfile::tempdir().expect("a state for the session");
-    personal::hold_workspace(
-        state.path(),
-        &laptop.device,
-        &laptop.cert,
-        &cluster,
-        FILES,
-        KIND,
-    );
     let socket = laptop.socket().to_path_buf();
-    let mut session =
-        personal::session(&socket, &laptop, "Ada", &cluster, state.path(), FILES, true);
+    let mut session = personal::session(&socket, "Ada", &cluster, state.path(), FILES, true);
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()

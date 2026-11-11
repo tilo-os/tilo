@@ -171,7 +171,7 @@ fn every_mutable_method_of_the_bar_touches_its_drawing() {
         "settle_hover_intent",
         "cancel_close",
         "set_history_control",
-        "set_maximized",
+        "set_resize",
         "set_carriable",
         "set_group_focused",
         "set_popup_area",

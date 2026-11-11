@@ -311,6 +311,14 @@ impl SurfaceHost for Banners {
     }
 }
 
+/// The column's name for the desk's windows floating as cards: no app's activity.
+const DOCKED_APP: &str = "desk";
+
+/// A docked window's card, by its window.
+fn docked_id(group: u64) -> String {
+    format!("window:{group}")
+}
+
 /// The floating layer over the first output: every activity's card, docked in a corner column or
 /// dragged loose, clear of the bar, the banners and the readout. The session says what to show and
 /// carries out what the person did; the layer draws it.
@@ -325,9 +333,15 @@ pub(crate) struct ActivityLayer {
     corner: ui::floating_layer::Corner,
     /// The outputs the compositor last said it has: the cards stand on the first.
     outputs: Vec<tilo_session_core::surface::HostedOutput>,
-    /// What the cards keep clear of: the banners' stack, the readout's band.
+    /// What the cards keep clear of: the banners' stack, the readout's band, and the field the
+    /// person types into.
     banners: Reserved,
     readout: Reserved,
+    typing: ReadoutPlaces,
+    /// The desk, whose windows floating as cards stand in the column with the activities'.
+    desk: tilo_desktop_surface::DesktopHandle,
+    /// Where the desk's docked windows stood last pass, in desk coordinates.
+    docked_at: Vec<Rect>,
     /// The feed published last, so an unchanged screen is not a frame.
     published: Option<tilo_activities::Feed>,
 }
@@ -338,8 +352,9 @@ impl ActivityLayer {
         link: tilo_activities::Link,
         reader: Rc<crate::chrome::Activities>,
         cards: crate::cards::Cards,
-        banners: Reserved,
-        readout: Reserved,
+        (banners, readout): (Reserved, Reserved),
+        typing: ReadoutPlaces,
+        desk: tilo_desktop_surface::DesktopHandle,
         scale: f64,
     ) -> Self {
         Self {
@@ -351,6 +366,9 @@ impl ActivityLayer {
             outputs: Vec::new(),
             banners,
             readout,
+            typing,
+            desk,
+            docked_at: Vec::new(),
             published: None,
         }
     }
@@ -384,26 +402,65 @@ impl ActivityLayer {
             bar: Rect::new(0.0, 0.0, f64::from(width), bar),
             banners: self.banners.now(),
             readout: self.readout.now().map(local),
+            // A field inside a card is the card's own: the card is what the person types in. A
+            // docked window's field is its own wherever it stands in the window's lane, folded to
+            // its header or open; the strip keeps the windows it shows clear of that lane.
+            caret: self
+                .typing
+                .borrow()
+                .caret()
+                .filter(|caret| {
+                    let x = caret.center().x;
+                    !self.cards.holds(*caret)
+                        && !self.docked_at.iter().any(|at| at.x0 <= x && x <= at.x1)
+                })
+                .map(local),
         };
-        let cards = self.reader.cards();
+        let mut cards = self.reader.cards();
+        // The desk's windows floating as cards stand in the same column, each a card the window
+        // draws: a conversation the person is in, nearest the corner as a call is, with a song's
+        // card above it.
+        let docked = self.desk.docked_cards();
+        cards.extend(docked.iter().map(|docked| {
+            let id = docked_id(docked.group);
+            let mut card = ui::floating_layer::Card::new(
+                DOCKED_APP,
+                ui::live_activity::Summary::new(ui::live_activity::Kind::Call, "", "").with_id(id),
+            );
+            card.rich = true;
+            card.size = Some(ui::vello::kurbo::Size::new(docked.size.0, docked.size.1));
+            card
+        }));
         let expanded = self.reader.expanded();
         // Where the layer puts the cards their apps draw, this pass: the app's gesture is a
         // request, and this is the sign the desk places its window by. The layer lays them out with
         // the same arithmetic it draws with.
         let layer = ui::floating_layer::place(&placement, self.corner, &cards, expanded);
         self.cards.begin_slots();
+        let mut dock = std::collections::BTreeMap::new();
         for placed in &layer.cards {
-            if self.cards.size(&placed.app, &placed.summary.id).is_none() {
-                continue;
-            }
             let at = Rect::new(
                 placed.rect.x0 + f64::from(x),
                 placed.rect.y0 + f64::from(y),
                 placed.rect.x1 + f64::from(x),
                 placed.rect.y1 + f64::from(y),
             );
+            let window = (placed.app == DOCKED_APP)
+                .then(|| {
+                    docked
+                        .iter()
+                        .find(|card| docked_id(card.group) == placed.summary.id)
+                })
+                .flatten();
+            if let Some(window) = window {
+                dock.insert(window.group, at);
+            } else if self.cards.size(&placed.app, &placed.summary.id).is_none() {
+                continue;
+            }
             self.cards.slot_at(&placed.app, &placed.summary.id, at);
         }
+        self.docked_at = dock.values().copied().collect();
+        self.desk.dock_at(dock);
         let feed = tilo_activities::Feed {
             placement,
             corner: self.corner,

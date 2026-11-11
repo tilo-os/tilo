@@ -45,7 +45,7 @@ mod store;
 
 pub use module::{Module, ModuleError};
 
-/// The model module a host's tests run: `tag`'s model crate (`tasks-model`, `tube-model`) built
+/// The model module a host's tests run: `tag`'s model crate (`tasks-model`, `tube-model`, `console-model`) built
 /// for `wasm32` by this crate's build script, the same code the app ships.
 ///
 /// `None` when this build could not build it — a machine with no Rust that has the wasm32

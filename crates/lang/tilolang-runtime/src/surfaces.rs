@@ -66,6 +66,7 @@ const SWIPE: &str = "swipe";
 const OVERVIEW: &str = "overview";
 const OVERVIEW_ACTIONS: &str = "overview_actions";
 const SIDEBAR_ACTIONS: &str = "sidebar_actions";
+const SIDEBAR: &str = "sidebar";
 const ACTIONS: &str = "actions";
 
 /// The word a "…" is named by: the one the shell gives its own More button.
@@ -386,13 +387,14 @@ impl Core {
         }
     }
 
-    /// The actions the view's own controls in the window's bar apply: those of the sidebar's
-    /// head, and those of the controls the page draws in the bar's own row (a page's `header`).
-    /// A control the view drew there stands where the view put it, alone: the subject's action
-    /// of the same name is not placed beside it as a second button.
+    /// The actions the view's own controls already offer where the window's navigation and
+    /// headers stand: the sidebar's head and its places (a section's add), and the controls the
+    /// view draws in its columns' header rows. A control the view drew stands where the view put
+    /// it, alone: the subject's action of the same name is not placed again in a header row, so
+    /// the person finds each action once.
     fn header_actions(&self, shell: usize) -> Result<Vec<String>, RuntimeError> {
         let mut ids = Vec::new();
-        for name in [SIDEBAR_ACTIONS, ACTIONS, OVERVIEW_ACTIONS] {
+        for name in [SIDEBAR, SIDEBAR_ACTIONS, ACTIONS, OVERVIEW_ACTIONS] {
             if let Some(head) = self.slot(shell, name)? {
                 self.applied_ids(head, &mut ids)?;
             }

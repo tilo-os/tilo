@@ -56,6 +56,7 @@ use crate::strings::{tr, tr_args};
 
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
+use ui::widget::DrawChild;
 
 /// Compressed presentation bytes are bounded before opening the ZIP.  Archive
 /// member and aggregate expansion limits live beside the ODP/PPTX readers.
@@ -2007,7 +2008,7 @@ impl SlidesApp {
                 t,
                 &chrome.inspector_body,
             );
-            self.font_input.draw(scene, t, tr, &local, presence);
+            self.font_input.draw_child(scene, t, tr, &local, presence);
             scene.pop_layer();
         }
         if chrome.layout_picker_rect().is_some() {
@@ -2019,7 +2020,8 @@ impl SlidesApp {
                 t,
                 &chrome.inspector_body,
             );
-            self.layout_picker.draw(scene, t, tr, &local, presence);
+            self.layout_picker
+                .draw_child(scene, t, tr, &local, presence);
             scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
@@ -2048,7 +2050,7 @@ impl SlidesApp {
                 Point::new(rect.x0, panel.y0 + m.s4),
                 None,
             );
-            self.fill_picker.draw(scene, t, tr, &local, presence);
+            self.fill_picker.draw_child(scene, t, tr, &local, presence);
         }
     }
 
@@ -2064,7 +2066,7 @@ impl SlidesApp {
             self.notes.control_mut().apply_layout_external(nb);
             self.notes
                 .control_mut()
-                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+                .draw_child(scene, t, tr, theme, &PresenceCtx::empty());
             return;
         }
         let notes = self
@@ -2076,7 +2078,7 @@ impl SlidesApp {
         }
         self.notes_preview.apply_layout_external(nb);
         self.notes_preview
-            .draw(scene, t, tr, theme, &PresenceCtx::empty());
+            .draw_child(scene, t, tr, theme, &PresenceCtx::empty());
     }
 
     fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -2336,7 +2338,20 @@ impl SlidesApp {
                 tr("slides-a11y-edit-notes"),
                 AccessState::new(),
             ),
-            Hit::OpenLayoutMenu => (Role::Button, tr("slides-a11y-layout"), AccessState::new()),
+            Hit::OpenLayoutMenu => (
+                Role::Button,
+                tr_args(
+                    "slides-a11y-layout-menu",
+                    &[(
+                        "name",
+                        ArgValue::from(
+                            self.slide()
+                                .map_or_else(String::new, |slide| slide.layout.label().to_string()),
+                        ),
+                    )],
+                ),
+                AccessState::new(),
+            ),
         }
     }
 }
@@ -2580,7 +2595,7 @@ impl Widget for SlidesApp {
         // everything else.
         self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
         self.ctx_menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.note_selection();
     }
 
@@ -2755,15 +2770,21 @@ impl Widget for SlidesApp {
             .collect();
             return Some(
                 AccessNode::new(Role::Dialog)
-                    .with_name("Keyboard shortcuts")
-                    .with_description("Slides keyboard reference")
+                    .with_name(ui::i18n::I18nManager::lookup_plain("slides-a11y-shortcuts"))
+                    .with_description(ui::i18n::I18nManager::lookup_plain(
+                        "slides-a11y-shortcuts-reference",
+                    ))
                     .with_state(AccessState::new().modal(true))
                     .with_children(vec![
                         AccessNode::new(Role::List)
-                            .with_name("Shortcuts")
+                            .with_name(ui::i18n::I18nManager::lookup_plain(
+                                "slides-a11y-shortcuts-heading",
+                            ))
                             .with_children(shortcuts),
                         AccessNode::new(Role::Button)
-                            .with_name("Close keyboard shortcuts")
+                            .with_name(ui::i18n::I18nManager::lookup_plain(
+                                "slides-a11y-close-shortcuts",
+                            ))
                             .with_action_target("slides.help.close")
                             .with_state(AccessState::new().focusable(true)),
                     ]),
@@ -2806,7 +2827,9 @@ impl Widget for SlidesApp {
                     .with_state(AccessState::new().focusable(true))
                     .with_children(vec![
                         AccessNode::new(Role::Toolbar)
-                            .with_name("Presentation controls")
+                            .with_name(ui::i18n::I18nManager::lookup_plain(
+                                "slides-a11y-presentation-controls",
+                            ))
                             .with_children(controls),
                     ]),
             );
@@ -2908,10 +2931,10 @@ impl Widget for SlidesApp {
 
         let children = vec![
             AccessNode::new(Role::Toolbar)
-                .with_name("Slides controls")
+                .with_name(ui::i18n::I18nManager::lookup_plain("slides-a11y-controls"))
                 .with_children(controls),
             AccessNode::new(Role::List)
-                .with_name("Slides")
+                .with_name(ui::i18n::I18nManager::lookup_plain("slides-title"))
                 .with_description(format!(
                     "Showing slides {} through {} of {count}",
                     start + 1,
@@ -2926,7 +2949,7 @@ impl Widget for SlidesApp {
             AccessNode::new(Role::Document)
                 .with_name(self.deck.title.clone())
                 .with_value(format!("Slide {} of {count}", self.cur_slide + 1))
-                .with_description("Presentation editor with slide canvas and notes")
+                .with_description(ui::i18n::I18nManager::lookup_plain("slides-a11y-editor"))
                 .with_state(AccessState::new().focusable(true))
                 .with_children(children),
         )

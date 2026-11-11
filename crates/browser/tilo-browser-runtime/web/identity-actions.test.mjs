@@ -48,7 +48,7 @@ test('without passkeys the ask offers a recovery key, never a passkey it cannot 
   assert.deepEqual(mount.offers, [RECOVERY.id]);
   const [ask] = mount.said;
   assert.equal(ask.title, 'Come back as “Ada” next time?');
-  assert.equal(ask.action.title, 'Save key');
+  assert.equal(ask.action.title, 'Remember me', 'the button says what it does for the person');
   assert.doesNotMatch(ask.body, /passkey/);
 });
 
@@ -506,6 +506,7 @@ test('an agent’s link is a pairing link to this tab with a fresh invite, open 
   const made = await pairing.actions.connectAgent();
   assert.deepEqual(made, {
     link: `https://tilo.example/#/@rooms.example/w/WORKSPACE?pair=${pairing.identity.userPublicKey}${INVITE_A}`,
+    invite: INVITE_A,
     expiresAt: 10 * 60 * 1000,
   });
   assert.equal(typeof pairing.poll, 'function', 'the tab looks for the agent while the link is open');
@@ -533,6 +534,17 @@ test('the agent that answers its link is approved without asking, once, and said
   assert.equal(pairing.agents.length, 1);
   assert.equal(pairing.poll, null);
   assert.deepEqual(pairing.errors, []);
+});
+
+test('an agent’s link this tab made before it loaded again is approved the same way, while it is open', async () => {
+  const pairing = await pairingFixture();
+  const adopted = await pairing.actions.connectAgent({adopt: {id: INVITE_B, expiresAt: 5 * 60 * 1000}});
+  assert.deepEqual(adopted, {link: null, invite: INVITE_B, expiresAt: 5 * 60 * 1000}, 'its link is in the agent’s hands already');
+  pairing.host.pending = [request('d1', INVITE_B, {label: 'Claude Code on laptop'})];
+  await pairing.tick();
+  assert.deepEqual(pairing.host.answers, [['d1', true]]);
+  assert.deepEqual(pairing.asks, []);
+  assert.equal(await pairing.actions.connectAgent({adopt: {id: INVITE_A, expiresAt: 0}}), null, 'an expired one is not taken');
 });
 
 test('an agent’s link that expired approves nobody', async () => {

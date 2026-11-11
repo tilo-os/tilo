@@ -1,5 +1,5 @@
 use super::{CheckpointCapture, CheckpointRoute};
-use crate::owner::application_record::tests::{Fixture, fixture};
+use crate::owner::fixture::{Fixture, fixture};
 use crate::owner::{
     DocumentRead, NativeWorkspaceOwner, WorkspaceId, open_file, testing, testing::record_on_disk,
 };

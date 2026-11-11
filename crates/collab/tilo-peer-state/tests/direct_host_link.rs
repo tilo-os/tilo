@@ -904,3 +904,247 @@ async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted
     );
     assert!(serving.link(workspace_number()).is_none());
 }
+
+/// What a device commits to a workspace it hosts itself reaches the members linked to it at
+/// once, and a member that links later catches up on it. Such a workspace keeps no outgoing
+/// custody (its own device is its keeper) and holds no link to a host, so the commit went
+/// nowhere live: e2e-branch's box showed windows its copy opened, and the copy saw box's only
+/// after it linked again. A member's link signs the device's snapshots for its catch-up between
+/// the device's commits, with the same key: the commit after it is refused unless both take
+/// their numbers from one sequence.
+#[expect(
+    clippy::too_many_lines,
+    reason = "a workspace hosted here, a member linked to it, a commit, and a member that links later"
+)]
+#[tokio::test(flavor = "multi_thread")]
+async fn what_a_device_commits_to_the_workspace_it_hosts_reaches_its_members_live() {
+    use tilo_peer_state::direct::Owning;
+    use tilo_peer_state::join_answer::JoinAnswer;
+    use tilo_peer_state::owner::OwnerJoinWorkspaces;
+
+    let root = SigningKey::from_bytes(&[3; 32]);
+    let (host_key, host_cert) = common::device_with(
+        &root,
+        8,
+        DeviceCapabilities {
+            can_act_as_host: true,
+            ..DeviceCapabilities::primary()
+        },
+    );
+    let (b_key, b_cert) = device(&root, 9);
+    let (c_key, c_cert) = device(&root, 10);
+    let now = SystemTime::now();
+    let host_endpoint = localhost_endpoint(&host_key).await;
+    let host_state = tempfile::tempdir().unwrap();
+    let host = owner_at(host_state.path());
+    let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
+    let route = hint(workspace, &host_endpoint, &host_cert, &host_key);
+    host.create_workspace(
+        workspace,
+        "Hosted",
+        &host_cert,
+        &host_key,
+        Some(route.clone()),
+        now,
+    )
+    .expect("the workspace is founded here");
+    let service: Arc<dyn tilo_peer_state::join_transport::LocalJoinService> = Arc::new(JoinAnswer(
+        OwnerJoinWorkspaces::new(host.clone(), host_key.clone()),
+    ));
+    let frames = tempfile::tempdir().unwrap();
+    let store = Arc::new(Store::open(frames.path(), Appetite::StoreAll).unwrap());
+    let serving = Owning::new(host.clone(), host_key.clone(), Arc::clone(&store));
+    let router = Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, serving.clone())
+        .spawn();
+    // The device commits the record as a session's engine does, numbered from the durable view.
+    // A member's link signs the device's snapshots for its catch-up between two of these commits.
+    let commit = |value: &str| {
+        commit_record(&host, workspace, &host_key, value);
+        host.with_current(workspace, |view| {
+            Ok(view.peer().document_heads(APP, RECORD))
+        })
+        .unwrap()
+    };
+    commit("first");
+
+    let b_state = tempfile::tempdir().unwrap();
+    let (b, _) = joins(
+        b_state.path(),
+        &b_cert,
+        &b_key,
+        invitation(
+            &host,
+            workspace,
+            &host_cert,
+            &host_key,
+            route.clone(),
+            [9; 32],
+        ),
+        Arc::clone(&service),
+    )
+    .await;
+    let b = DirectSync::over(b.replica(workspace).unwrap(), b_key.clone());
+    let mut caught_up = b.caught_up();
+    let b_endpoint = localhost_endpoint(&b_key).await;
+    let b_link = tokio::spawn({
+        let b = b.clone();
+        let b_endpoint = b_endpoint.clone();
+        let host_addr = addr(&host_endpoint);
+        async move { b.connect(&b_endpoint, host_addr).await }
+    });
+    until(&b, "the member has the device's first write", |peer| {
+        peer.document(APP, RECORD).is_some()
+    })
+    .await;
+    // The device's next commit is made once the member caught up, as a person's next edit is.
+    tokio::time::timeout(Duration::from_secs(30), caught_up.wait_for(|up| *up))
+        .await
+        .expect("the member catches up")
+        .unwrap();
+
+    // A commit while the member is linked reaches it live.
+    let second = commit("second");
+    until(&b, "the member has the device's live write", |peer| {
+        peer.document_heads(APP, RECORD) == second
+    })
+    .await;
+
+    // A member that links later catches up on it.
+    let c_state = tempfile::tempdir().unwrap();
+    let (c, _) = joins(
+        c_state.path(),
+        &c_cert,
+        &c_key,
+        invitation(&host, workspace, &host_cert, &host_key, route, [10; 32]),
+        Arc::clone(&service),
+    )
+    .await;
+    let c = DirectSync::over(c.replica(workspace).unwrap(), c_key.clone());
+    let c_endpoint = localhost_endpoint(&c_key).await;
+    let c_link = tokio::spawn({
+        let c = c.clone();
+        let c_endpoint = c_endpoint.clone();
+        let host_addr = addr(&host_endpoint);
+        async move { c.connect(&c_endpoint, host_addr).await }
+    });
+    until(&c, "the late member has the device's writes", |peer| {
+        peer.document_heads(APP, RECORD) == second
+    })
+    .await;
+
+    b_link.abort();
+    c_link.abort();
+    router.shutdown().await.unwrap();
+    host_endpoint.close().await;
+    b_endpoint.close().await;
+    c_endpoint.close().await;
+}
+
+/// Commit `value` to the test record of `workspace` as `owner`'s device, numbered from the
+/// durable view as a session's engine does (the record's first write founds it empty), and
+/// answer the write's sequence number.
+fn commit_record(
+    owner: &tilo_peer_state::owner::NativeWorkspaceOwner,
+    workspace: tilo_desktop_model::WorkspaceId,
+    key: &SigningKey,
+    value: &str,
+) -> u64 {
+    let message = owner
+        .with_current(workspace, |view| {
+            let mut peer = view.peer().clone();
+            let publication = peer.publication_mut();
+            let Some(bytes) = view.peer().document(APP, RECORD) else {
+                return publication.publish_document(
+                    APP,
+                    RECORD,
+                    AutoCommit::new().save(),
+                    key,
+                    SystemTime::now(),
+                );
+            };
+            let mut document = AutoCommit::load(&bytes).unwrap();
+            document.set_actor(automerge::ActorId::from(
+                key.verifying_key().to_bytes().to_vec(),
+            ));
+            let heads = document.get_heads();
+            document.put(ROOT, "value", value).unwrap();
+            document.commit_edit("fixture", "value");
+            publication.publish_incremental(
+                APP,
+                RECORD,
+                document.save_after(&heads),
+                key,
+                SystemTime::now(),
+            )
+        })
+        .expect("the write signs");
+    let NeighbourMsg::AppDocument { envelope, .. } = message else {
+        panic!("a record's write is a document");
+    };
+    let seq = envelope.seq;
+    owner
+        .commit_document(
+            tilo_peer_state::owner_commit::OwnerCommitRequest {
+                workspace: workspace.to_string(),
+                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                    app: APP.into(),
+                    record: RECORD.into(),
+                    envelope,
+                },
+            },
+            SystemTime::now(),
+        )
+        .expect("the owner admits its own write");
+    seq
+}
+
+/// A link's catch-up is a commit of its device's: the snapshots it signs with the device's key
+/// are durable, so the device's next write, also after a restart, numbers past every snapshot a
+/// member was handed. Signed in the live replica alone, a restart numbered the next write from
+/// the durable view again, at a number a member already held.
+#[test]
+fn a_catch_up_is_durable_and_a_restarted_device_numbers_past_it() {
+    let root = SigningKey::from_bytes(&[4; 32]);
+    let (key, cert) = common::device_with(
+        &root,
+        11,
+        DeviceCapabilities {
+            can_act_as_host: true,
+            ..DeviceCapabilities::primary()
+        },
+    );
+    let state = tempfile::tempdir().unwrap();
+    let workspace = tilo_desktop_model::WorkspaceId::parse(WORKSPACE).unwrap();
+    let owner = owner_at(state.path());
+    owner
+        .create_workspace(workspace, "Hosted", &cert, &key, None, SystemTime::now())
+        .expect("the workspace is founded here");
+    commit_record(&owner, workspace, &key, "first");
+    let handed = owner
+        .commit_bootstrap(workspace, &key, SystemTime::now())
+        .expect("the catch-up commits");
+    let author = key.verifying_key().to_bytes();
+    let taken = handed
+        .iter()
+        .filter_map(|message| match message {
+            NeighbourMsg::AppDocument { envelope, .. } if *envelope.author.as_bytes() == author => {
+                Some(envelope.seq)
+            }
+            _ => None,
+        })
+        .max()
+        .expect("the catch-up hands the record as a snapshot this device signed");
+    assert!(
+        commit_record(&owner, workspace, &key, "second") > taken,
+        "the next write numbers past the catch-up"
+    );
+    drop(owner);
+
+    let restarted = owner_at(state.path());
+    let next = commit_record(&restarted, workspace, &key, "after a restart");
+    assert!(
+        next > taken,
+        "a restarted device numbers past what a member was handed: {next} after {taken}"
+    );
+}

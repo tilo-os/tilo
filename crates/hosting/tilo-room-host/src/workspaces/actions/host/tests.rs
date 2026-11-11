@@ -101,6 +101,8 @@ async fn the_relays_person_creates_and_lists_rooms_as_actions() {
             CREATE_ROOM,
             DELETE_ROOM,
             LIST_ROOMS,
+            tilo_relay_session::workspaces::LIST_PERSONAL,
+            tilo_relay_session::workspaces::KEEP_PERSONAL,
             LIST_REVOCATIONS,
             ENTER_ROOM,
             ATTACH_HOST,

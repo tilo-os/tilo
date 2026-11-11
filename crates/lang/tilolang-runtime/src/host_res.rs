@@ -1063,7 +1063,11 @@ impl Core {
             | Imp::MapSetAdd
             | Imp::MapSetRemove => self.set_map_import(imp, a),
             Imp::MapGetH | Imp::MapKeys => self.map_read_import(imp, a),
-            Imp::MapGetValue | Imp::MapKeysValue => self.map_value_import(imp, a),
+            Imp::MapNew
+            | Imp::MapPutValue
+            | Imp::MapRemoveValue
+            | Imp::MapGetValue
+            | Imp::MapKeysValue => self.map_value_import(imp, a),
             Imp::RecNew | Imp::RecSetI | Imp::RecSetF | Imp::RecSetH => self.rec_import(imp, a),
             Imp::RefLit => self.ref_lit(a),
             Imp::RefEq => {

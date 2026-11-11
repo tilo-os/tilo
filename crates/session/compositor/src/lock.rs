@@ -113,6 +113,16 @@ impl State {
         })
     }
 
+    /// Whether the lock client has drawn on every output it stands on: none of them shows the bare
+    /// lock any more.
+    pub(crate) fn lock_drawn_everywhere(&self) -> bool {
+        !self.lock.surfaces.is_empty()
+            && self.lock.surfaces.iter().all(|(_, surface)| {
+                with_renderer_surface_state(surface.wl_surface(), |state| state.buffer().is_some())
+                    .unwrap_or(false)
+            })
+    }
+
     /// Whether the session draws the lock itself now: the lock screen's app is not there, and the
     /// session's own view of the lock is on the outputs.
     pub(crate) fn lock_view_shows(&self) -> bool {

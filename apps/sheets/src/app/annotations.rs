@@ -19,6 +19,7 @@ use ui::charts::legend;
 use ui::charts::{Sparkline, TrendFill, TrendRange, TrendStyle};
 use ui::num::f64_of_usize;
 use ui::paint::PaintCtx;
+use ui::presence::PresenceCtx;
 use ui::surface::separator;
 use ui::widget::{BadgeFace, ButtonFace, ButtonRole, CardFace, ChipStyle, ControlSize, Tone};
 use vello::kurbo::Vec2;
@@ -818,7 +819,7 @@ impl SheetsApp {
     /// The marker of every thread whose cells are in view: the cell in the
     /// top trailing corner of its cells, and its tone, the author's colour
     /// while the thread is open for discussion, neutral once it is resolved.
-    pub(super) fn comment_markers(&self) -> Vec<(Rect, Tone)> {
+    pub(super) fn comment_markers(&self, presence: &PresenceCtx) -> Vec<(Rect, Tone)> {
         let body = self.grid.body_rect();
         self.sheet_comments
             .iter()
@@ -833,7 +834,7 @@ impl SheetsApp {
                 let tone = if thread.resolved {
                     Tone::Neutral
                 } else {
-                    Tone::of_identity(&thread.author)
+                    Tone::Presence(presence.hue_of(&thread.author))
                 };
                 Some((corner, tone))
             })
@@ -841,8 +842,14 @@ impl SheetsApp {
     }
 
     /// A marker in the corner of every commented cell.
-    pub(super) fn draw_comment_markers(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let markers = self.comment_markers();
+    pub(super) fn draw_comment_markers(
+        &self,
+        scene: &mut Scene,
+        transform: Affine,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let markers = self.comment_markers(presence);
         if markers.is_empty() {
             return;
         }
@@ -875,6 +882,7 @@ impl SheetsApp {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
+        presence: &PresenceCtx,
     ) {
         let Some(thread) = self.open_thread().cloned() else {
             return;
@@ -884,18 +892,24 @@ impl SheetsApp {
         };
         ui::widget::floating_surface::paint_card_shadow(scene, transform, card, 1.0, theme);
         let mut ctx = PaintCtx::new(scene, transform, tr, theme);
-        self.draw_comment_card(&mut ctx, card, &thread);
+        self.draw_comment_card(&mut ctx, card, &thread, presence);
     }
 
     /// A comment thread as a card: who wrote it and on what range, the
     /// comment, its replies, and what can be done with it.
-    fn draw_comment_card(&mut self, ctx: &mut PaintCtx<'_>, card: Rect, thread: &CommentThread) {
+    fn draw_comment_card(
+        &mut self,
+        ctx: &mut PaintCtx<'_>,
+        card: Rect,
+        thread: &CommentThread,
+        presence: &PresenceCtx,
+    ) {
         let theme = ctx.theme;
         let rows = self.metrics.comment_rows();
         let author = self.author_name(&thread.author);
         let face = CardFace::new()
             .title(&author)
-            .leading_stripe(Tone::of_identity(&thread.author))
+            .leading_stripe(Tone::Presence(presence.hue_of(&thread.author)))
             .pressable();
         face.paint(ctx, card);
         let body = face.body_rect(ctx.text, theme, card);

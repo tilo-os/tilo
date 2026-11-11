@@ -3029,7 +3029,7 @@ mod tests {{
             self.root.build_layout(tree, theme, nodes)
         }}
         fn apply_layout(&mut self, tree: &ui::taffy::TaffyTree<()>, node: ui::taffy::NodeId, origin: ui::kurbo::Point) {{ self.root.apply_layout(tree, node, origin); }}
-        fn draw(&mut self, scene: &mut ui::vello::Scene, transform: ui::kurbo::Affine, text: &mut ui::TextRenderer, theme: &ui::Theme, presence: &ui::presence::PresenceCtx) {{ self.root.draw(scene, transform, text, theme, presence); }}
+        fn draw(&mut self, scene: &mut ui::vello::Scene, transform: ui::kurbo::Affine, text: &mut ui::TextRenderer, theme: &ui::Theme, presence: &ui::presence::PresenceCtx) {{ ui::widget::DrawChild::draw_child(&mut self.root, scene, transform, text, theme, presence); }}
         fn handle_event(&mut self, event: &ui::winit::event::WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {{ self.root.handle_event(event, ctx); }}
         fn get_rect(&self) -> ui::kurbo::Rect {{ self.root.get_rect() }}
         fn as_any(&self) -> Option<&dyn std::any::Any> {{ Some(self) }}

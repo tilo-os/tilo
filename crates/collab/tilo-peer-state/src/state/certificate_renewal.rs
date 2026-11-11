@@ -85,12 +85,12 @@ impl PeerGovernanceMut<'_> {
         doc.set_actor(self.peer.workspace_actor_of(key));
         let mut changed = false;
         for (id, bytes) in rows {
-            let mut identity: GovernedIdentity = serde_json::from_slice(&bytes).map_err(err)?;
+            let mut identity = GovernedIdentity::decode(&bytes).map_err(err)?;
             if identity.device_cert != held {
                 continue;
             }
             identity.device_cert = renewed.clone();
-            let encoded = serde_json::to_vec(&identity).map_err(err)?;
+            let encoded = identity.encode().map_err(err)?;
             doc.put(&identities, id, automerge::ScalarValue::Bytes(encoded))
                 .map_err(err)?;
             changed = true;

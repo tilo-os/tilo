@@ -719,6 +719,7 @@ pub struct Avatar {
     name_state: Option<crate::local_state::LocalBinding<String>>,
     identity: String,
     presence: Option<Color>,
+    hue: Option<PresenceHue>,
     picture: Picture,
     image: Option<peniko::ImageData>,
     size: AvatarSize,
@@ -755,6 +756,7 @@ impl Avatar {
             name_state: None,
             identity: identity.into(),
             presence: None,
+            hue: None,
             picture: Picture::None,
             image: None,
             size: AvatarSize::Regular,
@@ -828,6 +830,15 @@ impl Avatar {
     #[must_use]
     pub fn with_presence(mut self, colour: Color) -> Self {
         self.presence = Some(colour);
+        self
+    }
+
+    /// The presence hue the person wears, as the workspace announced it
+    /// ([`AvatarFace::hue`]): a face painted through the theme's presence
+    /// palette, in the colour their caret and their byline wear.
+    #[must_use]
+    pub fn with_hue(mut self, hue: PresenceHue) -> Self {
+        self.hue = Some(hue);
         self
     }
 
@@ -909,6 +920,9 @@ impl Avatar {
         }
         if let Some(colour) = self.presence {
             face = face.presence(colour);
+        }
+        if let Some(hue) = self.hue {
+            face = face.hue(hue);
         }
         if self.square {
             face = face.square();

@@ -463,3 +463,36 @@ fn hex_postcard(value: &impl serde::Serialize) -> Result<String, String> {
         .map(hex::encode)
         .map_err(|error| error.to_string())
 }
+
+impl Workspaces {
+    /// The signed Iroh address a joining device dials to redeem an
+    /// invitation of `workspace`: the relay this host is reached through and
+    /// the addresses a stranger can dial, never the ones only the network
+    /// around this host knows (`tilo_delivery_protocol::workspace_join::reachable`).
+    pub(super) fn transport_hint(
+        &self,
+        workspace: &GovernedWorkspace,
+    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
+        let host = &self.inner.host;
+        // An invitation is handed to whoever the link reaches, so what this
+        // host answers at inside its own network stays out of it.
+        let endpoint_addr =
+            tilo_delivery_protocol::workspace_join::reachable(&host.endpoint.addr());
+        let packet_relay_url = endpoint_addr
+            .relay_urls()
+            .next()
+            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
+            version: 1,
+            mode: host.mode,
+            room: workspace.workspace().to_owned(),
+            workspace_id: workspace.workspace_id(),
+            endpoint_addr,
+            host_user_public_key: host.cert.user_public_key,
+            host_device_certificate: host.cert.clone(),
+            packet_relay_url,
+        }
+        .transport_hint(&host.key)
+        .map_err(|error| CollaborationError::new(error.to_string()))
+    }
+}

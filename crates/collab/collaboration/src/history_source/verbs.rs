@@ -753,11 +753,13 @@ fn carry_over(listed: &mut [Value]) {
         let Value::Object(fields) = entry else {
             continue;
         };
+        // One connection's run may go by a new title from one call to the
+        // next: a version under another title names it again.
         let same_author = ["run_id", "by"].iter().any(|key| {
             fields
                 .get(*key)
                 .is_some_and(|value| before.get(*key) == Some(value))
-        });
+        }) && fields.get("run") == before.get("run");
         let author: Vec<&str> = ["run", "run_id", "by"]
             .into_iter()
             .filter(|key| fields.contains_key(*key))

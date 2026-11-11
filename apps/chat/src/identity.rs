@@ -35,13 +35,9 @@ impl LocalIdentity {
     }
 
     /// Participant `id` as this device shows its own person: the display
-    /// name first-boot setup gave the runtime identity, else the login name.
+    /// name of the person's public identity record.
     pub fn for_participant(id: &str) -> Self {
-        let name = ui::local_identity::bound()
-            .map(|identity| identity.display_name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .or_else(user_display)
-            .unwrap_or_else(|| unnamed_label(id));
+        let name = ui::local_identity::own_name().unwrap_or_else(|| unnamed_label(id));
         Self {
             initials: initials_of(&name),
             color_idx: color_from_bytes(id.as_bytes()),
@@ -62,18 +58,6 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     let mut hasher = fnv::FnvHasher::default();
     std::hash::Hasher::write(&mut hasher, bytes);
     std::hash::Hasher::finish(&hasher)
-}
-
-/// An available login hint; absent names remain unnamed.
-fn user_display() -> Option<String> {
-    let raw = tilo_paths::session::user_name()?;
-    let display: String = raw
-        .split(['.', '_', '-', ' '])
-        .filter(|p| !p.is_empty())
-        .map(ui::format::capitalize_first)
-        .collect::<Vec<_>>()
-        .join(" ");
-    (!display.is_empty()).then_some(display)
 }
 
 /// Distinguish unnamed participants without exposing their complete routing id.

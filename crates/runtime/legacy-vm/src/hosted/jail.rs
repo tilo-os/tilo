@@ -10,9 +10,9 @@
 //!   Firecracker's `jailer`, which puts Firecracker in a chroot with only
 //!   `/dev/kvm`, `/dev/net/tun` and `/dev/urandom`, a cgroup bounding its
 //!   memory, CPU and processes, a mount namespace of its own, and finally
-//!   drops it to the VM's uid. The service names the relay a browser
-//!   environment's session joins through ([`Endpoint`]), which the helper
-//!   gives that VM's network as its one non-public destination. The
+//!   drops it to the VM's uid. The service names the relay the VM's
+//!   browser session joins through ([`Endpoint`]), which the helper gives
+//!   the VM's network as its one non-public destination. The
 //!   helper's process *becomes* Firecracker, so the service still waits on
 //!   its child.
 //! - **stop**: kill everything in the VM's cgroups (its uid is not the
@@ -293,7 +293,7 @@ impl Helper {
     /// The command that becomes the slot's Firecracker: booting from
     /// `/vm/firecracker.json` when `boot`, else waiting for a snapshot to
     /// load. `relay` is the one destination besides the internet the VM's
-    /// network allows, for a browser environment. The caller spawns it and
+    /// network allows, for its browser session. The caller spawns it and
     /// owns the child.
     #[must_use]
     pub fn start(

@@ -18,6 +18,7 @@ use ui::widget::{TextInput, Widget as _, text_control_height};
 use ui::{TextRole, paint::PaintCtx};
 
 use crate::draw_util::text_in_band;
+use ui::widget::DrawChild;
 
 /// What a press on a card asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -268,7 +269,8 @@ impl QuickAdd {
             .body_height(layout.body.height());
         modal_dialog::paint_backdrop(scene, transform, text, theme, &layout, &spec);
         let sheet = theme.on_ground(ui::chrome::panel_ground(theme));
-        self.input.draw(scene, transform, text, &sheet, presence);
+        self.input
+            .draw_child(scene, transform, text, &sheet, presence);
         let style = sheet.text(TextRole::Body);
         let band = self.lines.1;
         let mut ctx = PaintCtx::new(scene, transform, text, &sheet);

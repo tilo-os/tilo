@@ -27,7 +27,7 @@
 //! - [`config`] and [`policy`] — the on-disk `relay.toml` schema;
 //! - [`home_peer`] — the registry record written after enrolling an
 //!   always-on peer;
-//! - [`hosted`] — what a host hands a workspace's browser environment when
+//! - [`hosted`] — what a host hands the browser session in a workspace's VM when
 //!   it gives it the workspace, and the address such a machine reaches it at;
 //! - [`metrics`] — the counter snapshot the daemon persists for status UIs;
 //! - [`process_lease`] — the PID + start-time pair carried across the

@@ -728,6 +728,7 @@ version = 2
 person = true
 fields = [
   { path = "auto_brightness", type = "bool", readonly = true },
+  { path = "rotation_lock", type = "bool", readonly = true },
   { path = "scale", type = "float" },
 ]
 
@@ -736,6 +737,13 @@ id = "set-automatic-brightness"
 kind = "undoable"
 params = [
   { name = "on", type = "bool", required = true, schema = { type = "boolean" } },
+]
+
+[[resources.verbs]]
+id = "set-rotation-lock"
+kind = "undoable"
+params = [
+  { name = "locked", type = "bool", required = true, schema = { type = "boolean" } },
 ]
 
 [[resources]]

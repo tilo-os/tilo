@@ -19,6 +19,36 @@ pub fn agent_socket_path(runtime_dir: Option<OsString>) -> Option<PathBuf> {
     Some(tilo_paths::login::session_dir(runtime_dir)?.join(tilo_paths::login::AGENT_SOCKET_FILE))
 }
 
+/// The desktop door this process belongs to, when it runs on a Tilo desktop: the one its
+/// confined environment names, else its login's own. `Ok(None)` off a Tilo desktop; `Err` on one
+/// whose door is not there (yet), saying why.
+///
+/// # Errors
+/// This is a Tilo desktop, and nothing listens where its door goes.
+pub fn desktop_door() -> io::Result<Option<PathBuf>> {
+    match route(
+        false,
+        environment_door(std::env::var_os(tilo_paths::login::AGENT_SOCKET_ENV)),
+        tilo_paths::login::is_tilo_login(),
+        agent_socket_path(tilo_paths::login::login_runtime_dir().map(Into::into)),
+        Path::exists,
+    )? {
+        Route::Session(door) => Ok(Some(door)),
+        Route::Standalone => Ok(None),
+    }
+}
+
+/// Carry this process's stdio to the desktop door at `door`, until either side closes: what an
+/// MCP client on a Tilo desktop talks to.
+///
+/// # Errors
+/// Nothing answers at `door`, or the lines could not be carried.
+pub fn bridge(door: &Path) -> io::Result<()> {
+    let stream = tilo_files::native::socket::connect(door)
+        .map_err(|error| unreachable_door(door, &error))?;
+    crate::daemon::bridge_stdio(stream, None)
+}
+
 /// Where a `--connect` client goes.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Route {
@@ -513,6 +543,7 @@ where
                 id: run,
                 label: "REPL".into(),
                 kind: "repl".into(),
+                title: None,
             },
         ),
     };

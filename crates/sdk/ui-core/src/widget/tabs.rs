@@ -25,6 +25,10 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 
+#[path = "tabs_bar_layout.rs"]
+mod bar_layout;
+#[path = "tabs_new_tab.rs"]
+mod new_tab;
 #[path = "tabs_paint.rs"]
 mod paint;
 #[path = "tabs_pill_layout.rs"]
@@ -41,7 +45,9 @@ mod tips;
 mod title_menu;
 #[path = "tabs_toolbar_row.rs"]
 mod toolbar_row;
+// The strip's door to another application, from its one definition.
 use crate::tokens::{EffectiveMotion, MotionSource};
+pub(crate) use new_tab::{new_tab_control, new_tab_name, paint_new_tab};
 use pill_layout::{chip_rects, fit_pill_widths};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
@@ -248,6 +254,9 @@ pub struct TabDescriptor {
     /// The window is waiting for the person: a refusal, a background open, a dialog they are not
     /// looking at. One dot at the pill's trailing edge, cleared when the tab takes focus.
     pub attention: bool,
+    /// A person named the tab: the title is theirs, so the bar shows it even where its app's slots
+    /// would leave a window's one tab as its icon alone.
+    pub named: bool,
 }
 
 impl TabDescriptor {
@@ -258,6 +267,7 @@ impl TabDescriptor {
             app_kind: None,
             icon: None,
             attention: false,
+            named: false,
         }
     }
 }
@@ -280,13 +290,13 @@ pub enum TabMark {
 }
 
 impl TabMark {
-    /// What the mark says to someone who cannot see it.
-    fn description(self) -> &'static str {
-        match self {
-            Self::Busy => "Loading",
-            Self::Playing => "Playing audio",
-            Self::Muted => "Muted",
-        }
+    /// What the mark says to someone who cannot see it, in the desktop's language.
+    fn description(self) -> String {
+        crate::i18n::I18nManager::lookup_plain(match self {
+            Self::Busy => "tab-loading",
+            Self::Playing => "tab-playing",
+            Self::Muted => "tab-muted",
+        })
     }
 
     /// Whether a click on the mark does something.
@@ -494,8 +504,9 @@ pub struct TabBar {
     /// Each window control's hover tint, by control index: it comes at once and fades over the fast
     /// duration, so a sweeping pointer leaves no trail.
     control_lifts: [crate::motion::Feedback; 3],
-    /// The window is maximized: its maximize control shows restore.
-    maximized: bool,
+    /// What the window's maximize control does where the window stands: restore while maximized,
+    /// snap back while floating.
+    resize: super::window_controls::Resize,
     /// Whether the window showed several tabs at the last layout, and since when: the tabs' bodies
     /// grow in, or fade back into a plain title.
     tabbed: bool,
@@ -503,6 +514,11 @@ pub struct TabBar {
     /// The slots each tab's app declared for the window's bar
     /// ([`crate::window_toolbar`]), by tab id. Sidecar like the others.
     toolbars: HashMap<u64, crate::window_toolbar::WindowToolbar>,
+    /// The window floats as a card: its bar is the card's header, naming what the window is about
+    /// beside the card's own controls ([`Self::set_card`]).
+    card: Option<HashMap<u64, crate::window_toolbar::WindowToolbar>>,
+    /// The card's collapse was pressed, once.
+    pending_collapse: bool,
     /// Each tab's location picture (a page's favicon), decoded from its
     /// slots: it stands where the app's icon would.
     location_images: HashMap<u64, icons::AppImage>,
@@ -515,6 +531,10 @@ pub struct TabBar {
     rename: Option<rename::TabRename>,
     /// A name committed in place, drained by [`TabBar::take_rename`].
     pending_rename: Option<(u64, String)>,
+    /// The tab a person pressed last and when: a second press on it soon after asks to name it.
+    last_tab_press: Option<(u64, Instant)>,
+    /// A tab a double click asked to name, drained by [`TabBar::take_rename_ask`].
+    rename_ask: Option<u64>,
     /// The words the bar painted in its last drawing, each at the place its ink stands
     /// ([`TabBar::painted_labels`]).
     painted_labels: std::cell::RefCell<Vec<crate::window_toolbar::BarLabel>>,
@@ -679,15 +699,19 @@ impl TabBar {
                 crate::motion::Feedback::default(),
                 crate::motion::Feedback::default(),
             ],
-            maximized: false,
+            resize: super::window_controls::Resize::Maximize,
             tabbed,
             tabbed_changed_at: None,
             toolbars: HashMap::new(),
+            card: None,
+            pending_collapse: false,
             location_images: HashMap::new(),
             toolbar_row: Box::new(super::window_toolbar_row::ToolbarRow::new()),
             motion: EffectiveMotion::default(),
             rename: None,
             pending_rename: None,
+            last_tab_press: None,
+            rename_ask: None,
             painted_labels: std::cell::RefCell::new(Vec::new()),
         }
     }
@@ -785,13 +809,14 @@ impl TabBar {
         first.x0 + PILL_PAD_X + ICON_W + TOOLBAR_LEAD_GAP
     }
 
-    /// The window is maximized, so its maximize control offers restore.
-    pub fn set_maximized(&mut self, maximized: bool) {
-        if self.maximized == maximized {
+    /// What the window's maximize control offers where the window stands: restore while it is
+    /// maximized, snap back while it floats.
+    pub fn set_resize(&mut self, resize: super::window_controls::Resize) {
+        if self.resize == resize {
             return;
         }
         self.touch();
-        self.maximized = maximized;
+        self.resize = resize;
     }
 
     /// A window bar showing a single tab: the tab is the window's title, with
@@ -828,6 +853,12 @@ impl TabBar {
             match image.and_then(crate::window_toolbar::ToolbarImage::app_image) {
                 Some(image) => self.location_images.insert(id, image),
                 None => self.location_images.remove(&id),
+            };
+        }
+        if let Some(card) = self.card.as_mut() {
+            match toolbar.as_ref() {
+                Some(toolbar) => card.insert(id, toolbar.card_form()),
+                None => card.remove(&id),
             };
         }
         match toolbar {
@@ -940,8 +971,9 @@ impl TabBar {
     }
 
     fn active_toolbar(&self) -> Option<&crate::window_toolbar::WindowToolbar> {
+        let toolbars = self.card.as_ref().unwrap_or(&self.toolbars);
         self.window_controls
-            .then(|| self.toolbars.get(&self.active_id))
+            .then(|| toolbars.get(&self.active_id))
             .flatten()
     }
 
@@ -959,10 +991,15 @@ impl TabBar {
     }
 
     /// A pill shown as its icon alone: a pinned tab, or the one tab of a
-    /// window whose app put its slots in the title's row.
+    /// window whose app put its slots in the title's row — unless a person
+    /// named it or is naming it, when its name stands beside the icon.
     fn icon_only(&self, id: u64) -> bool {
         self.pinned_ids.contains(&id)
-            || (self.solo() && id == self.active_id && self.active_slots().is_some())
+            || (self.solo()
+                && id == self.active_id
+                && self.active_slots().is_some()
+                && self.renaming() != Some(id)
+                && !self.tabs.iter().any(|tab| tab.id == id && tab.named))
     }
 
     /// Whether the bar stands two rows tall: the tabs, then the active tab's slots. A window going
@@ -1113,202 +1150,11 @@ impl TabBar {
         &self.controls
     }
 
-    /// Whether `p` is on the window's controls pill, padding included: the
-    /// window's own chrome, which no app underneath it receives.
-    #[must_use]
-    pub fn control_pill_hit(&self, p: Point) -> bool {
-        self.controls.on_pill(p)
-    }
-
     /// Where the window's History toggle stands this frame: the app's
     /// action, on the window's ground just before the controls' pill.
     #[must_use]
     pub fn history_action_rect(&self) -> Rect {
         self.history_action
-    }
-
-    /// The bar as it lays itself out now: every control it shows, in reading order (the active
-    /// tab's own slots — the sidebar toggle, Back and Forward, the leading actions, the views and
-    /// the location's picker, the actions and the overflow button — then the window's History
-    /// control and own controls), and the room it leaves empty beside its location's label. A
-    /// capture, an inspector and a layout check read the bar through it, and every one of them
-    /// shows each control once.
-    #[must_use]
-    pub fn bar_layout(&self) -> crate::window_toolbar::BarLayout {
-        use super::window_controls::WindowControl;
-        use crate::window_toolbar::{BarControl, BarLayout};
-        let lookup = crate::i18n::I18nManager::lookup_plain;
-        let mut spare = 0.0;
-        let mut out = Vec::new();
-        let mut push = |control: BarControl| {
-            if control.rect[2] > 0.0 && control.rect[3] > 0.0 {
-                out.push(control);
-            }
-        };
-        // The strip's own door to another application, after the tabs: a control of the bar as
-        // much as the app's slots are, and read with them.
-        if self.new_tab_rect.area() > 0.0 {
-            push(
-                BarControl::new("new-tab", "tab-new", self.new_tab_rect)
-                    .named(NEW_TAB.to_owned())
-                    .icon(Some(icons::Icon::Plus.name().to_owned()))
-                    .furniture(),
-            );
-        }
-        if let Some(toolbar) = self.active_toolbar() {
-            let slots = self.toolbar_row.slots();
-            spare = slots.spare;
-            if toolbar.sidebar.is_some() && !slots.sidebar_folded(toolbar) {
-                let key = if toolbar.sidebar == Some(true) {
-                    "window-toolbar-hide-sidebar"
-                } else {
-                    "window-toolbar-show-sidebar"
-                };
-                push(
-                    BarControl::new(
-                        "sidebar",
-                        super::window_toolbar_row::SIDEBAR_TARGET,
-                        slots.sidebar,
-                    )
-                    .named(lookup(key)),
-                );
-            }
-            if toolbar.navigation.is_some() {
-                push(
-                    BarControl::new("back", super::window_toolbar_row::BACK_TARGET, slots.back)
-                        .named(lookup("window-toolbar-back")),
-                );
-                if !slots.forward_folded(toolbar) {
-                    push(
-                        BarControl::new(
-                            "forward",
-                            super::window_toolbar_row::FORWARD_TARGET,
-                            slots.forward,
-                        )
-                        .named(lookup("window-toolbar-forward")),
-                    );
-                }
-            }
-            if let Some(location) = toolbar.location.as_ref() {
-                push(
-                    BarControl::new(
-                        "location",
-                        super::window_toolbar_row::LOCATION_TARGET,
-                        slots.location,
-                    )
-                    .named(location.label.clone()),
-                );
-            }
-            for (index, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
-                let labelled = action.labelled && slots.labelled;
-                let icon = (!action.icon.is_empty()).then(|| action.icon.clone());
-                if icon.is_none() && !labelled {
-                    continue;
-                }
-                let control = BarControl::new("leading", action.id.clone(), *rect)
-                    .named(action.name.clone())
-                    .words(slots.leading_words.get(index).copied().unwrap_or(0.0));
-                let control = if action.primary {
-                    control.primary()
-                } else {
-                    control
-                };
-                push(if labelled {
-                    control.icon(icon).labelled()
-                } else {
-                    control.icon(icon)
-                });
-            }
-            if let (Some(views), Some(first), Some(last)) = (
-                toolbar.views.as_ref(),
-                slots.views.first(),
-                slots.views.last(),
-            ) {
-                push(
-                    BarControl::new(
-                        "views",
-                        super::window_toolbar_row::VIEWS_MENU_TARGET,
-                        first.union(*last),
-                    )
-                    .named(views.name.clone()),
-                );
-            }
-            if let Some(views) = toolbar.views.as_ref()
-                && slots.views_menu.area() > 0.0
-            {
-                let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
-                let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
-                push(
-                    BarControl::new(
-                        "views-menu",
-                        super::window_toolbar_row::VIEWS_MENU_TARGET,
-                        slots.views_menu,
-                    )
-                    .named(label.to_owned())
-                    .icon(Some(icons::Icon::ChevronDown.name().to_owned()))
-                    .menu(),
-                );
-            }
-            for (index, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
-                let mut control = BarControl::new("action", action.id.clone(), *rect)
-                    .named(action.name.clone())
-                    .words(slots.action_words.get(index).copied().unwrap_or(0.0));
-                if !action.icon.is_empty() {
-                    control = control.icon(Some(action.icon.clone()));
-                }
-                if action.menu || !action.items.is_empty() {
-                    control = control.menu();
-                }
-                if action.primary {
-                    control = control.primary();
-                }
-                push(if action.labelled && slots.actions_labelled {
-                    control.labelled()
-                } else {
-                    control
-                });
-            }
-            if slots.overflow.area() > 0.0 {
-                push(
-                    BarControl::new(
-                        "overflow",
-                        super::window_toolbar_row::OVERFLOW_TARGET,
-                        slots.overflow,
-                    )
-                    .named(lookup("window-toolbar-more"))
-                    .icon(Some(icons::Icon::MoreHorizontal.name().to_owned()))
-                    .menu(),
-                );
-            }
-        }
-        if self.history_action.area() > 0.0 {
-            push(
-                BarControl::new("history", WINDOW_HISTORY_TARGET, self.history_action)
-                    .named(lookup("history-mode-title")),
-            );
-        }
-        for (slot, control, rect) in [
-            ("minimize", WindowControl::Minimize, self.controls.minimize),
-            ("maximize", WindowControl::Maximize, self.controls.maximize),
-            ("close", WindowControl::Close, self.controls.close),
-        ] {
-            let icon = match control {
-                WindowControl::Minimize => icons::Icon::Minus,
-                WindowControl::Maximize if self.maximized => icons::Icon::Minimize2,
-                WindowControl::Maximize => icons::Icon::Maximize2,
-                WindowControl::Close => icons::Icon::X,
-            };
-            push(
-                BarControl::new(slot, control.target(), rect)
-                    .named(lookup(control.name_key(self.maximized)))
-                    .icon(Some(icon.name().to_owned())),
-            );
-        }
-        BarLayout {
-            spare,
-            controls: out,
-            labels: self.painted_labels(),
-        }
     }
 
     /// Whether tabs close from the strip (default `true`). Without it no
@@ -1518,7 +1364,8 @@ impl TabBar {
         let is_pinned = self.icon_only(t.id);
         // Tabs are not pills: the control radius (design language, Shape).
         let radius = f64::from(theme.tokens.radii.control);
-        let Some(&target) = self.tab_rects.get(i) else {
+        // A pill laid out no room draws nothing: a card's header shows none.
+        let Some(&target) = self.tab_rects.get(i).filter(|rect| rect.width() > 0.0) else {
             return;
         };
 
@@ -2434,15 +2281,38 @@ impl TabBar {
             || pressed
             || self.keyboard_focus && t.id == self.active_id
         {
-            // With the maximize chip withheld there is nothing above `Close` to open into, and
-            // reserving its width would push the title around for nothing.
-            if self.show_maximize {
-                Reveal::Full
-            } else {
-                Reveal::Close
-            }
+            self.open_reveal()
         } else {
             self.resting_reveal(i)
+        }
+    }
+
+    /// How far a pill opens under the pointer: its whole cluster, or only its close where the
+    /// maximize chip is withheld — a window's bar, whose own controls maximize it — since there
+    /// is nothing above `Close` to open into, and reserving its width would push the title
+    /// around for nothing.
+    fn open_reveal(&self) -> Reveal {
+        if self.show_maximize {
+            Reveal::Full
+        } else {
+            Reveal::Close
+        }
+    }
+
+    /// The narrowest pill `i` stands at in a row too short for every title: its glyph as a
+    /// target a person can press, and on the active tab its × as well — a tab that cannot be
+    /// read or closed is no tab. A pinned pill stands at its own width.
+    fn squeeze_floor(&self, i: usize) -> f64 {
+        let Some(t) = self.tabs.get(i) else {
+            return 0.0;
+        };
+        if self.icon_only(t.id) {
+            return PINNED_W;
+        }
+        let lead = PILL_PAD_X + self.leading_zone(i);
+        match self.resting_reveal(i) {
+            Reveal::None => lead.max(CLOSE_HIT_PX),
+            reveal => lead + reveal.reserve(),
         }
     }
 
@@ -2609,6 +2479,11 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return PILL_MIN_PX;
         };
+        // A card's header leads with whom or what it is about, as a card names its activity:
+        // the window's one tab draws nothing before it.
+        if self.card.is_some() && self.solo() {
+            return 0.0;
+        }
         if self.icon_only(t.id) {
             return PINNED_W;
         }
@@ -3131,9 +3006,10 @@ impl TabBar {
                     super::window_controls::WindowControl::Maximize => {
                         self.pending_max = Some(active);
                     }
-                    // The group's bar lays out no minimize: the strip closes
-                    // and restores, the desktop's window menu minimizes.
-                    super::window_controls::WindowControl::Minimize => {}
+                    // Only a card's header lays out a minimize: it folds the card to its header.
+                    super::window_controls::WindowControl::Minimize => {
+                        self.pending_collapse = true;
+                    }
                 }
             }
             *handled = true;
@@ -3327,8 +3203,8 @@ impl TabBar {
     }
 
     /// The tab a right-click (or long press) at `p` opens the window menu for: the pill under it,
-    /// else the active tab, since the menu is the window's; the active tab's own slots keep their
-    /// gestures.
+    /// else the active tab, since the menu is the window's; the active tab's own controls keep
+    /// their gestures, and its location at rest is the window's title like a pill.
     fn context_menu_target(&self, p: Point) -> Option<(u64, Point)> {
         if let Some(idx) = self
             .tab_rects
@@ -3339,9 +3215,29 @@ impl TabBar {
             return Some((t.id, p));
         }
         let in_row = self.tab_row().contains(p);
-        (in_row && !self.toolbar_hit(p) && self.tabs.iter().any(|t| t.id == self.active_id))
+        let apps = self.active_toolbar().is_some() && self.toolbar_row.owns_secondary_press(p);
+        (in_row && !apps && self.tabs.iter().any(|t| t.id == self.active_id))
             .then_some((self.active_id, p))
     }
+    /// Show the bar as the header of a card floating over the desk, or as the window's bar again.
+    pub fn set_card(&mut self, card: bool) {
+        self.touch();
+        if self.card.is_some() == card {
+            return;
+        }
+        self.card = card.then(|| {
+            self.toolbars
+                .iter()
+                .map(|(id, toolbar)| (*id, toolbar.card_form()))
+                .collect()
+        });
+    }
+
+    /// The card's collapse was pressed since the last call.
+    pub fn take_collapse(&mut self) -> bool {
+        std::mem::take(&mut self.pending_collapse)
+    }
+
     pub fn take_max(&mut self) -> Option<u64> {
         self.pending_max.take()
     }
@@ -3781,6 +3677,8 @@ pub const TAB_PILL_INSET_Y: f64 = 6.0;
 /// close), as assistive technology and automation address them.
 pub const WINDOW_HISTORY_TARGET: &str = "window-history";
 pub const WINDOW_MAXIMIZE_TARGET: &str = "window-maximize";
+/// The collapse of a window floating as a card.
+pub const WINDOW_COLLAPSE_TARGET: &str = "window-collapse";
 pub const WINDOW_CLOSE_TARGET: &str = "window-close";
 /// Action target of a window's new-tab door, as assistive technology and
 /// automation address it.
@@ -3796,27 +3694,6 @@ pub const TOOLBAR_ROW_HEIGHT: f64 = 40.0;
 const TOOLBAR_LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
-
-/// What the strip's new-tab control is called to assistive technology, and the tooltip of its
-/// glyph: a "+" needs no words in the row.
-pub(crate) const NEW_TAB: &str = "New tab";
-
-/// Paint the new-tab door at `rect`: the shared small button, bare at rest so it never competes
-/// with a tab, a lift of the ground under the pointer. A bar and the row of a window that holds
-/// its bar draw the door through here, so it looks the same in either.
-pub(crate) fn paint_new_tab(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    hovered: bool,
-) {
-    let face = super::ButtonFace::icon_only(rect, icons::Icon::Plus, NEW_TAB)
-        .control_size(super::ControlSize::Small)
-        .hovered(hovered);
-    super::Button::paint(scene, transform, tr, theme, &face);
-}
 
 const PILL_GAP: f64 = 6.0;
 /// Text inset on either end of a pill; the leading glyph starts here too.
@@ -4151,8 +4028,14 @@ impl Widget for TabBar {
                 self.tabbed = tabbed;
                 self.tabbed_changed_at = Some(crate::time::now());
             }
-            let history = self.history.contains_key(&self.active_id);
-            let controls = super::window_controls::WindowControls::lay_out(self.tab_row());
+            // A card's header carries the card's controls alone: History is the window's, in its
+            // strip.
+            let history = self.card.is_none() && self.history.contains_key(&self.active_id);
+            let controls = if self.card.is_some() {
+                super::window_controls::WindowControls::lay_out_card(self.tab_row())
+            } else {
+                super::window_controls::WindowControls::lay_out(self.tab_row())
+            };
             // Someone else's window, or one its person only watches, is not
             // theirs to close: the bar offers what the policy allows.
             self.controls = if self.held_ids.contains_key(&self.active_id) {
@@ -4202,7 +4085,7 @@ impl Widget for TabBar {
         self.mark_rects.resize(self.tabs.len(), Rect::ZERO);
 
         self.settle_hover_intent();
-        let (visual_order, widths, grow) = self.compute_pill_layout();
+        let (visual_order, widths, grow, at_least) = self.compute_pill_layout();
 
         let gap = PILL_GAP;
         let close_w = CLOSE_W;
@@ -4236,10 +4119,23 @@ impl Widget for TabBar {
             let effective = if is_pinned {
                 0.0
             } else {
-                let protect = self.shaped_title_width(i).min(MIN_TITLE_PX);
-                let afford = (r.width() - PILL_PAD_X - self.leading_zone(i) - protect).max(0.0);
+                // A pill gives up its chips before the last characters of its title, except
+                // where the row stands at its least, its tabs down to their glyphs: the tab in
+                // front keeps its × there — its floor holds the room for it.
+                let resting = self.resting_reveal(i);
+                let kept = if resting == Reveal::Close && at_least {
+                    resting.reserve()
+                } else {
+                    0.0
+                };
+                let room = (r.width() - PILL_PAD_X - self.leading_zone(i)).max(0.0);
+                let protect = self
+                    .shaped_title_width(i)
+                    .min(MIN_TITLE_PX)
+                    .min((room - kept).max(0.0));
+                let afford = (room - protect).max(0.0);
                 let grow_px = grow.get(slot).copied().unwrap_or(0.0);
-                (self.resting_reveal(i).reserve() + grow_px).min(afford)
+                (resting.reserve() + grow_px).min(afford)
             };
             let (close, max_rect, search_rect) = chip_rects(
                 r,
@@ -4482,6 +4378,7 @@ impl Widget for TabBar {
         // The window's own controls, by what they do.
         out.extend([
             (WINDOW_HISTORY_TARGET.to_string(), self.history_action),
+            (WINDOW_COLLAPSE_TARGET.to_string(), self.controls.minimize),
             (WINDOW_MAXIMIZE_TARGET.to_string(), self.controls.maximize),
             (WINDOW_CLOSE_TARGET.to_string(), self.controls.close),
         ]);
@@ -4552,7 +4449,10 @@ impl Widget for TabBar {
                 } else {
                     node.with_children(vec![
                         drawn(&self.close_rects, AccessNode::new(Role::Button))
-                            .with_name(format!("Close {}", t.title))
+                            .with_name(crate::i18n::I18nManager::format(
+                                "tab-close-named",
+                                &[("title", t.title.clone().into())],
+                            ))
                             .with_action_target(format!("tab-close:{}", t.id))
                             .with_state(AccessState {
                                 focusable: true,
@@ -4599,7 +4499,10 @@ impl Widget for TabBar {
                         let mut node = node.with_description(mark.description());
                         node.children.push(
                             AccessNode::new(Role::ToggleButton)
-                                .with_name(format!("Mute {}", t.title))
+                                .with_name(crate::i18n::I18nManager::format(
+                                    "tab-mute-named",
+                                    &[("title", t.title.clone().into())],
+                                ))
                                 .with_action_target(format!("tab-mute:{}", t.id))
                                 .with_state(AccessState {
                                     focusable: true,
@@ -4615,7 +4518,7 @@ impl Widget for TabBar {
             })
             .collect();
         if self.new_tab {
-            let new_tab = AccessNode::new(Role::Button).with_name(NEW_TAB);
+            let new_tab = AccessNode::new(Role::Button).with_name(new_tab_name());
             let new_tab = if self.new_tab_rect.area() > 0.0 {
                 new_tab.with_bounds(self.new_tab_rect)
             } else {
@@ -4655,13 +4558,22 @@ impl Widget for TabBar {
                 history.state.checked = Some(control.is_open());
                 tab_children.push(history);
             }
+            let collapses = self.controls.minimize.area() > 0.0;
+            if collapses {
+                tab_children.push(button(
+                    Role::Button,
+                    crate::i18n::I18nManager::lookup_plain(
+                        super::window_controls::WindowControl::Minimize.name_key(self.resize),
+                    ),
+                    WINDOW_COLLAPSE_TARGET,
+                    self.controls.minimize,
+                ));
+            }
             tab_children.push(button(
                 Role::Button,
-                crate::i18n::I18nManager::lookup_plain(if self.maximized {
-                    "host-window-restore"
-                } else {
-                    "host-window-maximize"
-                }),
+                crate::i18n::I18nManager::lookup_plain(
+                    super::window_controls::WindowControl::Maximize.name_key(self.resize),
+                ),
                 WINDOW_MAXIMIZE_TARGET,
                 self.controls.maximize,
             ));
@@ -4681,6 +4593,7 @@ impl Widget for TabBar {
             let slots = self.toolbar_row.accessibility();
             if !slots.is_empty() {
                 let controls = 1
+                    + usize::from(collapses)
                     + usize::from(closes)
                     + usize::from(self.history.contains_key(&self.active_id));
                 let at = tab_children.len().saturating_sub(controls);
@@ -4724,6 +4637,10 @@ impl Widget for TabBar {
                 WINDOW_CLOSE_TARGET => return self.start_closing(active),
                 WINDOW_MAXIMIZE_TARGET => {
                     self.pending_max = Some(active);
+                    return true;
+                }
+                WINDOW_COLLAPSE_TARGET if self.controls.minimize.area() > 0.0 => {
+                    self.pending_collapse = true;
                     return true;
                 }
                 WINDOW_HISTORY_TARGET => return self.press_history(active),
@@ -4915,9 +4832,10 @@ impl TabBar {
 
     /// Visual-slot ordering (pinned first) plus each slot's fitted width and
     /// in-flight reveal growth — the inputs `apply_layout`'s placement loop turns
-    /// into rects. Split out so `apply_layout` itself stays inside the
+    /// into rects — and whether the row stands at its least, its tabs down to their
+    /// glyphs. Split out so `apply_layout` itself stays inside the
     /// `too_many_lines` budget.
-    fn compute_pill_layout(&mut self) -> (Vec<usize>, Vec<f64>, Vec<f64>) {
+    fn compute_pill_layout(&mut self) -> (Vec<usize>, Vec<f64>, Vec<f64>, bool) {
         self.touch();
         // The only place the reveal curve advances, so rects and paint stay in step.
         let live: HashSet<u64> = self.tabs.iter().map(|t| t.id).collect();
@@ -4952,20 +4870,59 @@ impl TabBar {
             .iter()
             .map(|&i| self.natural_pill_width(i, self.resting_reveal(i).reserve()))
             .collect();
-        // The widest pill's opening: a pill with History opens one chip wider.
+        // The widest a pill grows past its resting width as it opens: a pill with History opens
+        // one chip wider, and a window's bar opens its tabs only as far as their close — keeping
+        // back the whole cluster there squeezed a narrow window's tabs to slivers.
         let headroom = visual_order
             .iter()
             .zip(&pinned_flags)
             .filter(|(_, pinned)| !**pinned)
-            .map(|(&i, _)| self.reserve_of(i, Reveal::Full) - Reveal::None.reserve())
+            .map(|(&i, _)| {
+                if self.solo() || !self.closable {
+                    return 0.0;
+                }
+                (self.reserve_of(i, self.open_reveal()) - self.resting_reveal(i).reserve()).max(0.0)
+            })
             .fold(0.0, f64::max);
         let row = self.pill_row();
         let laid_out = row.width() > 0.0;
-        let plus = if self.new_tab {
-            NEW_TAB_CHIP_PX + PILL_GAP
+        // How narrow each pill may get before the row gives up something else: a comfortable
+        // floor that keeps a fragment of every title (and the tab in front's × beside its own),
+        // else a pill's glyph and the tab in front's ×.
+        let comfortable: Vec<f64> = visual_order
+            .iter()
+            .zip(&resting)
+            .map(|(&i, &w)| {
+                let fragment = if self.resting_reveal(i) == Reveal::None {
+                    0.0
+                } else {
+                    MIN_TITLE_PX
+                };
+                w.min((self.squeeze_floor(i) + fragment).max(PILL_SQUEEZE_FLOOR_PX))
+            })
+            .collect();
+        let least: Vec<f64> = visual_order
+            .iter()
+            .zip(&resting)
+            .map(|(&i, &w)| w.min(self.squeeze_floor(i)))
+            .collect();
+        let gaps = pill_layout::row_gaps(visual_order.len());
+        let fits =
+            |floors: &[f64], beside: f64| floors.iter().sum::<f64>() + gaps + beside <= row.width();
+        let plus_w = NEW_TAB_CHIP_PX + PILL_GAP;
+        // The "+" keeps its place beside the tabs while they still stand at their least; past
+        // that the tabs come first, and the "+" stands only where the row has room left over.
+        let plus = if self.new_tab && (self.solo() || fits(&least, plus_w)) {
+            plus_w
         } else {
             0.0
         };
+        let at_least = !fits(&comfortable, plus);
+        let floors = if at_least { least } else { comfortable };
+        // A pill opening under the pointer grows into what the row has left once every pill
+        // stands at its floor, never into a neighbour's floor.
+        let headroom =
+            headroom.min((row.width() - floors.iter().sum::<f64>() - gaps - plus).max(0.0));
         let fit_avail = if laid_out && self.solo() {
             // A window's title opens no chips; what it has of a "+" stands
             // beside it.
@@ -4975,7 +4932,11 @@ impl TabBar {
         } else {
             row.width()
         };
-        let base = fit_pill_widths(&resting, &pinned_flags, fit_avail);
+        let firm: Vec<bool> = visual_order
+            .iter()
+            .map(|&i| self.resting_reveal(i) != Reveal::None)
+            .collect();
+        let base = fit_pill_widths(&resting, &floors, &firm, fit_avail);
         // Growth beyond resting, scaled down together if two pills are briefly
         // part-open mid-handover so the total can't outrun the one-pill headroom.
         let mut grow: Vec<f64> = visual_order
@@ -4993,7 +4954,12 @@ impl TabBar {
             }
         }
         let widths: Vec<f64> = base.iter().zip(grow.iter()).map(|(b, g)| b + g).collect();
-        (visual_order, widths, grow)
+        (
+            visual_order,
+            widths,
+            grow,
+            at_least && laid_out && !self.solo(),
+        )
     }
 
     /// One row of tab pills, each springing from its previous layout rect and
@@ -5641,6 +5607,10 @@ mod window_controls_tests;
 mod phone_bar_tests;
 
 #[cfg(test)]
+#[path = "tabs_new_tab_tests.rs"]
+mod new_tab_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::presence::user_color;
@@ -5992,6 +5962,7 @@ mod tests {
                     app_kind: Some(AppKind::Terminal),
                     icon: None,
                     attention: false,
+                    named: false,
                 }],
                 1,
             );
@@ -6044,6 +6015,7 @@ mod tests {
                     app_kind: Some(AppKind::Editor),
                     icon: None,
                     attention: false,
+                    named: false,
                 }],
                 1,
             );

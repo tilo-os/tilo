@@ -23,7 +23,6 @@ use ui::richtext::{FontFamily, RichTextLayout, TextAlign};
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::Widget;
 use ui::widget::toast::ToastKind;
 use ui::widget::{Button, ButtonFace, ButtonRole, ColorSwatchFace, ControlSize, SegmentedFace};
 use vello::Scene;
@@ -830,7 +829,7 @@ impl Editor {
         }
         self.zoom_input.apply_layout_external(zoom);
         self.zoom_rect = zoom;
-        Widget::draw(
+        ui::widget::DrawChild::draw_child(
             &mut self.zoom_input,
             scene,
             transform,
@@ -1098,7 +1097,7 @@ impl Editor {
         if !ctx.visible(rect) {
             return Rect::ZERO;
         }
-        Widget::draw(
+        ui::widget::DrawChild::draw_child(
             menu,
             ctx.scene,
             ctx.transform,
@@ -1217,7 +1216,7 @@ impl Editor {
                 let rect = Rect::new(column.x0, column.y0, column.x0 + w, column.y1);
                 slot.input.apply_layout_external(rect);
                 if ctx.visible(rect) {
-                    Widget::draw(
+                    ui::widget::DrawChild::draw_child(
                         &mut slot.input,
                         ctx.scene,
                         ctx.transform,

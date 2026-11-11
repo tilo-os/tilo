@@ -73,6 +73,11 @@ impl PublicationSchedule {
         self.due
     }
 
+    /// When the last delivery ran.
+    pub(crate) fn last_published(&self) -> Option<Instant> {
+        self.last
+    }
+
     /// The end of the window the last delivery opened, while it is open
     /// at `now`.
     pub(crate) fn window_end(&self, now: Instant) -> Option<Instant> {

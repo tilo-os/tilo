@@ -16,8 +16,9 @@ use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
-use tilo_session_host::session_actions::Heard;
-use tilo_session_host::{PeerEvent, PeerEvents, PeerHandle};
+use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session_client::{Events, Link};
+use tilo_session_core::remote::Heard;
 use tilo_user_identity::DeviceCert;
 
 /// How long the owner's admission of this reporter stands: long enough to
@@ -38,8 +39,8 @@ const FILED_STANDS: Duration = Duration::from_secs(120);
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
 
 pub(crate) struct Connection {
-    peer: PeerHandle,
-    events: PeerEvents,
+    peer: Link,
+    events: Events,
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,
@@ -63,7 +64,7 @@ pub(crate) struct Connection {
 
 pub(crate) fn configure(
     id: u32,
-    peer: PeerHandle,
+    peer: Link,
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,
@@ -77,11 +78,14 @@ pub(crate) fn configure(
     }
     .validate()
     .map_err(|error| error.to_string())?;
+    // Whether the destination's chat exists is the owner's to say: its
+    // admission reads the channel from what the workspace keeps. A workspace
+    // that sends its records when they are opened sends this page no chat
+    // until someone opens Chat, so the page's own copy proves nothing.
     if crate::replication::device_of(id).as_deref()
         != Some(hex::encode(reporter.device_public_key).as_str())
-        || !crate::replication::has_record(id, "so.tilo.chat", "")
     {
-        return Err("feedback requires an already joined peer and existing Chat source".into());
+        return Err("feedback requires an already joined peer".into());
     }
     CONNECTIONS.with_borrow_mut(|connections| {
         if connections.contains_key(&id) {
@@ -191,8 +195,11 @@ impl Connection {
         })
         .encode()
         .map_err(|error| error.to_string())?;
-        self.peer
-            .send_remote_action(self.workspace, self.owner.device_public_key, frame)?;
+        self.peer.send(Cmd::RemoteAction(
+            self.workspace,
+            self.owner.device_public_key,
+            frame,
+        ))?;
         self.pending
             .insert(self.serial, (web_time::Instant::now(), submission));
         Ok(self.serial)
@@ -248,8 +255,11 @@ impl Connection {
         let frame = RemoteActionFrame::new(RemoteActionMessage::Invoke(request))
             .encode()
             .map_err(|error| error.to_string())?;
-        self.peer
-            .send_remote_action(self.workspace, self.owner.device_public_key, frame)?;
+        self.peer.send(Cmd::RemoteAction(
+            self.workspace,
+            self.owner.device_public_key,
+            frame,
+        ))?;
         self.filing
             .insert(invocation, (web_time::Instant::now(), submission.clone()));
         Ok(())
@@ -329,7 +339,7 @@ pub(crate) fn pump(id: u32) {
     for event in events {
         let mut state = connection.borrow_mut();
         match event {
-            PeerEvent::Remote(Heard::Action {
+            Event::Remote(Heard::Action {
                 workspace_id,
                 from,
                 frame,
@@ -403,7 +413,7 @@ pub(crate) fn pump(id: u32) {
                     }
                 }
             }
-            PeerEvent::Remote(Heard::Undeliverable {
+            Event::Remote(Heard::Undeliverable {
                 workspace_id, to, ..
             }) if workspace_id == state.workspace && to == state.owner.device_public_key => {
                 state.admission = None;
@@ -438,7 +448,7 @@ fn renew_admission(connection: &mut Connection) {
 /// the reports filed in its Chat and keeps its own copy, which its receipt
 /// waits for. The page captures nothing itself; the picker's masked crops
 /// are the only picture a report carries.
-struct PageContent;
+struct PageContent(u32);
 impl Capture for PageContent {
     fn offers_screenshots(&self) -> bool {
         NoCapture.offers_screenshots()
@@ -450,7 +460,7 @@ impl Capture for PageContent {
         NoCapture.capture()
     }
     fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error> {
-        keep_picture(&crate::page_content::page_content(), image)
+        keep_picture(&content_of(self.0)?, image)
     }
 }
 
@@ -465,14 +475,20 @@ fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
             crate::replication::committed_record(desktop, workspace, app, record)
         }),
         protected: Box::new(crate::capture_declarations::declared),
-        keep: Box::new(|bytes| {
-            crate::page_content::page_content()
+        keep: Box::new(move |bytes| {
+            content_of(id)
+                .map_err(|error| error.to_string())?
                 .put(bytes)
                 .map_err(|error| error.to_string())
         }),
         now_ms: Box::new(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX)),
-        pictures: Box::new(PageContent),
+        pictures: Box::new(PageContent(id)),
     }
+}
+
+fn content_of(id: u32) -> Result<tilo_content::ContentStore, Error> {
+    crate::replication::content(crate::feedback_route::desktop_of(id))
+        .ok_or(Error::Invalid("the page has no workspace for the picture"))
 }
 
 /// Keep `image` in `content`, refusing a store that keeps other bytes.

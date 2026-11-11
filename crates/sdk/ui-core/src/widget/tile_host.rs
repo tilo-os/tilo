@@ -19,6 +19,7 @@ use winit::event::WindowEvent;
 
 use crate::motion::{Direction, WindowMotion};
 use crate::tokens::{EffectiveMotion, MotionSource};
+use crate::widget::DrawChild;
 
 /// How far a window's arrival has come `elapsed` after it spawned: it fades
 /// in and scales up in place (`motion::WindowMotion::OPEN`).
@@ -179,51 +180,89 @@ impl ContentDamage {
     /// are, and what they damaged. No hint when it moved, or when widgets
     /// paint other people's marks placed from their content, which their
     /// damage does not cover.
+    ///
+    /// With `copies` (the host's device pixels per unit of the app's own
+    /// coordinates), the host keeps the pixels it presented and can move
+    /// them: a scroll in the app is handed over as what moved
+    /// ([`crate::scene_parts::DamageHint::copies`]) and the strip it
+    /// exposed, not as its whole viewport.
     fn hint(
         &mut self,
         app: &dyn Widget,
         placement: Affine,
         clip: Rect,
         presence: &PresenceCtx,
+        copies: Option<f64>,
     ) -> Option<crate::scene_parts::DamageHint> {
         let boxes = crate::damage::widget_boxes(app);
         let from = self.generation;
         self.generation = self.generation.wrapping_add(1);
         let previous = self.painted.replace((placement, boxes));
-        let moved = previous
+        let before = previous
             .filter(|(placed, _)| *placed == placement)
-            .and_then(|(_, before)| {
-                let (_, after) = self.painted.as_ref()?;
-                Some(crate::damage::changed_boxes_besides_own_damage(
-                    app, &before, after,
-                ))
-            });
-        let Some(moved) = moved.filter(|_| !presence.places_content_marks(crate::time::now()))
-        else {
+            .map(|(_, before)| before);
+        let (Some(before), Some((_, after))) = (
+            before.filter(|_| !presence.places_content_marks(crate::time::now())),
+            self.painted.as_ref(),
+        ) else {
             self.steps.clear();
             return None;
         };
-        let mut damage = moved;
-        app.collect_damage(&mut damage);
-        let rects = damage
-            .into_iter()
-            .map(|rect| {
-                placement
-                    .transform_rect_bbox(rect.inflate(APP_DAMAGE_REACH, APP_DAMAGE_REACH))
-                    .intersect(clip)
-            })
-            .filter(|rect| !rect.is_zero_area())
-            .collect::<Vec<_>>();
+        let mut damage = Vec::new();
+        let offers = if copies.is_some() {
+            crate::scroll_copy::accepting(|| app.collect_damage(&mut damage))
+        } else {
+            app.collect_damage(&mut damage);
+            Vec::new()
+        };
+        let to_section = |rect: Rect| {
+            placement
+                .transform_rect_bbox(rect.inflate(APP_DAMAGE_REACH, APP_DAMAGE_REACH))
+                .intersect(clip)
+        };
+        let (mut rects, copies) = match copies.filter(|_| !offers.is_empty()) {
+            None => {
+                damage.extend(crate::damage::changed_boxes_besides_own_damage(
+                    app, &before, after,
+                ));
+                (
+                    damage.into_iter().map(to_section).collect::<Vec<_>>(),
+                    Vec::new(),
+                )
+            }
+            Some(scale) => {
+                let (rects, copies) = planned_copies(
+                    app,
+                    (&before, after),
+                    &offers,
+                    damage,
+                    (placement, clip),
+                    scale,
+                );
+                (
+                    rects.into_iter().map(to_section).chain(copies.1).collect(),
+                    copies.0,
+                )
+            }
+        };
+        rects.retain(|rect| !rect.is_zero_area());
+        // A host that presented an older drawing makes none of the copies:
+        // they repaint where they land.
+        let repainted: Vec<Rect> = rects
+            .iter()
+            .copied()
+            .chain(copies.iter().map(|copy| copy.destination().expand()))
+            .collect();
         let earlier = (0..self.steps.len())
             .map(|first| {
                 let since = self.steps.range(first..).flat_map(|(_, rects)| rects);
                 (
                     self.steps[first].0,
-                    since.chain(&rects).copied().collect::<Vec<_>>(),
+                    since.chain(&repainted).copied().collect::<Vec<_>>(),
                 )
             })
             .collect();
-        self.steps.push_back((from, rects.clone()));
+        self.steps.push_back((from, repainted));
         if self.steps.len() > APP_DAMAGE_STEPS {
             self.steps.pop_front();
         }
@@ -233,7 +272,7 @@ impl ContentDamage {
             to: self.generation,
             placement,
             rects,
-            copies: Vec::new(),
+            copies,
             earlier,
         })
     }
@@ -243,6 +282,87 @@ impl ContentDamage {
         self.painted = None;
         self.steps.clear();
     }
+}
+
+/// What an app's drawing changed when the host can move what its scrollers
+/// offer to copy (`offers`, collected with its `damage` in the app's own
+/// coordinates): the damage, with what moved otherwise and what came or
+/// went in a scrolled content ([`crate::scroll_copy::moves_besides`]), in
+/// the app's coordinates; and the copies (in the section's, moved by the
+/// placement) with what they expose and what stays put over them (in the
+/// section's, clipped to `clip`). `scale` is the host's device pixels per
+/// unit of the app's coordinates.
+fn planned_copies(
+    app: &dyn Widget,
+    (before, after): (
+        &[(crate::damage::WidgetIdentity, Rect)],
+        &[(crate::damage::WidgetIdentity, Rect)],
+    ),
+    offers: &[crate::scroll_copy::ScrollOffer],
+    mut damage: Vec<Rect>,
+    (placement, clip): (Affine, Rect),
+    scale: f64,
+) -> (Vec<Rect>, (Vec<crate::scroll_copy::MovedRegion>, Vec<Rect>)) {
+    // A widget whose own damage covers its box (a block editor that grew
+    // by a paragraph) leaves its box to that damage.
+    let covered = crate::damage::boxes_covered_by_own_damage(app);
+    let uncovered = |boxes: &[(crate::damage::WidgetIdentity, Rect)]| -> Vec<_> {
+        boxes
+            .iter()
+            .filter(|(widget, _)| !covered.contains(widget))
+            .copied()
+            .collect()
+    };
+    let moves = crate::scroll_copy::moves_besides(&uncovered(before), &uncovered(after), offers);
+    damage.extend(moves.besides);
+    damage.extend(moves.carried);
+    // What the window shows, in the app's coordinates; the planner's target
+    // reaches to its far corner, in the app's device pixels.
+    let shown = placement
+        .inverse()
+        .transform_rect_bbox(clip)
+        .intersect(Rect::new(
+            0.0,
+            0.0,
+            f64::from(u32::MAX),
+            f64::from(u32::MAX),
+        ));
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a window's far corner in device pixels, clamped to what a u32 holds"
+    )]
+    let size = (
+        (shown.x1 * scale).ceil().clamp(0.0, f64::from(u32::MAX)) as u32,
+        (shown.y1 * scale).ceil().clamp(0.0, f64::from(u32::MAX)) as u32,
+    );
+    let plan = crate::scroll_copy::plan_placed(offers, &[app], (placement, shown), scale, size);
+    let to_section = |rect: Rect| {
+        placement
+            .transform_rect_bbox(Rect::new(
+                rect.x0 / scale,
+                rect.y0 / scale,
+                rect.x1 / scale,
+                rect.y1 / scale,
+            ))
+            .intersect(clip)
+    };
+    let mut fixed: Vec<Rect> = plan
+        .damage
+        .iter()
+        .chain(&plan.exposed)
+        .copied()
+        .map(to_section)
+        .collect();
+    let mut copies = Vec::with_capacity(plan.copies.len());
+    for copy in &plan.copies {
+        let moved = crate::scroll_copy::MovedRegion::of(copy, scale);
+        match moved.transformed(placement) {
+            Some(moved) => copies.push(moved),
+            None => fixed.push(to_section(copy.destination_rect())),
+        }
+    }
+    (damage, (copies, fixed))
 }
 
 /// The name of the card a tile shows while its record cannot be opened.
@@ -896,21 +1016,6 @@ impl TileHost {
     /// The window is drawn as a card whose outline the card paints over it.
     pub(crate) fn set_edge_by_card(&mut self, by_card: bool) {
         self.edge_by_card = by_card;
-    }
-
-    /// Stroke the window's edge along the card `rect` it is drawn at, out to
-    /// where the card stands: the silhouette and focus ring a window keeps
-    /// when it is drawn as one card off the desk. The tile's own edge is off
-    /// then ([`Self::set_edge_by_card`]), so this is its only outline.
-    pub fn draw_card_edge(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        radius: f64,
-        rect: Rect,
-    ) {
-        self.draw_edge_at(scene, transform, theme, radius, rect);
     }
 
     /// Name `tab` to a panic hook while this tile's application runs: see
@@ -2267,7 +2372,10 @@ impl Widget for TileHost {
         if let Some(detail) = &self.record_transition_error {
             return Some(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                    .with_name("Document switch blocked")
+                    .with_name(crate::i18n::widget_format(
+                        "widget-document-switch-blocked",
+                        &[],
+                    ))
                     .with_description(detail.clone())
                     .with_live(crate::a11y::Politeness::Assertive)
                     .with_bounds(self.rect),
@@ -3097,7 +3205,7 @@ impl TileHost {
             let rect = self.rect;
             if let Some((_, card)) = &mut self.error_card {
                 card.apply_layout_external(rect);
-                card.draw(scene, transform, tr, theme, presence);
+                card.draw_child(scene, transform, tr, theme, presence);
             }
         } else {
             // The app and its history were laid out where the tile
@@ -3120,19 +3228,26 @@ impl TileHost {
                         // window.
                         let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
                         crate::scene_parts::begin(scene, key);
-                        w.draw(scene, content_transform, tr, theme, presence);
+                        w.draw_child(scene, content_transform, tr, theme, presence);
+                        // A host that keeps what it presented and moves it
+                        // copies a scroll: the app stands on the opaque
+                        // content ground the tile fills, which moves with it.
+                        let copies = (crate::scroll_copy::host_copies()
+                            && theme.tokens.colors.surfaces.content.components[3] >= 1.0)
+                            .then(crate::scroll_copy::host_device_scale);
                         let hint = self.content_damage.hint(
                             &**w,
                             content_transform,
                             transform.transform_rect_bbox(self.rect),
                             presence,
+                            copies,
                         );
                         crate::scene_parts::end_hinted(scene, hint);
                     } else {
                         self.content_damage.forget();
                     }
                     if let Some(history) = &mut self.history {
-                        history.draw(scene, content_transform, tr, theme, presence);
+                        history.draw_child(scene, content_transform, tr, theme, presence);
                     }
                 }
                 TileContent::Stub { kind, label } => {
@@ -3182,6 +3297,9 @@ mod tests;
 #[cfg(test)]
 #[path = "tile_host_arriving_tests.rs"]
 mod arriving_tests;
+#[cfg(test)]
+#[path = "tile_host_copy_tests.rs"]
+mod copy_tests;
 #[cfg(test)]
 #[path = "tile_host_window_tests.rs"]
 mod window_tests;

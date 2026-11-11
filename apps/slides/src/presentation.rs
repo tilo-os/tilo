@@ -17,7 +17,7 @@ use ui::TextRole;
 use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ProgressBar, Widget};
+use ui::widget::ProgressBar;
 
 use ui::i18n::ArgValue;
 
@@ -26,6 +26,7 @@ use crate::model::{Deck, Palette, PaletteKind, SLIDE_H, SLIDE_W};
 use crate::render;
 use crate::render::DeckAssets;
 use crate::strings::{tr, tr_args};
+use ui::widget::DrawChild;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Blank {
@@ -981,7 +982,7 @@ fn draw_presenter_footer(ctx: &mut PaintCtx<'_>, view: &PresenterView<'_>) {
         frame.rect.x1,
         frame.rect.y1,
     ));
-    progress.draw(
+    progress.draw_child(
         ctx.scene,
         ctx.transform,
         ctx.text,

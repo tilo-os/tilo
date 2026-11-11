@@ -168,6 +168,7 @@ impl OpSet {
         Columns::validate(bytes, cols)
     }
 
+    #[cfg(any(test, feature = "slow_path_assertions"))]
     pub(crate) fn validate_op_order(&self) -> bool {
         let mut stepper = Default::default();
         for op in self.iter() {
@@ -1586,25 +1587,53 @@ impl OpSet {
         self.id_index.actor_inserted(idx); // TILO(op-id-index-actors)
         self.cols.rewrite_with_new_actor(idx);
         self.cols.index.mark.rewrite_with_new_actor(idx);
-        self.obj_info = ObjIndex(
-            self.obj_info
-                .0
-                .iter()
-                .map(|(id, make)| (id.with_new_actor(idx), make.with_new_actor(idx)))
-                .collect(),
+        // TILO(actor-renumber): only the objects made by an actor at or above `idx` change their
+        // key; the rest are renumbered where they are, rather than the whole index rebuilt.
+        let moved: Vec<(OpId, ObjInfo)> = self
+            .obj_info
+            .0
+            .extract_if(|id, _| id.actor() >= idx)
+            .collect();
+        crate::work::renumbered_objects(moved.len()); // TILO(work-count)
+        for make in self.obj_info.0.values_mut() {
+            *make = make.with_new_actor(idx);
+        }
+        self.obj_info.0.extend(
+            moved
+                .into_iter()
+                .map(|(id, make)| (id.with_new_actor(idx), make.with_new_actor(idx))),
         );
     }
 
     pub(crate) fn remove_actor(&mut self, idx: usize) {
         self.actors.remove(idx);
         self.id_index.actor_removed(idx); // TILO(op-id-index-actors)
+        // TILO(actor-at-end): the last actor names no op (the caller removes only an actor
+        // nothing holds), and no index is above it: nothing to renumber.
+        if idx == self.actors.len() {
+            return;
+        }
         self.cols.rewrite_without_actor(idx);
-        self.obj_info = ObjIndex(
-            self.obj_info
-                .0
-                .iter()
-                .filter_map(|(id, make)| Some((id.without_actor(idx)?, make.without_actor(idx)?)))
-                .collect(),
+        // TILO(actor-renumber): as for an inserted actor, only the keys at or above `idx` move.
+        let moved: Vec<(OpId, ObjInfo)> = self
+            .obj_info
+            .0
+            .extract_if(|id, _| id.actor() >= idx)
+            .collect();
+        crate::work::renumbered_objects(moved.len()); // TILO(work-count)
+        self.obj_info
+            .0
+            .retain(|_, make| match make.without_actor(idx) {
+                Some(renumbered) => {
+                    *make = renumbered;
+                    true
+                }
+                None => false,
+            });
+        self.obj_info.0.extend(
+            moved
+                .into_iter()
+                .filter_map(|(id, make)| Some((id.without_actor(idx)?, make.without_actor(idx)?))),
         );
     }
 }

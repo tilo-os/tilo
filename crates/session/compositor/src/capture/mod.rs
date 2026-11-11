@@ -38,7 +38,9 @@ use smithay::backend::renderer::element::RenderElement;
 use smithay::backend::renderer::element::utils::{
     Relocate, RelocateRenderElement, RescaleRenderElement,
 };
-use smithay::backend::renderer::{Bind, ExportMem, ImportAll, ImportMem, Offscreen, Renderer};
+use smithay::backend::renderer::{
+    Bind, ExportMem, ImportAll, ImportDma, ImportMem, Offscreen, Renderer,
+};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::DisplayHandle;
 use smithay::reexports::wayland_server::backend::{ClientId, ObjectId};
@@ -652,7 +654,7 @@ pub fn copy<R, T>(
     frame: &Frame,
 ) -> Result<Copied, CaptureError>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Offscreen<T> + Bind<Dmabuf> + ExportMem,
     R::TextureId: Clone + Send + 'static,
 {
     let View {
@@ -897,7 +899,7 @@ fn scene_elements<R>(
     held: Held,
 ) -> Option<SceneElements<R>>
 where
-    R: Renderer + ImportAll + ImportMem + Bind<Dmabuf>,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Bind<Dmabuf>,
     R::TextureId: Clone + Send + 'static,
 {
     let (elements, offset, clear) = match scene {
@@ -967,7 +969,7 @@ pub(crate) fn read_back<R, T>(
     held: Held,
 ) -> Result<Screenshot, CaptureError>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Offscreen<T> + Bind<Dmabuf> + ExportMem,
     R::TextureId: Clone + Send + 'static,
 {
     let View {
@@ -999,7 +1001,7 @@ pub(crate) fn read_back_scaled<R, T>(
     max: (u32, u32),
 ) -> Result<Screenshot, CaptureError>
 where
-    R: Renderer + ImportAll + ImportMem + Offscreen<T> + Bind<Dmabuf> + ExportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma + Offscreen<T> + Bind<Dmabuf> + ExportMem,
     R::TextureId: Clone + Send + 'static,
 {
     let View {

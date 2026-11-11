@@ -431,7 +431,7 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
     fn icon_only_buttons_are_square_named_and_plain() {
         let button = Button::icon_only("close", crate::icons::Icon::X, "Close");
         assert_eq!(button.role, ButtonRole::Plain);
-        assert_eq!(Widget::tooltip(&button), Some("Close"));
+        assert_eq!(Widget::tooltip(&button).as_deref(), Some("Close"));
         assert_eq!(
             Widget::accessibility(&button).unwrap().name.as_deref(),
             Some("Close")
@@ -1588,7 +1588,7 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
         let b = Button::new("id", "")
             .with_icon(crate::icons::Icon::Search)
             .tooltip("Search");
-        assert_eq!(Widget::tooltip(&b), Some("Search"));
+        assert_eq!(Widget::tooltip(&b).as_deref(), Some("Search"));
         let plain = Button::new("id", "Save");
         assert_eq!(Widget::tooltip(&plain), None, "no tooltip unless attached");
     }
@@ -1607,7 +1607,7 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
             "compaction never makes an icon-only control silent"
         );
         assert_eq!(
-            Widget::tooltip(&button),
+            Widget::tooltip(&button).as_deref(),
             Some("Publish this document now"),
             "the authored tooltip survives compaction"
         );
@@ -1624,7 +1624,10 @@ fn tooltip_naming_precedence_and_compact_toolbar_semantics() {
             Some("Publish document"),
             "the name the app stated still says it after expansion"
         );
-        assert_eq!(Widget::tooltip(&button), Some("Publish this document now"));
+        assert_eq!(
+            Widget::tooltip(&button).as_deref(),
+            Some("Publish this document now")
+        );
     }
 
     fn icon_only_tooltip_doubles_as_accessible_name() {
@@ -1886,41 +1889,35 @@ fn a_button_named_beyond_its_label_is_announced_with_that_name() {
     );
 }
 
-/// The app's one main action is declared to the window's bar as such, and stays in its row:
-/// it is drawn as the primary button rather than as every other action, and it is never the
-/// slot the bar keeps behind its one door.
+/// A control the solver has placed answers its measure there, not in a draw: a control that is
+/// laid out and never drawn (a shut overflow door's button among a row's controls) finds no draw
+/// to answer it, so one switch of input would keep it — and its path to the root — asking to be
+/// measured on every frame after.
 #[test]
-fn the_primary_button_declares_the_windows_main_action() {
-    use crate::widget::Widget as _;
-    let primary = Button::new("new", "New note")
-        .with_icon(crate::icons::Icon::Plus)
-        .role(ButtonRole::Primary);
-    let slot = primary
-        .window_slot("new".to_owned())
-        .expect("a button names its slot");
-    assert!(slot.primary, "the bar draws it as the primary button");
-    assert!(slot.labelled, "where the bar has room it says its words");
-    assert!(
-        !slot.menu,
-        "what the window is for is never behind its door"
+fn a_button_the_solver_placed_answers_its_measure() {
+    let mut harness = crate::headless::FrameHarness::new(
+        crate::State::new(),
+        Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
+            "pin",
+            crate::icons::Icon::Pin,
+            "Pin",
+        )))),
+        (400, 100),
     );
-
-    // A main action an app declares without a glyph is still no row of the bar's menu.
-    let bare = Button::new("new", "New note").role(ButtonRole::Primary);
-    let slot = bare
-        .window_slot("new".to_owned())
-        .expect("a button names its slot");
-    assert!(slot.primary && !slot.menu);
-
-    // Every other action is not the main one, and an icon-less one stands in the menu.
-    let other = Button::new("sort", "Sort").with_icon(crate::icons::Icon::ArrowUpDown);
-    let slot = other
-        .window_slot("sort".to_owned())
-        .expect("a button names its slot");
-    assert!(!slot.primary);
-    let unmarked = Button::new("untag", "Untag");
-    let slot = unmarked
-        .window_slot("untag".to_owned())
-        .expect("a button names its slot");
-    assert!(!slot.primary && slot.menu);
+    harness.relayout();
+    // The person reaches for the mouse, then for the keyboard: the face is the same size.
+    let keyboard = harness.interaction_environment().with_keyboard_modality();
+    harness.set_interaction_environment(keyboard);
+    assert!(
+        harness.last_relayout().measured,
+        "the switch lays the window out once: {:?}",
+        harness.last_relayout()
+    );
+    harness.relayout();
+    assert_eq!(
+        harness.last_relayout().marked_leaves,
+        0,
+        "a control the solver placed asks for no second measure: {:?}",
+        harness.last_relayout()
+    );
 }

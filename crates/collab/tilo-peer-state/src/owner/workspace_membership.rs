@@ -131,7 +131,7 @@ mod app_authorship_tests;
 mod tests {
     use super::*;
     use crate::TransportOrigin;
-    use crate::owner::application_record::tests::{Fixture, fixture};
+    use crate::owner::fixture::{Fixture, fixture};
     use crate::workspace_membership::WorkspaceMembershipCommand;
     use neighbour_wire::NeighbourMsg;
 
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn a_device_that_does_not_govern_publishes_its_own_changes_until_governance_carries_them() {
-        let mut fixture = crate::owner::application_record::tests::member_device_fixture();
+        let mut fixture = crate::owner::fixture::member_device_fixture();
         let workspace = WorkspaceId::parse(crate::owner::testing::WORKSPACE).unwrap();
         let outgoing = |owner: &NativeWorkspaceOwner| {
             owner

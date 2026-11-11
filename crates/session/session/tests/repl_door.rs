@@ -502,11 +502,16 @@ fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
         placed_by_german,
         "the English word finds no notebook on a German desk"
     );
-    until(&mut session, "the ask conversation", |session| {
-        common::places(session)
-            .iter()
-            .any(|place| place.record.contains("chat.workspace/channels/"))
+    let sent = common::wait_for(&mut session, "the ask to be sent", |session| {
+        session.settle_services();
+        session
+            .read("session:send-to")
+            .and_then(|sent| sent.as_array()?.last().cloned())
     });
+    assert_eq!(
+        sent["text"], "notebooks",
+        "the agent is asked the words: {sent}"
+    );
 }
 
 /// How many of the seeded notes app's resources stand on the arrangement.

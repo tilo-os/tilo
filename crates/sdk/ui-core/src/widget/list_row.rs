@@ -49,8 +49,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
-    ActionEmitter, ChipStyle, Element, Fact, MediaArt, MediaAspect, MediaSource, TaffyTreeExt,
-    Tone, Widget,
+    ActionEmitter, ChipStyle, DrawChild, Element, Fact, MediaArt, MediaAspect, MediaSource,
+    TaffyTreeExt, Tone, Widget,
 };
 
 /// What sits in a row's leading column.
@@ -294,6 +294,9 @@ pub struct ListRowFace<'a> {
     /// How many rows over it the row stands: its content indents one
     /// disclosure gutter per depth, while its lift fills the row.
     depth: u32,
+    /// The column the row keeps in front of its content, inside its own box: where a tree's
+    /// chevron stands ([`ListRowFace::chevron_column`]).
+    chevron_column: f64,
     status: Option<RowStatus<'a>>,
     change: Option<RowChange<'a>>,
     struck: bool,
@@ -400,6 +403,7 @@ impl<'a> ListRowFace<'a> {
             leading_column: None,
             nested: false,
             depth: 0,
+            chevron_column: 0.0,
             status: None,
             change: None,
             struck: false,
@@ -671,6 +675,15 @@ impl<'a> ListRowFace<'a> {
     #[must_use]
     pub fn nested(mut self, nested: bool) -> Self {
         self.nested = nested;
+        self
+    }
+
+    /// The column the row keeps in front of its content, inside its own box: a tree's chevron
+    /// stands there and the row's content starts past it, while the row's lift still fills from
+    /// the box's own edge.
+    #[must_use]
+    pub fn chevron_column(mut self, px: f64) -> Self {
+        self.chevron_column = px.max(0.0);
         self
     }
 
@@ -1087,46 +1100,6 @@ const SWIPE_COMMIT: f64 = 0.4;
 /// its trailing control wraps under it.
 const MIN_TEXT_LINES: u8 = 8;
 
-/// Whether `control` draws a face of one size whatever room it gets (a
-/// switch, a checkbox), so stretching it under the text would only move it
-/// off the text's edge. Looks through wrappers that announce nothing
-/// themselves to the control they hold.
-fn keeps_its_face_size(control: &dyn Widget) -> bool {
-    match control.accessibility() {
-        Some(node) => matches!(node.role, Role::Switch | Role::Checkbox | Role::RadioButton),
-        None => match control.children().as_slice() {
-            [only] => keeps_its_face_size(*only),
-            _ => false,
-        },
-    }
-}
-
-/// The persistent control a retained row holds at its trailing edge.
-struct Trailing {
-    /// Stands for the text band among the row's children: the row's node
-    /// holds the band's node, then the control's, and every walk that pairs
-    /// a widget's children with its layout nodes (focus order, the
-    /// accessibility tree) must meet the control at the control's node.
-    band_slot: crate::widget::Absent,
-    element: Element,
-    band: Option<NodeId>,
-    node: Option<NodeId>,
-    /// The text band's height, settled from measured line boxes.
-    band_height: f32,
-    /// The control wrapped under the text.
-    wrapped: bool,
-    /// The control's own width, while it is not filling the row.
-    natural: f32,
-    /// The width the control fills under the text, from the text's edge to
-    /// the row's, where a control beside the text ends.
-    fill: Option<f32>,
-    /// The control's own minimum width, restored when it stops filling.
-    own_min: taffy::Dimension,
-    /// Centred on the column a disclosure chevron stands in
-    /// ([`ListRow::trailing_disclosure`]).
-    on_disclosure_column: bool,
-}
-
 /// An unseen change a retained row shows ([`ListRow::change`]).
 struct Changed {
     identity: String,
@@ -1189,6 +1162,9 @@ pub struct ListRow {
     /// How many rows over it the row stands, indenting its content one
     /// disclosure gutter each ([`ListRowFace::depth`]).
     depth: u32,
+    /// The column the row keeps in front of its content, inside its own box: where the tree's
+    /// chevron stands ([`ListRowFace::chevron_column`]).
+    chevron_column: f64,
     /// Every badge of the row's list, measured into `leading_column` at
     /// layout.
     column_badges: Option<std::rc::Rc<[String]>>,
@@ -1313,6 +1289,7 @@ impl ListRow {
             leading_column: None,
             nested: false,
             depth: 0,
+            chevron_column: 0.0,
             column_badges: None,
             shared_leading: None,
             shared_after_trailing: None,
@@ -1713,6 +1690,13 @@ impl ListRow {
         self
     }
 
+    /// See [`ListRowFace::chevron_column`].
+    #[must_use]
+    pub fn chevron_column(mut self, px: f64) -> Self {
+        self.chevron_column = px.max(0.0);
+        self
+    }
+
     /// See [`ListRowFace::depth`].
     #[must_use]
     pub fn depth(mut self, depth: u32) -> Self {
@@ -1914,6 +1898,7 @@ impl ListRow {
             band_height: 0.0,
             wrapped: false,
             natural: 0.0,
+            margins: 0.0,
             fill: None,
             own_min: taffy::Dimension::auto(),
             on_disclosure_column: false,
@@ -2127,75 +2112,6 @@ impl ListRow {
     }
 
     /// The rect the row paints in: its layout box grown by the bleed.
-    /// Wrapped under the text, the control fills the row from the text's
-    /// edge to the row's own, where every control beside its text ends,
-    /// instead of keeping its own width. It keeps filling while its own
-    /// width still would not fit beside the text's narrowest. True when the
-    /// control's style changed.
-    fn fill_under_text(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        node: NodeId,
-        text: &mut TextRenderer,
-    ) -> bool {
-        let (Some(theme), Some(metrics)) = (self.theme.clone(), self.metrics.as_ref()) else {
-            return false;
-        };
-        let column_gap = metrics.column_gap;
-        let min_text = f64::from(MIN_TEXT_LINES) * f64::from(metrics.title.line_height_px());
-        let bleed = metrics.bleed;
-        let Some(trailing) = &self.trailing else {
-            return false;
-        };
-        let (Some(band), Some(child)) = (trailing.band, trailing.node) else {
-            return false;
-        };
-        let (Ok(row), Ok(band_layout), Ok(child_layout)) =
-            (taffy.layout(node), taffy.layout(band), taffy.layout(child))
-        else {
-            return false;
-        };
-        let row_width = f64::from(row.size.width);
-        let band_height = f64::from(trailing.band_height);
-        let (natural, wrapped) = if trailing.fill.is_some() {
-            let natural = f64::from(trailing.natural);
-            (natural, min_text + column_gap + natural > row_width + 0.5)
-        } else {
-            (
-                f64::from(child_layout.size.width),
-                child_layout.location.y >= band_layout.location.y + trailing.band_height - 0.5,
-            )
-        };
-        let fill = (wrapped && !keeps_its_face_size(trailing.element.as_ref())).then(|| {
-            let band_rect = Rect::new(-bleed, 0.0, row_width + bleed, band_height);
-            let m = self.metrics(&theme);
-            let text_edge = self.with_face(|face| face.text_x(band_rect, &m, text, &theme));
-            crate::num::f32_of_f64((row_width - text_edge.max(0.0)).max(0.0))
-        });
-        let Some(trailing) = &mut self.trailing else {
-            return false;
-        };
-        if trailing.fill.is_none() {
-            trailing.natural = crate::num::f32_of_f64(natural);
-        }
-        let same = match (trailing.fill, fill) {
-            (Some(a), Some(b)) => (a - b).abs() < 0.5,
-            (None, None) => true,
-            _ => false,
-        };
-        if same {
-            return false;
-        }
-        trailing.fill = fill;
-        let own_min = trailing.own_min;
-        let Ok(style) = taffy.style(child) else {
-            return false;
-        };
-        let mut style = style.clone();
-        style.min_size.width = fill.map_or(own_min, length);
-        taffy.set_style(child, style).is_ok()
-    }
-
     fn outer(&self) -> Rect {
         if self.card {
             // A card is its own surface: nothing of it paints past its box.
@@ -2374,6 +2290,7 @@ impl ListRow {
         }
         face = face.nested(self.nested);
         face = face.depth(self.depth);
+        face = face.chevron_column(self.chevron_column);
         if let Some(avatar) = &self.avatar {
             face = face.avatar(avatar.face());
         }
@@ -2816,11 +2733,16 @@ impl Widget for ListRow {
             style.max_size.width = percent(1.0_f32);
             style.flex_shrink = 0.0;
             style.align_self = Some(taffy::AlignSelf::Center);
-            style.margin.left = length(crate::num::f32_of_f64(column_gap));
-            style.margin.right = length(crate::num::f32_of_f64(after_trailing));
+            let (before, after) = (
+                crate::num::f32_of_f64(column_gap),
+                crate::num::f32_of_f64(after_trailing),
+            );
+            style.margin.left = length(before);
+            style.margin.right = length(after);
             style.margin.top = length(crate::num::f32_of_f64(pad_y));
             style.margin.bottom = length(crate::num::f32_of_f64(pad_y));
             trailing.own_min = style.min_size.width;
+            trailing.margins = before + after;
             trailing.fill = None;
             let _ = taffy.set_style(child, style);
         }
@@ -2995,7 +2917,7 @@ impl Widget for ListRow {
         if let Some(trailing) = &mut self.trailing {
             trailing
                 .element
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 
@@ -3475,6 +3397,9 @@ use part::RowPart;
 
 mod edge;
 pub use edge::{RowAction, RowChange, SwipeAction};
+
+mod trailing;
+use trailing::Trailing;
 
 mod colour;
 

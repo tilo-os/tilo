@@ -347,6 +347,43 @@ impl AttachedView {
             .collect()
     }
 
+    /// The resource `id` the view publishes for this participant, resolved
+    /// without building every other one: what an invocation on an address
+    /// already known asks for.
+    #[must_use]
+    pub fn resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        let permissions = self.permissions.borrow();
+        permissions.permitted_resource(self.definition.app_id(), self.frame.resource(id)?)
+    }
+
+    /// The contract of the action `address` names, as the view publishes it
+    /// now: `None` when the view publishes no such action.
+    #[must_use]
+    pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
+        if let Some(resource) = self.resource(&address.resource)
+            && resource
+                .actions
+                .iter()
+                .any(|action| action.id == address.action)
+        {
+            // The one resource's own actions, never its children's: an
+            // action elsewhere in the tree is not this address's.
+            let mut alone = resource;
+            alone.children.clear();
+            if let Some(descriptor) = tilo_actions::door::survey(&[alone])
+                .into_iter()
+                .find(|descriptor| descriptor.address == *address)
+            {
+                return Some(descriptor);
+            }
+        }
+        // A resource only the whole tree names (an accessibility or search
+        // surface) is answered as it always was.
+        tilo_actions::door::survey(&self.resources())
+            .into_iter()
+            .find(|descriptor| descriptor.address == *address)
+    }
+
     /// Every document operation the participant may perform through the
     /// view now, with its typed parameters.
     #[must_use]
@@ -499,10 +536,7 @@ impl AttachedView {
         ),
         DoorError,
     > {
-        if !tilo_actions::door::survey(&self.resources())
-            .iter()
-            .any(|entry| &entry.address == address)
-        {
+        if self.descriptor(address).is_none() {
             return Err(DoorError::Unknown(address.clone()));
         }
         self.landed.0.borrow_mut().clear();
@@ -678,6 +712,29 @@ impl AttachedView {
             .merge(&self.records, &self.checkout, mutation.clone())?;
         self.frame.relayout();
         Ok(changed)
+    }
+
+    /// Take the view's records to come from its workspace's hosts, which may
+    /// send a record only once it is asked for (a public workspace):
+    /// [`RecordStore::ask_workspace_for_missing`]. A chain the view holds no
+    /// part of asks for its head then, and writes to it wait for the answer.
+    pub fn ask_workspace_for_missing(&self) {
+        self.records.ask_workspace_for_missing();
+    }
+
+    /// What the view's records ask the workspace's hosts for
+    /// ([`RecordStore::wanted_records`]).
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<ui_core::record::RecordId> {
+        self.records.wanted_records()
+    }
+
+    /// The workspace's hosts sent all they hold of `record`, none of it
+    /// ([`RecordStore::note_workspace_answered`]); the view takes it up at its
+    /// next frame.
+    pub fn workspace_answered(&mut self, record: ui_core::record::RecordId) {
+        self.records.note_workspace_answered(record);
+        self.frame.relayout();
     }
 
     /// The chains of records the app keeps beside its own

@@ -195,6 +195,12 @@ impl StatePeer {
             let held = message.clone();
             match self.receive_with_context(author, message, now, replayed, strict_report) {
                 Ok(applied) => {
+                    if let InputDisposition::RetryLater(waiting_for) = &applied.primary {
+                        into.still_held.push(crate::admission::StillHeld {
+                            message: held.clone(),
+                            waiting_for: waiting_for.clone(),
+                        });
+                    }
                     into.changed |= applied.changed;
                     into.metadata_changed |= applied.metadata_changed;
                     into.rejected = into.rejected.saturating_add(applied.rejected);

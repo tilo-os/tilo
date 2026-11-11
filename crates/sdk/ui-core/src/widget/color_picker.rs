@@ -25,6 +25,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::ButtonRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 #[path = "color_picker_component.rs"]
 mod component;
@@ -188,7 +189,7 @@ impl ColorPicker {
     pub fn new(initial: Color) -> Self {
         let mut s = Self {
             dirty: true,
-            accessible_name: Some("Colour".to_owned()),
+            accessible_name: Some(crate::i18n::widget_format("widget-color-name", &[])),
             color: initial,
             on_change: None,
             local_state: None,
@@ -207,7 +208,7 @@ impl ColorPicker {
                 .control_size(crate::widget::ControlSize::Small)
                 .with_kind(TextInputKind::Code)
                 .with_id("color_picker.hex")
-                .with_accessible_name("Hex colour"),
+                .with_accessible_name(crate::i18n::widget_format("widget-color-hex", &[])),
             hex_input_rect: Rect::ZERO,
             #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,
@@ -1086,7 +1087,7 @@ impl Widget for ColorPicker {
         // --- Hex input --- drawn here directly since `hex_input` isn't in
         // the taffy tree.
         self.hex_input
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

@@ -92,6 +92,7 @@ async fn a_member_fetches_a_bridged_avatar_from_the_room_host() {
             app_id: CHAT.into(),
             cluster_id: room.workspace.clone(),
             hash: hash.into(),
+            have: Vec::new(),
         })
         .unwrap()
     };

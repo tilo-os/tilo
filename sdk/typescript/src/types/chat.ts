@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "@tilo/sdk";
-import type * as tilo from "@tilo/sdk";
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
 
 export interface Category {
   name: string;
@@ -538,15 +538,6 @@ export interface Workspace extends tilo.Resource {
     report: string;
     update: unknown;
   }): Promise<tilo.Run | void>;
-  readWorkspace(args?: {
-    message?: string;
-    channel?: string;
-  }): Promise<void>;
-  readMessages(args: {
-    channel: string;
-    pageSize?: number;
-    cursor?: string;
-  }): Promise<void>;
   exportContent(args: {
     channel: string;
     format?: string;

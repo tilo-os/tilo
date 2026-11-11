@@ -44,14 +44,24 @@
 //! A part opened in the app's store by anyone — a peer's merged into an
 //! attached view, one this device asked the workspace for — is held from the
 //! next read on.
+//!
+//! Where the store's records come from the workspace's hosts — a page's, and a
+//! native app's, which asks its session for them — the chain asks them for its
+//! head as it opens ([`RecordId::chain_head`]): a public workspace sends a
+//! newcomer no part of it until then, and the head they send is held like any
+//! part that arrives. Until they answered, a window that holds no part does
+//! not know which part is the newest, and writes nothing
+//! ([`Chain::head_arriving`]).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker, OperationKind};
 use tilo_resource::{Invoke, Reader, Resource};
+use ui_core::automerge::transaction::Transactable as _;
+use ui_core::automerge::{ChangeHash, ObjType, ROOT, ReadDoc as _, Value};
 use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
 use ui_core::record::{RecordCheckout, RecordId, RecordKind, RecordOpenError, RecordStore};
 
@@ -209,17 +219,45 @@ pub(crate) struct ChainState<P: Chained> {
     /// looked for a newer head and at the parts it waits for.
     looked: Cell<Option<u64>>,
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
-    /// Actions asked for while the part they change was on its way from the
-    /// workspace ([`ChainState::apply_then`]), applied in order once it is here.
-    pending: RefCell<VecDeque<PendingWrite<P>>>,
+    /// The person's record of the actions asked for while the part they
+    /// change was on its way from the workspace ([`ChainState::apply_as`]),
+    /// kept with the app's records: every window of the app shows them and
+    /// applies them in order once the part is here, across a closed window
+    /// and a restart.
+    waiting_record: RecordCheckout,
+    /// Whether [`Self::waiting_record`] was looked for on this device.
+    unsent_looked: Cell<bool>,
+    /// What [`Self::waiting_record`] writes into this chain, as a part holding only
+    /// that reads ([`ChainState::unwritten`]), at the record's heads.
+    unwritten: RefCell<Unwritten<P>>,
+    /// Whether the actions that waited are being applied now.
+    draining: Cell<bool>,
 }
 
-/// An action that waits for the part it changes to arrive, with what to do
-/// once it was applied (the part's number) or refused.
-struct PendingWrite<P: Chained> {
+/// What to do once an action that waited for its part was applied (the
+/// part's number) or refused.
+pub(crate) type Later = Box<dyn FnOnce(Result<u64, ActionError>)>;
+
+/// What the actions waiting for their part write, read as a part, at the
+/// heads of the record that keeps them.
+type Unwritten<P> = (Vec<ChangeHash>, Option<Rc<<P as Resource>::State>>);
+
+/// The kind of the record of a person's actions waiting for their part.
+const UNSENT_KIND: &str = "tilo.chain-unsent";
+
+thread_local! {
+    /// Who waits to be told what became of an action that waited for its
+    /// part, by its entry in the record of them: told by whichever window
+    /// applies it.
+    static ANSWERS: RefCell<HashMap<String, Later>> = RefCell::default();
+}
+
+/// An action that waits for the part it changes to arrive, as the record
+/// of them keeps it: `id` names its entry there.
+struct Unsent<P: Chained> {
+    id: String,
     action: P::Action,
     invoker: ActionInvoker,
-    then: Box<dyn FnOnce(Result<u64, ActionError>)>,
 }
 
 /// What became of an action applied to the part it changes.
@@ -231,7 +269,7 @@ enum Write {
     Arriving,
 }
 
-/// Why an action on a part still on its way is refused where it cannot wait.
+/// Why a part still on its way cannot be opened for what needs it now.
 const PART_ARRIVING: &str = "the part is on its way from the workspace";
 
 impl<P: Chained> ChainState<P> {
@@ -259,7 +297,6 @@ impl<P: Chained> ChainState<P> {
             .clone();
         let id = ui_core::record::chain_resource_id(&chain);
         let state = Self {
-            workspace,
             base,
             chain,
             id,
@@ -270,8 +307,18 @@ impl<P: Chained> ChainState<P> {
             revision: Cell::new(0),
             looked: Cell::new(None),
             published: RefCell::new(None),
-            pending: RefCell::default(),
+            waiting_record: unsent_checkout(&workspace.me),
+            unsent_looked: Cell::new(false),
+            unwritten: RefCell::default(),
+            draining: Cell::new(false),
+            workspace,
         };
+        // Asked for as the chain opens, with the window's other records: the
+        // newest part arrives in the same round trip. A chain with a part
+        // here already knows its newest one, and asks for nothing.
+        if state.head().is_none() {
+            let _ = state.head_on_its_way();
+        }
         state.look();
         Some(state)
     }
@@ -297,6 +344,34 @@ impl<P: Chained> ChainState<P> {
     pub(crate) fn head(&self) -> Option<u64> {
         self.refresh();
         self.parts.borrow().keys().next_back().copied()
+    }
+
+    /// Whether no part is held here and the workspace has not yet said which
+    /// one is the newest ([`Self::head_on_its_way`]).
+    pub(crate) fn head_arriving(&self) -> bool {
+        self.head().is_none() && self.head_on_its_way()
+    }
+
+    /// Whether the workspace may still send this chain's newest part: it has
+    /// not said it has no part at all, and opening the chain's head
+    /// ([`RecordId::chain_head`]) found none of it here. That open is what
+    /// asks the store's workspace for the head — a page's hosts, or a native
+    /// app's — and it answers `RecordOpenError::Arriving` until the part
+    /// arrives, or until the workspace answers it has none
+    /// ([`RecordStore::workspace_answered`]).
+    fn head_on_its_way(&self) -> bool {
+        let head = self.chain.chain_head();
+        if self.workspace.store.workspace_answered(&head) {
+            return false;
+        }
+        // A store written at this moment cannot say which part is the newest: the head is
+        // waited for rather than taken as the workspace's word that there is none.
+        matches!(
+            self.workspace
+                .store
+                .try_open_record(&RecordCheckout::new(head, self.kind.clone())),
+            Err(RecordOpenError::Arriving | RecordOpenError::Busy)
+        )
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -348,6 +423,7 @@ impl<P: Chained> ChainState<P> {
             moved |= self.look();
             moved |= self.follow_waiting();
         }
+        moved |= self.follow_unsent();
         if self.workspace.store.takes_writes() {
             self.apply_pending();
         }
@@ -359,52 +435,255 @@ impl<P: Chained> ChainState<P> {
 
     /// Apply the actions that wait for their part, in order, while their part
     /// is here: what is still on its way waits on, and the ones after it too.
+    /// Each leaves the record of them once written or refused.
     fn apply_pending(&self) {
-        let queue = match self.pending.try_borrow_mut() {
-            Ok(mut pending) if !pending.is_empty() => std::mem::take(&mut *pending),
-            _ => return,
-        };
-        let mut left = VecDeque::new();
-        for entry in queue {
-            if !left.is_empty() {
-                left.push_back(entry);
-                continue;
-            }
-            match self.try_apply(&entry.action, &entry.invoker) {
-                Ok(Write::Arriving) => left.push_back(entry),
-                Ok(Write::Done(index, _)) => (entry.then)(Ok(index)),
-                Err(error) => (entry.then)(Err(error)),
-            }
+        // Writing one refreshes the chain, which comes back here.
+        if self.draining.replace(true) {
+            return;
         }
-        // Asked for while these were applied: after them.
-        let mut pending = self.pending.borrow_mut();
-        left.append(&mut pending);
-        *pending = left;
+        for entry in self.unsent() {
+            let written = match self.try_apply(&entry.action, &entry.invoker) {
+                Ok(Write::Arriving) => break,
+                Ok(Write::Done(index, _)) => Ok(index),
+                Err(error) => Err(error),
+            };
+            self.forget_unsent(&entry.id);
+            answer::<P>(&entry.id, written);
+        }
+        self.draining.set(false);
+        if self.follow_unsent() {
+            self.moved();
+        }
     }
 
-    /// Apply `action`, invoked by `invoker`, as [`Self::apply_as`]; when the
-    /// part it changes is still on its way from the workspace (a device back
-    /// from away opening a conversation it holds), once that part is here.
-    /// `then` is told the part it was applied to, or why it was refused.
-    pub(crate) fn apply_then(
+    /// Apply `action`, invoked by `invoker`, to the part it changes: read
+    /// against the app's record ([`Chained::prepare`]), checked against
+    /// what they may do in the workspace, attributed to them and written into
+    /// the part's history. The part it was written to, with the item
+    /// resources it created.
+    ///
+    /// While that part is on its way from the workspace (a device back from
+    /// away, before its head arrived) the action waits for it: `Ok(None)`.
+    /// It is kept in the person's record of such actions with the app's
+    /// records, shown in [`Self::unwritten`] by every window of the app, and
+    /// applied by whichever holds the chain once the part is here, after
+    /// those that waited before it — after the window closed or the app
+    /// restarted too. `later` is taken then: told the part or why it was
+    /// refused if this process still runs; a refusal nobody waits for is
+    /// logged. Otherwise it is left for the caller to answer now.
+    ///
+    /// # Errors
+    /// As the door refuses it now: the person may not, the app's record or
+    /// the part refused it, or the record of waiting actions cannot be
+    /// written.
+    pub(crate) fn apply_as(
         &self,
-        action: P::Action,
-        invoker: ActionInvoker,
-        then: impl FnOnce(Result<u64, ActionError>) + 'static,
-    ) {
+        action: &P::Action,
+        invoker: &ActionInvoker,
+        later: &mut Option<Later>,
+    ) -> Result<Option<(u64, Vec<String>)>, ActionError> {
         // Behind the ones already waiting: actions are applied in the order asked.
-        if self.pending.borrow().is_empty() {
-            match self.try_apply(&action, &invoker) {
-                Ok(Write::Arriving) => {}
-                Ok(Write::Done(index, _)) => return then(Ok(index)),
-                Err(error) => return then(Err(error)),
+        if self.unsent().is_empty() {
+            match self.try_apply(action, invoker)? {
+                Write::Arriving => {}
+                Write::Done(index, created) => return Ok(Some((index, created))),
             }
         }
-        self.pending.borrow_mut().push_back(PendingWrite {
-            action,
-            invoker,
-            then: Box::new(then),
+        let id = self.keep_unsent(action, invoker)?;
+        if let Some(later) = later.take() {
+            ANSWERS.with(|answers| answers.borrow_mut().insert(id, later));
+        }
+        if self.follow_unsent() {
+            self.moved();
+        }
+        Ok(None)
+    }
+
+    /// What the actions waiting for their part write ([`Self::apply_as`]),
+    /// read as a part holding only that: what a view shows as being sent.
+    /// `None` while nothing waits.
+    pub(crate) fn unwritten(&self) -> Option<Rc<P::State>> {
+        if self.follow_unsent() {
+            self.moved();
+        }
+        self.unwritten.borrow().1.clone()
+    }
+
+    /// Read the record of waiting actions again when it changed (here, in
+    /// another window, on another of the person's devices). Whether it did.
+    fn follow_unsent(&self) -> bool {
+        // Not here (nothing waits), or read by whatever runs now: as it was.
+        let Some(heads) = self
+            .open_unsent(false)
+            .then(|| {
+                self.workspace.store.read(
+                    &self.waiting_record.id,
+                    ui_core::automerge::AutoCommit::base_heads,
+                )
+            })
+            .flatten()
+        else {
+            return false;
+        };
+        if self.unwritten.borrow().0 == heads {
+            return false;
+        }
+        let unwritten = self.read_unwritten(&self.unsent());
+        *self.unwritten.borrow_mut() = (heads, unwritten);
+        true
+    }
+
+    fn read_unwritten(&self, unsent: &[Unsent<P>]) -> Option<Rc<P::State>> {
+        if unsent.is_empty() {
+            return None;
+        }
+        let mut doc = ui_core::automerge::AutoCommit::new();
+        P::initialize(&mut doc).ok()?;
+        let base = (self.base)();
+        for entry in unsent {
+            let mut action = entry.action.clone();
+            if P::prepare(&mut action, &base).is_err() {
+                continue;
+            }
+            let Ok(encoded) = tilo_resource::encode::<P>(&action) else {
+                continue;
+            };
+            let context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
+                .with_app(self.workspace.app_id, self.workspace.app_title)
+                .with_invoker(entry.invoker.clone());
+            let writer = ui_core::bound_dispatch::document_writer(&entry.invoker.actor, &doc);
+            if let Err(error) = tilo_actions::apply_local_with_context(
+                &mut doc,
+                &action,
+                encoded,
+                Some(&writer),
+                context,
+            ) {
+                tracing::warn!(kind = P::KIND, %error, "a write waiting for its part cannot be shown");
+            }
+        }
+        Reader::<P>::read(&doc)
+            .map(|reader| Rc::clone(reader.state()))
+            .ok()
+    }
+
+    /// Open the record of waiting actions where this device keeps it, once;
+    /// with `create`, start it where nothing of it is here.
+    fn open_unsent(&self, create: bool) -> bool {
+        let store = &self.workspace.store;
+        if store.is_ready(&self.waiting_record.id) {
+            return true;
+        }
+        if self.unsent_looked.replace(true) && !create {
+            return false;
+        }
+        match store.open_if_held(&self.waiting_record) {
+            Ok(_) => true,
+            // Nothing of it here, or a store that keeps no canonical records
+            // (a test's): started as every record is.
+            Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) if create => {
+                self.create(&self.waiting_record, |_| Ok(()))
+                    .map_err(|error| {
+                        tracing::warn!(kind = P::KIND, %error, "the record of waiting writes cannot be started");
+                    })
+                    .is_ok()
+            }
+            Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) => false,
+            // Read by whatever runs now: looked for again at the next refresh.
+            Err(RecordOpenError::Busy) => {
+                self.unsent_looked.set(false);
+                false
+            }
+            Err(error) => {
+                tracing::warn!(kind = P::KIND, %error, "the record of waiting writes cannot be opened");
+                false
+            }
+        }
+    }
+
+    /// The actions waiting for a part of this chain, oldest first.
+    fn unsent(&self) -> Vec<Unsent<P>> {
+        if !self.open_unsent(false) {
+            return Vec::new();
+        }
+        self.workspace
+            .store
+            .read(&self.waiting_record.id, |doc| {
+                read_unsent::<P>(doc, &self.chain)
+            })
+            .unwrap_or_default()
+    }
+
+    /// Keep `action`, invoked by `invoker`, in the record of waiting
+    /// actions, after the others. Its entry there.
+    fn keep_unsent(
+        &self,
+        action: &P::Action,
+        invoker: &ActionInvoker,
+    ) -> Result<String, ActionError> {
+        if !self.open_unsent(true) {
+            return Err(ActionError::Refused(PART_ARRIVING.into()));
+        }
+        let entry = serde_json::to_string(&(action, invoker)).map_err(ActionError::Encode)?;
+        let chain = self.chain.as_str().to_owned();
+        self.edit_unsent(move |doc| {
+            let list = match doc.get(ROOT, chain.as_str())? {
+                Some((Value::Object(ObjType::List), list)) => list,
+                _ => doc.put_object(ROOT, chain.as_str(), ObjType::List)?,
+            };
+            doc.insert(&list, doc.length(&list), entry)?;
+            let kept = doc.get(&list, doc.length(&list).saturating_sub(1))?;
+            Ok(kept.map(|(_, id)| id.to_string()).unwrap_or_default())
+        })
+        .map_err(ActionError::Refused)
+    }
+
+    /// Take the entry `id` out of the record of waiting actions.
+    fn forget_unsent(&self, id: &str) {
+        let chain = self.chain.as_str().to_owned();
+        let forgotten = self.edit_unsent(move |doc| {
+            let Some((Value::Object(ObjType::List), list)) = doc.get(ROOT, chain.as_str())? else {
+                return Ok(());
+            };
+            let at = (0..doc.length(&list)).find(
+                |at| matches!(doc.get(&list, *at), Ok(Some((_, entry))) if entry.to_string() == id),
+            );
+            if let Some(at) = at {
+                doc.delete(&list, at)?;
+            }
+            Ok(())
         });
+        if let Err(error) = forgotten {
+            tracing::error!(kind = P::KIND, %error, "a written write still waits in its record");
+        }
+    }
+
+    /// Change the record of waiting actions: nobody's undo step, saved as
+    /// any edit of the app's records.
+    fn edit_unsent<T>(
+        &self,
+        edit: impl FnOnce(
+            &mut ui_core::automerge::AutoCommit,
+        ) -> Result<T, ui_core::automerge::AutomergeError>,
+    ) -> Result<T, String> {
+        let id = &self.waiting_record.id;
+        let edited = self
+            .workspace
+            .store
+            .with_history(id, |doc, history| {
+                let edited = edit(doc).map_err(|error| error.to_string())?;
+                doc.commit_with(
+                    ui_core::automerge::transaction::CommitOptions::default()
+                        .with_message(tilo_actions::FrameworkChange::Native.change_message()),
+                );
+                history.rebase(doc);
+                Ok::<_, String>(edited)
+            })
+            .ok_or("the record of waiting writes is in use")??;
+        if let Err(error) = self.workspace.store.schedule_committed_history(id) {
+            tracing::error!(%error, "the record of waiting writes could not be saved");
+        }
+        Ok(edited)
     }
 
     /// Whether to look for a newer head and at the parts waited for now:
@@ -476,6 +755,11 @@ impl<P: Chained> ChainState<P> {
     /// one was.
     fn look(&self) -> bool {
         let looked = self.workspace.store.kept_revision();
+        // Holding no part, the chain asks for its head, should its store have
+        // come to read records through the workspace since it opened.
+        if self.parts.borrow().is_empty() {
+            let _ = self.head_on_its_way();
+        }
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.
@@ -649,7 +933,9 @@ impl<P: Chained> ChainState<P> {
                 // canonical records (a test's) and has no record it could
                 // open: it is started as every record is.
                 Err(RecordOpenError::MissingRecord | RecordOpenError::IdentityMismatch) => {
-                    self.create(&checkout)?;
+                    self.create(&checkout, |doc| {
+                        P::initialize(doc).map_err(|error| error.to_string())
+                    })?;
                     opened = Opened::Started;
                 }
                 Err(error) => return Err(error.into()),
@@ -662,12 +948,13 @@ impl<P: Chained> ChainState<P> {
         Ok(opened)
     }
 
-    /// Create the part `checkout` names, with the part resource's genesis:
+    /// Create the record `checkout` names, with `initialize` its genesis:
     /// the same on every device, so two that start it converge.
-    fn create(&self, checkout: &RecordCheckout) -> Result<(), String> {
-        let initialize = |doc: &mut ui_core::automerge::AutoCommit| {
-            P::initialize(doc).map_err(|error| error.to_string())
-        };
+    fn create(
+        &self,
+        checkout: &RecordCheckout,
+        initialize: impl Fn(&mut ui_core::automerge::AutoCommit) -> Result<(), String>,
+    ) -> Result<(), String> {
         match self.workspace.store.reserve_record(checkout) {
             Ok(mut reservation) => reservation
                 .initialize(initialize)
@@ -723,35 +1010,14 @@ impl<P: Chained> ChainState<P> {
         Ok(())
     }
 
-    /// Apply `action`, invoked by `invoker`, to the part it changes: read
-    /// against the app's record ([`Chained::prepare`]), checked against
-    /// what they may do in the workspace, attributed to them and written into
-    /// the part's history. The part it was applied to.
-    pub(crate) fn apply_as(
-        &self,
-        action: &P::Action,
-        invoker: &ActionInvoker,
-    ) -> Result<u64, ActionError> {
-        self.apply_answering(action, invoker)
-            .map(|(index, _)| index)
-    }
-
-    /// [`Self::apply_as`], with the item resources the action created: what
-    /// its invoker is answered, as for the app's own actions.
-    fn apply_answering(
-        &self,
-        action: &P::Action,
-        invoker: &ActionInvoker,
-    ) -> Result<(u64, Vec<String>), ActionError> {
-        match self.try_apply(action, invoker)? {
-            Write::Done(index, created) => Ok((index, created)),
-            Write::Arriving => Err(ActionError::Refused(PART_ARRIVING.into())),
-        }
-    }
-
-    /// [`Self::apply_answering`], telling a part on its way from the
-    /// workspace apart from a refusal.
+    /// Write `action` into its part now, as [`Self::apply_as`], or say the
+    /// part is on its way.
     fn try_apply(&self, action: &P::Action, invoker: &ActionInvoker) -> Result<Write, ActionError> {
+        // Which part is the newest is on its way: a part started now would be
+        // an old one, or a second first one.
+        if self.head_arriving() {
+            return Ok(Write::Arriving);
+        }
         let mut action = action.clone();
         let base = (self.base)();
         P::prepare(&mut action, &base).map_err(ActionError::Refused)?;
@@ -763,7 +1029,7 @@ impl<P: Chained> ChainState<P> {
             // decides it: a grant on the app, the parts' kind or the verb
             // covers it.
             let need = tilo_resource::need_of::<P>(&action);
-            let node = if let Some(verb) = verb_of::<P>(&action) {
+            let node = if let Some(verb) = super::workspace::verb_of::<P>(&action) {
                 tilo_actions::action_node(
                     &TreePath::root(),
                     self.workspace.app_id,
@@ -976,18 +1242,6 @@ impl<P: Chained> ChainState<P> {
     }
 }
 
-/// The verb `action` runs, as history names it: what a grant on one verb
-/// covers. `None` for a field edit.
-fn verb_of<P: Chained>(action: &P::Action) -> Option<String> {
-    use tilo_actions::Action as _;
-    let mut doc = ui_core::automerge::AutoCommit::new();
-    P::initialize(&mut doc).ok()?;
-    match action.describe(&doc)?.what {
-        tilo_actions::Did::Verb(call) => Some(call.action.action),
-        _ => None,
-    }
-}
-
 /// `resource`'s document actions, and those of its children, carried out on
 /// the chain `chain`, each keeping the need it declares. An item's views
 /// and the app's other effects on it stay as the part publishes them,
@@ -1060,7 +1314,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
         super::record::not_by_app::<P>(&action)?;
-        self.apply_as(&action, invoker)
+        self.apply_as(&action, invoker, &mut None)
             .map(drop)
             .map_err(|error| error.to_string())
     }
@@ -1087,8 +1341,12 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
         super::record::not_by_app::<P>(&action)?;
-        let (_, resources) = ChainState::apply_answering(self, &action, invoker)
-            .map_err(|error| error.to_string())?;
+        // One that waits for its part creates its items once it is written.
+        let resources = self
+            .apply_as(&action, invoker, &mut None)
+            .map_err(|error| error.to_string())?
+            .map(|(_, created)| created)
+            .unwrap_or_default();
         Ok(tilo_actions::ActionOutput {
             value: None,
             resources,
@@ -1145,6 +1403,15 @@ impl<P: Chained> Chain<P> {
         self.state.head()
     }
 
+    /// Whether the chain's newest part is still on its way: no part is held
+    /// here and the workspace's hosts, asked for the chain's head, have not
+    /// answered. A view shows the chain loading rather than empty; an action
+    /// is refused until then.
+    #[must_use]
+    pub fn head_arriving(&self) -> bool {
+        self.state.head_arriving()
+    }
+
     /// Increases whenever a held part changed or a newer head arrived.
     #[must_use]
     pub fn revision(&self) -> u64 {
@@ -1175,22 +1442,26 @@ impl<P: Chained> Chain<P> {
         self.state.waited()
     }
 
-    /// Apply `action` now, as the window's person, to the part it changes.
-    /// The part's number.
+    /// Apply `action` as the window's person to the part it changes. The
+    /// part's number; `None` while that part is on its way from the
+    /// workspace: the action waits for it, shows in [`Self::unwritten`]
+    /// meanwhile, and is written once it is here, in the order asked.
     ///
     /// # Errors
     /// As the door refuses it: the person may not, the app's record or the
     /// part refused it.
-    pub fn apply(&self, action: &P::Action) -> Result<u64, ActionError> {
+    pub fn apply(&self, action: &P::Action) -> Result<Option<u64>, ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
-        self.state.apply_as(action, &ActionInvoker::actor(me))
+        self.state
+            .apply_as(action, &ActionInvoker::actor(me), &mut None)
+            .map(|written| written.map(|(index, _)| index))
     }
 
-    /// Apply what `invoke` names now, as [`Self::apply`].
+    /// Apply what `invoke` names, as [`Self::apply`].
     ///
     /// # Errors
     /// As [`Self::apply`], or the arguments do not build the action.
-    pub fn invoke(&self, invoke: &Invoke<P>) -> Result<u64, ActionError> {
+    pub fn invoke(&self, invoke: &Invoke<P>) -> Result<Option<u64>, ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
@@ -1200,7 +1471,7 @@ impl<P: Chained> Chain<P> {
     /// Apply what `invoke` names as the window's person, as [`Self::invoke`],
     /// and tell `then` the part's number or why it was refused: at once, or,
     /// while the part it changes is on its way from the workspace, once it
-    /// arrived. Actions are applied in the order they were asked for.
+    /// arrived.
     pub fn invoke_then(
         &self,
         invoke: &Invoke<P>,
@@ -1211,8 +1482,26 @@ impl<P: Chained> Chain<P> {
             Err(reason) => return then(Err(ActionError::Refused(reason))),
         };
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
-        self.state
-            .apply_then(action, ActionInvoker::actor(me), then);
+        let mut later: Option<Later> = Some(Box::new(then));
+        let answer = match self
+            .state
+            .apply_as(&action, &ActionInvoker::actor(me), &mut later)
+        {
+            Ok(None) => return,
+            Ok(Some((index, _))) => Ok(index),
+            Err(error) => Err(error),
+        };
+        if let Some(then) = later {
+            then(answer);
+        }
+    }
+
+    /// What the actions waiting for their part write, read as a part holding
+    /// only that: what a view shows as being sent until it is written
+    /// ([`Self::apply`]). `None` while nothing waits.
+    #[must_use]
+    pub fn unwritten(&self) -> Option<Rc<P::State>> {
+        self.state.unwritten()
     }
 
     /// Take back the window's person's last step in part `index`, through
@@ -1260,7 +1549,7 @@ impl<P: Chained> Chain<P> {
     ///
     /// # Errors
     /// As [`Self::invoke`].
-    pub fn stage_as(&self, invoke: &Invoke<P>, author: &str) -> Result<u64, ActionError> {
+    pub fn stage_as(&self, invoke: &Invoke<P>, author: &str) -> Result<Option<u64>, ActionError> {
         self.stage_at(invoke, author, tilo_resource::origin_now_ms())
     }
 
@@ -1274,9 +1563,11 @@ impl<P: Chained> Chain<P> {
         invoke: &Invoke<P>,
         author: &str,
         now_ms: i64,
-    ) -> Result<u64, ActionError> {
+    ) -> Result<Option<u64>, ActionError> {
         let action = invoke.build(now_ms).map_err(ActionError::Refused)?;
-        self.state.apply_as(&action, &ActionInvoker::actor(author))
+        self.state
+            .apply_as(&action, &ActionInvoker::actor(author), &mut None)
+            .map(|written| written.map(|(index, _)| index))
     }
 
     /// Write `state` into part `index` directly, as what the part starts
@@ -1416,18 +1707,106 @@ fn detached_dispatch<P: Chained>(
     state: &Rc<ChainState<P>>,
     me: &str,
 ) -> Dispatcher<P> {
+    dispatching(state, me, |apply| {
+        Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
+            state.id(),
+            false,
+            apply,
+        )
+    })
+}
+
+/// The dispatcher `make` makes of what applies an action to `state`'s parts
+/// as `me` ([`ChainState::apply_as`]): one that waits for its part is taken,
+/// as written; refused once its part arrived, it is told in the
+/// dispatcher's [`refused`](Dispatcher::refused) as one the workspace
+/// refused after this device showed it.
+pub(crate) fn dispatching<P: Chained>(
+    state: &Rc<ChainState<P>>,
+    me: &str,
+    make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
+) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
     let invoker = ActionInvoker::actor(me);
-    Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
-        state.id(),
-        false,
-        move |action| {
-            let state = applying
-                .upgrade()
-                .ok_or_else(|| ActionError::Refused("the chain is closed".into()))?;
-            state.apply_as(action, &invoker).map(drop)
-        },
-    )
+    let told: Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::dispatch::Refused>>>> =
+        Rc::default();
+    let telling = Rc::clone(&told);
+    let dispatch = make(Box::new(move |action| {
+        let state = applying
+            .upgrade()
+            .ok_or_else(|| ActionError::Refused("the chain is closed".into()))?;
+        let refused = telling.get().cloned();
+        let named = action.clone();
+        let later: Later = Box::new(move |written| {
+            let Err(error) = written else {
+                return;
+            };
+            tracing::warn!(kind = P::KIND, %error, "a write that waited for its part was refused");
+            if let Some(refused) = refused {
+                refused.set(Some(super::dispatch::Refused {
+                    action: super::workspace::verb_of::<P>(&named).unwrap_or_default(),
+                    item: None,
+                    reason: error.to_string(),
+                    by_workspace: true,
+                }));
+            }
+        });
+        state.apply_as(action, &invoker, &mut Some(later)).map(drop)
+    }));
+    let _ = told.set(dispatch.refused());
+    dispatch
+}
+
+/// The record of `me`'s actions waiting for their part, in the workspace the
+/// app's records are kept in: their own there, as the app's records of a
+/// kind are ([`RecordId::of_member`]), or the one a person without a root
+/// identity keeps on this device.
+fn unsent_checkout(me: &str) -> RecordCheckout {
+    let kind = RecordKind::new(UNSENT_KIND);
+    let id = RecordId::of_member(me, UNSENT_KIND)
+        .unwrap_or_else(|| ui_core::record::person::record_id(&kind));
+    RecordCheckout::new(id, kind)
+}
+
+/// The actions the record of waiting actions `doc` keeps for `chain`, in
+/// order, each with its entry there; one that does not read is left out and
+/// logged.
+fn read_unsent<P: Chained>(
+    doc: &ui_core::automerge::AutoCommit,
+    chain: &RecordId,
+) -> Vec<Unsent<P>> {
+    let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(ROOT, chain.as_str()) else {
+        return Vec::new();
+    };
+    doc.list_range(&list, ..)
+        .filter_map(|item| {
+            let id = item.id().to_string();
+            let value = item.value.into_value();
+            serde_json::from_str::<(P::Action, ActionInvoker)>(value.as_str().unwrap_or_default())
+                .map(|(action, invoker)| Unsent {
+                    id,
+                    action,
+                    invoker,
+                })
+                .map_err(
+                    |error| tracing::warn!(kind = P::KIND, %error, "a waiting write does not read"),
+                )
+                .ok()
+        })
+        .collect()
+}
+
+/// Tell whoever waits for the action kept as `id` what became of it; a
+/// refusal nobody waits for is logged.
+fn answer<P: Chained>(id: &str, written: Result<u64, ActionError>) {
+    match ANSWERS.with(|answers| answers.borrow_mut().remove(id)) {
+        Some(later) => later(written),
+        None => {
+            if let Err(error) = written {
+                tracing::warn!(kind = P::KIND, %error, "a write that waited for its part was refused");
+            }
+        }
+    }
 }
 
 /// The chains a window's views opened, by part type and chain: one per each;

@@ -115,6 +115,15 @@ pub fn security_basis(
     basis::legacy(doc, extra_revocations)
 }
 
+/// [`security_basis`] of a governance state, reading the identity rows it
+/// decoded once rather than decoding each again.
+pub(crate) fn security_basis_of(
+    doc: &crate::cached_document::CachedDocument,
+    extra_revocations: &[tilo_user_identity::RevocationEntry],
+) -> Result<[u8; 32], MediaPolicyError> {
+    basis::decoded(doc, extra_revocations)
+}
+
 /// Strict governed-document validation. Missing policy remains disabled. This
 /// checks consistency only; callers must independently authenticate the writer.
 pub fn validate_transition(
@@ -164,9 +173,8 @@ fn revocation_floors(doc: &AutoCommit) -> Result<RevocationFloors, MediaPolicyEr
     let identities = strict_map(doc, &ROOT, "peer_identities_v1")?;
     let mut floors = BTreeMap::new();
     for key in doc.keys(&identities) {
-        let row: crate::state::GovernedIdentity =
-            serde_json::from_slice(&strict_bytes(doc, &identities, &key)?)
-                .map_err(|_| MediaPolicyError::Malformed)?;
+        let row = crate::state::GovernedIdentity::decode(&strict_bytes(doc, &identities, &key)?)
+            .map_err(|_| MediaPolicyError::Malformed)?;
         for entry in row.revocations {
             if entry.user_public_key != row.device_cert.user_public_key {
                 return Err(MediaPolicyError::Binding);
@@ -845,8 +853,10 @@ mod workspace_media_tests {
     fn legacy_identity_revocation_floor_survives_media_bootstrap() {
         let (mut before, root, device) = governed_legacy_workspace();
         let identities = before.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
-        let mut row: crate::state::GovernedIdentity =
-            serde_json::from_slice(&strict_bytes(&before, &identities, &device).unwrap()).unwrap();
+        let mut row = crate::state::GovernedIdentity::decode(
+            &strict_bytes(&before, &identities, &device).unwrap(),
+        )
+        .unwrap();
         let mut revoked = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: [99; 32],
@@ -860,7 +870,7 @@ mod workspace_media_tests {
             .put(
                 &identities,
                 &device,
-                ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                ScalarValue::Bytes(row.encode().unwrap()),
             )
             .unwrap();
         before.commit();
@@ -882,7 +892,7 @@ mod workspace_media_tests {
                 .put(
                     &identities,
                     &device,
-                    ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                    ScalarValue::Bytes(row.encode().unwrap()),
                 )
                 .unwrap();
             let value = enable_media(&mut after);

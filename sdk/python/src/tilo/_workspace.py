@@ -231,6 +231,21 @@ class Workspace:
         """A resource read whole: its fields, its children and its actions."""
         return Resource(self, path).load()
 
+    def record(
+        self, app: str, record: str = "", *, parts: bool = False, after: str | None = None
+    ) -> Any:
+        """A record of `app` as plain data, `{"revision", "records": [{"record", "value"}]}`:
+        the app's record of the workspace for an empty `record`. `parts` reads the chain of
+        parts the record is the base of (a chat's messages); `after` waits for a write past
+        that revision. Chat's conversations are read so."""
+        return self.client.handoff(self._record(app, record, parts, after))
+
+    async def _record(self, app: str, record: str, parts: bool, after: str | None) -> Any:
+        arguments: dict[str, Any] = {"path": f"record:{app}:{record}", "parts": parts}
+        if after is not None:
+            arguments["after"] = after
+        return await self._call("tilo_read", arguments)
+
     def resource(self, path: str) -> Resource:
         """A resource as a typed object: fields, actions and field edits."""
         return Resource(self, path)

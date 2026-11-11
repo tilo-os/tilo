@@ -339,6 +339,11 @@ fn send_makes_one_request_as_the_person_with_what_the_box_holds() {
     let requests = crate::shared_selection::take_send_to();
     assert_eq!(requests.len(), 1, "one request, one action");
     assert_eq!(requests[0].to.len(), 1);
+    assert_eq!(
+        requests[0].to[0].name, "",
+        "the new agent nobody named is named by the shell from what it is asked, never \
+         every one \"New agent\""
+    );
     assert_eq!(requests[0].about.len(), 1);
     assert_eq!(requests[0].text, "Can you look at this?");
     assert!(send_to.take_sent());

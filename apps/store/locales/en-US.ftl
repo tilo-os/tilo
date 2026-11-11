@@ -356,3 +356,4 @@ store-remotes-configured = Configured repositories
 
 # The installed list, with what the apps on it take on this device in all.
 store-installed-total = { $count } installed, { $size } in all
+store-window-name = App Store

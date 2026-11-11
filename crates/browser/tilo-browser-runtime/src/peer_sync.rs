@@ -13,11 +13,11 @@ use collab_types::presence::{
     ShellChat, ShellPresence, ShellReaction, ShellSelection, ShellWindow, Shown, ShownLayout,
     ShownWave,
 };
-use iroh::{EndpointAddr, EndpointId};
+use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
-use tilo_session::sync::{Client, Device, Outbox, OwnPresence, Topic, Transport};
-use tilo_session_host::PeerHandle;
-use tilo_session_host::session_actions::SessionActions;
+use tilo_session::sync::{Client, Device, OwnPresence, Topic, Transport};
+use tilo_session_client::Link;
+use tilo_session_core::remote::SessionActions;
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
@@ -181,17 +181,6 @@ fn pointer_of(value: &JsPresence) -> Result<Option<tilo_live::presence::Point>, 
         .transpose()
 }
 
-/// What this page has no carrier for: the client's commands to the plane, which this session says
-/// through its host — the mount that shows a workspace opens its live plane.
-#[derive(Debug)]
-struct NoCarrier;
-
-impl Outbox for NoCarrier {
-    fn send(&self, _command: tilo_session::sync::Cmd) -> bool {
-        false
-    }
-}
-
 /// The most narrated work a workspace holds for its mounts between two frames: a burst past it is
 /// older than what the frame shows anyway.
 const MAX_HELD_INTERACTIONS: usize = 32;
@@ -201,7 +190,7 @@ const MAX_HELD_INTERACTIONS: usize = 32;
 struct Page {
     /// The device of the host this page's session is with.
     host: [u8; 32],
-    handle: PeerHandle,
+    handle: Link,
     /// The person this page belongs to, their root key as hex.
     user: String,
     /// The session's sync, saying this page's word on each workspace's presence track.
@@ -215,10 +204,7 @@ struct Page {
     interactions: HashMap<String, Vec<tilo_actions::SemanticInteraction>>,
     /// The doors this page asks the host's actions through, one per workspace: one session path,
     /// shared by the page's Rust and its JavaScript.
-    doors: RefCell<HashMap<u64, tilo_session_host::session_actions::SessionActions>>,
-    /// How a door is made: named where the page starts, with the peer's code, so
-    /// a mount that asks for one carries none of it.
-    open_door: fn(&PeerHandle, u64, [u8; 32]) -> SessionActions,
+    doors: RefCell<HashMap<u64, SessionActions>>,
 }
 
 thread_local! {
@@ -242,24 +228,25 @@ pub(crate) struct BoardView {
 
 /// Register `id`'s peer: the identity and handle its presence says on, and the host (`host`, its
 /// certificate) its session is with.
-pub(crate) fn register(
-    id: u32,
-    handle: &PeerHandle,
-    cert: &DeviceCert,
-    host: &DeviceCert,
-    label: &str,
-) {
+pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceCert, label: &str) {
     let Ok(publisher) = EndpointId::from_bytes(&cert.device_public_key) else {
         return;
     };
     let (_heard, arrived) = std::sync::mpsc::channel();
     let (_landed, enrolled) = std::sync::mpsc::channel();
+    #[cfg_attr(
+        all(target_arch = "wasm32", target_os = "unknown"),
+        expect(
+            clippy::arc_with_non_send_sync,
+            reason = "a page runs on one thread, and its session's handle holds the page's engine"
+        )
+    )]
     let client = Rc::new(Client::over(
         Transport {
-            outgoing: std::sync::Arc::new(NoCarrier),
+            outgoing: std::sync::Arc::new(handle.clone()),
             arrived,
             enrolled,
-            saying: Some(tilo_session_host::saying(handle)),
+            saying: Some(tilo_session_client::saying(handle)),
         },
         Device {
             publisher,
@@ -285,7 +272,6 @@ pub(crate) fn register(
                 waved: None,
                 interactions: HashMap::new(),
                 doors: RefCell::default(),
-                open_door: |handle, workspace, host| SessionActions::new(handle, workspace, host),
             },
         );
     });
@@ -293,7 +279,7 @@ pub(crate) fn register(
 
 /// Every started page of the person whose root is `user` (hex): what changes for that person as a
 /// whole, such as a revocation their root signs, reaches all of their sessions at once.
-pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
+pub(crate) fn handles_of(user: &str) -> Vec<Link> {
     PAGES.with_borrow(|pages| {
         pages
             .values()
@@ -303,14 +289,14 @@ pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
     })
 }
 
-/// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
-/// host: one session path per workspace, whichever of the page's callers asks.
 /// The host handle of the started page `id`: what this page asks its session for over the peer it
 /// is with.
-pub(crate) fn handle_of(id: u32) -> Option<PeerHandle> {
+pub(crate) fn handle_of(id: u32) -> Option<Link> {
     PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.handle.clone()))
 }
 
+/// The door to `workspace`'s host actions for `id`'s page, or `None` while its session has no
+/// host: one session path per workspace, whichever of the page's callers asks.
 pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
     PAGES.with_borrow(|pages| {
         let page = pages.get(&id)?;
@@ -318,7 +304,7 @@ pub(crate) fn actions_of(id: u32, workspace: u64) -> Option<SessionActions> {
         Some(
             doors
                 .entry(workspace)
-                .or_insert_with(|| (page.open_door)(&page.handle, workspace, page.host))
+                .or_insert_with(|| SessionActions::new(&page.handle, workspace, page.host))
                 .clone(),
         )
     })
@@ -459,7 +445,7 @@ pub(crate) fn hear(peer: u32, workspace_id: u64, from: [u8; 32], body: &[u8]) {
 
 /// Take semantic work `from` narrated on a record's live stream in `workspace_id` (`event`):
 /// admitted only from a member here that this page's board knows as an agent
-/// ([`tilo_session_host::narration::admit`]), and held for the mounts that draw the workspace,
+/// ([`tilo_session_client::narration::admit`]), and held for the mounts that draw the workspace,
 /// whose next frame shows it. Work from anyone else, or that does not hold, is dropped.
 pub(crate) fn narrated(
     peer: u32,
@@ -475,7 +461,7 @@ pub(crate) fn narrated(
             return false;
         };
         let here = page.client.members(&workspace);
-        let Some(interaction) = tilo_session_host::narration::admit(&here, from, event) else {
+        let Some(interaction) = tilo_session_client::narration::admit(&here, from, event) else {
             return false;
         };
         let held = page.interactions.entry(workspace).or_default();

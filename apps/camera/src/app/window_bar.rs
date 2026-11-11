@@ -396,7 +396,7 @@ mod tests {
         let size = |app: &mut TestApp<SampleCamera>| {
             camera(app, |camera| {
                 let page = camera.document_scan.pages[0].rendered();
-                (page.width(), page.height())
+                (page.width, page.height)
             })
         };
         let (width, height) = size(&mut app);

@@ -80,11 +80,11 @@
 //!   message, a saved query's SQL — is a child resource: a resource type of
 //!   its own stored at a place in its parent's document, whose edits the
 //!   parent carries in one of its own actions (`EditBody { page, edit }`).
-//!   The parent publishes it from `children` with
-//!   [`publish_child`](tilo_resource::publish_child); a view or surface
-//!   edits it through [`RecordEnv::child`], a
+//!   A view or surface edits it through [`RecordEnv::child`], a
 //!   [`Dispatcher`] of the child type that wraps each edit into the
-//!   parent's action. The child is addressed, permissioned, undone (by its
+//!   parent's action; the framework publishes it there
+//!   ([`publish_child`](tilo_resource::publish_child)), so the palette,
+//!   agents and scripts address it too. The child is addressed, permissioned, undone (by its
 //!   own coalescing) and named in history like a root, and applies as the
 //!   parent. Rich text is `tilo_rich_text::RichTextField` over such a
 //!   dispatcher; plain text is [`PlainText`](tilo_resource::PlainText),

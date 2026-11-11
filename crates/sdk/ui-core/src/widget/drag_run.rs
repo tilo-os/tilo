@@ -40,6 +40,7 @@ use crate::tokens::Rhythm;
 use crate::widget::arrange::{Align, Distribute, Grid, Row as FlexRow, Stack as FlexStack};
 
 use crate::component::SlotViews;
+use crate::widget::DrawChild;
 use crate::widget::{Element, TaffyTreeExt, Widget};
 
 /// Which way a run goes.
@@ -1094,7 +1095,7 @@ impl Widget for DragRun {
         presence: &PresenceCtx,
     ) {
         if let Some(items) = &mut self.items {
-            Widget::draw(&mut **items, scene, transform, text, theme, presence);
+            DrawChild::draw_child(&mut **items, scene, transform, text, theme, presence);
         }
         self.paint(scene, transform, text, theme);
         self.dirty = false;

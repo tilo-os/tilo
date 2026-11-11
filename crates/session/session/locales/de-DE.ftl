@@ -91,12 +91,12 @@ desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöf
 ## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
 ## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab
 ## sagt, warum das Fenster nicht hier ist, statt dass der Platz verschwindet.
-desk-place-not-read = Sein gespeichertes Fenster ließ sich nicht lesen, deshalb ist es nicht hier. Schließe diesen Tab, wenn du damit fertig bist; bei der nächsten Anmeldung öffnet sich die App wieder.
-
 ## Die „Immer erlauben“-Antworten, die dieser Rechner für die Agenten an seiner
 ## Tür aufbewahrt hat und nicht lesen konnte: jeder Agent, dessen Antwort es
 ## war, wird erneut gefragt.
 agent-bindings-app-name = Agenten
+send-to-agent-unnamed = Agent
+send-to-resource = Senden an
 agent-bindings-lost-title = { $agent } wird erneut gefragt
 agent-bindings-lost-body = Dieser Rechner konnte nicht lesen, dass du { $agent } hier arbeiten lässt, deshalb fragt er dich erneut, wenn sich { $agent } das nächste Mal verbindet. Sonst wurde nichts entfernt.
 agent-bindings-unreadable-title = Deine Antworten zu Agenten ließen sich nicht lesen
@@ -195,6 +195,7 @@ session-displays-close-sheet = Das Bildschirmfenster schließen
 session-display-builtin = Eingebauter Bildschirm
 session-display-external = Externer Bildschirm
 session-clipboard = Zwischenablage
+session-quick-settings = Schnelleinstellungen
 session-devices = Geräte
 session-devices-press = Eines der Geräte der Person drücken
 session-bluetooth-app = Bluetooth
@@ -221,11 +222,14 @@ session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
 session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
 session-notifications-open = Die Benachrichtigung öffnen
-session-notifications-hand-to-agent = Die Benachrichtigung an einen Agenten übergeben
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
 notification-from-device-only = Von { $device }
+## A notification a program sent from a terminal, with no app this device
+## knows behind it: the person reads where it came from, never a bare
+## command name.
+notification-sender-terminal = Terminal
 ## The person asked to report a problem and this computer has nowhere to
 ## send one: the report box says so where they asked, rather than opening
 ## on an address that would never carry it.
@@ -321,9 +325,6 @@ session-desk-stop-agent = Stoppen
 session-people = Personen
 
 ## Wie die privaten Unterhaltungen einer Person heißen und was sie anbieten.
-session-messages = Private Nachrichten
-session-messages-send = Private Nachricht senden
-
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
 session-lock-screen = Sperrbildschirm
 
@@ -394,9 +395,6 @@ capture-target-region = Ein Bereich des Schreibtischs
 # The agent the session makes in a workspace that keeps none, when a person
 # asks from the canvas (shell.md §8.1).
 session-agent-name = Assistent
-# The conversation a person asks in, made with Chat's own actions on the
-# first ask (shell.md §8.1).
-session-ask-conversation = Assistent
 
 desk-style-failed-app-name = Schreibtisch
 desk-style-failed-title = Dein Schreibtischstil konnte nicht angezeigt werden

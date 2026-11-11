@@ -380,7 +380,9 @@ view outline<T>(
 ///
 /// `add` draws the button a row shows over its trailing corner while it is hovered or holds
 /// focus, so the tree makes what a person needs beside where it will stand. The tree is named
-/// `name` for a reader, and a tree taller than the room it is given scrolls itself (`fill`).
+/// `name` for a reader, and a tree taller than the room it is given scrolls itself (`fill`);
+/// that tree is its pane's list, so its rows stand on the pane's content edge as a list's do,
+/// and a window a phone holds, where the pane is the whole screen, keeps its page gutter.
 template view tree_rows<T>(
     name: Text,
     items: Collection<T>,
@@ -617,11 +619,25 @@ view document<R>(of: R, content: View) {
 /// What follows a document's heading, one row lead in: the body starts under the text the
 /// heading's control leads to, so a task's notes, subtasks and facts stand in the column its
 /// title's text does, and the box that says the item is done stands in the gutter to their
-/// left. A document whose heading opens with its title alone has no lead to make.
+/// left. A document whose heading opens with its title alone has no lead to make, and a page
+/// on a phone's screen keeps none either: the column there is too narrow to give a control's
+/// cell out of every line, so the body starts on the page's gutter and the heading keeps its
+/// control beside its title.
 template view body(content: View) {
     // A document's blocks under its heading are groups of their own, a group gutter apart: a
     // section's heading keeps its content a step under it and more room over it.
     stack(lead: 1, gap: .group) {
+        content
+    }
+}
+
+/// The page's own sections after the writing it holds: what links here, the discussion, the
+/// history. A rule says where a person's writing ends, so a heading the page goes by never reads
+/// as another line of what was written, and each section stands a group gutter under it, further
+/// from the writing than the writing's own headings stand from each other.
+template view after_body(content: View) {
+    stack(gap: .group) {
+        divider()
         content
     }
 }

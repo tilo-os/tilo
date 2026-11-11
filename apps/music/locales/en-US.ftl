@@ -2,7 +2,7 @@ music-open-audio-file = Open audio file
 music-connect-spotify = Connect Spotify
 music-connect-spotify-library = Enable full controls
 music-spotify-playback = Authorize playback
-music-spotify-playback-authorized = Spotify • Playback grant authorized; Premium checked before audio
+music-spotify-playback-authorized = Spotify: playback authorized; Premium checked before audio
 music-spotify-devices = Spotify devices
 music-browse-spotify = Browse Spotify
 music-browse-youtube = YouTube Music
@@ -27,7 +27,7 @@ music-spotify-request-timeout = Spotify did not finish this request in time. A c
 music-spotify-select-device = Select { $device }
 music-spotify-pause-device = Pause { $device }
 music-spotify-play-device = Play on { $device }
-music-spotify-playlist-choice = Spotify · { $name }
+music-spotify-playlist-choice = Spotify: { $name }
 music-spotify-remove-playlist = Remove all occurrences from this Spotify playlist
 music-spotify-rename-playlist = Rename Spotify playlist…
 music-spotify-save-playlist = Save Spotify playlist
@@ -67,7 +67,7 @@ music-recommendations-input-followed-artists = Use followed artists
 music-recommendations-empty = Nothing tailored yet. Add music, then like a song, save an album or follow an artist to find suggestions.
 music-recommendations-no-match = No eligible songs match. Adjust inputs, restore a song or add music. An account connection isn’t needed.
 music-recommendations-library = Open songs
-music-recommendations-song = { $title } · { $artist }
+music-recommendations-song = { $title } by { $artist }
 music-recommendations-play = Play
 music-recommendations-dismiss = Hide this suggestion
 music-recommendations-restore = Show again
@@ -114,3 +114,14 @@ music-preferences-followed-artists = { $new ->
 }
 music-preferences-preferred-artists = Changed the preferred artists
 music-preferences-dismissed = Changed the hidden recommendations
+
+## What the window and its player are called for assistive technology
+
+music-title = Music
+music-a11y-player = Music player
+music-a11y-search = Search music
+music-a11y-search-description = Search songs, albums, artists and playlists
+music-a11y-search-description-simple = Search for a song, album, or artist
+music-a11y-choose-source = Choose where your music comes from
+music-a11y-empty = Empty music library
+music-a11y-description = Music library and playback controls

@@ -1422,6 +1422,10 @@ fn set_kind_region(dm: &mut DocMut, region: Region, block: &str, kind: &str) {
     dm.set_kind_in(region, block, kind);
 }
 
+fn remove_attr_region(dm: &mut DocMut, region: Region, block: &str, key: &str) {
+    dm.remove_attr_in(region, block, key);
+}
+
 // ---------------------------------------------------------------------------
 // Per-variant `apply` bodies. Split out of `Action::apply` below (one match
 // arm each) so that single trait method stays short; kept as free functions
@@ -1552,6 +1556,36 @@ fn apply_set_mark(
     }
 }
 
+/// Write the kind `kind` onto each of `blocks`, with `level` and `ordered` when they are given,
+/// and without the ones that kind does not carry: a line that stops being a heading forgets its
+/// level, and a list item that becomes prose its order and depth.
+fn set_kind_and_attrs(
+    dm: &mut DocMut,
+    region: Region,
+    block: &str,
+    kind: &str,
+    level: Option<i64>,
+    ordered: Option<bool>,
+) {
+    set_kind_region(dm, region, block, kind);
+    let carries_level = matches!(kind, "heading" | "list_item");
+    let carries_ordered = kind == "list_item";
+    if carries_level {
+        if let Some(l) = level {
+            set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
+        }
+    } else {
+        remove_attr_region(dm, region, block, "level");
+    }
+    if carries_ordered {
+        if let Some(o) = ordered {
+            set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
+        }
+    } else {
+        remove_attr_region(dm, region, block, "ordered");
+    }
+}
+
 fn apply_set_paragraph_style(
     dm: &mut DocMut,
     region: Region,
@@ -1563,13 +1597,7 @@ fn apply_set_paragraph_style(
     let mut sorted = blocks.to_vec();
     sorted.sort();
     for block in &sorted {
-        set_kind_region(dm, region, block, kind);
-        if let Some(l) = level {
-            set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
-        }
-        if let Some(o) = ordered {
-            set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
-        }
+        set_kind_and_attrs(dm, region, block, kind, level, ordered);
     }
 }
 
@@ -1586,13 +1614,7 @@ fn apply_named_style(
     sorted.sort();
     for block in &sorted {
         if let Some(k) = kind {
-            set_kind_region(dm, region, block, k);
-            if let Some(l) = level {
-                set_attr_region(dm, region, block, "level", &AttrVal::Int(l));
-            }
-            if let Some(o) = ordered {
-                set_attr_region(dm, region, block, "ordered", &AttrVal::Bool(o));
-            }
+            set_kind_and_attrs(dm, region, block, k, level, ordered);
         }
         set_attr_region(dm, region, block, "style", &AttrVal::Str(style.to_string()));
     }

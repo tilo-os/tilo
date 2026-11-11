@@ -23,7 +23,7 @@ use tilo_desktop_surface::navigation::Application;
 use tilo_desktop_surface::{DesktopHandle, DesktopSurface, TileSource};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desk::{Desk, Store};
-use tilo_session_host::session_actions::SessionActions;
+use tilo_session_core::remote::SessionActions;
 use ui::application::{
     AppComponent, ApplicationDefinition, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
 };
@@ -147,6 +147,8 @@ pub(crate) struct Inputs {
     pub provider_admin: ui::models::ProviderAdministration,
     /// The peer whose workspace this desktop shows, when it has one.
     pub peer: Option<u32>,
+    /// The content store the desktop lends every window it opens.
+    pub content: tilo_content::ContentStore,
 }
 
 /// The person who made each strip or opened each window, by its id. Kept
@@ -934,12 +936,12 @@ impl Tiles {
         }
         .map_err(|error| error.to_string())?;
         context.provide_models(self.inputs.models.clone());
-        context.provide_content(crate::page_content());
-        // What another window handed this one to open, from the page's
+        context.provide_content(self.inputs.content.clone());
+        // What another window handed this one to open, from the desktop's
         // content, where that window keeps it.
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
         if let Some(hash) = handed {
-            let (file, _) = crate::content_open::opened_file(&hash, &crate::page_content())?;
+            let (file, _) = crate::content_open::opened_file(&hash, &self.inputs.content)?;
             context.provide_open_file(file);
         }
         context.provide_workspace_records(crate::workspace_records::in_page(
@@ -950,13 +952,10 @@ impl Tiles {
             self.shared.record_actions.peer.is_some(),
         ));
         crate::person_records::provide(&mut context, &self.inputs.store)?;
-        // Only registered control panels receive the administration capability.
-        if crate::host_services::provider_admin_app(definition.app_id()) {
-            crate::host_services::provide_provider_admin(
-                &mut context,
-                self.inputs.provider_admin.clone(),
-            )?;
-        }
+        crate::host_services::provide_provider_admin(
+            &mut context,
+            self.inputs.provider_admin.clone(),
+        );
         crate::page_content::serve_window(
             &context.wake_handle(),
             &self.shared.images,
@@ -1045,8 +1044,8 @@ fn embed_instance(view: &ResourceView) -> TabId {
 }
 
 /// Where an app's code comes from: the host that served this page, by
-/// the name its address gives it.
-fn code_host() -> ui::arriving::Source {
+/// the name its address gives it. A window showing its app arrive says it.
+pub(crate) fn code_host() -> ui::arriving::Source {
     let host = js_sys::Reflect::get(&js_sys::global(), &"location".into())
         .and_then(|location| js_sys::Reflect::get(&location, &"host".into()))
         .ok()
@@ -1471,20 +1470,10 @@ impl Persistence {
         if notifications_revision == self.saved_notifications_revision.get() {
             return Ok(());
         }
-        let history: Vec<_> = self
+        let bytes = self
             .notifications
-            .log()
-            .history()
-            .iter()
-            .filter(|notification| !tilo_desktop_surface::is_host_offer(notification))
-            .cloned()
-            .collect();
-        let bytes = tilo_desktop_surface::notifications::encode_history(
-            &history,
-            ui::time::SystemTime::now(),
-            ui::time::now(),
-        )
-        .map_err(|error| error.to_string())?;
+            .kept(ui::time::SystemTime::now())
+            .map_err(|error| error.to_string())?;
         self.store
             .write(&self.notifications_key, WriteOp::Replace(bytes), None)
             .map_err(|error| error.to_string())?;
@@ -1811,20 +1800,9 @@ pub(crate) fn mount(
     let notifications_key =
         StorageKey::record(DESKTOP_PACKAGE, inputs.workspace.clone(), "notifications");
     let notifications = tilo_desktop_surface::DesktopNotifications::default();
-    if let Some(history) = store
-        .read(&notifications_key)
-        .ok()
-        .flatten()
-        .and_then(|stored| {
-            tilo_desktop_surface::notifications::decode_history(
-                &stored.bytes,
-                ui::time::SystemTime::now(),
-                ui::time::now(),
-            )
-            .ok()
-        })
-    {
-        notifications.restore_history(history);
+    if let Some(stored) = store.read(&notifications_key).ok().flatten() {
+        // A record this page cannot read leaves the centre empty rather than the page unopened.
+        let _ = notifications.restore_kept(&stored.bytes, ui::time::SystemTime::now());
     }
     let saved_notifications_revision = Cell::new(notifications.revision());
     let profile = Rc::new(ProfileStore {

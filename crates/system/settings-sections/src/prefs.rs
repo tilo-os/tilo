@@ -133,6 +133,11 @@ impl Default for NightLightPrefs {
 pub struct DisplayPrefs {
     #[model(readonly)]
     pub auto_brightness: bool,
+    /// Whether the built-in panel stays put when a convertible is turned.
+    /// Changed only through [`DisplayPrefs::set_rotation_lock`].
+    #[serde(default)]
+    #[model(readonly)]
+    pub rotation_lock: bool,
     /// `HiDPI` display scale factor: `1.0` = 100 %, `1.25`, `1.5`, `1.75`,
     /// `2.0`. The compositor reads this section of the shared settings
     /// file at session start and advertises it to clients as the
@@ -156,6 +161,7 @@ impl Default for DisplayPrefs {
     fn default() -> Self {
         Self {
             auto_brightness: false,
+            rotation_lock: false,
             scale: 1.0,
         }
     }
@@ -2031,6 +2037,13 @@ impl DisplayPrefs {
     #[action(id = "set-automatic-brightness")]
     pub fn set_automatic_brightness(&mut self, on: bool) -> Result<(), tilo_resource::Refusal> {
         self.auto_brightness = on;
+        Ok(())
+    }
+
+    /// Keep the built-in panel put when the device turns, or let it follow.
+    #[action(id = "set-rotation-lock")]
+    pub fn set_rotation_lock(&mut self, locked: bool) -> Result<(), tilo_resource::Refusal> {
+        self.rotation_lock = locked;
         Ok(())
     }
 }

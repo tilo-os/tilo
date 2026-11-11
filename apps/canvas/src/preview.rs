@@ -14,6 +14,7 @@ use ui::{PresenceCtx, TextRenderer, Theme};
 
 use crate::model::Artwork;
 use crate::render::{Options, Renderer};
+use ui::widget::DrawChild;
 
 /// The canvas, with the version `preview` names drawn over it.
 pub struct VersionPreview {
@@ -170,7 +171,7 @@ impl ui::widget::Decorator for VersionPreview {
         presence: &PresenceCtx,
     ) {
         self.canvas
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.paint(scene, transform, text_renderer, theme);
     }
 

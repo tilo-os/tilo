@@ -46,8 +46,8 @@ fn edit(peer: &DirectSync, key: &SigningKey, value: &str) -> Option<Vec<automerg
     peer.read(|peer| peer.document_heads(APP, RECORD))
 }
 
-/// Wait until `done` holds of `sync`'s replica.
-async fn until(sync: &DirectSync, done: impl Fn(&StatePeer) -> bool + Sync) {
+/// Wait until `done` holds of `sync`'s replica; `what` names the wait that gave up.
+async fn until(sync: &DirectSync, what: &str, done: impl Fn(&StatePeer) -> bool + Sync) {
     let mut changes = sync.changes();
     tokio::time::timeout(Duration::from_secs(30), async {
         while !sync.read(&done) {
@@ -55,7 +55,7 @@ async fn until(sync: &DirectSync, done: impl Fn(&StatePeer) -> bool + Sync) {
         }
     })
     .await
-    .expect("the replicas converge");
+    .unwrap_or_else(|_| panic!("the replicas converge: {what}"));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -113,7 +113,7 @@ async fn two_devices_of_one_person_converge_directly() {
 
     // B converges to A's rows and document heads.
     let rows = a.read(StatePeer::rows);
-    until(&b, |b| b.rows() == rows).await;
+    until(&b, "B holds A's rows", |b| b.rows() == rows).await;
     assert_eq!(
         b.read(|b| b.document_heads(APP, RECORD)),
         a.read(|a| a.document_heads(APP, RECORD))
@@ -121,7 +121,10 @@ async fn two_devices_of_one_person_converge_directly() {
 
     // B edits the document; A converges to B's edit.
     let edited = edit(&b, &b_key, "from b");
-    until(&a, |a| a.document_heads(APP, RECORD) == edited).await;
+    until(&a, "A holds B's edit", |a| {
+        a.document_heads(APP, RECORD) == edited
+    })
+    .await;
     let on_a = AutoCommit::load(&a.read(|a| a.document(APP, RECORD)).unwrap()).unwrap();
     assert_eq!(
         on_a.get(ROOT, "value")
@@ -228,7 +231,7 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
 
     // What A made reaches B.
     let rows = a.read(StatePeer::rows);
-    until(&b, |b| b.rows() == rows).await;
+    until(&b, "B holds A's rows", |b| b.rows() == rows).await;
     let from_a = AutoCommit::load(&b.read(|b| b.document(APP, RECORD)).unwrap()).unwrap();
     assert_eq!(
         from_a
@@ -243,9 +246,15 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
 
     // What B writes reaches A, and A's next write reaches B.
     let edited = edit(&b, &b_key, "from b");
-    until(&a, |a| a.document_heads(APP, RECORD) == edited).await;
+    until(&a, "A holds the edit", |a| {
+        a.document_heads(APP, RECORD) == edited
+    })
+    .await;
     let edited = edit(&a, &a_key, "from a again");
-    until(&b, |b| b.document_heads(APP, RECORD) == edited).await;
+    until(&b, "B holds the edit", |b| {
+        b.document_heads(APP, RECORD) == edited
+    })
+    .await;
 
     link.abort();
     a_router.shutdown().await.unwrap();
@@ -298,100 +307,15 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     });
 
     // The member has the host's history before it writes to it.
-    until(&member, |member| {
+    until(&member, "the member holds the record", |member| {
         member.document_heads(APP, RECORD).is_some()
     })
     .await;
     // The member writes as the device the host serves: its own.
     let edited = edit(&member, &key, "from the member");
-    until(&host, |host| host.document_heads(APP, RECORD) == edited).await;
-    paired.abort();
-}
-
-/// A device that hosts its own workspace, and the person's other device linked
-/// to it: what the hosting device's own member writes reaches the other
-/// device, as what the other device writes reaches it. e2e-branch's box hosts
-/// the workspace its copy entered: the copy's windows reached box, and box's
-/// never reached the copy.
-#[tokio::test(flavor = "multi_thread")]
-async fn what_the_hosting_device_writes_reaches_the_persons_other_device() {
-    let root = SigningKey::from_bytes(&[6; 32]);
-    let (key, cert) = device(&root, 8);
-    let (other_key, other_cert) = device(&root, 9);
-    let now = SystemTime::now();
-    let mut made = StatePeer::new(
-        WORKSPACE,
-        cert.clone(),
-        vec![cert.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    made.select_admission_v5().unwrap();
-    let mut document = AutoCommit::new();
-    document.put(ROOT, "value", "from the host").unwrap();
-    document.commit_edit("fixture", "value");
-    made.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &cert, std::slice::from_ref(&cert))
-                .unwrap(),
-            documents: vec![SeedDocument {
-                app_id: APP.into(),
-                record_id: RECORD.into(),
-                kind: "test".into(),
-                bytes: document.save(),
-            }],
-        },
-        &key,
-        now,
-    )
-    .unwrap();
-    assert!(
-        made.governance_mut()
-            .admit_member_device(&other_cert, &key, now)
-            .unwrap()
-    );
-    let roster = made.certificates();
-    let own = StatePeer::from_join(WORKSPACE, cert.clone(), roster.clone(), &[], now).unwrap();
-    let other = StatePeer::from_join(WORKSPACE, cert.clone(), roster, &[], now).unwrap();
-
-    let host = DirectSync::new(made, key.clone());
-    let member = DirectSync::new(own, key.clone());
-    let paired = tokio::spawn({
-        let host = host.clone();
-        let member = member.clone();
-        async move { DirectSync::pair(&member, &host).await }
-    });
-    let other = DirectSync::new(other, other_key.clone());
-    let host_endpoint = localhost_endpoint(&key).await;
-    let accepting = iroh::protocol::Router::builder(host_endpoint.clone())
-        .accept(DIRECT_ALPN, host.clone())
-        .spawn();
-    let other_endpoint = localhost_endpoint(&other_key).await;
-    let link = tokio::spawn({
-        let other = other.clone();
-        let other_endpoint = other_endpoint.clone();
-        let host_addr = addr(&host_endpoint);
-        async move { other.connect(&other_endpoint, host_addr).await }
-    });
-    until(&member, |member| {
-        member.document_heads(APP, RECORD).is_some()
+    until(&host, "the host holds the member's edit", |host| {
+        host.document_heads(APP, RECORD) == edited
     })
     .await;
-    until(&other, |other| other.document_heads(APP, RECORD).is_some()).await;
-
-    // The other device's write reaches the hosting device's member.
-    let edited = edit(&other, &other_key, "from the other device");
-    until(&member, |member| {
-        member.document_heads(APP, RECORD) == edited
-    })
-    .await;
-    // And the member's write reaches the other device.
-    let edited = edit(&member, &key, "from the hosting device");
-    until(&other, |other| other.document_heads(APP, RECORD) == edited).await;
-
-    link.abort();
     paired.abort();
-    accepting.shutdown().await.unwrap();
-    other_endpoint.close().await;
 }

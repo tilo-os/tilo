@@ -30,13 +30,14 @@
 //! `presets::N0`'s, and both leave the crypto provider and the relay map to
 //! the caller.
 //!
-//! The session's endpoint and the filesystem's are the two a person's device
-//! holds, and neither binds the preset: they take [`collaborating`] and
-//! [`Watchonly`] with `presets::Minimal`'s crypto provider and number 0's
-//! default relay map. `presets::N0` is left to processes that are not a
-//! desktop — a relay's diagnostic probe, the initrd's unlock exchange, a
-//! headless runtime — each listed with its reason in
-//! `tools/policy/check_iroh_presets.py`, which refuses a new one.
+//! The session's endpoint, the filesystem's and a runtime's are what a
+//! person's device holds, and none binds the preset: they take
+//! [`collaborating`] and [`Watchonly`] with `presets::Minimal`'s crypto
+//! provider and the relays [`crate::relays`] reads from the person's
+//! settings. `presets::N0` is left to processes that are not a desktop — a
+//! relay's diagnostic probe, the initrd's unlock exchange — each listed with
+//! its reason in `tools/policy/check_iroh_presets.py`, which refuses a new
+//! one.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};

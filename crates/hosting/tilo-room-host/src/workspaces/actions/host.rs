@@ -24,8 +24,8 @@ use tilo_peer_state::join::MemberRole;
 use tilo_relay_session::workspaces::{
     ATTACH_HOST, ActionInvitation, CREATE_OWN_ROOM, CREATE_ROOM, CreatedWorkspace, DELETE_ROOM,
     DETACH_HOST, ENTER_ROOM, EnteredWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOM,
-    HOST_ROOMS_RESOURCE, HostedWorkspace, LIST_REVOCATIONS, LIST_ROOMS, NOT_YOUR_OWN, UNHOST_ROOM,
-    WorkspaceListing,
+    HOST_ROOMS_RESOURCE, HostedWorkspace, KEEP_PERSONAL, LIST_PERSONAL, LIST_REVOCATIONS,
+    LIST_ROOMS, NOT_YOUR_OWN, PersonalList, UNHOST_ROOM, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -58,7 +58,7 @@ const OWNER_ROLE: &str = "owner";
 
 /// The host's operations in catalogue order, each with the
 /// [`HostOperation`] it is.
-const HOST_VERBS: [(Verb, HostOperation); 10] = [
+const HOST_VERBS: [(Verb, HostOperation); 12] = [
     (
         Verb {
             id: CREATE_ROOM,
@@ -98,6 +98,26 @@ const HOST_VERBS: [(Verb, HostOperation); 10] = [
             params: Vec::new,
         },
         HostOperation::ListWorkspaces,
+    ),
+    (
+        Verb {
+            id: LIST_PERSONAL,
+            label: "List your workspaces, wherever they are hosted",
+            gate: LIST_PERSONAL,
+            kind: ActionKind::Read,
+            params: Vec::new,
+        },
+        HostOperation::ReadPersonalList,
+    ),
+    (
+        Verb {
+            id: KEEP_PERSONAL,
+            label: "Keep your workspace list here",
+            gate: KEEP_PERSONAL,
+            kind: roles::GOVERNANCE_KIND,
+            params: keep_personal_params,
+        },
+        HostOperation::KeepPersonalList,
     ),
     (
         Verb {
@@ -166,6 +186,14 @@ fn workspace_params() -> Vec<ActionParam> {
         "room",
         ParamType::Text,
         "The workspace, as listing workspaces names it.",
+    )]
+}
+
+fn keep_personal_params() -> Vec<ActionParam> {
+    vec![ActionParam::required(
+        "list",
+        ParamType::Object,
+        "Your workspaces, each with where it is hosted, as your device holds them.",
     )]
 }
 
@@ -414,6 +442,11 @@ impl Workspaces {
                     .map_err(|error| refused(&error))?;
                 Ok(serde_json::json!({ "deleted": workspace }))
             }
+            HostOperation::ReadPersonalList | HostOperation::KeepPersonalList => {
+                self.authorize(device, None, WorkspaceOp::Host(operation), now)
+                    .map_err(|error| refused(&error))?;
+                self.personal_invoke(device, operation, &args).await
+            }
             HostOperation::ListRevocations => {
                 self.authorize(device, None, WorkspaceOp::Host(operation), now)
                     .map_err(|error| refused(&error))?;
@@ -453,6 +486,35 @@ impl Workspaces {
             }
             _ => Err(ActionHostError::UnknownAction),
         }
+    }
+
+    /// Read or keep `device`'s person's workspace list, already permitted to.
+    async fn personal_invoke(
+        &self,
+        device: &DeviceCert,
+        operation: HostOperation,
+        args: &Args,
+    ) -> Result<Value, ActionHostError> {
+        if operation == HostOperation::ReadPersonalList {
+            let here = self.listed(device).await;
+            return answer(&self.personal(device, &here));
+        }
+        let list: PersonalList = args
+            .object("list")?
+            .ok_or_else(|| invalid("`list` is required"))?;
+        // A list is kept for a person who takes part here: one the site let
+        // in, or a member of a workspace here, whom an invitation brought.
+        // Anyone else holds nothing here to keep a list of.
+        let person = device.user_public_key;
+        if !self.inner.memberships.holds_any(&person)
+            && !self.let_in(&person, tilo_clock::unix_now_ns()).await
+        {
+            return Err(refused(&self.not_let_in().to_reason()));
+        }
+        let kept = self
+            .keep_personal(device, list)
+            .map_err(|error| refused(&error))?;
+        Ok(serde_json::json!({ "kept": kept }))
     }
 
     /// Make the workspace `args` names, as `device`, already permitted to,
@@ -569,6 +631,22 @@ impl Workspaces {
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
+        // A grant for one workspace enters that one, already made: it makes no other.
+        let makes = device
+            .capabilities
+            .agent
+            .is_none_or(|scope| scope.makes_workspaces());
+        if !makes
+            && (name.is_some()
+                || !moving.is_some_and(|room| {
+                    device
+                        .capabilities
+                        .agent
+                        .is_some_and(|scope| scope.reaches(room))
+                }))
+        {
+            return Err(refused(&NOT_YOUR_OWN));
+        }
         let making = own.making.lock().await;
         let mine = own.of(&person);
         let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
@@ -601,6 +679,13 @@ impl Workspaces {
         {
             // A plain ask for "my workspace" answers the first they made.
             self.summary(first).await.map_err(|error| refused(&error))?
+        } else if !makes {
+            return Err(refused(&NOT_YOUR_OWN));
+        } else if !self.let_in(&person, now).await {
+            // A new workspace is for a person the site let in. Anyone can
+            // make a root, so a certificate alone is nobody's way past the
+            // door: they hear the door's own refusal, with its wait list.
+            return Err(refused(&self.not_let_in().to_reason()));
         } else {
             // Another one: there is no bound on how many a person keeps.
             let name = name.unwrap_or(OWN_WORKSPACE_NAME);
@@ -753,5 +838,7 @@ impl Workspaces {
 
 #[cfg(test)]
 mod own_tests;
+#[cfg(test)]
+mod personal_tests;
 #[cfg(test)]
 mod tests;

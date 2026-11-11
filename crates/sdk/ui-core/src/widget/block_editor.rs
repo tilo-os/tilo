@@ -26,6 +26,7 @@ use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_p
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Button;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
@@ -492,6 +493,8 @@ struct BlockSnapshot {
 
 /// Display-only, bounded projection for a live page embed. The source CRDT
 /// keeps only the stable UUID mark; hosts refresh this projection on sync.
+/// The excerpt is the start of what the page says: a card shows a few lines of
+/// it, a line per paragraph it breaks.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransclusionPreview {
     pub title: String,
@@ -751,6 +754,10 @@ pub struct BlockEditor {
     references: references::References,
     transclusion_previews: HashMap<PageId, TransclusionPreview>,
     transclusion_rects: Vec<Option<(Rect, Card)>>,
+    /// How tall the card of each embed stands, by the block it is the whole of: what it shows of
+    /// what it projects was measured at the width the stack laid it out at, and the stack starts
+    /// from it when nothing has measured it yet.
+    card_heights: HashMap<String, f32>,
     pending_transclusion_opens: Vec<PageId>,
     /// Where the links inside the cards painted last were painted, and what each names.
     card_links: Vec<(Rect, String)>,
@@ -1003,6 +1010,7 @@ impl BlockEditor {
             references: references::References::default(),
             transclusion_previews: HashMap::new(),
             transclusion_rects: Vec::new(),
+            card_heights: HashMap::new(),
             pending_transclusion_opens: Vec::new(),
             card_links: Vec::new(),
             pending_resource_link_opens: Vec::new(),
@@ -4793,56 +4801,6 @@ impl BlockEditor {
         }
     }
 
-    fn activate_card(&mut self, event: &WindowEvent) -> bool {
-        let WindowEvent::MouseInput {
-            state: ElementState::Released,
-            button: MouseButton::Left,
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let point = self.last_mouse_pos;
-        // A link inside a card stands in front of the card it is painted on.
-        if let Some(reference) = self
-            .card_links
-            .iter()
-            .find(|(rect, _)| rect.contains(point))
-            .map(|(_, reference)| reference.clone())
-        {
-            self.open_reference(&reference);
-            return true;
-        }
-        let Some(card) = self
-            .transclusion_rects
-            .iter()
-            .flatten()
-            .find(|(rect, _)| rect.contains(point))
-            .map(|(_, card)| card.clone())
-        else {
-            return false;
-        };
-        match card {
-            Card::Record(reference) => {
-                self.open_reference(&reference);
-                true
-            }
-            Card::Page(_) => false,
-        }
-    }
-
-    pub fn set_transclusion_previews(&mut self, previews: HashMap<PageId, TransclusionPreview>) {
-        if self.transclusion_previews != previews {
-            self.transclusion_previews = previews;
-            self.dirty = true;
-            self.structure_dirty = true;
-        }
-    }
-
-    pub fn take_transclusion_open(&mut self) -> Option<PageId> {
-        self.pending_transclusion_opens.pop()
-    }
-
     pub fn take_external_link_open(&mut self) -> Option<String> {
         self.pending_external_link_opens.pop()
     }
@@ -7947,7 +7905,7 @@ fn draw_block(
             let mut quiet = ctx.theme.clone();
             quiet.text_primary = quiet.text_dim;
             quiet.tokens.colors.text_primary = quiet.tokens.colors.text_dim;
-            b.line.draw(
+            b.line.draw_child(
                 ctx.scene,
                 ctx.transform,
                 ctx.text_renderer,
@@ -8007,7 +7965,7 @@ fn draw_block(
             // behind that editor is still there, just not painted.
             let descriptor = formula_descriptor(&b.kind);
             if descriptor.is_none_or(|value| value.mode == crate::math::FormulaMode::Source) {
-                b.line.draw(
+                b.line.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text_renderer,
@@ -8021,7 +7979,7 @@ fn draw_block(
         BlockKind::Table { visual } => {
             if !visual {
                 let outer = ctx.table_cells.is_some().then(|| std::mem::take(ctx.scene));
-                b.line.draw(
+                b.line.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text_renderer,
@@ -8051,7 +8009,7 @@ fn draw_block(
             return;
         }
     }
-    b.line.draw(
+    b.line.draw_child(
         ctx.scene,
         ctx.transform,
         ctx.text_renderer,
@@ -8549,8 +8507,10 @@ impl BlockEditor {
                 && is_paragraph[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_paragraph[previous]);
-            // An embed (an embedded note, an image) is an object in the
-            // flow: it stands a group gap from the text on either side.
+            // An embed (an embedded note, an image) is an object in the flow: the text it
+            // stands between is one group of prose, so it sits a group gap from the line
+            // above it and from the one below, the same distance a page puts between the
+            // groups a person reads down.
             let around_embed = embeds.get(i).copied().unwrap_or(false)
                 || i.checked_sub(1)
                     .and_then(|previous| embeds.get(previous).copied())
@@ -8561,25 +8521,32 @@ impl BlockEditor {
             let list_item_pair = is_list_item[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_list_item[previous]);
+            let rhythm = &theme.tokens.spacing.rhythm;
             let paragraph_gap = if self.compact_paragraph_spacing {
-                theme.tokens.spacing.s1
+                rhythm.tight
             } else {
-                theme.tokens.spacing.s2
+                rhythm.related
             };
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
-            } else if heading_above {
-                theme.tokens.spacing.s6 * theme.text_scale
-            } else if against_surface || around_embed {
-                theme.tokens.spacing.s4 * theme.text_scale
+            } else if heading_above || around_embed {
+                // The gap between groups keeps a heading off the line above it and an embed off
+                // the text on either side.
+                rhythm.group * theme.text_scale
+            } else if against_surface {
+                // A surface a block paints of its own reaches past its box, so it stands a
+                // section gap from the text around it.
+                rhythm.section * theme.text_scale
             } else if heading_below {
-                theme.tokens.spacing.s3 * theme.text_scale
+                // What a heading opens stands at the closest gap the rhythm has: the distance
+                // from the heading down to it is a third of the distance up to the heading.
+                rhythm.tight * theme.text_scale
             } else if list_item_pair {
                 paragraph_gap / 2.0 * theme.text_scale
             } else if compact_paragraph_pair {
-                theme.tokens.spacing.s1 * theme.text_scale
+                rhythm.tight * theme.text_scale
             } else {
-                theme.tokens.spacing.s2 * theme.text_scale
+                rhythm.related * theme.text_scale
             };
             if is_formula_end.get(i).copied().unwrap_or(false) {
                 stack_box.min = if formula_descriptor(&b.kind)
@@ -8591,7 +8558,14 @@ impl BlockEditor {
                 };
             }
             if transclusion_target(b).is_some() {
-                stack_box.min = TRANSCLUSION_MIN_HEIGHT * theme.text_scale;
+                // The card shows what it projects, so its height is the height of that content:
+                // the stack measures it at the width it lays the blocks out at, and starts here
+                // from the height it measured last.
+                stack_box.min = self
+                    .card_heights
+                    .get(&b.id)
+                    .copied()
+                    .unwrap_or(TRANSCLUSION_MIN_HEIGHT * theme.text_scale);
             }
             self.stack_boxes.push(stack_box);
         }
@@ -8668,6 +8642,9 @@ impl BlockEditor {
     /// inputs are unchanged reuses its cached height, so the cost of an edit does not grow with the
     /// document; without a text renderer, a line keeps the height it last measured.
     fn stack_blocks(&mut self, width: f32, mut text_renderer: Option<&mut TextRenderer>) {
+        if let Some(text_renderer) = text_renderer.as_deref_mut() {
+            self.measure_card_heights(width, text_renderer);
+        }
         let stack = &mut self.stack;
         if let Some(text_renderer) = text_renderer.as_deref() {
             let shaping = (
@@ -9171,8 +9148,13 @@ impl Widget for BlockEditor {
                 ));
             }
             if let Some(image) = self.image_attachments.get_mut(&b.id) {
-                let source_bottom =
-                    (original.y0 + f64::from(b.line.image_source_height())).min(original.y1);
+                // The room the picture's source takes at the width this block is applied at,
+                // not the one it was last measured at: a host measures lines at widths it never
+                // applies, and a source measured at one of those would place the picture inside
+                // itself.
+                let source_bottom = (original.y0
+                    + f64::from(b.line.image_source_height_at(original.width())))
+                .min(original.y1);
                 if let Some(slot) = self.image_preview_rects.get_mut(index) {
                     *slot = Some(Rect::new(
                         original.x0 + pad,
@@ -9720,20 +9702,24 @@ impl Widget for BlockEditor {
                         y + 24.0 * self.text_scale,
                     ));
                 }
-                control
-                    .button
-                    .draw(ctx.scene, ctx.transform, ctx.text_renderer, theme, presence);
+                control.button.draw_child(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text_renderer,
+                    theme,
+                    presence,
+                );
                 if self.focused == Some(idx)
                     || Rect::new(rect.x0, top, rect.x1, rect.y1).contains(self.last_mouse_pos)
                 {
-                    control.add_row.draw(
+                    control.add_row.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
                         theme,
                         presence,
                     );
-                    control.add_column.draw(
+                    control.add_column.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
@@ -10087,7 +10073,7 @@ impl Widget for BlockEditor {
                 {
                     image
                         .button_mut()
-                        .draw(scene, transform, text_renderer, theme, presence);
+                        .draw_child(scene, transform, text_renderer, theme, presence);
                 }
             }
             if let Some(handle) = self.image_resize_handle(index) {
@@ -11655,58 +11641,6 @@ impl BlockEditor {
         }
     }
 
-    /// `TextInput` does NOT handle Tab, but intercept anyway so future
-    /// `TextInput` changes don't break the contract. Returns `true` when
-    /// the caller should stop routing this event any further.
-    fn try_tab_indent(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
-        use winit::event::{ElementState, KeyEvent};
-        use winit::keyboard::{Key, NamedKey};
-
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let Some(focused_idx) = self.focused else {
-            return false;
-        };
-        if !self.is_focused || self.tab_navigation || ctx.modifiers.state().alt_key() {
-            return false;
-        }
-        let command = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
-        let delta = match logical_key {
-            Key::Character(key) if command && key == "]" => 1,
-            Key::Character(key) if command && key == "[" => -1,
-            Key::Named(NamedKey::Tab)
-                if !command
-                    && (self.document_selection.is_some()
-                        || self.blocks.get(focused_idx).is_some_and(|b| {
-                            !matches!(
-                                b.kind,
-                                BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
-                            )
-                        })) =>
-            {
-                if ctx.modifiers.state().shift_key() {
-                    -1
-                } else {
-                    1
-                }
-            }
-            _ => return false,
-        };
-        self.try_indent_selection(delta);
-        *ctx.handled = true;
-        true
-    }
-
     /// The `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
@@ -12022,6 +11956,8 @@ mod clipboard;
 mod format;
 #[path = "block_editor_html.rs"]
 mod html;
+#[path = "block_editor_keys.rs"]
+mod keys;
 pub use html::{blocks_from_html, blocks_to_html};
 #[path = "block_editor_handle_reveal.rs"]
 mod handle_reveal;
@@ -12090,6 +12026,10 @@ mod image_paste_tests;
 #[cfg(test)]
 #[path = "block_editor_clipboard_tests.rs"]
 mod clipboard_tests;
+
+#[cfg(test)]
+#[path = "block_editor_heading_tests.rs"]
+mod heading_tests;
 
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
@@ -13459,6 +13399,10 @@ impl BlockEditor {
             ) {
                 self.tab_navigation = false;
             }
+        }
+
+        if self.try_heading_shortcut(event, ctx) {
+            return;
         }
 
         // TextInput does NOT handle Tab, but intercept anyway so future

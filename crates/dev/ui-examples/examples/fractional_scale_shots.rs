@@ -33,6 +33,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
+use tilo_ui::widget::DrawChild;
 
 /// Logical canvas size — fixed across shots; only the physical buffer grows
 /// with the device scale.
@@ -102,7 +103,7 @@ fn shoot(base: &Theme, ui_scale: f32, text_scale: f32, device_scale: f64, out: &
     // Composite the logical scene at the device scale — crisp physical raster.
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    root.draw(
+    root.draw_child(
         &mut scene,
         composite_transform(device_scale),
         &mut tr,

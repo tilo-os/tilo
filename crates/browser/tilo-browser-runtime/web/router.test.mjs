@@ -153,6 +153,19 @@ test('a window this person opens on the desktop pushes', () => {
   assert.deepEqual(window.writes, [['push', link.format({mode: 'desktop', target: {scope, app: 'so.tilo.calculator'}})]]);
 });
 
+test('behind the first screen of a setup, windows write no address: Back never lands on what it covered', () => {
+  const navigation = fakeNavigation(desk([['1', 'so.tilo.notes']], '1'));
+  const window = fakeWindow(BASE);
+  window.document = {documentElement: {dataset: {firstRun: 'waiting'}}};
+  startRouter({window, link, navigation, initial: {mode: 'desktop', target: {scope, app: 'so.tilo.notes'}}, show: async () => {}});
+  window.writes.length = 0;
+  navigation.emit(desk([['1', 'so.tilo.notes'], ['3', 'so.tilo.calculator']], '3'));
+  assert.deepEqual(window.writes, [], 'the address stays the site the person opened');
+  delete window.document.documentElement.dataset.firstRun;
+  navigation.emit(desk([['1', 'so.tilo.notes'], ['3', 'so.tilo.calculator']], '1'));
+  assert.equal(window.writes.length, 1, 'once the screen is gone, the address follows the desktop again');
+});
+
 test('windows others open and changes that keep the focus write nothing', () => {
   const navigation = fakeNavigation(desk([['1', 'so.tilo.chat']], '1'));
   const window = fakeWindow(link.format({mode: 'desktop', target: chat}));

@@ -34,14 +34,16 @@ use tilo_actions::outcome::{ActionFailure, ActionOutput, InvocationId};
 use tilo_actions::params::{ActionArgs, ActionParam, ParamType, validate_json_schema};
 use tilo_actions::remote::{
     ActionHost, ActionHostError, Caller, CatalogueQuery, CatalogueRow, Confirmation,
-    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, ReceiptStatus,
+    InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, Pending, RECORD_READS_UNAVAILABLE,
+    ReceiptStatus, RecordAddress, RecordAsk, read_records,
 };
 use uuid::Uuid;
 
 use crate::StepPolicy;
 use crate::catalog::{ResourceTarget, find_row};
 use crate::grant::{
-    EDIT_PARAM, FIELD_EDIT, StepGrant, edit_reach, grant_answer, step_node, step_node_at,
+    EDIT_PARAM, FIELD_EDIT, READ_STEP, StepGrant, edit_reach, grant_answer, read_nodes, step_node,
+    step_node_at,
 };
 use crate::path::StepPath;
 use crate::shortcut::{AiTransform, Binding, Condition, Selector, Shortcut, Step, StepKind};
@@ -49,7 +51,7 @@ use crate::template::{self, Piece, render_value};
 use crate::{
     AGENT_TRANSFORM_KIND, SHORTCUT_RUN_ACTION, SHORTCUTS_APP_ID, TriggerSpec, shortcut_id_of,
 };
-use tilo_action_policy::Answer;
+use tilo_action_policy::{ActionKind, Answer};
 
 /// How many catalogue pages the interpreter reads looking for one action.
 const MAX_CATALOGUE_PAGES: usize = 32;
@@ -915,6 +917,11 @@ fn reads(step: &Step) -> Vec<String> {
         }
         StepKind::SetVar { value, .. } => binding(value),
         StepKind::Ai { input, .. } => input.as_ref().into_iter().for_each(&mut binding),
+        StepKind::Read { record, .. } => {
+            if let Some(record) = crate::shortcut::read_record_binding(record) {
+                binding(&record);
+            }
+        }
         StepKind::Ask { .. } | StepKind::Task { .. } => {}
     }
     if let StepPolicy::Fallback { steps } = &step.on_error {
@@ -1583,7 +1590,70 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
                 Ok(Done::local(result))
             }
             StepKind::Ask { param } => Ok(Done::local(self.ask(step, path, param).await)),
+            StepKind::Read {
+                app,
+                record,
+                joined,
+            } => Ok(Done::local(self.read(app, record, *joined))),
         }
+    }
+
+    /// Read `record` of `app` (joined, its chain of parts; named from the run,
+    /// with placeholders) through the host's record door, as the run's caller
+    /// reads it, inside the shortcut's grant.
+    fn read(&self, app: &str, record: &str, joined: bool) -> Result<Option<Value>, StepFailure> {
+        let record = match crate::shortcut::read_record_binding(record) {
+            None => record.to_owned(),
+            Some(named) => match self.evaluate(&named)? {
+                Some(Value::String(record)) => record,
+                _ => {
+                    return Err(StepFailure::Binding {
+                        reason: format!("`{record}` names no record"),
+                    });
+                }
+            },
+        };
+        let record = record.as_str();
+        for node in read_nodes(self.caller.workspace(), app, record, joined) {
+            let (app_id, action) = (app.to_owned(), READ_STEP.to_owned());
+            match (
+                grant_answer(&self.shortcut.grant, &node, ActionKind::Read).answer,
+                self.mode,
+            ) {
+                (Answer::Deny, _) => return Err(StepFailure::OutsideGrant { app_id, action }),
+                (Answer::Ask, RunMode::Unattended) => {
+                    return Err(StepFailure::AsksFirst { app_id, action });
+                }
+                _ => {}
+            }
+        }
+        let host = |error: ActionHostError| StepFailure::Host {
+            error: Box::new(error),
+        };
+        let reads = self.host.record_reads().ok_or_else(|| {
+            host(ActionHostError::Unavailable {
+                reason: RECORD_READS_UNAVAILABLE.into(),
+            })
+        })?;
+        let ask = RecordAsk {
+            address: RecordAddress {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            },
+            joined,
+        };
+        let readings = read_records(
+            reads.as_ref(),
+            &self.caller,
+            &[ask],
+            None,
+            tilo_clock::Instant::now(),
+        )
+        .map_err(host)?;
+        readings
+            .readable()
+            .map(Some)
+            .map_err(|reason| StepFailure::Contract { reason })
     }
 
     /// A loop step: bind `item` to each element of `items` in turn and run
@@ -2147,10 +2217,31 @@ impl<'a, H: ActionHost + Sync, K: RunHooks> Runner<'a, H, K> {
             .unwrap_or(Ok(()))
     }
 
+    /// What a condition tests of `binding`: its value, a part the value it
+    /// points into lacks reading as absent, so a condition asks whether an
+    /// event carries a field.
+    fn tested(&self, binding: &Binding) -> Result<Option<Value>, StepFailure> {
+        let (whole, pointer) = match binding {
+            Binding::Input(name) => {
+                let (name, pointer) = Binding::named_part(name);
+                (Binding::Input(name.to_owned()), pointer)
+            }
+            Binding::Var(name) => {
+                let (name, pointer) = Binding::named_part(name);
+                (Binding::Var(name.to_owned()), pointer)
+            }
+            Binding::StepOutput { step, pointer } => (Binding::step(step, ""), pointer.clone()),
+            _ => return self.evaluate(binding),
+        };
+        Ok(self
+            .evaluate(&whole)?
+            .and_then(|value| value.pointer(&pointer).cloned()))
+    }
+
     fn condition(&self, condition: &Condition) -> Result<bool, StepFailure> {
         Ok(match condition {
-            Condition::Truthy(value) => self.evaluate(value)?.as_ref().is_some_and(truthy),
-            Condition::Equals { left, right } => self.evaluate(left)? == self.evaluate(right)?,
+            Condition::Truthy(value) => self.tested(value)?.as_ref().is_some_and(truthy),
+            Condition::Equals { left, right } => self.tested(left)? == self.tested(right)?,
             Condition::Not(inner) => !self.condition(inner)?,
             Condition::All(all) => {
                 for inner in all {

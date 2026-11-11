@@ -48,7 +48,10 @@
 //! ([`crate::environment`]), on the planes a window's session works on — and
 //! its one record is what it reaches within them: the state plane's replay,
 //! live fan-out, opening and changes ask its scope what a frame's record is,
-//! and the live plane offers it no namespace but its own.
+//! and the live plane offers it no namespace but its own. A device whose
+//! environment stopped is refused by step 1 on every plane, as a revoked one
+//! is, until the certificate it was given expires: the register says so before
+//! anything is delisted, so no plane admits it in between.
 //!
 //! A public workspace is no exception to the rule: whoever visits it is a
 //! member of it with the role its owner gave them, and every device certified
@@ -237,6 +240,9 @@ pub enum DenyReason {
     /// A hosted browser environment's device, outside the one workspace and
     /// the one record the relay confines it to.
     OutOfEnvironmentScope,
+    /// A hosted browser environment's device whose environment stopped: it
+    /// reaches nothing, and no plane admits it, until its certificate expires.
+    EnvironmentStopped,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a workspace this relay does
     /// not govern.
@@ -257,6 +263,9 @@ impl DenyReason {
             Self::NotAMember => "device not in workspace membership",
             Self::OutOfEnvironmentScope => {
                 "a browser environment's device reaches one workspace and its own record"
+            }
+            Self::EnvironmentStopped => {
+                "the browser environment this device belongs to has stopped"
             }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
@@ -303,6 +312,15 @@ impl RelayTrust<'_> {
             .is_some_and(|expiry| expiry <= now_ns)
         {
             return Err(DenyReason::CertExpired);
+        }
+        // A device whose environment stopped is refused on every plane, as a
+        // revoked one is, until the certificate it was given expires: this is
+        // the check every plane and every audit makes.
+        if matches!(
+            self.environments.of(&peer.device_public_key, now_ns),
+            Some(crate::environment::Environment::Stopped { .. })
+        ) {
+            return Err(DenyReason::EnvironmentStopped);
         }
         if !self
             .revocations
@@ -471,8 +489,14 @@ pub(crate) fn decide_in(
     if let Err(reason) = trust.principal(peer, workspace.runtime.store.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
-    if let Some(scope) = crate::environment::scope_of(trust.environments, &peer.device_public_key) {
-        return environment_decision(workspace, scope, op);
+    match crate::environment::environment_of(trust.environments, &peer.device_public_key) {
+        Some(crate::environment::Environment::Placed(scope)) => {
+            return environment_decision(workspace, scope, op);
+        }
+        Some(crate::environment::Environment::Stopped { .. }) => {
+            return Decision::Deny(DenyReason::EnvironmentStopped);
+        }
+        None => {}
     }
     if let Some(scope) = peer.cert.capabilities.agent {
         return grant_decision(workspace, peer, scope, op);

@@ -558,6 +558,8 @@ mod tests {
             plain_listen: Some("127.0.0.1:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
+            door: None,
+            link: None,
         }
     }
 

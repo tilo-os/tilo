@@ -483,19 +483,18 @@ decorator_trait! {
         /// is the inner widget's: a bar docked under a pane around a page still finds the page.
         fn readable_column() -> Option<crate::widget::arrange::Length>;
         fn test_id() -> Option<&str>;
-        fn window_slot(id: String) -> Option<crate::window_toolbar::ToolbarAction>;
-        fn window_slot_barrier() -> bool;
         fn test_rects() -> Vec<(String, vello::kurbo::Rect)>;
         fn get_rect() -> vello::kurbo::Rect;
         fn paint_bounds() -> vello::kurbo::Rect;
         fn child_clip_rect() -> Option<vello::kurbo::Rect>;
         fn own_page_title() -> Option<String>;
+        fn is_item_opened_in_place() -> bool;
         fn page_title_is_heading() -> bool;
         fn snap_points(axis: crate::widget::ScrollAxis, out: &mut Vec<f32>);
         fn cursor_shape(point: vello::kurbo::Point) -> Option<winit::window::CursorIcon>;
         fn claims_raw_touch(point: vello::kurbo::Point) -> bool;
         fn touch_claim(point: vello::kurbo::Point) -> crate::interaction::TouchClaim;
-        fn tooltip() -> Option<&str>;
+        fn tooltip() -> Option<std::borrow::Cow<'_, str>>;
         fn tooltip_side() -> crate::widget::tooltip::TooltipSide;
         fn tooltip_target_at(point: vello::kurbo::Point) -> Option<(vello::kurbo::Rect, String)>;
         fn is_focusable() -> bool;
@@ -561,7 +560,6 @@ decorator_trait! {
     }
 
     mut {
-        fn window_choose(id: &str) -> bool;
         fn set_full_bleed(full_bleed: bool);
         fn place_disclosing(slot: vello::kurbo::Rect);
         fn note_placement(placement: crate::widget::Placement);
@@ -595,6 +593,12 @@ decorator_trait! {
             text: &mut TextRenderer,
         ) -> bool;
         fn apply_layout(taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
+        // Not `expect`: whether clippy sees a call inside this macro's
+        // expansion depends on the features the crate is built with.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+        )]
         fn draw(
             scene: &mut Scene,
             transform: Affine,
@@ -641,6 +645,7 @@ decorator_trait! {
         fn dismiss_presented_modal() -> bool;
         fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
+        fn layout_measured();
         fn release_scene_cache();
         fn draw_overlay(
             scene: &mut Scene,

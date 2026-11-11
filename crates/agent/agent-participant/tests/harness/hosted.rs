@@ -103,6 +103,9 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
         state_root: state.join("relay"),
         web_entry: options.web_entry,
         member_limits: options.member_limits,
+        // The host's own packet relay, on this machine: devices reach it here, as
+        // the test's devices do, and no test depends on the public relays.
+        packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
         ..Default::default()
     };
     let (relay, agents) = tilo_relay::agents::start(
@@ -135,6 +138,8 @@ pub async fn start(root: &SigningKey, host: &Device, state: &Path, options: Opti
             plain_listen: options.plain.then(|| "127.0.0.1:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
+            door: None,
+            link: None,
         })
         .await
         .unwrap();

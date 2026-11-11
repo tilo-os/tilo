@@ -89,7 +89,6 @@ fn a_narrow_window_shows_the_empty_state_alone() {
 fn a_narrow_window_draws_no_back_over_the_empty_state() {
     const NARROW: u32 = 420;
     let mut shell = NavShell::new()
-        .with_header_in_window_bar()
         .sidebar(Probe::boxed("sidebar").0)
         .overview(Probe::boxed("overview").0)
         .content(Probe::boxed("content").0)

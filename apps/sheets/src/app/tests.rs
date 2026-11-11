@@ -6,6 +6,7 @@ use automerge::transaction::Transactable as _;
 use ui::framework::testing::TestApp;
 use ui::lock::MutexRecover as _;
 use ui::portal::PortalOutcome;
+use ui::widget::DrawChild;
 
 /// Serializes tests that round-trip through the process-global system
 /// clipboard, so a parallel test's copy can't land between another's
@@ -145,7 +146,7 @@ pub(super) fn measured_app_with_doc(
 pub(super) fn paint_frame(app: &mut SheetsApp, tr: &mut TextRenderer, theme: &Theme) {
     let mut scene = Scene::new();
     let presence = PresenceCtx::default();
-    app.draw(&mut scene, Affine::IDENTITY, tr, theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, tr, theme, &presence);
     app.draw_overlay(&mut scene, Affine::IDENTITY, tr, theme, &presence);
 }
 

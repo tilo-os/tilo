@@ -9,6 +9,75 @@ use super::{EPSILON, Kind, Problem, SHELL};
 /// the app's.
 const BAR: &str = "WindowBar";
 
+/// What is wrong with the window's columns as they stand at rest: a column whose header the app
+/// declares — the words that name what it shows and the buttons that act on it — that draws no
+/// header row at its top. A column's header is the app's own and stands at every time; a window
+/// that draws it only while its bar is out starts the column straight with its rows, and nothing
+/// names it or adds to it until the person reaches for the window's top edge.
+///
+/// `declared` names the columns (`sidebar`, `overview`, `content`) whose header the app declares;
+/// `frames` are the columns the window lays out. A column standing off the window (a pushed screen
+/// behind the one in front) is not on it, and a sidebar narrow enough to read as a rail of icons
+/// says what it holds by them: neither is judged.
+pub fn column_headers_at_rest(
+    declared: &[&str],
+    frames: &[ui::widget::ColumnFrame],
+    width: f64,
+) -> Vec<Problem> {
+    frames
+        .iter()
+        .filter(|frame| declared.contains(&frame.key) && !frame.rail)
+        .filter(|frame| frame.column.x1 > EPSILON && frame.column.x0 < width - EPSILON)
+        .filter(|frame| frame.header.height() <= EPSILON)
+        .map(|frame| Problem {
+            kind: Kind::HeaderOnReveal,
+            keys: Vec::new(),
+            widget: SHELL.to_owned(),
+            id: None,
+            detail: format!(
+                "the {} column's header row — the words that name what it shows and the buttons \
+                 that act on it — does not stand at rest: the {:.0}px wide column starts straight \
+                 with its rows, so nothing there says what it holds until the person reaches for \
+                 the window's top edge",
+                frame.key,
+                frame.column.width(),
+            ),
+        })
+        .collect()
+}
+
+/// What is wrong with the window's bar against the window's own header rows: an action the bar
+/// offers that a button standing in the window offers too, by the same name. A column's header
+/// row is where its actions stand, and the bar holds only what is the window's, so a person
+/// finds each action once.
+///
+/// `buttons` are the names of the buttons the window draws where the person reaches them.
+pub fn offered_twice(layout: &ui::window_toolbar::BarLayout, buttons: &[String]) -> Vec<Problem> {
+    layout
+        .controls
+        .iter()
+        // The app's own slots: the window's furniture, navigation and controls are the window's.
+        .filter(|control| {
+            !control.furniture
+                && matches!(control.slot, "leading" | "views" | "views-menu" | "action")
+                && !control.name.is_empty()
+        })
+        .filter(|control| buttons.contains(&control.name))
+        .map(|control| Problem {
+            kind: Kind::OfferedTwice,
+            keys: Vec::new(),
+            widget: BAR.to_owned(),
+            id: Some(control.id.clone()),
+            detail: format!(
+                "the bar offers \"{}\" and the window offers it again as a button of its own: a \
+                 column's actions stand in its header row, and the bar holds only what is the \
+                 window's",
+                control.name,
+            ),
+        })
+        .collect()
+}
+
 /// What is wrong with one window's bar as it lays itself out across the window: a control it
 /// shows twice, and an action that asks for its words standing as its icon alone while the bar
 /// has room for those words. Both read the app's actions: the window's own furniture wears a glyph

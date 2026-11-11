@@ -678,7 +678,9 @@ impl CalendarApp {
                 self.quick_add.open();
                 self.quick_add
                     .input_mut()
-                    .set_text("Lunch with Sam friday 1pm");
+                    .set_text(&ui::i18n::I18nManager::lookup_plain(
+                        "calendar-quick-example",
+                    ));
             }
             "shortcuts" => self.shortcuts.set_open(true),
             "task_detail" => self.shots_show_task_detail(),
@@ -4299,14 +4301,14 @@ impl Widget for CalendarApp {
             })
             .collect();
         let mut root = AccessNode::new(Role::Window)
-            .with_name("Calendar")
+            .with_name(ui::i18n::I18nManager::lookup_plain("calendar-title"))
             .with_bounds(self.rect)
             .with_children(controls);
         root.children.extend(self.task_list_access_nodes());
         if self.syncing() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Synchronizing calendars")
+                    .with_name(ui::i18n::I18nManager::lookup_plain("calendar-a11y-syncing"))
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
@@ -4320,7 +4322,7 @@ impl Widget for CalendarApp {
         if self.detail_open && matches!(self.selection, Some(Sel::Event(_))) {
             root.children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name("Event editor. Changes save automatically."),
+                    .with_name(ui::i18n::I18nManager::lookup_plain("calendar-a11y-editor")),
             );
             if let Some(conflict) = self.local_schedule_conflict_summary() {
                 root.children
@@ -4730,7 +4732,9 @@ fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> Box<TextInput
     let requested = std::rc::Rc::clone(requested);
     Box::new(
         TextInput::local()
-            .with_placeholder("Invite by email")
+            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
+                "calendar-invite-placeholder",
+            ))
             .with_id("event_invite")
             .with_trailing_accessory(
                 ui::icons::Icon::Users,
@@ -4754,7 +4758,9 @@ fn title_field() -> Box<TextInput> {
 fn location_field() -> Box<TextInput> {
     Box::new(
         TextInput::local()
-            .with_placeholder("Add location")
+            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
+                "calendar-location-placeholder",
+            ))
             .with_id("event_location"),
     )
 }

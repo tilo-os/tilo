@@ -400,3 +400,6 @@ browser-filters-updated = Filter lists updated
 browser-filters-cached = Using cached filter lists
 browser-filters-failed = Update failed: { $detail }. Previous rules retained.
 browser-filters-failed-worker = Update failed: worker unavailable. Previous rules retained.
+browser-address-suggestions = Address suggestions
+browser-window-name = Browser
+browser-page-menu-name = Page context menu

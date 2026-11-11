@@ -30,6 +30,7 @@ use crate::platform::PlatformConventions;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::capability::capability_mut;
 use crate::widget::search_field::FilterCount;
 use crate::widget::{
@@ -971,10 +972,11 @@ impl FindBar {
             0.0,
             ground,
         );
-        self.field.draw(scene, transform, text, theme, presence);
+        self.field
+            .draw_child(scene, transform, text, theme, presence);
         if self.replace_row {
             self.replace_field
-                .draw(scene, transform, text, theme, presence);
+                .draw_child(scene, transform, text, theme, presence);
         }
         let parts = self.parts.clone();
         // Text / Hex is one segmented strip.
@@ -1666,9 +1668,10 @@ impl Widget for FindScope {
     ) {
         self.motion = theme.motion();
         if !self.laid_sliding {
-            self.content.draw(scene, transform, text, theme, presence);
+            self.content
+                .draw_child(scene, transform, text, theme, presence);
             if self.open {
-                self.bar.draw(scene, transform, text, theme, presence);
+                self.bar.draw_child(scene, transform, text, theme, presence);
             }
             return;
         }
@@ -1685,7 +1688,7 @@ impl Widget for FindScope {
             transform,
             &self.rect,
         );
-        self.content.draw(
+        self.content.draw_child(
             scene,
             transform * Affine::translate((0.0, offset)),
             text,
@@ -1701,7 +1704,7 @@ impl Widget for FindScope {
                 transform,
                 &Rect::new(band.x0, band.y0, band.x1, band.y0 + reveal.height),
             );
-            self.bar.draw(scene, transform, text, theme, presence);
+            self.bar.draw_child(scene, transform, text, theme, presence);
             scene.pop_layer();
         }
         scene.pop_layer();

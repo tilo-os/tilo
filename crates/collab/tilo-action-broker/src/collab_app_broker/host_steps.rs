@@ -368,6 +368,10 @@ impl AppBrokerState {
             address,
             argument: argument.as_deref(),
             task_run: run.map(|run| run as &dyn tilo_broker_core::steps::TaskRun),
+            run: request
+                .context
+                .as_ref()
+                .and_then(|context| context.group.as_ref()),
         };
         if descriptor.contract.is_live() {
             let view = match steps.watch(&step) {

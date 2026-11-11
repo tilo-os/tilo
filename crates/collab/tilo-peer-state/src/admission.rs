@@ -194,6 +194,14 @@ pub struct Released {
     /// Whether it came as retained history rather than live.
     pub retained: bool,
 }
+/// A held message decided again with the input a report is about that still
+/// waits, and what it waits for now: what it waited for came, and it needs
+/// something else besides.
+#[derive(Clone, Debug)]
+pub struct StillHeld {
+    pub message: neighbour_wire::NeighbourMsg,
+    pub waiting_for: MissingPrerequisite,
+}
 #[derive(Clone, Debug)]
 pub struct AdmissionReport {
     pub(crate) primary: InputDisposition,
@@ -201,6 +209,8 @@ pub struct AdmissionReport {
     pub(crate) summary: ReceiveOutcome,
     /// The held messages taken in with this input, in the order they were.
     pub(crate) released: Vec<Released>,
+    /// The held messages decided again with this input that still wait.
+    pub(crate) still_held: Vec<StillHeld>,
 }
 impl AdmissionReport {
     pub fn primary(&self) -> &InputDisposition {
@@ -218,6 +228,11 @@ impl AdmissionReport {
     pub fn summary(&self) -> &ReceiveOutcome {
         &self.summary
     }
+    /// The held messages this input had decided again that still wait, with
+    /// what each waits for now.
+    pub fn still_held(&self) -> &[StillHeld] {
+        &self.still_held
+    }
     pub(crate) fn new(primary: InputDisposition, summary: ReceiveOutcome) -> Self {
         let settled = match &primary {
             InputDisposition::Accepted(op) => vec![op.clone()],
@@ -228,6 +243,7 @@ impl AdmissionReport {
             settled,
             summary,
             released: Vec::new(),
+            still_held: Vec::new(),
         }
     }
     /// What deciding the held `message` again took in: the message itself
@@ -394,6 +410,21 @@ impl ExactAdmissions {
             let recent = std::mem::take(&mut self.recent);
             self.settled_mut().extend(recent);
         }
+    }
+    /// Take the entry of `key` out: the write it admitted was withdrawn.
+    pub(crate) fn withdraw(&mut self, key: &AdmissionKey) -> Result<(), AdmissionError> {
+        let Some(operation_id) = self.get(key).copied() else {
+            return Ok(());
+        };
+        let bytes = resources::entry_bytes(&DocumentAdmission {
+            key: key.clone(),
+            operation_id,
+        })?;
+        if self.recent.remove(key).is_none() {
+            self.settled_mut().remove(key);
+        }
+        self.entry_bytes = self.entry_bytes.saturating_sub(bytes);
+        Ok(())
     }
     /// Add a decoded entry `check` measured as `bytes` to the settled or
     /// the recent entries, as the wire index placed it.

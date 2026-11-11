@@ -73,7 +73,7 @@ impl StatePeer {
             .ok_or("workspace governance missing")?;
         let mut out = Vec::new();
         for bytes in doc.policy().identities.values() {
-            let identity: GovernedIdentity = serde_json::from_slice(bytes).map_err(err)?;
+            let identity = GovernedIdentity::decode(bytes).map_err(err)?;
             if identity
                 .delegate
                 .as_ref()
@@ -121,13 +121,13 @@ impl StatePeer {
             .workspace_doc
             .as_ref()
             .ok_or("workspace governance missing")?
-            .policy()
             .workspace_policy(&self.core.workspace);
         let prefix = bot::grant_prefix(id);
         Ok(policy
             .grants
-            .into_iter()
+            .iter()
             .filter(|grant| grant.id.as_str().starts_with(&prefix))
+            .cloned()
             .collect())
     }
 
@@ -361,7 +361,7 @@ impl StatePeer {
             doc.put(
                 &identities,
                 &id,
-                automerge::ScalarValue::Bytes(serde_json::to_vec(identity).map_err(err)?),
+                automerge::ScalarValue::Bytes(identity.encode().map_err(err)?),
             )
             .map_err(err)?;
             doc.put(&names, &id, identity.device_cert.device_label.as_str())

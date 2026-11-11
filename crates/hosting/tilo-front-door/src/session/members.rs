@@ -25,7 +25,7 @@ use crate::account::{Outcome, answer, failed, refused};
 use base64::Engine as _;
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::RemoteActionTarget;
-use tilo_session_host::device::HostRefusal;
+use tilo_session_client::device::HostRefusal;
 
 /// The path of a workspace's people.
 pub const ROOT: &str = "workspace/members";
@@ -84,7 +84,7 @@ impl Session {
     ) -> Result<Value, Outcome> {
         let id = self
             .relay
-            .enter(&self.connection, self.parent.as_deref(), workspace)
+            .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
         let target = RemoteActionTarget::workspace_governance(workspace, verb);

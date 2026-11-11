@@ -50,7 +50,6 @@ const WHOLE_PIXEL: f64 = 1e-3;
 /// How far, in logical pixels, a box inside an offering scroller may be from
 /// its old box plus the delta and still count as moved by it: layout adds
 /// the same origin to both, so only rounding separates them.
-#[cfg(feature = "native")]
 const SAME_PLACE: f64 = 1e-6;
 
 /// A scroller's claim that, since the frame its host last presented, its
@@ -225,10 +224,8 @@ pub fn offer<T: ?Sized>(
 
 /// A widget of one tree walk by identity, with its layout box
 /// ([`crate::damage::widget_boxes`]).
-#[cfg(feature = "native")]
 pub(crate) type Placed = (crate::damage::WidgetIdentity, Rect);
 
-#[cfg(feature = "native")]
 fn moved_by(old: Rect, new: Rect, delta: Vec2) -> bool {
     (new.x0 - old.x0 - delta.x).abs() <= SAME_PLACE
         && (new.x1 - old.x1 - delta.x).abs() <= SAME_PLACE
@@ -239,7 +236,6 @@ fn moved_by(old: Rect, new: Rect, delta: Vec2) -> bool {
 /// Where one widget of a tree walk stands with respect to the offers: the
 /// offering scroller whose content holds it (the innermost), and whether it
 /// is an offering scroller itself.
-#[cfg(feature = "native")]
 #[derive(Clone, Copy)]
 struct Standing<'a> {
     content_of: Option<&'a ScrollOffer>,
@@ -247,7 +243,6 @@ struct Standing<'a> {
 }
 
 /// Each widget of `list` (a tree walk) as it stands to `offers`.
-#[cfg(feature = "native")]
 fn standings<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<Standing<'a>> {
     // The offering scrollers the walk is inside, innermost last: the depth
     // of each and its offer.
@@ -272,7 +267,6 @@ fn standings<'a>(list: &[Placed], offers: &'a [ScrollOffer]) -> Vec<Standing<'a>
 
 /// What a relayout (and a rebuild a widget described) changed besides what
 /// scroll copies move.
-#[cfg(feature = "native")]
 #[derive(Debug, Default, PartialEq)]
 pub(crate) struct Moves {
     /// The old and new box of every widget that moved or resized otherwise,
@@ -292,7 +286,6 @@ pub(crate) struct Moves {
 /// copy's, and one that stayed put (a pinned title above a scrolled body, a
 /// sticky header over it) is damage where it is and where the copy took its
 /// pixels. The scroller itself must not move.
-#[cfg(feature = "native")]
 pub(crate) fn moves_besides(before: &[Placed], after: &[Placed], offers: &[ScrollOffer]) -> Moves {
     let old_standings = standings(before, offers);
     let new_standings = standings(after, offers);
@@ -795,10 +788,51 @@ pub fn plan_scaled(
     offers: &[ScrollOffer],
     roots: &[&dyn Widget],
     (drawn_scale, device_per_scene): (f64, f64),
+    size: (u32, u32),
+) -> CopyPlan {
+    plan_drawn(
+        offers,
+        roots,
+        crate::scale::composite_transform(drawn_scale),
+        drawn_scale * device_per_scene,
+        size,
+    )
+}
+
+/// [`plan`] for widgets drawn with `placement` into a host's scene (an app
+/// in a desktop's window, drawn where the window stands) and clipped there
+/// to `clip` (in the widgets' own coordinates, as the window clips its
+/// app), whose target has `device_per_unit` pixels per unit of the widgets'
+/// coordinates: the plan is in those coordinates' device pixels, for a
+/// `width` × `height` target of them; a host moves it by `placement`
+/// ([`MovedRegion::of`], [`MovedRegion::transformed`]). An offer drawn under
+/// another transform is refused.
+pub fn plan_placed(
+    offers: &[ScrollOffer],
+    roots: &[&dyn Widget],
+    (placement, clip): (Affine, Rect),
+    device_per_unit: f64,
+    size: (u32, u32),
+) -> CopyPlan {
+    // What the window shows of each scroller: past its clip, the pixels on
+    // screen are the host's, which do not move with the content.
+    let clipped: Vec<ScrollOffer> = offers
+        .iter()
+        .map(|offer| ScrollOffer {
+            viewport: offer.viewport.intersect(clip),
+            ..offer.clone()
+        })
+        .collect();
+    plan_drawn(&clipped, roots, placement, device_per_unit, size)
+}
+
+fn plan_drawn(
+    offers: &[ScrollOffer],
+    roots: &[&dyn Widget],
+    drawn: Affine,
+    scale: f64,
     (width, height): (u32, u32),
 ) -> CopyPlan {
-    let drawn = crate::scale::composite_transform(drawn_scale);
-    let scale = drawn_scale * device_per_scene;
     let mut planned = CopyPlan::default();
     if offers.is_empty() {
         return planned;

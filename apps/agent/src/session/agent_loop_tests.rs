@@ -454,6 +454,9 @@ struct World {
     /// A republished catalogue reaches the agent this many link polls
     /// after the step's result instead of with it.
     republish_after_polls: usize,
+    /// Chat publishes the conversation's message only this many link polls after the run started:
+    /// the agent's first catalogue holds none of it.
+    chat_late: Option<usize>,
     /// A child of the run is accepted at once and settles in its
     /// application this long after it started: a re-ask answers its
     /// terminal update from then on.
@@ -1451,6 +1454,13 @@ fn paced_fixture(
     execution_fixture(title, world, turns, pace, None)
 }
 
+/// The catalogue that publishes Chat's message late, when `world` publishes it so.
+fn late_chat(world: &World) -> Option<(usize, CollabEvent)> {
+    let polls = world.chat_late?;
+    let surfaces = world.surfaces();
+    Some((polls, CollabEvent::ActionCatalogue { surfaces }))
+}
+
 fn execution_fixture(
     title: &str,
     world: World,
@@ -1488,7 +1498,7 @@ fn execution_fixture(
         sent: sent.clone(),
         events: Vec::new(),
         held: Vec::new(),
-        late: None,
+        late: late_chat(&world.borrow()),
         holding: Vec::new(),
     });
     let mut run = runtime_collab::TaskRunEnvelope {
@@ -1508,7 +1518,9 @@ fn execution_fixture(
         spend: None,
     };
     bind_context(&mut run);
-    let surfaces = world.borrow().surfaces();
+    let mut surfaces = world.borrow().surfaces();
+    surfaces
+        .retain(|surface| world.borrow().chat_late.is_none() || surface.app_id != "so.tilo.chat");
     let session = Session {
         cfg: Config {
             agent_id: "agent-1".into(),
@@ -1812,6 +1824,30 @@ fn recorded(sent: &[CollabRequest], action: &str) -> Vec<serde_json::Map<String,
             _ => None,
         })
         .collect()
+}
+
+/// An agent started for a turn reads the catalogue before Chat republished the message it
+/// answers: the turn waits for the republication, and its reply is recorded all the same.
+#[test]
+fn a_turn_waits_for_its_message_to_be_published() {
+    let mut f = fixture(
+        "write a paragraph",
+        World {
+            chat: Some("asked".into()),
+            chat_late: Some(2),
+            ..World::default()
+        },
+        vec![turn(&[finish("Wrote it.", true)], 24)],
+    );
+    f.session.run_task(&f.run).unwrap();
+    let sent = f.sent.borrow();
+    let records = recorded(&sent, "record-work");
+    assert_eq!(
+        records.first().map(|first| first["work"]["state"].clone()),
+        Some(Value::from("taken")),
+        "the reply was told the run started once the message was published"
+    );
+    assert_eq!(records.last().unwrap()["say"], "Wrote it.");
 }
 
 /// The turn a run answers is recorded in its conversation: the reply is

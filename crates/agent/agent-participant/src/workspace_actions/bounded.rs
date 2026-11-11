@@ -24,9 +24,9 @@
 //! or anything a viewer's action wrote, is never saved.
 
 use super::{
-    ActionHostError, Arc, Caller, CallerPrincipal, Change, ConfinedReplica, Confirmation,
-    DocumentMutation, DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest,
-    Mounted, Mutex, Outcome, Seed, Worker, WorkspaceState, bytes_of, reads, whole,
+    ActionHostError, Arc, Caller, CallerPrincipal, ConfinedReplica, Confirmation, DocumentMutation,
+    DocumentRoute, HashMap, HashSet, Instant, InvocationId, InvokeRequest, Mounted, Mutex, Outcome,
+    Seed, Worker, WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
@@ -185,18 +185,19 @@ fn key_of(prop: &automerge::Prop) -> String {
 /// The storage keys `mutation` writes at, each top down to what it put or
 /// deleted, in a record whose changes so far are `before`.
 fn written_keys(
-    before: &[Change],
+    before: Option<&[u8]>,
     mutation: &DocumentMutation,
 ) -> Result<Vec<Vec<String>>, String> {
     use automerge::PatchAction;
     use tilo_automerge::ApplyIncoming as _;
     let mut doc = automerge::AutoCommit::new();
-    for (_, bytes) in before {
+    if let Some(bytes) = before {
         doc.load_incoming(bytes)
             .map_err(|error| error.to_string())?;
     }
     let was = doc.get_heads();
-    doc.load_incoming(&bytes_of(mutation))
+    let (DocumentMutation::Snapshot(written) | DocumentMutation::Incremental(written)) = mutation;
+    doc.load_incoming(written)
         .map_err(|error| error.to_string())?;
     let now = doc.get_heads();
     Ok(doc
@@ -226,7 +227,7 @@ fn written_keys(
 pub(super) fn refused_writes(
     permissions: &ui::permissions::PermissionContext,
     (app, declared): (&str, Option<&str>),
-    before: &[Change],
+    before: Option<&[u8]>,
     mutation: &DocumentMutation,
     confirmed: bool,
 ) -> Result<Vec<TreePath>, String> {
@@ -279,8 +280,7 @@ pub(super) fn question(
     // by the agent's own name says nothing more.
     let run = super::said_run_title(request)
         .filter(|run| *run != agent)
-        .unwrap_or_default()
-        .to_owned();
+        .unwrap_or_default();
     let contract = &about.descriptor.contract;
     Ok(ConfirmationQuestion {
         id,
@@ -513,10 +513,9 @@ impl Worker {
                 };
                 self.bounded.remove(&oldest);
             }
-            let changes = state
-                .records
-                .get(&holder)
-                .ok_or(ActionHostError::UnknownAction)?;
+            let (bytes, revision) = state
+                .document(&holder)
+                .map_err(|_| ActionHostError::UnknownAction)?;
             let app = ConfinedReplica::open(
                 &self.catalogue,
                 &holder.app_id,
@@ -525,7 +524,7 @@ impl Worker {
                 &member_actor(&policy, who)?,
                 Seed::Existing {
                     record: reads::record_id(&holder.record).map_err(unavailable)?,
-                    changes: changes.iter().map(|(_, bytes)| bytes.clone()).collect(),
+                    changes: vec![bytes],
                 },
             )
             .map_err(|error| unavailable(error.to_string()))?;
@@ -535,7 +534,7 @@ impl Worker {
                 BoundedReplica {
                     held: Mounted {
                         app,
-                        seen: changes.iter().map(|(digest, _)| *digest).collect(),
+                        merged: Some(revision),
                         parts: HashMap::new(),
                         used: clock,
                     },
@@ -551,21 +550,17 @@ impl Worker {
             .ok_or_else(|| unavailable("the record did not mount".into()))?;
         held.held.used = clock;
         if holder != *route && !held.held.parts.contains_key(route) {
-            let part = state
-                .records
-                .get(route)
-                .ok_or(ActionHostError::UnknownAction)?;
+            let (part, revision) = state
+                .document(route)
+                .map_err(|_| ActionHostError::UnknownAction)?;
             held.held
                 .app
                 .apply_record(
                     &reads::record_id(&route.record).map_err(unavailable)?,
-                    &DocumentMutation::Snapshot(whole(part).map_err(unavailable)?),
+                    &DocumentMutation::Snapshot(part),
                 )
                 .map_err(|error| unavailable(error.to_string()))?;
-            held.held.parts.insert(
-                route.clone(),
-                part.iter().map(|(digest, _)| *digest).collect(),
-            );
+            held.held.parts.insert(route.clone(), Some(revision));
         }
         Ok(key)
     }
@@ -681,10 +676,9 @@ impl Worker {
         caller: &Caller,
         who: &Bounded,
         (request, route, state): (&InvokeRequest, &DocumentRoute, &WorkspaceState),
-        (target, arguments, published): (
+        (target, arguments): (
             &tilo_actions::remote::RemoteActionTarget,
             serde_json::Map<String, serde_json::Value>,
-            &[tilo_actions::ActionDescriptor],
         ),
     ) -> Result<
         (
@@ -696,25 +690,27 @@ impl Worker {
         let key = self
             .bounded_replica(workspace_id, who, route, state)
             .map_err(Outcome::Rejected)?;
-        // Taken out: whatever runs in it now, it is opened afresh next time.
+        // Out of the map while it runs, and back in once what it changed is
+        // saved: a caller's next action reuses what they opened instead of
+        // opening the record afresh, which costs more with every change the
+        // record holds. An action whose change is not saved leaves it behind,
+        // so nothing unsaved is ever acted on.
         let held = self
             .bounded
             .remove(&key)
             .ok_or(Outcome::Rejected(ActionHostError::UnknownAction))?;
-        let app = held.held.app;
-        let Some(descriptor) = app
-            .survey()
-            .into_iter()
-            .find(|descriptor| descriptor.address == target.address)
-        else {
-            let published = published
-                .iter()
-                .any(|descriptor| descriptor.address == target.address);
-            return Err(Outcome::Rejected(if published {
-                ActionHostError::NotPermitted
-            } else {
-                ActionHostError::UnknownAction
-            }));
+        let app = &held.held.app;
+        // What the caller's own view offers, asked for by address: the record
+        // publishes to its owner what the caller may not run, which tells a
+        // refused action from one that does not exist.
+        let Some(descriptor) = app.descriptor(&target.address) else {
+            return Err(Outcome::Rejected(
+                if self.publishes(&key.0, &target.address) {
+                    ActionHostError::NotPermitted
+                } else {
+                    ActionHostError::UnknownAction
+                },
+            ));
         };
         let arguments = descriptor.bind_prompt_text(arguments);
         let declared = descriptor.contract.need().field;
@@ -751,8 +747,8 @@ impl Worker {
                 anchor: hex::encode(anchor.cursor),
                 head: hex::encode(head.cursor),
             });
-        let holder = key.0;
-        let taken: Vec<(DocumentRoute, DocumentMutation)> = super::take_all(&app, &holder)
+        let holder = key.0.clone();
+        let taken: Vec<(DocumentRoute, DocumentMutation)> = super::take_all(app, &holder)
             .map_err(|error| super::commit_failed(error.to_string(), false))?
             .into_iter()
             .map(|(changed, mutation)| (changed.unwrap_or_else(|| holder.clone()), mutation))
@@ -764,11 +760,11 @@ impl Worker {
             .map_err(Outcome::Rejected)?;
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
         for (changed, mutation) in &taken {
-            let before = state.records.get(changed).map_or(&[][..], Vec::as_slice);
+            let before = state.document(changed).ok().map(|(bytes, _)| bytes);
             let refused = refused_writes(
                 &permissions,
                 (&changed.app_id, declared.as_deref()),
-                before,
+                before.as_deref(),
                 mutation,
                 confirmed,
             )
@@ -795,7 +791,22 @@ impl Worker {
             self.commit_durably(workspace_id, &changed, &mutation)
                 .map_err(|reason| super::commit_failed(reason, true))?;
         }
+        self.bounded.insert(key, held);
         Ok((output, left_at))
+    }
+}
+
+impl Worker {
+    /// Whether the record at `holder` publishes `address` to its owner: what
+    /// tells an action a caller may not run from one that does not exist.
+    fn publishes(
+        &self,
+        holder: &DocumentRoute,
+        address: &tilo_actions::door::ActionAddress,
+    ) -> bool {
+        self.mounted
+            .get(holder)
+            .is_some_and(|mounted| mounted.app.descriptor(address).is_some())
     }
 }
 
@@ -877,7 +888,7 @@ mod tests {
 
     /// A record holding a title and an issue's comments, its one change, and
     /// the document to write the next change on.
-    fn record() -> (Vec<Change>, automerge::AutoCommit) {
+    fn record() -> (Vec<u8>, automerge::AutoCommit) {
         let mut doc = automerge::AutoCommit::new();
         doc.put(automerge::ROOT, "title", "Launch").unwrap();
         let issues = doc
@@ -890,7 +901,7 @@ mod tests {
             .unwrap();
         doc.commit();
         let genesis = doc.save();
-        (vec![([0; 32], genesis)], doc)
+        (genesis, doc)
     }
 
     /// The change `write` makes on `doc`, as an increment.
@@ -929,7 +940,7 @@ mod tests {
             doc.put(automerge::ROOT, "title", "Renamed").unwrap();
         });
         let refused = |role, mutation: &DocumentMutation| {
-            refused_writes(&as_role(role), (APP, None), &before, mutation, false).unwrap()
+            refused_writes(&as_role(role), (APP, None), Some(&before), mutation, false).unwrap()
         };
         assert!(refused(Role::Commenter, &commented).is_empty());
         assert_eq!(
@@ -951,7 +962,7 @@ mod tests {
             refused_writes(
                 &as_role(role),
                 (APP, Some(policy::roles::COMMENTS_FIELD)),
-                &before,
+                Some(&before),
                 &retitled,
                 false,
             )

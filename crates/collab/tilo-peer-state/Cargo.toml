@@ -56,7 +56,6 @@ tracing.workspace = true
 iroh-base = { workspace = true, features = ["key"], optional = true }
 # The person's own documents between two of their devices: the link every host
 # dials, a page included.
-iroh.workspace = true
 # One length-prefixed record per link exchange, the same framing its peers read.
 wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = ["postcard", "tokio"] }
 
@@ -65,6 +64,7 @@ wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = [
 # watchers. A page holds its workspaces through the same owner over its own
 # storage and link, so the engine builds for wasm32 without them.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh.workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 # Writes the file-backed store: owner-only, crash-safe replacement.

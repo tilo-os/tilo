@@ -383,7 +383,7 @@ impl Workspace for PageWorkspace {
                 role: asked,
                 expires_at_ns,
                 inviter_name: name,
-                retired_wait_list_entry: None,
+                wait_list_entry: None,
                 recipient,
             },
             move |reply| {

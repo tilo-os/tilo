@@ -12,7 +12,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextKind, TextRenderer, TextStyle};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
-use ui::widget::{PropertyListFace, PropertyRow, Widget};
+use ui::widget::{PropertyListFace, PropertyRow};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -446,7 +446,7 @@ impl Editor {
 
         self.endian_group
             .set_selected(super::layout::endian_index(self.model.endian()));
-        Widget::draw(
+        ui::widget::DrawChild::draw_child(
             &mut self.endian_group,
             scene,
             transform,
@@ -495,7 +495,7 @@ impl Editor {
         presence: &PresenceCtx,
     ) {
         self.empty.apply_layout_external(self.rect);
-        Widget::draw(&mut self.empty, scene, transform, tr, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.empty, scene, transform, tr, theme, presence);
         // "New empty file" under "Open file": a second way in, secondary to
         // opening one.
         let open = self.empty.action_rect();

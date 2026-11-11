@@ -70,7 +70,8 @@ impl SessionConfig {
     /// The person's settings as stored.
     #[must_use]
     pub fn load() -> Self {
-        let input = RichInputConfig::load();
+        // The sources of the keyboard typing now, as switching the source reads them.
+        let input = settings_store::keyboard_sources::current(&RichInputConfig::load());
         let accessibility = tilo_accessibility_settings::AccessibilitySettings::load();
         let power = loaded_power();
         Self {

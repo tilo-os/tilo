@@ -517,11 +517,12 @@ fn identities_without_an_agent_keep_their_bytes() {
         delegate: None,
         workspace_delegations: vec![],
     };
-    let bytes = serde_json::to_string(&identity).unwrap();
-    assert!(
-        !bytes.contains("delegate\""),
-        "an ordinary identity's governed bytes are unchanged: {bytes}"
-    );
-    let back: crate::state::GovernedIdentity = serde_json::from_str(&bytes).unwrap();
+    let bytes = identity.encode().unwrap();
+    let back = crate::state::GovernedIdentity::decode(&bytes).unwrap();
     assert!(back.delegate.is_none());
+    assert_eq!(
+        back.encode().unwrap(),
+        bytes,
+        "an ordinary identity's governed bytes read and write back alike"
+    );
 }

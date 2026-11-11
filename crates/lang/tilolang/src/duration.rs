@@ -2,14 +2,9 @@
 //! paths"). A duration is a value of its own: a moment or a day moves by it, two moments or two
 //! days apart are one, and a filter resolves it against the time it is asked at.
 
-/// The units a duration is written in, and how many seconds each is.
-pub const UNITS: &[(&str, i64)] = &[
-    ("s", 1),
-    ("m", 60),
-    ("h", 3600),
-    ("d", 86_400),
-    ("w", 604_800),
-];
+// The units are the lexer's: which suffix makes a number a duration is what it reads, and the
+// seconds each is worth is what turns the literal into a value.
+pub use tilolang_lex::duration::UNITS;
 
 /// The seconds `amount` of `unit` make; `None` for a unit that is none of [`UNITS`] or an
 /// amount too large.

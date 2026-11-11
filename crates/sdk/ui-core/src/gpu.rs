@@ -227,6 +227,18 @@ impl BackendChoice {
     }
 }
 
+/// The adapter a process opens its devices on, where it named one
+/// ([`prefer_adapter`]).
+static PREFERRED_ADAPTER: std::sync::OnceLock<fn(&Adapter) -> bool> = std::sync::OnceLock::new();
+
+/// Open the process's devices on the first adapter `accepts`, unless
+/// `WGPU_ADAPTER_NAME` names another. A process whose frames another process
+/// shows names that one's GPU here, so what it draws is allocated in that
+/// GPU's memory. Only devices opened afterwards follow it.
+pub fn prefer_adapter(accepts: fn(&Adapter) -> bool) {
+    let _ = PREFERRED_ADAPTER.set(accepts);
+}
+
 /// The backends a context starts with when `WGPU_BACKEND` names none.
 ///
 /// Windows uses DX12 alone: probing every backend can enter optional Vulkan
@@ -379,6 +391,17 @@ impl RenderContext {
         if software_fallback().is_some() {
             self.settle_backends().await;
             return loss::software_adapter(&self.instance).await;
+        }
+        if let Some(accepts) = PREFERRED_ADAPTER.get().filter(|_| !adapter_named_by_env()) {
+            for adapter in self
+                .instance
+                .enumerate_adapters(wgpu::Backends::VULKAN)
+                .await
+            {
+                if accepts(&adapter) {
+                    return Some(adapter);
+                }
+            }
         }
         if self.fallback.is_some()
             && self.devices.is_empty()

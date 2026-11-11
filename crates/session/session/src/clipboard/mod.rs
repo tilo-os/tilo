@@ -38,9 +38,11 @@ use tilo_resource::Effect;
 use tilo_service::{Service, Started, decode, offer, reading};
 use ui::dnd::CopiedFiles;
 
+mod desk;
 pub(crate) mod paste;
 use crate::controls::CLIPBOARD_RESOURCE;
 use crate::i18n::t;
+pub(crate) use desk::DeskClipboard;
 
 /// The clipboard's history and the read of the selection filling it.
 pub(crate) struct Clipboard {
@@ -74,6 +76,8 @@ pub(crate) struct Clipboard {
     synced_at: Cell<Option<Instant>>,
     /// What wakes the session's loop when a paste on its own thread is over.
     wake: tilo_service::Wake,
+    /// The clipboard the session's own surfaces copy to and paste from.
+    desk: DeskClipboard,
 }
 
 /// One read of the selection.
@@ -85,19 +89,25 @@ struct Reading {
     pull: Pull,
 }
 
-/// What quick settings asked of the history.
+/// What the history's resource and the roles beside it asked of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum Ask {
     /// Put a copy back on the clipboard and paste it into the app in front.
     Paste(String),
-    /// Put `text` on the clipboard for the person to paste somewhere else,
-    /// without keeping it, for as long as `kept_for` says.
-    Copy { text: String, kept_for: Duration },
+    /// Put `text` on the clipboard for the person to paste somewhere else. A credential stays
+    /// only as long as `kept_for` says, and is no copy of the person's; anything else is.
+    Copy {
+        text: String,
+        kept_for: Option<Duration>,
+    },
 }
 
 impl crate::platform::clipboard::Clipboard for Clipboard {
     fn copy(&self, text: String, kept_for: Duration) {
-        self.ask(Ask::Copy { text, kept_for });
+        self.ask(Ask::Copy {
+            text,
+            kept_for: Some(kept_for),
+        });
     }
 }
 
@@ -118,25 +128,33 @@ impl Clipboard {
             paste: RefCell::new(paste::Paste::unfinished(&wake)),
             unshared: Cell::new(true),
             synced_at: Cell::new(None),
+            desk: DeskClipboard::new(wake.clone()),
             wake,
         }
+    }
+
+    /// The clipboard the session's own surfaces copy to and paste from: this one.
+    pub(crate) fn desk(&self) -> DeskClipboard {
+        self.desk.clone()
     }
 
     /// Take the selection as the apps set it: start reading what it offers,
     /// and keep a copy once its bytes are all here.
     pub(crate) fn follow(&self, compositor: &mut Compositor) {
         self.take_back_when_due(compositor);
+        let change = compositor.selection_changes(Selection::Clipboard);
+        self.desk.moved(change);
         self.finish_reading();
         if self.reading.borrow().is_some() {
             return;
         }
-        let change = compositor.selection_changes(Selection::Clipboard);
         if change == self.seen.get() {
             return;
         }
         let mimes = compositor.selection_formats(Selection::Clipboard);
         let Some(mime) = kept_mime(&mimes) else {
             self.seen.set(change);
+            self.desk.read(change, None);
             // A secret or unkeepable copy takes the files with it: a paste must not paste what the
             // person copied before it.
             self.files.take();
@@ -153,6 +171,7 @@ impl Clipboard {
             Err(error) => {
                 tracing::warn!(%error, "the selection could not be read");
                 self.seen.set(change);
+                self.desk.read(change, None);
             }
         }
     }
@@ -178,6 +197,7 @@ impl Clipboard {
                 )),
                 Pulled::Lost => {
                     self.seen.set(reading.change);
+                    self.desk.read(reading.change, None);
                     self.files.take();
                     None
                 }
@@ -187,6 +207,7 @@ impl Clipboard {
             return;
         };
         self.seen.set(change);
+        self.desk.read(change, text_of(&mime, &bytes));
         let now = ui::time::unix_now_ms();
         let files = ui::dnd::is_file_mime(&mime)
             .then(|| ui::dnd::copied_files(&mime, &String::from_utf8_lossy(&bytes)))
@@ -383,22 +404,43 @@ impl Clipboard {
         self.asks.borrow_mut().push(ask);
     }
 
+    /// Whether a copy is to be pasted on the next [`Self::serve_asks`].
+    pub(crate) fn pasting(&self) -> bool {
+        self.asks
+            .borrow()
+            .iter()
+            .any(|ask| matches!(ask, Ask::Paste(_)))
+    }
+
     /// Carry out what quick settings asked: put a copy back on the clipboard and paste it into the
     /// app in front, or put what a surface hands the person on it.
     pub(crate) fn serve_asks(&self, compositor: &mut Compositor) {
+        // What the session's own surfaces copied is the person's copy, as an app's is.
+        for text in self.desk.take_copies() {
+            self.copy_text(compositor, text);
+        }
         for ask in std::mem::take(&mut *self.asks.borrow_mut()) {
             match ask {
                 Ask::Paste(key) => {
                     self.paste(compositor, &key);
                 }
-                Ask::Copy { text, kept_for } => {
-                    self.copy_for_person(
-                        compositor,
-                        tilo_compositor::clipboard_history::TEXT_MIME,
-                        text.into_bytes(),
-                        Some(kept_for),
-                    );
-                }
+                Ask::Copy { text, kept_for } => match kept_for {
+                    // A credential the session hands over: on the clipboard for as long as it is
+                    // wanted there, and never kept among the person's copies.
+                    Some(kept_for) => {
+                        self.copy_for_person(
+                            compositor,
+                            tilo_compositor::clipboard_history::TEXT_MIME,
+                            text.into_bytes(),
+                            Some(kept_for),
+                        );
+                    }
+                    // What the person asked to copy: the history takes it in as it takes what
+                    // they copied in an app.
+                    None => {
+                        self.copy_text(compositor, text);
+                    }
+                },
             }
         }
     }
@@ -413,6 +455,7 @@ impl Clipboard {
             };
             (copy.mime.clone(), copy.bytes.clone())
         };
+        let text = text_of(&offer.0, &offer.1);
         if let Err(error) = compositor.set_selection(Selection::Clipboard, vec![offer]) {
             tracing::warn!(%error, "the copy could not be put on the clipboard");
             return false;
@@ -420,6 +463,7 @@ impl Clipboard {
         // The session's own offer is not a copy the person made.
         self.seen
             .set(compositor.selection_changes(Selection::Clipboard));
+        self.desk.read(self.seen.get(), text);
         Self::paste_into_focus(compositor);
         true
     }
@@ -436,6 +480,7 @@ impl Clipboard {
         bytes: Vec<u8>,
         kept_for: Option<Duration>,
     ) -> bool {
+        let text = text_of(mime, &bytes);
         if let Err(error) =
             compositor.set_selection(Selection::Clipboard, vec![(mime.to_owned(), bytes)])
         {
@@ -445,8 +490,27 @@ impl Clipboard {
         // The session's own offer is not a copy the person made.
         self.seen
             .set(compositor.selection_changes(Selection::Clipboard));
+        self.desk.read(self.seen.get(), text);
         self.kept_until
             .set(kept_for.and_then(|kept| Instant::now().checked_add(kept)));
+        true
+    }
+
+    /// Put `text` on the clipboard as a copy of the person's own: what they asked to copy, here or
+    /// in an app of theirs, so the history keeps it as it keeps what they copied.
+    fn copy_text(&self, compositor: &mut Compositor, text: String) -> bool {
+        if let Err(error) = compositor.set_selection(
+            Selection::Clipboard,
+            vec![(
+                tilo_compositor::clipboard_history::TEXT_MIME.to_owned(),
+                text.into_bytes(),
+            )],
+        ) {
+            tracing::warn!(%error, "the text could not be put on the clipboard");
+            return false;
+        }
+        // The history reads it back on its next pass, as it reads a copy of any app's.
+        self.kept_until.set(None);
         true
     }
 
@@ -471,14 +535,19 @@ impl Clipboard {
             .set(compositor.selection_changes(Selection::Clipboard));
     }
 
-    /// Make the app in front paste, with the chord it pastes with. A hosted surface holding the
-    /// keyboard takes the chord as it is: the app in front is a window, and the session's own
-    /// surfaces are closed by then.
+    /// Make the field that holds the keyboard paste: the app in front with the chord it pastes
+    /// with, or a field of the session's own (the desk's search) with Ctrl+V.
     fn paste_into_focus(compositor: &mut Compositor) {
-        let Some(window) = compositor.focused_window() else {
-            return;
+        let window = if compositor.host_takes_keys() {
+            None
+        } else {
+            compositor.focused_window()
         };
-        let ids: Vec<&str> = window.app_id.as_deref().into_iter().collect();
+        let ids: Vec<&str> = window
+            .as_ref()
+            .and_then(|window| window.app_id.as_deref())
+            .into_iter()
+            .collect();
         let section = settings_store::load_section(paste_shortcut::SECTION);
         let overrides = paste_shortcut::overrides_from_section(&section);
         let chord = if ids.is_empty() {
@@ -582,6 +651,10 @@ impl Service for Served {
             ClipboardAction::Clear => {
                 self.clipboard.clear();
             }
+            ClipboardAction::Copy { text } => self.clipboard.ask(Ask::Copy {
+                text,
+                kept_for: None,
+            }),
             ClipboardAction::PasteFiles {
                 destination,
                 conflict,
@@ -640,6 +713,13 @@ pub(crate) enum ClipboardAction {
     /// Clear the history, keeping what the person pinned
     #[effect(own_device, idempotent)]
     Clear,
+    /// Put text on the clipboard, as if it had been copied
+    #[effect(own_device)]
+    Copy {
+        /// The text to copy
+        #[param("The text to copy")]
+        text: String,
+    },
     /// Paste the copied files into a folder, as a copy, or a move after a cut
     #[effect(own_device, label = "Paste files")]
     PasteFiles {
@@ -700,6 +780,11 @@ fn copy_of(stored: StoredCopy) -> Option<Copy> {
     copy.pinned = stored.pinned;
     copy.from = stored.from;
     Some(copy)
+}
+
+/// The text a copy of `mime` 's `bytes` pastes as, when it is text.
+fn text_of(mime: &str, bytes: &[u8]) -> Option<String> {
+    (mime == TEXT_MIME).then(|| String::from_utf8_lossy(bytes).into_owned())
 }
 
 /// evdev codes of the paste chord.

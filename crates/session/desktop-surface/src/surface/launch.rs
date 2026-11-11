@@ -3,7 +3,7 @@
 
 use tilo_desktop_model::{Strip, StripId, WindowGroup, WindowWidth, Workspace};
 
-use super::{RowOp, Shared};
+use super::{Shared, row_op::RowOp};
 use crate::TileSource;
 use crate::navigation;
 

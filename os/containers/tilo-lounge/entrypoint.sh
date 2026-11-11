@@ -28,6 +28,22 @@
 # ingress binds TILO_ROOMS_WEB; an address ending in `:0` takes a port the
 # kernel picks, which the host announces in its started event.
 #
+# The host's own HTTPS listener presents a development certificate it makes
+# and keeps under the state root, unless the operator mounts a publicly
+# trusted one: a PEM chain and its key, set together. The host reads them
+# again when the files change, so a renewal reaches it without a restart.
+#   TILO_ROOMS_TLS_CERT       the certificate chain (PEM, leaf first)
+#   TILO_ROOMS_TLS_KEY        its private key (PEM)
+#
+# Pages reach the host itself over WebTransport (HTTP/3, UDP), which no
+# HTTPS ingress carries: the host listens at TILO_ROOMS_LINK, and pages open
+# their sessions at TILO_ROOMS_LINK_ORIGIN, a name leading straight to that
+# UDP port. The host presents its TLS certificate there: one a browser
+# trusts for that name, or, with the development certificate, one pages pin
+# by the hash the host publishes. Unset, the host listens beside
+# TILO_ROOMS_WEB at the public origin, which only a host with no ingress
+# reaches.
+#
 # Every workspace this host keeps gives each person who asks workspaces of
 # their own, governed here beside the Lounge, keeping between them as many
 # gigabytes per person as the operator says:
@@ -47,6 +63,8 @@ fail() {
 # arrangement is its shared desktop record, so the host has no layout flag, and
 # a deployment that still names one (eu1 does) starts unchanged.
 known='TILO_ROOMS_PERSISTENT TILO_ROOMS_NAME TILO_ROOMS_DESCRIPTION TILO_ROOMS_ADMISSION
+TILO_ROOMS_WAIT_LIST_MAX TILO_ROOMS_CONTACT TILO_ROOMS_LOCAL
+TILO_ROOMS_MAIL_FROM TILO_ROOMS_RESEND_KEY_FILE TILO_ROOMS_RESEND_URL TILO_ROOMS_MAIL_TEMPLATES
 TILO_ROOMS_PUBLIC_API TILO_ROOMS_LIVE_ORIGIN
 TILO_ROOMS_DEFAULT_ROLE TILO_ROOMS_CHAT_CHANNELS TILO_ROOMS_FEEDBACK_CHANNEL
 TILO_ROOMS_SEED_APPS TILO_ROOMS_AUTHOR_APPS TILO_ROOMS_REFOUND TILO_ROOMS_BOTS TILO_ROOMS_LAYOUT
@@ -55,6 +73,8 @@ TILO_ROOMS_PERSON_STORAGE_GB TILO_ROOMS_IROH_LISTEN
 TILO_ROOMS_STATE
 TILO_ROOMS_WEB_ENTRY TILO_ROOMS_SITE_ORIGINS TILO_ROOMS_RELAY_ORIGIN
 TILO_ROOMS_RELAY_PLAIN TILO_ROOMS_LIVE TILO_ROOMS_LIVE_ORIGIN TILO_ROOMS_WEB
+TILO_ROOMS_TLS_CERT TILO_ROOMS_TLS_KEY
+TILO_ROOMS_LINK TILO_ROOMS_LINK_ORIGIN
 TILO_ROOMS_HTTP TILO_ROOMS_FETCH_PROXY
 TILO_ROOMS_MODERATION_KEY_FILE TILO_ROOMS_MODERATION_MODEL
 TILO_ROOMS_DISCORD_CLIENT_ID TILO_ROOMS_DISCORD_CLIENT_SECRET_FILE
@@ -97,6 +117,16 @@ origin=${origin%/}
 # rides the plain listener as the HTTPS stream fallback, so neither changes
 # what the host serves; both are read so eu1's environment starts as it is.
 dir=${TILO_ROOMS_STATE:-/run/tilo-rooms}/$name
+tls=dev
+if [ -n "${TILO_ROOMS_TLS_CERT:-}" ] || [ -n "${TILO_ROOMS_TLS_KEY:-}" ]; then
+  [ -n "${TILO_ROOMS_TLS_CERT:-}" ] && [ -n "${TILO_ROOMS_TLS_KEY:-}" ] \
+    || fail "TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY are set together, or neither"
+  # The host's flag holds both paths, split at the comma.
+  case "$TILO_ROOMS_TLS_CERT$TILO_ROOMS_TLS_KEY" in
+    *,*) fail "TILO_ROOMS_TLS_CERT and TILO_ROOMS_TLS_KEY are paths without a comma" ;;
+  esac
+  tls="files:$TILO_ROOMS_TLS_CERT,$TILO_ROOMS_TLS_KEY"
+fi
 
 # comma_flags VALUE FLAG: FLAG and one comma-separated, trimmed entry of VALUE
 # per entry. The settings it splits (origins, app ids, channel names) hold no
@@ -127,7 +157,7 @@ set -- room \
   --inactive-after-days "${TILO_ROOMS_INACTIVE_AFTER_DAYS:-30}" \
   --web "${TILO_ROOMS_WEB:-127.0.0.1:9781}" \
   --packet-relay "${TILO_ROOMS_LIVE:-0.0.0.0:9782}" \
-  --tls dev \
+  --tls "$tls" \
   --web-plain "${TILO_ROOMS_RELAY_PLAIN:-0.0.0.0:9780}" \
   --public-origin "$origin" \
   --http "${TILO_ROOMS_HTTP:-0.0.0.0:8790}" \
@@ -140,6 +170,11 @@ set -- room \
 if [ -n "${TILO_ROOMS_LIVE_ORIGIN:-}" ]; then
   set -- "$@" --packet-relay-url "${TILO_ROOMS_LIVE_ORIGIN%/}"
 fi
+if [ -n "${TILO_ROOMS_LINK:-}" ] || [ -n "${TILO_ROOMS_LINK_ORIGIN:-}" ]; then
+  [ -n "${TILO_ROOMS_LINK:-}" ] && [ -n "${TILO_ROOMS_LINK_ORIGIN:-}" ] \
+    || fail "TILO_ROOMS_LINK and TILO_ROOMS_LINK_ORIGIN are set together, or neither"
+  set -- "$@" --link-listen "$TILO_ROOMS_LINK" --link-origin "${TILO_ROOMS_LINK_ORIGIN%/}"
+fi
 if [ -n "${TILO_ROOMS_NAME:-}" ]; then
   set -- "$@" --workspace-name "$TILO_ROOMS_NAME"
 fi
@@ -147,6 +182,16 @@ fi
 # anyone as the default role or only to people invited.
 if [ "$admission" = invite ]; then
   set -- "$@" --invitation-only
+fi
+wait_list=${TILO_ROOMS_WAIT_LIST_MAX:-}
+if [ -n "$wait_list" ]; then
+  case $wait_list in
+    ''|*[!0-9]*) fail "TILO_ROOMS_WAIT_LIST_MAX is a count, not $wait_list" ;;
+  esac
+  # The list is what a door taking people by invitation offers those it turns
+  # away: an open door turns nobody away.
+  [ "$admission" = invite ] || fail "TILO_ROOMS_WAIT_LIST_MAX needs TILO_ROOMS_ADMISSION=invite"
+  set -- "$@" --wait-list-max "$wait_list"
 fi
 person_storage=${TILO_ROOMS_PERSON_STORAGE_GB:-}
 if [ -n "$person_storage" ]; then

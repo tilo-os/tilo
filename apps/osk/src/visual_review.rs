@@ -27,6 +27,7 @@ use vello::kurbo::{Affine, Point};
 
 use super::OskWidget;
 use crate::layout::KeyAction;
+use ui::widget::DrawChild;
 
 fn shot_dir() -> PathBuf {
     std::env::var_os("TILO_OSK_SHOT_DIR").map_or_else(
@@ -95,7 +96,7 @@ pub(super) fn render(osk: &mut OskWidget, theme: &Theme, w: f32, h: f32, name: &
     // they do on a phone panel. A render ratio, not a layout size.
     let scale = 2.0;
     let mut scene = Scene::new();
-    osk.draw(
+    osk.draw_child(
         &mut scene,
         Affine::scale(scale),
         &mut tr,

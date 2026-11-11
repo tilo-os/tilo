@@ -41,6 +41,8 @@ const NOTES: &str = "so.tilo.notes";
 const TERMINAL: &str = "so.tilo.terminal";
 /// The app the person's own lists are answered to.
 const FILES: &str = "so.tilo.file-explorer";
+/// Another app, with a window of its own beside Notes.
+const CLOCKS: &str = "so.tilo.clocks";
 
 /// Install the packages `(id, name)` in `home` 's own app store.
 fn packages(home: &mut tilo_test_env::TestHome, packages: &[(&str, &str)]) {
@@ -294,7 +296,6 @@ fn an_agent_opens_notes_in_a_workspace() {
 #[test]
 fn an_agents_open_brings_the_window_the_desk_already_shows_forward() {
     let _settled = ui::motion::testing::settled();
-    const CLOCKS: &str = "so.tilo.clocks";
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let records = home.home().join("starts");
     packages(&mut home, &[(NOTES, "Notes"), (CLOCKS, "Clocks")]);
@@ -327,7 +328,6 @@ fn an_agents_open_brings_the_window_the_desk_already_shows_forward() {
     // where a window of the app stands, not that there is another one.
     let asked = {
         let opened = Arc::clone(&opened);
-        let workspace = workspace.clone();
         let place = LaunchPlace::Beside {
             app_id: NOTES.to_owned(),
         };

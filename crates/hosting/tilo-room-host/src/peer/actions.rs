@@ -95,19 +95,22 @@ pub(super) async fn handle_remote_action(
     if to == *session.own_device_public_key {
         // An action of a window this host serves but does not hold (a Browser
         // whose page runs on a VM host) is handed to the device that holds it,
-        // stamped with this sender, or refused as the plane says.
+        // stamped with this sender, or answered by the plane itself, which may
+        // take its time about it.
         if let Some(plane) = session.app_serving
             && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
-            && let Some(route) = plane.route(workspace_id, peer.device_public_key, &decoded.message)
+            && let Ok(caller) = session_caller(peer, session)
+            && let Some(route) =
+                plane.route_certified(workspace_id, &caller, &peer.cert, &decoded.message)
         {
-            match route {
-                crate::app_serving::Routing::Device(holder) => {
-                    return hand_over(peer, session, &mut wr, workspace_id, version, holder, frame);
-                }
-                crate::app_serving::Routing::Refused(error) => {
-                    return refused_answer(peer, session, workspace_id, version, &decoded, error);
-                }
-            }
+            return hand_routed(
+                peer,
+                session,
+                &mut wr,
+                (workspace_id, version),
+                (&decoded, frame),
+                route,
+            );
         }
         let standing = super::change_standing(peer, &wr);
         // Never hold the workspace across the plane: it may take its time.
@@ -126,9 +129,102 @@ pub(super) async fn handle_remote_action(
     hand_over(peer, session, &mut wr, workspace_id, version, to, frame)
 }
 
+/// Write the answer the plane routed a request to, on the connection of the
+/// device that asked, whenever the plane has it: an answer it drops is the
+/// refusal the request's kind takes. `None`: nothing is returned to the
+/// connection handler, which is how a later answer is written.
+fn answered_by_plane(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    version: u16,
+    request: &tilo_actions::remote::RemoteActionFrame,
+    answer: tilo_actions::remote::Pending<tilo_actions::remote::RemoteActionMessage>,
+) -> Option<Envelope> {
+    let abandoned = tilo_actions::remote::refuse(
+        &request.message,
+        tilo_actions::remote::ActionHostError::Unavailable {
+            reason: "the host dropped the request".into(),
+        },
+    );
+    let outbound = session.outbound.clone();
+    let to_device_public_key = peer.device_public_key;
+    let from_device_public_key = *session.own_device_public_key;
+    let from_user_public_key = *session.own_user_public_key;
+    answer_later(answer, abandoned, move |answer| {
+        let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
+            .encode()
+            .ok()?;
+        Some((
+            outbound,
+            Envelope::RemoteAction {
+                workspace_id,
+                version,
+                to_device_public_key,
+                from_device_public_key,
+                from_user_public_key,
+                frame,
+            },
+        ))
+    });
+    None
+}
+
 /// Hand `frame` to the connected device `to` of the workspace, stamped with
 /// the authenticated `peer` as its sender: the relay routes what it forwards,
 /// and never runs it.
+/// Where a plane routed the frame of `decoded`'s — `frame`, as the caller
+/// wrote it — in `workspace_id`: handed to the device holding the window, as
+/// the caller wrote it or as the plane wrote it in the caller's place, or
+/// answered here.
+fn hand_routed(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    (workspace_id, version): (u64, u16),
+    (decoded, frame): (&tilo_actions::remote::RemoteActionFrame, Vec<u8>),
+    route: crate::app_serving::Routing,
+) -> Option<Envelope> {
+    match route {
+        crate::app_serving::Routing::Device(holder) => {
+            hand_over(peer, session, wr, workspace_id, version, holder, frame)
+        }
+        crate::app_serving::Routing::Replaced { to, message } => {
+            hand_over_replaced(peer, session, wr, (workspace_id, version), to, *message)
+        }
+        crate::app_serving::Routing::Answer(answer) => {
+            answered_by_plane(session, peer, workspace_id, version, decoded, answer)
+        }
+    }
+}
+
+/// [`hand_over`] of the frame `message` writes in place of the caller's: what
+/// a plane that answers for the person hands the window.
+///
+/// # Errors
+///
+/// Never: a frame that does not encode is refused as undeliverable.
+fn hand_over_replaced(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    wr: &mut tokio::sync::MutexGuard<'_, crate::workspace::WorkspaceRuntime>,
+    (workspace_id, version): (u64, u16),
+    to: [u8; 32],
+    message: tilo_actions::remote::RemoteActionMessage,
+) -> Option<Envelope> {
+    match tilo_actions::remote::RemoteActionFrame::new(message).encode() {
+        Ok(frame) => hand_over(peer, session, wr, workspace_id, version, to, frame),
+        Err(_) => Some(Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key: to,
+            reason: format!(
+                "{}: the host could not write the frame",
+                UnavailableReason::InvalidRequest.wire_token()
+            ),
+        }),
+    }
+}
+
 fn hand_over(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -160,11 +256,14 @@ fn hand_over(
             "addressed device may not act in the workspace",
         );
     }
+    let mut frame = frame;
     if let Some(plane) = session.app_serving
         && plane.tracks(workspace_id)
         && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+        && let Some(answer) = plane.relayed(workspace_id, peer.device_public_key, &decoded.message)
+        && let Ok(encoded) = tilo_actions::remote::RemoteActionFrame::new(answer).encode()
     {
-        plane.relayed(workspace_id, peer.device_public_key, &decoded.message);
+        frame = encoded;
     }
     let stamped = Envelope::RemoteAction {
         workspace_id,
@@ -183,30 +282,6 @@ fn hand_over(
             "addressed device is not connected to the workspace",
         )
     }
-}
-
-/// Answer `request` to `peer` as refused with `error`: what it asked for is
-/// not served for it now, and it is told so in the answer its request takes.
-fn refused_answer(
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    workspace_id: u64,
-    version: u16,
-    request: &tilo_actions::remote::RemoteActionFrame,
-    error: tilo_actions::remote::ActionHostError,
-) -> Option<Envelope> {
-    let answer = tilo_actions::remote::refuse(&request.message, error)?;
-    let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
-        .encode()
-        .ok()?;
-    Some(Envelope::RemoteAction {
-        workspace_id,
-        version,
-        to_device_public_key: peer.device_public_key,
-        from_device_public_key: *session.own_device_public_key,
-        from_user_public_key: *session.own_user_public_key,
-        frame,
-    })
 }
 
 /// Handle an inbound `HostAction`: one of this host's own operations
@@ -252,6 +327,34 @@ pub(super) fn handle_host_action(
             reason: "this host serves no host operations".into(),
         });
     };
+    // One of the host's own operations changes what it keeps for a person as
+    // theirs: it spends their change budget, as a change in one of their
+    // workspaces does, and is refused before it runs, saying when the budget
+    // admits the next one. Only a person's own devices and keys are answered
+    // here, so a server key spends the owner budget its certificate names and
+    // any other device the guest's, as a workspace's change standing sees them.
+    if matches!(
+        request.message,
+        tilo_actions::remote::RemoteActionMessage::Invoke(_)
+    ) && let Some(crate::member_limits::Limited::Changes { retry_after }) =
+        super::over_change_limit(
+            peer,
+            session,
+            if peer.cert.capabilities.server_key {
+                crate::member_limits::Standing::Owner
+            } else {
+                crate::member_limits::Standing::Guest
+            },
+        )
+    {
+        return refused(ActionHostError::Unavailable {
+            reason: format!(
+                "{}: {}",
+                tilo_relay_protocol::refusal::BACKPRESSURE,
+                tilo_relay_protocol::refusal::too_many_changes(retry_after)
+            ),
+        });
+    }
     let caller = match session_caller(peer, session) {
         Ok(caller) => caller,
         Err((_, detail)) => {
@@ -436,7 +539,7 @@ fn serve_locally(
 /// Who `peer` acts as: the person on their own device, the agent that
 /// device handed this session to ([`SessionCtx::agent`]), or the agent or bot
 /// whose live delegation that device carries.
-fn session_caller(
+pub(super) fn session_caller(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
 ) -> Result<tilo_actions::remote::Caller, (UnavailableReason, &'static str)> {

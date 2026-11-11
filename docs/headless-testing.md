@@ -533,7 +533,10 @@ desktop) on a private runtime directory and a throwaway identity. The session
 also starts its own surfaces — the lock screen, the quick settings panel and the
 on-screen keyboard, beside its executable — and its own sound server: `pipewire`,
 `pipewire-pulse`, `wireplumber` and `pw-cli` must be on `PATH`, and it refuses to
-start without them rather than start as half a desktop. The apps it
+start without them rather than start as half a desktop. That sound is the
+session's own: its WirePlumber runs without the audio and Bluetooth monitors, so
+the only output is the session's null sink and the machine's cards and Bluetooth
+stay the host's. The apps it
 installs are `--apps` (default: Notes, Files, Chat, Settings, Terminal), signed
 with the session's own key and installed through `tilo-install` into the
 session's store — the same path the image's `/usr/share/tilo-apps` is built

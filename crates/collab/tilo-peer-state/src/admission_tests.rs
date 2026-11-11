@@ -1212,13 +1212,17 @@ fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first(
         device_public_key,
         request_id,
         role: crate::join::MemberRole::Viewer,
-        invitation: None,
     };
+    let ledgered = |receipt| crate::state::LedgerReceipt {
+        receipt,
+        invitation: vec![],
+    };
+    let ledgered = |receipt| ledgered(receipt).encode().unwrap();
     left.set_actor(automerge::ActorId::from(vec![98; 32]));
     left.put(
         &invitation_receipts,
         hex::encode(invite_id),
-        automerge::ScalarValue::Bytes(serde_json::to_vec(&receipt([99; 32], [100; 32])).unwrap()),
+        automerge::ScalarValue::Bytes(ledgered(receipt([99; 32], [100; 32]))),
     )
     .unwrap();
     left.commit_edit("fixture", "fixture");
@@ -1227,9 +1231,7 @@ fn concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first(
         .put(
             &invitation_receipts,
             hex::encode(invite_id),
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&receipt([102; 32], [103; 32])).unwrap(),
-            ),
+            automerge::ScalarValue::Bytes(ledgered(receipt([102; 32], [103; 32]))),
         )
         .unwrap();
     right.commit_edit("fixture", "fixture");

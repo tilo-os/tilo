@@ -8,11 +8,11 @@
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::Affine;
 
 use super::CodeApp;
+use ui::widget::DrawChild;
 
 impl CodeApp {
     /// Paint the content column: the editor, the bottom panel and the status
@@ -26,10 +26,10 @@ impl CodeApp {
         presence: &PresenceCtx,
     ) {
         self.editor
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if self.panel_visible {
             self.panel
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         let status = self.status_rect;
         if status.height() > 0.0 {

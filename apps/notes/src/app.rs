@@ -15,6 +15,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
@@ -55,10 +56,11 @@ thread_local! {
     static SHELL_PRESENTS_HISTORY: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-/// What the window's bar was last declared with: the note shown (its title
-/// and anchor), whether the page tree is open, and whether New note is
-/// offered.
-type DeclaredBar = (Option<(String, String)>, bool, bool);
+/// What the window's bar was last declared with: the window it was declared
+/// on ([`ui::window_toolbar::current_window`], so a note shown in another
+/// window declares its slots there), the note shown (its title and anchor),
+/// and whether the page tree is open.
+type DeclaredBar = (Option<u64>, Option<(String, String)>, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -266,40 +268,53 @@ fn line_after_new_picture(
     after.get(new + 1).map(|(id, _)| id.clone())
 }
 
-/// `bytes` as an image the notebook keeps: as given when it fits an asset,
-/// else re-encoded (JPEG, or PNG to keep transparency) and scaled down until
-/// it does. A screenshot is often larger than an asset may be, and pasting it
-/// must still work.
-fn fit_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+/// Whether `bytes` are kept as given: an image the notebook keeps that fits
+/// an asset. `Ok(false)` for one that must be made smaller first
+/// ([`shrink_image_asset`]).
+fn image_fits_asset(bytes: &[u8]) -> Result<bool, String> {
+    crate::notebook::image_mime(bytes).ok_or_else(|| ui::i18n!("notes-image-kind"))?;
+    Ok(bytes.len() <= crate::notebook::MAX_ASSET_BYTES)
+}
+
+/// `bytes`, an image larger than an asset may be, re-encoded (JPEG, or PNG to
+/// keep transparency) and scaled down until it fits. A screenshot is often
+/// larger than an asset may be, and pasting it must still work.
+async fn shrink_image_asset(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    use ui::image_codec::{Encoding, decode, encode};
     const MAX: usize = crate::notebook::MAX_ASSET_BYTES;
-    crate::notebook::image_mime(&bytes).ok_or_else(|| ui::i18n!("notes-image-kind"))?;
-    if bytes.len() <= MAX {
-        return Ok(bytes);
-    }
-    let mut image = image::load_from_memory(&bytes).map_err(|error| error.to_string())?;
-    drop(bytes);
-    let transparent = image.color().has_alpha();
-    for _ in 0..8 {
-        let encoded = if transparent {
-            ui::png::encode_image(&image)
-        } else {
-            ui::jpeg::encode_image(&image, 85)
-        }
+    let mut image = decode(&bytes, None)
+        .await
         .map_err(|error| error.to_string())?;
+    drop(bytes);
+    let encoding = if image.has_alpha() {
+        Encoding::Png
+    } else {
+        Encoding::Jpeg { quality: 85 }
+    };
+    for _ in 0..8 {
+        let encoded = encode(&image, encoding)
+            .await
+            .map_err(|error| error.to_string())?;
         if encoded.len() <= MAX {
             return Ok(encoded);
         }
-        let (width, height) = (image.width(), image.height());
+        let (width, height) = (image.width, image.height);
         if width < 64 || height < 64 {
             break;
         }
-        image = image.resize(
-            width.saturating_mul(3) / 4,
-            height.saturating_mul(3) / 4,
-            image::imageops::FilterType::Triangle,
-        );
+        image = image.resized(width.saturating_mul(3) / 4, height.saturating_mul(3) / 4);
     }
     Err(ui::i18n!("notes-image-unfit"))
+}
+
+/// An image a paste or a drop brought, made small enough for an asset off
+/// the frame, waiting to go into the note.
+enum ShrunkImage {
+    Pasted(
+        ui::widget::block_editor::ImagePasteRequest,
+        Result<Vec<u8>, String>,
+    ),
+    Dropped(String, Result<Vec<u8>, String>),
 }
 
 /// Whether `bytes` are an image a notebook keeps: a PNG, JPEG or WebP of at
@@ -360,8 +375,6 @@ pub struct NotesApp {
     /// The note title and sidebar state the bar's slots were last declared
     /// with.
     declared_bar: Option<DeclaredBar>,
-    /// The window bar's entries, each carrying the header request it makes.
-    bar: ui::framework::BarCommands<window_bar::BarCommand>,
     /// Whether the headers offer New note: the person may make one.
     offers_new_note: bool,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
@@ -386,6 +399,8 @@ pub struct NotesApp {
     /// Last framework-owned durability projection; querying it never touches the record.
     record_save_status: ui::record::RecordSaveStatus,
     canonical_assets: Arc<std::sync::RwLock<HashMap<String, Vec<u8>>>>,
+    /// Pasted or dropped images made smaller off the frame, to insert.
+    shrunk_images: Arc<std::sync::Mutex<Vec<ShrunkImage>>>,
     canonical_asset_manifest: ui::tilo_resource::Map<ui::tilo_resource::Bytes>,
     /// Some referenced image's bytes are still on their way from a
     /// collaborator's device: the record content arrival count when the
@@ -718,7 +733,6 @@ impl NotesApp {
         NavShell::new()
             .content_kind(ui::widget::ContentKind::Document)
             .with_id("notes-shell")
-            .with_header_in_window_bar()
             .sidebar(Box::new(columns.sidebar.slot()))
             .content(Box::new(columns.content.slot()))
             .sidebar_header(
@@ -756,7 +770,6 @@ impl NotesApp {
             header,
             header_in_bar: false,
             declared_bar: None,
-            bar: ui::framework::BarCommands::new(),
             offers_new_note: true,
             shell_node: None,
             sidebar_node: None,
@@ -767,6 +780,7 @@ impl NotesApp {
             theme: Theme::dark(),
             record_save_status: ui::record::RecordSaveStatus::MemoryOnly,
             canonical_assets: Arc::new(std::sync::RwLock::new(HashMap::new())),
+            shrunk_images: Arc::default(),
             canonical_asset_manifest: ui::tilo_resource::Map::new(),
             canonical_assets_waiting: None,
             asset_reads: asset_reads::AssetReads::new(),
@@ -1127,57 +1141,127 @@ impl NotesApp {
     /// Keep each image pasted into the open note with the notebook and put it
     /// after the caret, as a chosen image is.
     fn drain_pasted_images(&mut self, edits: &mut ui::widget::Edits<'_>) {
-        for request in self.main.take_pasted_images() {
-            let Some(page) = self.main.page_id() else {
-                continue;
-            };
-            let result = fit_image_asset(request.image.bytes).and_then(|bytes| {
-                let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
-                let picture = format!("![Pasted image]({source})");
-                let before = crate::read::page_block_snapshots(edits.doc(), page);
-                // The pasted picture is drawn from here at once, whatever the
-                // content store does with the notebook's copy.
-                if let Ok(mut assets) = self.canonical_assets.write() {
-                    assets.insert(source, bytes.clone());
+        for mut request in self.main.take_pasted_images() {
+            match image_fits_asset(&request.image.bytes) {
+                Ok(true) => {
+                    let bytes = std::mem::take(&mut request.image.bytes);
+                    self.insert_pasted_image(edits, &request, Ok(bytes));
                 }
-                // Replaces the selection the paste was made over, or goes
-                // after the block the caret was in, as one action.
-                let edit = self
-                    .main
-                    .body_editor_mut()
-                    .image_paste_action(edits.doc(), &request.target, picture.clone())
-                    .map_err(|error| error.to_string())?;
-                self.submit_now(edits, actions::show_image(page, bytes, edit))?;
-                // Typing goes on under the picture, on the line the paste left
-                // after it, and the next paste goes after that line.
-                let after = crate::read::page_block_snapshots(edits.doc(), page);
-                if let Some(line) = line_after_new_picture(&before, &after, &picture) {
-                    self.main.put_caret_on_rebind(line);
+                Ok(false) => {
+                    let bytes = std::mem::take(&mut request.image.bytes);
+                    self.shrink_then(bytes, move |shrunk| ShrunkImage::Pasted(request, shrunk));
                 }
-                Ok(())
-            });
-            match result {
-                Ok(()) => {
-                    self.bound_page = None;
-                    self.self_dirty = true;
-                }
-                Err(error) => self.notify(
-                    ui::i18n::I18nManager::format(
-                        "notes-image-paste-failed",
-                        &[("error", ui::i18n::ArgValue::from(error))],
-                    ),
-                    ui::widget::toast::ToastKind::Error,
-                ),
+                Err(error) => self.insert_pasted_image(edits, &request, Err(error)),
             }
+        }
+        let shrunk = std::mem::take(
+            &mut *self
+                .shrunk_images
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
+        for image in shrunk {
+            match image {
+                ShrunkImage::Pasted(request, bytes) => {
+                    self.insert_pasted_image(edits, &request, bytes);
+                }
+                ShrunkImage::Dropped(alt, bytes) => self.insert_fitted_image(edits, &alt, bytes),
+            }
+        }
+    }
+
+    /// Make `bytes` small enough for an asset off the frame, then hand what
+    /// came of it, as `landed` makes it, to the next frame.
+    fn shrink_then(
+        &self,
+        bytes: Vec<u8>,
+        landed: impl FnOnce(Result<Vec<u8>, String>) -> ShrunkImage + Send + 'static,
+    ) {
+        let shrunk = Arc::clone(&self.shrunk_images);
+        let wake = ui::WakeHandle::new();
+        ui::rt::app().spawn_then(shrink_image_asset(bytes), move |bytes| {
+            shrunk
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .push(landed(bytes));
+            wake.wake();
+        });
+    }
+
+    /// Put the pasted image `bytes` (fit for an asset) where `request` says.
+    fn insert_pasted_image(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        request: &ui::widget::block_editor::ImagePasteRequest,
+        bytes: Result<Vec<u8>, String>,
+    ) {
+        let Some(page) = self.main.page_id() else {
+            return;
+        };
+        let result = bytes.and_then(|bytes| {
+            let source = format!("asset:{}", blake3::hash(&bytes).to_hex());
+            let picture = format!("![Pasted image]({source})");
+            let before = crate::read::page_block_snapshots(edits.doc(), page);
+            // The pasted picture is drawn from here at once, whatever the
+            // content store does with the notebook's copy.
+            if let Ok(mut assets) = self.canonical_assets.write() {
+                assets.insert(source, bytes.clone());
+            }
+            // Replaces the selection the paste was made over, or goes
+            // after the block the caret was in, as one action.
+            let edit = self
+                .main
+                .body_editor_mut()
+                .image_paste_action(edits.doc(), &request.target, picture.clone())
+                .map_err(|error| error.to_string())?;
+            self.submit_now(edits, actions::show_image(page, bytes, edit))?;
+            // Typing goes on under the picture, on the line the paste left
+            // after it, and the next paste goes after that line.
+            let after = crate::read::page_block_snapshots(edits.doc(), page);
+            if let Some(line) = line_after_new_picture(&before, &after, &picture) {
+                self.main.put_caret_on_rebind(line);
+            }
+            Ok(())
+        });
+        match result {
+            Ok(()) => {
+                self.bound_page = None;
+                self.self_dirty = true;
+            }
+            Err(error) => self.notify(
+                ui::i18n::I18nManager::format(
+                    "notes-image-paste-failed",
+                    &[("error", ui::i18n::ArgValue::from(error))],
+                ),
+                ui::widget::toast::ToastKind::Error,
+            ),
         }
     }
 
     /// Insert the image `bytes`, described as `alt`, into the open note.
     fn insert_image_bytes(&mut self, edits: &mut ui::widget::Edits<'_>, alt: &str, bytes: Vec<u8>) {
+        match image_fits_asset(&bytes) {
+            Ok(true) => self.insert_fitted_image(edits, alt, Ok(bytes)),
+            Ok(false) => {
+                let alt = alt.to_owned();
+                self.shrink_then(bytes, move |shrunk| ShrunkImage::Dropped(alt, shrunk));
+            }
+            Err(error) => self.insert_fitted_image(edits, alt, Err(error)),
+        }
+    }
+
+    /// Insert `bytes` (fit for an asset), described as `alt`, into the open
+    /// note.
+    fn insert_fitted_image(
+        &mut self,
+        edits: &mut ui::widget::Edits<'_>,
+        alt: &str,
+        bytes: Result<Vec<u8>, String>,
+    ) {
         let Some(page) = self.main.page_id() else {
             return;
         };
-        let inserted = fit_image_asset(bytes).and_then(|bytes| {
+        let inserted = bytes.and_then(|bytes| {
             let insertion = effects::image_insertion(page, self.image_anchor(page), alt, bytes);
             self.submit_now(edits, insertion)
         });
@@ -3038,7 +3122,7 @@ impl Widget for NotesApp {
             // Unclipped: the page tree's context menu is a floating surface
             // that reaches past its column.
             self.sidebar
-                .draw(scene, transform, text_renderer, &sidebar_theme, presence);
+                .draw_child(scene, transform, text_renderer, &sidebar_theme, presence);
             if self.outline_node.is_some() {
                 ui::widget::draw_child_at(
                     &mut *self.outline,
@@ -3202,7 +3286,7 @@ impl Widget for NotesApp {
         ];
         Some(
             AccessNode::new(Role::Group)
-                .with_name("Notes")
+                .with_name(crate::metadata::CATALOG.t("notes-window-name"))
                 .with_description(ui::i18n!("notes-window-description"))
                 .with_children(children),
         )

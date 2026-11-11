@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "@tilo/sdk";
-import type * as tilo from "@tilo/sdk";
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
 
 export interface AnswerInteractionOp {
   interaction: string;
@@ -450,9 +450,6 @@ export interface Guild extends tilo.Resource {
   myLink(): Promise<void>;
   linkOffer(args: {
     token: unknown;
-  }): Promise<void>;
-  planRoute(args: {
-    event: unknown;
   }): Promise<void>;
   planEvent(args: {
     event: unknown;

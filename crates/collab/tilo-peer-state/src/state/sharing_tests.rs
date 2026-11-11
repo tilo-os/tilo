@@ -62,17 +62,22 @@ fn durable_parts_reuse_what_a_write_did_not_change() {
     candidate.receive_from(origin, message, now).unwrap();
     let after = candidate.durable_parts().unwrap();
     assert_eq!(after.concat(), candidate.durable_whole().unwrap());
-    // The governance head, then each record in route order: tab:1, tab:2.
+    // The governance head, its document's stored base, the rest of the head,
+    // then each record in route order: tab:1, tab:2.
     assert_eq!(after.len(), before.len());
     assert!(
-        std::sync::Arc::ptr_eq(&before[2], &after[2]),
+        std::sync::Arc::ptr_eq(&before[1], &after[1]),
+        "the governance a record write left alone is not saved again"
+    );
+    assert!(
+        std::sync::Arc::ptr_eq(&before[4], &after[4]),
         "the untouched record is not encoded again"
     );
     assert!(
-        !std::sync::Arc::ptr_eq(&before[1], &after[1]),
+        !std::sync::Arc::ptr_eq(&before[3], &after[3]),
         "the written record is"
     );
-    assert_ne!(before[1], after[1]);
+    assert_ne!(before[3], after[3]);
     let restored = StatePeer::restore(
         &after.concat(),
         candidate.workspace_id(),

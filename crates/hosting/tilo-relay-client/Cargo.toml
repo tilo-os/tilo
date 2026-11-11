@@ -20,10 +20,6 @@ collab-types = { version = "0.1.0", path = "../../collab/collab-types" }
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
 # The one link grammar the page writes a login code with, read here.
 tilo-reference = { version = "0.1.0", path = "../../collab/reference" }
-iroh = { workspace = true, optional = true }
-# The congestion controller an endpoint starts with (`host::transport`):
-# iroh takes noq's factory but does not re-export it.
-noq-proto = { version = "1.1", default-features = false, optional = true }
 iroh-base.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "rt", "sync", "time"] }
 ed25519-dalek.workspace = true
@@ -39,16 +35,24 @@ wire-frame = { version = "0.1.0", path = "../../system/wire-frame", features = [
 # session sign with it too, with or without the iroh dialers.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 hex.workspace = true
+# The link's WebTransport backend: the browser's own in a page.
+tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["webtransport"] }
+web-transport-trait = { version = "0.4.0", optional = true }
 
 [features]
-default = ["iroh"]
-# The iroh dialers: certification and remote environments over their ALPNs.
-iroh = ["dep:iroh", "dep:noq-proto"]
+default = ["dial"]
+# The dialers: certification and the link to a host (`link`), over iroh
+# natively and over the browser's WebTransport in a page.
+dial = ["dep:iroh", "dep:noq-proto", "dep:web-transport-trait"]
 
 [lints]
 workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+iroh = { workspace = true, optional = true }
+# The congestion controller an endpoint starts with (`host::transport`):
+# iroh takes noq's factory but does not re-export it.
+noq-proto = { version = "1.1", default-features = false, optional = true }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 # What a native peer's HTTPS goes through, as a page's does through its `fetch`.

@@ -309,12 +309,12 @@ name = "openssl-free"
 # seconds, rather than part of security, whose micro-VM every crate change
 # would otherwise boot. It reads the OS tree and the workflows whole, the Rust
 # and shell sources of the apps and crates, every manifest and lockfile (cargo
-# tree resolves the vendored crates' too) and the two packaging recipes it
-# greps.
+# tree resolves the vendored crates' too), the packaging recipes it greps and
+# the build scripts that hold the images' ELF checks.
 inputs = [
   "os/", ".forgejo/", ".cargo/", "*Cargo.toml", "*Cargo.lock", "rust-toolchain.toml",
   "crates/*.rs", "crates/*.sh", "apps/*.rs", "apps/*.sh",
-  "dist/arch/PKGBUILD", "dist/nix/package.nix",
+  "dist/arch/PKGBUILD", "dist/nix/package.nix", "tools/ci/publish/",
 ]
 suites = ["os/tests/no_openssl_runtime.sh"]
 
@@ -598,11 +598,12 @@ name = "browser-runtime-web"
 # and the scripts that assemble the web core. app-installer reads the Rust
 # app catalogue. bundle-update runs the split modules' loader that wasm-split's
 # main.rs writes.
-inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
+inputs = ["crates/browser/tilo-browser-runtime/", "tools/web/wasm-split/src/main.rs", "crates/browser/tilo-web-desktop/src/lazy.rs", "crates/collab/tilo-user-identity/tests/fixtures/root-envelope.json", "crates/collab/reference/tests/links.json"]
 suites = [
   "crates/browser/tilo-browser-runtime/web/app-bar.test.mjs",
   "crates/browser/tilo-browser-runtime/web/first-run.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-prefetch.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/startup-order.test.mjs",
   "crates/browser/tilo-browser-runtime/web/here.test.mjs",
   "crates/browser/tilo-browser-runtime/web/fetch-proxy.test.mjs",
   "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
@@ -626,6 +627,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/panorama.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantic-presentation.test.mjs",
   "crates/browser/tilo-browser-runtime/web/semantics.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/dom-input.test.mjs",
   "crates/browser/tilo-browser-runtime/web/dom-present.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
   "crates/browser/tilo-browser-runtime/web/resource-reference.test.mjs",
@@ -636,6 +638,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/admission.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry.test.mjs",
   "crates/browser/tilo-browser-runtime/web/entry-page.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/door-wait-list.test.mjs",
   "crates/browser/tilo-browser-runtime/web/arrival.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-accounts.test.mjs",
   "crates/browser/tilo-browser-runtime/web/browser-locale.test.mjs",
@@ -749,6 +752,7 @@ readers = [
   "apps/tilolang/tests/history_undo.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
+  "apps/tilolang/tests/tasks_board.rs",
 ]
 
 [[cargo]]
@@ -832,6 +836,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",
+  "crates/platform/tilolang-tilo/tests/headings.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/link_editor.rs",
@@ -1416,7 +1421,7 @@ package = "tilo-agent-participant"
 # confined workers inside the test environment script.
 inputs = [
   "crates/sdk/ui-core/assets/fonts/",
-  "crates/session/host/tests/support/",
+  "crates/session/client/tests/support/",
   "tools/with-test-environment.sh",
 ]
 readers = [
@@ -1427,6 +1432,7 @@ readers = [
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
   "crates/agent/agent-participant/tests/shared_session.rs",
+  "crates/agent/agent-participant/tests/public_workspace_records.rs",
 ]
 
 [[cargo]]
@@ -1527,19 +1533,14 @@ readers = [
 package = "tilo-session-client"
 # The vault's test decodes the registry as builds that kept lifecycle records
 # wrote it.
-inputs = ["crates/session/fixtures/"]
-readers = ["crates/session/client/src/channels/vault.rs"]
-
-[[cargo]]
-package = "tilo-session-host"
 # The actual microphone fixture serves the production web modules to
 # Chromium and carries the page's pictures to a native participant of its call;
 # the device's refusal test reads how each refusal travels as the CLI, the front
 # door and the page read it. The page tests' driver serves the runtime module
 # built beside the page's sources: a run that is handed none builds it with the
 # script the CI setup uses, so that script and the build it runs are read too.
-inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
-readers = ["crates/session/host/tests/voice_browsers.rs", "crates/session/host/tests/headless_audio_lifetime.rs", "crates/session/host/tests/surface_by_hash.rs", "crates/session/host/src/device.rs", "crates/session/host/tests/support/mod.rs"]
+inputs = ["crates/session/fixtures/", "crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs", "tools/with-headless-audio.sh", "apps/notes/surface.toml", "crates/collab/actions/tests/host_refusals.json", "tools/build-page-bundle.sh", "crates/browser/tilo-browser-runtime/scripts/build.sh"]
+readers = ["crates/session/client/src/channels/vault.rs", "crates/session/client/tests/voice_browsers.rs", "crates/session/client/tests/headless_audio_lifetime.rs", "crates/session/client/tests/surface_by_hash.rs", "crates/session/client/src/device.rs", "crates/session/client/tests/support/mod.rs"]
 scope = { inputs = ["crates/browser/tilo-browser-runtime/web/", "tools/web/chrome.mjs"], test = "voice_browsers", filter = "binary(voice_browsers)" }
 
 [[cargo]]
@@ -1626,9 +1627,25 @@ reason = "needs the built web entry image"
 suite = "os/containers/tilo-lounge/test-page-boot.sh"
 check = "page-boot"
 
+[[covered]]
+suite = "os/containers/tilo-lounge/test-setup-resume.sh"
+check = "setup-resume"
+
+[[unrequired]]
+suite = "os/containers/tilo-sh/test-vm-host.sh"
+reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
+
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-agent-setup.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the agent-setup check runs it in its image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-wait-list-door.sh"
+reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list-door check runs it in its image"
+
+[[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-tour.sh"
+reason = "a newcomer's tour kept as pictures for a person to review, judging nothing on looks; needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the page-tour check runs it on request"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-two-people.sh"
@@ -1740,10 +1757,6 @@ reason = "needs make and a kernel source tree"
 [[unrequired]]
 suite = "os/kernel/tests/test-rpm.sh"
 reason = "needs the built kernel RPM; kernel-acceptance-<arch> runs it"
-
-[[unrequired]]
-suite = "os/containers/tilo-relay/test_probe_sccache.py"
-reason = "timing-sensitive: a 50 ms client timeout races Python start-up and fails under CPU contention"
 
 [[unrequired]]
 suite = "os/tests/airplay-encrypted-session.sh"

@@ -307,7 +307,7 @@ impl App {
         }
         if self.collaboration.manager.is_connected() {
             match self.pending_primary_document() {
-                Ok(Some((mutation, heads))) => {
+                Ok(Some((mutation, heads, commit))) => {
                     tracing::debug!(
                         target: "tilo.state",
                         event = "document_send",
@@ -319,14 +319,7 @@ impl App {
                         heads = heads.len(),
                         "queueing document mutation"
                     );
-                    let request = match mutation {
-                        collab_types::DocumentMutation::Snapshot(bytes) => {
-                            crate::collaboration::CollabRequest::document_snapshot(bytes)
-                        }
-                        collab_types::DocumentMutation::Incremental(bytes) => {
-                            crate::collaboration::CollabRequest::document_incremental(bytes)
-                        }
-                    };
+                    let request = document_routes::part_request(mutation, None, commit);
                     let result = self.collaboration.manager.try_send(request);
                     if self.note_document_send(&result) {
                         self.advance_primary_document(heads);
@@ -1280,6 +1273,14 @@ impl App {
         if let Some(me) = collaborators.iter().find(|c| c.is_self) {
             self.presence_ctx
                 .set_self_participant(crate::permissions::UserId(me.id.clone()), me.name.clone());
+            // The colour the member list says this person wears, when it says
+            // one: the same one every other app and desk paints them in. A
+            // member list that leaves its own row out still gets it from the
+            // colour the person chose here.
+            if let Some(hue) = me.colour.or_else(crate::local_identity::own_colour) {
+                self.presence_ctx
+                    .set_presence_hue(crate::permissions::UserId(me.id.clone()), hue);
+            }
         } else {
             self.presence_ctx.clear_self_participant();
         }
@@ -1413,3 +1414,7 @@ impl App {
 #[cfg(test)]
 #[path = "cold_construction_tests.rs"]
 mod cold_construction_tests;
+
+#[cfg(test)]
+#[path = "person_colour_tests.rs"]
+mod person_colour_tests;

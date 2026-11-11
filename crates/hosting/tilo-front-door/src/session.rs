@@ -35,7 +35,7 @@ use std::{
 };
 use tilo_runtime::mcp::{McpServer, Surface};
 use tilo_runtime::mcp_windows;
-use tilo_session_host::session_actions::SessionActions;
+use tilo_session_core::remote::SessionActions;
 
 /// The header naming an MCP session (Streamable HTTP).
 pub const SESSION_HEADER: &str = "mcp-session-id";
@@ -76,6 +76,11 @@ struct Served {
     windows: Arc<mcp_windows::AgentWindows>,
 }
 
+/// A run in a workspace one of the person's devices hosts, entered at that
+/// device's agent door: the device serves the whole run, its people and its
+/// windows included, and shows the agent there itself.
+struct OnDevice(tilo_runtime::enter::Entered);
+
 pub struct Session {
     pub grant: String,
     pub scope: Scope,
@@ -88,12 +93,11 @@ pub struct Session {
     relay: Arc<Relay>,
     /// The grant's session with the relay.
     connection: Arc<Connection>,
-    /// For a minted grant, the session of the grant that minted it, which
-    /// asks for its invitation.
-    parent: Option<Arc<Connection>>,
     /// The door, which answers the account's own actions.
     door: std::sync::Weak<crate::Door>,
     served: tokio::sync::Mutex<HashMap<String, Arc<Served>>>,
+    /// The runs in workspaces the person's devices host, by workspace.
+    on_devices: tokio::sync::Mutex<HashMap<String, Arc<OnDevice>>>,
     /// The workspace tools, once a workspace served them.
     tools: Mutex<Option<Vec<Value>>>,
     pub(crate) last_used: Mutex<Instant>,
@@ -149,7 +153,6 @@ impl Session {
         label: String,
         relay: Arc<Relay>,
         connection: Arc<Connection>,
-        parent: Option<Arc<Connection>>,
         door: std::sync::Weak<crate::Door>,
     ) -> Self {
         Self {
@@ -162,9 +165,9 @@ impl Session {
                 .to_owned(),
             relay,
             connection,
-            parent,
             door,
             served: tokio::sync::Mutex::default(),
+            on_devices: tokio::sync::Mutex::default(),
             tools: Mutex::default(),
             last_used: Mutex::new(Instant::now()),
         }
@@ -195,10 +198,7 @@ impl Session {
         if let Some(known) = runs.get(workspace) {
             return Ok(Arc::clone(known));
         }
-        let id = self
-            .relay
-            .enter(&self.connection, self.parent.as_deref(), workspace)
-            .await?;
+        let id = self.relay.enter(&self.connection, workspace).await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
         // The records the run works in open as windows on the workspace's
@@ -222,6 +222,17 @@ impl Session {
     /// (`workspace/members`) are answered here ([`members`]).
     async fn serve(&self, workspace: &str, request: Value) -> Reply {
         let id = request.get("id").cloned().unwrap_or(Value::Null);
+        match self.on_device(workspace).await {
+            Ok(Some(run)) => {
+                return run
+                    .0
+                    .handle(request)
+                    .await
+                    .map_or_else(Reply::accepted, Reply::one);
+            }
+            Ok(None) => {}
+            Err(refused) => return Reply::one(error(&id, -32000, &refused)),
+        }
         if request.get("method").and_then(Value::as_str) == Some("tools/call") {
             let tool = request
                 .pointer("/params/name")
@@ -258,6 +269,61 @@ impl Session {
             tokio::spawn(async move { windows.changed(changed, step).await });
         }
         Reply::one(answer)
+    }
+
+    /// The run in `workspace` when one of the person's devices hosts it, as
+    /// their list says, entering it at that device's agent door the first
+    /// time (and again once the device closed it); `None` for a workspace the
+    /// relay keeps.
+    async fn on_device(&self, workspace: &str) -> Result<Option<Arc<OnDevice>>, String> {
+        // A workspace the run already works in on the relay is the relay's.
+        if self.served.lock().await.contains_key(workspace) {
+            return Ok(None);
+        }
+        let mut runs = self.on_devices.lock().await;
+        if let Some(known) = runs.get(workspace).filter(|known| known.0.is_live()) {
+            return Ok(Some(Arc::clone(known)));
+        }
+        let Some(address) = self.device_address(workspace).await else {
+            return Ok(None);
+        };
+        let endpoint = self
+            .connection
+            .endpoint()
+            .await
+            .map_err(|error| error.to_string())?;
+        let entered = tilo_runtime::enter::enter(
+            &endpoint,
+            &self.connection.entering_key(),
+            workspace,
+            &address,
+            &self.label,
+        )
+        .await?;
+        let run = Arc::new(OnDevice(entered));
+        runs.insert(workspace.to_owned(), Arc::clone(&run));
+        drop(runs);
+        Ok(Some(run))
+    }
+
+    /// Where `workspace` is hosted when one of the person's devices hosts it,
+    /// as their list says (a key for one workspace reads that one's).
+    async fn device_address(
+        &self,
+        workspace: &str,
+    ) -> Option<tilo_relay_session::workspaces::WorkspaceHostAddress> {
+        let address = self
+            .relay
+            .workspaces(&self.connection)
+            .await
+            .ok()?
+            .into_iter()
+            .find(|listed| listed.id == workspace)?
+            .address?;
+        let host = address.address().ok()?;
+        (host.mode
+            == tilo_delivery_protocol::workspace_join::WorkspaceHostMode::NativeInteractiveWorkspaceOwner)
+            .then_some(address)
     }
 
     /// Answer the client's `initialize`. A pinned session enters its one
@@ -482,6 +548,7 @@ impl Session {
     /// them, or when the grant is revoked.
     pub(crate) async fn close(&self) {
         self.served.lock().await.clear();
+        self.on_devices.lock().await.clear();
     }
 }
 

@@ -405,7 +405,7 @@ impl ChatApp {
         hits: &mut Vec<(Rect, Hit)>,
     ) {
         if m.author.starts_with("bot:")
-            || self.agent_authors.contains_key(&m.author)
+            || self.is_agent_author(&m.author)
             || self.is_provider_output(m)
         {
             return;
@@ -461,7 +461,7 @@ impl ChatApp {
                 for_person: Some(initiator),
                 color,
             }
-        } else if self.agent_authors.contains_key(&m.author) {
+        } else if self.is_agent_author(&m.author) {
             Author::Agent {
                 name,
                 for_person: None,
@@ -600,6 +600,16 @@ pub(crate) fn typing_line(
 /// same one Messages shows on every line.
 fn clock_label(ts: i64) -> String {
     ConversationClock::local().clock(ts)
+}
+
+/// What a message's header says where its time stands: its time, or that it
+/// is being sent.
+fn time_label(m: &crate::model::Message) -> String {
+    if m.sending {
+        crate::i18n::t("chat-message-sending")
+    } else {
+        clock_label(m.ts)
+    }
 }
 
 /// "Today", "Yesterday", the weekday, or the date: the toolkit's day label,
@@ -882,6 +892,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         };
         // Two hours apart across midnight, and one three days later.
         let start = 1_782_828_300_i64;
@@ -890,7 +901,7 @@ mod tests {
             line("b", start.saturating_add(3_600)),
             line("c", start.saturating_add(4 * 86_400)),
         ];
-        let groups = crate::model::group_messages(&app.messages);
+        let groups = crate::model::group_messages(&app.messages, true);
         let clock = ui::widget::ConversationClock::at(0, start);
         let (items, _) = app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock);
         let dividers = items

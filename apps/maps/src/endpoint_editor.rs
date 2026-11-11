@@ -25,6 +25,7 @@ use ui::widget::{
 use crate::canvas::{self, MapPalette};
 use crate::failure;
 use crate::model::Place;
+use ui::widget::DrawChild;
 
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(280);
 /// Where typed places come from, as their placeholder names it.
@@ -483,7 +484,7 @@ impl EndpointEditor {
             field.input.apply_layout_external(rect);
             field
                 .input
-                .draw(scene, transform, text, theme, &PresenceCtx::empty());
+                .draw_child(scene, transform, text, theme, &PresenceCtx::empty());
         }
 
         let swap = Rect::new(

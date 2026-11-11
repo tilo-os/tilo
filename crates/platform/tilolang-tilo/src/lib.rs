@@ -22,6 +22,7 @@ pub mod catalogue;
 pub mod chunk;
 pub mod containers;
 pub mod effects;
+pub mod history;
 pub mod host;
 pub mod index;
 pub mod instance;

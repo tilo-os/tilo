@@ -27,3 +27,10 @@ passwords-request-details = { $app } requests access to { $item }.
     Device: { $device }
 passwords-saved-item = Saved { $item }
 passwords-new-item = New item
+
+## What the editor's fields ask for
+
+passwords-add-note = Add a note
+passwords-tags-hint = Separate tags with commas
+passwords-custom-fields-hint = One per line, such as PIN = 1234
+passwords-export-acknowledge = I understand the file is not encrypted

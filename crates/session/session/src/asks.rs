@@ -26,6 +26,10 @@ use crate::{
 /// How far a popover stands clear of the caret it was opened from, logical pixels.
 const CARET_GAP: f64 = 6.0;
 
+/// How long the clipboard panel waits for the field it was pressed in to commit the caret its
+/// last key moved: a frame or two, and a little more for an app that was busy.
+const CARET_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// The tag the ask about the device `digest` names is taken back under.
 fn pairing_tag(digest: [u8; 32]) -> String {
     format!("pairing:{}", hex::encode(digest))
@@ -656,7 +660,18 @@ impl Shared {
 
     /// Open the panel where the person types, for the clipboard's copies: beside the caret that
     /// asked for it, and under the tray when no field holds one.
+    /// A key moves the field's caret before its app commits it, so the panel waits for that
+    /// commit: placed now, it would stand at the caret from before the app's last redraw.
     fn show_quick_settings_beside_caret(&self) {
+        if !self.quick_settings {
+            return;
+        }
+        self.pending_paste
+            .set(std::time::Instant::now().checked_add(CARET_SETTLE_WAIT));
+    }
+
+    /// Put the clipboard panel up beside the caret the desk has now, on its paste page.
+    pub(crate) fn open_clipboard_beside_caret(&self) {
         if !self.quick_settings {
             return;
         }
@@ -664,7 +679,10 @@ impl Shared {
             .overlays
             .caret()
             .map(|at| Anchor::Beside { at, gap: CARET_GAP });
-        self.overlays.open(Slot::QuickSettings, anchor);
+        // The surface the field stands in (the desk's search) stays up under it, and has the
+        // keyboard back for the paste.
+        self.overlays.open_over(Slot::QuickSettings, anchor);
+        self.panel_asks.borrow_mut().push("paste");
     }
 
     /// Close the quick settings when they are up, open them otherwise.
@@ -693,7 +711,6 @@ impl Shared {
             }
             ShortcutAction::ClipboardHistory => {
                 self.show_quick_settings_beside_caret();
-                self.panel_asks.borrow_mut().push("paste");
             }
             ShortcutAction::Search => {
                 invocations.push(Invocation::new(DESK_RESOURCE, "search"));

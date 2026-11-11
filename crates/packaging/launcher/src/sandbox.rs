@@ -504,6 +504,7 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
         "TILO_CONTINUITY_INSTANCE",
         "TILO_CONTINUITY_RESUME_SCHEMA",
         "TILO_CONTINUITY_RESUME_HEX",
+        tilo_process::environment::WINDOWLESS_ENV,
     ] {
         let Ok(value) = std::env::var(key) else {
             continue;
@@ -517,6 +518,7 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
                 || (value.len() <= 5
                     && value.bytes().all(|byte| byte.is_ascii_digit())
                     && value.parse::<u16>().is_ok_and(|version| version > 0)))
+            && (key != tilo_process::environment::WINDOWLESS_ENV || value == "1")
             && (key != "TILO_CONTINUITY_RESUME_HEX"
                 || (value.len() <= 64 * 1024 && value.bytes().all(|byte| byte.is_ascii_hexdigit())))
         {

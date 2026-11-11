@@ -34,6 +34,7 @@ what was stored inside the guest.
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as dt
 import hashlib
 import json
@@ -617,12 +618,34 @@ def configure_passwords(facts: dict, run: Run) -> None:
     box = run.vm(SOURCE)
     open_passwords(box)
     before = password_items(box)
+    password = "e2e-" + os.urandom(12).hex()
     app_action(box, "", "save-login", {"name": PASSWORD_TITLE, "origin": "https://branch.example",
                                        "username": "ada@branch.example",
-                                       "password": "e2e-" + os.urandom(12).hex()}, PASSWORDS)
+                                       "password": password}, PASSWORDS)
     new = wait_until(lambda: password_items(box) - before, 30, interval=1.0)
     expect(new, "Passwords lists no new item after save-login")
     facts["password_items"] = sorted(new)
+    expect(password not in json.dumps(listed_actions(box)),
+           "the saved password is in the desktop's action listing")
+    leaks = secret_leaks(box, password)
+    expect(not leaks, f"the saved password is in plain text in {leaks}")
+
+
+# Where a secret a person saved must never be in plain text: the system journal (every unit's
+# and the session's own log) and the files under /var/log and the person's home, where the
+# vault keeps it only sealed.
+SECRET_PLACES = """p=$(printf %s {pattern} | base64 -d)
+journalctl -m --no-pager -o cat 2>/dev/null | grep -qaF -- "$p" && echo journal
+grep -rlaF --exclude-dir=proc -- "$p" /var/log /home 2>/dev/null | head -n 20
+true"""
+
+
+def secret_leaks(vm: TiloVm, secret: str) -> list[str]:
+    """The places on `vm` that hold `secret` in plain text. The secret travels base64-encoded,
+    so no command line or log of this harness carries it either."""
+    pattern = shlex.quote(base64.b64encode(secret.encode()).decode())
+    text = vm.root_exec(SECRET_PLACES.format(pattern=pattern), timeout=300)
+    return [line for line in text.splitlines() if line.strip()]
 
 
 def open_passwords(vm: TiloVm) -> None:
@@ -636,9 +659,30 @@ def open_passwords(vm: TiloVm) -> None:
 
 
 def password_items(vm: TiloVm) -> set[str]:
-    """The vault items Passwords publishes rows for, by their resource ids."""
-    return {part for row in listed_actions(vm) if row.get("provider") == "app-actions"
-            for part in row["id"].split("\x1f") if part.startswith("passwords:item:")}
+    """The logins in the vault, by their opaque item ids, as Passwords' own list-logins action
+    answers: the vault's rows in the listing name an item only once a query reaches it."""
+    answer = app_action(vm, "", "list-logins", None, PASSWORDS)
+    logins = found_key(answer, "logins")
+    expect(isinstance(logins, list), f"list-logins answered no logins: {json.dumps(answer)[:600]}")
+    return {login["item"] for login in logins if login.get("name") == PASSWORD_TITLE}
+
+
+def found_key(value, key: str):
+    """The first value under `key` anywhere in `value`, or None."""
+    if isinstance(value, dict):
+        if key in value:
+            return value[key]
+        value = list(value.values())
+    if isinstance(value, list):
+        for item in value:
+            if (hit := found_key(item, key)) is not None:
+                return hit
+    if isinstance(value, str) and key in value:
+        try:
+            return found_key(json.loads(value), key)
+        except ValueError:
+            return None
+    return None
 
 
 def configure_workspace(facts: dict, run: Run) -> None:
@@ -689,11 +733,31 @@ def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
     """Every row the desktop lists for `query`, page after page: a page holds at most 256 rows
     (`MAX_CATALOGUE_PAGE`), and the desk's own chrome fills most of the first."""
     keep_awake(vm)
+    for _ in range(LISTING_READS):
+        rows = read_listing(vm, query)
+        if rows is not None:
+            return rows
+    raise VmError(f"the action listing changed on each of {LISTING_READS} reads while it was paged")
+
+
+# How often a listing is read again from its first page when it moved on while paged, as it
+# does while an app that just opened publishes its actions.
+LISTING_READS = 10
+
+
+def read_listing(vm: TiloVm, query: tuple[str, ...]) -> list[dict] | None:
+    """One paged read of the listing, or `None` when it moved on between two pages
+    (`stale_cursor`): a page past the first is cut from the listing the first was."""
     rows, cursor = [], None
     for _ in range(40):
         page = ["--cursor", cursor] if cursor else []
-        listed = vm.control_json("actions", "list", *query, "--json", "--programmatic",
-                                 "--wait=8000", "--limit", "256", *page)
+        try:
+            listed = vm.control_json("actions", "list", *query, "--json", "--programmatic",
+                                     "--wait=8000", "--limit", "256", *page)
+        except VmError as exc:
+            if cursor and "stale_cursor" in str(exc):
+                return None
+            raise
         rows.extend(listed.get("actions", []))
         cursor = listed.get("next_cursor")
         if not cursor:
@@ -1153,10 +1217,13 @@ def steps(run: Run, args) -> None:
     run.step("S02", "a person signs in on box: the VM's person, certified by their root",
              sign_in, run)
     run.step("S03", "the person sets box up: a Secret Service secret, git, an SSH key", configure, run)
-    run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
-    run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
+    # The workspace first: the apps the person sets up next open in it, so their records are on
+    # box's disk, and so on each branch's. A window a branch opens where its app has no record
+    # yet waits for the workspace's host, and b boots while box, the host, is stopped.
     run.step("S03c", "the person makes a workspace on box and opens a window on its desk",
              configure_workspace, run)
+    run.step("S03b", "the person saves a model provider's API key through Settings", configure_provider, run)
+    run.step("S03d", "the person saves a login in their passwords vault", configure_passwords, run)
     try:
         source = machine_facts(run, SOURCE, "S03-box-source")
         source_person = person_facts(run, SOURCE, "S03-box-source")

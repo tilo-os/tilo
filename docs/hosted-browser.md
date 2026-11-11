@@ -219,15 +219,68 @@ it, as it already carries remote actions between a workspace's devices. The
 action runs on the window, and History records it as the caller's: the
 agent's run, for the person it acts for.
 
-Page actions are `Outside`, so an agent's call asks the person first. Nobody
-stands in front of a window in a VM, so the session there refuses such an
-action for want of the person's answer, and the relay puts the question to
-the person's approving devices (`CertificationProtocol::confirm`, five
-minutes for this one invocation). Allowed, the relay hands the action back
-with the person's answer signed by its own device key; the session accepts
-an answer from the host that certified it, for its own person, and runs the
-action without asking again. Denied or unanswered, the action does not run.
-That is the approval before `submit-page`.
+The window opens for an agent rather than for the person: it browses as a
+visitor, on a fresh profile of the VM's own, so an agent reads and fills the
+page it opened without anyone being asked, and what acts on the page still
+asks. Nobody stands in front of a window in a VM, so the session there
+refuses a page action for want of the person's answer, and the relay puts
+the question to the person's approving devices itself
+(`CertificationProtocol::confirm`, five minutes for this one invocation)
+while the caller waits: a caller needs nothing beyond asking and following
+what it asked for. Allowed, the relay hands the same invocation to the
+window again with the person's answer signed by its own device key; the
+session accepts an answer from the host that certified it, for its own
+person, and runs the action once. Denied or unanswered, the invocation ends
+refused and nothing runs. That is the approval before `submit-page`.
+
+**Every departure is that same approval, however it was triggered.** In a
+window opened for an agent the engine stops the page where it was about to
+send something and holds it there: a form submission — a submit button, Enter
+in a field, the page's own `submit()` or `requestSubmit()` — any navigation or
+`fetch`/`XMLHttpRequest` with a method other than `GET` or `HEAD`, from the
+page or a frame of it, a download, and what a payment flow sends. The page
+stays as it was filled and nothing leaves: the request is paused, not dropped,
+so the person who allows it sends exactly what was filled in. The page action
+whose run reached the hold answers that it needs the person, naming the method
+and where it goes (and, for a download, the file it would save), and their
+allow releases that one request — the invocation
+does not run the page action again — while a denial or a question nobody
+answers drops it and leaves the page as it was. Such a hold is the
+invocation's, and the window publishes no second way to answer it, so nobody
+is asked about one departure twice.
+
+A departure no action asked for, such as a page posting on its own or a
+download the page started, waits on nobody's invocation. The window publishes
+it as the wait it is — `send-held-request` and `keep-held-request` of
+`browser.page`, each bound to the hold's id and stating it as their one
+accepted argument — and the session in the VM reports each one it publishes to
+the relay, naming that invocation. The relay puts it to the person as it puts
+any page action, and their answer comes back to the session as the
+confirmation their allow runs it with: the same witness the relay signs for a
+page action, for that one request. Denied or unanswered, the session runs
+`keep-held-request` instead and the page stays as it was filled. A person's
+own window holds none of this: what they click leaves as they click it.
+
+A key can carry the authority to operate the pages its workspaces' Browser
+holds without asking each time: the person ticks **Operate web pages in
+Browser** where they make the key (it is ticked unless they say no, and a key
+minted from a key keeps its answer), and the key's certificate carries it.
+Holding it, the relay answers for the person on the page actions that
+operating a page is — `navigate`, `fill-page`, `select-page`, `click-page`,
+`press-page`, `scroll-page`, `drag-page` and `pointer-path`/`pointer-page` —
+signing the same witness a person's own answer would, so the window runs one
+at once, as that key's agent, and counts it. A hold is untouched by it: the
+engine still stops the page where it was about to send something, answers
+that invocation that it needs the person, and only their own answer releases
+that one request, so a key that clicks a submit button still waits for them.
+It answers for nothing else either:
+`submit-page`, filling in a file or a password, and everything else Browser
+holds for the person still asks them, a key without the scope is asked about
+every page action, and revoking the key ends it with the key's certificate.
+Where the person sees it: the door's grants page says it on the key, and the
+lists of agents let in — the Tilo overview and the Console's Connect page —
+say it on the agent's row as it reads the key's certificate at the door, with
+the same Revoke.
 
 The page action is counted once the window answers that it ran, so an
 action the person did not allow is never counted.

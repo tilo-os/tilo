@@ -62,21 +62,6 @@ topbar-arrived-more = { $name } und { $count ->
     [one] eine weitere Person
    *[other] { $count } weitere
 } sind da
-topbar-clock-resume = Fortsetzen
-topbar-clock-pause = Pausieren
-topbar-clock-lap = Runde
-topbar-clock-add-minute = +1 Min.
-topbar-clock-close-stopwatch = Schwebende Stoppuhr schließen
-topbar-clock-close-timer = Schwebenden Timer schließen
-topbar-clock-floating-stopwatch = Schwebende Stoppuhr
-topbar-clock-floating-timer = Schwebender Timer
-topbar-clock-floating-description = Zum Verschieben ziehen. Mit der Tastatur Alt gedrückt halten und die Pfeiltasten verwenden; zusätzlich Umschalt für größere Schritte.
-topbar-clock-stopwatch = Stoppuhr
-topbar-clock-timer = Timer
-topbar-clock-paused = Pausiert
-topbar-clock-running = Läuft
-topbar-clock-record-lap = Runde erfassen
-topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation
@@ -237,7 +222,6 @@ activity-pane-timeline = Zeitleiste
 activity-pane-browse = Durchsuchen
 activity-pane-details = Details
 activity-resume-heading = Zuletzt bearbeitet
-activity-resume-context = { $app } · { $when }
 activity-resume-button = Fortsetzen
 activity-pending-edits = Warte auf laufende Bearbeitungen
 activity-catch-up-quiet = { $workspace } · Nichts Neues braucht deine Aufmerksamkeit
@@ -1082,8 +1066,7 @@ overview-presence-many = { $count } Personen sind hier
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Willkommen bei Tilo
 browser-welcome-subtitle = Der gemeinsame Computer deines Teams. Alles, was du machst, wird laufend gespeichert und Ende-zu-Ende-verschlüsselt.
-browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet, Strg+K findet jede App
-browser-welcome-hint-mac = Pfeiltasten bewegen, Eingabe öffnet, ⌘K findet jede App
+browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet
 
 # The workspace overview every desktop shows
 overview-title = Arbeitsbereichsübersicht
@@ -1122,6 +1105,7 @@ overview-tilo-host-provider = Hosting-Anbieter
 overview-tilo-manage-billing = Abrechnung verwalten
 overview-tilo-agent-everywhere = Alle deine Workspaces
 overview-tilo-agent-everywhere-lower = alle deine Workspaces
+overview-tilo-agent-browser-pages = Bedient Webseiten im Browser
 overview-tilo-agent-working = { $runs ->
         [one] Arbeitet gerade
        *[other] { $runs } Läufe gerade
@@ -1440,6 +1424,7 @@ desktop-display-name = Bildschirm { $number }
 # What a person can do to one window, from its own menu.
 window-menu-reveal = Zu diesem Fenster gehen
 window-menu-rename = Dieses Fenster benennen…
+window-tab-name = Fenstername
 window-menu-full-screen = Vollbild
 window-menu-exit-full-screen = Vollbild beenden
 window-menu-maximize = Den Streifen füllen

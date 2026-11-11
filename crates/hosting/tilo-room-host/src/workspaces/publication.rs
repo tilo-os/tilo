@@ -21,6 +21,11 @@ pub(super) enum Change {
     /// Anything else: it takes something back when it overwrites or deletes
     /// a value ([`withdraws`]).
     Other,
+    /// Nothing but the workspace's document starting over, published anew:
+    /// its governance was brought up from an earlier stored layout, and what
+    /// was published before is in that layout
+    /// ([`tilo_peer_state::StatePeer::governance_brought_up`]).
+    StartOver,
 }
 
 /// What the workspace published since its document last started over did to
@@ -38,12 +43,15 @@ pub(super) enum SinceBase {
 ///
 /// A newcomer is sent the base and every change after it, and a member already
 /// in only the changes: so a change is appended, and the workspace starts over
-/// once the changes since the base weigh as much as the base itself (or there
-/// are [`MAX_PUBLICATION_TAIL`] of them). A newcomer then fetches at most
-/// about twice the workspace as it stands, however long it has run, and the
-/// host writes a base at most once per its own weight in appended changes:
-/// each change's share of those writes is no more than its own size, so a join
-/// costs the host the same in a workspace of hundreds as in one of a few.
+/// once the changes since the base weigh half as much as the base itself (or
+/// there are [`MAX_PUBLICATION_TAIL`] of them). A newcomer then fetches at most
+/// about one and a half times the workspace as it stands, however long it has
+/// run, and the host writes a base at most once per half its own weight in
+/// appended changes: each change's share of those writes is no more than twice
+/// its own size, so a join costs the host the same in a workspace of hundreds
+/// as in one of a few. Waiting until the changes weigh as much as the base
+/// halved the host's base writes but let a newcomer fetch up to twice the
+/// workspace, and what a newcomer downloads is what it waits for.
 /// Starting over at every arrival would write and send the whole workspace for
 /// each person who came in. A small workspace's base is cheap to write, so it
 /// starts over no more often than every [`MIN_PUBLICATION_TAIL_BYTES`]. An
@@ -58,7 +66,7 @@ pub(super) fn starts_over(outgoing: &[Publication]) -> bool {
             .sum()
     };
     changes.len() >= MAX_PUBLICATION_TAIL
-        || weight(changes) >= weight(base).max(MIN_PUBLICATION_TAIL_BYTES)
+        || weight(changes) >= (weight(base) / 2).max(MIN_PUBLICATION_TAIL_BYTES)
 }
 
 /// Whether `message`, published after the workspace's base, takes back

@@ -109,6 +109,7 @@ fn stand(cards: &mut Cards, surface: &mut dyn Widget, work: Rect, bar: Rect) -> 
         bar,
         banners: None,
         readout: None,
+        caret: None,
     };
     let layer = ui::floating_layer::place(&placement, Corner::default(), &column, false);
     for shown in &mut cards.shown {

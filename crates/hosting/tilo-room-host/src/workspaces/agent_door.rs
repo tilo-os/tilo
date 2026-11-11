@@ -34,6 +34,9 @@ struct Agent {
     granted_ms: i64,
     last_ms: i64,
     runs: Vec<OpenRun>,
+    /// Its certificate lets it operate web pages in Browser
+    /// ([`DeviceCapabilities::browser_pages`]).
+    browser_pages: bool,
 }
 
 /// The agent door of the host's own person.
@@ -67,9 +70,14 @@ impl AgentDoor {
                 granted_ms: i64::try_from(cert.issued_at_ns / 1_000_000).unwrap_or(i64::MAX),
                 last_ms: now,
                 runs: Vec::new(),
+                browser_pages: cert.capabilities.browser_pages,
             });
         name.clone_into(&mut agent.name);
         agent.last_ms = now;
+        // The key it is set up with may be replaced by another of the
+        // person's keys between sessions: what it may do is the certificate
+        // it came in with now.
+        agent.browser_pages = cert.capabilities.browser_pages;
         if !agent.runs.iter().any(|run| Arc::ptr_eq(&run.stop, stop)) {
             agent.runs.push(OpenRun {
                 started_ms: now,
@@ -155,6 +163,7 @@ impl AgentDoor {
                         started_ms: open.started_ms,
                     })
                     .collect(),
+                browser_pages: agent.browser_pages,
             })
             .collect::<Vec<_>>();
         drop(agents);
@@ -207,4 +216,43 @@ impl super::Workspaces {
 /// The device a grant id ([`Grant::id`]) names.
 fn grant_device(grant: &str) -> Option<[u8; 32]> {
     hex::decode(grant).ok()?.try_into().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tilo_user_identity::{AgentScope, DeviceCapabilities};
+
+    fn cert(capabilities: DeviceCapabilities) -> DeviceCert {
+        DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [2; 32],
+            device_label: "Claude Code".to_owned(),
+            capabilities,
+            issued_at_ns: 1_000_000_000,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        }
+    }
+
+    /// The door says of each agent whether the key it came in with operates
+    /// web pages in Browser, as that key's certificate carries it: a key
+    /// without it is asked about every page action.
+    #[test]
+    fn an_agents_key_says_whether_it_operates_web_pages() {
+        let door = AgentDoor::default();
+        let stop = Arc::new(Notify::new());
+        let operating = cert(
+            DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces).with_browser_pages(true),
+        );
+        door.note(&operating, "Claude Code", &stop);
+        let read = door.door();
+        assert_eq!(read.grants.len(), 1);
+        assert!(read.grants[0].browser_pages);
+
+        let asked = cert(DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces));
+        door.note(&asked, "Claude Code", &stop);
+        assert!(!door.door().grants[0].browser_pages);
+    }
 }

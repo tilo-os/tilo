@@ -1,7 +1,8 @@
 use crate::TransportOrigin;
 use crate::owner::testing::{APP, WORKSPACE, raw_fixture, record_on_disk};
 use crate::owner::{
-    DocumentRead, NativeWorkspaceOwner, PendingEnrollmentId, WorkspaceId, open_file,
+    DocumentRead, HostAnswer, NativeWorkspaceOwner, PendingEnrollmentId, RecordWrites, WorkspaceId,
+    open_file,
 };
 use crate::owner_commit::{CommitOperation, OwnerCommitRequest};
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable};
@@ -9,6 +10,7 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::{
+    collections::BTreeMap,
     path::PathBuf,
     sync::{
         Arc,
@@ -23,8 +25,6 @@ mod busy_workspace;
 mod changes_read;
 #[path = "create_tests.rs"]
 mod create;
-#[path = "member_initialization_tests.rs"]
-mod member_initialization;
 #[path = "vouched_tests.rs"]
 mod vouched;
 
@@ -233,6 +233,85 @@ fn a_local_write_is_durable_with_its_outgoing_custody_before_its_receipt() {
 }
 
 #[test]
+fn a_write_its_relay_host_refused_leaves_the_replica_and_every_answer_is_counted() {
+    let joined = enrolled();
+    let (owner, workspace, now) = (&joined.owner, joined.workspace, joined.now);
+    let topic = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_current(workspace, |view| {
+                let chat = AutoCommit::load(&view.peer().document(APP, "").ok_or("no chat")?)
+                    .map_err(|error| error.to_string())?;
+                Ok(chat
+                    .get(ROOT, "topic")
+                    .ok()
+                    .flatten()
+                    .and_then(|(value, _)| value.as_str().map(str::to_owned)))
+            })
+            .unwrap()
+    };
+    let newest = |owner: &NativeWorkspaceOwner| {
+        owner
+            .with_outgoing(workspace, now, |_, outgoing| Ok(outgoing.queued().last()))
+            .unwrap()
+            .unwrap()
+    };
+    owner
+        .commit_document(edit_with(owner, workspace, now, "kept"), now)
+        .unwrap();
+    owner
+        .retire_answered(
+            workspace,
+            &BTreeMap::from([(newest(owner), HostAnswer::Durable(7))]),
+        )
+        .unwrap();
+    let refused = edit_with(owner, workspace, now, "refused");
+    let crate::owner_commit::CommitOperation::Document { envelope, .. } = refused.operation.clone()
+    else {
+        panic!("a document write");
+    };
+    owner.commit_document(refused, now).unwrap();
+    assert_eq!(topic(owner).as_deref(), Some("refused"));
+    owner
+        .retire_answered(
+            workspace,
+            &BTreeMap::from([(newest(owner), HostAnswer::Refused)]),
+        )
+        .unwrap();
+    let answered = RecordWrites {
+        pending: 0,
+        durable: 1,
+        refused: 1,
+        last_order: Some(7),
+    };
+    assert_eq!(topic(owner).as_deref(), Some("kept"));
+    assert!(
+        owner
+            .with_current(workspace, |view| {
+                view.peer()
+                    .lookup_exact_local_document(APP, "", &envelope, now)
+                    .map_err(|error| error.to_string())
+            })
+            .unwrap()
+            .is_none(),
+        "no evidence of the refused write stays to wait for"
+    );
+    assert_eq!(
+        owner
+            .record_writes(workspace)
+            .get(&(APP.to_owned(), String::new())),
+        Some(&answered)
+    );
+    let reopened = open_file(&joined.path).unwrap();
+    assert_eq!(topic(&reopened).as_deref(), Some("kept"));
+    assert_eq!(
+        reopened
+            .record_writes(workspace)
+            .get(&(APP.to_owned(), String::new())),
+        Some(&answered)
+    );
+}
+
+#[test]
 fn prepared_local_write_uses_current_sequence_after_an_intervening_commit() {
     let joined = enrolled();
     let stale = edit_with(&joined.owner, joined.workspace, joined.now, "stale edit");
@@ -335,6 +414,72 @@ fn a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence()
                 chat.get(ROOT, "topic").unwrap().unwrap().0.as_str(),
                 Some("unordered edit")
             );
+            Ok(())
+        })
+        .unwrap();
+}
+
+/// Two local writers of this device sign their writes before the owner's
+/// turn orders them. The write that reaches the turn second, though signed
+/// first, is taken all the same, signed again past the record's floor; one
+/// still past the floor, and an exact retry of a taken write, are taken as
+/// they are.
+#[test]
+fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
+    let joined = enrolled();
+    let key = member();
+    let envelope = |request: &OwnerCommitRequest| match &request.operation {
+        CommitOperation::Document { envelope, .. } => (**envelope).clone(),
+        _ => panic!("a document write"),
+    };
+    let earlier = unordered_edit(&joined, "signed first");
+    let later = unordered_edit(&joined, "signed second");
+    assert!(envelope(&earlier).seq < envelope(&later).seq);
+    let (taken, _) = joined
+        .owner
+        .commit_local_document(later.clone(), &key, joined.now)
+        .unwrap();
+    assert_eq!(
+        envelope(&taken),
+        envelope(&later),
+        "a write past the floor is taken as it is"
+    );
+    assert_eq!(
+        joined
+            .owner
+            .commit_document(earlier.clone(), joined.now)
+            .unwrap_err(),
+        "native local document signed sequence is stale",
+        "the passed write as it was signed is a replay"
+    );
+    let (taken, receipt) = joined
+        .owner
+        .commit_local_document(earlier.clone(), &key, joined.now)
+        .unwrap();
+    receipt.validate_local_document(&earlier, &taken).unwrap();
+    assert_ne!(envelope(&taken), envelope(&earlier));
+    assert!(envelope(&taken).seq > envelope(&later).seq);
+    let (again, _) = joined
+        .owner
+        .commit_local_document(taken.clone(), &key, joined.now)
+        .unwrap();
+    assert_eq!(
+        envelope(&again),
+        envelope(&taken),
+        "an exact retry is the write already taken"
+    );
+    joined
+        .owner
+        .with_current(joined.workspace, |view| {
+            for write in [&later, &taken] {
+                assert!(
+                    view.peer()
+                        .lookup_exact_local_document(APP, "", &envelope(write), joined.now)
+                        .map_err(|error| error.to_string())?
+                        .is_some(),
+                    "both writes are the record's"
+                );
+            }
             Ok(())
         })
         .unwrap();

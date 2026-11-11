@@ -530,7 +530,7 @@ impl ChromeSource for SessionChrome {
         // The bar's own avatar is the same face their card shows: one name, one identity, one
         // colour, read where the card reads it.
         let (name, identity) = crate::people::own_face(&own, &self.person);
-        let (red, green, blue) = crate::people::own_rgb(&identity);
+        let (red, green, blue) = crate::people::own_live_rgb(self.sync.as_deref(), &identity);
         OwnChip {
             // The name they go by, and the root key the picture they chose hangs on: the id is
             // never shown as their name.
@@ -748,14 +748,17 @@ impl crate::Session {
     }
 }
 
-/// What holds the keyboard over the desk: the desk's search from the pass it says it is open, and
-/// what the overlay stack says otherwise.
+/// What holds the keyboard over the desk: a surface opened over the field the person types in,
+/// else the desk's search from the pass it says it is open, and what the overlay stack says
+/// otherwise.
 /// The palette is the desk's own state while it is the chrome that draws it and publishes its
 /// surface. A key typed between the desk opening it and the chrome drawing it is the palette's, not
 /// the window's behind it: what the person typed goes into the search, and the frame that key asks
 /// for is the one that publishes the palette's surface.
 pub(crate) fn keyboard_target(handle: &DesktopHandle, overlays: &Overlays) -> Target {
-    if handle.search_open() {
+    if let Some(over) = overlays.over() {
+        Target::Surface(over)
+    } else if handle.search_open() {
         Target::Surface(Slot::Search)
     } else {
         overlays.target()

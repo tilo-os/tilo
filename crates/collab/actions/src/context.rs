@@ -341,6 +341,7 @@ impl ActionContext {
             id: id.into(),
             label: label.into(),
             kind: kind.into(),
+            title: None,
         });
         self
     }
@@ -1346,6 +1347,11 @@ pub struct WorkGroup {
     pub label: String,
     /// Open vocabulary: `issue`, `task`, `agent-run`, `session`, …
     pub kind: String,
+    /// What the caller itself called the work, when it named it: the title
+    /// an agent gave its run ("Fill Jane's application"). Words for people
+    /// to read, never the group itself, which a host may decide on its own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
 }
 
 /// [`ActionFacet::key`] of the risk ([`crate::RiskLevel::name`]) of the

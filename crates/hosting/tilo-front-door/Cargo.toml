@@ -15,13 +15,18 @@ hyper = { version = "1.8.1", features = ["http1", "server"] }
 hyper-util = { version = "0.1.20", features = ["tokio"] }
 ed25519-dalek.workspace = true
 iroh-base.workspace = true
+iroh.workspace = true
+# The relays the grant's endpoint dials the person's devices through.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
-tilo-session-host = { path = "../../session/host" }
+tilo-session-client = { path = "../../session/client" }
+tilo-session-core = { path = "../../session/core" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 # HTTPS to the relay and the site, as every client of the relay makes its requests.
 tilo-relay-client = { path = "../tilo-relay-client" }
 tilo-relay-session = { path = "../tilo-relay-session" }
+tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-runtime = { path = "../../runtime/tilo-runtime" }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

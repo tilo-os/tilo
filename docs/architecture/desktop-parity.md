@@ -58,8 +58,8 @@ carry its direction cue is not drawn yet."
 | Strip deck: every strip laid at the deck's whole size, only the shown one drawn and taking input; going to another strip slides the deck | `StripDeck` (`begin_drag`/`drag_to`/`end_drag`, `Snap::SPEC`, `FingerPath` resampling, `COMMIT_SHARE` a quarter of the deck) | `surface/slide.rs`: the shown strip is laid out and takes input while the one before it is posed away | same (§9) |
 | Switch strip by key (Ctrl+Super+↑/↓, Super+1..9, controller): `Snap` within `fast` | `desktop_host.rs` `go_to_strip` → `ShowStrip`; `composition.rs` `deck.show(display, index, source)` | `go_to_strip` → `ChromeEffect::ShowStrip` → `show_active_strip` swaps the row | worse → **fixed** (§9) |
 | Switch strip by clicking the strip switcher / ribbon | `overlay_host/strip_switcher.rs`, `strip_rail.rs`; the click calls `state.focus_strip` and the deck slides | `desktop/src/strip_switcher.rs`, `strip_navigator.rs`, `strip_indicators.rs` (the sliding indicator moves on `ListChange::MOVE`); the switch itself jumped | worse → **fixed** (§9) |
-| Three fingers up/down move the deck with the hand; release settles with momentum | `update_strip_deck_drag` → `StripDeck::begin_drag/drag_to/end_drag`; commit past a quarter or a flick | `GestureTracker` emits `StripDeckUpdate` per update; `surface-host`'s gesture reader hands every update to `DesktopSurface` | same (§9) |
-| Horizontal strip pan follows three fingers 1:1 with rubber band and coast | `GroupRow::update_strip_pan` driven by `StripPanUpdate` | `GestureReader` drops the stream into `self.travel` and steps at the end; `DesktopSurface` has `route_swipe` (wheel and trackpad scroll) but no gesture-driven pan. `paging.rs` uses `update_strip_pan` for a wheel step | worse (still) |
+| Three fingers up/down move the deck with the hand; release settles with momentum | `update_strip_deck_drag` → `StripDeck::begin_drag/drag_to/end_drag`; commit past a quarter or a flick | `GestureTracker` streams `StripDeckUpdate`; the desk reads the travel at the lift and steps the strip past `SWIPE_THRESHOLD`, sliding as a finger's change; the deck does not follow the hand | worse |
+| Horizontal strip pan follows three fingers 1:1 with rubber band and coast | `GroupRow::update_strip_pan` driven by `StripPanUpdate` | `GestureReader` hands every `StripPanUpdate` to `DesktopSurface::carry_strip`, which drives `update_strip_pan`; release coasts by `end_strip_pan` and focus follows the window left in view | same |
 | Focused window framed; a keyboard focus change slides the viewport only when the target was off screen, at `fast` | `navigation.rs` `begin_transition`, `scroll_group_into_view_animated` | `desktop/src/navigation.rs` `apply_navigation` (built only behind `composition.rs`); `desktop-surface` `scroll_group_into_view` jumps | worse |
 | Strip indicator ribbon and rail fade and slide between strips | `StripIndicators` `Transient::CONFIRMATION`, `SlidingFocus::follow` | `desktop/src/strip_indicators.rs` same | same |
 
@@ -165,7 +165,7 @@ What differs is the host around it.
 1. **No workspace slide** (fixed in §9).
 2. **No strip slide** (fixed in §9).
 3. **Three-finger strip and window gestures did not follow the fingers** (fixed
-   in §9 for the deck; the horizontal strip pan is still stepped).
+   in §9 for the strip; the deck still steps at the lift).
 4. **The four-finger workspace switch had no direction cue** (fixed in §9).
 5. **Quick Settings has no entrance and no height motion.** The old panel
    appeared from the tray and grew with what it showed; the new one is placed
@@ -192,12 +192,14 @@ before at its last laid-out place and poses it away on `Snap` (a strip step)
 or `Drill::WORKSPACE` (a workspace step) while the strip chosen is already the
 one laid out and taking input. A pointer and a finger slide; a key and an
 action move within `fast`, as the design note says, and a change nobody made
-still lands. Three fingers carry the deck: `surface-host`'s gesture reader
-used to keep only the total and step once at release, and now hands every
-update to the surface. Tests: `surface/slide_tests.rs` (a click slides across
-frames and never cuts, a key's slide is over within `fast`, a finger moves the
-strips one to one with its travel, a second change carries on from where the
-first is drawn, a workspace switch travels the shared axis' 28 px).
+still lands. Three fingers sideways carry the shown strip: `surface-host`'s
+gesture reader hands every update to `DesktopSurface::carry_strip`. Up and
+down they step the strip at the lift, which slides. Tests:
+`surface/slide_tests.rs` (a click slides across frames and never cuts, a key's
+slide is over within `fast`, a second change carries on from where the first
+is drawn, a workspace switch travels the shared axis' 28 px) and
+`session/tests/test_control.rs` (a held swipe through the control socket
+carries the strip).
 
 **Quick Settings at scale (§3).** `quick-settings/tests/scale.rs` lays the
 panel out at 2× and drives every tile, the volume mute, every slider and

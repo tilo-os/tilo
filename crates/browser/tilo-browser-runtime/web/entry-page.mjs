@@ -20,13 +20,14 @@ import {AdmissionError} from './admission.mjs';
 import {answerAgentQuestions} from './agent-questions.mjs';
 import {doorCopy, failureMessage, inviteLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, STOPPED_DRAWING, stoppedInside} from './arrival.mjs';
 import {servedVersion, watchForUpdate} from './bundle-update.mjs';
+import {mountWaitList} from './door-wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
-import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
+import {applicationName, loadRuntime, mountDesktop, prefetchApplication, prefetchDesktop, prefetchOfferedApplications, prepareGpu, reportPageErrors} from './host.mjs';
 import {connectPeer, httpsPost, identityProfile, inspectInvitation, joinWorkspace, openInvitation, profileDevice, withCustody} from './peer.mjs';
 import {readBrowserAccounts} from './browser-accounts.mjs';
 import {CustodyError, idbStorage, openDeviceCustody} from './device-custody.mjs';
 import {createIdentityActions, SIGN_IN, syncProfile} from './identity-actions.mjs';
-import {firstRun, MCP_URL, SEEN} from './first-run.mjs';
+import {firstRun, MCP_URL, setupDone} from './first-run.mjs';
 import {pickImageFile, squarePhoto} from './profile-photos.mjs';
 import {deviceLabel, pairingFailure, pairSecret, whenRequested} from './pairing.mjs';
 import {readInstallSecret, SET_UP, SETUP_PHASES, setUpFailure, setUpMachine} from './machine-setup.mjs';
@@ -35,8 +36,9 @@ import {createReconnect, domReconnectView} from './reconnect.mjs';
 import {followConnection} from './connection-status.mjs';
 import {followRefusal, hostUnreachable, reachedHost, refusalText, rejoinedName, retryUnreachable} from './session-refusal.mjs';
 import {rendererUnavailable} from './webgpu-safety.mjs';
-import {createWorkspaceActions} from './workspace-actions.mjs';
+import {createWorkspaceActions, invitedLine} from './workspace-actions.mjs';
 import {sameEntry} from './entered-workspaces.mjs';
+import {siteHost} from './site-host.mjs';
 import {
   chooseDisplayName, chooseWorkspace, chosenDisplayName, chosenWorkspace, enteredWorkspaces, forgetDeletedWorkspace, forgetGoneWorkspaces,
   heldWorkspaces, hostDeviceOf, hostToReconnect, joinGranted, joinViaHost, keepJoinedHost, keepOwnedHost,
@@ -50,8 +52,11 @@ const JOIN_NOW = 'tilo-embed-join';
 
 const hex = bytes => Array.from(bytes, byte => byte.toString(16).padStart(2, '0')).join('');
 
-/** The host's certificate; a workspace that just started refuses briefly. */
+/** The host's certificate, as the page's site names it (`site-host.mjs`) or else as the host
+ * says; a workspace that just started refuses briefly. */
 async function hostCertificate(runtime, origin, {timeoutMs = 15_000} = {}) {
+  const named = siteHost(origin);
+  if (named) return named.info.hostCert;
   const deadline = Date.now() + timeoutMs;
   for (let delay = 100; ; delay = Math.min(delay * 2, 1000)) {
     try {
@@ -511,6 +516,121 @@ function askLine({label: text, action, save}) {
   });
 }
 
+/** A link to hand on: shown to select, with a button that copies it
+ * (inside the person's click, which a browser's clipboard asks for). */
+function shareCard({title, body, link}) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card';
+    form.dataset.card = 'share';
+    const heading = Object.assign(document.createElement('p'), {textContent: title});
+    const about = Object.assign(document.createElement('p'), {textContent: body});
+    const field = Object.assign(document.createElement('input'), {name: 'link', value: link, readOnly: true});
+    field.setAttribute('aria-label', 'Link');
+    field.addEventListener('focus', () => field.select());
+    const copy = Object.assign(document.createElement('button'), {type: 'button', textContent: 'Copy link'});
+    copy.addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(link);
+        copy.textContent = 'Copied';
+      } catch {
+        field.focus();
+        copy.textContent = 'Select the link and copy it';
+      }
+    });
+    const done = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Done'});
+    form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
+    form.append(heading, about, field, copy, done);
+    document.body.append(form);
+    copy.focus();
+  });
+}
+
+/** When a wait-list address was left, as the inviter reads dates. */
+const addedAt = atMs => new Intl.DateTimeFormat(undefined, {dateStyle: 'medium', timeStyle: 'short'}).format(new Date(atMs));
+
+/** The addresses on the workspace's wait list, each to invite (`invite(entry)`
+ * makes and shares an invitation for it) or take off the list (`unlist`), as
+ * `load()` resolves them; read again after every decision. Resolves when
+ * closed. */
+function waitingCard({load, invite, unlist}) {
+  return new Promise(resolve => {
+    const form = document.createElement('form');
+    form.className = 'tilo-entry-card tilo-waiting';
+    form.dataset.card = 'waiting';
+    const heading = Object.assign(document.createElement('h2'), {textContent: 'Waiting to join'});
+    const listed = document.createElement('section');
+    listed.dataset.list = 'wait-list';
+    const error = document.createElement('p');
+    error.className = 'tilo-entry-error';
+    error.setAttribute('role', 'alert');
+    error.hidden = true;
+    const close = Object.assign(document.createElement('button'), {type: 'submit', textContent: 'Close'});
+    form.addEventListener('submit', event => { event.preventDefault(); form.remove(); resolve(); });
+    const said = refusal => { error.textContent = refusal?.message ?? String(refusal); error.hidden = false; };
+    const button = (text, run) => {
+      const made = Object.assign(document.createElement('button'), {type: 'button', textContent: text});
+      made.addEventListener('click', run);
+      return made;
+    };
+    const show = async () => {
+      let contacts = [];
+      try { contacts = await load(); } catch (refusal) { said(refusal); }
+      // The wait list: addresses people left at the door, oldest first.
+      listed.replaceChildren();
+      if (!contacts.length) {
+        listed.append(Object.assign(document.createElement('p'), {className: 'tilo-waiting-none',
+          textContent: 'Nobody is waiting to join.'}));
+        return;
+      }
+      const title = Object.assign(document.createElement('h3'), {textContent: `Wait list · ${contacts.length}`});
+      const about = Object.assign(document.createElement('p'), {className: 'tilo-waiting-note',
+        textContent: 'They asked to join without an invitation. Invite sends them a link to join; they leave the list once they join.'});
+      const rows = document.createElement('ul');
+      rows.append(...contacts.map(entry => {
+        const item = document.createElement('li');
+        const who = document.createElement('span');
+        who.className = 'tilo-waiting-who';
+        who.append(Object.assign(document.createElement('span'), {className: 'tilo-waiting-contact', textContent: entry.contact, title: entry.contact}),
+          Object.assign(document.createElement('time'), {dateTime: new Date(entry.addedAtMs).toISOString(), textContent: addedAt(entry.addedAtMs)}));
+        // Invited already: said, so nobody invites them twice.
+        if (entry.invitedAtMs != null) {
+          who.append(Object.assign(document.createElement('time'), {className: 'tilo-waiting-invited',
+            dateTime: new Date(entry.invitedAtMs).toISOString(), textContent: invitedLine(entry.invitedAtMs)}));
+        }
+        item.append(who, button(entry.invitedAtMs == null ? 'Invite' : 'Invite again', () => decide(async () => {
+          const sent = await invite(entry);
+          if (sent?.mailed) mailed(entry.contact, sent.link);
+        }, entry.requestId)), button('Remove', () => decide(unlist, entry.requestId)));
+        return item;
+      }));
+      listed.append(title, about, rows);
+    };
+    // A mailed invitation, said, with its link to copy should the mail not
+    // arrive.
+    const sent = document.createElement('p');
+    sent.className = 'tilo-waiting-sent';
+    sent.setAttribute('role', 'status');
+    sent.hidden = true;
+    const mailed = (contact, link) => {
+      const copy = button('Copy link', async () => {
+        copy.textContent = await navigator.clipboard.writeText(link).then(() => 'Copied', () => 'Copy failed');
+      });
+      sent.replaceChildren(`Invitation emailed to ${contact}. `, copy);
+      sent.hidden = false;
+    };
+    const decide = async (choice, requestId) => {
+      error.hidden = true;
+      sent.hidden = true;
+      try { await choice(requestId); } catch (refusal) { said(refusal); }
+      await show();
+    };
+    form.append(heading, listed, sent, error, close);
+    document.body.append(form);
+    void show();
+  });
+}
+
 /**
  * The root a machine is set up with: the one this page unlocked, else this
  * browser's own (made now on a first visit). Never a root other than the
@@ -707,8 +827,8 @@ export async function startEntryPage({mode}) {
     mcp: MCP_URL,
     ...(query.get('room') ? {room: query.get('room')} : {}),
     ...(query.get('workspace') ? {workspaceName: query.get('workspace')} : {}),
-    // The directory sheet's Join, which its door granted: the page joins with
-    // the invitation it answered, then shows the workspace.
+    // The directory sheet's Join: the page enters the workspace through its
+    // door on the session, then shows it.
     onJoinGranted: joined => { void openGrantedWorkspace(joined); },
     // The render state is for tests and tools (data-phase, data-frames on
     // the root element); the bar only tells the person something they can
@@ -805,6 +925,7 @@ export async function startEntryPage({mode}) {
     rendererUnavailable: () => renderer,
     onAdmitted: peer => { admitted = peer; letIn(peer); },
     prefetchApplication,
+    prefetchDesktop,
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {
@@ -1013,8 +1134,8 @@ export async function startEntryPage({mode}) {
   const openGrantedWorkspace = async joined => {
     if (!opened) return;
     try {
-      // The same join an invitation link takes, which keeps the membership so
-      // the opened page reconnects as this person.
+      // The same join the page's own door and an invitation link take, which
+      // keeps the membership so the opened page reconnects as this person.
       const {peer, origin, room, name} = await joinGranted(joined, {
         join: options => deps.joinWorkspace(options), displayName: displayName ?? null,
       });
@@ -1128,7 +1249,7 @@ export async function startEntryPage({mode}) {
     identityActions = attachIdentity();
     // A page holding the person's root is asked what their agents here
     // need them to allow, as their native devices are.
-    answerAgentQuestions({peer: page.peer, identity: currentIdentity(), runtime});
+    answerAgentQuestions({peer: page.peer, identity: currentIdentity()});
     // The first screen (first-run.mjs) sets an agent up through this tab's
     // root and signs in with an agent, both through a login code its host
     // makes, and signs in with a passkey, once the page can.
@@ -1141,10 +1262,18 @@ export async function startEntryPage({mode}) {
     if (firstRun && !embed && here.kind !== 'own') {
       firstRun.whenDone(async () => {
         if (!hostedOwn) await hostedOwnMade;
-        if (hostedOwn) return void openWorkspace({choice: ownChoice(hostedOwn), page, status});
-        void ownDesktopAllowed(page.entry?.home).then(open => {
-          if (open) void openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
-        });
+        if (hostedOwn) {
+          // Chosen before the setup is over, so no load in between opens the
+          // site's home workspace: from now on a bare entry opens this one.
+          const choice = ownChoice(hostedOwn);
+          remembering(() => chooseWorkspace(choice));
+          setupDone();
+          return openWorkspace({choice, page, status});
+        }
+        setupDone();
+        if (await ownDesktopAllowed(page.entry?.home)) {
+          await openWorkspace({choice: {id: `${OPEN_WORKSPACE}own`, name: 'Your desktop', own: true}, page, status});
+        }
       });
     }
     // A tab an agent just signed in as a device of the person: it paired
@@ -1193,6 +1322,18 @@ export async function startEntryPage({mode}) {
       peer: page.peer,
       machines: () => (person() ? ownedHosts(person()) : []),
       lobby: async origin => connectPeer({origin, identity: await rootOfThisPage(page.peer), runtime, displayName, live: false}),
+      // The invitation's short link, sealed onto this site's shelf, as the
+      // sheet makes it: the site keeps ciphertext it cannot read and the key
+      // rides in the link's fragment. A shelf that answers with nothing
+      // leaves the invitation's own text, which joins just the same.
+      inviteLink: async invitation => {
+        try {
+          return await runtime.sealedInvitationLink(page.entry.base, page.peer.origin, invitation);
+        } catch (error) {
+          console.warn('invitation not shelved:', error?.message ?? error);
+          return invitation;
+        }
+      },
       open: async ({origin, room, name, hostDevice: holder}) => {
         keepJoinedHost({origin, room, userPublicKey: (await rootOfThisPage(page.peer)).userPublicKey});
         remembering(() => rememberEntered(runtime, {origin, room, name, hostDevice: holder}));
@@ -1202,6 +1343,8 @@ export async function startEntryPage({mode}) {
       ui: {
         askWorkspaceName: save => askLine({label: 'Name of the new workspace', action: 'Create', save}),
         chooseMachine: origins => card('Create the workspace on', [...origins.map(origin => [new URL(origin).host, origin]), ['Cancel', null]]),
+        share: shareCard,
+        waitingList: waitingCard,
         fail: text => card(text, [['Close', null]]),
       },
     }) : null;
@@ -1316,7 +1459,7 @@ export async function startEntryPage({mode}) {
     status.textContent = said;
     // Turned away for coming without an invitation: a place to open the
     // one they get.
-    if (error?.code === 'invitation-only') offerDoor({messages, named, workspace: visitedAt ?? admitting?.entry?.home});
+    if (error?.code === 'invitation-only') offerDoor({messages, named, error, workspace: visitedAt ?? admitting?.entry?.home});
     const known = admitting && remembering(() => rememberedWorkspace(admitting.scope));
     // A declined or unusable invitation, a damaged link or this browser's
     // device key held by another tab says nothing about the workspace.
@@ -1476,8 +1619,10 @@ const DOOR_SIGNED_IN = 'tilo-door-signed-in';
 
 /**
  * On a page turned away for coming without an invitation, the door
- * (index.html, `#arrival-door`): it names the workspace `named` and asks for
- * the invite link someone sends. Under it: signing
+ * (index.html, `#arrival-door`). Where the host keeps a wait list
+ * (`error.door`), it apologises that Tilo is invite-only for now and asks
+ * for an email to invite (`offerWaitList`); else it names the workspace
+ * `named` and asks for the invite link someone sends. Under either: signing
  * in with an identity the person already has (a passkey, then the page
  * loads again and joins as them, and a member gets in), and the field to
  * paste an invite link into, opened in this tab. Where the person has a
@@ -1485,14 +1630,26 @@ const DOOR_SIGNED_IN = 'tilo-door-signed-in';
  * at the foot of the page (`offerOwnDesktop`); while the home takes people
  * by invitation only, nothing does.
  */
-function offerDoor({messages, named, workspace}) {
+function offerDoor({messages, named, error, workspace}) {
   const door = document.getElementById('arrival-door');
+  // The first screen of a first visit is not for someone the door turns
+  // away: it asks them to set an agent up in a workspace they are not in.
+  // It leaves now, and this browser remembers the door, so a reload or a
+  // second tab opens on it again rather than on the setup screen.
+  if (firstRun) {
+    try { globalThis.localStorage?.setItem(SEEN, '1'); } catch { /* No storage: the door shows again either way. */ }
+    firstRun.close();
+    // Now, not after the screen's fade: the door is what this visit is.
+    document.documentElement.removeAttribute('data-first-run');
+  }
   const form = document.getElementById('arrival-invite');
+  const toggle = document.getElementById('arrival-invite-toggle');
   const field = document.getElementById('arrival-invite-link');
   const problem = document.getElementById('arrival-invite-error');
-  if (!door || !form || !field || !problem) return;
+  if (!door || !form || !toggle || !field || !problem) return;
   const say = (key, english, args) => localized(messages, key, english, args);
-  const copy = doorCopy({workspace: named, messages});
+  const waitList = Boolean(error?.door?.waitList && workspace?.admission);
+  const copy = doorCopy({workspace: named, waitList, messages});
   document.getElementById('arrival-door-heading').textContent = copy.heading;
   document.getElementById('arrival-door-body').textContent = copy.body;
   const own = document.getElementById('arrival-own');
@@ -1503,11 +1660,20 @@ function offerDoor({messages, named, workspace}) {
       door.querySelector('.door-foot')?.append(own);
     });
   }
+  if (waitList) offerWaitList({workspace, contact: error.door.contact, mail: error.door.mail === true, messages});
   offerSignIn({workspace, named, messages});
-  // The invite link, shown: it is the way in.
+  // The invite link: behind a small toggle beside the wait list; shown
+  // where it is the only way in.
+  toggle.textContent = say('arrival-invite-toggle', 'Have an invite link?');
   field.placeholder = say('arrival-invite-placeholder', 'Paste an invite link');
   field.setAttribute('aria-label', say('arrival-invite-link', 'Invite link'));
   form.querySelector('button').textContent = say('arrival-invite-open', 'Open');
+  form.hidden = waitList;
+  toggle.addEventListener('click', () => {
+    form.hidden = !form.hidden;
+    toggle.setAttribute('aria-expanded', String(!form.hidden));
+    if (!form.hidden) field.focus();
+  });
   form.addEventListener('submit', event => {
     event.preventDefault();
     const target = inviteLinkTarget(field.value);
@@ -1520,14 +1686,40 @@ function offerDoor({messages, named, workspace}) {
   window.addEventListener('hashchange', () => {
     if (inviteLinkTarget(location.href)) location.reload();
   });
-  document.documentElement.dataset.door = 'invite';
+  document.documentElement.dataset.door = waitList ? 'wait-list' : 'invite';
+}
+
+/** The door's wait list (door-wait-list.mjs): an email field that leaves
+ * the address at the host's door, where it stands once it took it, this
+ * browser's way to take it off again, and where questions go (`contact`).
+ * A door that mails (`mail`) sends links back to this page: one that
+ * confirms the address (`?wait-list-confirm=`) or takes it off
+ * (`?wait-list-remove=`), done here and taken out of the address bar. */
+function offerWaitList({workspace, contact, mail, messages}) {
+  const form = document.getElementById('arrival-wait');
+  const elements = {form, submit: form?.querySelector('button')};
+  for (const [name, id] of [['email', 'arrival-wait-email'], ['done', 'arrival-wait-done'], ['againLine', 'arrival-wait-again-line'],
+    ['againPrompt', 'arrival-wait-again-prompt'], ['again', 'arrival-wait-again'], ['change', 'arrival-wait-change'],
+    ['leave', 'arrival-wait-leave'], ['note', 'arrival-wait-note'], ['contact', 'arrival-wait-contact']]) {
+    elements[name] = document.getElementById(id);
+  }
+  if (Object.values(elements).some(element => !element)) return;
+  const url = new URL(location.href);
+  const arrival = {confirm: url.searchParams.get('wait-list-confirm'), remove: url.searchParams.get('wait-list-remove')};
+  if (arrival.confirm || arrival.remove) {
+    url.searchParams.delete('wait-list-confirm');
+    url.searchParams.delete('wait-list-remove');
+    history.replaceState(history.state, '', url);
+  }
+  mountWaitList({elements, root: document.documentElement, workspace, contact, mail,
+    arrival: arrival.confirm || arrival.remove ? arrival : null, messages});
 }
 
 /**
  * Signing in at the door with an identity the person already has: their
  * passkey opens it (its envelope from the hosts that keep it), and the page
  * loads again to join as them. A member gets in; anyone else is told this
- * identity is not in `named` yet.
+ * identity is not in `named` yet, with the wait list still there.
  */
 function offerSignIn({workspace, named, messages}) {
   const say = (key, english, args) => localized(messages, key, english, args);
@@ -1549,7 +1741,7 @@ function offerSignIn({workspace, named, messages}) {
   } catch { /* No storage: nothing to say about a sign-in. */ }
   if (signedIn && signedIn === currentIdentity()?.userPublicKey) {
     note.textContent = named
-      ? say('arrival-sign-in-not-member', 'You’re signed in, but this identity isn’t in { $workspace } yet. Ask someone in it for an invite.', {workspace: named})
+      ? say('arrival-sign-in-not-member', 'You’re signed in, but this identity isn’t in { $workspace } yet. Join the wait list, or ask someone in it for an invite.', {workspace: named})
       : say('arrival-sign-in-not-member-unnamed', 'You’re signed in, but this identity isn’t in this workspace yet. Ask someone in it for an invite.');
   }
   button.addEventListener('click', async () => {
@@ -1687,7 +1879,7 @@ function keepIdentity({peer, mount, home, name, runtime, link, naming, photos}) 
     // A peer that cannot set a name of its own (a guest the relay admitted)
     // goes by none; the person's own desktop (no peer) and a workspace they
     // joined do.
-    identity, name, pairing: pairingOf({peer, identity, runtime, link}), naming: !peer || peer.setDisplayName ? naming : null,
+    identity, name, pairing: pairingOf({peer, identity, link}), naming: !peer || peer.setDisplayName ? naming : null,
     photos: !peer || peer.setDisplayName ? photos : null,
     hosts: () => membershipOrigins(identity.userPublicKey),
     lookups: () => [...membershipOrigins(), ...listedWorkspaces({home}).map(workspace => workspace.host.origin)],
@@ -1795,28 +1987,46 @@ function offerFirstRunCodes({origin, identity, runtime, link}) {
       passkeys: () => false});
     return actions;
   };
+  // What the setup keeps of a code names whose it is: a code kept for
+  // another person or host is not this tab's to follow.
+  const ours = saved => saved?.person === identity.userPublicKey && saved?.host === host;
   firstRun.offerSetup(async () => {
     const agents = await agentActions();
-    const {link: pairingLink} = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
-    const made = await codes.create(pairingLink);
+    const pairing = await agents.connectAgent({workspace: setUpIn ?? namedOwnWorkspace(host, identity.userPublicKey)});
+    const made = await codes.create(pairing.link);
     // While the person's root is in this tab alone, a stand-in on the
     // host keeps them from being lost with it.
     void agents.keepStandIn().catch(error => console.warn('first run: stand-in', error));
-    return made;
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host,
+      invite: pairing.invite, inviteExpiresAt: pairing.expiresAt}};
+  }, saved => {
+    if (!ours(saved)) return null;
+    // The link in the code names an invite this tab made before it was
+    // loaded again: the agent's device answering it is approved here, as
+    // it would have been.
+    if (saved.invite) {
+      void agentActions().then(agents => agents.connectAgent({adopt: {id: saved.invite, expiresAt: saved.inviteExpiresAt}}))
+        .catch(error => console.warn('first run: approving your agent', error));
+    }
+    return codes.resume(saved);
   });
   // Claimed by a device of the person: this tab asks to be certified as a
   // device of theirs with the invite the claim named, as a pairing link
   // does, and their stand-in on the host approves exactly that request.
   // The link opens the workspace this tab is let into, so it waits for that.
-  firstRun.offerAgentSignIn(async () => ({...await codes.create(null), signIn: async ({user, invite}) => {
+  const signIn = async ({user, invite}) => {
     const peer = await Promise.race([pageLetIn, new Promise(resolve => setTimeout(resolve, LET_IN_MS, null))]);
     if (!peer?.workspace) throw Object.assign(new Error('this tab is not in its workspace yet'), {code: 'not-let-in'});
     const url = (await link).format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room: peer.workspace}}});
-    try { globalThis.localStorage?.setItem(SEEN, '1'); } catch { /* The pairing link skips the first screen anyway. */ }
+    setupDone();
     try { globalThis.sessionStorage?.setItem(OPEN_OWN, '1'); } catch { /* Then the home workspace stays in front. */ }
     globalThis.location.assign(`${url}${new URL(url).hash.includes('?') ? '&' : '?'}pair=${pairSecret(user, invite)}`);
     globalThis.location.reload();
-  }}));
+  };
+  firstRun.offerAgentSignIn(async () => {
+    const made = await codes.create(null);
+    return {...made, saved: {...made.saved, person: identity.userPublicKey, host}, signIn};
+  }, saved => (ours(saved) ? {...codes.resume(saved), signIn} : null));
 }
 
 /** Where this browser keeps the person's own workspace it named before it existed. */
@@ -1906,7 +2116,14 @@ function loginCodes(runtime, origin) {
   return {
     async create(link = null) {
       const made = JSON.parse(await runtime.createLoginCode(post, link));
-      return {code: made.code, expiresAt: made.expires_at_ms, follow: async () => JSON.parse(await runtime.followLoginCode(post, made.follow))};
+      return this.resume({code: made.code, expiresAt: made.expires_at_ms, follow: made.follow});
+    },
+    /** A code made before, from what was kept of it (`{code, expiresAt,
+     * follow}`, `follow` the secret only this browser holds, and whatever
+     * else the page kept with it), followed again: kept again whole. */
+    resume(saved) {
+      return {code: saved.code, expiresAt: saved.expiresAt, saved: {...saved},
+        follow: async () => JSON.parse(await runtime.followLoginCode(post, saved.follow))};
     },
   };
 }
@@ -1920,8 +2137,9 @@ function loginCodes(runtime, origin) {
 function pairingAt({origin, identity, runtime, link}) {
   if (!runtime?.PairingHost || !link) return null;
   let host = null;
-  const at = () => (host ??= runtime.hostInfo(httpsPost(origin)).then(info => {
-    const {address} = JSON.parse(info);
+  const asked = async () => siteHost(origin)?.info ?? JSON.parse(await runtime.hostInfo(httpsPost(origin)));
+  const at = () => (host ??= asked().then(info => {
+    const {address} = info;
     if (!address) throw new Error('this host takes no device connections');
     return new runtime.PairingHost(JSON.stringify(address));
   }).catch(error => { host = null; throw error; }));
@@ -1942,12 +2160,12 @@ function pairingAt({origin, identity, runtime, link}) {
  * answering `invite`, and the host's requests waiting for this root to
  * approve them.
  */
-function pairingOf({peer, identity, runtime, link}) {
-  if (!peer?.origin || !peer.workspace || !peer.host?.address || !runtime?.PairingHost || !link) return null;
-  // The host reached as every device reaches it, over iroh, only while the
-  // page pairs: made on the first question, let go once no invite is open.
+function pairingOf({peer, identity, link}) {
+  if (!peer?.origin || !peer.workspace || !peer.pairing || !link) return null;
+  // Asked over the page's own session with the host: made on the first
+  // question, let go once no invite is open.
   let host = null;
-  const at = () => (host ??= new runtime.PairingHost(JSON.stringify(peer.host.address)));
+  const at = () => (host ??= peer.pairing());
   return {
     link: (invite, room = peer.workspace) => {
       const url = link.format({mode: 'desktop', target: {scope: {kind: 'room', host: peer.origin, room}}});

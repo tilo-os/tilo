@@ -4,8 +4,8 @@
 //! deliberate multi-page session. Every page retains its source image and
 //! structured OCR so crop/rotation or language changes can be revisited.
 
-use image::{DynamicImage, GenericImageView, imageops};
 use tilo_ocr::Document;
+use ui::image_codec::DecodedImage;
 use ui::widget::CropSelection;
 
 /// Translate the unstructured SANE/process boundary into short recovery copy.
@@ -58,7 +58,7 @@ pub struct Crop {
 }
 
 pub struct Page {
-    original: DynamicImage,
+    original: DecodedImage,
     pub crop: Crop,
     pub rotation: Rotation,
     pub ocr: Option<Document>,
@@ -69,8 +69,8 @@ pub struct Page {
 
 impl Page {
     #[must_use]
-    pub fn new(original: DynamicImage) -> Self {
-        let (width, height) = original.dimensions();
+    pub fn new(original: DecodedImage) -> Self {
+        let (width, height) = (original.width, original.height);
         Self {
             original,
             crop: Crop {
@@ -93,11 +93,11 @@ impl Page {
             || crop
                 .x
                 .checked_add(crop.width)
-                .is_none_or(|right| right > self.original.width())
+                .is_none_or(|right| right > self.original.width)
             || crop
                 .y
                 .checked_add(crop.height)
-                .is_none_or(|bottom| bottom > self.original.height())
+                .is_none_or(|bottom| bottom > self.original.height)
         {
             return Err("crop must remain inside the captured page");
         }
@@ -120,10 +120,9 @@ impl Page {
 
     #[must_use]
     pub fn crop_editor_source(&self) -> (std::sync::Arc<[u8]>, u32, u32, CropSelection) {
-        let rgba = self.original.to_rgba8();
-        let (width, height) = rgba.dimensions();
+        let (width, height) = (self.original.width, self.original.height);
         (
-            std::sync::Arc::from(rgba.into_raw()),
+            std::sync::Arc::from(self.original.rgba.as_slice()),
             width,
             height,
             CropSelection {
@@ -139,8 +138,8 @@ impl Page {
 
     /// Applies shared crop-editor coordinates to this page.
     pub fn set_normalized_crop(&mut self, selection: CropSelection) -> Result<(), &'static str> {
-        let width = self.original.width();
-        let height = self.original.height();
+        let width = self.original.width;
+        let height = self.original.height;
         let x = (selection.left.clamp(0.0, 1.0) * f64::from(width)).round() as u32;
         let y = (selection.top.clamp(0.0, 1.0) * f64::from(height)).round() as u32;
         let right = (selection.right.clamp(0.0, 1.0) * f64::from(width)).round() as u32;
@@ -154,15 +153,16 @@ impl Page {
     }
 
     #[must_use]
-    pub fn rendered(&self) -> DynamicImage {
-        let cropped =
-            self.original
-                .crop_imm(self.crop.x, self.crop.y, self.crop.width, self.crop.height);
+    pub fn rendered(&self) -> DecodedImage {
+        let cropped = self
+            .original
+            .cropped(self.crop.x, self.crop.y, self.crop.width, self.crop.height)
+            .unwrap_or_else(|| self.original.clone());
         match self.rotation {
             Rotation::None => cropped,
-            Rotation::Clockwise => DynamicImage::ImageRgba8(imageops::rotate90(&cropped)),
-            Rotation::UpsideDown => DynamicImage::ImageRgba8(imageops::rotate180(&cropped)),
-            Rotation::CounterClockwise => DynamicImage::ImageRgba8(imageops::rotate270(&cropped)),
+            Rotation::Clockwise => cropped.turned(1),
+            Rotation::UpsideDown => cropped.turned(2),
+            Rotation::CounterClockwise => cropped.turned(3),
         }
     }
 }
@@ -174,7 +174,7 @@ pub struct ScanSession {
 }
 
 impl ScanSession {
-    pub fn add_page(&mut self, image: DynamicImage) {
+    pub fn add_page(&mut self, image: DecodedImage) {
         self.pages.push(Page::new(image));
         self.selected = self.pages.len().saturating_sub(1);
     }
@@ -205,11 +205,11 @@ impl ScanSession {
             .pages
             .iter()
             .map(|page| {
-                let image = page.rendered().to_rgb8();
+                let image = page.rendered();
                 tilo_doc_pdf::ScannedPdfPage {
-                    width: image.width(),
-                    height: image.height(),
-                    rgb: image.into_raw(),
+                    width: image.width,
+                    height: image.height,
+                    rgb: image.pixels().flat_map(|[r, g, b, _]| [r, g, b]).collect(),
                     recognized_text: page
                         .ocr
                         .as_ref()
@@ -254,7 +254,7 @@ mod tests {
     )]
     fn page_edits_invalidate_stale_ocr_and_export_a_searchable_pdf() {
         {
-            let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
+            let mut page = Page::new(DecodedImage::filled(100, 80, [0, 0, 0, 255]));
             page.ocr = Some(Document {
                 words: Vec::new(),
                 language: "eng".into(),
@@ -269,17 +269,14 @@ mod tests {
             assert!(page.ocr.is_none());
         }
         {
-            let mut page = Page::new(DynamicImage::new_rgb8(100, 80));
+            let mut page = Page::new(DecodedImage::filled(100, 80, [0, 0, 0, 255]));
             page.ocr = Some(Document {
                 words: Vec::new(),
                 language: "eng".into(),
             });
             page.rotate_clockwise();
             assert_eq!(page.rotation, Rotation::Clockwise);
-            assert_eq!(
-                (page.rendered().width(), page.rendered().height()),
-                (80, 100)
-            );
+            assert_eq!((page.rendered().width, page.rendered().height), (80, 100));
             assert!(page.ocr.is_none());
             for _ in 0..3 {
                 page.rotate_clockwise();
@@ -287,7 +284,7 @@ mod tests {
             assert_eq!(page.rotation, Rotation::None);
         }
         {
-            let mut page = Page::new(DynamicImage::new_rgb8(200, 100));
+            let mut page = Page::new(DecodedImage::filled(200, 100, [0, 0, 0, 255]));
             page.set_normalized_crop(CropSelection {
                 left: 0.1,
                 top: 0.2,
@@ -311,15 +308,15 @@ mod tests {
         }
         {
             let mut scan = ScanSession::default();
-            scan.add_page(DynamicImage::new_rgb8(10, 20));
-            scan.add_page(DynamicImage::new_rgb8(30, 40));
+            scan.add_page(DecodedImage::filled(10, 20, [0, 0, 0, 255]));
+            scan.add_page(DecodedImage::filled(30, 40, [0, 0, 0, 255]));
             assert!(scan.move_page(1, 0));
-            assert_eq!(scan.pages[0].rendered().width(), 30);
+            assert_eq!(scan.pages[0].rendered().width, 30);
         }
         {
             let mut scan = ScanSession::default();
-            scan.add_page(DynamicImage::new_rgb8(2, 1));
-            scan.add_page(DynamicImage::new_rgb8(1, 2));
+            scan.add_page(DecodedImage::filled(2, 1, [0, 0, 0, 255]));
+            scan.add_page(DecodedImage::filled(1, 2, [0, 0, 0, 255]));
             scan.pages[0].ocr = Some(Document {
                 words: vec![tilo_ocr::Word {
                     text: "First receipt".into(),

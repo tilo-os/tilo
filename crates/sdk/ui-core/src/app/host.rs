@@ -1,6 +1,11 @@
 // Frame layout and drawing shared by every host of App, and App's host-facing
 // behaviour. The native event-loop runner is `app/native_runner.rs`.
 
+// Only the frame's own draw passes draw widgets as children; the portable
+// toolkit has no window to draw.
+#[cfg(feature = "native")]
+use crate::widget::DrawChild;
+
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
 #[cfg(feature = "native")]
@@ -55,6 +60,9 @@ fn draw_frame_content_with(
     // What a widget places again as it paints (a floating panel measured
     // against its labels) lands on this display's pixels as layout does.
     let _grid = crate::widget::layout::enter_device_scale(f64::from(scale_factor));
+    // A window that does not hold the keyboard paints no caret: what is typed next lands in the
+    // surface that took it.
+    let _carets = crate::caret_owner::holding(app.input.keyboard_held);
     let owner = app.motion_owner();
     crate::motion::own(owner, || {
         draw_frame_content_owning(app, scene, size, scale_factor, t_draw_start, culled)
@@ -125,7 +133,7 @@ fn draw_frame_content_owning(
     let mut history_changed = false;
     if let Some(history) = &mut app.history {
         if tracked {
-            history.draw(
+            history.draw_child(
                 scene,
                 transform,
                 &mut app.text_renderer,
@@ -164,7 +172,7 @@ fn draw_frame_content_owning(
         };
         app.presence_ctx
             .with_permissions(app.permission_ctx.clone(), || {
-                app.root_widget.draw(
+                app.root_widget.draw_child(
                     widgets,
                     transform,
                     &mut app.text_renderer,
@@ -359,7 +367,7 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
     let secrets = crate::secret_paint::SecretPaint::begin();
     app.presence_ctx
         .with_permissions(app.permission_ctx.clone(), || {
-            app.root_widget.draw(
+            app.root_widget.draw_child(
                 widgets,
                 drawn.transform,
                 &mut app.text_renderer,
@@ -900,6 +908,9 @@ fn lay_out_window(
     app.layout.last_layout_logical = Some(logical);
     app.layout.last_layout_scale = Some(scale_factor);
     app.layout.layout_dirty = false;
+    // The size the window wants follows what was laid out in it: a panel whose height follows its
+    // page measures that page here.
+    app.window.preferred_size = crate::widget::preferred_window_size(app.root_widget.as_ref());
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
     }

@@ -479,6 +479,137 @@ impl NativeWorkspaceOwner {
         self.commit_document_with_current(workspace, |_| Ok(request), now)
     }
 
+    /// [`Self::commit_document`] for a write one of this device's local
+    /// writers signed, sequenced in the owner's turn
+    /// ([`StatePeer::sequenced_local_document`]) by `key`, the device: the
+    /// write as the record took it, and its receipt.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::commit_document`].
+    pub fn commit_local_document(
+        &self,
+        request: crate::owner_commit::OwnerCommitRequest,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<
+        (
+            crate::owner_commit::OwnerCommitRequest,
+            crate::owner_commit::OwnerCommitReceipt,
+        ),
+        String,
+    > {
+        use crate::owner_commit::CommitOperation;
+        let workspace =
+            WorkspaceId::parse(&request.workspace).ok_or("invalid native document workspace")?;
+        let mut committed = None;
+        let receipt = self.commit_document_with_current(
+            workspace,
+            |view| {
+                let CommitOperation::Document {
+                    app,
+                    record,
+                    envelope,
+                } = request.operation
+                else {
+                    return Err("unsupported native owner commit family".into());
+                };
+                // The live replica holds the record's floor as the turn admits.
+                let envelope = view
+                    .replica()
+                    .lock()
+                    .sequenced_local_document(&app, &record, *envelope, key, now)?;
+                let sequenced = crate::owner_commit::OwnerCommitRequest {
+                    workspace: request.workspace,
+                    operation: CommitOperation::Document {
+                        app,
+                        record,
+                        envelope: Box::new(envelope),
+                    },
+                };
+                committed = Some(sequenced.clone());
+                Ok(sequenced)
+            },
+            now,
+        )?;
+        Ok((committed.ok_or("the write was never prepared")?, receipt))
+    }
+
+    /// [`Self::commit_document`] for several writes of this device to
+    /// `workspace`, in order and in one owner turn: one durable publication
+    /// for all of them. Commits as many as its outgoing custody takes and
+    /// answers how many; the rest wait until the host answered some of what
+    /// it holds. `whole` commits all of them or, when custody cannot take
+    /// all, none.
+    ///
+    /// # Errors
+    ///
+    /// A write is not this device's or not for `workspace`, or its admission
+    /// fails; nothing is committed then.
+    pub fn commit_documents(
+        &self,
+        workspace: WorkspaceId,
+        writes: Vec<crate::owner_commit::OwnerCommitRequest>,
+        whole: bool,
+        now: SystemTime,
+    ) -> Result<usize, String> {
+        use crate::owner_commit::CommitOperation;
+        if writes.is_empty() {
+            return Ok(0);
+        }
+        let _turn = self.0.mutation.lock();
+        let candidate = self.view(workspace)?;
+        let device = candidate.device().device_public_key;
+        let changed = candidate.change(|live, stored| {
+            let mut committed = 0_usize;
+            let count = writes.len();
+            for request in writes {
+                if WorkspaceId::parse(&request.workspace) != Some(workspace) {
+                    return Err("native document write names another workspace".into());
+                }
+                let outgoing = publication::prepare(&request)?;
+                let CommitOperation::Document {
+                    app,
+                    record,
+                    envelope,
+                } = request.operation
+                else {
+                    return Err("unsupported native owner commit family".into());
+                };
+                if envelope.author.as_bytes() != &device {
+                    return Err(
+                        "native local publication signer differs from selected device".into(),
+                    );
+                }
+                match publication::append_local(stored, outgoing) {
+                    Err(full) if full == publication::CUSTODY_FULL => break,
+                    appended => appended?,
+                }
+                live.admit_new_local_document(&app, &record, *envelope, now)?;
+                committed = committed.saturating_add(1);
+            }
+            if whole && committed < count {
+                // Leaves the replica as it was.
+                return Err(publication::CUSTODY_FULL.into());
+            }
+            if committed > 0 {
+                stored.generation = stored
+                    .generation
+                    .checked_add(1)
+                    .ok_or("native owner generation exhausted")?;
+            }
+            Ok(committed)
+        });
+        let (committed, stored) = match changed {
+            Err(full) if whole && full == publication::CUSTODY_FULL => return Ok(0),
+            changed => changed?,
+        };
+        if committed > 0 {
+            self.publish_record(workspace, &candidate, stored, None)?;
+        }
+        Ok(committed)
+    }
+
     /// Prepare a signed local document mutation from the current committed
     /// workspace and admit it in the same owner turn. This keeps its sequence and
     /// document basis current when other publications race the caller.
@@ -520,7 +651,7 @@ impl NativeWorkspaceOwner {
             .is_some();
         drop(live);
         if admitted {
-            if candidate.record.device != candidate.record.workspace_host
+            if !candidate.hosted_here()
                 && !publication::has_exact(&candidate.record, &outgoing)?
                 && !publication::retry_covered(
                     &candidate.replica().lock(),
@@ -536,6 +667,8 @@ impl NativeWorkspaceOwner {
                 aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
             });
         }
+        let kept_here = candidate.record.device == candidate.record.workspace_host;
+        let carried = kept_here.then(|| outgoing.clone());
         let (receipt, stored) = candidate.change(|live, stored| {
             live.admit_new_local_document(&app, &document, *envelope, now)?;
             publication::append_local(stored, outgoing)?;
@@ -550,6 +683,14 @@ impl NativeWorkspaceOwner {
             })
         })?;
         self.publish_record(workspace, &candidate, stored, None)?;
+        // A workspace this device hosts queues nothing for a host to take
+        // (62b849bdb3d): its members linked here hear the commit now, and one
+        // linked later catches up on it as the link starts.
+        if let Some(bytes) = carried
+            && let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&bytes)
+        {
+            self.0.kept_here(workspace, &message);
+        }
         Ok(receipt)
     }
 }

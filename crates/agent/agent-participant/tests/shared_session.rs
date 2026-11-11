@@ -32,9 +32,9 @@
               driven on the test's own thread (the agent's apps are not Send)"
 )]
 
-#[path = "../../../session/host/tests/support/participant.rs"]
+#[path = "../../../session/client/tests/support/participant.rs"]
 mod participant;
-#[path = "../../../session/host/tests/support/mod.rs"]
+#[path = "../../../session/client/tests/support/mod.rs"]
 mod support;
 
 mod common;
@@ -47,6 +47,7 @@ tilo_automerge_isolate::test_worker!();
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -65,14 +66,14 @@ use tilo_relay::certify::{ApproverDecision, ApproverReply};
 use tilo_relay::daemon::{Relay, RelayIdentity};
 use tilo_relay::web::{TlsSource, WebConfig};
 use tilo_relay_client::Approver;
+use tilo_relay_client::certify;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentStatus, AgentsStatus, CANCEL_TASK_ACTION, MESSAGE_ACTION, PAUSE_ACTION,
     RESUME_ACTION, SPAWN_ACTION, STATUS_ACTION, STOP_ACTION, SUPERVISOR_RESOURCE, TaskState,
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_session_host::session_actions::Heard;
-use tilo_session_host::{PeerEvent, PeerHandle, certify};
+use tilo_session_core::remote::Heard;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,
@@ -146,6 +147,8 @@ async fn start_host(
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
+            door: None,
+            link: None,
         })
         .await
         .unwrap();
@@ -196,7 +199,7 @@ async fn approve_agent(host: &TestHost, root: &SigningKey, laptop: &Device) -> S
 
 /// One remote action from the browser to the host's agent supervisor.
 async fn call(
-    browser: &PeerHandle,
+    browser: &Link,
     host_device: [u8; 32],
     agent: Option<&mut AgentParticipant>,
     address: ActionAddress,
@@ -221,7 +224,7 @@ async fn call(
     .unwrap();
     let events = browser.events();
     browser
-        .send_remote_action(workspace(), host_device, frame)
+        .send(Cmd::RemoteAction(workspace(), host_device, frame))
         .unwrap();
     let mut agent = agent;
     wait_for("the host's receipt", || {
@@ -229,7 +232,7 @@ async fn call(
             agent.pump();
         }
         let receipt = events.drain().into_iter().find_map(|event| match event {
-            PeerEvent::Remote(Heard::Action { from, frame, .. }) if from == host_device => {
+            Event::Remote(Heard::Action { from, frame, .. }) if from == host_device => {
                 match RemoteActionFrame::decode(&frame).unwrap().message {
                     RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
                         Some(receipt)
@@ -237,7 +240,7 @@ async fn call(
                     _ => None,
                 }
             }
-            PeerEvent::Remote(Heard::Undeliverable { reason, .. }) => {
+            Event::Remote(Heard::Undeliverable { reason, .. }) => {
                 panic!("undeliverable: {reason}")
             }
             _ => None,
@@ -255,7 +258,7 @@ fn completed(receipt: &InvocationReceipt) -> serde_json::Value {
 }
 
 async fn status(
-    browser: &PeerHandle,
+    browser: &Link,
     host_device: [u8; 32],
     agent: &mut AgentParticipant,
 ) -> AgentsStatus {
@@ -274,7 +277,7 @@ async fn status(
 /// each was authored by `author`, until the record contains `text`.
 async fn receive_until(
     agent: &mut AgentParticipant,
-    events: &tilo_session_host::PeerEvents,
+    (browser, events): (&Link, &tilo_session_client::Events),
     route: &DocumentRoute,
     page: &mut Replica,
     author: [u8; 32],
@@ -292,13 +295,31 @@ async fn receive_until(
             agent.peer().status().channels,
         );
         agent.pump();
+        let own = browser.engine().identity().device_cert.device_public_key;
+        let mut landed = false;
         for event in events.drain() {
-            if let PeerEvent::Document(document) = event
-                && document.route == *route
+            if let Event::Landed {
+                route: changed,
+                author: wrote,
+            } = event
+                && changed == *route
             {
-                assert_eq!(document.author, author, "only the agent edits here");
-                page.apply(&document.mutation().unwrap()).unwrap();
+                // The browser's own write lands in its replica too.
+                assert!(
+                    wrote.is_none_or(|wrote| wrote == author || wrote == own),
+                    "only the agent edits here"
+                );
+                landed = true;
             }
+        }
+        if landed
+            && let Ok(Some(bytes)) =
+                browser
+                    .engine()
+                    .record(&route.cluster_id, &route.app_id, &route.record)
+        {
+            page.apply(&collab_types::DocumentMutation::Snapshot(bytes))
+                .unwrap();
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
@@ -404,7 +425,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
         record: page.wire_record().to_owned(),
     };
     browser
-        .publish(route.clone(), &page.take_mutation().unwrap())
+        .write(route.clone(), &page.take_mutation().unwrap())
         .unwrap();
     let receipt = browser.barrier().unwrap();
     wait_for("the page's record to be durable", || async {
@@ -461,7 +482,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // order, authored by the agent's device.
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -491,7 +512,9 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     // 5. The host keeps the agent to its delegated workspaces.
     agent
         .peer()
-        .join(tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap())
+        .send(Cmd::Join(
+            tilo_relay_protocol::room_workspace_id(OTHER_WORKSPACE).unwrap(),
+        ))
         .unwrap();
     wait_for(
         "the host to refuse a workspace outside the delegation",
@@ -548,10 +571,9 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     assert_eq!(held.agents[0].status, AgentStatus::Paused);
     assert_eq!(held.agents[0].tasks[1].state, TaskState::Queued);
     assert!(
-        !browser_events
-            .drain()
-            .iter()
-            .any(|event| matches!(event, PeerEvent::Document(document) if document.route == route)),
+        !browser_events.drain().iter().any(
+            |event| matches!(event, Event::Landed { route: changed, .. } if *changed == route)
+        ),
         "a paused agent edits nothing"
     );
     completed(
@@ -566,7 +588,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -625,7 +647,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -687,7 +709,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     );
     receive_until(
         &mut agent,
-        &browser_events,
+        (&browser, &browser_events),
         &route,
         &mut page,
         agent_cert.device_public_key,
@@ -721,7 +743,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let no_edit = |what: &str| {
         assert!(
             !browser_events.drain().iter().any(
-                |event| matches!(event, PeerEvent::Document(document) if document.route == route)
+                |event| matches!(event, Event::Landed { route: changed, .. } if *changed == route)
             ),
             "{what}"
         );
@@ -792,7 +814,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
             );
             receive_until(
                 &mut agent,
-                &browser_events,
+                (&browser, &browser_events),
                 &route,
                 &mut page,
                 agent_cert.device_public_key,

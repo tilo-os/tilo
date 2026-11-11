@@ -13,7 +13,7 @@ rm -rf "$out"
 mkdir -p "$out"
 container=crates/browser/tilo-browser-runtime/container
 python3 -I "$container/layout.py" "$bundle" "$out/site"
-cp "$container/Containerfile" "$container/Caddyfile" "$container/entrypoint.sh" "$out/"
+cp "$container/Containerfile" "$container/Caddyfile" "$container/entrypoint.sh" "$container/compress.sh" "$out/"
 # What `curl -fsSL https://<site> | sh` gets: the tilo command's installer.
 cp dist/install/tilo.sh "$out/install.sh"
 # The image's revision label (the Containerfile's SOURCE_REVISION).

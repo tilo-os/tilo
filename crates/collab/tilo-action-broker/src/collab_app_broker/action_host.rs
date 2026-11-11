@@ -390,6 +390,23 @@ fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDe
     }
 }
 
+/// A workspace's `start` of `app`: its instance with no window, where the host runs one,
+/// answered with that instance as [`app_open_descriptor`]'s `open` is.
+pub(super) fn app_start_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
+    let mut descriptor = app_open_descriptor(&crate::services::LaunchableApplication {
+        package_id: package_id.to_owned(),
+        display_name: display_name.to_owned(),
+        unconfined: false,
+        offers: Vec::new(),
+        capabilities: Vec::new(),
+    });
+    descriptor.address.action = tilo_actions::remote::APPLICATION_START_ACTION.into();
+    descriptor.action_label = format!("Start {display_name}");
+    descriptor.description =
+        Some("Start this application in the current workspace without showing it".into());
+    descriptor
+}
+
 /// The address `request` is delivered at: on `resource`, the resource it names as its app
 /// publishes it now, when it was written under an id the app had before.
 fn current_address(resource: Option<&str>, request: &InvokeRequest) -> tilo_actions::ActionAddress {
@@ -1075,11 +1092,17 @@ impl AppBrokerState {
             let first = rows.len();
             let workspace_id = workspace.id().to_string();
             let mut live_apps = std::collections::HashSet::new();
+            // The apps with a window here: one running only without a window
+            // is still opened, which gives that instance its window.
+            let mut windowed_apps = std::collections::HashSet::new();
             for surface in surfaces
                 .iter()
                 .filter(|surface| surface.live && surface.route.cluster_id == workspace_id)
             {
                 live_apps.insert(surface.app_id.clone());
+                if !self.is_windowless(surface.peer_id) {
+                    windowed_apps.insert(surface.app_id.clone());
+                }
                 providers.push(CatalogueProvider {
                     provider: surface.peer_id.to_string(),
                     app_id: surface.app_id.clone(),
@@ -1285,7 +1308,7 @@ impl AppBrokerState {
                 for app in applications
                     .iter()
                     .filter(|app| scope.wants_app(&app.package_id))
-                    .filter(|app| !live_apps.contains(&app.package_id))
+                    .filter(|app| !windowed_apps.contains(&app.package_id))
                 {
                     if policy.may_in(
                         &workspace,
@@ -1302,11 +1325,13 @@ impl AppBrokerState {
                         rows.push(app_named_row(&provider, app));
                     }
                 }
+                // A running app is offered to close where the host closes
+                // apps; where it does not, an agent of this machine is still
+                // told its name, which is how it addresses the app.
                 rows.extend(
                     applications
                         .iter()
                         .filter(|app| scope.wants_app(&app.package_id))
-                        .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
                             policy.may_in(
@@ -1316,12 +1341,16 @@ impl AppBrokerState {
                                 now,
                             )
                         })
-                        .map(|app| {
-                            CatalogueRow::for_action(
-                                provider.clone(),
-                                &app.package_id,
-                                app_close_descriptor(&app.package_id, &app.display_name),
-                            )
+                        .filter_map(|app| {
+                            if closes_applications {
+                                Some(CatalogueRow::for_action(
+                                    provider.clone(),
+                                    &app.package_id,
+                                    app_close_descriptor(&app.package_id, &app.display_name),
+                                ))
+                            } else {
+                                names_unopened.then(|| app_named_row(&provider, app))
+                            }
                         }),
                 );
             }
@@ -1711,6 +1740,7 @@ impl AppBrokerState {
         }
         if is_launchable_provider(&request.target.provider)
             || application_provider(&request.target.provider).is_some()
+            || super::windowless_instances::started_app(request).is_some()
         {
             return self.invoke_launchable(caller, origin, request);
         }
@@ -1861,8 +1891,12 @@ impl AppBrokerState {
         let resource = earlier.current_resource(&request.target.address.resource);
         let address = &current_address(resource.as_deref(), request);
         let (workspace, app_id, record, offered) = if let Some((workspace, app_id)) =
-            application_provider(&request.target.provider)
+            super::windowless_instances::started_app(request)
         {
+            // A workspace's `start` of its app offers nothing of the app: it
+            // runs the app, so the caller may launch it.
+            (workspace.to_owned(), app_id.to_owned(), None, None)
+        } else if let Some((workspace, app_id)) = application_provider(&request.target.provider) {
             let current = earlier.current(app_id).to_owned();
             let app_id = current.as_str();
             let offered = self
@@ -2009,6 +2043,61 @@ impl AppBrokerState {
         self.start_job(caller, origin, &delivered, request).await
     }
 
+    /// The connection ready to take `address` in `destination`, and the address it takes it
+    /// at: the native task's own, an instance of the app for a `start` (`starts`), else the
+    /// app's ready publisher of it.
+    fn ready_for(
+        &self,
+        destination: &LaunchDestination,
+        native: Option<&super::native_task_execution::NativeLaunch>,
+        starts: bool,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<(u64, tilo_actions::ActionAddress)> {
+        let workspace = destination.workspace.id().to_string();
+        match native {
+            Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
+            None if starts => self
+                .running_instance(&destination.app_id, &workspace, &address.action)
+                .map(|peer_id| (peer_id, address.clone())),
+            None => self.ready_delivery(
+                &destination.app_id,
+                &workspace,
+                destination.record.as_deref(),
+                address,
+            ),
+        }
+    }
+
+    /// Answer `request`, a workspace's `start` of its app ([`super::windowless_instances::started_app`]),
+    /// with `peer_id`, the instance that runs now. The journal blocks, so it answers on the
+    /// delivery runtime's blocking pool.
+    async fn answer_started(
+        self: &Arc<Self>,
+        caller: &Caller,
+        origin: Option<&super::published_invocation::InvocationCaller>,
+        request: &InvokeRequest,
+        (workspace, app_id): (&str, &str),
+        peer_id: u64,
+    ) -> Result<u64, ActionHostError> {
+        let state = Arc::clone(self);
+        let (caller, origin, request) = (caller.clone(), origin.cloned(), request.clone());
+        let reason = format!("{app_id} start worker stopped");
+        let (workspace, app_id) = (workspace.to_owned(), app_id.to_owned());
+        tokio::task::spawn_blocking(move || {
+            state.answer_start(
+                &caller,
+                origin.as_ref(),
+                &request,
+                (&app_id, &workspace),
+                peer_id,
+            )
+        })
+        .await
+        .map_err(|error| ActionHostError::Unavailable {
+            reason: format!("{reason}: {error}"),
+        })?
+    }
+
     /// Launch `app_id` unless it already publishes the action, then deliver
     /// the invocation to the connection that does, through the same
     /// admission a live action takes.
@@ -2037,6 +2126,7 @@ impl AppBrokerState {
         let abandoned = completer.abandoned();
         tokio::pin!(deadline, abandoned);
         let shows = self.action_shows(app_id, &workspace_id, address);
+        let started = super::windowless_instances::started_app(request);
         // Taken before the first look, so a publication between that look
         // and the wait below still wakes it.
         let mut changes = self.publisher_changes();
@@ -2054,16 +2144,16 @@ impl AppBrokerState {
             if tokio::time::Instant::now() >= deadline.deadline() {
                 return Err(expired());
             }
-            let ready = match native {
-                Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
-                None => self.ready_delivery(
-                    app_id,
-                    &workspace_id,
-                    destination.record.as_deref(),
-                    address,
-                ),
-            };
-            if let Some((peer_id, published)) = ready {
+            if let Some((peer_id, published)) =
+                self.ready_for(destination, native, started.is_some(), address)
+            {
+                if native.is_none()
+                    && let Some(started) = started
+                {
+                    return self
+                        .answer_started(caller, origin, request, started, peer_id)
+                        .await;
+                }
                 return self
                     .deliver_to(peer_id, caller, origin, (request, &published), native)
                     .await;
@@ -2517,7 +2607,9 @@ impl AppBrokerState {
 
     /// The ready publisher of `address` and the address it publishes it
     /// under: the exact one, else (when `aliases`) one whose resource is a
-    /// bound alias of `address`'s resource.
+    /// bound alias of `address`'s resource, or the one alias of the same
+    /// resource now when `address` names an alias an instance that ended
+    /// published ([`super::PublishedSurface::current_resource`]).
     fn publisher_of(
         &self,
         app_id: &str,
@@ -2543,23 +2635,34 @@ impl AppBrokerState {
                     && subscribers.contains_key(&surface.peer_id)
             })
             .filter_map(|surface| {
-                let published = surface
-                    .actions
-                    .iter()
-                    .find(|action| {
-                        action.action == address.action && action.resource == address.resource
-                    })
-                    .or_else(|| {
-                        surface.actions.iter().find(|action| {
-                            aliases
-                                && action.action == address.action
-                                && tilo_actions::selection::logical_resource_id(&action.resource)
-                                    == address.resource
-                        })
-                    })?;
+                let resource = if aliases {
+                    surface
+                        .current_resource(&address.resource, &address.action)
+                        .or_else(|| {
+                            surface
+                                .actions
+                                .iter()
+                                .find(|action| {
+                                    action.action == address.action
+                                        && tilo_actions::selection::logical_resource_id(
+                                            &action.resource,
+                                        ) == address.resource
+                                })
+                                .map(|action| action.resource.as_str())
+                        })?
+                } else {
+                    surface
+                        .actions
+                        .iter()
+                        .find(|action| {
+                            action.action == address.action && action.resource == address.resource
+                        })?
+                        .resource
+                        .as_str()
+                };
                 Some((
                     surface.peer_id,
-                    tilo_actions::ActionAddress::new(&published.resource, &published.action),
+                    tilo_actions::ActionAddress::new(resource, &address.action),
                 ))
             })
             .min_by_key(|(peer_id, _)| *peer_id)

@@ -2,9 +2,10 @@
 //! disclosed only through a private view.
 //!
 //! The action directory discloses a resource through its first view (a
-//! document read first), else through a descendant's. A view that changes
-//! only what its caller sees, and is neither a document read nor the
-//! caller's own participant view, is private: its resource's label and
+//! document read first, then another read of the record), else through a
+//! descendant's. A view that changes only what its caller sees, and is
+//! neither a read of the record nor the caller's own participant view, is
+//! private: its resource's label and
 //! presentation are the publisher's, and the broker never lists that
 //! resource, nor anything below it, to an agent. A resource without a view
 //! is not a listing of its own: its actions stand in its place, each listed
@@ -43,8 +44,9 @@ fn walk(resource: &ResourceSpec, hidden: &mut Vec<ContractViolation>) {
     }
 }
 
-/// The view the directory discloses `resource` through: its own first view,
-/// a document read before any other, else its first child's.
+/// The view the directory discloses `resource` through: its own view of the
+/// lowest [`crate::ActionContract::disclosure_rank`] (a document read, then
+/// another read of the record, then the first), else its first child's.
 fn disclosing_view(resource: &ResourceSpec) -> Option<&ActionSpec> {
     let mut first: Option<&ActionSpec> = None;
     for action in resource
@@ -53,7 +55,7 @@ fn disclosing_view(resource: &ResourceSpec) -> Option<&ActionSpec> {
         .filter(|action| action.kind == OperationKind::View)
     {
         if first.is_none_or(|first| {
-            action.contract.reads_document() && !first.contract.reads_document()
+            action.contract.disclosure_rank() < first.contract.disclosure_rank()
         }) {
             first = Some(action);
         }
@@ -63,7 +65,7 @@ fn disclosing_view(resource: &ResourceSpec) -> Option<&ActionSpec> {
 
 /// Whether `view` keeps its resource from everyone but the publisher.
 fn is_private(view: &ActionSpec) -> bool {
-    !view.contract.is_participant_view() && !view.contract.reads_document()
+    !view.contract.discloses_resource()
 }
 
 fn hide(
@@ -168,6 +170,16 @@ mod tests {
             ),
             // Only private views: nothing an agent could take is hidden.
             row("panel", vec![view("show-panel", &[])]),
+            // A window's own view first, then a read of the record (History's
+            // review): the read discloses it under the caller's own policy.
+            row(
+                "session",
+                vec![
+                    view("show-history", &[]),
+                    view("review", &[crate::RECORD_READ_TAG]),
+                    effect("run"),
+                ],
+            ),
         ]);
         assert_eq!(hidden_from_agents(&resources), []);
         // The app's own root is the app's: an agent addresses it by name.

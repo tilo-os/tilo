@@ -865,51 +865,6 @@ fn a_menu_near_the_trailing_edge_opens_its_send_to_box_in_the_window() {
     crate::shared_selection::set_send_host_available(false);
 }
 
-/// A header's menu is the window bar's too: its button stands in the bar's row, listing the rows
-/// the menu holds, and the row the person chose comes back by its id and runs.
-#[test]
-fn a_menu_button_lists_its_rows_in_the_window_bar() {
-    let chosen = std::rc::Rc::new(std::cell::Cell::new(0u8));
-    let picked = std::rc::Rc::clone(&chosen);
-    let mut button =
-        crate::widget::Button::icon_only("sort", Icon::ArrowUpDown, "Sort").with_menu(vec![
-            MenuItem::selection("Date").with_checked(false),
-            MenuItem::action("Title", move || picked.set(2)),
-        ]);
-    let slot = Widget::window_slot(&button, "sort".to_owned()).expect("the bar lists the menu");
-    assert!(
-        slot.labelled && !slot.menu,
-        "the bar's row says what the menu is, and the row's own door is not the only one"
-    );
-    let rows: Vec<&str> = slot.items.iter().map(|row| row.name.as_str()).collect();
-    assert_eq!(rows, ["Date", "Title"], "the bar lists each row once");
-    assert!(slot.items[1].enabled, "a row that acts is enabled");
-    assert!(
-        Widget::window_choose(&mut button, &slot.items[1].id),
-        "the row the bar names is the row choose runs"
-    );
-    assert_eq!(chosen.get(), 2, "the row ran what it says");
-    assert!(
-        !Widget::window_slot_barrier(&button),
-        "a bar can list this menu's rows"
-    );
-
-    let nested =
-        crate::widget::Button::icon_only("more", Icon::MoreHorizontal, "More").with_menu(vec![
-            MenuItem::submenu("Move to", vec![MenuItem::action("Done", || {})]),
-        ]);
-    assert!(
-        Widget::window_slot_barrier(&nested),
-        "a menu deeper than the bar lists keeps its header's row"
-    );
-    let empty = crate::widget::Button::icon_only("note", Icon::MoreHorizontal, "More")
-        .with_menu(Vec::new());
-    assert!(
-        Widget::window_slot_barrier(&empty),
-        "a menu with nothing to list is not a button the bar offers"
-    );
-}
-
 /// A menu that takes typing shows its hint whole: the field is drawn as wide
 /// as the hint plus its own inset on both sides, so a hint longer than every
 /// row widens the panel rather than running out of the field mid-word.
@@ -935,5 +890,58 @@ fn the_field_that_takes_typing_shows_its_hint_whole() {
     assert!(
         shown + 0.5 >= f64::from(hint_width),
         "the field shows {shown} px of the {hint_width} px hint {hint:?}"
+    );
+}
+
+/// A menu opened a second time stands as it did the first, the host having told it how the person
+/// works since (a mouse, then a key pressed): its caption and rules keep their own heights, never
+/// a pressable row's each.
+#[test]
+fn a_menu_opened_again_keeps_its_rows_heights() {
+    let _settled = crate::motion::testing::settled();
+    let theme = Theme::light();
+    let presence = PresenceCtx::default();
+    let mut text = TextRenderer::new();
+    let items = || {
+        vec![
+            MenuItem::caption("Hosted by example.org"),
+            MenuItem::separator(),
+            MenuItem::selection("Join a workspace"),
+            MenuItem::separator(),
+            MenuItem::selection("Rename workspace").with_icon(crate::icons::Icon::Pencil),
+            MenuItem::selection("Overview"),
+            MenuItem::selection("New strip").with_icon(crate::icons::Icon::Plus),
+        ]
+    };
+    let mut menu = ContextMenu::new();
+    let open = |menu: &mut ContextMenu, text: &mut TextRenderer| {
+        menu.set_items(items());
+        menu.open_anchored(
+            Rect::new(50.0, 4.0, 160.0, 28.0),
+            Rect::new(0.0, 0.0, 1280.0, 800.0),
+        );
+        menu.layout_within(text, &theme);
+        let mut top = Scene::new();
+        menu.draw_overlay(&mut top, Affine::IDENTITY, text, &theme, &presence);
+        (0..menu.items().len())
+            .filter_map(|index| menu.item_rect(index).map(|rect| (rect.y0, rect.height())))
+            .collect::<Vec<_>>()
+    };
+    let first = open(&mut menu, &mut text);
+    menu.close();
+    Widget::set_interaction_environment(&mut menu, crate::InteractionEnvironment::POINTER);
+    Widget::set_interaction_environment(
+        &mut menu,
+        crate::InteractionEnvironment {
+            modality: crate::interaction::InputModality::Keyboard,
+            ..crate::InteractionEnvironment::POINTER
+        },
+    );
+    let mut top = Scene::new();
+    menu.draw_overlay(&mut top, Affine::IDENTITY, &mut text, &theme, &presence);
+    let second = open(&mut menu, &mut text);
+    assert_eq!(
+        first, second,
+        "where the second opening's rows stand, and how tall"
     );
 }

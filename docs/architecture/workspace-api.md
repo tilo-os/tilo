@@ -143,7 +143,7 @@ After that, files go through the apps' own actions, which take the
 The door holds no device of anyone. The grant's own key is the device: it
 dials the relay's iroh endpoint with the grant's certificate, as a `tilo
 login` computer dials with its own, and enters the way that computer does
-(`tilo_session_host::login`).
+(`tilo_session_client::device`).
 
 The relay admits an agent's grant (`tilo_room_host::workspace_access`) as
 its person's agent, iff
@@ -165,21 +165,24 @@ and it governs, invites and administers nothing. The relay's own operations
 treat it as its person within its scope (`host_authority`): a grant reaching
 all workspaces makes and lists the person's own; nothing else.
 
-**A grant reaching all the person's workspaces** goes through the site's door
-to the site's home workspace, as the person's page does (the door the site's
-`entry.json` names for the relay), asks the relay there for the person's own
-workspace (`room.create-own`), which answers with an invitation for the
-person, redeems it and joins.
+A grant enters a workspace as every device of the person does
+(`Device::enter_workspace`): on its session with the relay, in no workspace,
+it asks the relay for the invitation into that workspace (`room.create-own`
+naming it), redeems the invitation on the same connection, and joins. A grant reaching all the person's workspaces may
+also make one; a minted grant, or one certified for one workspace directly,
+enters only its own and makes none. The relay asks for no parent and no site
+workspace first: a workspace's roster admits devices one by one, each by an
+invitation, and the grant's certificate chain is checked at that join and at
+every handshake after.
 
-**A minted grant** reaches one workspace and never the home workspace. Its
-parent, which reaches all of them, asks for the invitation into that
-workspace (`room.create-own` naming it, which answers only the person's own
-workspace and never makes another), and the minted grant redeems it itself.
-The parent asks rather than the relay admitting the minted grant on its
-person's membership alone because a workspace's roster admits devices one by
-one, each by an invitation: the minted grant enters exactly as every device
-of the person does, and its certificate's chain is checked at that join and
-at every handshake after.
-
-A grant the person certified for one workspace directly (an agent pointed at
-`/w/<workspace>`) has no parent to ask, and is not admitted yet.
+A workspace of one's own is for a person the site let in. The relay names its
+site's home workspace (`Workspaces::admit_own_through`), and makes a new
+workspace only for its own person, a member of the home workspace (its door or
+an invitation admitted them), a person an invitation into it still names, or a
+person who already keeps workspaces of their own there. Every key and agent of
+that person is the person, within its scope. Anyone else, a fresh root or any
+key it certified, is refused with the door's own refusal (`DoorRefused`, read
+back as `HostRefusal::door`), which offers the wait list when the door takes
+people by invitation. Entering a workspace a person was invited into stays
+theirs either way, and so does keeping their workspace list once they are a
+member of any workspace there.

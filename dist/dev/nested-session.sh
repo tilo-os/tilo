@@ -383,6 +383,11 @@ export TILO_APPS_DATA_DIR=$state/apps
 system_store=$state/system
 export TILO_APPS_SYSTEM_DIR=$system_store
 export TILO_RUNTIME_BUNDLE_DIR=$runtimes
+# Verified once here, as installing a runtime does on a device, leaving the
+# record a launch reads: the first app started in this state does not hash the
+# whole runtime on its way to its first frame.
+"$bin/tilo-runtime-bundle" verify --record --require-signature "$runtimes/$runtime_version" >/dev/null \
+    || die "the runtime bundle $runtime_version does not verify"
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # A development session: a running app whose payload is its module (a
@@ -685,6 +690,21 @@ wait_for_socket "$ush_socket" "$!" || die "the ush supervisor did not start (see
 # nothing it plays is heard on the machine running it. A headless session has
 # no speakers, so it gets one null sink: an output with a name and a level to
 # show and change.
+# The machine's own cards and Bluetooth are the host's, and its PipeWire holds
+# them. WirePlumber's hardware monitors would open those devices in this
+# session, find them taken, and retry without pause: nearly half a core spent
+# for as long as the session runs. Its session manager still runs (default
+# nodes, volume, routing); it just has no hardware to enumerate.
+wireplumber_config=$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d
+mkdir -p "$wireplumber_config"
+cat > "$wireplumber_config/50-nested-session.conf" <<'WIREPLUMBER'
+wireplumber.profiles = {
+  main = {
+    hardware.audio = disabled
+    hardware.bluetooth = disabled
+  }
+}
+WIREPLUMBER
 for tool in pipewire pipewire-pulse wireplumber pw-cli; do
     command -v "$tool" >/dev/null \
         || die "$tool is required on PATH: the session would start with no sound"

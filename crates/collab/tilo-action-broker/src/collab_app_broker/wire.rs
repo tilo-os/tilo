@@ -230,9 +230,9 @@ impl JoinedChannel {
 impl JoinedChannel {
     /// Answer a committed-document request. An `Await` is held until the
     /// read may have changed, and an Open whose record is still being
-    /// decided (the workspace's host's replay) or created on another device is
-    /// awaited, all on this `LocalSet`, so every channel's calls keep
-    /// flowing meanwhile.
+    /// decided (the workspace's host's replay, or the host it was asked of)
+    /// or created on another device is awaited, all on this `LocalSet`, so
+    /// every channel's calls keep flowing meanwhile.
     pub(super) async fn committed_document_answer(
         self: Rc<Self>,
         request: runtime_collab::committed_document::Request,
@@ -240,7 +240,7 @@ impl JoinedChannel {
         if let runtime_collab::committed_document::Request::Await { known_revision } = request {
             return self.await_committed_change(known_revision).await;
         }
-        if let Some(waiting) = self.committed_history_wait(&request) {
+        if let Some(waiting) = self.committed_arrival_wait(&request) {
             waiting.await;
         }
         self.committed_document_dispatch(&request)
@@ -380,22 +380,26 @@ impl JoinedChannel {
         } else {
             None
         };
-        if owner_required {
+        // The write as the owner took it: signed again where another local
+        // writer's later write passed its sequence.
+        let envelope = if owner_required {
             state.revalidate_admission(&route, &self.verified_identity)?;
             state
-                .commit_owner_request(
+                .commit_owner_document(
                     tilo_peer_state::owner_commit::OwnerCommitRequest {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
-                            envelope: Box::new(envelope.clone()),
+                            envelope: Box::new(envelope),
                         },
                     },
                     self.record_kind.clone(),
                 )
-                .await?;
-        }
+                .await?
+        } else {
+            envelope
+        };
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         let authorized =
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
@@ -654,18 +658,14 @@ impl JoinedChannel {
                 let _order = state.owner_commit_order.lock().await;
                 state.revalidate_admission(&route, &identity)?;
                 state
-                    .commit_owner_request(
-                        tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            workspace: surface.route.cluster_id,
-                            operation:
-                                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                                    invocation: update.invocation().0,
-                                    redacted: serde_json::to_vec(&receipt)
-                                        .map_err(|e| BrokerError::failed(e.to_string()))?,
-                                },
+                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
+                        workspace: surface.route.cluster_id,
+                        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                            invocation: update.invocation().0,
+                            redacted: serde_json::to_vec(&receipt)
+                                .map_err(|e| BrokerError::failed(e.to_string()))?,
                         },
-                        None,
-                    )
+                    })
                     .await?;
                 state.revalidate_admission(&route, &identity)?;
                 Ok(())
@@ -1522,7 +1522,6 @@ impl JoinedChannel {
                 )
             }
         };
-        let offers = !actions.is_empty();
         let surface = PublishedSurface {
             peer_id,
             app_id: route.app_id.clone(),
@@ -1559,9 +1558,10 @@ impl JoinedChannel {
             .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
-        if offers {
-            self.state.launch_published(peer_id);
-        }
+        // A catalogue offering its record is what an `open` of it waits for:
+        // a directory alone is offered before the app is ready.
+        self.state
+            .launch_published(&surface, self.record_kind.as_deref());
         Ok(())
     }
 
@@ -1742,7 +1742,6 @@ impl JoinedChannel {
         // The directory can alter remote discoverability without an eager
         // action snapshot changing, so tell catalogue subscribers.
         self.state.publish_action_catalogue();
-        self.state.launch_published(self.peer_id);
         Ok(())
     }
 

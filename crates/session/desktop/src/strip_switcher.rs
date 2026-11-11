@@ -29,6 +29,7 @@ use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 use crate::i18n::{t, t_args};
 use tilo_desktop_model::{DesktopTree, StripId};
+use ui::widget::DrawChild;
 
 /// Longest strip name a person or an agent may give, in characters: what the strip switcher's row
 /// shows without eliding most of it.
@@ -1395,7 +1396,7 @@ impl StripSwitcher {
             .theme
             .clone()
             .with_text_scale(cx.theme.text_scale * cx.theme.ui_scale);
-        input.draw(
+        input.draw_child(
             cx.scene,
             cx.transform,
             cx.text,

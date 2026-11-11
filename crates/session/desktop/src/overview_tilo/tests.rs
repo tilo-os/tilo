@@ -191,6 +191,7 @@ fn agents_let_in_can_each_be_revoked() {
                     name: "Claude Code #2".into(),
                     started_ms: 1,
                 }],
+                browser_pages: true,
                 ..Grant::default()
             }],
             ..Door::default()
@@ -201,7 +202,15 @@ fn agents_let_in_can_each_be_revoked() {
     assert_eq!(captions(&rows), ["Agents", "Account"]);
     let agent = items(&rows)[0];
     assert_eq!(agent.title, "Claude Code");
-    assert_eq!(facts(agent), ["All your workspaces", "Working now"]);
+    assert_eq!(
+        facts(agent),
+        [
+            "All your workspaces",
+            "Operates web pages in Browser",
+            "Working now"
+        ],
+        "what its key operates in Browser says between what it reaches and what it is doing"
+    );
     assert_eq!(
         agent.mark,
         Some(TiloMark::Face(TiloFace {
@@ -213,7 +222,7 @@ fn agents_let_in_can_each_be_revoked() {
         "the row wears the agent's own face, in its client's hue"
     );
     assert_eq!(
-        agent.facts[1].mark,
+        agent.facts[2].mark,
         Some(ui::widget::FactMark::Dot(Tone::Presence(
             PresenceHue::Orange
         ))),

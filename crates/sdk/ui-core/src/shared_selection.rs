@@ -192,15 +192,10 @@ impl SharedSelection {
                 from: Some(at),
             });
         }
-        let label = (!resource.label.trim().is_empty())
-            .then(|| resource.label.clone())
-            .or_else(|| excerpt.map(str::to_owned))
-            .or_else(|| match &anchor {
-                Some(Anchor::Item { id }) => Some(id.clone()),
-                Some(Anchor::Items { ids }) => ids.first().cloned(),
-                Some(Anchor::Text { .. }) | None => None,
-            })?;
-        Some(Attached::Resource { at, anchor, label })
+        // What the person saw on the box's chip: the item picked ("#1 Write the launch notes"),
+        // never only the list it is in.
+        let label = crate::widget::send_to::subject_label(self);
+        (!label.is_empty()).then_some(Attached::Resource { at, anchor, label })
     }
 
     /// Whether there is nothing to ask about.
@@ -619,8 +614,9 @@ mod tests {
             Some(Attached::resource(
                 run_at,
                 Some(Anchor::item("block-2")),
-                "Plan"
-            ))
+                "late results"
+            )),
+            "the chip reads the words picked, as the box's chip did, not the page they are in"
         );
         let Some(Attached::Resource { at, anchor, .. }) = &sent else {
             panic!("a resource attachment: {sent:?}");
@@ -644,8 +640,9 @@ mod tests {
                     reference: ResourceRef::whole("notes.page", "notes.page:1", "Plan"),
                 },
                 Some(Anchor::items(["row-1", "row-2"])),
-                "Plan"
-            ))
+                "One +1"
+            )),
+            "rows read as the first row and how many more, never only the list"
         );
 
         // Words the app reports no resource for are quoted, alone.

@@ -81,9 +81,6 @@ pub struct QuickSettingsState {
     pub rotation_available: bool,
     /// `display.rotation_lock`: the screen stays put when the device turns.
     pub rotation_lock: bool,
-    /// The section whose page replaces the controls (Wi-Fi's networks,
-    /// Bluetooth's devices, a VPN's profiles, the battery); at most one.
-    pub section: Option<crate::QsSection>,
     /// The form for joining a network that broadcasts no name; `None`
     /// except while it is up.
     pub wifi_hidden: Option<crate::HiddenNetworkPrompt>,
@@ -170,7 +167,6 @@ impl Default for QuickSettingsState {
             night_light: night_light_shows(),
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
-            section: None,
             wifi_hidden: None,
             wifi_joining: None,
             wifi_password: None,
@@ -184,7 +180,9 @@ impl Default for QuickSettingsState {
             microphone: None,
             sound_streams: Vec::new(),
             device_rows: Vec::new(),
-            arrangement: settings_store::hardware::QuickSettingsConfig::default(),
+            // As the person left it: the session keeps the arrangement and publishes it, and a
+            // panel started before that reading arrives starts where they left it.
+            arrangement: settings_store::hardware::QuickSettingsConfig::load(),
             notifications: 0,
             handoff_targets: None,
             now_playing: None,
@@ -259,6 +257,9 @@ impl QuickSettingsState {
     #[must_use]
     pub fn fixture() -> Self {
         Self {
+            // The controls as they come, not as this machine's settings happen to have them: what
+            // a screenshot, a test or a panel run on its own shows.
+            arrangement: settings_store::hardware::QuickSettingsConfig::default(),
             brightness: 0.6,
             brightness_available: true,
             status: crate::status::SystemStatus {
@@ -282,16 +283,5 @@ impl QuickSettingsState {
             volume_available: false,
             ..Self::fixture()
         }
-    }
-
-    /// Open `section`'s page, closing any other: one section is open at a
-    /// time.
-    pub fn open_section(&mut self, section: crate::QsSection) {
-        self.section = Some(section);
-    }
-
-    /// Open `section`, or close it when it is the one open.
-    pub fn toggle_section(&mut self, section: crate::QsSection) {
-        self.section = (self.section != Some(section)).then_some(section);
     }
 }

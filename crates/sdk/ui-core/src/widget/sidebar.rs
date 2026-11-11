@@ -257,6 +257,20 @@ impl SidebarDrawer {
     pub fn content_is_column(self, min_width: f64) -> Self {
         self.content_min_width(min_width)
     }
+    /// The content is a surface drawn at whatever room it gets — pages
+    /// scaled to fit, a picture, a map — not a column of text, so it works
+    /// narrower than a column: the panel docks beside it while it keeps
+    /// `min_width`, and floats over it below that
+    /// ([`crate::widget::ContentKind::Canvas`]).
+    #[must_use]
+    pub fn content_surface(mut self, min_width: f64) -> Self {
+        self.push = false;
+        self.content_min = Some(ContentMinimum {
+            extent: AuthoredExtent::text(min_width),
+            class: crate::widget::ContentKind::Canvas.beside_sidebar_class(),
+        });
+        self
+    }
     /// The narrowest the docked panel shrinks to beside the content before
     /// it floats: the panel's own minimum (`metrics.panel_min_width`) unless
     /// it states another. Each panel is authored at 1×; the resolved width
@@ -1215,6 +1229,36 @@ mod tests {
             assert!(drawer.is_docked(), "resize must not turn into an overlay");
             assert_eq!(drawer.content_rect().width(), column);
         }
+    }
+
+    /// A surface drawn to the room it gets (pages, a picture) is no column of text: the panel
+    /// docks beside it narrower than a column, down to the surface's own minimum, and floats over
+    /// it only below that.
+    #[test]
+    fn a_panel_docks_beside_a_surface_narrower_than_a_column() {
+        let theme = Theme::dark();
+        let column = f64::from(crate::widget::arrange::column_min_width(
+            crate::widget::arrange::rem_of(&theme),
+        ));
+        let surface = 360.0;
+        assert!(surface < column, "the surface's minimum is under a column");
+        let mut drawer = SidebarDrawer::new()
+            .right()
+            .docked_width(300.0)
+            .content_surface(surface);
+        drawer.scale_for(&theme);
+        let area = Rect::new(0.0, 0.0, 600.0, 700.0);
+        drawer.resolve(area);
+        drawer.snap(true);
+        drawer.resolve(area);
+        assert!(drawer.is_docked(), "the panel docks beside the surface");
+        assert!((drawer.content_rect().width() - surface).abs() < 0.5);
+        let narrow = Rect::new(0.0, 0.0, surface + 150.0, 700.0);
+        drawer.resolve(narrow);
+        assert!(
+            drawer.is_overlay(),
+            "below the surface's minimum the panel floats"
+        );
     }
 
     #[test]

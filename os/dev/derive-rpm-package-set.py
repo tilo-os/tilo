@@ -17,6 +17,8 @@ SOURCES = (
     "os/Containerfile.host",
     "os/dev/composefs/Containerfile",
     "os/containers/tilo-relay/Containerfile",
+    "os/containers/tilo-front-door/Containerfile",
+    "os/containers/tilo-vm-host/Containerfile",
     "os/Containerfile.env-runtime",
     # The sealing tool stage's list, installed by name from this file (see its header).
     "os/dev/uki-tools.packages",

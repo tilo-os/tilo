@@ -10,7 +10,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::keyboard::{Key, NamedKey};
 
-use super::{ListModel, RowGroup, VirtualList};
+use super::{ListModel, RowGroup, RowStance, VirtualList};
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::theme::Theme;
 
@@ -24,12 +24,14 @@ pub const TREE_INDENT: f64 =
 /// a chain that loops still ends.
 const TREE_DEPTH_GUARD: u32 = 64;
 
-/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where the column of the top
-/// level stands in from it, and `step` the disclosure gutter every depth indents its content by.
+/// Where a tree's rows stand: `x0` the list's leading edge, `lead` where the box of the top level
+/// stands in from it, `column` the chevron column kept inside that box, and `step` the disclosure
+/// gutter every depth indents its content by.
 #[derive(Clone, Copy)]
 pub(super) struct Chevrons {
     pub(super) x0: f64,
     pub(super) lead: f64,
+    pub(super) column: f64,
     pub(super) step: f64,
 }
 
@@ -39,6 +41,7 @@ impl<M: ListModel> VirtualList<M> {
         Chevrons {
             x0: self.rect.x0,
             lead: self.lead,
+            column: self.chevron_column,
             step: self.disclosure,
         }
     }
@@ -56,7 +59,7 @@ impl Chevrons {
             return None;
         }
         // The step in front of the row's content, one step back for each depth it stands in.
-        Some(self.x0 + self.lead + (f64::from(marks.depth(key)) - 1.0) * self.step)
+        Some(self.x0 + self.lead + self.column + (f64::from(marks.depth(key)) - 1.0) * self.step)
     }
 
     /// The box the row `key`'s chevron takes: in its own depth's gutter, centred on the row's
@@ -91,7 +94,8 @@ impl Chevrons {
     ) {
         let depth = marks.depth(key);
         for level in 0..depth {
-            let x = self.x0 + self.lead + f64::from(level) * self.step + self.step / 2.0;
+            let x =
+                self.x0 + self.lead + self.column + f64::from(level) * self.step + self.step / 2.0;
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
@@ -276,11 +280,23 @@ impl<M: ListModel> VirtualList<M> {
     /// The row's own line, where a row that grew into its item still starts: its chevron and
     /// the way back to the part of it on screen hang on the line, not beside the document the
     /// row opened into, which may run far below it.
+    ///
+    /// The line is the box the row's content stands in — the one its text, its leading control
+    /// and its lift share — across the slot the list gives it. A finger's row takes a taller slot
+    /// than its box, so the slot's own centre is not the line's.
     pub(super) fn line_box(&self, key: &M::Key, row: Rect) -> Rect {
-        if self.open.as_ref() == Some(key) && row.height() > self.row_line {
-            Rect::new(row.x0, row.y0, row.x1, row.y0 + self.row_line)
+        let own = self
+            .mounted
+            .iter()
+            .find(|mounted| &mounted.key == key)
+            .map(|mounted| mounted.widget.get_rect())
+            .filter(|own| own.height() > 0.0)
+            .unwrap_or(row);
+        let line = Rect::new(row.x0, own.y0, row.x1, own.y1);
+        if self.open.as_ref() == Some(key) && line.height() > self.row_line {
+            Rect::new(line.x0, line.y0, line.x1, line.y0 + self.row_line)
         } else {
-            row
+            line
         }
     }
 
@@ -549,8 +565,20 @@ impl<M: ListModel> VirtualList<M> {
         } else {
             0.0
         };
-        let lead = self.bleed.max(gutter);
-        if (lead - self.lead).abs() <= 0.5 {
+        // Where the rows' box starts in from the list's leading edge, and the column kept for
+        // the chevrons in front of their content. A column's list keeps its gutter: the rows' box
+        // stands on the pane's content edge — so the row's lift keeps the column's gutter — and
+        // the chevron column stands inside that box, as the first thing at the edge, where on a
+        // phone it would otherwise reach the glass. A list inside a page has its own edge as the
+        // gutter: the page already stands in from the window, so the chevron column stands in
+        // front of the rows' box there.
+        let (lead, chevron_column) = match self.stance {
+            RowStance::Column => (self.bleed, gutter),
+            RowStance::Bleed | RowStance::Flush => (self.bleed.max(gutter), 0.0),
+        };
+        let stepped = (self.chevron_column - chevron_column).abs() > 0.5;
+        self.chevron_column = chevron_column;
+        if (lead - self.lead).abs() <= 0.5 && !stepped {
             return;
         }
         self.lead = lead;
@@ -802,7 +830,10 @@ impl<M: ListModel> VirtualList<M> {
         }
         // Where the rows at that depth begin: a dropped row lands in its own column, clear of
         // the step its chevron takes.
-        let indent = self.rect.x0 + self.lead + (f64::from(depth) + 1.0) * self.disclosure;
+        let indent = self.rect.x0
+            + self.lead
+            + self.chevron_column
+            + (f64::from(depth) + 1.0) * self.disclosure;
         let right = self.lift_rect(0.0, 0.0).x1;
         let preview = match placement {
             DropPlacement::Inside => Rect::new(indent, row.y0, right, row.y1),

@@ -991,11 +991,10 @@ const EXPORT_JPEG_QUALITY: u8 = 90;
 
 /// RGBA8 as lossless WebP bytes.
 pub fn encode_webp(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>, String> {
-    let mut webp = Vec::new();
-    image::codecs::webp::WebPEncoder::new_lossless(&mut webp)
-        .encode(rgba, width, height, image::ExtendedColorType::Rgba8)
-        .map_err(|error| error.to_string())?;
-    Ok(webp)
+    let pixels = ui::image_codec::DecodedImage::from_rgba(width, height, rgba.to_vec())
+        .ok_or("the pixels do not match their size")?;
+    ui::image_codec::encode_now(&pixels, ui::image_codec::Encoding::WebP)
+        .map_err(|error| error.to_string())
 }
 
 fn round(value: f64) -> f64 {

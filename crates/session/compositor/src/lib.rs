@@ -82,6 +82,7 @@ mod xdnd_bridge;
 mod xwayland;
 
 pub use seats::{Aim, Seat, WindowAim};
+pub use uploads::gpu_frames_node;
 
 use std::cell::RefCell;
 use std::os::unix::net::UnixStream;
@@ -150,6 +151,7 @@ pub use share_stream::ShareStream;
 /// The quarter turns an output is shown at.
 pub use smithay::utils::Transform;
 pub use state::State;
+pub use typing::TypedMark;
 
 use smithay::utils::{Point, Rectangle};
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
@@ -429,6 +431,9 @@ impl Compositor {
         if let Some((serial, at)) = self.data.state.take_retired() {
             self.recorder.note_retirement(serial, at);
         }
+        // A surface shown past the time its app had to draw its fitted frame takes the frame it
+        // has, rather than staying hidden.
+        self.data.state.expire_layer_settling(Instant::now());
         self.recorder.begin_tick(Instant::now());
     }
 
@@ -473,13 +478,9 @@ impl Compositor {
         !self.data.state.redraw.is_empty()
     }
 
-    /// Take in what arrived while the caller worked out this frame — a
-    /// commit with the frame a surface just laid out, a configure it
-    /// acknowledged, a door message — and tell the clients what the caller
-    /// queued for them, without waiting for any of it.
-    ///
-    /// Whether an output then owes a frame: what arrived is drawn now and
-    /// answers its client in this turn rather than the next.
+    /// Take in what arrived while the caller worked out this frame (a commit, an acked configure,
+    /// a door message) and send the clients what is queued, without waiting for any of it.
+    /// Whether an output then owes a frame: what arrived is answered in this turn, not the next.
     ///
     /// # Errors
     /// The display is gone.
@@ -488,7 +489,7 @@ impl Compositor {
         self.event_loop
             .dispatch(Some(Duration::ZERO), &mut self.data)
             .map_err(io)?;
-        self.display.flush_clients()?;
+        self.take_in()?;
         Ok(self.owes_frame())
     }
 
@@ -672,6 +673,11 @@ impl Compositor {
         self.data.state.idle.session.is_locked()
     }
 
+    /// Whether the lock screen's own client has drawn on every output it stands on.
+    pub fn lock_client_drawn(&self) -> bool {
+        self.data.state.lock_drawn_everywhere()
+    }
+
     /// Whether the lock is what the outputs show: the lock client's own frame is on one of them, or
     /// the session draws the lock itself because the lock screen's app could not show it.
     pub fn lock_drawn(&self) -> bool {
@@ -836,6 +842,12 @@ impl Compositor {
         dispatched?;
         self.recorder
             .mark_input(started.elapsed().saturating_sub(parked));
+        self.take_in()
+    }
+
+    /// Handle what the loop's wait brought: the keys due, the clients' requests (a commit, an
+    /// acked configure) and what they change, then flush the answers.
+    fn take_in(&mut self) -> Result<(), Error> {
         self.data.state.repeat_keys();
         let ticked = Instant::now();
         let due = self.keys.tick(ticked);
@@ -1008,6 +1020,13 @@ impl Compositor {
     #[must_use]
     pub fn text_caret(&self) -> Option<TextCaret> {
         self.data.state.text_caret()
+    }
+
+    /// Whether the focused field has committed the caret the keys it received left: a surface a
+    /// key opens at the caret waits for it rather than standing where the caret was before the
+    /// field's last redraw.
+    pub fn caret_settled(&mut self) -> bool {
+        self.data.state.caret_settled()
     }
 
     /// Insert `text` into the field the person is typing into, whatever that field asks of its
@@ -1711,6 +1730,12 @@ impl Compositor {
         }
     }
 
+    /// Where the layout the keyboard types in now puts each ASCII mark: the key, as it types alone,
+    /// and whether Shift or `AltGr` add the mark. What a chord on a mark is shown as.
+    pub fn typed_marks(&mut self) -> Vec<TypedMark> {
+        self.data.state.typed_marks()
+    }
+
     /// The layout the keyboard types in now, as XKB names it; `None` without a keyboard.
     pub fn keyboard_layout(&mut self) -> Option<String> {
         let LoopData { state, .. } = &mut self.data;
@@ -2191,6 +2216,34 @@ impl Compositor {
         self.data.state.set_layer_shown(namespace, shown);
     }
 
+    /// Show the session's layer surface `namespace` once its app has drawn a frame after the
+    /// `after`th it committed: the page the session asked it for, at the size it asked, rather
+    /// than the one the app was left on.
+    pub fn show_layer_after(&mut self, namespace: &str, after: u64) {
+        self.data
+            .state
+            .set_layer_shown_after(namespace, true, Some(after));
+    }
+
+    /// How many frames the client of the layer surface `namespace` has committed: what a show asks
+    /// to be drawn after.
+    #[must_use]
+    pub fn layer_frames(&self, namespace: &str) -> u64 {
+        self.data.state.layer_frames(namespace)
+    }
+
+    /// Hand the keyboard to the session's layer surface `namespace` until it is hidden, when it
+    /// takes the keyboard at all; false while it does not stand yet.
+    pub fn lend_layer_keyboard(&mut self, namespace: &str) -> bool {
+        self.data.state.lend_layer_keyboard(namespace)
+    }
+
+    /// Give the keyboard the session's layer surface `namespace` was lent back to where it was,
+    /// as the surface is put away and before it has finished leaving.
+    pub fn return_layer_keyboard(&mut self, namespace: &str) {
+        self.data.state.return_layer_keyboard(namespace);
+    }
+
     /// Whether the session shows its layer surface `namespace` , hid it, or never said (shown).
     #[must_use]
     pub fn layer_shown(&self, namespace: &str) -> Option<bool> {
@@ -2202,6 +2255,50 @@ impl Compositor {
     #[must_use]
     pub fn layer_drawn(&self, namespace: &str) -> bool {
         self.data.state.layer_drawn(namespace)
+    }
+
+    /// Stand the session's layer surface `namespace` in `room` (`x, y, w, h` , logical layout
+    /// coordinates), as big as its app asks for inside it, whatever its own anchors and margins
+    /// say; `None` gives it back to them. A surface whose content fits itself rests against the
+    /// room's bottom edge with `rests_at_bottom` — a panel opened above the caret it edits hangs by
+    /// its bottom there, clear of the caret's line — else against its top. A popover the session
+    /// places moves and gets less room with a configure, not a new start of its app.
+    pub fn place_layer_in(
+        &mut self,
+        namespace: &str,
+        room: Option<(i32, i32, i32, i32)>,
+        rests_at_bottom: bool,
+    ) {
+        let room = room.map(|(x, y, w, h)| layer::Place {
+            room: Rectangle::new((x, y).into(), (w, h).into()),
+            rests_at_bottom,
+        });
+        self.data.state.place_layer_in(namespace, room);
+    }
+
+    /// Where the session's layer surface `namespace` stands now (`x, y, w, h` , logical layout
+    /// coordinates): a panel that fits its content is as tall as its page. `None` before it
+    /// stands anywhere.
+    #[must_use]
+    pub fn layer_rect(&self, namespace: &str) -> Option<(i32, i32, i32, i32)> {
+        self.data
+            .state
+            .layer_rect(namespace)
+            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    }
+
+    /// When showing a layer surface next gives up waiting for a frame at the size its app asks
+    /// for, so a panel that cannot resize is still shown.
+    #[must_use]
+    pub fn layer_settle_deadline(&self) -> Option<Instant> {
+        self.data.state.layer_settle_deadline()
+    }
+
+    /// Whether the person sees the layer surface `namespace`: it is shown, its app has drawn it,
+    /// and that frame is the size it asked for.
+    #[must_use]
+    pub fn layer_visible(&self, namespace: &str) -> bool {
+        self.data.state.layer_visible(namespace)
     }
 
     /// Draw the layer surface `namespace` as `pose` says from the next frame on, or as it stands

@@ -25,6 +25,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
+use crate::widget::DrawChild;
 use crate::widget::decorator::concrete::Decorator;
 use crate::widget::{Element, Placement, layout_rect};
 
@@ -150,7 +151,7 @@ impl PageSlide {
             transform,
             &clip,
         );
-        page.draw(scene, transform * pose.transform, text, theme, presence);
+        page.draw_child(scene, transform * pose.transform, text, theme, presence);
         scene.pop_layer();
     }
 }
@@ -255,9 +256,7 @@ impl Decorator for PageSlide {
             );
             self.aimed = Some(self.level);
         }
-        let node = self.page.build_layout(taffy, theme, node_map);
-        self.layout_dirty = false;
-        node
+        self.page.build_layout(taffy, theme, node_map)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -349,6 +348,10 @@ impl Decorator for PageSlide {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.page.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 }
 

@@ -22,6 +22,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::search::SearchRequest;
 use crate::tokens::MotionSource;
+use crate::widget::DrawChild;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_controls::{
     CONTROL_GAP, CONTROL_PX, ControlsState, WindowControl, WindowControls,
@@ -208,8 +209,9 @@ impl SlotRow {
     /// The window is maximized: its maximize control shows restore.
     #[cfg(feature = "native")]
     pub(crate) fn set_maximized(&mut self, maximized: bool) {
-        if self.controls_state.maximized != maximized {
-            self.controls_state.maximized = maximized;
+        let resize = crate::widget::window_controls::Resize::of(maximized, false);
+        if self.controls_state.resize != resize {
+            self.controls_state.resize = resize;
             self.repaint = true;
         }
     }
@@ -497,7 +499,8 @@ impl SlotRow {
         );
         self.row.paint(scene, transform, text, theme, presence);
         self.search.set_ground(theme.tokens.colors.surfaces.content);
-        self.search.draw(scene, transform, text, theme, presence);
+        self.search
+            .draw_child(scene, transform, text, theme, presence);
         // The window's own controls, in their pill over the bar's ground:
         // the one thing in the bar that is not the app's.
         let now = crate::motion::frame_now();
@@ -768,7 +771,7 @@ impl SlotRow {
             nodes.push(
                 crate::a11y::AccessNode::new(crate::a11y::Role::Button)
                     .with_name(crate::i18n::I18nManager::lookup_plain(
-                        control.name_key(self.controls_state.maximized),
+                        control.name_key(self.controls_state.resize),
                     ))
                     .with_action_target(control.target())
                     .with_bounds(rect)

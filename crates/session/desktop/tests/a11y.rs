@@ -26,7 +26,7 @@ use ui::a11y::Action;
 use ui::headless::FrameHarness;
 use ui::kurbo::{Affine, Rect};
 use ui::synthetic_input::{char_key, key_press, named_key};
-use ui::widget::Widget;
+use ui::widget::DrawChild;
 use winit::event::{Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
@@ -167,7 +167,7 @@ fn draw_chrome(frame: &mut FrameHarness) {
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = ui::vello::Scene::new();
     with_chrome(frame, |chrome| {
-        chrome.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+        chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
     });
 }
 

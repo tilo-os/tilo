@@ -1,6 +1,6 @@
 //! A member device that takes its workspaces' work: it runs their shell
 //! commands ([`tilo_actions::remote::environment_runs`]) and opens their
-//! browser environments ([`tilo_actions::remote::browser`]) on the hosted-VM
+//! Browser ([`tilo_actions::remote::browser`]) in their VMs on the hosted-VM
 //! service beside it.
 //!
 //! [`EnvironmentRuns`] is what the member's device plane hands a request to:
@@ -41,8 +41,8 @@ pub struct EnvironmentRuns(Arc<Inner>);
 
 struct Inner {
     shells: WorkspaceShells,
-    /// Where browser environments start: the hosted-VM service of this host,
-    /// when it runs one.
+    /// Where the workspaces' Browser starts: the hosted-VM service of this
+    /// host, when it runs one.
     browsers: Option<BrowserHost>,
     /// The operator this member belongs to: whose devices may ask.
     operator: [u8; 32],
@@ -75,7 +75,10 @@ impl EnvironmentRuns {
     /// Runs in `shells`, asked by devices of `operator`.
     #[must_use]
     pub fn new(shells: WorkspaceShells, operator: [u8; 32]) -> Self {
-        let browsers = shells.hosted_socket().map(BrowserHost::new);
+        let size = shells.hosted_size();
+        let browsers = shells
+            .hosted_socket()
+            .map(|socket| BrowserHost::new(socket, size));
         Self(Arc::new(Inner {
             shells,
             browsers,
@@ -89,7 +92,7 @@ impl EnvironmentRuns {
 
 fn not_served() -> ActionHostError {
     ActionHostError::Unavailable {
-        reason: "this member runs its workspaces' shell commands and browser environments".into(),
+        reason: "this member runs its workspaces' shell commands and Browser".into(),
     }
 }
 
@@ -135,8 +138,8 @@ impl Inner {
         self.moved();
     }
 
-    /// Answer `run` by opening (or ending) `workspace`'s browser environment
-    /// on this host's hosted-VM service, and answer what it said.
+    /// Answer `run` by opening (or ending) `workspace`'s Browser in its VM on
+    /// this host's hosted-VM service, and answer what it said.
     fn start_browser(
         self: &Arc<Self>,
         run: Run,
@@ -154,7 +157,7 @@ impl Inner {
                     browsers.open(&asked).map(Some)
                 }
                 (None, Some(browsers)) => browsers.stop(&workspace).map(|()| None),
-                _ => Err("this member runs no browser environments".to_owned()),
+                _ => Err("this member runs no workspace VMs".to_owned()),
             };
             let update = match outcome {
                 Ok(opened) => InvocationUpdate::Succeeded {
@@ -323,7 +326,7 @@ impl EnvironmentRuns {
             .filter(|_| action == browser::OPEN || action == browser::STOP);
         if (action == browser::OPEN || action == browser::STOP) && browsers.is_none() {
             return Err(ActionHostError::Unavailable {
-                reason: "this member runs no Linux VMs, so no browser environment".into(),
+                reason: "this member runs no workspace VMs, so no Browser".into(),
             });
         }
         // Only the workspace's host asks: a device of this member's own
@@ -376,20 +379,20 @@ impl EnvironmentRuns {
 enum Asked {
     /// Run a command line in a session's shell.
     Run(RunCommand),
-    /// Open a workspace's browser environment (`Some`), or end it.
+    /// Open a workspace's Browser (`Some`), or end its session.
     Browser(Option<OpenBrowser>),
 }
 
-/// A browser environment to open, as its action's argument.
+/// A Browser to open, as its action's argument.
 fn open_argument(request: &InvokeRequest) -> Result<OpenBrowser, ActionHostError> {
     let InvokeArgument::Json(map) = &request.argument else {
         return Err(ActionHostError::InvalidRequest {
-            reason: "opening a browser environment takes its workspace as JSON".into(),
+            reason: "opening Browser takes its workspace as JSON".into(),
         });
     };
     serde_json::from_value(serde_json::Value::Object(map.clone())).map_err(|error| {
         ActionHostError::InvalidRequest {
-            reason: format!("not a browser environment to open: {error}"),
+            reason: format!("not a Browser to open: {error}"),
         }
     })
 }

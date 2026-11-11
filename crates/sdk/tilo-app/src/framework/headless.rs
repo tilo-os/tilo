@@ -1009,6 +1009,20 @@ impl<A: ResourceApp> HeadlessApp<A> {
         Ok(took_in)
     }
 
+    /// Take this window's records to come from its workspace's hosts, as a
+    /// page's do ([`ui_core::record::RecordStore::ask_workspace_for_missing`]):
+    /// a record not here is asked for, and new only once they answered.
+    pub fn asks_the_workspace(&mut self) {
+        self.records.ask_workspace_for_missing();
+    }
+
+    /// What this window asks its workspace's hosts for
+    /// ([`ui_core::record::RecordStore::wanted_records`]).
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        self.records.wanted_records()
+    }
+
     /// The workspace's hosts sent everything they hold of `id`, a record this
     /// window asked for, or none is connected to ask
     /// ([`ui_core::record::RecordStore::note_workspace_answered`]).
@@ -1109,6 +1123,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .into_iter()
             .map(|checkout| checkout.id)
             .collect()
+    }
+
+    /// The whole document of `id` as this window holds it: its own record,
+    /// or one it keeps beside it (a part of a chain).
+    pub fn record_document(&self, id: &RecordId) -> Option<Vec<u8>> {
+        self.records.read(id, |doc| doc.clone().save())
     }
 
     /// Submit `submit` through the running view's own dispatcher, as a
@@ -1611,7 +1631,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// Run the frame the app runs after an event: edits the views and
     /// effects submitted are applied, and what they change is drawn.
     pub fn settle(&mut self) {
-        self.service_owner_wakes();
         self.harness()
             .wait_until(ui_core::time::Duration::ZERO, |_| true);
     }
@@ -1623,7 +1642,6 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// forces no frame to sync and publish, so it costs what the live window
     /// costs: what the perf measurements run after each interaction.
     pub fn idle(&mut self) {
-        self.service_owner_wakes();
         self.harness().idle();
     }
 
@@ -1632,18 +1650,7 @@ impl<A: ResourceApp> HeadlessApp<A> {
     /// takes it, then the frame a redraw, an animation or a due deadline
     /// asks for. Whether a frame ran.
     pub fn frame(&mut self) -> bool {
-        self.service_owner_wakes();
         self.harness().poll_frame().unwrap_or(false)
-    }
-
-    /// Take up what the app's workers woke its components for, as the live
-    /// window does at the start of each frame. Left queued, a wake kept
-    /// every later frame syncing and publishing, which the live window
-    /// never does.
-    fn service_owner_wakes(&mut self) {
-        if let Err(error) = self.harness().service_pending_owner_models() {
-            tracing::warn!(?error, "test app: a woken component's model was refused");
-        }
     }
 
     /// Invoke any published action of the resource by id with JSON

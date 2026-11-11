@@ -126,6 +126,12 @@ struct Clock {
 
 impl Clock {
     fn start() -> Option<&'static Self> {
+        // A page runs no threads of its own: without the clock, consumers keep their one-second
+        // re-check, as they do wherever the thread could not start, and the page's console is not
+        // told so on every load.
+        if cfg!(target_arch = "wasm32") {
+            return None;
+        }
         let clock: &'static Self = Box::leak(Box::new(Self {
             deadlines: Mutex::new(BTreeSet::new()),
             platform: platform::Clock::open(),

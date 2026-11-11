@@ -1,9 +1,9 @@
 //! The workspaces this browser entered, changed by the rules every device keeps that list by
-//! ([`tilo_session_host::entered`]). The page keeps the list in its browser's storage and hands it
+//! ([`tilo_session_client::entered`]). The page keeps the list in its browser's storage and hands it
 //! over as the JSON it stores; each call answers the list as it is now and the workspaces that
 //! stop being the one a bare entry reopens (`{entered, unchoose}`).
 
-use tilo_session_host::entered::{self, Entered, Place};
+use tilo_session_client::entered::{self, Entered, Place};
 use wasm_bindgen::prelude::*;
 
 use crate::peer::js_error;

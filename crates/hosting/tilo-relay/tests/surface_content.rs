@@ -33,6 +33,7 @@ fn want(requester: u64, workspace: &str, hash: &str) -> Vec<u8> {
         app_id: APP.into(),
         cluster_id: workspace.into(),
         hash: hash.into(),
+        have: Vec::new(),
     })
     .unwrap()
 }

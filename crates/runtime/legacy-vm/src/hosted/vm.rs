@@ -19,7 +19,6 @@ use legacy_agent_protocol::{AGENT_PORT, GuestMessage, HostMessage, client};
 use libvirt_domain::DomainState;
 use thiserror::Error;
 
-use super::browser::BrowserGuest;
 use super::files::Served;
 use super::firecracker::{self, Api, FirecrackerError, Machine, VmFiles};
 use super::jail::{Jail, JailDirs};
@@ -62,11 +61,6 @@ pub enum VmError {
     #[error("the VM is not running")]
     NotRunning,
     #[error(
-        "this host runs no browser environments: its service was started without the \
-         browser guest image"
-    )]
-    NoBrowserGuest,
-    #[error(
         "every Linux VM this host runs at once is running; try again in a minute \
          (an idle VM goes to sleep after its idle limit)"
     )]
@@ -87,9 +81,13 @@ pub struct Settings {
     /// one ([`super::jail`]). Unjailed VMs (development only) have no
     /// network.
     pub jail: Option<Arc<Jail>>,
-    /// The browser environments this host runs, when it runs any: the guest
-    /// image they boot, the spares it keeps, and how long one lives.
-    pub browser: Option<BrowserGuest>,
+    /// Where the relay is, as the host reaches it: the one destination a
+    /// VM may reach besides the internet, so the browser session in it joins
+    /// its workspace. A relay on the host's own loopback (a local stack) is
+    /// reached through [`super::network::HOST_LOOPBACK`]; anywhere else (a
+    /// cluster address), the VM dials it as it is. `None`: the host serves
+    /// no Browser.
+    pub relay: Option<Endpoint>,
 }
 
 /// How the last wake went: what an agent waited for its first command.
@@ -109,8 +107,7 @@ struct ShareServer {
 pub struct HostedVm {
     files: VmFiles,
     settings: Arc<Settings>,
-    /// Where its runs are billed; `None` for a browser environment, which no
-    /// account's ledger runs: the relay counts page use.
+    /// Where its runs are billed.
     ledger: Option<Ledger>,
     clock: Clock,
     meter: Meter,
@@ -122,6 +119,8 @@ pub struct HostedVm {
     servers: Vec<ShareServer>,
     wake_started: Option<Instant>,
     restoring: bool,
+    /// The next run starts for a Linux action, and is billed from its start.
+    bill_next: bool,
     last_wake: Option<Wake>,
     /// The jail slot the running VM holds.
     slot: Option<u32>,
@@ -167,6 +166,7 @@ impl HostedVm {
             servers: Vec::new(),
             wake_started: None,
             restoring: false,
+            bill_next: false,
             last_wake: None,
             slot: None,
         })
@@ -175,35 +175,6 @@ impl HostedVm {
     #[must_use]
     pub const fn identity(&self) -> &VmIdentity {
         &self.meter.identity
-    }
-
-    /// Whether this is a workspace's browser environment rather than a Linux
-    /// VM: it boots the browser guest image, is never snapshotted, and keeps
-    /// nothing when it stops.
-    #[must_use]
-    pub fn is_browser(&self) -> bool {
-        self.meter.identity.size == VmSize::Browser
-    }
-
-    /// The relay a browser environment's session joins its workspace
-    /// through: the one destination its VM reaches besides the internet.
-    /// `None` for a Linux VM, which is given none.
-    fn relay(&self) -> Option<Endpoint> {
-        let guest = self.settings.browser.as_ref()?;
-        self.is_browser().then_some(guest.relay)
-    }
-
-    /// The guest image this VM boots: its kind's.
-    fn machine(&self) -> Result<Machine, VmError> {
-        if self.is_browser() {
-            return self
-                .settings
-                .browser
-                .as_ref()
-                .map(|browser| browser.machine.clone())
-                .ok_or(VmError::NoBrowserGuest);
-        }
-        Ok(self.settings.machine.clone())
     }
 
     /// How to reach the running VM's agent.
@@ -233,9 +204,20 @@ impl HostedVm {
     }
 
     /// Wake the VM with `shares` mounted, and say how to reach its agent,
-    /// and how the wake went when this call woke it.
-    pub fn ensure(&mut self, shares: &[Served]) -> Result<(AgentLink, Option<Wake>), VmError> {
-        self.reap();
+    /// and how the wake went when this call woke it. For a Linux action
+    /// (`linux`), the VM's time is billed from now until it sleeps
+    /// ([`Meter::billed`](super::meter::Meter::billed)); the browser session
+    /// alone bills none.
+    pub fn ensure(
+        &mut self,
+        shares: &[Served],
+        linux: bool,
+    ) -> Result<(AgentLink, Option<Wake>), VmError> {
+        if self.reap() && linux {
+            self.meter.billed((self.clock)());
+            self.meter.save(&self.files.meter())?;
+        }
+        self.bill_next = linux;
         for share in shares {
             if !self.desired.iter().any(|known| known.path == share.path) {
                 self.desired.push(share.clone());
@@ -277,8 +259,8 @@ impl HostedVm {
     }
 
     /// Look at the running VM: is it alive, what runs in it. Suspends it
-    /// once it has been idle for the limit; a browser environment is never
-    /// suspended (its session's idle limit ends it, and it keeps nothing).
+    /// once it has been idle for the limit: the browser session counts as
+    /// running until its own idle limit ends it.
     pub fn poll(&mut self) -> Result<(), VmError> {
         if !self.reap() || self.life.phase() != Phase::Running {
             return Ok(());
@@ -290,9 +272,6 @@ impl HostedVm {
         };
         self.meter.seen(now);
         self.meter.save(&self.files.meter())?;
-        if self.is_browser() {
-            return Ok(());
-        }
         if let Some(actions) = self.life.activity(running, now / 1000)
             && let Err(error) = self.execute(&actions)
         {
@@ -302,12 +281,8 @@ impl HostedVm {
         Ok(())
     }
 
-    /// Suspend now, whatever runs. A browser environment is never
-    /// snapshotted, so it is left as it is.
+    /// Suspend now, whatever runs.
     pub fn suspend(&mut self) -> Result<(), VmError> {
-        if self.is_browser() {
-            return Ok(());
-        }
         self.reap();
         if let Some(actions) = self.life.suspend_now()
             && let Err(error) = self.execute(&actions)
@@ -320,42 +295,25 @@ impl HostedVm {
 
     /// Stop the VM and drop its snapshot: the next command boots it from
     /// its disk. The guest flushes its disk first; it is not shut down
-    /// beyond that, so stopping is never billed for a slow shutdown. A
-    /// browser environment keeps nothing: its disk, meter and sockets are
-    /// deleted.
+    /// beyond that, so stopping is never billed for a slow shutdown.
     pub fn stop(&mut self) -> Result<(), VmError> {
         if let Some(process) = self.process.take() {
-            if !self.is_browser() {
-                let _ = self.agent(&HostMessage::MountFiles { shares: Vec::new() });
-                let _ = self.sync_guest();
-            }
+            let _ = self.agent(&HostMessage::MountFiles { shares: Vec::new() });
+            let _ = self.sync_guest();
             self.finish(process);
             self.ended(RunEnd::Stopped)?;
         }
         self.stop_servers();
         self.drop_snapshot()?;
         self.observe()?;
-        if self.is_browser() {
-            self.forget()?;
-        }
         Ok(())
-    }
-
-    /// Delete everything a browser environment wrote: its disk, its meter
-    /// and its sockets. What it kept is nothing.
-    fn forget(&self) -> Result<(), VmError> {
-        let _ = std::fs::remove_dir_all(&self.files.run);
-        match std::fs::remove_dir_all(&self.files.state) {
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.into()),
-            _ => Ok(()),
-        }
     }
 
     fn execute(&mut self, actions: &[Action]) -> Result<(), VmError> {
         for action in actions {
             match action {
                 Action::CreateDisk => firecracker::create_disk(
-                    &self.machine()?,
+                    &self.settings.machine,
                     &self.files.disk(),
                     self.meter.identity.size,
                 )?,
@@ -379,8 +337,7 @@ impl HostedVm {
 
     fn start(&mut self) -> Result<(), VmError> {
         let settings = Arc::clone(&self.settings);
-        let machine = self.machine()?;
-        let machine = &machine;
+        let machine = &settings.machine;
         let snapshot = self.files.snapshot();
         std::fs::create_dir_all(&self.files.run)?;
         std::fs::create_dir_all(self.files.vmm())?;
@@ -423,7 +380,7 @@ impl HostedVm {
                     sockets,
                     guest: guest.as_ref(),
                 },
-                self.relay(),
+                settings.relay,
             )
         } else {
             let argv = if self.restoring {
@@ -460,7 +417,8 @@ impl HostedVm {
             },
         );
         self.process = Some(process);
-        self.meter.started((self.clock)());
+        self.meter
+            .started((self.clock)(), std::mem::take(&mut self.bill_next));
         self.meter.save(&self.files.meter())?;
         self.link = Some(AgentLink::Hybrid {
             socket: self.files.vsock_socket(),
@@ -514,19 +472,16 @@ impl HostedVm {
             return;
         };
         let released = self
-            .machine()
-            .map_err(|error| std::io::Error::other(error.to_string()))
-            .and_then(|machine| {
-                self.jail_dirs(&machine).and_then(|(vmm, sockets, _)| {
-                    jail.helper.release(
-                        slot,
-                        &JailDirs {
-                            vmm: &vmm,
-                            sockets: &sockets,
-                            guest: None,
-                        },
-                    )
-                })
+            .jail_dirs(&self.settings.machine)
+            .and_then(|(vmm, sockets, _)| {
+                jail.helper.release(
+                    slot,
+                    &JailDirs {
+                        vmm: &vmm,
+                        sockets: &sockets,
+                        guest: None,
+                    },
+                )
             });
         match released {
             Ok(()) => jail.give_back(slot),
@@ -879,66 +834,7 @@ fn kill_stray(files: &VmFiles, jail: Option<&Jail>) {
 
 #[cfg(test)]
 mod tests {
-    use std::net::Ipv4Addr;
-
     use super::*;
-
-    #[test]
-    fn a_browser_environment_is_never_snapshotted_and_keeps_nothing() {
-        let dir = tempfile::tempdir().unwrap();
-        let files = VmFiles {
-            state: dir.path().join("state"),
-            run: dir.path().join("run"),
-            jailed: false,
-        };
-        std::fs::create_dir_all(files.vmm()).unwrap();
-        std::fs::write(files.disk(), b"a fresh copy of the browser guest").unwrap();
-        let machine = Machine {
-            firecracker: dir.path().join("no-firecracker"),
-            kernel: dir.path().join("vmlinux"),
-            initramfs: None,
-            cmdline: Machine::DEFAULT_CMDLINE.into(),
-            base_disk: None,
-        };
-        let settings = Settings {
-            machine: machine.clone(),
-            idle_suspend: Duration::from_secs(1),
-            self_exe: dir.path().join("tilo-legacy"),
-            jail: None,
-            browser: Some(BrowserGuest::new(
-                machine,
-                Endpoint {
-                    address: Ipv4Addr::LOCALHOST,
-                    port: 7704,
-                },
-            )),
-        };
-        let identity = VmIdentity {
-            vm: "ws1/browser".into(),
-            workspace: "ws1".into(),
-            environment: "browser".into(),
-            account: "acct-1".into(),
-            size: VmSize::Browser,
-        };
-        let mut vm = HostedVm::open(
-            identity,
-            files.clone(),
-            Arc::new(settings),
-            None,
-            Arc::new(|| 1_000),
-        )
-        .unwrap();
-        assert!(vm.is_browser());
-        // phase: a browser environment is never suspended to a snapshot
-        vm.suspend().unwrap();
-        assert!(!files.snapshot().valid() && !files.snapshot().memory.exists());
-        // phase: stopping it deletes the disk it booted, and everything else
-        vm.stop().unwrap();
-        assert!(
-            !files.state.exists(),
-            "a browser environment keeps nothing when it stops"
-        );
-    }
 
     #[test]
     fn a_share_server_is_confined_to_its_share() {

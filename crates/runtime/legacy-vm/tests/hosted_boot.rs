@@ -58,7 +58,7 @@ fn config(scratch: &std::path::Path, run: &str) -> ServiceConfig {
                 PathBuf::from,
             ),
             jail: None,
-            browser: None,
+            relay: None,
         },
     }
 }

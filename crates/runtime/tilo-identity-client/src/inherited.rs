@@ -17,8 +17,16 @@ pub fn load() -> Result<Arc<BrokerSigningIdentity>, NotAvailable> {
     Err(NotAvailable::ServiceFdMissing)
 }
 
+/// Who the person is, for showing them: the public record the launcher's
+/// broker carries, which every app with an identity gets. Only an app with no
+/// broker asks the workspace identity service, whose answer needs this
+/// device's custody of the workspace profile; signing stays with the service.
 pub fn load_metadata() -> Result<IdentityMetadata, NotAvailable> {
-    let identity = load()?;
+    let identity = if std::env::var_os(legacy::BROKER_ENV_VAR).is_some() {
+        legacy::connect_from_env()?
+    } else {
+        load()?
+    };
     let metadata = identity.metadata();
     Ok(IdentityMetadata {
         profile_photo: metadata.profile_photo().cloned(),

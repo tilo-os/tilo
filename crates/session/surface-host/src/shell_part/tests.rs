@@ -733,6 +733,30 @@ fn one_window_arrangement() -> ArrangementReading {
     }
 }
 
+/// Where the menu of the window the part shows as `name` stands, when it shows one. The strips
+/// say a window's name twice: its frame is named for it, and so is the window's own menu in its
+/// bar, which lists the commands of the place the window shows. The frame is the largest control
+/// of that name, and the menu the smallest of the others whose centre the frame holds: an icon
+/// in the window's bar. A window named by its frame alone has none.
+fn window_menu(part: &mut ShellPart, name: &str) -> Option<(f64, f64, f64, f64)> {
+    let named = part.control_bounds_all(name);
+    let frame = named
+        .iter()
+        .copied()
+        .max_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))?;
+    named
+        .into_iter()
+        .filter(|&(x, y, w, h)| {
+            let (across, down) = (x + w / 2.0, y + h / 2.0);
+            w * h < frame.2 * frame.3
+                && across >= frame.0
+                && across <= frame.0 + frame.2
+                && down >= frame.1
+                && down <= frame.1 + frame.3
+        })
+        .min_by(|a, b| (a.2 * a.3).total_cmp(&(b.2 * b.3)))
+}
+
 /// A part over the arrangement of one foreign window, its wells reporting to the handle it
 /// returns.
 fn showing_one_window() -> (ShellPart, ui::widget::Wells) {
@@ -777,22 +801,27 @@ fn the_screen_shows_the_arrangement_and_reports_each_windows_well() {
         "the well stands on the output, under the bar: {well:?}"
     );
 
-    // Each window's own controls stand in its one bar — its menu and its close, beside its
-    // maximize; the framed canvas shows none of them, and its entry (what typed text finds is
+    // Each window's own controls stand in its one bar — its menu, named for the window it is the
+    // menu of (the place shows a terminal and has no title of its own, so it is called by what
+    // it shows), and its close, beside its maximize; the framed canvas names the window by its
+    // frame alone, with no menu of the window's, and shows its entry (what typed text finds is
     // placed on the canvas) instead.
     assert!(
-        labels.iter().any(|label| label == "This window")
+        window_menu(&mut part, "Terminal").is_some()
             && labels.iter().any(|label| label == "Close")
             && labels.iter().any(|label| label == "Maximize"),
-        "the windows show their controls: {labels:?}"
+        "the windows show their controls: {labels:?}; Terminal names {:?}",
+        part.control_bounds_all("Terminal")
     );
     // The preset switch shows the same place on the framed canvas, its well there.
     click(&mut part, "Frames");
     let labels = crate::Published::accessible_labels(&mut part);
+    let named = part.control_bounds_all("Terminal");
     assert!(
-        !labels.iter().any(|label| label == "This window")
+        !named.is_empty()
+            && window_menu(&mut part, "Terminal").is_none()
             && labels.iter().any(|label| label == CANVAS_ENTRY),
-        "the canvas shows: {labels:?}; refused {:?}",
+        "the canvas shows: {labels:?}; Terminal names {named:?}; refused {:?}",
         part.refusals()
     );
     assert!(

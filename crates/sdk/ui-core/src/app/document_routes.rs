@@ -694,6 +694,7 @@ struct Part {
     mutation: collab_types::DocumentMutation,
     authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentCustody>>,
     heads: Vec<automerge::ChangeHash>,
+    document: automerge::AutoCommit,
 }
 
 /// The commit each part of the pass travels under: the units one action
@@ -704,53 +705,59 @@ struct Part {
 /// A commit names one workspace, so the parts of another workspace's route
 /// are committed to apart. The author's device is left as zeros: the
 /// transport signs the frame and stamps the device it signs with.
-fn publication_commits(parts: &[Part]) -> Vec<Option<collab_types::WorkspaceCommit>> {
+fn publication_commits(parts: &mut [Part]) -> Vec<Option<collab_types::WorkspaceCommit>> {
     let mut commits = vec![None; parts.len()];
-    let mut groups: Vec<(uuid::Uuid, Vec<usize>)> = Vec::new();
-    for (index, part) in parts.iter().enumerate() {
+    // Every unit of the pass, by the workspace it belongs to.
+    let mut groups: Vec<(uuid::Uuid, Vec<(usize, collab_types::UnitMutation)>)> = Vec::new();
+    for (index, part) in parts.iter_mut().enumerate() {
         if part.authorization.is_some() {
             continue;
         }
         let workspace = part.route.cluster_id;
+        let unit = collab_types::UnitMutation {
+            app: &part.route.app_id,
+            record: part.route.record.as_deref().unwrap_or(""),
+            mutation: &part.mutation,
+            document: Some(part.document.document()),
+        };
         match groups.iter_mut().find(|(known, _)| *known == workspace) {
-            Some((_, group)) => group.push(index),
-            None => groups.push((workspace, vec![index])),
+            Some((_, group)) => group.push((index, unit)),
+            None => groups.push((workspace, vec![(index, unit)])),
         }
     }
     for (workspace, group) in groups {
-        let units: Vec<collab_types::UnitMutation> = group
-            .iter()
-            .filter_map(|index| parts.get(*index))
-            .map(|part| collab_types::UnitMutation {
-                app: &part.route.app_id,
-                record: part.route.record.as_deref().unwrap_or(""),
-                mutation: &part.mutation,
-            })
-            .collect();
-        let author = collab_types::CommitAuthor {
-            principal: None,
-            device: [0; 32],
-        };
-        match collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, &units) {
-            Ok(group_commits) => {
-                for (index, commit) in group.iter().zip(group_commits) {
-                    if let Some(slot) = commits.get_mut(*index) {
-                        *slot = commit;
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: a published change commits to no action");
+        let units: Vec<collab_types::UnitMutation> = group.iter().map(|(_, unit)| *unit).collect();
+        for ((index, _), commit) in group.iter().zip(unit_commits(workspace, &units)) {
+            if let Some(slot) = commits.get_mut(*index) {
+                *slot = commit;
             }
         }
     }
     commits
 }
 
+/// The commit each of `units`, all of `workspace`, travels under: one entry
+/// per unit, `None` for one that carries no change or names no action.
+pub(super) fn unit_commits(
+    workspace: uuid::Uuid,
+    units: &[collab_types::UnitMutation],
+) -> Vec<Option<collab_types::WorkspaceCommit>> {
+    let author = collab_types::CommitAuthor {
+        principal: None,
+        device: [0; 32],
+    };
+    collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, units).unwrap_or_else(
+        |error| {
+            tracing::warn!(%error, "collab: a published change commits to no action");
+            vec![None; units.len()]
+        },
+    )
+}
+
 /// What one part of the pass sends: its changes under the commit of the
 /// action that made them, or as the transport carries them when the part is
 /// no action's.
-fn part_request(
+pub(super) fn part_request(
     mutation: collab_types::DocumentMutation,
     authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentCustody>>,
     commit: Option<collab_types::WorkspaceCommit>,
@@ -830,7 +837,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                 entry.needs_snapshot,
                 entry.pending.failure.is_some(),
             );
-            let (mutation, authorization, heads) = match publication {
+            let (mutation, authorization, heads, document) = match publication {
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Unchanged) => continue,
                 Ok(crate::history_mode::owner::OwnedDocumentPublication::Unfinished) => {
                     blocked.get_or_insert("an owned document has unfinished changes");
@@ -844,7 +851,8 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                     mutation,
                     authorization,
                     heads,
-                }) => (mutation, authorization, heads),
+                    document,
+                }) => (mutation, authorization, heads, document),
                 Err(_) => {
                     blocked.get_or_insert("an owned document is unreadable");
                     continue;
@@ -858,9 +866,10 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
                         as std::sync::Arc<dyn crate::collaboration::DocumentCustody>
                 }),
                 heads,
+                document,
             });
         }
-        let commits = publication_commits(&parts);
+        let commits = publication_commits(&mut parts);
         for (part, commit) in parts.into_iter().zip(commits) {
             let route = part.route;
             let heads = part.heads;
@@ -1045,6 +1054,7 @@ mod tests {
             mutation,
             authorization: None,
             heads: Vec::new(),
+            document: automerge::AutoCommit::new(),
         }
     }
 
@@ -1056,7 +1066,7 @@ mod tests {
         let workspace = uuid::Uuid::new_v4();
         let invocation = uuid::Uuid::new_v4();
         let other = uuid::Uuid::new_v4();
-        let parts = vec![
+        let mut parts = vec![
             part(
                 crate::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
                 action_mutation("title", "a", invocation),
@@ -1078,7 +1088,7 @@ mod tests {
                 collab_types::DocumentMutation::Snapshot(Vec::new()),
             ),
         ];
-        let commits = publication_commits(&parts);
+        let commits = publication_commits(&mut parts);
 
         let action = commits[0]
             .as_ref()
@@ -1125,6 +1135,54 @@ mod tests {
                     CollabRequest::Document { commit: None, .. }
                 )),
             }
+        }
+    }
+
+    /// Typing a word writes its first letter as the action and every next letter
+    /// as a continuation of it. Each letter goes out in its own pass, and each
+    /// travels under the action of the person who typed it.
+    #[test]
+    fn every_letter_typed_publishes_under_the_typists_action() {
+        let mut fixture = super::super::framework_history_tests::RoutedOwners::new();
+        fixture.app.publish_owned_documents();
+        fixture.app.document_routes.sent.clear();
+        let gesture = tilo_actions::ActionId(uuid::Uuid::new_v4());
+        let typed = |text: &str| tilo_actions::ActionContext {
+            action: Some(tilo_actions::EncodedAction {
+                type_id: "notes.type".into(),
+                payload: format!("{text:?}").into_bytes(),
+            }),
+            invoker: Some(tilo_actions::ActionInvoker::actor("alice")),
+            ..tilo_actions::ActionContext::default().in_gesture(Some(gesture))
+        };
+        let id = fixture.bindings[0].checkout.id.clone();
+        let records = fixture.records.clone();
+        let write = |text: &str, message: String| {
+            records
+                .with_history(&id, |doc, _| {
+                    automerge::transaction::Transactable::put(doc, automerge::ROOT, "body", text)
+                        .unwrap();
+                    doc.commit_with(
+                        automerge::transaction::CommitOptions::default().with_message(message),
+                    );
+                })
+                .unwrap();
+        };
+        write("a", typed("a").change_message().unwrap());
+        fixture.app.publish_owned_documents();
+        write("ab", typed("ab").continuation_of(&typed("a")).unwrap());
+        fixture.app.publish_owned_documents();
+
+        let sent = &fixture.app.document_routes.sent;
+        assert_eq!(sent.len(), 2, "each letter goes out in its own pass");
+        for (_, request) in sent {
+            let CollabRequest::Document { commit, .. } = request else {
+                panic!("a letter is a document change");
+            };
+            let commit = commit
+                .as_ref()
+                .expect("every letter travels under its action");
+            assert_eq!(commit.author.principal.as_deref(), Some("alice"));
         }
     }
 }

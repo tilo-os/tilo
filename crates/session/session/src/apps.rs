@@ -75,6 +75,9 @@ struct State {
     authority_at: Option<u64>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
+    /// The compositor drew its first frame with no GPU to import from: its apps were pinned to the
+    /// software renderer it draws with ([`Apps::follow_render_node`]).
+    software: bool,
     /// The session's launch records, once it has lent them: what its broker admits a connection by,
     /// and so what each launch it makes is written into.
     launches: Option<std::sync::Arc<crate::Launches>>,
@@ -168,6 +171,7 @@ impl Apps {
                 authority: Authority::new(),
                 authority_at: None,
                 render_node: None,
+                software: false,
                 launches: None,
                 doors: None,
                 me: Weak::new(),
@@ -203,6 +207,45 @@ impl Apps {
     /// offers it.
     pub fn set_render_node(&self, node: Option<PathBuf>) {
         self.state.borrow_mut().render_node = node;
+    }
+
+    /// Take the compositor's render node once it has one: its backend names the GPU clients
+    /// import on when it starts importing dma-bufs, which can be after the session first hands
+    /// the launcher its node. Until then a launch had none, and an app that opens the GPU itself
+    /// got no pin at all (on a machine without a GPU, every installed driver in its loader).
+    ///
+    /// Once the compositor has drawn (`drawn`) with no GPU to import from, it draws with the
+    /// software renderer, and so must its apps: the launcher of each is handed the software pin
+    /// (lavapipe alone, Mesa's EGL vendor, no device-select layer), which a launch with no render
+    /// node takes into its sandbox (`launcher::gpu::inherited_software_pin`). Without it an app
+    /// that opens the GPU itself loaded every installed driver, and Chat crashed in a VM without
+    /// 3D.
+    pub fn follow_render_node(&self, node: impl FnOnce() -> Option<PathBuf>, drawn: bool) {
+        let mut state = self.state.borrow_mut();
+        if state.render_node.is_some() || state.software {
+            return;
+        }
+        state.render_node = node();
+        if state.render_node.is_none() && drawn {
+            state.software = true;
+            #[cfg(target_os = "linux")]
+            match launcher::gpu::software_pin(&launcher::gpu::IcdSearch::default()) {
+                Ok(pin) => {
+                    for (key, value) in pin.env() {
+                        state
+                            .environment
+                            .forwarded
+                            .entry(key.to_owned())
+                            .or_insert(value);
+                    }
+                    tracing::info!(
+                        vulkan = %pin.vulkan_icd_json.display(),
+                        "no GPU: the apps opened from here on render with the software renderer"
+                    );
+                }
+                Err(why) => tracing::info!(%why, "no GPU, and no software renderer to pin apps to"),
+            }
+        }
     }
 
     /// The person at this device, by the id the workspaces' governance names them by: whose
@@ -551,6 +594,19 @@ impl Apps {
             } else {
                 self.workspace_named(&request.workspace)
             };
+            if request.windowless {
+                let started = self.start_windowless(&request.launch, &workspace);
+                if let Err(error) = &started {
+                    tracing::warn!(
+                        app = %request.launch.id(),
+                        workspace = %workspace.id,
+                        %error,
+                        "an app asked for without a window did not start"
+                    );
+                }
+                request.answer(started.map_err(|error| error.to_string()));
+                continue;
+            }
             let context = request.context.clone();
             let started = self.starting_tool(context.as_deref(), || {
                 // The place the asker named is where the window it asks for stands, and never that
@@ -1128,38 +1184,7 @@ impl Apps {
         // does for it is in the launch's share, and the phases below say where that share went.
         let app = launch.app();
         let timed = tilo_startup_metrics::launch_requested(app);
-        // A service running this app's model serves its record: the launch names the resource the
-        // session publishes, so the app opens no record of its own (`docs/architecture/apps.md` §8
-        // step 2).
-        let hosted = matches!(launch, Launch::Record { .. } | Launch::Package { .. })
-            .then(|| self.hosted(app))
-            .flatten();
-        let planned = {
-            let state = self.state.borrow();
-            // The workspace's own X11 display: an app started there connects to a server no other
-            // workspace's apps share.
-            let mut environment = state.environment.clone();
-            environment.x11_display = state
-                .x11
-                .as_ref()
-                .filter(|_| workspace.is_workspace())
-                .and_then(|x11| x11.display_for(&workspace.id))
-                .map(|number| format!(":{number}"));
-            let context = PlanContext {
-                environment: &environment,
-                workspace,
-                launcher: state.launcher.clone(),
-                identity: state.identity.clone(),
-                authority: Some(&state.authority),
-                render_node: state.render_node.clone(),
-                new_window,
-                continuity_instance: instance,
-                connector: None,
-                hosted: hosted.as_deref(),
-            };
-            Planned::of(launch, &context)
-        };
-        let mut planned = match planned {
+        let mut planned = match self.plan(launch, workspace, new_window, instance) {
             Ok(planned) => planned,
             Err(error) => {
                 tilo_startup_metrics::launch_failed(timed);
@@ -1225,6 +1250,77 @@ impl Apps {
         started.map(|_| true)
     }
 
+    /// How `launch` starts in `workspace`: a window of its own when `new_window`, in the tab
+    /// `instance` when the desk holds one.
+    fn plan(
+        &self,
+        launch: &Launch,
+        workspace: &Workspace,
+        new_window: bool,
+        instance: Option<u64>,
+    ) -> Result<Planned, tilo_app_launch::PlanError> {
+        // A service running this app's model serves its record: the launch names the resource the
+        // session publishes, so the app opens no record of its own (`docs/architecture/apps.md` §8
+        // step 2).
+        let hosted = matches!(launch, Launch::Record { .. } | Launch::Package { .. })
+            .then(|| self.hosted(launch.app()))
+            .flatten();
+        let state = self.state.borrow();
+        // The workspace's own X11 display: an app started there connects to a server no other
+        // workspace's apps share.
+        let mut environment = state.environment.clone();
+        environment.x11_display = state
+            .x11
+            .as_ref()
+            .filter(|_| workspace.is_workspace())
+            .and_then(|x11| x11.display_for(&workspace.id))
+            .map(|number| format!(":{number}"));
+        let context = PlanContext {
+            environment: &environment,
+            workspace,
+            launcher: state.launcher.clone(),
+            identity: state.identity.clone(),
+            authority: Some(&state.authority),
+            render_node: state.render_node.clone(),
+            new_window,
+            continuity_instance: instance,
+            connector: None,
+            hosted: hosted.as_deref(),
+        };
+        Planned::of(launch, &context)
+    }
+
+    /// Start package `app` in `workspace` with no window, for an action that shows nothing: its
+    /// process takes the app's actions on its records and makes a window only when the shell
+    /// asks it for one, through the door it holds as every launch of the app does. A process of
+    /// the app running there already takes the action instead, and nothing starts.
+    fn start_windowless(&self, launch: &Launch, workspace: &Workspace) -> Result<(), DoorError> {
+        let authored = self.authored(launch, workspace);
+        let workspace = &authored;
+        let Some(doors) = self.state.borrow().doors.clone() else {
+            return Err(DoorError::Failed(
+                "this session starts no app without a window".into(),
+            ));
+        };
+        let mut planned = self
+            .plan(launch, workspace, false, None)
+            .map_err(|error| DoorError::Failed(error.to_string()))?;
+        planned
+            .env
+            .insert(ui::window_door::WINDOWLESS_ENV.to_owned(), "1".to_owned());
+        let Some(reservation) = doors
+            .reserve_unless_running(&planned.app, &workspace.id)
+            .map_err(DoorError::Failed)?
+        else {
+            return Ok(());
+        };
+        let door = doors.hold(&planned.app, &workspace.id);
+        self.spawn(&planned, Some(&launch.id()), &workspace.id, door, None)?;
+        // The launch holds its door from its start: the reservation is spent, not given up.
+        reservation.launched();
+        Ok(())
+    }
+
     /// How a window that must start a process of its own starts it: what a window asked of a
     /// process gone to sleep or built before the door does.
     fn start_alone(
@@ -1270,26 +1366,37 @@ impl Apps {
     ) -> Result<u64, DoorError> {
         let launches = self.state.borrow().launches.clone();
         let mut state = self.state.borrow_mut();
+        let windowless = planned.env.contains_key(ui::window_door::WINDOWLESS_ENV);
         // The launch's share in the launch-latency log runs from the request to the first presented
-        // frame: the launcher's and the app's in this log, the surface's in the compositor's.
-        let timed = timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app));
+        // frame: the launcher's and the app's in this log, the surface's in the compositor's. A
+        // launch with no window presents none.
+        let timed = (!windowless)
+            .then(|| timed.unwrap_or_else(|| tilo_startup_metrics::launch_requested(&planned.app)));
         let started = state.spawner.start_with(planned, door, &|pid| {
             if let Some(launches) = &launches {
                 // The launcher binds the session's documents store into a package's sandbox and
                 // into nothing else, so a package is the launch whose files are answered with paths
                 // in the store.
-                launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
+                if windowless {
+                    launches.started_windowless(pid, &planned.app, workspace);
+                } else {
+                    launches.started(pid, &planned.app, workspace, !planned.kind.is_host());
+                }
             }
         });
         let started = match started {
             Ok(started) => started,
             Err(error) => {
-                tilo_startup_metrics::launch_failed(timed);
+                if let Some(timed) = timed {
+                    tilo_startup_metrics::launch_failed(timed);
+                }
                 return Err(DoorError::Failed(error.to_string()));
             }
         };
         let (started, door) = started;
-        tilo_startup_metrics::launch_spawned(timed, started.pid);
+        if let Some(timed) = timed {
+            tilo_startup_metrics::launch_spawned(timed, started.pid);
+        }
         if let Some(asked) = asked {
             state.running.insert(started.id, asked.to_owned());
         }
@@ -1594,6 +1701,58 @@ mod tests {
 
     fn apps() -> Apps {
         Apps::with_launcher(SessionEnvironment::default(), None, None)
+    }
+
+    /// A launch takes the compositor's render node once the compositor has one, though the session
+    /// asked before its backend named it; the node it took then stays.
+    #[test]
+    fn a_launch_follows_the_render_node_the_compositor_names_later() {
+        let apps = apps();
+        apps.set_render_node(None);
+        apps.follow_render_node(|| None, false);
+        assert_eq!(apps.state.borrow().render_node, None);
+        assert!(
+            !apps.state.borrow().software,
+            "nothing is decided before the first frame"
+        );
+        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/card1")), true);
+        assert_eq!(
+            apps.state.borrow().render_node.as_deref(),
+            Some(Path::new("/dev/dri/card1"))
+        );
+        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/renderD128")), true);
+        assert_eq!(
+            apps.state.borrow().render_node.as_deref(),
+            Some(Path::new("/dev/dri/card1")),
+            "the node it took stays"
+        );
+    }
+
+    /// A compositor that has drawn with no GPU to import from draws in software, and the apps it
+    /// opens are handed the software renderer's pin, where this machine has one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_compositor_that_drew_without_a_gpu_pins_its_apps_to_the_software_renderer() {
+        let apps = apps();
+        apps.follow_render_node(|| None, true);
+        let state = apps.state.borrow();
+        assert!(state.software);
+        assert_eq!(state.render_node, None);
+        match launcher::gpu::software_pin(&launcher::gpu::IcdSearch::default()) {
+            Ok(pin) => {
+                for (key, value) in pin.env() {
+                    assert_eq!(
+                        state.environment.variables().get(key),
+                        Some(&value),
+                        "{key}"
+                    );
+                }
+            }
+            Err(_) => assert!(
+                !state.environment.forwarded.contains_key("VK_DRIVER_FILES"),
+                "no software renderer here, so nothing is pinned"
+            ),
+        }
     }
 
     /// An agent is a service the launcher runs, and the agent's own options follow the entrypoint:

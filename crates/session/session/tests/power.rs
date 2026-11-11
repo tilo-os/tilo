@@ -330,7 +330,7 @@ fn session(machine: &Machine, service: Box<dyn Service>) -> Session {
 /// the session lock, which this run builds the first time a test locks into it.
 fn lock_screen() -> Surface {
     let binary = tilo_test_env::sibling_binary("tilo-lock-screen", "tilo-lock-screen");
-    Surface::new("lock", binary).person("ada").lock()
+    Surface::new("lock", binary).lock()
 }
 
 /// A session answering its power through `machine` , whose lock screen the session starts when it

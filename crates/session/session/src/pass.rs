@@ -101,6 +101,7 @@ impl Session {
         // once.
         let launch = self.shared.launch.clone();
         if let Some(launch) = &launch {
+            launch.follow_render_node(|| self.compositor.render_node(), self.first_frame);
             launch.start_asked_now();
         }
         // What search reads of the desk is read in turns that have nothing to draw. What arrived
@@ -152,6 +153,7 @@ impl Session {
         // What the services published this pass is what every surface of the machine shows.
         self.shared.follow_status();
         self.follow_readout();
+        self.follow_pending_paste();
         self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what their devices did, so a
         // panel is sent the reading of this pass.
@@ -418,6 +420,8 @@ impl Session {
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
             crate::platform::keys::next_readout_deadline(&self.shared.waiting.borrow()),
+            self.shared.pending_paste.get(),
+            self.compositor.layer_settle_deadline(),
             Some(self.update_finish.next_deadline()),
         ];
         deadlines.into_iter().flatten().min()
@@ -552,7 +556,16 @@ impl Session {
         self.shared.serve_mentions();
         self.follow_collaboration();
         self.follow_automation();
-        self.shared.follow_records();
+        // The person's list is kept on the hosts of their workspaces through the sessions the
+        // broker reaches them on.
+        let hosted = self
+            .action_plane
+            .as_ref()
+            .and_then(crate::plane::Plane::action_broker)
+            .and_then(|broker| broker.hosted_workspaces());
+        self.shared.follow_records(hosted.as_deref());
+        // What was sent since the last look, by a box, an agent or a script.
+        self.shared.deliver_sends();
         // The community this computer is configured for is joined on its own,
         // once, as the session starts.
         self.shared.follow_community();
@@ -631,7 +644,7 @@ impl Session {
         self.follow_window_menu();
         // Each open window takes the temperature of the workspace it is in, as this pass left it.
         self.follow_window_warmth();
-        self.shared.clipboard.serve_asks(&mut self.compositor);
+        self.serve_clipboard_asks();
         // A paste of files runs on its own thread; the loop only asks whether it is over and tells
         // the person how it went.
         for notice in self.shared.clipboard.step_files() {

@@ -12,7 +12,7 @@
 //! The session is the same everywhere; what reaches the host and what shows
 //! the question differ. A device with its own certificate opens one approver
 //! connection ([`Approver`]); a page holding the root signs each command
-//! with it ([`MemberQuestions`]). A native session shows the question on its
+//! with it and asks over the session it already holds ([`MemberQuestions`]). A native session shows the question on its
 //! sheet, a page on the same sheet over its desktop ([`QuestionSheet`]).
 
 use std::collections::HashSet;
@@ -23,7 +23,9 @@ use tilo_relay_protocol::certify::{
 };
 use tokio::sync::mpsc;
 
-use crate::certify::{Approver, MemberApprover};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::certify::Approver;
+use crate::certify::MemberHost;
 use crate::error::CertifyError;
 use crate::signer::DeviceSigner;
 
@@ -56,6 +58,7 @@ pub trait QuestionSheet {
     fn withdraw(&mut self, id: [u8; 32]);
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 impl QuestionHost for Approver {
     async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         self.list_confirmations().await
@@ -71,13 +74,14 @@ impl QuestionHost for Approver {
 }
 
 /// A host's questions to the member whose root a page holds: each command
-/// signed by that root, on a connection of its own.
-pub struct MemberQuestions<'a> {
-    pub host: &'a MemberApprover,
+/// signed by that root, asked where `host` reaches the host (the page's own
+/// session).
+pub struct MemberQuestions<'a, H> {
+    pub host: &'a H,
     pub root: &'a dyn DeviceSigner,
 }
 
-impl QuestionHost for MemberQuestions<'_> {
+impl<H: MemberHost> QuestionHost for MemberQuestions<'_, H> {
     async fn confirmations(&mut self) -> Result<Vec<PendingConfirmation>, CertifyError> {
         let approval =
             crate::pairing::member_approval(self.root, ApproverRequest::Confirmations).await?;

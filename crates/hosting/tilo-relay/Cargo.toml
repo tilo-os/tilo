@@ -20,8 +20,8 @@ test-support = ["tilo-room-host/test-support"]
 # Agents on the host: `dev --agents` / `run --agents` run an agent supervisor
 # (tilo-agent-participant, which links every web app) as the app-serving
 # plane. Needs the browser listener for steering from pages.
-agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-host", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account"]
-web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes"]
+agents = ["web", "tilo-room-host/agents", "dep:tilo-agent-participant", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-moderation", "dep:tilo-resource", "dep:tilo-workspace-emoji", "dep:ui", "dep:chat", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:ush", "dep:legacy-vm", "dep:tilo-host-account"]
+web = ["tilo-room-host/web", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac"]
 
 [[bin]]
 name = "tilo-relay"
@@ -38,6 +38,10 @@ path = "src/enroll.rs"
 [[bin]]
 name = "tilo-home-peer-control"
 path = "src/home_peer_control/main.rs"
+
+[[bin]]
+name = "tilo-approve"
+path = "src/approve.rs"
 
 # The host / relay daemon.
 #
@@ -160,8 +164,13 @@ bytes = { workspace = true, optional = true }
 tilo-live = { path = "../../collab/tilo-live", features = ["relay", "iroh"], optional = true }
 # SHA-256 of the development certificate, which a page pins.
 sha2 = { workspace = true, optional = true }
-# The fetch proxy a page's apps reach the web through.
-tilo-net = { path = "../../platform/tilo-net", features = ["http", "proxy-host"], optional = true }
+# The fetch proxy a page's apps reach the web through, and the mail the door
+# sends over HTTPS.
+tilo-net = { path = "../../platform/tilo-net", features = ["http", "json", "proxy-host"], optional = true }
+# The door's mail outbox awaits a send in its own future.
+futures = { workspace = true, optional = true }
+# The keyed hash of a visitor's address the door's wait-list windows count.
+hmac = { workspace = true, optional = true }
 tilo-agent-participant = { path = "../../agent/agent-participant", optional = true }
 # The workspaces' shells a host serving their records runs: ush's own
 # commands here, Linux programs in the workspace's hosted VM.
@@ -191,7 +200,7 @@ tilo-workspace-emoji = { path = "../../platform/tilo-workspace-emoji", optional 
 # The room's default record id, the one members' first windows open.
 ui = { package = "tilo-ui", path = "../../sdk/ui-core", optional = true }
 # Read existing signed document envelopes through the shared, read-only cipher.
-tilo-session-host = { path = "../../session/host", optional = true }
+tilo-session-client = { path = "../../session/client", optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The host keeps its workspaces' content in directories, one per workspace.
@@ -264,7 +273,9 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 chat = { path = "../../../apps/chat", default-features = false, features = ["samples"] }
-ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
+# Text a test lays out uses the pinned catalog, never the fonts the machine
+# running it has installed.
+ui = { package = "tilo-ui", path = "../../sdk/ui-core", features = ["test-support"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }

@@ -7,7 +7,7 @@
 use tilo_desktop_model::{GroupId, StripId, Tab, TabId};
 
 use super::tile_content::{build_tile, descriptor};
-use super::{DesktopSurface, RowOp, Shared};
+use super::{DesktopSurface, Shared, row_op::RowOp};
 use crate::TileSource;
 use crate::navigation::RouteIds;
 

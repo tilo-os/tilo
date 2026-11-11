@@ -10,6 +10,7 @@ use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome,
     t,
 };
+use ui::widget::DrawChild;
 /// The strip's separator: the chevron that opens the strip switcher.
 static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
 
@@ -55,8 +56,14 @@ pub(super) struct StripsKey {
 
 impl TopBarChrome {
     /// Whether the workspace's new name is being typed, in place of its name in the bar.
-    pub(super) fn renaming_workspace(&self) -> bool {
+    pub(crate) fn renaming_workspace(&self) -> bool {
         self.strips.naming.is_some()
+    }
+
+    /// Where the workspace's name field stands while it is typed, once the bar has drawn it.
+    pub(crate) fn workspace_name_rect(&self) -> Option<Rect> {
+        (self.renaming_workspace() && self.strips.field_rect.area() > 0.0)
+            .then_some(self.strips.field_rect)
     }
 
     pub(super) fn sync_strips(&mut self, tree: &DesktopTree) {
@@ -221,7 +228,7 @@ impl TopBarChrome {
         let input_theme = theme
             .clone()
             .with_text_scale(theme.text_scale * theme.ui_scale);
-        input.draw(
+        input.draw_child(
             scene,
             transform,
             text_renderer,
@@ -268,7 +275,7 @@ impl TopBarChrome {
         self.cache_fp = super::CacheFingerprint::default();
     }
 
-    pub(super) fn cancel_workspace_rename(&mut self) -> bool {
+    pub(crate) fn cancel_workspace_rename(&mut self) -> bool {
         let cancelled = self.strips.naming.take().is_some();
         if cancelled {
             self.strips.field_rect = Rect::ZERO;

@@ -32,6 +32,7 @@ use crate::document::{self, ArtworkFile, ArtworkRecents, EXTENSION, Recent, Rece
 use crate::model::Artwork;
 use crate::panels::export::{self, Settings};
 use crate::tools::{FileRequest, Sheet, Tools, ViewRequest};
+use ui::widget::DrawChild;
 
 /// A chooser, or a write it led to, that has not answered yet.
 enum Pending {
@@ -756,7 +757,7 @@ impl ui::widget::Decorator for FileDesk {
         self.take();
         self.poll();
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     /// The window's keys work wherever the focus is (a tool just clicked

@@ -82,6 +82,22 @@ action refer(p: Post, t: Task) {
     p.body = RichText(p.body, " see ", t)
 }
 
+/// Puts a task under what a post says, as a card of it where the post is drawn.
+action embed(p: Post, t: Task) {
+    p.body = RichText(p.body, RichText.embed(t))
+}
+
+/// Posts a line and a card of `t` under it: the line's break ends the paragraph, so the card
+/// starts the next one.
+action embed_under_line(b: Board, t: Task) -> Post {
+    b.posts.insert(Post(body: RichText("What to take to the market:\n", RichText.embed(t))))
+}
+
+/// Posts a line, the empty line a person left under it, and a card of `t` below that.
+action embed_after_blank_line(b: Board, t: Task) -> Post {
+    b.posts.insert(Post(body: RichText("What to take to the market:\n\n", RichText.embed(t))))
+}
+
 /// Posts a Markdown document as its body.
 action import_body(b: Board, markdown: Text) -> Post {
     b.posts.insert(Post(body: RichText.from_markdown(markdown)))
@@ -90,6 +106,36 @@ action import_body(b: Board, markdown: Text) -> Post {
 /// What a post says as a Markdown document.
 action markdown_of(p: Post) -> Text {
     p.body.markdown
+}
+
+/// What `p` says as Markdown, each task it refers to a link to the file `folder` writes that
+/// task at: a bundle of pages, where a page names another by the path it stands at.
+action linked_markdown(p: Post, folder: Text) -> Text {
+    let pages: Map<Text> = Map<Text>()
+    let place = 0
+    for t in p.body.references.of(Task) {
+        place = place + 1
+        pages.put(t.id, "{folder}Task {place}.md")
+    }
+    p.body.markdown(links: pages, from: "")
+}
+
+/// The post `markdown` says, where a link to the page `path` is the reference to `t`: what an
+/// import of a bundle of pages reads.
+action post_linked(b: Board, markdown: Text, t: Task, path: Text) -> Post {
+    let pages: Map<Text> = Map<Text>()
+    pages.put(path, t.id)
+    b.posts.insert(Post(body: RichText.from_markdown(markdown, links: pages, from: "")))
+}
+
+/// What the map `p`'s tasks are named in holds under `key`, by a title: a map the code fills as
+/// it runs, read as it runs.
+action page_of(p: Post, key: Text) -> Option<Text> {
+    let pages: Map<Text> = Map<Text>()
+    for t in p.body.references.of(Task) {
+        pages.put(t.title, t.id)
+    }
+    pages.get(key)
 }
 
 /// What a post says in a line.

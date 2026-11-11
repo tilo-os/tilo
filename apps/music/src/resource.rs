@@ -16,7 +16,7 @@ use crate::actions::{MusicEffect, Place};
 use crate::app::Music;
 use crate::model::{Album, CatalogueTrack, Library, Playlist};
 
-ui::embedded_catalog!(static CATALOG, ["en-US"]);
+ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
 
 #[resource(
     kind = "music.library",

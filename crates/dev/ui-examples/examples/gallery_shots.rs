@@ -30,6 +30,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
+use tilo_ui::widget::DrawChild;
 
 const WIDTH: u32 = 1200;
 const HEIGHT: u32 = 2300;
@@ -82,7 +83,7 @@ fn shoot(theme: &Theme, out: &Path, scale: f64) {
     let presence = PresenceCtx::default();
     // Composite through a pure scale by the (possibly fractional) factor —
     // exactly what `App` does live with `Affine::scale(window.scale_factor())`.
-    root.draw(&mut scene, Affine::scale(scale), &mut tr, theme, &presence);
+    root.draw_child(&mut scene, Affine::scale(scale), &mut tr, theme, &presence);
 
     // The offscreen target is sized in PHYSICAL pixels: logical × scale.
     // WIDTH/HEIGHT → f64 is lossless; the rounded product is always a

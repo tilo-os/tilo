@@ -142,9 +142,6 @@ pub struct WidgetHost {
     /// The display's grid: what the tree moves through is drawn once per
     /// display frame, so the screens show as many frames as they run at.
     cadence: Cadence,
-    /// Fingers are carrying the desk's strips: the surface draws them
-    /// following the hand until it lets go.
-    hand_on_deck: bool,
     /// What the role that placed the tree closes when the pointer is pressed
     /// elsewhere: the shared handle runs it before the tree is borrowed, so
     /// the role may ask the layer it holds to draw again.
@@ -202,7 +199,6 @@ impl WidgetHost {
             name: None,
             asked: Rc::new(std::cell::Cell::new(false)),
             cadence: Cadence::new(),
-            hand_on_deck: false,
             dismissed: None,
         }
     }
@@ -306,44 +302,6 @@ impl WidgetHost {
     #[must_use]
     pub const fn host(&self) -> &FrameHarness {
         &self.host
-    }
-
-    /// Whether the desk's fingers are already carrying its strips: the travel
-    /// that opened a gesture then moves the deck it landed on instead of
-    /// opening another.
-    #[must_use]
-    pub const fn wants_hand_on_deck(&self) -> bool {
-        self.hand_on_deck
-    }
-
-    /// Fingers landed on the deck, `travel` pixels into the gesture.
-    pub fn begin_strip_deck(&mut self, travel: f64) {
-        self.hand_on_deck = true;
-        self.deck_drag(travel, true);
-    }
-
-    /// The fingers have carried the deck `travel` pixels since they landed.
-    pub fn drag_strip_deck(&mut self, travel: f64) {
-        self.deck_drag(travel, false);
-    }
-
-    /// The fingers lifted after carrying the deck `travel` pixels.
-    pub fn end_strip_deck(&mut self, travel: f64) {
-        self.hand_on_deck = false;
-        self.deck_drag(travel, false);
-    }
-
-    /// Draw the desk's strips following the fingers.
-    fn deck_drag(&mut self, travel: f64, began: bool) {
-        self.with_surface(|surface| {
-            let shown = surface.shown_strip_id();
-            let slides = surface.slides_mut();
-            if began {
-                slides.begin_lift(shown);
-            }
-            slides.lift_to(travel);
-        });
-        self.owe();
     }
 
     /// Three fingers landed on the strip shown, `travel` pixels into the
@@ -724,7 +682,7 @@ impl SurfaceHost for WidgetHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        self.frames.covers(px, py)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -861,6 +819,12 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        // The tree draws carets only while this surface holds the keyboard: the same answer that
+        // decides whether keys reach it ([`SurfaceHost::wants_keyboard`]). A surface that just lost
+        // or took the keyboard draws again, so the caret goes with it.
+        if self.host.set_keyboard_held(self.wants_keyboard()) {
+            self.owe();
+        }
         if self.asked.replace(false) {
             // What asked for this pass is outside the tree and needs the tree
             // to have taken it: a widget that reads something the host holds

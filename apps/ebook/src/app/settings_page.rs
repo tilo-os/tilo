@@ -7,9 +7,9 @@ use super::{
     HostedDropdown, Icon, InputHint, ListRowFace, ModalAction, ModalSpec, NumberField, PAGE_MAX_W,
     PaintCtx, PathBuf, Point, ReadTheme, ReaderPalette, ReaderShortcut, Rect, RenameTarget,
     ScrollMetrics, SegmentedFace, SegmentedStyle, SelectionState, SettingsTab, TextRole, Theme,
-    ToggleGroup, Widget, button_width, content, key_legend, modal_dialog, paint_scroll_thumb,
-    switch_size,
+    ToggleGroup, button_width, content, key_legend, modal_dialog, paint_scroll_thumb, switch_size,
 };
+use ui::widget::DrawChild;
 
 /// The settings page's content column: its leading edge and width, bounded
 /// to a readable measure.
@@ -745,7 +745,7 @@ impl BooksApp {
             let field = Rect::new(slot.x0 + pad, cy - height / 2.0, slot.x1, cy + height / 2.0);
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field);
-                rn.field.draw(
+                rn.field.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text,
@@ -1099,7 +1099,7 @@ impl BooksApp {
         if self.renaming_scheme(&scheme.id) {
             if let Some(rn) = self.renaming.as_mut() {
                 rn.field.apply_layout_external(field);
-                rn.field.draw(
+                rn.field.draw_child(
                     panel.scene,
                     panel.transform,
                     panel.text,

@@ -16,7 +16,10 @@ mod layer;
 mod mark;
 mod placed;
 pub(crate) mod render;
-pub use caret_tag::{CaretTag, LabeledCaret, hide_names_beside_caret_tags, tag_gap, tags_crowd};
+pub use caret_tag::{
+    CaretTag, LabeledCaret, TAG_WIDGET, hide_names_beside_caret_tags, tag_faults, tag_gap,
+    tags_crowd,
+};
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
     ReactionFloat, single_emoji,
@@ -24,7 +27,7 @@ pub use chat::{
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement, MarkerPlace,
     TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};
@@ -100,6 +103,31 @@ pub use collab_types::presence::{
 #[must_use]
 pub fn presence_colour((red, green, blue): (u8, u8, u8)) -> vello::peniko::Color {
     vello::peniko::Color::from_rgb8(red, green, blue)
+}
+
+/// What colour each of `ids` is drawn in, given the colours `chosen` already
+/// holds for some of them (a person's own, as they announced it): everyone else
+/// takes the ring entry their identity names, stepping to a free one where
+/// somebody already wears it, walked over sorted ids so every host settles a
+/// room alike ([`assign_peer_colors`]).
+///
+/// One settlement for the desk's faces, its roster and its cursors, so one
+/// person is one colour on every surface of a workspace.
+#[must_use]
+pub fn settle_colors<S: std::hash::BuildHasher>(
+    ids: &[&str],
+    chosen: &HashMap<String, (u8, u8, u8), S>,
+) -> HashMap<String, (u8, u8, u8)> {
+    let mut settled: Vec<&str> = ids
+        .iter()
+        .copied()
+        .filter(|id| !chosen.contains_key(*id))
+        .collect();
+    settled.compact_sort();
+    settled.dedup();
+    let mut assigned = assign_peer_colors(&settled, &chosen.values().copied().collect::<Vec<_>>());
+    assigned.extend(chosen.iter().map(|(id, rgb)| (id.clone(), *rgb)));
+    assigned
 }
 
 /// [`user_color`] as a colour: what a face of `user_id` wears when the workspace
@@ -1265,10 +1293,30 @@ impl PresenceCtx {
     }
 
     pub fn color_for(&self, user: &UserId) -> (u8, u8, u8) {
-        if let Some(rgb) = self.color_overrides.get(user) {
-            return *rgb;
-        }
-        user_color(&user.0)
+        self.color_overrides
+            .get(user)
+            .copied()
+            .unwrap_or_else(|| user_color(&user.0))
+    }
+
+    /// The hue `user` wears: the one the workspace announced for them (their
+    /// choice, as the member list said it), else the one their identity
+    /// derives. [`Self::color_for`] is this hue's colour, and every surface
+    /// paints a person through one of the two, so their face, their caret and
+    /// their byline are one colour.
+    pub fn hue_for(&self, user: &UserId) -> crate::tokens::PresenceHue {
+        self.color_overrides
+            .get(user)
+            .and_then(|(red, green, blue)| {
+                crate::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
+            })
+            .unwrap_or_else(|| crate::tokens::PresenceHue::of_identity(&user.0))
+    }
+
+    /// [`Self::hue_for`] by the id a document or a roster spells, for a view
+    /// that paints an author, an assignee or a seat.
+    pub fn hue_of(&self, id: &str) -> crate::tokens::PresenceHue {
+        self.hue_for(&UserId(id.to_owned()))
     }
 
     /// When the workspace admitted `user`, as its roster records it; `None` when
@@ -2248,6 +2296,32 @@ mod color_override_tests {
         ctx.set_color_override(UserId("alice".into()), "#abcdef");
         ctx.set_color_override(UserId("alice".into()), "nonsense");
         assert_eq!(ctx.color_for(&UserId("alice".into())), user_color("alice"));
+    }
+
+    /// One person is one colour: the hue the workspace announced for them is
+    /// the one their face, their caret and their byline wear, and only someone
+    /// who announced none is painted in what their id derives.
+    #[test]
+    fn the_announced_hue_is_the_one_a_person_wears_everywhere() {
+        let mut ctx = PresenceCtx::empty();
+        let ada = UserId("ada".into());
+        assert_eq!(
+            ctx.hue_of("ada"),
+            crate::tokens::PresenceHue::of_identity("ada"),
+            "nobody announced a colour for her yet"
+        );
+        ctx.set_presence_hue(ada.clone(), crate::tokens::PresenceHue::Violet);
+        assert_eq!(ctx.hue_of("ada"), crate::tokens::PresenceHue::Violet);
+        assert_eq!(
+            ctx.color_for(&ada),
+            identity_rgb(crate::tokens::PresenceHue::Violet),
+            "the colour they are painted in is the hue they wear"
+        );
+        assert_eq!(
+            ctx.hue_of("bo"),
+            crate::tokens::PresenceHue::of_identity("bo"),
+            "someone else keeps their own"
+        );
     }
 }
 

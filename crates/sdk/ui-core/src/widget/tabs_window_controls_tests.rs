@@ -322,6 +322,60 @@ fn solo_bar_with_slots() -> TabBar {
     b
 }
 
+/// A secondary press on a bar whose app put its slots there opens the window's menu wherever it
+/// does not land on one of the app's controls: on the location, which names the window as a title
+/// does, and on the row's empty stretch. One on the app's own control is the app's.
+#[test]
+fn a_secondary_press_on_the_location_opens_the_windows_menu() {
+    let mut b = solo_bar_with_slots();
+    lay_out_at_width_with(&mut b, 900.0, &crate::theme::Theme::dark());
+    let location = b.location_rect();
+    assert!(
+        location.area() > 0.0,
+        "the app's location stands in the row"
+    );
+    let reload = b.toolbar_rects().3[0];
+    let right = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+    move_to(&mut b, location.center().x, location.center().y);
+    assert!(dispatch(&mut b, &right), "the bar takes the press");
+    assert_eq!(
+        b.take_context_menu().map(|(tab, _)| tab),
+        Some(1),
+        "the location opens its window's menu"
+    );
+    move_to(&mut b, reload.center().x, reload.center().y);
+    dispatch(&mut b, &right);
+    assert_eq!(b.take_context_menu(), None, "the app's control keeps it");
+}
+
+/// A window's one tab drawn as its icon shows its title while a person names it, and keeps
+/// showing the name they gave it; the app's own title goes back to the icon.
+#[test]
+fn a_windows_only_tab_shows_the_name_a_person_gave_it() {
+    let mut b = solo_bar_with_slots();
+    b.tab_rects = vec![Rect::new(0.0, 6.0, 40.0, 34.0)];
+    assert!(b.icon_only(1));
+    assert!(
+        b.begin_rename(1, "Window name"),
+        "the icon opens to a field"
+    );
+    assert!(!b.icon_only(1), "the field stands where the title would");
+    assert!(b.cancel_rename());
+    assert!(b.icon_only(1), "Escape leaves the icon");
+    let mut named = TabDescriptor::new(1, "Plan");
+    named.named = true;
+    b.tabs[0] = named;
+    assert!(
+        !b.icon_only(1),
+        "a named tab shows its name beside the location"
+    );
+    b.pin(1);
+    assert!(
+        !b.begin_rename(1, "Window name"),
+        "a pinned tab has no title to edit"
+    );
+}
+
 /// One place says what a window is: its only tab is drawn as its icon alone when the bar's
 /// slots carry the app's location, so the title is not painted over the location beside it.
 #[test]

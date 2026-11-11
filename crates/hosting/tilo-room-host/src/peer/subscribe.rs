@@ -192,10 +192,8 @@ pub(super) async fn subscribe(
     // own record and nothing else of the workspace.
     if ws.lock().await.attached(&peer.device_public_key) {
         ticket = ticket.with_every_record();
-    } else if let Some(channel) = session
-        .environment(&peer.device_public_key)
-        .and_then(|scope| scope.channel)
-    {
+    } else if let Some(scope) = session.environment(&peer.device_public_key) {
+        let channel = scope.channel;
         ticket = ticket.with_channels(std::iter::once(channel).collect());
     }
     crate::timing::event("join.ticket_wait", waited, 0);
@@ -203,6 +201,12 @@ pub(super) async fn subscribe(
     let capture = ticket.authority.clone();
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new(&work));
+    // What is committed for a device the door just admitted (its channel
+    // Welcome) goes ahead of everything its replay carries.
+    ws.lock()
+        .await
+        .arriving
+        .arrived(&peer.device_public_key, &catchup);
     let registration = SubscriberRegistration {
         workspace: completion_workspace,
         source,
@@ -213,6 +217,9 @@ pub(super) async fn subscribe(
         state_tx,
         catchup: catchup.clone(),
         lag: session.lag.clone(),
+        channel_reader: session
+            .channel_reader
+            .load(std::sync::atomic::Ordering::Relaxed),
     };
 
     let rx = owner
@@ -244,6 +251,9 @@ pub(super) async fn subscribe(
         SubscribeReplayCompletion::Ready(handle) => handle,
         SubscribeReplayCompletion::Superseded => return Err(PeerError::Superseded),
     };
+    // Captured: whatever the replay waits on from here is its own page's
+    // network, which no other page's replay may wait behind.
+    ticket.authority.release_slot();
     session.metrics.inc_subscribes();
     Ok(Subscribed::Replaying((
         workspace_id,
@@ -371,6 +381,7 @@ struct SubscriberRegistration {
     state_tx: mpsc::Sender<StateDelivery>,
     catchup: Arc<ReplayCatchup>,
     lag: Arc<Lag>,
+    channel_reader: bool,
 }
 
 /// The completion half of [`handle_subscribe`], run under the workspace's lock
@@ -391,6 +402,7 @@ async fn register_subscriber(
         state_tx,
         catchup: session_catchup,
         lag: session_lag,
+        channel_reader,
     } = registration;
     let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
     wr.subscription_completed(&source.peer.device_public_key, &source.tx);
@@ -460,6 +472,7 @@ async fn register_subscriber(
             tx: state_tx,
             replay: Some(session_catchup),
             lag: Some(session_lag),
+            channel_reader,
         },
     );
     drop(wr);

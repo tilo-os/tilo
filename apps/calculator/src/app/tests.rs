@@ -2,6 +2,7 @@ use super::*;
 use crate::resource::{CalculatorShell, history_entry_id};
 use ui::prelude::TestApp;
 use ui::tilo_resource::Invoke;
+use ui::widget::DrawChild;
 
 include!("../local_capture_tests.rs");
 include!("../typing_tests.rs");
@@ -1015,7 +1016,7 @@ fn drag(app: &mut CalculatorApp, st: &mut ui::State, a: Point, b: Point) {
 /// real frame: the controls are measured at the size they paint at.
 fn wide(mut app: CalculatorApp) -> CalculatorApp {
     app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
-    app.draw(
+    app.draw_child(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),

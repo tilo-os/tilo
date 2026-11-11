@@ -8,6 +8,7 @@ use crate::component::{Bound, Component, Described, Event, Value};
 use crate::tokens::TextRole;
 
 use super::{LineSignal, RichTextLine};
+use crate::widget::DrawChild;
 use crate::widget::TextInput;
 
 /// One line of text, edited in place: a block editor's cell, a composer's message. It carries
@@ -180,7 +181,8 @@ impl crate::widget::Widget for DeclaredLine {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.line.draw(scene, transform, text, theme, presence);
+        self.line
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(

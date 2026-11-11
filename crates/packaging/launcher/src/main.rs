@@ -1365,12 +1365,15 @@ fn host_launch_env_is_secret(key: &str) -> bool {
     matches!(key, "XDG_ACTIVATION_TOKEN" | "DESKTOP_STARTUP_ID")
 }
 
+/// The launcher's own diagnostics go to standard error: standard output is the app's, which a
+/// caller reads as the app's answer (a record's search entries, a surface report).
 fn init_tracing() {
     use tracing_subscriber::EnvFilter;
     let env = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
     let _ = tracing_subscriber::fmt()
         .with_env_filter(env)
         .with_target(false)
+        .with_writer(std::io::stderr)
         .try_init();
 }
 

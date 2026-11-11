@@ -4,48 +4,16 @@
 #![allow(
     clippy::expect_used,
     clippy::indexing_slicing,
-    reason = "a fixture that cannot build its invitation or see its own reply has no fallback"
+    reason = "a fixture that cannot see its own reply has no fallback"
 )]
 
 use test_http::{Reply, Responder};
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
-use tilo_workspace_directory::{Person, client, fetch_directory, join, read_site};
+use tilo_workspace_directory::{Way, client, fetch_directory, read_site, through_door};
 
 /// The workspace every test in this file joins.
 const WORKSPACE: &str = "6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71";
-
-/// An invitation for `person` to `workspace`, minted as a host mints one.
-fn invitation_for(workspace: &str, person: [u8; 32]) -> String {
-    let host = ed25519_dalek::SigningKey::from_bytes(&[0x31; 32]);
-    let host_device = ed25519_dalek::SigningKey::from_bytes(&[0x32; 32]);
-    let now = tilo_clock::unix_now_ns();
-    let mut issuer = tilo_user_identity::DeviceCert {
-        user_public_key: host.verifying_key().to_bytes(),
-        device_public_key: host_device.verifying_key().to_bytes(),
-        device_label: "The book club's host".to_owned(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: now,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut issuer, &host).expect("a certified host");
-    let grant = tilo_workspace_join::InviteGrant {
-        workspace_id: tilo_workspace_join::room_workspace_id(workspace).expect("a workspace's id"),
-        room: workspace.to_owned(),
-        issuer,
-        role: tilo_workspace_join::MemberRole::Viewer,
-        nonce: [0x33; 16],
-        recipient_user_public_key: Some(person),
-        invitee_name: None,
-        expires_at_ns: now.saturating_add(3_600_000_000_000),
-        transport: Vec::new(),
-    };
-    let signed =
-        tilo_workspace_join::issue_invitation(grant, &host_device).expect("a signed invitation");
-    tilo_workspace_join::encode_invitation_text(&signed)
-}
 
 fn entry(name: &str) -> DirectoryEntry {
     DirectoryEntry {
@@ -62,71 +30,37 @@ fn entry(name: &str) -> DirectoryEntry {
     }
 }
 
+/// Joining through a door asks the door nothing here (there is no client to
+/// ask with): the device enters the workspace its path names on the session
+/// it opens with the door's host, where the door decides. A door below a host's API prefix and one at a
+/// site's own path name the same workspace, and a path that names none is
+/// refused before anything is asked.
 #[test]
-fn a_door_round_trip_carries_the_invitation_it_granted() {
-    let person = Person {
-        user: [0x21; 32],
-        name: "Ada Lovelace".to_owned(),
-    };
-    let invitation = invitation_for(WORKSPACE, person.user);
-    let answer = serde_json::json!({
-        "invitation": invitation,
-        "admissionToken": "one-time-token",
-        "origin": "https://rooms.tilo.sh/",
-    })
-    .to_string();
-    let responder = Responder::start(vec![
-        Reply::status(200)
-            .header("Content-Type", "application/json")
-            .body(answer),
-    ]);
-    let door = url::Url::parse(&format!(
-        "{}/peer/v1/directory/{WORKSPACE}/",
-        responder.url()
-    ))
-    .expect("the door's address");
-    let client = client().expect("a client");
-    let granted = tilo_rt::block_on(join(&client, &door, &person))
-        .expect("the app runtime")
-        .expect("a granted join");
-    assert_eq!(granted.workspace, WORKSPACE);
-    assert_eq!(
-        granted.invitation, invitation,
-        "the invitation the door answered with is the one carried"
-    );
-
-    let request = responder.next_request();
-    assert_eq!(request.method, "POST");
-    assert_eq!(
-        request.target,
-        format!("/peer/v1/directory/{WORKSPACE}/join")
-    );
-    let body = request.body_text();
-    assert!(body.contains(&hex::encode(person.user)), "{body}");
-    assert!(body.contains("Ada Lovelace"), "{body}");
-}
-
-#[test]
-fn a_door_that_refuses_says_why_in_its_own_words() {
-    let person = Person {
-        user: [0x22; 32],
-        name: "Grace".to_owned(),
-    };
-    let responder = Responder::start(vec![
-        Reply::status(403)
-            .header("Content-Type", "application/json")
-            .body(r#"{"error":"this workspace is full"}"#),
-    ]);
-    let door = url::Url::parse(&format!(
-        "{}/peer/v1/directory/{WORKSPACE}/",
-        responder.url()
-    ))
-    .expect("the door's address");
-    let client = client().expect("a client");
-    let refused = tilo_rt::block_on(join(&client, &door, &person))
-        .expect("the app runtime")
-        .expect_err("a refused join");
-    assert_eq!(refused, "this workspace is full");
+fn a_door_join_enters_the_workspace_its_path_names_and_asks_nothing() {
+    for door in [
+        format!("https://rooms.tilo.test/peer/v1/directory/{WORKSPACE}/"),
+        format!("https://tilo.test/directory/{WORKSPACE}/"),
+    ] {
+        let door = url::Url::parse(&door).expect("the door's address");
+        let granted = through_door(&door).expect("a door names its workspace");
+        assert_eq!(granted.workspace, WORKSPACE);
+        assert_eq!(
+            granted.way,
+            Way::Door(door.clone()),
+            "the device enters through the door itself, holding no invitation"
+        );
+        assert_eq!(granted.invitation(), None);
+    }
+    for nameless in [
+        "https://tilo.test/door/".to_owned(),
+        "https://tilo.test/directory/not-a-workspace/".to_owned(),
+    ] {
+        let door = url::Url::parse(&nameless).expect("the door's address");
+        assert!(
+            through_door(&door).is_err(),
+            "{nameless} names no workspace to enter"
+        );
+    }
 }
 
 #[test]

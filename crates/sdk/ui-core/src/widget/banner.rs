@@ -32,6 +32,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::control_size::ControlSize;
 use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
@@ -440,7 +441,8 @@ fn paint_banner(
     }
     if let Some(dismiss) = g.dismiss {
         let dismiss = shift(dismiss);
-        let face = ButtonFace::icon_only(dismiss, Icon::X, "Dismiss")
+        let name = crate::i18n::widget_format("widget-dismiss", &[]);
+        let face = ButtonFace::icon_only(dismiss, Icon::X, &name)
             .control_size(ControlSize::Small)
             .hovered(dismiss.contains(hover));
         crate::widget::Button::paint(ctx.scene, ctx.transform, ctx.text, &on_well, &face);
@@ -629,7 +631,6 @@ impl Widget for BannerBody {
             self.rect = rect;
             self.dirty = true;
         }
-        self.layout_dirty = false;
     }
 
     fn draw(
@@ -673,6 +674,10 @@ impl Widget for BannerBody {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 }
 
@@ -859,9 +864,13 @@ impl Banner {
         let id = format!("{}.dismiss", self.id.as_deref().unwrap_or("banner"));
         let requested = Rc::clone(&self.dismiss_requested);
         self.dismiss = Some(
-            Button::icon_only(&id, Icon::X, "Dismiss")
-                .control_size(ControlSize::Small)
-                .on_view(move || requested.set(true)),
+            Button::icon_only(
+                &id,
+                Icon::X,
+                &crate::i18n::widget_format("widget-dismiss", &[]),
+            )
+            .control_size(ControlSize::Small)
+            .on_view(move || requested.set(true)),
         );
         self.body.dismissible = true;
         self
@@ -1086,10 +1095,11 @@ impl Banner {
         presence: &PresenceCtx,
     ) {
         self.place_buttons(text, theme);
-        self.body.draw(scene, transform, text, theme, presence);
+        self.body
+            .draw_child(scene, transform, text, theme, presence);
         let on_well = theme.on_ground(well(theme));
         for button in self.buttons_mut() {
-            button.draw(scene, transform, text, &on_well, presence);
+            button.draw_child(scene, transform, text, &on_well, presence);
         }
     }
 }
@@ -1221,7 +1231,6 @@ impl Widget for Banner {
             self.rect = rect;
             self.dirty = true;
         }
-        self.layout_dirty = false;
         self.device_scale = f64::from(super::layout::device_scale());
         // Its identity matched nothing: it takes up the banner that stood
         // here before (what it says changed), or it arrived.
@@ -1366,6 +1375,10 @@ impl Widget for Banner {
 
     fn layout_needs_measure(&self) -> bool {
         self.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn take_structure_dirty(&mut self) -> bool {

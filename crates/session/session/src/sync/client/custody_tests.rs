@@ -235,7 +235,10 @@ impl Device {
             .enroll(Enrolling {
                 slot,
                 workspace_id,
-                invitation: host.invitation(self.person(), request),
+                way: tilo_workspace_directory::Way::Invitation(
+                    host.invitation(self.person(), request),
+                ),
+                name: String::new(),
                 renewal: None,
             })
             .expect("the plane takes the enrollment");

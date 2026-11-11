@@ -471,7 +471,7 @@ impl HistoryHost {
     ) -> bool {
         let mut own = self.painting.take().unwrap_or_default();
         own.reset();
-        Widget::draw(self, &mut own, transform, text, theme, presence);
+        crate::widget::DrawChild::draw_child(self, &mut own, transform, text, theme, presence);
         scene.append(&own, None);
         let changed = self.painted.as_ref().map_or_else(
             || !own.encoding().draw_tags.is_empty(),

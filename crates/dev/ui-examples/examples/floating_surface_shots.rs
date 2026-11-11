@@ -9,6 +9,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::{TextRenderer, TextWeight};
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{FloatingWindow, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Stroke};
@@ -203,7 +204,7 @@ fn stamp(window: &mut dyn Widget, theme: &Theme, tr: &mut TextRenderer, scene: &
         },
     );
     window.apply_layout(&taffy, node, Point::ZERO);
-    window.draw(scene, Affine::IDENTITY, tr, theme, &PresenceCtx::default());
+    window.draw_child(scene, Affine::IDENTITY, tr, theme, &PresenceCtx::default());
 }
 
 pub fn run(_: &[String]) {

@@ -8,6 +8,7 @@
     reason = "smithay geometry: logical and physical coordinates of outputs and windows, far from i32 limits"
 )]
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -800,6 +801,11 @@ impl State {
                 .iter()
                 .rposition(|host| host.above_lock() && host.accepts_pointer(point.x, point.y));
         }
+        // A layer surface over the windows (quick settings, a panel's popover) is drawn over every
+        // hosted surface, so the pointer on it is its own, as on the desk under it.
+        if self.layer_surface_under(point, true).is_some() {
+            return None;
+        }
         // The last host draws on top, so it is asked first.
         let under = |below: bool| {
             self.hosts.iter().rposition(|host| {
@@ -856,8 +862,13 @@ impl State {
         {
             return;
         }
-        // Input changes what shows: hover, a press, the pointer itself.
-        self.mark_redraw_all();
+        // Pointing changes what shows: hover, a press, the pointer itself. A key does not: what
+        // takes it shows the answer (a client's commit, a hosted surface's frame, the focus or
+        // the windows it moves), and a frame drawn for the key itself would hold that answer back
+        // to the display's next refresh.
+        if !matches!(event, InputEvent::Key { .. } | InputEvent::Switch { .. }) {
+            self.mark_redraw_all();
+        }
         let time = self.now_ms();
         let serial = SERIAL_COUNTER.next_serial();
         match event {
@@ -916,6 +927,7 @@ impl State {
         };
         // evdev codes sit 8 below their XKB keycodes.
         let code = keycode.saturating_add(8);
+        let moves_caret = Cell::new(false);
         let routed = keyboard.input(
             self,
             code.into(),
@@ -956,6 +968,14 @@ impl State {
                     text,
                     modifiers,
                 };
+                // Typing and the plain navigation keys move a field's caret; a chord and a
+                // modifier do not. What it moved waits for the field to commit before a surface
+                // opens at it.
+                moves_caret.set(
+                    !handle.modified_sym().is_modifier_key()
+                        && (key.text.is_some()
+                            || !(modifiers.ctrl || modifiers.alt || modifiers.logo)),
+                );
                 if !pressed {
                     if let Some(host) = state.host_keys.release(keycode) {
                         // A held modifier's release also reaches what else answers it: a surface
@@ -1011,6 +1031,9 @@ impl State {
                 {
                     self.key_delivered(&focus, keycode);
                     self.note_input_on(&focus);
+                    if moves_caret.get() {
+                        self.note_caret_may_move();
+                    }
                 }
             }
         }
@@ -1521,7 +1544,35 @@ impl State {
             self.space.refresh();
             self.mark_redraw_all();
         }
-        // A card an app draws stays in front of the windows it floats over.
+        // A window floating over the desk stands in front of the strips' windows, a focused or
+        // maximized one included; the dialogs stay in front of the windows they belong to, and a
+        // card an app draws stays in front of them all.
+        let floats: Vec<_> = self
+            .space
+            .elements()
+            .filter(|window| {
+                describe(self, window).is_some_and(|info| self.covers.contains_key(&info.id))
+            })
+            .cloned()
+            .collect();
+        if !floats.is_empty() {
+            for window in floats {
+                self.space.raise_element(&window, false);
+            }
+            let dialogs: Vec<_> = self
+                .space
+                .elements()
+                .filter(|window| {
+                    window
+                        .toplevel()
+                        .is_some_and(|toplevel| toplevel.parent().is_some())
+                })
+                .cloned()
+                .collect();
+            for window in dialogs {
+                self.space.raise_element(&window, false);
+            }
+        }
         let cards: Vec<_> = self
             .space
             .elements()
@@ -1554,6 +1605,16 @@ impl State {
             return;
         };
         if self.locked() || self.focused_window().is_some_and(|info| info.id == id) {
+            return;
+        }
+        // A panel over the windows that holds the keyboard keeps it while it shows: the window
+        // gets it back when the panel is hidden.
+        if self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus())
+            .is_some_and(|focus| self.layers.shows_surface(&focus))
+        {
             return;
         }
         if let Some(window) = window_of(self, id) {
@@ -1756,6 +1817,23 @@ impl State {
             // Every key a real keyboard sends arrives as an evdev code in this range; a keymap also
             // binds codes no keyboard sends.
             crate::typing::stroke_for(keymap, layout, ch, |code| (1..=255).contains(&code))
+        })
+    }
+
+    /// Where the active layout types each ASCII mark, by the keys [`Self::stroke_for`] presses.
+    pub(crate) fn typed_marks(&mut self) -> Vec<crate::typing::TypedMark> {
+        let Some(keyboard) = self.seat.get_keyboard() else {
+            return Vec::new();
+        };
+        keyboard.with_xkb_state(self, |context| {
+            let Ok(xkb) = context.xkb().lock() else {
+                return Vec::new();
+            };
+            let layout = xkb.active_layout().0;
+            // Safety: the keymap reference never outlives the `Xkb` it borrows from, which the lock
+            // holds for this scan.
+            let keymap = unsafe { xkb.keymap() };
+            crate::typing::typed_marks(keymap, layout, |code| (1..=255).contains(&code))
         })
     }
 

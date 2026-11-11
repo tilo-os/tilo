@@ -387,6 +387,11 @@ impl Store for TiloStore {
     }
 
     fn read(&self, at: &ResourceRef, field: &FieldSpec) -> Result<FieldValue, StoreError> {
+        // A read a test asked to be refused answers as one of a store whose index has not
+        // caught up with the resource does.
+        if self.refuses_reads_of(at) {
+            return Err(not_found(format!("resource {}", at.doc)));
+        }
         if let Some(value) = self.read_indexed(at, field)? {
             return Ok(value);
         }

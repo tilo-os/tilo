@@ -904,14 +904,15 @@ fn a_kept_message_names_its_author_as_the_record_kept_them_and_never_by_their_id
     let unnamed = app.user_name(crate::testing::BO);
     assert_eq!(unnamed, crate::identity::unnamed_label(crate::testing::BO));
     assert!(!unnamed.contains(crate::testing::BO));
-    let read = crate::effects::read_messages(
-        &app.held_messages(),
-        ("c_general", &|id| app.display_name(id)),
-        None,
-        None,
-    )
-    .unwrap();
-    assert!(read.to_string().contains("first") && read.to_string().contains("second"));
+    let held = app.held_messages();
+    let said: Vec<&str> = held
+        .iter()
+        .map(|(_, message)| message.text.as_str())
+        .collect();
+    assert!(
+        said.contains(&"first") && said.contains(&"second"),
+        "{said:?}"
+    );
 }
 
 #[test]

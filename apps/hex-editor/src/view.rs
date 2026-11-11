@@ -80,7 +80,7 @@ use ui::widget::toggle_group::Segment;
 const CANCELLED: &str = "cancelled";
 
 fn file_open_request() -> PickRequest {
-    PickRequest::open("Open file", "Open")
+    PickRequest::open(&crate::resource::CATALOG.t("hex-editor-open-file"), "Open")
         .thread_name("hex-portal-open")
         .filter(FileFilter::all_files())
 }
@@ -111,7 +111,7 @@ fn empty_state() -> EmptyState {
         .with_message(
             "Inspect and edit any file byte by byte, or start an empty one and type bytes in.",
         )
-        .with_action("Open file")
+        .with_action(crate::resource::CATALOG.t("hex-editor-open-file"))
         .with_action_id("hex.open")
 }
 
@@ -191,7 +191,7 @@ pub(crate) struct Editor {
     /// False until the resource holds a file — drives the composed empty
     /// state (no fabricated buffer in the live app).
     has_file: bool,
-    /// Where the empty state's "New empty file" button sits, once painted.
+    /// Where the empty state's new-file button sits, once painted.
     new_file: Rect,
     /// The bytes as last opened or saved, which the changed-byte marks
     /// compare against.
@@ -901,9 +901,9 @@ impl Editor {
         ];
         if self.has_file {
             children.push(
-                AccessNode::new(Role::StaticText).with_name(
-                    "Keyboard: Ctrl+O open, Ctrl+S save, Ctrl+F find, Ctrl+H replace, Ctrl+G go to offset, Ctrl+C copy, Ctrl+X cut, Ctrl+V paste, Ctrl+A select all, Ctrl+I show or hide the inspector, Ctrl+Z undo, Ctrl+Shift+Z redo, Tab switches hex and ASCII, Insert switches overwrite and insert.",
-                ).with_hashed_key("hex.keyboard-help"),
+                AccessNode::new(Role::StaticText)
+                    .with_name(crate::resource::CATALOG.t("hex-editor-keyboard-help"))
+                    .with_hashed_key("hex.keyboard-help"),
             );
             if self.geo.inspector_visible {
                 children.extend(self.endian_group.accessibility());
@@ -914,24 +914,24 @@ impl Editor {
         } else {
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name("Open file")
-                    .with_description("Choose a local file to inspect")
+                    .with_name(crate::resource::CATALOG.t("hex-editor-open-file"))
+                    .with_description(crate::resource::CATALOG.t("hex-editor-open-file-detail"))
                     .with_state(AccessState::default().focusable(true))
                     .with_bounds(self.empty.action_rect())
                     .with_action_target("hex.open"),
             );
             children.push(
                 AccessNode::new(Role::Button)
-                    .with_name("New empty file")
-                    .with_description("Start an empty buffer to type bytes into")
+                    .with_name(crate::resource::CATALOG.t("hex-editor-new-file"))
+                    .with_description(crate::resource::CATALOG.t("hex-editor-new-file-detail"))
                     .with_state(AccessState::default().focusable(true))
                     .with_bounds(self.new_file)
                     .with_action_target("hex.new"),
             );
         }
         AccessNode::new(Role::Document)
-            .with_name("Hex editor")
-            .with_description("The bytes of one file, edited byte by byte.")
+            .with_name(crate::resource::CATALOG.t("hex-editor-window-name"))
+            .with_description(crate::resource::CATALOG.t("hex-editor-window-detail"))
             .with_state(AccessState::default().focusable(true).focused(self.focused))
             .with_children(children)
     }
@@ -1742,7 +1742,7 @@ mod tests {
     /// Paint a frame of `view` at `theme` into a fresh scene.
     fn paint_frame(view: &mut HexView, tr: &mut TextRenderer, theme: &Theme) {
         let mut scene = Scene::new();
-        Widget::draw(
+        ui::widget::DrawChild::draw_child(
             view,
             &mut scene,
             Affine::IDENTITY,

@@ -8,6 +8,7 @@ use tilo_test_env::hang_bound;
 use ui::State;
 use ui::framework::ResourceSurface;
 use ui::tilo_resource::Resource as _;
+use ui::widget::DrawChild;
 use ui::widget::Widget as _;
 use vello::kurbo::Rect;
 
@@ -878,7 +879,7 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let theme = Theme::high_contrast().with_text_scale(2.0);
         let mut scene = Scene::new();
         let mut text_renderer = TextRenderer::new();
-        widget.draw(
+        widget.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text_renderer,
@@ -1991,7 +1992,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             widget.force_geometry(viewport, 10.0, 20.0);
             widget.force_grid(vec!["one".into(), "two".into()]);
             widget.open_context_menu_at(viewport.center());
-            widget.draw(
+            widget.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut TextRenderer::new(),
@@ -2114,7 +2115,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
         let mut scene = Scene::new();
         let mut text_renderer = TextRenderer::new();
         let theme = Theme::dark().with_text_scale(2.0);
-        widget.draw(
+        widget.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text_renderer,
@@ -4544,7 +4545,7 @@ fn typing_damages_only_its_row_and_the_cursor() {
     let mut frame = |widget: &mut TerminalWidget| {
         let mut scene = Box::new(Scene::new());
         let ((), parts) = ui::scene_parts::record(&mut scene, |scene| {
-            widget.draw(
+            widget.draw_child(
                 scene,
                 Affine::IDENTITY,
                 &mut text,
@@ -4608,7 +4609,7 @@ fn fingers_scroll_the_scrollback_by_the_pixel_and_copy_its_rows() {
     let theme = Theme::dark();
     let mut text = TextRenderer::new();
     let mut frame = |widget: &mut TerminalWidget| {
-        widget.draw(
+        widget.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,

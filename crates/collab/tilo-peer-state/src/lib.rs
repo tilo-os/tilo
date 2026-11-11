@@ -8,16 +8,20 @@
 )]
 mod frames;
 pub mod governance;
+pub mod governance_work;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_answer;
 pub mod join_ledger;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod join_transport;
+mod kept_states;
 /// The workspace invitation and join contract (`tilo-workspace-join`).
 pub use tilo_workspace_join as join;
 // The wire message admission speaks; owned by `neighbour-wire`.
 use neighbour_wire::NeighbourMsg;
 pub use neighbour_wire::{RefusalReason, WriteRefusal};
+#[cfg(test)]
+mod admission_cost_tests;
 #[cfg(test)]
 mod admission_tests;
 #[cfg(test)]
@@ -56,15 +60,16 @@ mod verified_certificate;
 pub use state::{AdmittedFrame, PERSONAL_ALPN, PersonalSync};
 pub use state::{
     DelegateInactive, DocumentRow, GovernedAccess, GovernedAgent, GovernedDelegateRow,
-    GovernedMember, HELD_FOR_SURFACE, InstalledApp, InstalledBot, MAX_HELD_BYTES, MAX_HELD_INPUTS,
-    MemberAuthority, MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord,
-    OpenedWrite, PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
+    GovernedMember, InstalledApp, InstalledBot, MAX_HELD_BYTES, MAX_HELD_INPUTS, MemberAuthority,
+    MembershipError, NativePublicationCut, OpenedHistory, OpenedRecord, OpenedWrite,
+    PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
-    PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint,
-    SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    WORKSPACE_HOSTS_KEY, committed_document_revision, decide_with_surfaces, default_surfaces,
-    peer_handle, seed_workspace, workspace_host_actor, workspace_hosts_of, workspace_seed,
+    PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal, RowError,
+    SealCheckpoint, SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, UnmergedReason,
+    UnmergedWrite, WORKSPACE_HOSTS_KEY, committed_document_revision, decide_with_surfaces,
+    default_surfaces, peer_handle, seed_workspace, workspace_host_actor, workspace_hosts_of,
+    workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;
@@ -88,5 +93,5 @@ mod admission;
 pub mod resources;
 pub use admission::{
     AdmissionError, AdmissionReport, DocumentAdmission, DropReason, DroppedInput, InputDisposition,
-    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released,
+    MAX_EXACT_ADMISSION_BYTES, MAX_EXACT_ADMISSIONS, MissingPrerequisite, Released, StillHeld,
 };

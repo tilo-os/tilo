@@ -21,6 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use tilo_actions::InvocationId;
 use tilo_actions::door::ActionAddress;
@@ -30,25 +31,28 @@ use tilo_actions::remote::{
 };
 
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_relay_client::Host;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
-use tilo_session_host::session_actions::Heard;
-use tilo_session_host::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_session_core::remote::Heard;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
 
-/// A checkpoint a record's change left: its author and its bytes.
+/// A record as it stood when a write landed: its author, and the record saved.
 pub type Checkpoint = ([u8; 32], Vec<u8>);
 
 /// A page in a host's workspace.
 pub struct Page {
-    pub peer: PeerHandle,
-    pub events: PeerEvents,
+    pub peer: Link,
+    pub events: Events,
     pub host_key: [u8; 32],
-    /// Every durable change of the records this page received, in order.
+    /// Each record of the workspace as it stood whenever someone else's write
+    /// to it landed, in order, and as this page published it.
     pub documents: BTreeMap<DocumentRoute, Vec<Checkpoint>>,
+    /// Who wrote what landed in a record this page cannot open yet.
+    unopened: BTreeMap<DocumentRoute, [u8; 32]>,
     /// The host's answers, taken by [`Page::answer`].
     pub answers: Vec<RemoteActionMessage>,
     /// The correlation the page names its next catalogue request with.
@@ -94,16 +98,11 @@ impl Page {
             peer.join_placed(cluster_id, "Workspace").unwrap();
         } else {
             ready(&[&peer]).await;
-            let (reply, answer) = tokio::sync::oneshot::channel();
-            peer.rooms_then(
-                tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
+            let answer = peer
+                .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Enter {
                     workspace: cluster_id.into(),
-                },
-                Box::new(move |result| {
-                    let _ = reply.send(result);
-                }),
-            )
-            .unwrap();
+                })
+                .unwrap();
             assert!(matches!(
                 tilo_test_env::within("the node enters the governed fixture", answer)
                     .await
@@ -111,7 +110,7 @@ impl Page {
                     .unwrap(),
                 tilo_relay_protocol::workspaces::WorkspacesReply::Workspace(_)
             ));
-            peer.join(workspace).unwrap();
+            peer.send(Cmd::Join(workspace)).unwrap();
         }
         // The page acts as soon as it is open, and an action the host has not
         // subscribed the session to yet is refused and never answered.
@@ -123,7 +122,7 @@ impl Page {
     /// `cluster_id` names under `host`'s host: `events` are its peer's,
     /// taken before it joined.
     pub fn joined(
-        (peer, events): (PeerHandle, PeerEvents),
+        (peer, events): (Link, Events),
         device: &Device,
         host: &Device,
         cluster_id: &str,
@@ -138,6 +137,7 @@ impl Page {
             peer,
             host_key: host.cert.device_public_key,
             documents: BTreeMap::new(),
+            unopened: BTreeMap::new(),
             answers: Vec::new(),
             correlation: 0,
             workspace,
@@ -145,11 +145,11 @@ impl Page {
         }
     }
 
-    /// Take one event: a record's change is kept, everything else is the
-    /// caller's to read.
-    pub fn take(&mut self, event: PeerEvent) -> Option<PeerEvent> {
-        if let PeerEvent::LivePlane {
-            workspace_id,
+    /// Take one event: a record that changed is kept as it stands then,
+    /// everything else is the caller's to read.
+    pub fn take(&mut self, event: Event) -> Option<Event> {
+        if let Event::LivePlane {
+            ws: workspace_id,
             from,
             track: tilo_live::live::Track::Presence,
             body,
@@ -160,8 +160,8 @@ impl Page {
             self.board
                 .heard(*from, body, tilo_clock::unix_now_ms() as f64);
         }
-        if let PeerEvent::Live {
-            workspace_id,
+        if let Event::Live {
+            ws: workspace_id,
             from,
             frame,
         } = &event
@@ -171,24 +171,37 @@ impl Page {
             )) = tilo_relay_protocol::live::LiveFrame::decode(frame)
         {
             let here = self.here();
-            if let Some(work) = tilo_session_host::narration::admit(&here, *from, &event) {
+            if let Some(work) = tilo_session_client::narration::admit(&here, *from, &event) {
                 self.narrated.push((record, work));
             }
         }
-        if let PeerEvent::Document(document) = &event {
-            if let Some(mutation) = document.mutation() {
-                let bytes = match mutation {
-                    collab_types::DocumentMutation::Snapshot(bytes)
-                    | collab_types::DocumentMutation::Incremental(bytes) => bytes,
-                };
-                self.documents
-                    .entry(document.route.clone())
-                    .or_default()
-                    .push((document.author, bytes));
-            }
+        let Event::Landed { route, author } = event else {
+            return Some(event);
+        };
+        let own = self.peer.engine().identity().device_cert.device_public_key;
+        if author == Some(own) {
+            // Kept when it was published.
             return None;
         }
-        Some(event)
+        let read = self
+            .peer
+            .engine()
+            .record(&route.cluster_id, &route.app_id, &route.record);
+        // Keys that arrived open what the writers before them wrote; keys that open nothing new
+        // say nobody wrote anything.
+        match (read, author.or_else(|| self.unopened.remove(&route))) {
+            (Ok(Some(bytes)), Some(author)) => {
+                self.documents
+                    .entry(route)
+                    .or_default()
+                    .push((author, bytes));
+            }
+            (_, Some(author)) => {
+                self.unopened.insert(route, author);
+            }
+            (_, None) => {}
+        }
+        None
     }
 
     /// Everyone here now, as a surface draws them.
@@ -204,13 +217,11 @@ impl Page {
     pub fn pump(&mut self) {
         for event in self.events.drain() {
             match self.take(event) {
-                Some(PeerEvent::Remote(Heard::Action { from, frame, .. }))
-                    if from == self.host_key =>
-                {
+                Some(Event::Remote(Heard::Action { from, frame, .. })) if from == self.host_key => {
                     self.answers
                         .push(RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                Some(PeerEvent::Remote(Heard::Undeliverable { reason, .. })) => {
+                Some(Event::Remote(Heard::Undeliverable { reason, .. })) => {
                     panic!("undeliverable: {reason}")
                 }
                 Some(_) | None => {}
@@ -246,7 +257,7 @@ impl Page {
         let bytes = doc.save();
         let route = self.desk_route();
         self.peer
-            .publish(
+            .write(
                 route.clone(),
                 &collab_types::DocumentMutation::Snapshot(bytes.clone()),
             )
@@ -260,20 +271,21 @@ impl Page {
 
     /// The workspace's shared desk as the page has received it.
     pub fn desk(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
-        use tilo_automerge::ApplyIncoming as _;
         self.pump();
-        let mut doc = automerge::AutoCommit::new();
-        for (_, bytes) in self.documents.get(&self.desk_route()).into_iter().flatten() {
-            doc.load_incoming(bytes).unwrap();
-        }
-        tilo_desktop_model::shared_record::read(&doc, None)
+        let desk = self.desk_route();
+        let read = self
+            .peer
+            .engine()
+            .record(&desk.cluster_id, &desk.app_id, &desk.record);
+        let bytes = read.ok()??;
+        tilo_desktop_model::shared_record::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
     }
 
     /// Send `message` to the host.
     pub fn send(&self, message: RemoteActionMessage) {
         let frame = RemoteActionFrame::new(message).encode().unwrap();
         self.peer
-            .send_remote_action(self.workspace, self.host_key, frame)
+            .send(Cmd::RemoteAction(self.workspace, self.host_key, frame))
             .unwrap();
     }
 
@@ -396,7 +408,7 @@ impl Page {
         loop {
             match receipt.try_recv() {
                 Ok(result) => return result.unwrap(),
-                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(tilo_session_client::TryRecvError::Empty) => {}
                 Err(error) => panic!("the barrier ended: {error}"),
             }
             assert!(

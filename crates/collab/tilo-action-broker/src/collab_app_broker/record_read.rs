@@ -19,17 +19,14 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CallerPrincipal, RECORD_READS_FOR_TASKS, RecordAddress, RecordChange,
-    RecordChanges, RecordCopy, RecordReads, RecordWake,
+    ActionHostError, Caller, CallerPrincipal, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS,
+    RecordAddress, RecordChange, RecordChanges, RecordCopy, RecordReads, RecordWake,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
 
 use super::committed_document::{NativeDocumentRead, NativeDocumentReadContext, RecordRead};
 use super::{AppBrokerState, CrdtRoute};
-
-/// What a caller is told about a record it may not read.
-pub const RECORD_READ_REFUSED: &str = "not allowed to read this record";
 
 impl AppBrokerState {
     /// The record read door, when this host keeps a workspace's documents and knows its person's
@@ -322,10 +319,11 @@ fn read_record(
             .revalidate()
             .map_err(|reason| ActionHostError::Refused { reason })?;
         if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {
-            // A record a sealed workspace holds nothing of may still arrive in its host's replay;
-            // once that landed, one this device holds nothing of is one the workspace has none of.
-            // This read runs on a thread of its own, which the wait holds.
-            if let Some(history) = owner.await_sealed_history(&context) {
+            // A record this device holds nothing of may still arrive: with its host's replay, or
+            // from a host that sends records when they are opened. Once all of it came, one this
+            // device holds nothing of is one the workspace has none of. This read runs on a thread
+            // of its own, which the wait holds.
+            if let Some(history) = owner.await_arriving_record(&context) {
                 futures::executor::block_on(history);
             }
             if owner.record_read(workspace, &address.app, &address.record) == RecordRead::Own {

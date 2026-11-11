@@ -14,6 +14,8 @@
 //!   (`admit <code>` on stdin) and announces each on stdout.
 //! - `--agents` on `run` and `dev` (feature `agents`) — agents on the host,
 //!   with `--agent-model settings|scripted|openai:<url>|anthropic:<url>|cloud:<url>`.
+//! - `page-host <origin>` (feature `web`) — print what a site hands its page
+//!   about the host at `origin` (the web entry's `TILO_WEB_HOME_HOST_INFO`).
 //! - `status` — print a snapshot of the running daemon's counters
 //!   by reading the on-disk metrics dump.
 
@@ -86,6 +88,10 @@ enum Cmd {
     /// certifying only the browsers its operator admits on stdin.
     #[cfg(feature = "web")]
     Room(Box<web_cli::WorkspaceArgs>),
+    /// Print, as one line of JSON, what a site hands its page about the host
+    /// at an origin: the web entry's `TILO_WEB_HOME_HOST_INFO`.
+    #[cfg(feature = "web")]
+    PageHost(web_cli::PageHostArgs),
 }
 
 /// Logs go to stderr: a persistent workspace's stdout is the line protocol its
@@ -143,6 +149,8 @@ fn run() -> anyhow::Result<()> {
         Cmd::Room(args) => {
             tilo_rt::daemon("tilo-relay").run(web_cli::workspace(*args, wait_for_shutdown()))?
         }
+        #[cfg(feature = "web")]
+        Cmd::PageHost(args) => tilo_rt::daemon("tilo-relay").run(web_cli::page_host(args))?,
     }
 }
 

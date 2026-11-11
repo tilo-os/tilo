@@ -4,6 +4,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::close_fade;
@@ -231,6 +232,15 @@ pub struct WindowGroup {
     /// or hides the lit edge.
     grip_dirty: bool,
     pub maximized: bool,
+    /// Floating over the desk: the maximize control snaps it back ([`Self::take_pending_snap`]).
+    floating: bool,
+    /// Floating as a card, folded to its header: the collapse control opens it again
+    /// ([`Self::set_collapsed`]).
+    collapsed: bool,
+    /// The desktop opens new tabs in the window ([`Self::set_new_tab`]); a floating one shows no
+    /// door to them all the same.
+    opens_tabs: bool,
+    pending_snap: bool,
     pub search_active: bool,
     /// The active group of the active strip, set by the shell each frame.
     /// Consumed by the active [`TileHost`], which paints the signal on
@@ -332,9 +342,6 @@ pub struct WindowGroup {
     /// Its existing hosts fade within the group transition. `GroupRow` prunes the group
     /// once `close_complete()` is true.
     closing_at: Option<Instant>,
-    /// A close was asked of the owning client and not yet honoured: if the
-    /// group vanishes from the canonical tree, that exit is its one retirement.
-    close_requested: bool,
     close_duration: Duration,
     /// The close was a shortcut's or an action's: it lands, so the group is
     /// gone on the next frame instead of fading out.
@@ -389,7 +396,7 @@ impl WindowGroup {
                 transform,
                 &self.bar_rect().inflate(32.0, 32.0),
             );
-            self.bar.draw(scene, transform, tr, theme, presence);
+            self.bar.draw_child(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
         if let Some((_, host)) = self
@@ -406,7 +413,7 @@ impl WindowGroup {
             );
             let was_focused = host.focused;
             host.set_focused(false);
-            host.draw(scene, transform, tr, theme, presence);
+            host.draw_child(scene, transform, tr, theme, presence);
             host.set_focused(was_focused);
             scene.pop_layer();
         }
@@ -476,6 +483,10 @@ impl WindowGroup {
             size_label_fade: None,
             grip_dirty: false,
             maximized: false,
+            floating: false,
+            collapsed: false,
+            opens_tabs: true,
+            pending_snap: false,
             search_active: false,
             focused: false,
             chrome_motion: crate::tokens::EffectiveMotion::default(),
@@ -493,7 +504,6 @@ impl WindowGroup {
             rest_layout_owed: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
-            close_requested: false,
             width_stepped: false,
             close_rebuild_taken: false,
             close_duration: window_close_time(),
@@ -777,12 +787,6 @@ impl WindowGroup {
         self.retarget_width(from, 0.0);
     }
 
-    /// Whether a close was requested of the client and abandoned visually
-    /// because the client has not exited.
-    pub fn close_was_requested(&self) -> bool {
-        self.close_requested
-    }
-
     /// A frame was presented by a host that never marks this group drawn
     /// ([`super::GroupRow::frame_presented`]), so the next frame may step the width spring. If a
     /// rebuild skipped its step because the token was still spent, nothing has asked for the
@@ -858,6 +862,12 @@ impl WindowGroup {
             self.style_dirty = true;
             self.grip_dirty = true;
         }
+    }
+
+    /// How far the window is to stand moved down under what overlays its top edge.
+    #[cfg(test)]
+    pub(crate) fn top_overlay_inset(&self) -> f64 {
+        self.top_overlay_inset
     }
 
     /// How far a maximized window stands moved down now: on its way to
@@ -1441,22 +1451,6 @@ impl WindowGroup {
         }
     }
 
-    /// Stroke the window's edge, and its focus ring, along the card `rect` it
-    /// is drawn at: the outline a window keeps when it stands as one card off
-    /// the desk, in the colour and weight its tile's own edge has.
-    pub fn draw_card_edge(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        radius: f64,
-        rect: Rect,
-    ) {
-        if let Some(host) = self.active_host() {
-            host.draw_card_edge(scene, transform, theme, radius, rect);
-        }
-    }
-
     /// Read-only twin of [`Self::active_host_mut`] — avoids a `&mut`
     /// borrow that would conflict with the frame builder's own borrows.
     pub fn active_host(&self) -> Option<&TileHost> {
@@ -1600,34 +1594,6 @@ impl WindowGroup {
         }
         self.style_children(remount.taffy());
         true
-    }
-
-    /// Paint a complete semantic app canvas with the same shared window card
-    /// and tab decoration as the live group, without changing live layout.
-    pub fn draw_complete_capture(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> Option<Rect> {
-        if self.maximized {
-            return None;
-        }
-        let active_id = self.bar.active_id();
-        let host = self
-            .hosts
-            .iter_mut()
-            .find(|(id, _)| *id == active_id)
-            .map(|(_, host)| host)?;
-        let capture_rect = host.complete_content_rect()?;
-        self.bar
-            .set_group_focused(self.focused || self.search_active);
-        self.bar.draw(scene, transform, tr, theme, presence);
-        host.set_focused(self.focused || self.search_active);
-        host.draw_complete_content_capture(scene, transform, tr, theme, presence)?;
-        Some(self.rect.union(capture_rect))
     }
 
     /// Cancel the tab bar's gesture while preserving every live tab host.
@@ -2006,7 +1972,10 @@ impl WindowGroup {
         else {
             return false;
         };
-        if tab.title == descriptor.title && tab.app_kind == descriptor.app_kind {
+        if tab.title == descriptor.title
+            && tab.app_kind == descriptor.app_kind
+            && tab.named == descriptor.named
+        {
             return false;
         }
         *tab = descriptor;
@@ -2086,7 +2055,7 @@ impl WindowGroup {
             // The row's own controls name themselves; the window's furniture names what it does.
             return self
                 .new_tab_hit(p)
-                .then(|| (self.held.new_tab, crate::widget::tabs::NEW_TAB.to_owned()));
+                .then(|| (self.held.new_tab, crate::widget::tabs::new_tab_name()));
         }
         if !self.navigation_bar_visible() {
             return None;
@@ -2153,54 +2122,29 @@ impl WindowGroup {
     pub fn begin_tab_rename(&mut self, id: u64, name: &str) -> bool {
         let started = self.navigation_bar_visible() && self.bar.begin_rename(id, name);
         if started {
+            // A window's one tab drawn as its icon opens to its title while it is named.
+            self.style_dirty = true;
             self.grip_dirty = true;
         }
         started
+    }
+
+    /// Whether a field in the window's bar takes what is typed: a tab's name or the location
+    /// being edited. The keyboard is the bar's then, not the app's under it.
+    #[must_use]
+    pub fn takes_typing(&self) -> bool {
+        self.renaming_tab().is_some() || self.editing_location()
+    }
+
+    /// The tab a person double-clicked since the last call, asking to name it.
+    pub fn take_tab_rename_ask(&mut self) -> Option<u64> {
+        self.bar.take_rename_ask()
     }
 
     /// The tab being named in place, if any.
     #[must_use]
     pub fn renaming_tab(&self) -> Option<u64> {
         self.bar.renaming()
-    }
-
-    /// Whether `p` is on the name field of a tab being named.
-    #[must_use]
-    pub fn tab_rename_hit(&self, p: Point) -> bool {
-        self.bar.rename_hit(p)
-    }
-
-    /// Hand a keyboard or text event to the name field while a tab is being
-    /// named; the shell routes the keyboard here while
-    /// [`Self::renaming_tab`]. Returns whether the field took it.
-    pub fn tab_rename_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) -> bool {
-        let took = self.bar.rename_event(event, ctx);
-        self.grip_dirty = true;
-        took
-    }
-
-    /// Commit the name being edited, as Enter does. Returns whether a tab
-    /// was being named.
-    pub fn commit_tab_rename(&mut self) -> bool {
-        let committed = self.bar.commit_rename();
-        if committed {
-            self.grip_dirty = true;
-        }
-        committed
-    }
-
-    /// Put the title back, as Escape does. Returns whether a tab was being
-    /// named.
-    pub fn cancel_tab_rename(&mut self) -> bool {
-        let cancelled = self.bar.cancel_rename();
-        if cancelled {
-            self.grip_dirty = true;
-        }
-        cancelled
     }
 
     /// A name committed in place since the last call: the tab, and the name
@@ -2223,7 +2167,8 @@ impl WindowGroup {
     /// Offer the new-tab control, or not, for someone who opens nothing
     /// here. `true` when that changed what the window offers.
     pub fn set_new_tab(&mut self, on: bool) -> bool {
-        self.bar.set_new_tab(on)
+        self.opens_tabs = on;
+        self.bar.set_new_tab(on && !self.floating)
     }
 
     /// Whether someone else holds any of the window's tabs, so it does not
@@ -2349,7 +2294,6 @@ impl WindowGroup {
             // rebuilds it and the real destroy animates a second time.
             self.closing_at = None;
             self.close_lands = false;
-            self.close_requested = true;
             self.width_spring = None;
             self.style_dirty = true;
         }
@@ -2563,10 +2507,7 @@ impl WindowGroup {
         // rect on the window motion, as Super+M from the same place would
         // not (a shortcut lands).
         if let Some(_id) = self.bar.take_max() {
-            self.begin_rect_spring_from_current();
-            self.maximized = !self.maximized;
-            self.style_dirty = true;
-            self.pending_maximize_change = Some(self.maximized);
+            self.press_resize();
             handled = true;
         }
 
@@ -2674,7 +2615,7 @@ impl WindowGroup {
             let ids: Vec<u64> = self.closing_hosts.keys().copied().collect();
             for id in ids {
                 if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
-                    h.draw(scene, transform, tr, theme, presence);
+                    h.draw_child(scene, transform, tr, theme, presence);
                 }
             }
             return;
@@ -2725,7 +2666,7 @@ impl WindowGroup {
                     * Affine::translate((centre.x, centre.y))
                     * Affine::scale(scale)
                     * Affine::translate((-centre.x, -centre.y));
-                h.draw(scene, close_transform, tr, theme, presence);
+                h.draw_child(scene, close_transform, tr, theme, presence);
                 scene.pop_layer();
             }
         }
@@ -2901,7 +2842,7 @@ impl WindowGroup {
         );
         let was_focused = host.focused;
         host.set_focused(false);
-        host.draw(scene, preview_transform, tr, theme, presence);
+        host.draw_child(scene, preview_transform, tr, theme, presence);
         host.set_focused(was_focused);
         scene.pop_layer();
 
@@ -3534,11 +3475,11 @@ impl Widget for WindowGroup {
         if let Some(out_id) = outgoing
             && let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == out_id)
         {
-            h.draw(scene, transform, tr, theme, presence);
+            h.draw_child(scene, transform, tr, theme, presence);
         }
         if let Some(standing_in) = self.tab_standing_in() {
             if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == standing_in) {
-                h.draw(scene, transform, tr, theme, presence);
+                h.draw_child(scene, transform, tr, theme, presence);
             }
         } else if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.set_focused(focused);
@@ -3565,7 +3506,7 @@ impl Widget for WindowGroup {
                     &h.get_rect(),
                 );
             }
-            h.draw(scene, transform, tr, theme, presence);
+            h.draw_child(scene, transform, tr, theme, presence);
             if incoming.is_some() {
                 scene.pop_layer();
             }
@@ -3643,8 +3584,13 @@ impl Widget for WindowGroup {
             return;
         }
         if let Some(bar_child) = bar_child {
+            let renaming = self.bar.renaming();
             self.bar
                 .handle_event(event, &mut ctx.reborrow(ctx.path, bar_child));
+            if self.bar.renaming() != renaming {
+                // The named tab's pill is laid out for its name, or back to its icon.
+                self.style_dirty = true;
+            }
         }
 
         self.sweep_expired_closing_hosts();

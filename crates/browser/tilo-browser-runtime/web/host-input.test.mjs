@@ -306,14 +306,14 @@ test('persistence flushes credential custody before publishing document writes',
  assert.deepEqual(order,['custody','custody','document'],'close must also persist custody first');
 });
 test('frames without writes neither flush nor commit, and a burst coalesces into one round trip',async()=>{
- const f=await fixture();let commits=0,flushes=0,fileFlushes=0,blocked=null;
+ const f=await fixture();let commits=0,flushes=0,fileFlushes=0,blocked=null,drains=0;
  const storage=globalThis.__hostFixture.storage;
  storage.status={pendingWrites:0};
  const committed=[];
  storage.commit=async writes=>{commits++;committed.push(...writes);if(blocked)await blocked.wait;};
  storage.flush=async()=>{flushes++;};
  let queued=[];
- f.runtime.pending_writes=()=>queued.splice(0);
+ f.runtime.pending_writes=()=>{drains++;return queued.splice(0);};
  f.runtime.files_dirty=()=>false;
  f.runtime.flush_files=async()=>{fileFlushes++;};
  await tick();
@@ -324,8 +324,11 @@ test('frames without writes neither flush nor commit, and a burst coalesces into
  // A frame with a write starts a persist, held inside its commit.
  blocked={};blocked.wait=new Promise(done=>{blocked.release=done;});
  queued.push({revision:1n,key:'one'});
+ const drained=drains;
  f.update({phase:'presented',frames:40});
- for(let i=0;i<50&&commits===idle.commits;i++)await Promise.resolve();
+ // The frame's own task leaves its writes for the task after it.
+ assert.equal(drains,drained,'a frame persists after it, not inside it');
+ for(let i=0;i<50&&commits===idle.commits;i++)await new Promise(done=>setTimeout(done,0));
  assert.equal(commits,idle.commits+1,'the frame with a write started one commit');
  // Eighty more frames, each leaving a write, arrive while it is held.
  for(let frame=41;frame<121;frame++){queued.push({revision:BigInt(frame),key:`record-${frame}`});f.update({phase:'presented',frames:frame});}

@@ -54,7 +54,7 @@ mod workspace;
 use clock::{time_bucket_secs, until_next_time_bucket};
 use controls::{FocusOrigin, TrayBell, navigates};
 pub use reveal::{Finger, Reveals};
-use sharing::{FaceLook, roster_colors};
+use sharing::FaceLook;
 pub use space::BarSpace;
 pub use workspace::paint_tilo_mark;
 
@@ -413,6 +413,10 @@ pub struct TopBarChrome {
     synced_revision: u64,
     /// `Some(menu open)` when the bar leads with the Tilo mark ([`TopBarChrome::with_tilo_mark`]).
     tilo_mark: Option<bool>,
+    /// Whether the device the bar is drawn on shows the time itself at phone width, as a phone
+    /// does above a web page ([`TopBarChrome::with_device_clock`]): the bar's clock then gives way
+    /// there, and the workspace name gets its lane.
+    device_clock: bool,
     /// The person's own avatar, as last painted.
     own_avatar_rect: Rect,
     // Click geometry — recomputed every frame so it tracks DPI/resize.
@@ -434,6 +438,10 @@ pub struct TopBarChrome {
     tray_hit_rect: Rect,
     /// Where the bell's unread count was painted, `Rect::ZERO` without one.
     bell_badge_rect: Rect,
+    /// The bell's own click target inside the status cluster: a press there opens the
+    /// notification centre, and the rest of the cluster opens quick settings. The whole cluster
+    /// when the host has no quick settings.
+    bell_hit_rect: Rect,
     media_indicator_rect: Rect,
     media_signature: Vec<(u32, u8, String)>,
     media_started: Option<Instant>,
@@ -548,6 +556,7 @@ impl TopBarChrome {
             clock: ClockSnapshot::default(),
             synced_revision: 0,
             tilo_mark: None,
+            device_clock: false,
             own_avatar_rect: Rect::ZERO,
             tilo_mark_rect: Rect::ZERO,
             ws_pill_rect: Rect::ZERO,
@@ -558,6 +567,7 @@ impl TopBarChrome {
             app_tray_images: HashMap::new(),
             tray_hit_rect: Rect::ZERO,
             bell_badge_rect: Rect::ZERO,
+            bell_hit_rect: Rect::ZERO,
             media_indicator_rect: Rect::ZERO,
             media_signature: Vec::new(),
             media_started: None,
@@ -695,17 +705,13 @@ impl TopBarChrome {
         let transform = Affine::IDENTITY;
         // The status cluster paints the pill and its glyphs in one pass.
         let tray_w = self.draw_tray_pill_body(scene, transform, theme, text_renderer, center_y);
-        // s3 matches the pad_x used when this pill was sized and placed in `draw_tray_pill_body`;
-        // the gap before the avatar is s4 (16) where the bar has room, and the bar's own control
-        // gap (s2) on a phone, whose middle lane (the clock, or the banner of following someone)
-        // the people beside it must keep that same gap from.
-        let before_tray = if self.phone_wide() {
-            theme.tokens.spacing.s2
-        } else {
-            theme.tokens.spacing.s4
-        };
-        let stack_right_x =
-            self.rect.x1 - f64::from(theme.tokens.spacing.s3) - tray_w - f64::from(before_tray);
+        // s3 matches the pad_x used when this pill was sized and placed in `draw_tray_pill_body`.
+        // Every control on the right stands the bar's one control gap (s2) from the next, so the
+        // group reads as one row with even spacing at every width.
+        let stack_right_x = self.rect.x1
+            - f64::from(theme.tokens.spacing.s3)
+            - tray_w
+            - f64::from(theme.tokens.spacing.s2);
         let stack_right_x = self.draw_own_avatar(
             scene,
             transform,
@@ -956,6 +962,16 @@ impl TopBarChrome {
         self.chrome.as_ref()
     }
 
+    /// Who this person is, as their own avatar names them (the root key it wears): a host whose
+    /// roster lists them too never shows them a second time among the others.
+    fn own_identity(&self) -> Option<String> {
+        self.chrome
+            .as_ref()
+            .and_then(|chrome| chrome.snapshot().own)
+            .map(|own| own.identity)
+            .filter(|identity| !identity.is_empty())
+    }
+
     pub fn sync_from_tree(&mut self, tree: &DesktopTree) {
         self.workspace_total = tree.workspaces.len().max(1);
         let active_ws = tree.workspaces.iter().find(|w| w.slot == tree.active);
@@ -977,8 +993,13 @@ impl TopBarChrome {
         // An invited-but-not-arrived peer doesn't count as present. This person is their own avatar
         // beside the stack, never a face in it, and so are their other devices.
         let local = self.explicit_local_user.as_deref();
+        let own_identity = self.own_identity();
         let present = |c: &&tilo_desktop_model::Collaborator| {
-            c.id != "me" && Some(c.id.as_str()) != local && !c.invited && !c.own_device
+            c.id != "me"
+                && Some(c.id.as_str()) != local
+                && Some(c.id.as_str()) != own_identity.as_deref()
+                && !c.invited
+                && !c.own_device
         };
         self.collaborator_initials.clear();
         self.collaborator_names.clear();
@@ -989,7 +1010,8 @@ impl TopBarChrome {
         let now = tilo_clock::unix_now();
         // Settled over the whole workspace, so a peer's avatar matches the colour their cursor is
         // drawn in elsewhere on the desktop.
-        let colors = roster_colors(roster, local.unwrap_or(""));
+        let colors =
+            crate::collaborators::roster_colors_with_local_user(roster, local.unwrap_or(""));
         // Everyone present, the one this person follows first: the bar stands as many faces as it
         // has room for and folds the rest into the count badge, so a narrow bar keeps the face
         // being watched and never drops anyone uncounted.
@@ -1081,6 +1103,8 @@ impl TopBarChrome {
     const CONTROL_WORKSPACE_SETTINGS: &'static str = "topbar:workspace-settings";
     /// The current strip's name in the workspace pill: opens the strips.
     const CONTROL_STRIP_NAME: &'static str = "topbar:strip-name";
+    /// The bell inside the status cluster: its own target, which opens the notification centre.
+    const CONTROL_NOTIFICATIONS: &'static str = "topbar:notifications";
     const CONTROL_QUICK_SETTINGS: &'static str = "topbar:quick-settings";
     const CONTROL_COLLABORATORS: &'static str = "topbar:collaborators";
     const CONTROL_MEDIA: &'static str = "topbar:media";
@@ -1420,6 +1444,10 @@ impl Widget for TopBarChrome {
                 self.control_rect(Self::CONTROL_QUICK_SETTINGS),
             ),
             (
+                "topbar_bell".to_string(),
+                self.control_rect(Self::CONTROL_NOTIFICATIONS),
+            ),
+            (
                 "topbar_media_indicator".to_string(),
                 self.control_rect(Self::CONTROL_MEDIA),
             ),
@@ -1467,7 +1495,7 @@ impl Widget for TopBarChrome {
                         ..Default::default()
                     });
                 // The bell painted in the status cluster says what it shows.
-                if target == Self::CONTROL_QUICK_SETTINGS
+                if target == Self::CONTROL_NOTIFICATIONS
                     && let Some(bell) = self.bell_name()
                 {
                     node = node
@@ -1520,9 +1548,10 @@ impl Widget for TopBarChrome {
                 node
             })
             .collect();
-        // The time: read, not pressed. While following, the middle lane is the banner's and no
-        // time stands in it, so a reader is not told one the person cannot see.
-        if !self.following {
+        // The time: read, not pressed. While following, the middle lane is the banner's, and where
+        // the device shows the time itself the lane stands empty: no time stands in it then, so a
+        // reader is not told one the person cannot see.
+        if !self.following && !self.clock_gives_way() {
             children.push(
                 AccessNode::new(Role::StaticText)
                     .with_hashed_key("topbar-clock-reading")
@@ -1854,6 +1883,9 @@ mod fixture;
 
 #[cfg(test)]
 mod narrow_tests;
+
+#[cfg(test)]
+mod shot_tests;
 
 /// A digest of what someone's presence says they are doing: where they are, what they say, their
 /// availability and call. Its change is what makes them the one who did something last.

@@ -33,6 +33,7 @@ use ui::tilo_actions::ActionSpec;
 use ui::tilo_resource::Effect as _;
 use ui::time::{Duration, Instant};
 use ui::tokens::TextRole;
+use ui::widget::DrawChild;
 use ui::widget::toast::{Notice, ToastKind};
 use ui::widget::{
     AppModel, Column, Element, ModalDialog, ModelPath, ModelView, NavPane, PromptBody, Text,
@@ -1946,7 +1947,8 @@ impl Widget for ContainersApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.window.draw(scene, transform, tr, theme, presence);
+        self.window
+            .draw_child(scene, transform, tr, theme, presence);
     }
 
     fn draw_overlay(

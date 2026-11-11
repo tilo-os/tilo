@@ -36,6 +36,7 @@ exclude = [
     "vendor/alacritty_terminal",
     "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
+    "vendor/iroh-relay",
     "vendor/netwatch",
     "vendor/noq-udp",
     "vendor/accesskit_unix",
@@ -64,6 +65,7 @@ default-members = [
 members = [
     "crates/session/client",
     "crates/lang/tilolang",
+    "crates/lang/tilolang-lex",
     "crates/lang/tilolang-cli",
     "apps/poker",
     "crates/browser/browser-continuity",
@@ -82,7 +84,6 @@ members = [
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
     "crates/browser/tilo-browser-compute",
-    "crates/session/host",
     "crates/browser/paint-stream",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
@@ -95,6 +96,7 @@ members = [
     # Applications
     "apps/activity",
     "apps/console",
+    "apps/console-model",
     "apps/agent",
     "apps/api-tester",
     "apps/backups",
@@ -846,6 +848,7 @@ landlock = "0.4"
 seccompiler = "0.5"
 sd-notify = "0.4"
 sysinfo = "0.36"
+oneshot = "0.1.13"
 open = "5.3.5"
 libc = "0.2.186"
 rustix = "1.1.4"
@@ -990,6 +993,12 @@ opt-level = 3
 # crates.io automerge, the reference tilo-automerge's tests compare the fork to.
 [profile.test.package.automerge]
 opt-level = 3
+# The record's indexes: unoptimised, a commit zero-fills each page it writes a byte at a time,
+# and a store pays one commit per change it takes in.
+[profile.dev.package.redb]
+opt-level = 3
+[profile.test.package.redb]
+opt-level = 3
 
 # The wet-media simulations re-run on every edit of a painted layer; unoptimised
 # they take seconds per stroke, and the canvas app is unusable in a dev build.
@@ -1070,6 +1079,74 @@ opt-level = 3
 [profile.test.package.read-fonts]
 opt-level = 3
 [profile.test.package.swash]
+opt-level = 3
+
+# Every device in a workspace's channel group follows each commit that admits
+# someone: MLS works through the group's ratchet tree and writes the whole group
+# state, so in a group of hundreds each commit costs a member some milliseconds
+# optimised and ten times that unoptimised. A test with hundreds of member
+# devices in one process (the crowded entry) spends its run on that.
+[profile.dev.package.openmls]
+opt-level = 3
+[profile.test.package.openmls]
+opt-level = 3
+[profile.dev.package.openmls_traits]
+opt-level = 3
+[profile.test.package.openmls_traits]
+opt-level = 3
+[profile.dev.package.openmls_memory_storage]
+opt-level = 3
+[profile.test.package.openmls_memory_storage]
+opt-level = 3
+[profile.dev.package.openmls_rust_crypto]
+opt-level = 3
+[profile.test.package.openmls_rust_crypto]
+opt-level = 3
+[profile.dev.package.openmls_basic_credential]
+opt-level = 3
+[profile.test.package.openmls_basic_credential]
+opt-level = 3
+[profile.dev.package.tls_codec]
+opt-level = 3
+[profile.test.package.tls_codec]
+opt-level = 3
+[profile.dev.package.hpke-rs]
+opt-level = 3
+[profile.test.package.hpke-rs]
+opt-level = 3
+[profile.dev.package.hpke-rs-crypto]
+opt-level = 3
+[profile.test.package.hpke-rs-crypto]
+opt-level = 3
+[profile.dev.package.hpke-rs-rust-crypto]
+opt-level = 3
+[profile.test.package.hpke-rs-rust-crypto]
+opt-level = 3
+[profile.dev.package.x25519-dalek]
+opt-level = 3
+[profile.test.package.x25519-dalek]
+opt-level = 3
+[profile.dev.package.chacha20]
+opt-level = 3
+[profile.test.package.chacha20]
+opt-level = 3
+[profile.dev.package.chacha20poly1305]
+opt-level = 3
+[profile.test.package.chacha20poly1305]
+opt-level = 3
+# The sealing those ciphers are generic over is compiled where it is used, so
+# it runs at this crate's level, not theirs. Every device seals its channel
+# state, about a megabyte in a group of hundreds, with each frame it takes in:
+# unoptimised that took 35 ms per seal of 330 KB, 0.35 ms optimised, and made
+# a crowd's channel work in one process (the crowded entry) a tenth MLS and the
+# rest sealing.
+[profile.dev.package.tilo-seal]
+opt-level = 3
+[profile.test.package.tilo-seal]
+opt-level = 3
+[profile.dev.package.poly1305]
+opt-level = 3
+[profile.test.package.poly1305]
 opt-level = 3
 
 # Same reason for the hot paths the tilo-ui tests profile as dominant in a debug

@@ -494,7 +494,7 @@ tying those primitives to role admission/revocation. Production broker startup
 installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
 file store is used only when `TILO_SECRETS_DIR` is set explicitly (headless machines;
 `crates/platform/tilo-secrets/src/lib.rs`, acknowledged in
-`crates/session/session/src/channels/vault.rs`). Its document
+`crates/session/client/src/channels/vault.rs`). Its document
 store fsyncs encrypted compaction snapshots before minting route-bound receipts;
 restart, wrong-route and tamper behavior are covered by hermetic provider tests.
 The remaining work at the time was user-facing device/member provisioning and
@@ -641,16 +641,14 @@ as a `--build-arg`. The workflow has since been replaced by `os/dev/ensure-base-
 
 Two adjacent holes in the same guarantee were found alongside it:
 
-- `os/containers/tilo-relay/Containerfile:74` (now around `:149`; **still floating** on current
-  source) builds its runtime stage `FROM quay.io/fedora/fedora-minimal:44`, a floating tag — it never breaks, it just silently changes,
-  so the relay image is not reproducible across time. **Still open**, and not a one-line pin:
-  `BASE_REF` is the bootc base, ~1 GB with a kernel in it, so reusing it for a runtime stage whose
-  whole point is to be small is not the fix. A digest against quay.io expires the same way the
-  bootc pin did, so this needs its own mirrored image — and `mirror-base` cannot mirror it as
-  written (it hardcodes the `tilo/fedora-bootc` destination and asserts an `ostree.linux` label
-  fedora-minimal does not carry). Parameterise that workflow over source/destination, mirror
-  fedora-minimal, and add a second ref to `os/base-snapshot.env` that
-  `tools/ci/publish/relay-build.sh` passes alongside `BASE_REF`.
+- `os/containers/tilo-relay/Containerfile`'s runtime stage built `FROM quay.io/fedora/fedora-minimal:44`,
+  a floating tag — it never breaks, it just silently changes, so the relay image was not
+  reproducible across time. **Closed:** the runtime stage of every server image that ships
+  without a bootc base (the relay, the front door, the VM host, the agent host) is pinned by
+  digest from `registry.fedoraproject.org`, which keeps the digests quay.io prunes — the same pin
+  the Lounge and the browser runtime already carry, so a pin there keeps resolving and no mirrored
+  copy is needed. `BASE_REF` stays the bootc base: the runtime's minimal base is a second, separately
+  pinned base instead of a reuse of a ~1 GB image with a kernel in it.
 - `os/Containerfile`'s `wpe-builder` stage installs its build deps with `dnf builddep
   webkitgtk6.0` against live Fedora repos, a deliberate exception noted in the file. That much is
   still open. (**Closed by removal:** the browser moved from WPE to a Chromium engine and the

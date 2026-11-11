@@ -94,21 +94,6 @@ impl PeerTransport for Broker {
         Ok(())
     }
 
-    fn action_of(&self, workspace: &str, change: &[u8; 32]) -> Option<CommitHistory> {
-        self.actions
-            .borrow()
-            .iter()
-            .rev()
-            .find(|action| {
-                action.workspace == workspace
-                    && action
-                        .parts
-                        .iter()
-                        .any(|part| part.changes.contains(change))
-            })
-            .cloned()
-    }
-
     fn poll(&mut self) -> Vec<CollabEvent> {
         self.inbox.borrow_mut().drain(..).collect()
     }
@@ -743,17 +728,6 @@ fn one_undo_takes_back_every_unit_of_an_action_and_sends_the_reverts_as_one_acti
         assert_eq!(action.commit, undo_a.id());
         assert_eq!(action.parts.len(), 2, "the undo names both units");
     }
-    drop(history);
-    let undo = host
-        .instances()
-        .next()
-        .unwrap()
-        .record()
-        .manager()
-        .action_of(&cluster.to_string(), &undo_a.parts[0].changes[0])
-        .expect("the log knows the undo");
-    assert_eq!(undo.commit, undo_a.id());
-    assert_eq!(undo.parts.len(), 2);
 }
 
 #[test]

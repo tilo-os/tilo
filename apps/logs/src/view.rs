@@ -37,6 +37,7 @@ use ui::{LocalState, TextRole};
 use crate::journal::JournalLoadError;
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::Logs;
+use ui::widget::DrawChild;
 
 /// The dropdown value that means "no constraint" on a facet.
 const ALL: &str = "all";
@@ -588,14 +589,14 @@ impl Widget for JournalPane {
     ) {
         if self.shows_filters() {
             self.unit
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             self.boot
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
             self.severity
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.body_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

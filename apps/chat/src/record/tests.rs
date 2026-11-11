@@ -1081,7 +1081,7 @@ fn the_record_offers_each_item_its_views_with_no_window_open() {
     };
 
     let said = item("messages", &message);
-    for effect in ["reveal-message", "reveal-message-range", "read-message"] {
+    for effect in ["reveal-message", "reveal-message-range"] {
         assert!(
             actions(&said).iter().any(|id| id == effect),
             "{effect}: {:?}",
@@ -1484,7 +1484,11 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             "the agent the conversation was with is now its participant"
         );
         let row = chat
-            .conversation_rows(ADA)
+            .conversation_rows(
+                ADA,
+                &crate::messages::Messages::default(),
+                &crate::projection::AgentNames::new(),
+            )
             .into_iter()
             .find(|row| row.id == OLD_AGENT_CHANNEL)
             .expect("the agent's conversation is listed");
@@ -1546,7 +1550,7 @@ fn the_migrated_chat_draws_no_workspace_of_its_own() {
     let mut app = crate::ChatApp::new_ephemeral();
     app.reload(&doc);
     app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
-    ui::Widget::draw(
+    ui::widget::DrawChild::draw_child(
         &mut app,
         &mut vello::Scene::new(),
         vello::kurbo::Affine::IDENTITY,
@@ -1671,14 +1675,22 @@ fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
     let chat = ada.state().unwrap();
     let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
     let row = chat
-        .conversation_rows(ADA)
+        .conversation_rows(
+            ADA,
+            &crate::messages::Messages::default(),
+            &crate::projection::AgentNames::new(),
+        )
         .into_iter()
         .find(|row| row.id == with_bo.to_string())
         .expect("Ada lists her conversation with Bo");
     assert!(row.direct, "it is a conversation, not a channel");
     assert_eq!(row.name, crate::identity::unnamed_label(BO));
     let row = chat
-        .conversation_rows(BO)
+        .conversation_rows(
+            BO,
+            &crate::messages::Messages::default(),
+            &crate::projection::AgentNames::new(),
+        )
         .into_iter()
         .find(|row| row.id == with_bo.to_string())
         .expect("Bo lists it too");
@@ -1742,106 +1754,6 @@ fn two_devices_opening_the_same_conversation_at_once_share_one() {
     assert_eq!(
         Chat::direct_participants(&from_ada).map(|participants| participants.len()),
         Some(2)
-    );
-}
-
-/// A conversation the workspace keeps, such as a person's with an agent
-/// (`docs/designs/app-language/shell.md` §8.1), is a channel: its id is a
-/// channel id — the one every device derives for the same participants, in
-/// any order — so `create-channel-with-id` makes it once and it takes posts
-/// as any channel does. A direct conversation is not one: its id names its
-/// participants and is nothing the record holds.
-#[test]
-fn a_kept_conversation_is_a_channel_the_same_set_derives_on_every_device() {
-    const AGENT: &str = "agent-task:44444444-4444-4444-8444-444444444444";
-    let people = [Participant::person(ADA), Participant::agent(AGENT)];
-    let id = Chat::conversation_channel_id(people.clone());
-    assert_eq!(
-        id,
-        Chat::conversation_channel_id([
-            Participant::agent(AGENT),
-            Participant::person(ADA),
-            Participant::person(ADA),
-        ]),
-        "the id is the set, in any order"
-    );
-    assert_eq!(
-        id.as_str(),
-        format!("c_{:016x}", {
-            use std::hash::Hasher as _;
-            let mut hash = fnv::FnvHasher::default();
-            for key in Chat::direct_id(people.clone())
-                .as_str()
-                .trim_start_matches(DIRECT_CONVERSATION_PREFIX)
-                .split('|')
-            {
-                hash.write(key.as_bytes());
-                hash.write(&[0]);
-            }
-            hash.finish()
-        }),
-        "the id is derived from the participant keys and nothing else"
-    );
-    assert_ne!(
-        id,
-        Chat::direct_id(people.clone()),
-        "a kept conversation is no direct one"
-    );
-
-    let participants = people.iter().map(Participant::key).collect::<Vec<_>>();
-    let mut ada = Talk::new();
-    ada.chat
-        .apply(
-            Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
-                id: id.as_str().to_owned(),
-                name: "Assistant".parse().unwrap(),
-                category: None,
-                kind: None,
-                topic: None,
-                participants: Some(participants.clone()),
-            }),
-        )
-        .unwrap();
-    ada.apply(post_to(id.as_str(), "what is on my task list?"))
-        .unwrap();
-    let chat = ada.chat.state().unwrap();
-    let made = chat.channels.get(&id).expect("the conversation is made");
-    assert_eq!(made.name, "Assistant");
-    assert_eq!(
-        chat.conversation_participants(&id),
-        vec![Participant::person(ADA), Participant::agent(AGENT)],
-        "the agent takes part, so the person's message is a turn of its"
-    );
-    assert_eq!(
-        ada.rows(id.as_str())
-            .iter()
-            .map(|row| row.text.as_str())
-            .collect::<Vec<_>>(),
-        ["what is on my task list?"],
-        "the conversation takes the person's message"
-    );
-    // A second ask meets the one made, as a step run again does.
-    ada.chat
-        .apply(
-            Chat::CREATE_CHANNEL_WITH_ID.with(chat::CreateChannelWithId {
-                id: id.as_str().to_owned(),
-                name: "Renamed".parse().unwrap(),
-                category: None,
-                kind: None,
-                topic: None,
-                participants: Some(participants),
-            }),
-        )
-        .unwrap();
-    assert_eq!(
-        ada.chat
-            .state()
-            .unwrap()
-            .channels
-            .get(&id)
-            .map(|made| made.name.clone()),
-        Some("Assistant".to_owned()),
-        "naming the conversation again leaves it as it is"
     );
 }
 

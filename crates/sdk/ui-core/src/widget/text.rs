@@ -1255,6 +1255,12 @@ impl Widget for Text {
             || self.shows_stale_copy()
     }
 
+    /// A label the solver measured has the size it asked for, whether or not
+    /// a frame draws it: a label in a shut container finds no `mark_drawn`.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
+    }
+
     fn needs_idle_sync(&self) -> bool {
         self.i18n_revision != crate::i18n::I18nManager::revision()
     }

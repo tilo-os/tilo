@@ -94,6 +94,7 @@ impl Doors {
             member_limits: None,
             resumes: Box::leak(Box::default()),
             agent: Box::leak(Box::default()),
+            channel_reader: Box::leak(Box::default()),
             execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
             lag: Box::leak(Box::default()),
         }

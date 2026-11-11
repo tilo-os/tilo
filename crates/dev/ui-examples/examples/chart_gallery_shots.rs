@@ -15,6 +15,7 @@ use tilo_ui::vello::kurbo::{Affine, Point};
 use tilo_ui::widget::Widget;
 
 use super::chart_gallery_scene;
+use tilo_ui::widget::DrawChild;
 
 fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
     let mut root = if inspected {
@@ -43,7 +44,7 @@ fn shoot(theme: &Theme, width: u32, height: u32, inspected: bool, out: &Path) {
     );
     root.apply_layout(&taffy, node, Point::ZERO);
     let mut scene = Scene::new();
-    root.draw(
+    root.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut text,

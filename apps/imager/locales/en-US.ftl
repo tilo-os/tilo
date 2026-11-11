@@ -2284,3 +2284,6 @@ installer-hardware-evidence-firmware = firmware { $firmware }
 installer-hardware-unavailable = This computer does not say enough about its model for the compatibility report, so nothing on it was checked.
 installer-hardware-blocks-install = A part the desktop cannot start without is unsupported on this computer, so the installation stops at this step. Nothing has been changed.
 destination-windows-password = Password used to prepare this medium
+installer-keyboard-layout = Select a keyboard layout
+installer-language-locale = Choose a language and locale
+installer-time-zone = Select a time zone

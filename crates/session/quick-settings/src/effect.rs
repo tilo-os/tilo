@@ -457,8 +457,8 @@ pub enum QsEffect {
     MoveControl {
         #[param("The control, as Show control names it")]
         control: String,
-        #[param("Its new place among the controls shown, from 0")]
-        to: u32,
+        #[param("The control it stands in front of; none for the last place")]
+        before: Option<String>,
     },
     /// Put the panel's controls back as they were at first.
     #[effect(own_device)]

@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 use std::{future::Future, pin::Pin};
 
 pub type CommitFuture = Pin<Box<dyn Future<Output = Result<OwnerCommitReceipt, String>> + Send>>;
+/// A committed local document write: the write as the record took it, and its receipt.
+pub type LocalDocumentFuture =
+    Pin<Box<dyn Future<Output = Result<(OwnerCommitRequest, OwnerCommitReceipt), String>> + Send>>;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct OwnerCommitRequest {
@@ -324,8 +327,62 @@ pub trait OwnerCommitService: Send + Sync {
         let _ = record_kind;
         self.commit(request)
     }
+    /// [`Self::commit_with_record_kind`] for a document write one of this
+    /// device's local writers signed before the owner's turn: the write as
+    /// the record took it, with its receipt. An owner holding the device's key
+    /// signs a write that another writer's later-signed write passed again
+    /// under a sequence past it
+    /// ([`crate::StatePeer::sequenced_local_document`]); one without commits
+    /// it as it is.
+    fn commit_local_document(
+        &self,
+        request: OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> LocalDocumentFuture {
+        let commit = self.commit_with_record_kind(request.clone(), record_kind);
+        Box::pin(async move { Ok((request, commit.await?)) })
+    }
     /// Whether the owner can currently accept commits.
     fn health(&self) -> Result<(), String>;
+}
+
+impl OwnerCommitReceipt {
+    /// Check that this receipt answers `asked`, a document write of this
+    /// device, with `committed`: the same write of the same author to the
+    /// same record, at most signed again under another sequence
+    /// ([`OwnerCommitService::commit_local_document`]).
+    pub fn validate_local_document(
+        &self,
+        asked: &OwnerCommitRequest,
+        committed: &OwnerCommitRequest,
+    ) -> Result<(), String> {
+        let (
+            CommitOperation::Document {
+                app,
+                record,
+                envelope,
+            },
+            CommitOperation::Document {
+                app: taken_app,
+                record: taken_record,
+                envelope: taken,
+            },
+        ) = (&asked.operation, &committed.operation)
+        else {
+            return Err("owner receipt does not answer a document write".into());
+        };
+        let mut resigned = (**taken).clone();
+        resigned.seq = envelope.seq;
+        resigned.signature = envelope.signature;
+        if asked.workspace != committed.workspace
+            || app != taken_app
+            || record != taken_record
+            || resigned != **envelope
+        {
+            return Err("the owner committed another write than the one asked".into());
+        }
+        self.validate_for(committed)
+    }
 }
 
 #[cfg(test)]

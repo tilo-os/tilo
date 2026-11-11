@@ -71,6 +71,7 @@ use ui::framework::{
     LiveRow, RunMode,
 };
 use ui::tilo_resource::Effect as _;
+use ui::widget::DrawChild;
 
 const DROP_TITLE: &str = "Choose a disk image";
 const DROP_MESSAGE: &str = "Drop an ISO, IMG or RAW file here";
@@ -3474,7 +3475,7 @@ impl Widget for ImagerApp {
         }
         // The framework paints the window ground; the page is toolkit widgets.
         if let Some(composed) = self.composed.element_mut() {
-            composed.draw(scene, transform, text_renderer, theme, presence);
+            composed.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

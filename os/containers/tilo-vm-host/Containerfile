@@ -4,40 +4,52 @@
 # each one, Firecracker and its jailer, pasta for their network, and skopeo to
 # fetch the signed guest. One runs per VM-host node, privileged (KVM, a
 # writable cgroup tree, user namespaces), as README.md describes.
+#
+# Nothing here compiles: t builds the service, the jail helper and the member
+# (tools/ci/publish/server-binaries.sh, the check vm-host-binaries) and this
+# build lays them out with the base and the packages they run against, from the
+# same frozen snapshot and mirrored base as the relay
+# (tools/ci/publish/vm-host-build.sh).
 
-FROM docker.io/library/rust:1.97.1-bookworm@sha256:0e2bcaef56d041a486784e54104a81aebe0da44bd03019bd70bc0401e42e4a97 AS builder
-
-WORKDIR /workspace
-COPY . .
-
-RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
-    --mount=type=cache,target=/workspace/target,sharing=locked \
-    cargo build --locked --release -p legacy-vm --bin tilo-legacy --bin tilo-hosted-jail \
-        -p tilo-runtime --bin tilo-runtime \
-    && install -D -m 0755 target/release/tilo-legacy /out/tilo-legacy \
-    && install -D -m 0755 target/release/tilo-hosted-jail /out/tilo-hosted-jail \
-    && install -D -m 0755 target/release/tilo-runtime /out/tilo-runtime
+# ---- Frozen RPM repo (cross-time reproducibility) ---------------------------
+# The package set every Tilo server image installs from, as
+# tools/ci/publish/vm-host-build.sh resolves it. Declared before the first
+# FROM so it is global rather than scoped to the preceding stage.
+ARG RPMS_REF
+FROM ${RPMS_REF} AS rpms
 
 # Firecracker and its jailer, from the release os/external-assets pins.
 FROM scratch AS external-assets
 COPY --from=github-assets / /
 
-FROM docker.io/library/debian@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2 AS runtime
+# ---- Runtime -----------------------------------------------------------------
+# Fedora's minimal base, the same runtime base as the relay, pinned by digest on
+# registry.fedoraproject.org, which keeps superseded digests; quay.io prunes
+# them, so a pin there stops resolving.
+FROM registry.fedoraproject.org/fedora-minimal:44@sha256:694cfd38a85e4c48bae777d37e4ca8d5f0ee0dd36ace04294f23b72bf9bd3475
+
+# Buildah leaves the rpms mount out of the layer cache key; this ARG keys it on RPMS_REF.
+ARG RPMS_REF
+# Every program the start and the service run, from the frozen snapshot:
+# passt is pasta (each VM's network), skopeo fetches the guest, xfsprogs makes
+# the state disk's filesystem, libcap gives the helper its capabilities,
+# util-linux's setpriv drops to the service's uid and mounts the state disk,
+# curl lets the placer (`tilo-legacy hosted place`) scale the hosts through the
+# Kubernetes API, tar unpacks the member identity, and gzip unpacks the
+# Firecracker release below, which is a tarball. The package manager goes once
+# they are installed: this host installs nothing at run time.
+RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
+    microdnf install -y --setopt=reposdir=/repo --disablerepo='*' --enablerepo=frozen \
+        ca-certificates curl grep gzip libcap passt sed shadow-utils skopeo tar util-linux xfsprogs \
+    && microdnf clean all \
+    && microdnf remove -y --setopt=protected_packages= dnf5 \
+    && ! command -v dnf5 >/dev/null
 
 ARG SOURCE_REVISION
 LABEL org.opencontainers.image.title="Tilo hosted VM host" \
       org.opencontainers.image.description="Runs tilo.sh workspaces' Linux programs in jailed Firecracker VMs" \
       org.opencontainers.image.source="https://code.tilo.so/tilo/tilo" \
       org.opencontainers.image.revision="${SOURCE_REVISION}"
-
-# passt is pasta (each VM's network), skopeo fetches the guest, xfsprogs makes
-# the state disk's filesystem, libcap2-bin gives the helper its capabilities,
-# util-linux's setpriv drops to the service's uid, curl lets the placer
-# (`tilo-legacy hosted place`) scale the hosts through the Kubernetes API.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
-       ca-certificates curl libcap2-bin passt skopeo util-linux xfsprogs \
-    && rm -rf /var/lib/apt/lists/*
 
 ARG FIRECRACKER_ASSET=firecracker-v1.17.0-x86_64.tgz
 RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
@@ -55,10 +67,10 @@ RUN --mount=type=bind,from=external-assets,source=/,target=/assets,ro \
 # user-namespaced build they name that namespace's root, and no host's.
 RUN groupadd --system --gid 10001 tilo-hosted \
     && useradd --system --uid 10001 --gid 10001 --home-dir /var/lib/tilo-hosted --shell /usr/sbin/nologin tilo-hosted
-COPY --from=builder /out/tilo-legacy /usr/local/bin/tilo-legacy
+COPY bin/tilo-legacy /usr/local/bin/tilo-legacy
 # The member that takes the relay's runs for the workspaces on this host.
-COPY --from=builder /out/tilo-runtime /usr/local/bin/tilo-runtime
-COPY --from=builder /out/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
+COPY bin/tilo-runtime /usr/local/bin/tilo-runtime
+COPY bin/tilo-hosted-jail /usr/libexec/tilo/tilo-hosted-jail
 RUN chown root:tilo-hosted /usr/libexec/tilo/tilo-hosted-jail \
     && chmod 0750 /usr/libexec/tilo/tilo-hosted-jail
 COPY --chmod=0644 os/containers/tilo-vm-host/hosted-jail.json /etc/tilo/hosted-jail.json

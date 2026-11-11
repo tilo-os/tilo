@@ -21,6 +21,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::ChatApp;
+use ui::widget::DrawChild;
 
 /// The [`ChatApp`] the window shows, as the view and the window share it.
 pub(crate) type SharedChat = Rc<RefCell<ChatApp>>;
@@ -179,7 +180,7 @@ impl Widget for ChatWindow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.state().draw(scene, tf, tr, theme, presence);
+        self.state().draw_child(scene, tf, tr, theme, presence);
     }
 
     fn draw_overlay(

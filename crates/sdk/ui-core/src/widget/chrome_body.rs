@@ -17,6 +17,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{ChromeMaterial, Rhythm, SurfaceRole};
+use crate::widget::DrawChild;
 use crate::widget::{Container, Decorator, Element, Widget};
 
 /// How a bar or a dock's body sits in its edge.
@@ -347,7 +348,8 @@ impl Decorator for ChromeBody {
         presence: &PresenceCtx,
     ) {
         self.paint_body(scene, transform, theme);
-        self.container.draw(scene, transform, text, theme, presence);
+        self.container
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     /// The body adds no structure of its own: what its content reports is the body's.

@@ -344,9 +344,10 @@ mod cases {
         let behind: Vec<String> = door.iter().map(|node| text_of(node, "label")).collect();
         assert_eq!(
             behind,
-            ["Delete finished tasks", "New project"],
+            ["Delete finished tasks"],
             "the bar's door holds the actions the view placed, in its order, and then the \
-             rest of what Tasks offers:\n{}",
+             rest of what Tasks offers that the window does not already offer: New project is \
+             its Projects section's add, and stands there alone:\n{}",
             dump(tree)
         );
         assert!(

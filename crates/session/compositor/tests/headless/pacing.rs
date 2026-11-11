@@ -11,6 +11,19 @@ fn a_display_shows_one_frame_per_refresh() {
     let mut config = OutputConfig::new("HEADLESS-1", 640, 480);
     config.refresh_mhz = 10_000;
     compositor.add_output(&config).expect("output");
+    // A frame that shows something: one that changed no pixel takes no blank, as a display's
+    // backend queues no flip for it.
+    let mut client = mapped_client(
+        &mut compositor,
+        "org.example.shown",
+        (200, 100),
+        [0, 255, 0, 255],
+    );
+    compositor.draw_frame().expect("a frame");
+    client.show(200, 100, [0, 0, 255, 255]);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.owes_frame()
+    });
     compositor.draw_frame().expect("a frame");
     let shown = compositor.frames_presented();
 

@@ -85,7 +85,10 @@ impl Admitted {
         let held = held(&bob, &desk_key);
         let now = tilo_clock::unix_now_ns();
         let state = tempfile::tempdir().unwrap();
-        let relay = Relay::start(
+        // The host reaches no packet relay: the link it hands out then names the addresses it
+        // has here, which the device dials directly. A host with a public relay names only that
+        // relay, which this test's device would reach over the internet or not at all.
+        let relay = Relay::start_with_relay_mode(
             RelayConfig {
                 state_root: state.path().to_path_buf(),
                 ..RelayConfig::default()
@@ -96,6 +99,7 @@ impl Admitted {
                 device_cert: host.clone(),
                 revocations: RevocationList::new(),
             },
+            iroh::RelayMode::Disabled,
         )
         .await
         .unwrap();

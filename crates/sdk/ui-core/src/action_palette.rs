@@ -37,6 +37,7 @@ use crate::search::{
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
     ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, ResourceSpec,
@@ -58,7 +59,7 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 /// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
-mod api;
+pub(crate) mod api;
 mod empty_state;
 mod facet_chips;
 mod history;
@@ -677,7 +678,7 @@ impl ActionPalette {
             field: field_source
                 .build()
                 .control_size(FIELD_SIZE)
-                .with_placeholder("Search actions and results"),
+                .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[])),
             results: SearchResultsView::new()
                 .with_empty_text("No matches")
                 .with_test_id("action-palette-results"),
@@ -1158,7 +1159,7 @@ impl ActionPalette {
             .field_source
             .build()
             .control_size(FIELD_SIZE)
-            .with_placeholder("Search actions and results");
+            .with_placeholder(&crate::i18n::widget_format("action-palette-query", &[]));
         field.set_scope_token(self.scope.as_ref().map(scope_token_label));
         field
     }
@@ -2725,13 +2726,13 @@ impl ActionPalette {
             return;
         };
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.draw_facet_chips(scene, transform, text_renderer, theme);
         self.results
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if self.controls_node.is_some() {
             self.controls
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         pose.end(scene);
     }

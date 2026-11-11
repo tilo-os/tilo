@@ -139,7 +139,22 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // The fixture's pages lay no section under a block of their own, and no list stands
             // beside the page it opens.
             | Kind::CrowdedHeading
-            | Kind::DetailRowNotChosen => "(no view)",
+            | Kind::DetailRowNotChosen
+            // No window in this fixture declares a column header over a column that draws none or
+            // offers an action in its bar and its own row both, no field of it stands one band
+            // tall with its line off that band's middle (a field centres its own line), and no
+            // agent or peer is drawn in it, so no presence tag stands anywhere. No window in it
+            // holds writing either, so no section of a page stands under the writing it holds.
+            | Kind::HeaderOnReveal
+            | Kind::OfferedTwice
+            | Kind::LineOffCentre
+            | Kind::PresenceTag
+            | Kind::UnruledBody
+            // No page of this fixture leads its heading with a control, and none stands on a
+            // phone's screen.
+            // Its trees fold rows on the line those rows' words stand on.
+            | Kind::ChevronOffLine
+            | Kind::IndentedBody => "(no view)",
         };
         assert_eq!(
             finding.view,

@@ -301,6 +301,9 @@ pub(super) struct InputRuntime {
     /// The window has the keyboard: the one a person (or a test control's
     /// activation) addresses among the app's windows.
     pub(super) window_focused: bool,
+    /// Whether this window holds the keyboard: its fields keep their text and
+    /// selection without it, and paint no caret ([`crate::caret_owner`]).
+    pub(super) keyboard_held: bool,
 }
 
 impl InputRuntime {
@@ -309,6 +312,7 @@ impl InputRuntime {
             modifiers: winit::event::Modifiers::default(),
             keyboard_layout: None,
             window_focused: false,
+            keyboard_held: true,
             interaction: crate::interaction::InteractionEnvironment::default(),
             platform: crate::platform::PlatformConventions::default(),
             nav_gestures: crate::gesture::NavGestureRecognizer::new(),

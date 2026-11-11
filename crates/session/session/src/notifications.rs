@@ -117,12 +117,7 @@ pub(crate) fn history_file() -> Option<std::path::PathBuf> {
 /// bodies, its senders and how old each is. What a row could act on does not survive: the sender,
 /// its actions and the session's routes are gone with it.
 pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Path) {
-    let history = notices.log().history().to_vec();
-    let encoded = match tilo_desktop_surface::notifications::encode_history(
-        &history,
-        ui::time::SystemTime::now(),
-        ui::time::now(),
-    ) {
+    let encoded = match notices.kept(ui::time::SystemTime::now()) {
         Ok(encoded) => encoded,
         Err(error) => {
             tracing::warn!(%error, "the notification centre was not written");
@@ -145,31 +140,16 @@ pub(crate) fn save_history(notices: &DesktopNotifications, path: &std::path::Pat
     }
 }
 
-/// Open the centre the last session left, and hand back where it is kept so this session writes it
-/// back there.
+/// Open the centre the last session left, as old as it was, and hand back where it is kept so this
+/// session writes it back there.
 pub(crate) fn restore_history(notices: &DesktopNotifications) -> Option<std::path::PathBuf> {
     let path = history_file()?;
-    restore_kept(notices, &path);
-    Some(path)
-}
-
-/// Open the centre kept at `path` : what it kept, as old as it was.
-fn restore_kept(notices: &DesktopNotifications, path: &std::path::Path) {
-    let Ok(bytes) = std::fs::read(path) else {
-        return;
-    };
-    match tilo_desktop_surface::notifications::decode_history(
-        &bytes,
-        ui::time::SystemTime::now(),
-        ui::time::now(),
-    ) {
-        Ok(history) => {
-            if !history.is_empty() {
-                notices.restore_history(history);
-            }
-        }
-        Err(error) => tracing::warn!(%error, "the notification centre kept was not read"),
+    if let Ok(bytes) = std::fs::read(&path)
+        && let Err(error) = notices.restore_kept(&bytes, ui::time::SystemTime::now())
+    {
+        tracing::warn!(%error, "the notification centre kept was not read");
     }
+    Some(path)
 }
 
 /// The event sound an arrival asks for: a `suppress-sound` sender asks for
@@ -215,7 +195,15 @@ pub(crate) fn shown(
         notification.icon_kind = told.map_or(NotificationIconKind::System, |notice| notice.leading);
     } else {
         notification.app_name = match app_id.as_deref() {
-            Some(id) => Some(crate::app_names::sender_name(id, &sent.app_name)),
+            // A program the launcher proved with no installed app behind it is a command line
+            // sender: it is named by the name it gives, the entry it says it comes from, or the
+            // terminal it was typed into, never by its file name.
+            Some(id) if id.trim().starts_with('/') => Some(crate::app_names::program_sender_name(
+                id,
+                &sent.app_name,
+                sent.desktop_entry.as_deref(),
+            )),
+            Some(id) => Some(crate::app_names::app_name(id)),
             None => notifications::sender_claim(&sent.app_name),
         };
     }
@@ -1041,7 +1029,7 @@ impl SessionNotifications {
                 if self.banner(id).is_some() {
                     self.desktop.answer(BannerAsk::Dismiss(id));
                 }
-                self.desktop.open_center();
+                self.desktop.ask_centre(true);
             }
             Ask::AnswerCall(id) => self.call(id, true),
             Ask::DeclineCall(id) => self.call(id, false),

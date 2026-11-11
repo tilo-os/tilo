@@ -83,6 +83,12 @@ pub struct LiveMember {
     /// `None` when they are in none.
     #[serde(default)]
     pub call: Option<String>,
+    /// The colour they wear, `#rrggbb`, as their shell publishes it: the one
+    /// they chose in their own card, or the one their identity derives.
+    /// Empty for a member that said none, whose colour is settled from their
+    /// identity here ([`HereState::colors`]).
+    #[serde(default)]
+    pub colour: String,
 }
 
 impl LiveMember {
@@ -106,6 +112,7 @@ impl LiveMember {
             // An agent has no availability of its own: it is always at work.
             availability: (!shown.agent).then(|| shown.availability.clone()),
             call: shown.call.clone(),
+            colour: shown.colour.clone(),
         }
     }
 }
@@ -467,6 +474,26 @@ impl HereState {
         finished
     }
 
+    /// When an agent that left is next due to be said finished, on the clock
+    /// [`Self::take_agents_finished`] is handed: the reconnect's grace after it was last here.
+    /// `None` while every agent seen is still here. A page draws only when something changes, and
+    /// nothing changes when an agent stays gone: it wakes for this, or the notice waits for
+    /// whatever draws next.
+    #[must_use]
+    pub fn next_agent_finished_ms(&self) -> Option<u64> {
+        let here = |publisher: &str| {
+            self.members
+                .iter()
+                .flatten()
+                .any(|member| member.kind == "agent" && member.publisher == publisher)
+        };
+        self.working_agents
+            .iter()
+            .filter(|(publisher, _)| !here(publisher))
+            .map(|(_, (_, _, seen))| seen.saturating_add(REJOIN_QUIET_MS))
+            .min()
+    }
+
     /// Who joined since the last call, by the name everyone here sees: a person who was not in the
     /// workspace before. The first roster this page sees is who was already here, not arrivals;
     /// this page's person and agents are never announced, and leaving is not news. A device back
@@ -753,35 +780,47 @@ impl HereState {
     }
 
     /// What colour everyone here is drawn in, by live publisher, this page included. Settled over
-    /// the whole workspace at once ([`ui::presence::assign_peer_colors`]): two people here together
+    /// the whole workspace at once ([`ui::presence::settle_colors`]): two people here together
     /// never share a colour while the ring has room for both, and every page, seeing the same
     /// workspace, settles it alike. A person is settled by who they are (their user root) so their
-    /// other devices wear their colour; an agent by its own publisher. The colour a page publishes
-    /// for itself is not consulted: a page picking alone cannot know who else is here, which is how
-    /// two visitors came to wear the same one.
+    /// other devices wear their colour; an agent by its own publisher.
+    ///
+    /// The colour someone claims for themselves is the one they wear: it is the colour they chose
+    /// in their own card, or the one their identity derives, as their shell publishes it — the same
+    /// colour their apps paint them in. Whoever else's identity names it steps to a free entry, so
+    /// two people who chose alike still read apart.
+    ///
     /// A person's device is in the live layer before its certificate pairs it with its person. Until they do it has no entry here, and takes no part in the
     /// settlement, so they are drawn neutral ([`ui::presence::UNSETTLED_RGB`]) rather than in a
     /// colour keyed by their device that changes once their person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
-        let present: Vec<(&str, &str)> = self
+        // Each device here, by the person it is (an agent by its own
+        // publisher), with the colour its shell claimed where it claimed one.
+        let present: Vec<Present<'_>> = self
             .members
             .iter()
             .flatten()
             .chain(self.own.as_ref())
             .filter_map(|member| {
                 let id = member.publisher.as_str();
-                if member.kind == "agent" {
-                    Some((id, id))
+                let key = if member.kind == "agent" {
+                    id
                 } else {
-                    self.user_of(id).map(|user| (id, user))
-                }
+                    self.user_of(id)?
+                };
+                let claimed = ui::presence::parse_hex_color(&member.colour);
+                Some((id, key, claimed))
             })
             .collect();
-        let keys: Vec<&str> = present.iter().map(|(_, key)| *key).collect();
-        let settled = ui::presence::assign_peer_colors(&keys, &[]);
+        let chosen: HashMap<String, (u8, u8, u8)> = present
+            .iter()
+            .filter_map(|(_, key, claimed)| claimed.map(|rgb| ((*key).to_owned(), rgb)))
+            .collect();
+        let keys: Vec<&str> = present.iter().map(|(_, key, _)| *key).collect();
+        let settled = ui::presence::settle_colors(&keys, &chosen);
         let mut colors: HashMap<String, (u8, u8, u8)> = present
             .into_iter()
-            .filter_map(|(id, key)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
+            .filter_map(|(id, key, _)| settled.get(key).map(|rgb| (id.to_owned(), *rgb)))
             .collect();
         // An agent wears its client's hue, so Claude Code reads as Claude Code on every face and
         // caret of it; one this build does not know keeps the hue it settled on.
@@ -974,6 +1013,11 @@ impl HereState {
     }
 }
 
+/// One device here as the settlement reads it: its publisher, the person it
+/// is (an agent, itself), and the colour its shell claimed for that person
+/// where it claimed one.
+type Present<'a> = (&'a str, &'a str, Option<(u8, u8, u8)>);
+
 /// `publisher` 's colour in `colors` ([`HereState::colors`]), or the neutral face while the
 /// workspace has not settled one for it.
 fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8, u8) {
@@ -1079,6 +1123,11 @@ fn names(text: &str, name: &str) -> bool {
     !name.is_empty() && text.windows(name.len()).any(|run| run == name.as_slice())
 }
 
+/// `rgb` as the `#rrggbb` a roster row's colour is written in.
+fn hex_of((r, g, b): (u8, u8, u8)) -> String {
+    format!("#{r:02x}{g:02x}{b:02x}")
+}
+
 /// `people` as the active workspace's collaborators, for the bar's avatars: read from a copy of the
 /// tree, never written to the workspace's document.
 pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], following: Option<&str>) {
@@ -1106,6 +1155,9 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
                 followed == person.id || person.devices.iter().any(|device| device.id == followed)
             });
             known.active_tab = person.tab;
+            // The colour everyone here draws them in, as their pointer wears it: one colour per
+            // person on every face of them, whatever an older row said.
+            known.cursor_color = Some(hex_of(person.rgb));
             known.in_app.clone_from(&person.focus_app);
             known.availability = Some(person.availability.id().to_owned());
             known.call = person.call.as_ref().map(ui::CallPresence::encode);
@@ -1125,7 +1177,6 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
             }
             continue;
         }
-        let (r, g, b) = ui::presence::user_color(&person.id);
         let follows = following.is_some_and(|followed| {
             followed == person.id || person.devices.iter().any(|device| device.id == followed)
         });
@@ -1135,9 +1186,10 @@ pub fn overlay_collaborators(tree: &mut DesktopTree, people: &[Person], followin
             name: person.label.clone(),
             active_tab: person.tab,
             in_app: person.focus_app.clone(),
-            // The colour their pointer is drawn in on this desk, so a face, a pill and a caret for
-            // one person all wear the one colour.
-            cursor_color: Some(format!("#{r:02x}{g:02x}{b:02x}")),
+            // The colour their pointer is drawn in on this desk (`HereState::colors`, settled over
+            // everyone here), so a face, a pill and a caret for one person all wear the one colour,
+            // and their face on the bar matches the one their own bar shows them.
+            cursor_color: Some(hex_of(person.rgb)),
             role_id: person.agent.then(|| "agent".to_owned()),
             availability: Some(person.availability.id().to_owned()),
             call: person.call.as_ref().map(ui::CallPresence::encode),
@@ -1167,6 +1219,7 @@ mod tests {
             following: None,
             availability: None,
             call: None,
+            colour: String::new(),
         }
     }
 
@@ -1366,6 +1419,24 @@ mod tests {
             }]
         );
         assert!(here.take_agents_finished(later + 1).is_empty(), "said once");
+    }
+
+    /// An agent that left is due to be said finished once the reconnect's grace has passed since
+    /// it was last here, so the page can wake for it; none is due while it is here.
+    #[test]
+    fn an_agent_gone_is_due_once_its_grace_passes() {
+        let mut here = HereState::default();
+        here.set_members(None, Some(vec![member("claude", "agent", "Claude Code")]));
+        assert!(here.take_agents_finished(1_000).is_empty());
+        assert_eq!(here.next_agent_finished_ms(), None, "it is still here");
+        here.set_members(None, Some(Vec::new()));
+        assert_eq!(here.next_agent_finished_ms(), Some(1_000 + REJOIN_QUIET_MS));
+        assert_eq!(here.take_agents_finished(1_000 + REJOIN_QUIET_MS).len(), 1);
+        assert_eq!(
+            here.next_agent_finished_ms(),
+            None,
+            "said, nothing more is due"
+        );
     }
 
     /// A person's screen is their device's layout; an agent has none, even when its frame says one.
@@ -1590,6 +1661,47 @@ mod tests {
         let tree = DesktopTree::default();
         let shown = first.people(&tree, &[], &|_| None);
         assert_eq!(shown[0].rgb, second.own_rgb().expect("own colour"));
+    }
+
+    /// The colour someone chose in their own card is the colour they wear here,
+    /// on their own page and on everyone else's, and whoever else's identity
+    /// names the same one steps to a free entry: one person, one colour, on the
+    /// bar, in the People list and in every app they edit in.
+    #[test]
+    fn a_person_wears_the_colour_they_chose_and_the_others_step_aside() {
+        let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
+        let hex = format!("#{:02x}{:02x}{:02x}", violet.0, violet.1, violet.2);
+        let claiming = |device: &str, root: &str| LiveMember {
+            user: Some(root.into()),
+            colour: hex.clone(),
+            ..member(device, "person", device)
+        };
+        let quiet = |device: &str, root: &str| LiveMember {
+            user: Some(root.into()),
+            ..member(device, "person", device)
+        };
+        let mut own_page = HereState::default();
+        own_page.set_members(
+            Some(claiming("me", "me-root")),
+            Some(vec![quiet("bo", "bo-root")]),
+        );
+        assert_eq!(own_page.colors()["me"], violet, "they wear what they chose");
+        assert_eq!(own_page.own_rgb(), Some(violet), "and see themselves in it");
+        let mut peer_page = HereState::default();
+        peer_page.set_members(
+            Some(quiet("bo", "bo-root")),
+            Some(vec![claiming("me", "me-root")]),
+        );
+        assert_eq!(
+            peer_page.colors()["me"],
+            violet,
+            "every page paints them in it too"
+        );
+        assert_ne!(
+            peer_page.colors()["bo"],
+            violet,
+            "whoever else lands on it steps aside"
+        );
     }
 
     /// Someone whose device is live here before its certificate pairs it with their person is drawn
@@ -2285,11 +2397,10 @@ mod tests {
             .find(|c| c.id == "bot")
             .expect("overlaid");
         assert_eq!(bot.role_id.as_deref(), Some("agent"));
-        let (r, g, b) = ui::presence::user_color("bot");
         assert_eq!(
             bot.cursor_color.as_deref(),
-            Some(format!("#{r:02x}{g:02x}{b:02x}").as_str()),
-            "the colour their pointer is drawn in"
+            Some("#010203"),
+            "the colour everyone here draws them in, as their pointer wears it"
         );
         overlay_collaborators(&mut tree, &people, None);
         assert_eq!(

@@ -87,11 +87,15 @@ pub struct Names {
     pub me: String,
     /// Each agent of the workspace, by its id (the part after `agent:`), as the workspace
     /// keeps its name.
-    pub agents: std::collections::BTreeMap<String, String>,
+    pub agents: crate::projection::AgentNames,
 }
 
 /// One message of a channel, as its page shows it.
 #[derive(Clone, Debug, Default, PartialEq, serde::Deserialize, serde::Serialize)]
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "the page's message carries independent facts the row draws (edited, pinned, retry, sending), each read off the record on its own"
+)]
 pub struct Message {
     /// Its id, after `chat.workspace/messages/`.
     #[serde(default)]
@@ -137,6 +141,10 @@ pub struct Message {
     /// attempt the agent answers in now. A reply is of the attempt its question is in.
     #[serde(default)]
     pub attempts: u32,
+    /// Sent from here and not written yet: the conversation's messages are on their way to this
+    /// device, and it is written once they are here. Its byline says so in place of its time.
+    #[serde(default)]
+    pub sending: bool,
 }
 
 /// What an agent recorded of its work on a reply, as the page shows it.
@@ -174,13 +182,13 @@ impl Work {
 
     /// What happened, in one line, when the work failed.
     #[must_use]
-    pub fn happened(&self) -> &'static str {
-        match self.state.as_str() {
-            "provider_cancelled" => "Stopped",
-            "provider_truncated" => "The answer was interrupted",
-            "refused" | "provider_refused" => "Could not do this",
-            _ => "Could not finish",
-        }
+    pub fn happened(&self) -> String {
+        crate::i18n::t(match self.state.as_str() {
+            "provider_cancelled" => "chat-agent-cancelled",
+            "provider_truncated" => "chat-agent-truncated",
+            "refused" | "provider_refused" => "chat-agent-refused",
+            _ => "chat-agent-failed",
+        })
     }
 }
 
@@ -303,6 +311,7 @@ impl Channel {
                 text: row.text.clone(),
                 edited: row.edited,
                 attempts: row.attempts,
+                sending: row.sending,
                 reply_to: row.parent.as_deref().and_then(|parent| {
                     // A reply that answers the message right above it needs no quote: the person
                     // reads what is answered just over the answer. A reply to anything else
@@ -351,7 +360,7 @@ impl Channel {
                 Some(channel) if channel.is_channel() && !channel.name.trim().is_empty() => {
                     channel.name.trim().to_owned()
                 }
-                _ => chat.display_names(&channel_id, Some(me)),
+                _ => chat.display_names(&channel_id, Some(me), &names.agents),
             },
             topic: channel
                 .as_ref()
@@ -617,9 +626,9 @@ fn header_facts(c: &Channel, cx: &ViewCx) -> Vec<Node> {
             .into(),
     ];
     let caption = if c.voice {
-        "Voice channel"
+        crate::i18n::t("chat-voice-channel")
     } else {
-        c.topic.trim()
+        c.topic.trim().to_owned()
     };
     if !caption.is_empty() {
         facts.push(
@@ -781,16 +790,22 @@ fn message_row(c: &Channel, message: &Message, continues: bool, cx: &ViewCx) -> 
             .role(ui::TextRole::Label)
             .into(),
         ];
-        head.push(
-            ui::TimeBuilder::new(&cx.key(format!("when-{}", message.id)), moment(message.ts))
+        let when = cx.key(format!("when-{}", message.id));
+        head.push(if message.sending {
+            ui::TextBuilder::new(&when, crate::i18n::t("chat-message-sending"))
+                .role(ui::TextRole::Caption)
+                .secondary(true)
+                .into()
+        } else {
+            ui::TimeBuilder::new(&when, moment(message.ts))
                 .role(ui::TextRole::Caption)
                 .secondary(true)
                 .past(true)
                 // A message's line says when it was sent, by the clock the person reads
                 // ("5:16 AM"); the day it falls on is the divider over its run.
                 .clock(true)
-                .into(),
-        );
+                .into()
+        });
         vec![ui::row(
             &cx.key(format!("by-{}", message.id)),
             Gap::Tight,
@@ -941,7 +956,7 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
         banner = banner.message(reason);
     }
     if message.retry {
-        banner = banner.action("Retry");
+        banner = banner.action(crate::i18n::t("chat-retry"));
     }
     let banner: Node = banner.into();
     if let Some(summons) = message.retry_summons.clone() {
@@ -986,12 +1001,12 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, _cx: &ViewCx) -> Node {
     let excerpt = if quote.excerpt.trim().is_empty() {
         // A message the page does not hold (one from an earlier part of the chat) still says
         // it quotes one, so the reply does not read as answering nothing.
-        "A message above".to_owned()
+        crate::i18n::t("chat-quote-earlier")
     } else {
         quote.excerpt.trim().to_owned()
     };
     ui::QuoteBuilder::new(key, &excerpt)
-        .caption("In reply to")
+        .caption(crate::i18n::t("chat-quote-caption"))
         .author(principal(author, &quote.author))
         .into()
 }
@@ -1064,7 +1079,10 @@ fn reactions(c: &Channel, message: &Message, key: &str) -> Node {
 /// bound to, so a press and an agent's step take the one path to the record.
 fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let field: Node = ui::TextInputBuilder::new(&cx.key("draft"))
-        .placeholder(format!("Message #{}", c.name))
+        .placeholder(crate::i18n::t_args(
+            "chat-channel-composer-placeholder",
+            &[("channel", c.name.as_str().into())],
+        ))
         .lines(1_i64)
         .entry(true)
         .into();
@@ -1077,7 +1095,7 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let input = ui::fill(input);
     // The attach button: raises the system's own file chooser for the conversation (Chat's
     // `attach-file` effect with no path), whose files become the message's attachments.
-    let attach: Node = ui::ButtonBuilder::new(&cx.key("attach"), "Attach")
+    let attach: Node = ui::ButtonBuilder::new(&cx.key("attach"), crate::i18n::t("chat-attach"))
         .icon("paperclip")
         .icon_only(true)
         .role(ui::ButtonRole::Plain)
@@ -1085,7 +1103,7 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let fired = cx.action(&attach, "press", "attach-file");
     let attach = node::on(attach, "press", fired);
     // The button carries no text of its own: it sends the draft the field is bound to.
-    let send: Node = ui::ButtonBuilder::new(&cx.key("send"), "Send")
+    let send: Node = ui::ButtonBuilder::new(&cx.key("send"), crate::i18n::t("chat-send"))
         .icon("send")
         .icon_only(true)
         .into();
@@ -1285,6 +1303,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         }
     }
 
@@ -1608,11 +1627,15 @@ mod tests {
             })
             .collect();
         assert!(
-            labels.iter().any(|label| label == "Attach"),
+            labels
+                .iter()
+                .any(|label| *label == crate::i18n::t("chat-attach")),
             "the composer offers attach: {labels:?}"
         );
         assert!(
-            labels.iter().any(|label| label == "Send"),
+            labels
+                .iter()
+                .any(|label| *label == crate::i18n::t("chat-send")),
             "the composer offers send: {labels:?}"
         );
         // The field is full width: a `fill` argument asks for the room the buttons leave.
@@ -1650,7 +1673,7 @@ mod tests {
             .into_iter()
             .find(|node| {
                 node.kind == "ui.Button"
-                    && node.props.get("label") == Some(&Value::Text("Send".to_owned()))
+                    && node.props.get("label") == Some(&Value::Text(crate::i18n::t("chat-send")))
             })
             .expect("the composer's send button");
         assert_eq!(
@@ -2045,9 +2068,9 @@ mod tests {
         // A turn that ended without an answer the person can read leaves a row saying what
         // happened, and a Retry that asks the agent again on the very same message.
         for (state, happened) in [
-            ("provider_failed", "Could not finish"),
-            ("provider_cancelled", "Stopped"),
-            ("refused", "Could not do this"),
+            ("provider_failed", "chat-agent-failed"),
+            ("provider_cancelled", "chat-agent-cancelled"),
+            ("refused", "chat-agent-refused"),
         ] {
             let mut channel = writing_channel(state, "Half an answer");
             if let Some(reply) = channel.messages.last_mut() {
@@ -2066,7 +2089,7 @@ mod tests {
             let props = &rows[0].props;
             assert_eq!(
                 props.get("title"),
-                Some(&Value::Text(happened.to_owned())),
+                Some(&Value::Text(crate::i18n::t(happened))),
                 "the row says what happened ({state})"
             );
             assert_eq!(
@@ -2081,7 +2104,7 @@ mod tests {
             );
             assert_eq!(
                 props.get("action"),
-                Some(&Value::Text("Retry".to_owned())),
+                Some(&Value::Text(crate::i18n::t("chat-retry"))),
                 "the row offers a Retry ({state})"
             );
             assert_eq!(
@@ -2189,6 +2212,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         });
         let chat = workspace.read();
         let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
@@ -2213,6 +2237,39 @@ mod tests {
             keyed(&tree, "ui.Banner", "@failed-").len(),
             1,
             "the page draws the row where the failure happened"
+        );
+    }
+
+    #[test]
+    fn a_message_still_being_sent_says_so_in_place_of_its_time() {
+        // Sent from here while its conversation's messages arrive: the page shows it as the
+        // window does, with "Sending…" where its time will stand.
+        let workspace = crate::demo::Workspace::demo().expect("the demo workspace");
+        let mut rows = workspace.message_rows("c_crit");
+        // A day after the rest, so it starts a run of its own and carries its byline.
+        let ts = rows.iter().map(|row| row.ts).max().unwrap_or_default() + 86_400;
+        let mut sent = row("c_crit", "m_sent", crate::model::ME, ts, "On its way");
+        sent.sending = true;
+        rows.push(sent);
+        let chat = workspace.read();
+        let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());
+        assert!(
+            channel
+                .messages
+                .last()
+                .is_some_and(|message| message.sending)
+        );
+        let cx = view_cx(&channel);
+        let tree = page(&channel, &cx);
+        passes(&tree);
+        let said: Vec<String> = keyed(&tree, "ui.Text", "@when-m_sent")
+            .iter()
+            .flat_map(|node| texts(node))
+            .collect();
+        assert_eq!(said, [crate::i18n::t("chat-message-sending")]);
+        assert!(
+            keyed(&tree, "ui.Time", "@when-m_sent").is_empty(),
+            "no time yet"
         );
     }
 }

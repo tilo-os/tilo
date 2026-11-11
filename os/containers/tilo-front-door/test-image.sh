@@ -37,6 +37,10 @@ cleanup() {
 trap cleanup EXIT
 
 root=$(b mount "$container")
+# Every Tilo image is Fedora, the OS included: the door trusts the same
+# certificates and links the same libraries as the relay beside it.
+b run "$container" -- /usr/bin/busybox grep -qx 'ID=fedora' /etc/os-release \
+  || die 'the runtime is not a Fedora base'
 [[ -x $root/usr/local/bin/tilo-front-door ]] || die 'no /usr/local/bin/tilo-front-door'
 [[ -s $root/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem ]] \
   || die 'the trust bundle is not where every Tilo binary reads it'

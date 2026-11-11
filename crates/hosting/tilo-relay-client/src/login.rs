@@ -9,23 +9,26 @@
 //!
 //! Reading the code and signing in are a computer's work: a page writes the
 //! code and never reads one. The ways into the workspace a signed-in device
-//! takes — its site's door ([`Door`], entered on the device's session) and an
-//! invitation ([`redeem`]) — are a page's as much as a computer's, so only the
-//! first part is native.
+//! takes — its site's door ([`Door`]) and an invitation, both entered on the
+//! device's session ([`tilo_relay_protocol::entering`]) — are a page's as much
+//! as a computer's, so only the first part is native.
 
 #[cfg(not(target_arch = "wasm32"))]
 use tilo_reference::link::{Link, Mode, Scope, WebEntries, WebEntry};
+#[cfg(not(target_arch = "wasm32"))]
 use tilo_user_identity::DeviceCert;
 #[cfg(not(target_arch = "wasm32"))]
 use uuid::Uuid;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::error::CertifyError;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::host::Host;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::https;
+#[cfg(not(target_arch = "wasm32"))]
 use crate::https::HttpClient;
-use crate::invite::{ask_to_join, ask_to_join_pre_admitted};
+#[cfg(not(target_arch = "wasm32"))]
 use crate::signer::DeviceSigner;
 
 /// A person's user root, hex, in `?pair=`.
@@ -180,11 +183,11 @@ fn pair_of(pair: &str) -> Result<([u8; 32], Option<[u8; 16]>), String> {
 }
 
 /// A workspace's public door, as the site names it (`entry.json`'s home
-/// `admission`): its `join` path, which names the workspace it lets people
-/// into. A device enters through it on its session with the workspace's host
+/// `admission`): its path, which names the workspace it lets people into. A
+/// device enters through it on its session with the workspace's host
 /// ([`tilo_relay_protocol::entering`]).
 pub struct Door {
-    /// The door's `join`, below its origin.
+    /// The door's path, below its origin (`…/directory/<workspace>/`).
     pub path: String,
 }
 
@@ -199,8 +202,8 @@ impl Door {
 }
 
 /// The door of the site whose `entry.json` is `entry` to the workspace it
-/// keeps on the host at `host_origin`: its origin and `join` path. Only
-/// HTTPS, but for a door on loopback.
+/// keeps on the host at `host_origin`: its origin and path. Only HTTPS, but
+/// for a door on loopback.
 #[must_use]
 pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String, String)> {
     let home = entry.get("home")?;
@@ -218,12 +221,7 @@ pub fn site_door(entry: &serde_json::Value, host_origin: &str) -> Option<(String
     if authority.is_empty() || !(scheme == "https" || (scheme == "http" && loopback)) {
         return None;
     }
-    let path = if path.ends_with('/') {
-        format!("{path}join")
-    } else {
-        format!("{path}/join")
-    };
-    Some((format!("{scheme}://{authority}"), path))
+    Some((format!("{scheme}://{authority}"), path.to_owned()))
 }
 
 /// The door of the site at `site` to its workspace on the host at
@@ -316,57 +314,6 @@ pub struct Admission {
     pub name: String,
     /// What the device's person may do there.
     pub role: tilo_relay_protocol::workspaces::WorkspaceRole,
-}
-
-/// Redeem `invitation` on the host `client` posts to, as the device `cert` certifies (`signer`
-/// holding its key), shown to the workspace's people as `name`; with `token`, the one-time token of
-/// the pre-admission it was issued under. An invitation admits by the grant of whoever issued it,
-/// so the workspace admits the device at once or refuses.
-///
-/// # Errors
-///
-/// The host was not reached ([`CertifyError::Transport`]), or did not admit the device
-/// ([`CertifyError::Denied`], with the workspace's own reason).
-pub async fn redeem(
-    client: &dyn HttpClient,
-    invitation: &[u8],
-    cert: &DeviceCert,
-    signer: &dyn DeviceSigner,
-    name: &str,
-    token: Option<&[u8]>,
-) -> Result<Admission, CertifyError> {
-    use tilo_relay_protocol::workspaces::JoinReply;
-    let request = rand::random();
-    let reply = match token {
-        Some(token) => {
-            ask_to_join_pre_admitted(client, invitation, cert, signer, request, name, token).await?
-        }
-        None => ask_to_join(client, invitation, cert, signer, request, name).await?,
-    };
-    match reply {
-        JoinReply::Admitted {
-            workspace,
-            workspace_id,
-            name,
-            role,
-        } => Ok(Admission {
-            workspace,
-            workspace_id,
-            name,
-            role,
-        }),
-        JoinReply::Refused(reason) => Err(CertifyError::Denied(format!(
-            "The workspace did not let this device in: {reason}"
-        ))),
-        JoinReply::Declined => Err(CertifyError::Denied(
-            "The workspace no longer admits this device.".to_owned(),
-        )),
-        JoinReply::Invitation { .. } | JoinReply::Challenge { .. } | JoinReply::RetiredWaiting => {
-            Err(CertifyError::Denied(
-                "The workspace answered something other than an admission.".to_owned(),
-            ))
-        }
-    }
 }
 
 #[cfg(test)]

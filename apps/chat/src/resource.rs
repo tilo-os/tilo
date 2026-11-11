@@ -49,20 +49,22 @@ impl Chat {
                     .of_kind(IndexKind::Conversation)
                     .with_icon(CONVERSATION_ICON)
             });
-        // A conversation the record holds as an item: a group of people, or a
-        // person and an agent. What it is called is what its participants are
-        // called, until they name it; the row shows those participants beside
-        // it.
+        // A conversation the record holds as an item: a group of people, or a person and an
+        // agent. What it is called is its own name, which a kept one is made with, else what its
+        // participants are called; the row shows those participants beside it.
         let conversations = self
             .channels
             .iter()
             .filter(|(_, conversation)| !conversation.is_channel())
             .map(|(id, _)| {
-                SearchEntry::new(self.display_names(id, None), "")
-                    .anchored(anchor("channels", id))
-                    .of_kind(IndexKind::Conversation)
-                    .with_icon(CONVERSATION_ICON)
-                    .showing(self.participant_rows(id))
+                SearchEntry::new(
+                    self.display_names(id, None, &crate::projection::AgentNames::new()),
+                    "",
+                )
+                .anchored(anchor("channels", id))
+                .of_kind(IndexKind::Conversation)
+                .with_icon(CONVERSATION_ICON)
+                .showing(self.participant_rows(id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))
@@ -118,7 +120,7 @@ impl Chat {
     /// What the chat record holds, for a caller that reads it: with no item,
     /// the workspace's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
-    /// chain the window publishes, or with `read-workspace`.
+    /// chain the window publishes, or through the record door.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
@@ -217,6 +219,10 @@ impl ResourceApp for ChatShell {
     /// The chat's messages, kept in parts beside the workspace's chat record.
     fn records(records: &mut ui::framework::Records<'_>) {
         records.chain::<crate::parts::ChatPart>();
+        // What the person is writing and has not sent: their own record in
+        // the workspace, so a window that shows Chat and a device that only
+        // reads its records find the drafts alike.
+        records.person::<crate::drafts::ChatDrafts>();
         // The workspace's emoji and its agents are Chat's: every app of the
         // workspace opens them, and their changes are decided against Chat's
         // surface.
@@ -256,7 +262,14 @@ impl ResourceApp for ChatShell {
         let drafts = cx.person::<crate::drafts::ChatDrafts>();
         let app = ChatApp::new(identity, runtime, content)
             .with_models(models)
-            .with_drafts(drafts);
+            .with_drafts(drafts)
+            // The workspace's agents, as its own record of them names them: an agent is a
+            // collaborator, and its name reads from the same record in every app of the workspace.
+            .with_agents_record(
+                cx.shared_workspace::<ui::tilo_workspace_agent::WorkspaceAgents>(
+                    ui::tilo_workspace_agent::OWNER,
+                ),
+            );
         // A search hit, or an agent's `open`, shows the item it names.
         cx.on_open(app.opener());
         // The shell keeps the workspace's channels as its sidebar, their width,
@@ -700,13 +713,10 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         // two people it is between, so opening and sending read and write the
         // same record and the same parts as a channel's.
         ChatEffect::OpenDirectConversation { public_key } => {
-            let (_, id) = chat
-                .borrow()
-                .direct_conversation(public_key, &cx.live().get())?;
             let state = cx.live().get();
-            let mut chat = chat.borrow_mut();
-            chat.open_conversation(&id, &state);
-            return Ok(chat.opened_direct_answer(public_key, &id, &state));
+            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
+            chat.borrow_mut().open_conversation(&id, &state);
+            return Ok(ui::framework::Effected::done());
         }
         ChatEffect::OpenAgent { agent } => {
             let state = cx.live().get();
@@ -740,44 +750,27 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             }
             return Ok(ui::framework::Effected::Pending);
         }
-        ChatEffect::Send { to, attached, text } => {
+        ChatEffect::Send {
+            to,
+            attached,
+            text,
+            opens,
+        } => {
             let state = cx.live().get();
-            return chat
-                .borrow()
-                .send_from_box(to, attached.clone(), text, &state);
+            return chat.borrow().send_from_box(
+                to,
+                attached.clone(),
+                text,
+                opens.unwrap_or_default(),
+                &state,
+            );
         }
         _ => {}
-    }
-    if let ChatEffect::ReadMessages {
-        channel,
-        page_size,
-        cursor,
-    } = &effect
-    {
-        let chat = chat.borrow();
-        return crate::effects::read_messages(
-            &chat.held_messages(),
-            (channel, &|id| chat.display_name(id)),
-            *page_size,
-            cursor.as_deref(),
-        )
-        .map(ui::framework::Effected::value);
     }
     if let ChatEffect::ExportContent { channel, format } = &effect {
         return chat
             .borrow()
             .export_transcript(&cx.live().get(), channel, format.as_deref());
-    }
-    if let ChatEffect::ReadWorkspace { message, channel } = &effect {
-        let state = cx.live().get();
-        return Ok(ui::framework::Effected::value(
-            crate::effects::read_workspace(
-                &state,
-                &chat.borrow().held_messages(),
-                message.as_deref(),
-                channel.as_deref(),
-            ),
-        ));
     }
     if let Some(url) = crate::external::browser_destination(&effect)? {
         return Ok(cx.thread(

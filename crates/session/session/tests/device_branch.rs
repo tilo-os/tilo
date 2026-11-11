@@ -103,7 +103,10 @@ fn an_edit_on_one_device_of_a_person_reaches_the_other() {
 #[test]
 fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
     let (site, ada, laptop, copy) = laptop_and_its_copy();
-    let dropped = format!("joining as this device workspace={}", site.workspace);
+    // The channel state on the copied disk names the device it was made for: the copy's session
+    // drops all of it as it opens its vault on a device key of its own, before it opens any
+    // workspace's channel.
+    let dropped = "the channel state here was made for the device this machine was copied from";
     let admitted = format!(
         "the host admitted this device and the workspace is held here workspace={}",
         site.workspace
@@ -112,7 +115,7 @@ fn a_machine_copied_from_a_device_rejoins_as_a_device_of_its_own() {
         format!("the copy rejoining {} as its own device", site.workspace),
         || {
             let log = copy.log();
-            log.contains(&dropped)
+            log.contains(dropped)
                 && log
                     .lines()
                     .any(|line| line.contains(&admitted) && line.contains("member=true"))

@@ -31,6 +31,7 @@ const TILO: &str = "registry.tilo.so/tilo/tilo";
 const CODE: &str = "code.tilo.so/tilo/tilo";
 const GUEST: &str = "registry.tilo.so/tilo/legacy-guest";
 const HOSTED_GUEST: &str = "registry.tilo.so/tilo/hosted-guest";
+const HOSTED_BROWSER_GUEST: &str = "registry.tilo.so/tilo/hosted-browser-guest";
 const TRUST_ENV: &str = "\
 # a comment
 TILO_RELEASE_EPOCH=3
@@ -82,11 +83,26 @@ fn chain_requirement() -> Value {
     }])
 }
 
+/// Every repository the shipped policy verifies, read from the policy itself
+/// so a repository added to the generator is proved here without a second
+/// list to keep in step.
+fn signed_scopes() -> Vec<String> {
+    let policy = shipped();
+    let docker = policy["transports"]["docker"].as_object().unwrap();
+    let mut scopes: Vec<String> = docker
+        .iter()
+        .filter(|(_, requirement)| requirement[0]["type"] == json!("sigstoreSigned"))
+        .map(|(scope, _)| scope.clone())
+        .collect();
+    scopes.sort();
+    scopes
+}
+
 /// The generator's shape with `requirement` in every signed scope.
 fn generated(requirement: &Value) -> Value {
     let mut policy = shipped();
-    for scope in [TILO, CODE, GUEST, HOSTED_GUEST] {
-        policy["transports"]["docker"][scope] = requirement.clone();
+    for scope in signed_scopes() {
+        policy["transports"]["docker"][scope.as_str()] = requirement.clone();
     }
     policy
 }
@@ -241,6 +257,12 @@ fn weakened_cases() -> Vec<(&'static str, String)> {
             }),
         ),
         (
+            "hosted-browser-guest-accepts-anything",
+            weakened(|d| {
+                d.insert(HOSTED_BROWSER_GUEST.into(), accept());
+            }),
+        ),
+        (
             "tilo-namespace-accepts-anything",
             weakened(|d| {
                 d.insert("registry.tilo.so/tilo".into(), accept());
@@ -290,8 +312,8 @@ fn every_weakened_policy_fails() {
     let cases = weakened_cases();
     assert_eq!(
         cases.len(),
-        19,
-        "plus the missing file: the 20 weakened policies of the boot audit"
+        20,
+        "plus the missing file: the 21 weakened policies of the boot audit"
     );
     for (name, text) in cases {
         assert!(check(&text, &key_trust()).is_err(), "{name} was accepted");
@@ -639,9 +661,9 @@ fn a_developer_image_reports_its_dev_key_scope_instead_of_failing() {
 #[test]
 fn the_dev_key_is_accepted_only_in_the_two_dev_repositories_and_only_alone() {
     // The dev key on a release scope is a downgrade, developer mode or not.
-    for scope in [TILO, CODE, GUEST, HOSTED_GUEST] {
+    for scope in signed_scopes() {
         let mut policy = dev_policy();
-        policy["transports"]["docker"][scope] = json!([{
+        policy["transports"]["docker"][scope.as_str()] = json!([{
             "type": "sigstoreSigned",
             "keyPath": DEV_KEY,
             "rekorPublicKeyPath": "/usr/share/tilo/release/rekor.pub",

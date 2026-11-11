@@ -60,17 +60,25 @@ class AccountKeys:
         return self.client.handoff(self.client._keys_list())
 
     def create(
-        self, name: str, workspace: Any = None, expires_in: int | None = None
+        self,
+        name: str,
+        workspace: Any = None,
+        expires_in: int | None = None,
+        browser_pages: bool = True,
     ) -> Any:
         """Ask the person for a new key.
 
         A key reaching all their workspaces lasts until revoked unless
         `expires_in` (seconds) says when it expires; one reaching a single
-        workspace lasts at most 89 days. Raises `AskPending` with the link
-        they approve it at; `await ask.wait()` answers the `Key` once they do.
+        workspace lasts at most 89 days. `browser_pages` (on unless you say
+        no) lets the key operate web pages in its workspace's Browser —
+        navigating, filling in, selecting and clicking — without asking the
+        person each time; submitting a page still asks them. Raises
+        `AskPending` with the link they approve it at; `await ask.wait()`
+        answers the `Key` once they do.
         """
         return self.client.handoff(
-            self.client._key_create(name, workspace, expires_in)
+            self.client._key_create(name, workspace, expires_in, browser_pages)
         )
 
     def mint(
@@ -295,13 +303,19 @@ class AsyncTilo:
         return await self._endpoint().outcome(f"{ACCOUNT}/keys#revoke", {"grant": grant})
 
     async def _key_create(
-        self, name: str, workspace: Any, expires_in: int | None
+        self,
+        name: str,
+        workspace: Any,
+        expires_in: int | None,
+        browser_pages: bool = True,
     ) -> Key:
         arguments: dict[str, Any] = {"name": name}
         if workspace is not None:
             arguments["workspace"] = await self._workspace_id(workspace)
         if expires_in is not None:
             arguments["expires_in"] = expires_in
+        if not browser_pages:
+            arguments["browser_pages"] = False
         try:
             await self._endpoint().call("tilo_do", {
                 "path": f"{ACCOUNT}/keys#create",
@@ -317,15 +331,21 @@ class AsyncTilo:
         name: str | None = None,
         workspace: str | None = None,
         expires_in: int | None = None,
+        browser_pages: bool = True,
     ) -> Any:
         """A key this machine does not have yet: show the link, wait for approval.
 
-        It lasts until revoked unless `expires_in` (seconds) says otherwise.
+        It lasts until revoked unless `expires_in` (seconds) says otherwise,
+        and operates web pages in Browser unless `browser_pages` is false.
         """
-        return self.handoff(self._sign_in(name, workspace, expires_in))
+        return self.handoff(self._sign_in(name, workspace, expires_in, browser_pages))
 
     async def _sign_in(
-        self, name: str | None, workspace: str | None, expires_in: int | None
+        self,
+        name: str | None,
+        workspace: str | None,
+        expires_in: int | None,
+        browser_pages: bool = True,
     ) -> SignIn:
         body: dict[str, Any] = {}
         if name is not None:
@@ -334,6 +354,8 @@ class AsyncTilo:
             body["workspace"] = workspace
         if expires_in is not None:
             body["expires_in"] = expires_in
+        if not browser_pages:
+            body["browser_pages"] = False
         response = await self.transport.request("POST", "/keys/new", body=body)
         answer = _json_of(response)
         if response.status_code >= 400:

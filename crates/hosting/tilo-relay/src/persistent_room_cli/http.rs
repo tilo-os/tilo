@@ -43,6 +43,9 @@ pub(super) struct Config {
 
 /// A running listener. Dropping it stops serving.
 pub(super) struct Handle {
+    /// The address the listener bound: `--http 127.0.0.1:0` takes a port the
+    /// kernel picks, which the room announces.
+    pub addr: SocketAddr,
     tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
@@ -79,6 +82,7 @@ pub(super) async fn serve(config: Config) -> anyhow::Result<Handle> {
     });
     tracing::info!(%addr, "serving /mode, /avatars and /discord/callback");
     Ok(Handle {
+        addr,
         tasks: vec![tokio::spawn(accept_loop(listener, http))],
     })
 }
@@ -338,7 +342,12 @@ mod tests {
             String::from_utf8(body.to_vec()).unwrap(),
             format!("{{\"relay\":\"up\",\"revision\":\"{UNKNOWN_REVISION}\"}}")
         );
-        for path in ["/", "/avatars/not-a-name", "/discord/callback"] {
+        for path in [
+            "/",
+            "/wait-list",
+            "/avatars/not-a-name",
+            "/discord/callback",
+        ] {
             let request = Request::builder()
                 .uri(path)
                 .body(Full::new(Bytes::new()))

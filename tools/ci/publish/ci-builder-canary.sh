@@ -19,7 +19,7 @@
 # every publication waits for it. `browser-tests` compiles the browser peer and the agent
 # participant, which reads nearly every source file and so moved with every commit: it runs on
 # release candidates, when asked and when t has room. The same tests run on every commit in the
-# pinned builder (`test/tilo-session-host`, `test-x86_64/tilo-agent-participant`), so what the
+# pinned builder (`test/tilo-session-client`, `test-x86_64/tilo-agent-participant`), so what the
 # candidate adds is the image alone.
 set -euo pipefail
 . "$(dirname -- "${BASH_SOURCE[0]}")/lib.sh"
@@ -106,7 +106,7 @@ JS
     store_config=$scratch/builder-canary-nextest.toml
     printf '[store]\ndir = "%s"\n' "$CARGO_TARGET_DIR/nextest" > "$store_config"
     bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
-      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-session-host --test carriers --test passkey_root --test node_workspace --test voice_browsers \
+      --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-session-client --test carriers --test passkey_root --test node_workspace --test voice_browsers \
       -E 'binary(carriers) or binary(passkey_root) or binary(node_workspace) or binary(voice_browsers)'
     bash tools/ci/nextest.sh cargo nextest run --locked --profile ci --no-tests=fail \
       --target-dir "$CARGO_TARGET_DIR" --tool-config-file "tilo-canary:$store_config" -p tilo-agent-participant --test host_agents \

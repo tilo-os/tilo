@@ -149,11 +149,15 @@ fn the_workspaces_revocations_are_those_its_identity_rows_carry() {
     let mut forged = revoked(&ada);
     forged.user_public_key = bob.cert.user_public_key;
     for (device, revocations) in [(&ada, vec![revoked(&ada)]), (&bob, vec![forged])] {
-        let row = serde_json::json!({ "device_cert": device.cert, "revocations": revocations });
+        let row = crate::state::GovernedIdentity {
+            device_cert: device.cert.clone(),
+            revocations,
+            ..crate::state::GovernedIdentity::default()
+        };
         doc.put(
             &identities,
             hex::encode(device.cert.device_public_key),
-            ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+            ScalarValue::Bytes(row.encode().unwrap()),
         )
         .unwrap();
     }

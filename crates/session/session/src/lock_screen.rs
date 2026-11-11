@@ -17,6 +17,12 @@ use crate::{LOCK_SCREEN_TRIES, SessionAction};
 pub(crate) struct LockView {
     seat: tilo_sheets::lock::LockSeat,
     effects: std::sync::mpsc::Receiver<tilo_sheets::lock::LockEffect>,
+    /// The person typed into this view while it stood in for the app: it keeps the lock until the
+    /// lock ends, so what they type is never split between two fields.
+    typed: std::cell::Cell<bool>,
+    /// The lock screen's app has drawn since the session locked: from then on the app shows this
+    /// lock, and the view stands in for it no more.
+    app_shown: std::cell::Cell<bool>,
 }
 
 impl LockView {
@@ -24,12 +30,21 @@ impl LockView {
     pub(crate) fn new(seat: tilo_sheets::lock::LockSeat) -> Self {
         let (outgoing, effects) = std::sync::mpsc::channel();
         seat.ask_with(outgoing);
-        Self { seat, effects }
+        Self {
+            seat,
+            effects,
+            typed: std::cell::Cell::new(false),
+            app_shown: std::cell::Cell::new(false),
+        }
     }
 
     /// What the view asked since the session last looked, oldest first.
     pub(crate) fn take_effects(&self) -> Vec<tilo_sheets::lock::LockEffect> {
-        self.effects.try_iter().collect()
+        let effects: Vec<_> = self.effects.try_iter().collect();
+        if !effects.is_empty() {
+            self.typed.set(true);
+        }
+        effects
     }
 
     /// Put the view up on every display and show it `shown` , keeping what only the view can know —
@@ -48,6 +63,7 @@ impl LockView {
 
     /// The view has left the screen: nothing of it is drawn.
     fn close(&self) {
+        self.typed.set(false);
         if self.seat.presentation().is_drawn() {
             self.seat.presentation().gone();
         }
@@ -161,21 +177,25 @@ impl crate::Session {
                 self.start_lock_screen();
             }
         }
-        // The session's own view stands on every display while it shows the lock, and leaves with
-        // the lock.
-        if let Some(view) = &self.lock_view {
-            if self.compositor.session_locked() && self.lock_shown == LockShown::View {
-                view.open(lock.shown());
-            } else if !self.compositor.session_locked() {
-                view.close();
-            }
-        }
-        // The machine may sleep once the lock screen's frame is in.
-        self.admit_sleep_if_locked();
+        // Whose session it is, as their own avatar on the bar names them: read while the lock is up,
+        // since it is shown nowhere else.
+        let (person, hue) = if locked {
+            let own = self
+                .shared
+                .sync
+                .as_ref()
+                .map_or_else(crate::sync::OwnPresence::default, |sync| sync.own());
+            let (name, identity) = crate::people::own_face(&own, &self.shared.person);
+            (name, Some(crate::people::own_hue(&identity)))
+        } else {
+            let shown = lock.shown();
+            (shown.person, shown.hue)
+        };
         lock.show(tilo_sheets::lock::Shown {
             clock: ui::clock::time_of_day(&ui::clock::local_now()),
             date: ui::format::day_heading(ui::clock::today(), false),
-            person: self.unlocking.user.clone(),
+            person,
+            hue,
             status: self.lock_status(),
             media: lock_service::media(
                 &self.shared.readings,
@@ -183,6 +203,24 @@ impl crate::Session {
             ),
             ..lock.shown()
         });
+        // The session's own view stands on every display while it shows the lock, and leaves with
+        // the lock. It also stands until the lock screen's app has drawn: the app takes a moment to
+        // start, and the lock is on screen, prompt and all, from the first frame after it locks. A
+        // person who typed into it meanwhile keeps it for the rest of this lock.
+        if let Some(view) = &self.lock_view {
+            let locked = self.compositor.session_locked();
+            let app_shown = locked && (view.app_shown.get() || self.compositor.lock_client_drawn());
+            view.app_shown.set(app_shown);
+            let typed = view.typed.get() || view.seat.holds_typing();
+            view.typed.set(locked && typed);
+            if locked && (self.lock_shown == LockShown::View || !app_shown || typed) {
+                view.open(lock.shown());
+            } else {
+                view.close();
+            }
+        }
+        // The machine may sleep once the lock screen's frame is in.
+        self.admit_sleep_if_locked();
         for password in lock.take_attempts() {
             let verifier = std::sync::Arc::clone(&self.unlocking.verifier);
             let user = self.unlocking.user.clone();

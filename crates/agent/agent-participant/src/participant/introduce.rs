@@ -6,6 +6,7 @@
 //! workspace has not named.
 
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_client::Outbox;
 
 use super::AgentParticipant;
 
@@ -60,7 +61,7 @@ impl AgentParticipant {
         match app.take_mutation() {
             Ok(Some(mutation)) => {
                 self.generation = self.generation.wrapping_add(1);
-                if let Err(error) = self.peer.publish(route.clone(), &mutation) {
+                if let Err(error) = self.peer.write(route.clone(), &mutation) {
                     tracing::warn!(%error, "agent: its introduction could not be committed");
                 }
             }

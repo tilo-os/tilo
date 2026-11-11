@@ -19,7 +19,7 @@ pub(crate) fn host_ty(name: &str) -> Ty {
 
 impl Checker<'_> {
     /// The one positional argument of a built-in, checked as a resource.
-    fn resource_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
+    pub(super) fn resource_arg(&mut self, what: &str, args: &[ast::Arg], span: Span) -> Option<Ex> {
         let [a] = args else {
             self.err(
                 "E022",

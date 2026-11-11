@@ -10,6 +10,7 @@ use tilo_app::advanced::{Affine, NodeId, Scene, TaffyTree, WindowEvent};
 use tilo_app::headless::FrameHarness;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::ElementState;
+use ui_core::widget::DrawChild;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Playlist {
@@ -231,7 +232,8 @@ impl Widget for Staged {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.inner.draw(scene, transform, text, theme, presence);
+        self.inner
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn name(&self) -> &'static str {

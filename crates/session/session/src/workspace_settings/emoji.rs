@@ -25,8 +25,6 @@ use tilo_sheets::Seat as _;
 use tilo_sheets::file_picker::{FileAnswer, FileMode, FilePickerSeat, FileRequest, FileType};
 use tilo_sheets::workspace_settings as sheet;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::record::RecordOwners;
-use ui::record::workspace::WorkspaceRecords;
 use ui::workspace_emoji::{CustomEmoji, Small, WorkspaceEmoji, make_small, wake_when_tools_are_in};
 
 /// How workspace settings' history names where a change came from.
@@ -48,9 +46,9 @@ const PICTURES: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 
 /// The workspace's emoji as the Emoji tab holds them.
 pub(crate) struct Emoji {
-    /// Where this device keeps its apps' records: the one store Chat keeps the record in too, which
-    /// every app of the workspace opens.
-    owners: RecordOwners,
+    /// The workspace's records as the workspace holds them: the copy Chat and every app of the
+    /// workspace read.
+    records: crate::engine_records::EngineRecords,
     /// Wakes the session's loop when another replica's change arrives, and when the image tools a
     /// chosen picture waits for are in.
     wake: ui::WakeScope,
@@ -99,15 +97,18 @@ struct Waiting {
 }
 
 impl Emoji {
-    /// The workspace's emoji in the store rooted at `root` , waking the session's loop through
+    /// The workspace's emoji in the workspaces' copy of them (`records`), waking the session's loop through
     /// `wake` when a change or the image tools land.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(
+        records: crate::engine_records::EngineRecords,
+        wake: tilo_service::Wake,
+    ) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
             tracing::warn!(%error, "the workspace's emoji are not woken");
         }
         Self {
-            owners: RecordOwners::new(root),
+            records,
             wake: scope,
             open: RefCell::default(),
             shown: RefCell::default(),
@@ -255,11 +256,7 @@ impl Emoji {
             Standing::person(workspace.policy.clone(), person.clone()),
         )
         .with_policy_time_sampler(Arc::new(|| Ok(tilo_clock::unix_now())));
-        let records = WorkspaceRecords::in_workspace(
-            self.owners.clone(),
-            workspace_id.clone(),
-            author.clone(),
-        );
+        let records = self.records.in_workspace(&workspace_id, author.clone());
         let record = WorkspaceRecord::<Record>::open(
             &records,
             OWNER,
