@@ -153,10 +153,13 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
       await sleep(700);
       return;
     }
+    // Moved twice, so the desk sees the pointer arrive even where it already was; pressed with
+    // the button held, as a person's press is (a press that says no button is held is a hover).
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x: x - 1, y});
     await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
-    for (const type of ['mousePressed', 'mouseReleased']) {
-      await tab.send('Input.dispatchMouseEvent', {type, x, y, button: 'left', clickCount: 1});
-    }
+    await sleep(300);
+    await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1});
+    await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1});
     await sleep(700);
   };
   const key = async (k, modifiers = 0) => {
@@ -178,13 +181,25 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await waits.settle({evaluate: tab.evaluate.bind(tab), by: 3, owed: () => true, sleep, timeoutMs: 20_000});
     await sleep(ms);
   };
-  const press = async control => {
+  // Press the control named `control` (a name, or a test of one) where the desk last laid it
+  // out; `where` narrows it to the place it stands, such as the top bar.
+  const press = async (control, where = () => true) => {
     const tree = await names();
-    const hit = tree.find(([, , n, , b]) => n === control && b);
-    if (!hit) return false;
+    const named = typeof control === 'function' ? control : n => n === control;
     const box = await canvasBox();
+    // Only a control on screen can be pressed: one laid out where the strip has scrolled it
+    // away is no place a person can reach, and a press beside the page lands nowhere.
+    const onScreen = ([x0, y0, x1, y1]) => x1 > x0 && y1 > y0 && (x0 + x1) / 2 >= 0 && (x0 + x1) / 2 < box.w
+      && (y0 + y1) / 2 >= 0 && (y0 + y1) / 2 < box.h;
+    const hit = tree.find(([, , n, , b]) => named(n) && b && where(b) && onScreen(b));
+    if (!hit) return false;
     const [x0, y0, x1, y1] = hit[4];
-    await click(box.x + (x0 + x1) / 2, box.y + (y0 + y1) / 2);
+    const [x, y] = [box.x + (x0 + x1) / 2, box.y + (y0 + y1) / 2];
+    // What a press there reaches: the page's canvas, or something of the page over it.
+    const under = await tab.evaluate(`(() => { const e = document.elementFromPoint(${x}, ${y});
+      return e === globalThis.tiloMount?.canvas ? 'canvas' : e ? e.localName + (e.id ? '#' + e.id : '') + (e.className ? '.' + String(e.className).split(' ')[0] : '') : 'nothing'; })()`).catch(() => '?');
+    console.log(`  press ${JSON.stringify(hit[2])} at ${Math.round(x)},${Math.round(y)} on ${under}`);
+    await click(x, y);
     return true;
   };
   const step = async (what, run) => {
@@ -200,13 +215,16 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     // (an answer) is closed first, so the query is not appended to it.
     if (await waits.searchOpen(tab)) {
       await key('Escape');
-      await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 10_000}).catch(() => {});
+      if (!await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 10_000}).then(() => true, () => false)) {
+        report.problems.push(`${name}: Escape left the search open`);
+        await shoot('search-stuck');
+        await key('Escape');
+      }
     }
-    {
-      const box = await canvasBox();
-      await click(box.x + box.w / 2, box.y + box.h * 0.85);
-      await key('k', mac ? 4 : 2);
-    }
+    // The keyboard goes to the desk without a click: a click to give it focus lands on whatever
+    // stands there, a row of a search still up or a window's button.
+    await tab.evaluate('globalThis.tiloMount?.canvas?.focus({preventScroll: true})').catch(() => {});
+    await key('k', mac ? 4 : 2);
     await tab.waitFor('!!globalThis.tiloMount?.state()?.searchOpen', {timeout: 60_000});
     await type(query);
     await waits.settleSearch(tab, {sleep, timeoutMs: 30_000});
@@ -219,8 +237,16 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   // includes fetching the app's code.
   const opened = async () => {
     await key('Enter');
-    await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 90_000})
-      .catch(() => report.problems.push(`${name}: the search stayed open after Enter`));
+    const closed = await tab.waitFor('!globalThis.tiloMount?.state()?.searchOpen', {timeout: 90_000})
+      .then(() => true, () => false);
+    if (!closed) {
+      report.problems.push(`${name}: the search stayed open after Enter`);
+      // What it stood on: the field and its first rows, and whether it still searched.
+      const state = await tab.evaluate(`JSON.stringify((({searchSearching, frames}) => ({searchSearching, frames}))(globalThis.tiloMount?.state() ?? {}))`).catch(() => '?');
+      const rows = (await names()).filter(([, role, n]) => n && /TextInput|SearchBox|ListItem|Option|MenuItem|Row/i.test(role)).slice(0, 12)
+        .map(([, role, n]) => `${role}:${n}`);
+      console.log(`  search stayed open: ${state} ${JSON.stringify(rows).slice(0, 1500)}`);
+    }
     await sleep(500);
     // What the desk holds now, and what the page last said, for the log.
     const held = await tab.evaluate(`JSON.stringify({
@@ -294,7 +320,7 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
   for (const app of ['Notes', 'Sheets', 'Files', 'Chat', 'Canvas', 'Word Processor', 'Calendar', 'Browser']) {
     await step(`open-${app}`, async () => {
       await search(app.toLowerCase());
-      if (app === 'Notes') await shoot(`search-${app}`);
+      await shoot(`search-${app}`);
       await opened();
       await quiet(2500);
       await shoot(app);
@@ -319,14 +345,14 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     console.log(`bars: ${[...new Set(bars)].join(' | ').slice(0, 3000)}`);
   });
   await step('workspace-menu', async () => {
-    if (!await press('Workspace: workspaces, overview and strips')) throw new Error('no workspace menu');
+    const topBar = b => b[1] < 32;
+    if (!await press(n => n.endsWith(': workspaces, overview and strips'), topBar)) throw new Error('no workspace menu');
     await quiet(1500); await shoot('workspace-menu');
+    console.log(`  menu: ${JSON.stringify((await names()).filter(([, role]) => /Menu/.test(role)).map(([, role, n]) => `${role}:${n}`).slice(0, 12))}`);
     await key('Escape'); await quiet(500);
   });
   await step('own-card', async () => {
-    const tree = await names();
-    const me = tree.find(([, , n]) => / \(you\): /.test(n));
-    if (!me || !await press(me[2])) throw new Error('no own card');
+    if (!await press(n => n.endsWith(' (you): your profile'), b => b[1] < 32)) throw new Error('no own card');
     await quiet(1500); await shoot('own-card');
     await key('Escape'); await quiet(500);
   });
