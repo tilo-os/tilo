@@ -1593,11 +1593,14 @@ impl Widget for EmptyState {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.layout_dirty = false;
     }
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn needs_animation_frame(&self) -> bool {

@@ -674,7 +674,6 @@ impl Widget for StatTile {
             self.dirty = true;
         }
         self.rect = rect;
-        self.layout_dirty = false;
     }
 
     fn draw(
@@ -708,6 +707,10 @@ impl Widget for StatTile {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {

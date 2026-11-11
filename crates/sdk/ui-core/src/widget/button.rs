@@ -2396,12 +2396,6 @@ impl Widget for Button {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.solver_placed = true;
-        // The solver has just placed it: whatever asked for a measure is answered by this
-        // geometry, as `apply_layout_external` answers a host-placed control's. A control that
-        // is laid out but never drawn — a shut overflow door's button, a slot its row hides —
-        // finds no draw to answer it, so it would ask again on every frame and re-measure its
-        // path to the root for a control nobody sees.
-        self.layout_dirty = false;
         if self.face.resized(self.rect) {
             self.dirty = true;
         }
@@ -2588,6 +2582,12 @@ impl Widget for Button {
         // measure: the host sizes it, however hidden or unplaced it is.
         self.solver_placed
             && (self.layout_dirty || self.i18n_revision != crate::i18n::I18nManager::revision())
+    }
+
+    /// The solver measured the face it asked for, whether or not this frame
+    /// draws the control: a shut overflow door's button finds no `mark_drawn`.
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn needs_idle_sync(&self) -> bool {

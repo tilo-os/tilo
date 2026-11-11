@@ -631,7 +631,6 @@ impl Widget for BannerBody {
             self.rect = rect;
             self.dirty = true;
         }
-        self.layout_dirty = false;
     }
 
     fn draw(
@@ -675,6 +674,10 @@ impl Widget for BannerBody {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 }
 
@@ -1228,7 +1231,6 @@ impl Widget for Banner {
             self.rect = rect;
             self.dirty = true;
         }
-        self.layout_dirty = false;
         self.device_scale = f64::from(super::layout::device_scale());
         // Its identity matched nothing: it takes up the banner that stood
         // here before (what it says changed), or it arrived.
@@ -1373,6 +1375,10 @@ impl Widget for Banner {
 
     fn layout_needs_measure(&self) -> bool {
         self.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn take_structure_dirty(&mut self) -> bool {

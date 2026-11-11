@@ -336,8 +336,11 @@ impl Widget for ReactionStripWidget {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.layout_dirty = false;
         self.dirty = true;
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     fn get_rect(&self) -> Rect {

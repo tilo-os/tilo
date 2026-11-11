@@ -257,7 +257,6 @@ impl Decorator for PageSlide {
             self.aimed = Some(self.level);
         }
         let node = self.page.build_layout(taffy, theme, node_map);
-        self.layout_dirty = false;
         node
     }
 
@@ -350,6 +349,10 @@ impl Decorator for PageSlide {
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.page.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 }
 

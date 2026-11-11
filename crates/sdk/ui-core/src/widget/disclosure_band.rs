@@ -187,7 +187,6 @@ impl Widget for DisclosureBand {
             self.rect = rect;
             self.dirty = true;
         }
-        self.layout_dirty = false;
         if !self.band.laid_in_flow {
             // On its way: its container puts it in its slot, and its
             // content is placed there when it is drawn.
@@ -307,6 +306,10 @@ impl Widget for DisclosureBand {
 
     fn layout_needs_measure(&self) -> bool {
         self.is_layout_dirty()
+    }
+
+    fn layout_measured(&mut self) {
+        self.layout_dirty = false;
     }
 
     /// Joining or leaving the layout adds or removes the child's nodes in

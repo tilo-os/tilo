@@ -645,6 +645,7 @@ decorator_trait! {
         fn dismiss_presented_modal() -> bool;
         fn remount_children(remount: &mut crate::widget::Remount<'_>) -> bool;
         fn mark_drawn();
+        fn layout_measured();
         fn release_scene_cache();
         fn draw_overlay(
             scene: &mut Scene,

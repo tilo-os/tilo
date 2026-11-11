@@ -1273,6 +1273,16 @@ pub trait Widget {
             .unwrap_or_else(|| self.is_layout_dirty())
     }
 
+    /// Meet the measure request [`Self::layout_needs_measure`] just reported:
+    /// the solver asking is measuring this widget's node now, so whatever its
+    /// geometry depended on is read in this pass. A widget that keeps a
+    /// request flag clears it here. Only a draw used to answer it, so a widget
+    /// laid out and never drawn — a shut overflow door's controls, a row a
+    /// scroll hides, a pane folded away — kept asking, and every frame after
+    /// re-measured it and its path to the root for a widget nobody sees.
+    /// Containers need not forward: the solver meets every node it measures.
+    fn layout_measured(&mut self) {}
+
     /// Everything this widget paints, children included; [`draw_child`]
     /// skips the draw when it misses the viewport. Override for widgets
     /// that paint past their own rect.
