@@ -152,7 +152,7 @@ impl Inner {
         if !self.chunks.has_record() {
             return;
         }
-        let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
+        let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
             return;
         };
         let snapshot = std::sync::Arc::clone(&held.snapshot);
@@ -338,7 +338,7 @@ impl Inner {
                 .iter()
                 .filter(|write| !settled.contains(&write.seed))
             {
-                let Some(held) = self.apps.get(&write.app).filter(|held| held.ready()) else {
+                let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
                     continue;
                 };
                 let mut sink = OverlaySink {
@@ -425,7 +425,7 @@ impl Inner {
         };
         if let (true, Some(held)) = (
             self.chunks.has_record(),
-            self.apps.get(app).filter(|held| held.ready()),
+            self.apps.get(app).filter(|held| held.answers()),
         ) {
             let snapshot = Arc::clone(&held.snapshot);
             let mut sink = OverlaySink {

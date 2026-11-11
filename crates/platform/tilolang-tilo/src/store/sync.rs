@@ -92,7 +92,7 @@ impl TiloStore {
         let old_snapshots: BTreeMap<AppId, Arc<idx::Snapshot>> = inner
             .apps
             .iter()
-            .filter(|(_, held)| held.ready())
+            .filter(|(_, held)| held.answers())
             .map(|(app, held)| (app.clone(), Arc::clone(&held.snapshot)))
             .collect();
         // What the splices below are measured from is the listing as those who read the mirror

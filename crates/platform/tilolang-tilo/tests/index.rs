@@ -781,6 +781,77 @@ fn an_index_stamped_with_older_heads_catches_up_with_the_record() {
     assert_eq!(third.store().read_stats().doc.entries, 0);
 }
 
+/// A write made while the index catches up off the frame reads back at once: the window reads
+/// the rows the index held while the rest is derived, and the store's own writes over them, so a
+/// record just made is never missing from what the window reads.
+#[test]
+fn what_the_store_writes_while_its_index_catches_up_reads_back_at_once() {
+    let (mut ada, root, lock) = workspace();
+    let dir = TempDir::new("catching-up");
+    drop(kept_in(dir.path(), &ada.doc, &lock));
+    // The workspace moves on while no window keeps the index.
+    for step in 0..3 {
+        let action = plan(
+            &ada,
+            "add",
+            json!({ "text": format!("task {step}") }),
+            &root,
+        );
+        ada.apply(&action);
+    }
+    let host = Host::open(
+        Opening {
+            record: Some(&ada.doc),
+            chunks: None,
+            index_dir: Some(dir.path().to_owned()),
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    // A window with frames: what the record gained is derived off the frame.
+    host.set_index_waker(Arc::new(|| {}));
+    host.load_builtin(TODO, &lock).unwrap();
+    assert!(!host.index_ready(), "the index catches up off the frame");
+    let meta = host.packages()[0].meta.clone();
+    let list = ResourceRef::root(&root, type_id(&meta, "TodoList"));
+    let spec = tilolang_runtime::store::FieldSpec {
+        id: field_id(&meta, "TodoList", "items"),
+        kind: tilolang_runtime::meta::FieldKind::Collection,
+    };
+    let listed = || {
+        tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
+            .unwrap()
+            .ids()
+    };
+    let before = listed();
+    let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
+    host.runtime()
+        .invoke_action(
+            &Principal::new("ada"),
+            (
+                add.id.as_str(),
+                vec![Value::resource(&list), Value::text("written meanwhile")],
+            ),
+        )
+        .unwrap();
+    let written: Vec<String> = listed()
+        .into_iter()
+        .filter(|id| !before.contains(id))
+        .collect();
+    assert_eq!(
+        written.len(),
+        1,
+        "the item just written is listed while the index catches up"
+    );
+    host.wait_index();
+    assert!(host.index_ready());
+    let after = listed();
+    assert!(after.contains(&written[0]), "and once the index caught up");
+    assert_eq!(after.len(), 4, "beside the three the record gained");
+}
+
 /// Every text `node` and the nodes inside it show.
 fn texts_of(node: &tilolang_runtime::UiNode, out: &mut Vec<String>) {
     out.extend(node.props.values().filter_map(|value| match value {
