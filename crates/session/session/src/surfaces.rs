@@ -1166,7 +1166,15 @@ pub(crate) fn outcome(
         ReceiptStatus::Rejected { error } => Some(InvocationUpdate::Failed {
             invocation,
             error: tilo_actions::ActionFailure {
-                code: String::from("refused"),
+                // An action that waits for the person's word is told apart
+                // from one that ran and was refused: what a person reads is
+                // that their answer is missing, not that it failed.
+                code: match error {
+                    ActionHostError::ConfirmationRequired => {
+                        tilo_actions::remote::CONFIRMATION_REQUIRED_CODE.to_owned()
+                    }
+                    _ => String::from("refused"),
+                },
                 message: error.to_string(),
                 details: None,
                 retryable: false,

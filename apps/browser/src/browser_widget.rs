@@ -69,6 +69,9 @@ mod continuity;
 mod dialog;
 mod download_read;
 mod engine_runtime;
+mod holds;
+#[cfg(test)]
+mod holds_tests;
 mod http_fallback;
 mod library;
 #[cfg(test)]
@@ -670,6 +673,9 @@ pub struct BrowserWidget {
     resource_pip_deadline: Option<ui::time::Instant>,
     page_operation: Option<PageOperation>,
     page_operation_result: Option<ui::tilo_actions::InvocationUpdate>,
+    /// What the page is not allowed to send yet: the person answers each
+    /// request before it leaves ([`holds`]).
+    holds: holds::Holds,
     /// Effects waiting on an operation this window accepted.
     pending_replies: Vec<(ui::tilo_actions::InvocationId, ui::framework::EffectReply)>,
     page_request_seq: u32,
@@ -1426,6 +1432,11 @@ impl BrowserWidget {
         let settings_presentation = SettingsPresentation::from_settings(&settings);
         let search_index = crate::search_provider::BrowserSearchIndex::default();
         search_index.sync_all(&history, &downloads);
+        // A window opened for an agent browses as a visitor, and nothing it
+        // reaches leaves without the person's answer.
+        if browsing_mode.holds_departures() {
+            engine.hold_departures();
+        }
         Self {
             rect: Rect::ZERO,
             engine,
@@ -1572,6 +1583,7 @@ impl BrowserWidget {
             resource_pip_deadline: None,
             page_operation: None,
             page_operation_result: None,
+            holds: holds::Holds::default(),
             pending_replies: Vec::new(),
             page_request_seq: 0,
             pending_pip: None,
@@ -2026,6 +2038,9 @@ impl BrowserWidget {
             }
             BrowserOperation::ReadDownload { .. } | BrowserOperation::AnswerDownload { .. } => {
                 return Err("downloads read and answered through their resource action".into());
+            }
+            BrowserOperation::AnswerHeldRequest { .. } => {
+                return Err("a held request is answered through its resource action".into());
             }
             BrowserOperation::Page(_) => {
                 return Err("page actions report their result; start them as an invocation".into());
@@ -3240,6 +3255,18 @@ impl BrowserWidget {
                 | WebViewEvent::DownloadUpdated { .. }
                 | WebViewEvent::DownloadRuntime { .. }
                 | WebViewEvent::ExtensionDownloadOpen { .. }) => {
+                    // In a window an agent operates, a download the page
+                    // starts waits for the person like every other departure:
+                    // the hold asks, so no prompt of the window's own is put
+                    // beside it.
+                    if let WebViewEvent::NativeDownloadRequested { id, url, name } = &event
+                        && self.browsing_mode.holds_departures()
+                    {
+                        self.hold_download(*id, url, name);
+                        self.keep_native_download(&event);
+                        self.structure_dirty = true;
+                        continue;
+                    }
                     self.keep_native_download(&event);
                     self.capabilities.apply(event);
                     self.structure_dirty = true;
@@ -3497,6 +3524,8 @@ impl BrowserWidget {
                         self.settle_page_operation_on_question();
                     }
                 }
+                WebViewEvent::HeldRequest(request) => self.hold_asked(request),
+                WebViewEvent::HeldRequestClosed { id } => self.held_closed(id),
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
                 | WebViewEvent::DownloadFinished { .. }
@@ -5421,6 +5450,17 @@ impl BrowserWidget {
         // whoever reads the page answers it there, next to the page's other
         // buttons, and never has to find the prompt in the chrome.
         page.actions.extend(self.capabilities.permission_answers());
+        // A request the window holds waits on the person: whoever may ask the
+        // page answers it here, by its id, and nothing leaves until they do.
+        for held in self.holds.waiting() {
+            let id = held.request.id.to_string();
+            let mut send = E::SendHeldRequest { id: id.clone() }.bound();
+            send.type_mut().label = format!("Let it leave: {}", held.describing());
+            page.actions.push(send);
+            let mut keep = E::KeepHeldRequest { id }.bound();
+            keep.type_mut().label = "Keep the page as it is".into();
+            page.actions.push(keep);
+        }
         let element = String::new();
         for (spec, asking) in [
             (E::ReadPage { frame: None }, &["frame"][..]),
@@ -6043,6 +6083,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.run_pending_commands();
         self.apply_review_stage();
         self.drive_page_operation();
+        self.expire_holds();
         self.structure_dirty |= self.capabilities.ask(self.extensions.take_questions());
         let downloads_changed = self.capabilities.downloads_changed();
         self.structure_dirty |= downloads_changed;
@@ -6107,9 +6148,19 @@ impl BrowserWidget {
                 let value = self.answer_download(id, *allow)?;
                 return Ok(ui::framework::Effected::value(value));
             }
+            BrowserOperation::AnswerHeldRequest { id, allow } => {
+                let value = self.answer_hold(id, *allow)?;
+                return Ok(ui::framework::Effected::value(value));
+            }
             _ => {}
         }
         if let BrowserOperation::Page(request) = operation {
+            // The person allowed the departure this invocation reached: it
+            // leaves now, and the page action is not run a second time.
+            if let Some((id, kind)) = self.holds.release_for(invocation) {
+                self.release_held(id, kind, true);
+                return Ok(ui::framework::Effected::Pending);
+            }
             self.start_page_operation(invocation, request)?;
             return Ok(ui::framework::Effected::Pending);
         }

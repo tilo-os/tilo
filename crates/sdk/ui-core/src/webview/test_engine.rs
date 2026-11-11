@@ -59,8 +59,10 @@ struct Inner {
     adopted: std::collections::HashMap<u32, Arc<TestEngine>>,
     /// The tabs it was asked to create, oldest first.
     created: Vec<Arc<TestEngine>>,
-    /// It paints nothing new, as a busy renderer has not yet.
+    /// Whether it paints nothing new, as a busy renderer has not yet.
     holds_frames: bool,
+    /// Whether it was asked to hold what the page sends.
+    holds_departures: bool,
     /// Its pages carry an end mark, as a mail's document does.
     marks_page_end: bool,
     /// Addresses that fail to load, and the network error each fails with.
@@ -92,6 +94,12 @@ impl TestEngine {
     /// Every command received so far, in order.
     pub fn commands(&self) -> Vec<WebViewCommand> {
         self.lock_inner().commands.clone()
+    }
+
+    /// Whether it was asked to hold what the page sends, as a window an
+    /// agent operates asks.
+    pub fn holds_departures(&self) -> bool {
+        self.lock_inner().holds_departures
     }
 
     pub fn current_uri(&self) -> Option<String> {
@@ -241,6 +249,12 @@ impl TestEngine {
 
     /// Deliver `event` on the next drain, as the engine would on its own (a
     /// page reporting its document size).
+    /// Report `request` held, as a window an agent operates does when its
+    /// page is ready to send something.
+    pub fn hold(&self, request: super::HeldRequest) {
+        self.push_event(WebViewEvent::HeldRequest(request));
+    }
+
     pub fn push_event(&self, event: WebViewEvent) {
         self.lock_inner().events.push(event);
     }
@@ -523,6 +537,10 @@ impl WebViewEngine for TestEngine {
         self.lock_inner().accepts_popups = true;
     }
 
+    fn hold_departures(&self) {
+        self.lock_inner().holds_departures = true;
+    }
+
     fn accept_page_dialogs(&self) {
         self.lock_inner().accepts_page_dialogs = true;
     }
@@ -708,6 +726,7 @@ impl WebViewEngine for TestEngine {
             | WebViewCommand::Find { .. }
             | WebViewCommand::ContextMenuAction { .. }
             | WebViewCommand::AnswerPageDialog { .. }
+            | WebViewCommand::AnswerHeldRequest { .. }
             | WebViewCommand::StopFinding
             | WebViewCommand::SetZoomLevel(_)
             | WebViewCommand::ReportDocumentSize(_)

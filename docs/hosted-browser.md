@@ -233,6 +233,22 @@ session accepts an answer from the host that certified it, for its own
 person, and runs the action once. Denied or unanswered, the invocation ends
 refused and nothing runs. That is the approval before `submit-page`.
 
+**Every departure is that same approval, however it was triggered.** In a
+window opened for an agent the engine stops the page where it was about to
+send something and holds it there: a form submission — a submit button, Enter
+in a field, the page's own `submit()` or `requestSubmit()` — any navigation or
+`fetch`/`XMLHttpRequest` with a method other than `GET` or `HEAD`, from the
+page or a frame of it, a download, and what a payment flow sends. The page
+stays as it was filled and nothing leaves: the request is paused, not dropped,
+so the person who allows it sends exactly what was filled in. The page action
+whose run reached the hold answers that it needs the person, naming the method
+and where it goes, and their allow releases that one request — the invocation
+does not run the page action again — while a denial or a question nobody
+answers drops it and leaves the page as it was. A departure no action asked
+for, such as a page posting on its own, is published on the window as the wait
+it is, and answered from there. A person's own window holds none of this: what
+they click leaves as they click it.
+
 The page action is counted once the window answers that it ran, so an
 action the person did not allow is never counted.
 

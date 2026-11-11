@@ -377,6 +377,26 @@ pub enum BrowserEffect {
         #[param("The download's id")]
         id: String,
     },
+    /// Let the page send it
+    ///
+    /// Releases the request the window holds — a form submission, a
+    /// navigation or request with a method of its own, a download, a payment
+    /// — exactly once, answering what left and where. Nothing leaves before
+    /// the person allows it, and an agent may not answer for them.
+    #[effect(row, returns, destructive)]
+    SendHeldRequest {
+        #[param("The held request's id")]
+        id: String,
+    },
+    /// Keep the page as it is
+    ///
+    /// Drops the request the window holds: the page stays as it was filled
+    /// and nothing leaves.
+    #[effect(row, returns)]
+    KeepHeldRequest {
+        #[param("The held request's id")]
+        id: String,
+    },
     /// Zoom in
     ///
     /// Makes the page larger on this device; answers the page's size.
@@ -966,6 +986,10 @@ impl BrowserEffect {
             Self::ReadDownload { id } => BrowserOperation::ReadDownload { id },
             Self::SaveDownload { id } => BrowserOperation::AnswerDownload { id, allow: true },
             Self::DiscardDownload { id } => BrowserOperation::AnswerDownload { id, allow: false },
+            Self::SendHeldRequest { id } => BrowserOperation::AnswerHeldRequest { id, allow: true },
+            Self::KeepHeldRequest { id } => {
+                BrowserOperation::AnswerHeldRequest { id, allow: false }
+            }
             Self::AcceptPageDialog { dialog, text } => BrowserOperation::AnswerPageDialog {
                 dialog,
                 accept: true,
@@ -1261,6 +1285,12 @@ pub enum BrowserOperation {
     },
     /// Answer the page's offer to download `id`: save it when `allow`.
     AnswerDownload {
+        id: String,
+        allow: bool,
+    },
+    /// Answer the request `id` the window holds: let it leave when `allow`,
+    /// or keep the page as it is.
+    AnswerHeldRequest {
         id: String,
         allow: bool,
     },

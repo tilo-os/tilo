@@ -27,10 +27,11 @@ class Downloads final : public CefDownloadHandler {
   Downloads(std::string directory,Emit emit,std::function<int(CefRefPtr<CefBrowser>)> owner,
             std::function<bool(int)> eligible,std::function<bool(int)> can_reserve,
             std::function<void(int,bool)> owner_busy,std::function<void(int)> owner_idle,
-            std::function<void()> changed)
+            std::function<void()> changed,std::function<bool(int)> holds_for_person)
       :downloads_(std::move(directory)),emit_(std::move(emit)),owner_(std::move(owner)),
        eligible_(std::move(eligible)),can_reserve_(std::move(can_reserve)),
-       owner_busy_(std::move(owner_busy)),owner_idle_(std::move(owner_idle)),changed_(std::move(changed)) {}
+       owner_busy_(std::move(owner_busy)),owner_idle_(std::move(owner_idle)),changed_(std::move(changed)),
+       holds_for_person_(std::move(holds_for_person)) {}
   size_t Admitted() const {return slots_.Size();}
   bool Accepting() const {return accepting_;}
   bool OwnerBusy(int owner) const {
@@ -102,7 +103,11 @@ class Downloads final : public CefDownloadHandler {
     transfers_[id]=std::move(transfer);
     OwnerStateChanged(owner,was_busy);
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("url",url);d->SetString("name",name);emit_("download_prompt",d);Changed();
-    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id){self->DownloadDecision(id,false);},CefRefPtr<Downloads>(this),id),60000);
+    // A window an agent operates holds the download until the person answers
+    // it, as it holds every other departure: no deadline of the engine's own
+    // ends it, and the app drops the hold if nobody comes.
+    if(!holds_for_person_ || !holds_for_person_(owner))
+      CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id){self->DownloadDecision(id,false);},CefRefPtr<Downloads>(this),id),60000);
     return true;
   }
   void DownloadDecision(int id,bool allow) {
@@ -288,7 +293,7 @@ class Downloads final : public CefDownloadHandler {
   std::string downloads_;Emit emit_;
   std::function<int(CefRefPtr<CefBrowser>)> owner_;
   std::function<bool(int)> eligible_,can_reserve_;
-  std::function<void(int,bool)> owner_busy_;std::function<void(int)> owner_idle_;std::function<void()> changed_;
+  std::function<void(int,bool)> owner_busy_;std::function<void(int)> owner_idle_;std::function<void()> changed_;std::function<bool(int)> holds_for_person_;
   bool accepting_=true;
   DownloadSlots slots_;std::map<int,Transfer> transfers_,early_;std::map<int,RetryRecord> history_;std::set<int> terminal_;std::deque<int> terminal_order_;
   DownloadProvenance provenance_;

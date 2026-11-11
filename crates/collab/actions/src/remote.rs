@@ -574,6 +574,14 @@ impl InvocationState {
             InvocationUpdate::Succeeded { output, .. } => ReceiptStatus::Completed {
                 output: output.clone(),
             },
+            // An action that reached something only the person may allow
+            // stopped before it ran: their answer is what it waits on, which
+            // is a refusal to the caller, not a failure of the action.
+            InvocationUpdate::Failed { error, .. } if error.code == CONFIRMATION_REQUIRED_CODE => {
+                ReceiptStatus::Rejected {
+                    error: ActionHostError::ConfirmationRequired,
+                }
+            }
             InvocationUpdate::Failed { error, .. } => ReceiptStatus::Failed {
                 error: error.clone(),
             },
@@ -587,6 +595,14 @@ impl InvocationState {
         }
     }
 }
+
+/// The failure code an action answers while it runs when what it reached
+/// waits for the person's word ([`DoorError::ConfirmationRequired`]): the
+/// caller's invocation is refused for want of their answer, and their
+/// answer runs it again.
+///
+/// [`DoorError::ConfirmationRequired`]: crate::door::DoorError::ConfirmationRequired
+pub const CONFIRMATION_REQUIRED_CODE: &str = "action_confirmation_required";
 
 /// Why a host would not do what was asked. Every variant means nothing ran.
 ///
