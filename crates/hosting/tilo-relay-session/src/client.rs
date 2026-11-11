@@ -82,7 +82,18 @@ pub struct ClientCredentials<'a> {
     pub revocations: RevocationList,
     /// The workspace a device the host has not admitted yet enters on this
     /// session ([`tilo_relay_protocol::entering`]).
-    pub entering: Option<tilo_relay_protocol::entering::Entering>,
+    pub entering: Option<Entry>,
+}
+
+/// What a device the host has not admitted yet brings to its entry
+/// ([`tilo_relay_protocol::entering`]).
+#[derive(Clone, Debug)]
+pub struct Entry {
+    /// The workspace whose door it enters by, as its hello names it.
+    pub entering: tilo_relay_protocol::entering::Entering,
+    /// Its signed request for the keys of the workspace's channel group,
+    /// which its proof carries ([`tilo_relay_protocol::entering::EnterProof`]).
+    pub access: Option<collab_types::MlsAccessRequestV1>,
 }
 
 fn state_in_scope(scope: &InteractiveWorkspaceScope, envelope: &Envelope) -> bool {

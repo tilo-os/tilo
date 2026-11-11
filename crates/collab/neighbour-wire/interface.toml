@@ -5,7 +5,7 @@
 # Device ↔ device: the certified handshake, the relay session's frames and
 # the peer-sync messages they carry between two devices and their hosts.
 name = "peer"
-version = 36
+version = 37
 version_const = "crates/collab/neighbour-wire/src/lib.rs:PEER_PROTOCOL_VERSION"
 encoding = "postcard"
 served_to_apps = false
@@ -192,6 +192,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "EncryptionScheme::ContentKey.retention" = "#0 ContentRetention"
 "EncryptionScheme::MlsApplication" = "#0 unit"
 "EnterProof" = "struct"
+"EnterProof.access" = "#1 Option<MlsAccessRequestV1>"
 "EnterProof.signature" = "#0 [u8; 64] with=serde_bytes"
 "EnterRefusal" = "enum external"
 "EnterRefusal::Door" = "#0 struct"
@@ -205,6 +206,7 @@ RemoteActionMessage = "tilo_actions::remote::RemoteActionMessage: the action-hos
 "EnterStep::Refused" = "#2 tuple(EnterRefusal)"
 "Entered" = "enum external"
 "Entered::Admitted" = "#0 struct"
+"Entered::Admitted.desktop_scope" = "#4 Option<ChannelId>"
 "Entered::Admitted.name" = "#2 String"
 "Entered::Admitted.role" = "#3 WorkspaceRole"
 "Entered::Admitted.workspace" = "#0 String"

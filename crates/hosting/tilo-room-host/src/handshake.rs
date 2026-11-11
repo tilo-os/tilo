@@ -51,14 +51,17 @@ pub trait Doorway: Send + Sync {
         cert: &'a DeviceCert,
         entering: &'a Entering,
     ) -> EntryFuture<'a, Result<Asked, EnterRefusal>>;
-    /// Admit the device that signed `challenge` with `signature` under the
-    /// door's `token`, shown to the workspace's people as `name`.
+    /// Admit `cert`'s device, which signed `challenge` with `proof`'s
+    /// signature under the door's `token`, shown to the workspace's people as
+    /// `entering`'s name; and once admitted, hand the workspace's channel
+    /// participants the device's request for the keys of its group.
     fn prove<'a>(
         &'a self,
+        cert: &'a DeviceCert,
+        entering: &'a Entering,
         challenge: Vec<u8>,
         token: String,
-        signature: [u8; 64],
-        name: &'a str,
+        proof: EnterProof,
     ) -> EntryFuture<'a, Entered>;
 }
 
@@ -365,7 +368,7 @@ where
     )?;
     crate::timing::event("entry.proof_wait", proving, 0);
     let entered = doorway
-        .prove(challenge, token, proof.signature, &entering.name)
+        .prove(&hello.cert, entering, challenge, token, proof)
         .await;
     Ok((peer, entered))
 }

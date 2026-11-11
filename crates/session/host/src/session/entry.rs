@@ -134,8 +134,23 @@ impl Task {
                 workspace_id,
                 name,
                 role,
+                desktop_scope,
             } => {
                 self.config.entering = None;
+                // The desktop opens with the keys of the group the host named
+                // before the governance that decides it arrives.
+                if let (Some(scope), Some(id)) = (
+                    desktop_scope,
+                    tilo_desktop_model::WorkspaceId::parse(&workspace),
+                ) {
+                    use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+                    self.channels.scope_told(
+                        id,
+                        &collab_types::ChannelRoute::new(DESKTOP_APP, DESKTOP_RECORD),
+                        scope,
+                    );
+                    self.pump_channels(true);
+                }
                 self.update(|status| {
                     status.entry = Some(Entry::Admitted {
                         workspace,
@@ -155,6 +170,24 @@ impl Task {
                 ))
             }
         }
+    }
+
+    /// This device's request for the keys of the channel group of the
+    /// workspace its session enters ([`PeerConfig::entering`]), which its
+    /// proof carries: prepared before anything of the workspace's governance
+    /// is here, so its Welcome comes first in its download.
+    ///
+    /// [`PeerConfig::entering`]: super::PeerConfig::entering
+    pub(super) async fn entry_access(&mut self) -> Option<collab_types::MlsAccessRequestV1> {
+        let workspace = self.config.entering.as_ref()?.workspace.clone();
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)?;
+        self.channels
+            .ask_on_entry(
+                workspace,
+                tilo_clock::Instant::now(),
+                tilo_clock::unix_now(),
+            )
+            .await
     }
 
     /// The session is offline after its `attempt`th failed one in a row:

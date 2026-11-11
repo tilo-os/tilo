@@ -3,7 +3,7 @@
 //! form took, answered on the session's handshake.
 
 use tilo_relay_protocol::directory::DoorJoin;
-use tilo_relay_protocol::entering::{EnterRefusal, Entered, Entering};
+use tilo_relay_protocol::entering::{EnterProof, EnterRefusal, Entered, Entering};
 use tilo_relay_protocol::web::{MAX_DISPLAY_NAME_CHARS, kept};
 use tilo_relay_protocol::workspaces::{JoinReply, JoinStep};
 use tilo_user_identity::DeviceCert;
@@ -68,22 +68,118 @@ impl Doorway for Workspaces {
 
     fn prove<'a>(
         &'a self,
+        cert: &'a DeviceCert,
+        entering: &'a Entering,
         challenge: Vec<u8>,
         token: String,
-        signature: [u8; 64],
-        name: &'a str,
+        proof: EnterProof,
     ) -> EntryFuture<'a, Entered> {
         Box::pin(async move {
-            entered(
+            let entered = entered(
                 self.page_join(JoinStep::ProvePreAdmitted {
                     challenge,
-                    signature,
-                    name: name.to_owned(),
+                    signature: proof.signature,
+                    name: entering.name.clone(),
                     token: token.into_bytes(),
                 })
                 .await,
-            )
+            );
+            if !matches!(entered, Entered::Admitted { .. }) {
+                return entered;
+            }
+            if let Some(access) = proof.access {
+                self.key_arrival(&entering.workspace, cert, access).await;
+            }
+            self.with_desktop_scope(&entering.workspace, entered).await
         })
+    }
+}
+
+/// How long an admitted device's answer waits for the Welcome its request
+/// asked for: the participants commit it within tens of milliseconds, and a
+/// device whose Welcome is later asks again as a member, as every member does.
+const KEYS_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+impl Workspaces {
+    /// Hand `workspace`'s channel participants the request `cert`'s device
+    /// made in its entry, as they take every member's, and wait (at most
+    /// [`KEYS_WAIT`]) for the Welcome it asks for to be durable, kept for the
+    /// device's subscription to write first. A request for another group than
+    /// the workspace's own, by another device, or not signed by it is not
+    /// handed on.
+    async fn key_arrival(
+        &self,
+        workspace: &str,
+        cert: &DeviceCert,
+        access: collab_types::MlsAccessRequestV1,
+    ) {
+        let device = cert.device_public_key;
+        if access.device.as_bytes() != &device
+            || access.channel != collab_types::workspace_scope(workspace)
+            || access.verify().is_err()
+        {
+            tracing::debug!(%workspace, "an entry's channel request was not the device's own for the workspace's group");
+            return;
+        }
+        let Ok(workspace_id) = tilo_relay_protocol::room_workspace_id(workspace) else {
+            return;
+        };
+        let keyed = self
+            .inner
+            .host
+            .records
+            .expect_arrival(workspace_id, device)
+            .await;
+        let request = neighbour_wire::NeighbourMsg::MlsAccessRequest {
+            workspace: workspace.to_owned(),
+            request: Box::new(access),
+            delivery: 0,
+        };
+        if let Err(error) = self
+            .take_channel_governance(workspace, device, request)
+            .await
+        {
+            tracing::warn!(%workspace, %error, "an entry's channel request was not taken");
+            return;
+        }
+        if let Some(keyed) = keyed {
+            let _ = tokio::time::timeout(KEYS_WAIT, keyed.notified()).await;
+        }
+    }
+
+    /// `entered`, with the group that seals `workspace`'s shared desktop as
+    /// its governance decides it now.
+    async fn with_desktop_scope(&self, workspace: &str, entered: Entered) -> Entered {
+        let Entered::Admitted {
+            workspace: uuid,
+            workspace_id,
+            name,
+            role,
+            ..
+        } = entered
+        else {
+            return entered;
+        };
+        let desktop_scope = match self.workspace(workspace).await {
+            Ok(governed) => {
+                use tilo_desktop_model::ownership::{DESKTOP_APP, DESKTOP_RECORD};
+                let route = collab_types::ChannelRoute::new(DESKTOP_APP, DESKTOP_RECORD);
+                let governed = governed.lock().await;
+                governed
+                    .peer()
+                    .governance()
+                    .unit_scope(std::time::SystemTime::now(), &route)
+                    .ok()
+            }
+            Err(_) => None,
+        };
+        Entered::Admitted {
+            workspace: uuid,
+            workspace_id,
+            name,
+            role,
+            desktop_scope,
+        }
     }
 }
 
@@ -100,6 +196,7 @@ fn entered(reply: JoinReply) -> Entered {
             workspace_id,
             name,
             role,
+            desktop_scope: None,
         },
         JoinReply::Refused(reason) => Entered::Refused(refused(reason)),
         _ => Entered::Refused(refused(

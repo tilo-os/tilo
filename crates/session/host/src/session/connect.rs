@@ -59,8 +59,19 @@ impl Dial {
 impl Task {
     /// The session to the host, dialled from the endpoint this session keeps.
     pub(super) async fn connect(&mut self) -> Result<RelayClient, LinkError> {
-        connect(&self.config, self.signer.as_ref(), &mut self.dial).await
+        let access = self.entry_access().await;
+        connect_entering(&self.config, access, self.signer.as_ref(), &mut self.dial).await
     }
+}
+
+/// [`connect_entering`] without an entry's channel request.
+#[cfg(test)]
+pub(super) async fn connect(
+    config: &PeerConfig,
+    signer: &dyn DeviceSigner,
+    dial: &mut Dial,
+) -> Result<RelayClient, LinkError> {
+    connect_entering(config, None, signer, dial).await
 }
 
 /// The session to `config`'s host, dialled from `dial`'s endpoint — bound there
@@ -68,8 +79,12 @@ impl Task {
 /// dials as its device key, as a native peer does; a page's device key never
 /// leaves custody, so its endpoint speaks under its own key for the device,
 /// which signs that it does for every plane grant.
-pub(super) async fn connect(
+///
+/// An entry ([`PeerConfig::entering`]) carries `access`, this device's request
+/// for the keys of the workspace's channel group.
+async fn connect_entering(
     config: &PeerConfig,
+    access: Option<collab_types::MlsAccessRequestV1>,
     signer: &dyn DeviceSigner,
     dial: &mut Dial,
 ) -> Result<RelayClient, LinkError> {
@@ -101,7 +116,10 @@ pub(super) async fn connect(
             cert: config.cert.clone(),
             signer,
             revocations: config.revocations.clone(),
-            entering: config.entering.clone(),
+            entering: config
+                .entering
+                .clone()
+                .map(|entering| tilo_relay_session::Entry { entering, access }),
         },
     )
     .await

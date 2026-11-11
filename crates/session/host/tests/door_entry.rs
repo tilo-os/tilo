@@ -269,6 +269,54 @@ async fn a_strangers_connection_carries_the_entry_and_nothing_else() {
     }
     says_nothing_more(&mut recv).await;
 
+    // A stranger who proves its key but not the workspace's challenge, its proof carrying a
+    // request for the workspace's channel keys, is refused: the request goes nowhere, and the
+    // stream says nothing after the refusal.
+    let (_endpoint, _connection, mut send, mut recv) = dial(&host).await;
+    write_frame(&mut send, &hello(Some(entry(&lounge.workspace))))
+        .await
+        .unwrap();
+    let ack: HelloAck =
+        postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
+    let step: EnterStep =
+        postcard::from_bytes(&read_frame(&mut recv, 1 << 20).await.unwrap()).unwrap();
+    assert!(matches!(step, EnterStep::Challenge { .. }), "{step:?}");
+    let ack2 = tilo_relay_client::signer::signed_ack2(&device, &ack.server_nonce)
+        .await
+        .unwrap();
+    write_frame(&mut send, &postcard::to_allocvec(&ack2).unwrap())
+        .await
+        .unwrap();
+    let access = collab_types::MlsAccessRequestV1::signed(
+        collab_types::workspace_scope(&lounge.workspace),
+        vec![7; 512],
+        tilo_clock::unix_now(),
+        &device,
+    )
+    .unwrap();
+    let proof = tilo_relay_protocol::entering::EnterProof {
+        signature: [0; 64],
+        access: Some(access),
+    };
+    write_frame(&mut send, &postcard::to_allocvec(&proof).unwrap())
+        .await
+        .unwrap();
+    let answer = tokio::time::timeout(Duration::from_secs(20), read_frame(&mut recv, 1 << 20))
+        .await
+        .expect("the host answers the proof")
+        .unwrap();
+    let answer = tilo_delivery_protocol::transport_v2::decode(&answer).unwrap();
+    assert!(
+        matches!(
+            answer,
+            tilo_delivery_protocol::transport_v2::EnvelopeV2::State(Envelope::Entered(
+                tilo_relay_protocol::entering::Entered::Refused(_)
+            ))
+        ),
+        "{answer:?}"
+    );
+    says_nothing_more(&mut recv).await;
+
     // Its key, in a session of its own, is still a stranger's: the host admits it nowhere.
     let probe = start_peer(
         host.iroh(),

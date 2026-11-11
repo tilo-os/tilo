@@ -726,6 +726,10 @@ pub struct ChannelEncryption {
     /// while naming its own channel, so a payload's channel is turned back
     /// into its group here.
     units: HashMap<ChannelId, ChannelId>,
+    /// The key scope a workspace's host named for a storage unit as this
+    /// device entered ([`Self::scope_told`]), by the unit's own channel: what
+    /// the unit seals under until the governance here names its scope.
+    told: HashMap<ChannelId, ChannelId>,
     /// The policy epoch the last pass read, while the directory announces
     /// its changes: a request that went unanswered under the policy before
     /// it is asked again at once when it moves, rather than waiting out a
@@ -755,6 +759,8 @@ impl ChannelEncryption {
             self.groups_seen.remove(channel);
         }
         self.units
+            .retain(|unit, scope| !channels.contains(unit) && !channels.contains(scope));
+        self.told
             .retain(|unit, scope| !channels.contains(unit) && !channels.contains(scope));
         self.store
             .as_ref()
@@ -824,6 +830,7 @@ impl ChannelEncryption {
             registered: HashMap::new(),
             groups_seen: std::collections::HashSet::new(),
             units: HashMap::new(),
+            told: HashMap::new(),
             policy_epoch: None,
         }
     }
@@ -868,7 +875,15 @@ impl ChannelEncryption {
         wall: u64,
     ) -> Option<ChannelId> {
         let unit = route.channel(&workspace.to_string());
-        let scope = self.directory.unit_scope(workspace, route, wall)?;
+        // The governance here decides; before it arrives, what the host named
+        // as this device entered.
+        let scope = match self.directory.unit_scope(workspace, route, wall) {
+            Some(scope) => {
+                self.told.remove(&unit);
+                scope
+            }
+            None => *self.told.get(&unit)?,
+        };
         self.units.insert(unit, scope);
         Some(scope)
     }
@@ -2593,6 +2608,8 @@ impl tilo_identity_host::sources::ChannelKeySource for ChannelKeyProvider {
         })
     }
 }
+
+mod entry;
 
 #[cfg(test)]
 mod tests {

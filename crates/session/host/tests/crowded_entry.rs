@@ -484,6 +484,17 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
          {MAX_ROUND_TRIPS} round trips beside {COMPUTE:?} of compute ({allowed:?})",
         slow.shown
     );
+    // The entry carried the guest's request for the workspace's keys, so its
+    // Welcome is the first thing it downloads: the keys never wait behind the
+    // desktop they open.
+    assert!(
+        slow.keyed < slow.record && slow.keyed < slow.ready,
+        "the guest held the desktop's keys at {:?}, after its record at {:?} or the end of \
+         its replay at {:?}",
+        slow.keyed,
+        slow.record,
+        slow.ready
+    );
     assert!(
         slow.http.len() <= MAX_REQUESTS,
         "a fresh guest asked the host {} times over HTTPS, more than {MAX_REQUESTS}",
@@ -601,10 +612,11 @@ const ROUND_TRIP: Duration = Duration::from_millis(400);
 const COMPUTE: Duration = Duration::from_millis(1_300);
 
 /// What the quick entry may take beside [`COMPUTE`]: the host's channel
-/// service sometimes answers the guest's request for the desktop's keys on its
-/// once-a-second re-check rather than when the request arrives (a third of
-/// quick entries, 0.7 to 1 s later). The slow entry asks long after the host
-/// settled the guest's admission and is answered at once.
+/// service sometimes takes the guest's request for the workspace's keys, which
+/// its entry carries, on its once-a-second re-check rather than when the
+/// request arrives, and the host's answer to the entry waits for the Welcome
+/// (up to 1 s later). The slow entry's request meets a service that settled
+/// long before and is answered at once.
 const KEY_RECHECK: Duration = Duration::from_secs(1);
 
 /// How many round trips a fresh guest may wait, one after another, beside
@@ -626,18 +638,19 @@ const KEY_RECHECK: Duration = Duration::from_secs(1);
 /// - the hello, whose answer carries the door's challenge, and the proof
 ///   that admits the guest: 1.5;
 /// - the replay of governance and the desktop, about 0.45 MB, from a
-///   256 KiB initial window rather than QUIC's 14 KB, which took six: 1.5;
-/// - the desktop's keys, asked once the page took the replay in: 1.
+///   256 KiB initial window rather than QUIC's 14 KB, which took six: 1.5.
 ///
-/// Seven in all; at 400 ms the desktop shows in 3.9 to 4.15 s.
-const MAX_ROUND_TRIPS: f64 = 8.0;
+/// The desktop's keys take none of their own: the proof carries the guest's
+/// request for them, and the Welcome is the first thing its replay writes.
+/// Six in all; at 400 ms the desktop shows in about 3.4 s.
+const MAX_ROUND_TRIPS: f64 = 6.5;
 
 /// The HTTPS requests a fresh guest makes to enter: the host's certificate.
 /// The door, the workspace's challenge and the admission ride the session.
 const MAX_REQUESTS: usize = 1;
 
-/// What a fresh guest may receive before its desktop shows: the workspace's
-/// governance (a compressed base with the changes since, about 0.5 MB for 300
+/// What a fresh guest may receive before its desktop shows: its keys first,
+/// with the Welcome its entry asked for, the workspace's governance (a compressed base with the changes since, about 0.5 MB for 300
 /// members) and its shared desktop. The Lounge is public, so the members'
 /// records (3.5 MB here) and its chat (0.3 MB in its newest part) come only
 /// when the guest opens them; governance sent twice or uncompressed, or any
@@ -650,6 +663,11 @@ struct Entry {
     marks: Vec<(&'static str, Duration)>,
     /// When the desktop could show: the page held its keys and its record.
     shown: Duration,
+    /// When the page held the desktop's keys, and when its record.
+    keyed: Duration,
+    record: Duration,
+    /// When the host said the workspace's replay was done (`Ready`).
+    ready: Duration,
     /// Each HTTP request: its path, how long it took, its bytes both ways.
     http: Vec<(String, Duration, usize)>,
     /// What the page's session received and sent until then, and over HTTP.
@@ -870,6 +888,9 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     let http = std::mem::take(&mut *network.asked.lock().unwrap());
     let http_bytes: usize = http.iter().map(|(_, _, bytes)| bytes).sum();
     Entry {
+        keyed: keyed_desktop.unwrap_or_default(),
+        record: desktop_doc.unwrap_or_default(),
+        ready: ready.unwrap_or(shown),
         marks,
         shown,
         http,

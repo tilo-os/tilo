@@ -49,6 +49,9 @@ hex.workspace = true
 uuid.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
+# The channel access request an entry's proof carries; the toolkit presence
+# bodies the pointer pacing tests classify.
+collab-types = { path = "../../collab/collab-types" }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true, features = ["wasm_js"] }
@@ -61,8 +64,6 @@ workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "rt", "time", "test-util"] }
-# Builds the toolkit presence bodies the pointer pacing tests classify.
-collab-types = { path = "../../collab/collab-types" }
 tilo-automerge-isolate.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
 

@@ -22,7 +22,7 @@ pub(super) async fn authenticate_server<R, W>(
     signer: &dyn DeviceSigner,
     revocations: &RevocationList,
     server: &ExpectedServer,
-    entering: Option<tilo_relay_protocol::entering::Entering>,
+    entering: Option<super::Entry>,
 ) -> Result<AuthenticatedPeer, ClientError>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -33,11 +33,14 @@ where
         use rand::Rng;
         rand::rng().fill_bytes(&mut client_nonce);
     }
-    let entered = entering.is_some();
-    let hello = match entering {
-        Some(entering) => Hello::entering(own_cert.clone(), client_nonce, entering),
-        None => Hello::new(own_cert.clone(), client_nonce),
+    let (hello, access) = match entering {
+        Some(entry) => (
+            Hello::entering(own_cert.clone(), client_nonce, entry.entering),
+            Some(entry.access),
+        ),
+        None => (Hello::new(own_cert.clone(), client_nonce), None),
     };
+    let entered = access.is_some();
     let hello_bytes =
         postcard::to_allocvec(&hello).map_err(|e| ClientError::Codec(e.to_string()))?;
     write_frame(send, &hello_bytes).await?;
@@ -111,8 +114,11 @@ where
             .sign(tilo_relay_protocol::workspaces::join_proof_digest(&challenge).to_vec())
             .await
             .map_err(|error| ClientError::Sign(error.0))?;
-        let proof = postcard::to_allocvec(&EnterProof { signature })
-            .map_err(|e| ClientError::Codec(e.to_string()))?;
+        let proof = postcard::to_allocvec(&EnterProof {
+            signature,
+            access: access.flatten(),
+        })
+        .map_err(|e| ClientError::Codec(e.to_string()))?;
         write_frame(send, &proof).await?;
     }
     Ok(relay_peer)

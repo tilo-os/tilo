@@ -7,7 +7,7 @@
 //! ```text
 //! client → server:  Hello { .., entering: Some(Entering) }
 //! server → client:  HelloAck, then EnterStep::Challenge (or ::Refused, and the end)
-//! client → server:  HelloAck2, then EnterProof
+//! client → server:  HelloAck2, then EnterProof (with its channel access request)
 //! server → client:  Envelope::Entered, then the session, or nothing more
 //! ```
 //!
@@ -23,6 +23,16 @@
 //! admitted it: a frame that is not the next step of the entry ends the
 //! session. A client may send its first requests right behind its proof; the
 //! host reads them only once it answered [`Entered::Admitted`].
+//!
+//! The proof also carries the device's request to join the workspace's
+//! channel group ([`collab_types::workspace_scope`]), which its channels
+//! prepare before they know anything of the workspace's governance. The host
+//! hands it to the workspace's channel participants as it admits the device,
+//! as it hands every member's, so the Welcome that keys the device is the
+//! first thing its download carries, not something it asks for once the
+//! governance it downloads names it. The answer names the group that seals
+//! the workspace's shared desktop, so the device opens it with those keys
+//! before the governance that decides it arrives.
 
 use serde::{Deserialize, Serialize};
 
@@ -70,11 +80,18 @@ pub enum EnterStep {
 
 /// The device's signature over the challenge's join proof digest
 /// (`tilo_relay_protocol::workspaces::join_proof_digest`), right after its
-/// `HelloAck2`.
+/// `HelloAck2`, and its request to join the workspace's channel group.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnterProof {
     #[serde(with = "serde_bytes")]
     pub signature: [u8; 64],
+    /// The device's signed request for the keys of the workspace's channel
+    /// group ([`collab_types::workspace_scope`]), as it would publish it once
+    /// a member: handed to the group's participants once the workspace
+    /// admitted the device. `None` from a device whose channels keep no
+    /// state, which asks as a member later. A request for another group, or
+    /// from another device, is not handed on.
+    pub access: Option<collab_types::MlsAccessRequestV1>,
 }
 
 /// Why a door or its workspace did not let a device in.
@@ -118,6 +135,14 @@ pub enum Entered {
         name: String,
         /// What the person may do there.
         role: WorkspaceRole,
+        /// The channel group whose keys seal the workspace's shared desktop
+        /// record, as the workspace's governance decides it now: the
+        /// workspace's own group ([`collab_types::workspace_scope`]) while
+        /// everyone in it may read the desktop, or the record's own group.
+        /// The device opens the desktop with those keys before the governance
+        /// that decides it arrives; once it holds the governance, that
+        /// decides. `None` when the governance names neither.
+        desktop_scope: Option<collab_types::ChannelId>,
     },
     /// The workspace did not admit the device. The host closes the session.
     Refused(EnterRefusal),

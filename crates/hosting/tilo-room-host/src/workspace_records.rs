@@ -329,6 +329,27 @@ impl WorkspaceRecords {
             .collect()
     }
 
+    /// Keep what `workspace_id` commits for `device` alone until the device
+    /// subscribes, which the door just let it in to do ([`crate::peer::Arriving`]):
+    /// woken once the first such frame is durable. `None` for a workspace this
+    /// host does not hold.
+    #[expect(
+        clippy::significant_drop_tightening,
+        reason = "the workspace handle is what its lock guard borrows; it drops with the guard"
+    )]
+    pub(crate) async fn expect_arrival(
+        &self,
+        workspace_id: u64,
+        device: [u8; 32],
+    ) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        let workspace = {
+            let workspaces = self.workspaces.lock().await;
+            workspaces.get(&workspace_id).cloned()?
+        };
+        let keyed = workspace.lock().await.arriving.expect(device);
+        Some(keyed)
+    }
+
     /// Wait until every host commit queued for `workspace_id` so far is
     /// durable.
     pub(crate) async fn settled(&self, workspace_id: u64) {

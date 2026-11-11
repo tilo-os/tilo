@@ -14,6 +14,7 @@ mod actions;
 mod admin;
 mod admission;
 mod agent_run;
+mod arriving;
 mod checkpoint;
 mod commit;
 mod compaction;
@@ -34,6 +35,7 @@ mod test_hooks;
 pub use admission::enqueue_from_host;
 pub(crate) use admission::{HostAdmission, enqueue_host_state};
 use admission::{enqueue_state, enqueue_state_inner};
+pub(crate) use arriving::Arriving;
 #[cfg(test)]
 use checkpoint::buffered_retention_prefix_with_limits;
 use checkpoint::{
