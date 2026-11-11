@@ -114,6 +114,15 @@ pub(super) const DEPRECATED_TAG: &str = "tilo.deprecated:";
 /// model that corrects itself takes one of them; one that keeps calling the
 /// same way ends the task rather than looping.
 const MOST_MALFORMED_TURNS: usize = 2;
+/// How many finishes in a row a run answers with "nothing was done and nothing
+/// was said" before it ends with the clean failure row. A finish that carries
+/// neither a completed step nor words for the person is not an answer, whatever
+/// it says of itself; one that keeps making it ends the task as it began.
+const MOST_SILENT_FINISHES: usize = 2;
+/// What the model is told when it finished with work done and nothing written
+/// for the person: its own words are the reply, never a line it never wrote.
+const SAY_WHAT_YOU_DID: &str = "You finished without telling the person what you did. Call `plan` again with your reply: \
+     one or two sentences, in their words, saying what you did. Do not repeat any step.";
 /// How many times in a row a turn cut off at the model's output limit is
 /// continued from where it stopped before the run fails. Reasoning models
 /// spend part of their answer's budget thinking; an answer that keeps being
@@ -418,6 +427,18 @@ pub(super) struct LoopState {
     /// a bounded number of times, before the run fails with the clean
     /// sentence. A turn that is not cut off resets it.
     continuations: usize,
+    /// The last words the model wrote for the person, on whatever call carried
+    /// them, whether or not that call succeeded: they are the reply when the
+    /// run ends without a fresh one (a closing turn lost, a finish whose call
+    /// failed). Never a line the run writes itself.
+    reply: Option<String>,
+    /// Finishes so far answered with "nothing was done and nothing was said",
+    /// bounded so a model that keeps finishing silently ends the run as failed
+    /// instead of reporting a success it never earned.
+    silent_finishes: usize,
+    /// Whether the model was asked, once, to say what it did when it finished
+    /// with work done and no words.
+    asked_for_words: bool,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -609,6 +630,9 @@ impl LoopState {
             programs: program_steps::ProgramWorld::default(),
             malformed_turns: 0,
             continuations: 0,
+            reply: None,
+            silent_finishes: 0,
+            asked_for_words: false,
         }
     }
 
@@ -650,24 +674,60 @@ impl LoopState {
     /// A model turn that failed after every listed part of the request
     /// already has a successful operation ends the task as finished: the
     /// work is done, only the model's closing turn was lost (e.g. it ran
-    /// into its token limit).
-    fn finished_despite_failed_plan(&self, error: &str) -> Option<LoopEnd> {
+    /// into its token limit). The reply is the last words the model wrote for
+    /// the person, on whatever call carried them and whether or not that call
+    /// succeeded — never a line the run writes in its place. When the model
+    /// wrote nothing, it is asked once for the words; still none, the run ends
+    /// without a reply rather than with one nobody said.
+    fn finished_despite_failed_plan(
+        &mut self,
+        conversation: &mut Conversation,
+        error: &str,
+    ) -> Option<LoopEnd> {
         if self.completed == 0 || self.parts.is_empty() || !self.undone_parts().is_empty() {
+            return None;
+        }
+        if self.reply.is_none() && !self.asked_for_words {
+            self.asked_for_words = true;
+            tracing::info!(
+                error,
+                completed = self.completed,
+                "closing model turn failed after every part was done; asking for the words"
+            );
+            conversation.push_user(SAY_WHAT_YOU_DID);
             return None;
         }
         tracing::info!(
             error,
             completed = self.completed,
+            said = self.reply.is_some(),
             "closing model turn failed after every part was done; finishing"
         );
         Some(LoopEnd::Finished(
             tools::Finish {
-                reply: None,
+                reply: self.reply.clone(),
                 done: true,
                 view: None,
             },
             self.completed,
         ))
+    }
+
+    /// A turn that failed after the model was asked for the words, and left
+    /// none: the run ends with the clean failure row, since the person gets no
+    /// answer the model said. `None` when the turn failed for another reason
+    /// (a model that never reached this point, a part still undone).
+    fn failed_after_asking_for_words(&self, error: &str) -> Option<LoopEnd> {
+        if !self.asked_for_words || self.reply.is_some() {
+            return None;
+        }
+        if self.completed == 0 || self.parts.is_empty() || !self.undone_parts().is_empty() {
+            return None;
+        }
+        Some(LoopEnd::Failed(Failure::spoken(
+            &crate::i18n::t("agent-failure-no-answer"),
+            error,
+        )))
     }
 
     /// Record `parts`/`unable` a call carried; the first listing wins.
@@ -1546,7 +1606,14 @@ impl Session {
             Err(error) => {
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
-                if let Some(end) = state.finished_despite_failed_plan(error.detail()) {
+                if let Some(end) = state.finished_despite_failed_plan(conversation, error.detail())
+                {
+                    return Ok(Some(end));
+                }
+                if let Some(end) = state.failed_after_asking_for_words(error.detail()) {
+                    // The closing turn failed even after the model was asked
+                    // for its words: the run ends without a reply rather than
+                    // with one nobody said.
                     return Ok(Some(end));
                 }
                 // The model's own calls were refused for their shape or
@@ -1638,7 +1705,13 @@ impl Session {
                 conversation.continued();
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
-                if let Some(end) = state.finished_despite_failed_plan(&error) {
+                if let Some(end) = state.finished_despite_failed_plan(conversation, &error) {
+                    return Ok(Some(end));
+                }
+                if let Some(end) = state.failed_after_asking_for_words(&error) {
+                    // The closing turn failed even after the model was asked
+                    // for its words: the run ends without a reply rather than
+                    // with one nobody said.
                     return Ok(Some(end));
                 }
                 // The person reads one clean sentence of what happened; the
@@ -1740,6 +1813,42 @@ impl Session {
                 },
             );
         }
+        // A finish that did nothing and said nothing is not an answer, whatever
+        // it says of itself: the person would get a run that reports success
+        // for work nobody read about. Feed it back as the call's error, as a
+        // malformed call is, bounded — a model that keeps finishing that way
+        // ends the run with the clean failure row, never a success.
+        let silent = finish.as_ref().is_some_and(|Finishing { said, .. }| {
+            !failed && said.done && said.reply.is_none() && state.completed == 0
+        }) && words.trim().is_empty();
+        if silent {
+            let id = finish.as_ref().map(|finishing| finishing.id.clone());
+            state.silent_finishes += 1;
+            tracing::info!(
+                turn,
+                "finish refused: nothing was done and nothing was said"
+            );
+            if state.silent_finishes > MOST_SILENT_FINISHES {
+                return Ok(Some(LoopEnd::Failed(Failure::spoken(
+                    &crate::i18n::t("agent-failure-no-answer"),
+                    "the model finished without running a step or saying anything",
+                ))));
+            }
+            if let Some(id) = id {
+                *results.entry(id).or_default() =
+                    "Not finished: nothing in this run did anything, and no reply was written. \
+                     Do the request now with invoke, then call `plan` with your reply — or, when \
+                     the operations available cannot do it, call `plan` with done: false and say \
+                     why in the reply."
+                        .into();
+            }
+            finish = None;
+        } else {
+            // A turn that did something, or said something, is progress: the
+            // count of silent finishes is how many in a row cost the run, so a
+            // real turn clears it.
+            state.silent_finishes = 0;
+        }
         let ordered = calls
             .iter()
             .map(|call| {
@@ -1755,6 +1864,16 @@ impl Session {
             .push(assistant, ordered)
             .map_err(anyhow::Error::msg)?;
         self.show_pictures(conversation, state);
+        // What the model wrote for the person in this turn is the last thing it
+        // said, whether it rode on a call or stood alone. A run that ends
+        // without fresh words (a closing turn lost) answers with these.
+        if let Some(Finishing { said, .. }) = &finish
+            && let Some(reply) = &said.reply
+        {
+            state.reply = Some(reply.clone());
+        } else if !words.trim().is_empty() {
+            state.reply = Some(tools::bound_reply(&words));
+        }
         // A turn that called nothing and answered in words is the model's
         // answer: a chat-style model ends a turn that way, so its words are the
         // turn's reply. Every step the turn started has settled by now
@@ -1773,13 +1892,26 @@ impl Session {
                 state.completed,
             )));
         }
+        // The model's own words are the reply when its `plan` carried none: a
+        // model that wrote its answer in the turn's text said it, and no line
+        // stands in for what it said. A finish that left the person without
+        // words, with steps done, is asked once for them; a model that does not
+        // give them ends the run with what it did say earlier, if anything.
         match finish {
             Some(Finishing { mut said, .. }) if !failed => {
-                // The model's own words are the reply when its `plan` carried
-                // none: a model that wrote its answer in the turn's text said
-                // it, and no canned line stands in for what it said.
                 if said.reply.is_none() && !words.is_empty() {
                     said.reply = Some(tools::bound_reply(&words));
+                }
+                if said.reply.is_none() && state.completed > 0 && !state.asked_for_words {
+                    state.asked_for_words = true;
+                    tracing::info!(turn, "finished with work done and no reply: asking for it");
+                    conversation.push_user(SAY_WHAT_YOU_DID);
+                    self.chooser
+                        .mark(tilo_model_client::TraceEvent::PlanFailed, turn);
+                    return Ok(None);
+                }
+                if said.reply.is_none() {
+                    said.reply = state.reply.clone();
                 }
                 self.chooser
                     .mark(tilo_model_client::TraceEvent::PlanReady, turn);
@@ -2105,6 +2237,13 @@ impl Session {
             );
         }
         let result = tools::invoke_result(&report, &mut state.pages);
+        // The last words the model wrote for the person are the reply whatever
+        // becomes of the call they rode on: a failed invoke loses no sentence,
+        // and the run's end keeps what the model said rather than inventing a
+        // line for it.
+        if let Some(reply) = reply {
+            state.reply = Some(tools::bound_reply(reply));
+        }
         let reply = reply.filter(|_| !navigation);
         match reply {
             Some(reply) if report.succeeded => Handled::ResultFinish(

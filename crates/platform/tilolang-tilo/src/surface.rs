@@ -345,33 +345,70 @@ fn verb(meta: &Meta, action: &ActionMeta, types: &mut TypeSet) -> VerbSurface {
 /// The record unit, where an action writes unless it says otherwise.
 pub const RECORD_UNIT: &str = tilo_actions::surface::RECORD_UNIT;
 
-fn edit_verbs() -> Vec<VerbSurface> {
-    let verb = |id: &str, label: &str, value: Json, ty: FieldType| VerbSurface {
-        id: id.to_owned(),
-        label: label.to_owned(),
-        description: Some("A bound control changes the field it shows.".to_owned()),
-        kind: ActionKind::Undoable,
-        destructive: false,
-        incoming_message: false,
-        params: vec![
-            ParamSurface {
-                name: "field".to_owned(),
-                required: true,
-                schema: json!({"type": "string"}),
-                ty: FieldType::Text,
-                within: None,
-            },
-            ParamSurface {
-                name: "value".to_owned(),
-                required: true,
-                schema: value,
-                ty,
-                within: None,
-            },
-        ],
-        writes: vec![RECORD_UNIT.to_owned()],
-        field: None,
+/// The names of the fields of `ty` that `edit-text` and `edit-flag` can set, from the type's
+/// metadata: a text (or rich-text) field the first, a flag field the second, in declaration
+/// order. The edit verbs take these names, never the internal field ids the document stores
+/// them under — an agent, and anyone reading a surface, chooses a field by the name the app
+/// and its views use, and `edit_action` maps that name back to the id.
+pub(crate) fn editable_field_names(ty: &TypeMeta, merge: Merge) -> Vec<String> {
+    ty.fields
+        .iter()
+        .filter(|field| match merge {
+            Merge::Text => matches!(
+                tilolang_runtime::meta::parse_ty(field.ty.trim(), ""),
+                Ok(Ty::Text | Ty::RichText)
+            ),
+            Merge::Flag => matches!(
+                tilolang_runtime::meta::parse_ty(field.ty.trim(), ""),
+                Ok(Ty::Bool)
+            ),
+        })
+        .map(|field| field.name.clone())
+        .collect()
+}
+
+/// Which kinds of field an [`edit_verbs`] verb may set: a text (plain or rich), or a flag.
+#[derive(Clone, Copy)]
+pub(crate) enum Merge {
+    Text,
+    Flag,
+}
+
+fn edit_verbs(ty: &TypeMeta) -> Vec<VerbSurface> {
+    let field_param = |names: Vec<String>| ParamSurface {
+        name: "field".to_owned(),
+        required: true,
+        // The choices are the field names, so a caller reads the one it wants
+        // from the list instead of guessing at an internal id.
+        schema: json!({
+            "type": "string",
+            "description": "The name of the field to set.",
+            "enum": names,
+        }),
+        ty: FieldType::Text,
+        within: None,
     };
+    let verb =
+        |id: &str, label: &str, value: Json, ty: FieldType, names: Vec<String>| VerbSurface {
+            id: id.to_owned(),
+            label: label.to_owned(),
+            description: Some("A bound control changes the field it shows.".to_owned()),
+            kind: ActionKind::Undoable,
+            destructive: false,
+            incoming_message: false,
+            params: vec![
+                field_param(names),
+                ParamSurface {
+                    name: "value".to_owned(),
+                    required: true,
+                    schema: value,
+                    ty,
+                    within: None,
+                },
+            ],
+            writes: vec![RECORD_UNIT.to_owned()],
+            field: None,
+        };
     // The host creates a package's root resource on its own the first time a window wants it,
     // as a committed change of its own; receivers decide that change against this verb.
     let create = VerbSurface {
@@ -392,12 +429,14 @@ fn edit_verbs() -> Vec<VerbSurface> {
             "Edit a text field",
             json!({"type": "string"}),
             FieldType::Text,
+            editable_field_names(ty, Merge::Text),
         ),
         verb(
             EDIT_FLAG_ACTION,
             "Set a flag field",
             json!({"type": "boolean"}),
             FieldType::Bool,
+            editable_field_names(ty, Merge::Flag),
         ),
     ]
 }
@@ -456,7 +495,7 @@ pub fn package_surfaces(meta: &Meta) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     for ty in &meta.types {
         let mut types = TypeSet::new();
-        let mut verbs = edit_verbs();
+        let mut verbs = edit_verbs(ty);
         verbs.extend(
             meta.offered_actions()
                 .filter(|action| {

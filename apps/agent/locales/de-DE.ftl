@@ -21,3 +21,4 @@ agent-failure-cancelled = Der Aufruf des Modells wurde gestoppt.
 agent-failure-truncated = Die Antwort des Modells wurde abgeschnitten.
 agent-failure-refused = Das Modell hat diese Anfrage abgelehnt.
 agent-failure-transport = Das Modell war nicht erreichbar. Versuche es noch einmal.
+agent-failure-no-answer = Der Agent hat nichts getan und nicht gesagt, was er getan hat.

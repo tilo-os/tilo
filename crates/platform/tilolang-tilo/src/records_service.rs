@@ -425,6 +425,8 @@ impl RecordService {
             .get("field")
             .and_then(Json::as_str)
             .unwrap_or_default();
+        // The edit verbs take a field by its name, as their `field` choices list; an older
+        // caller's id still resolves to the field it names in `edit_action`.
         let mut value = arguments.get("value").cloned().unwrap_or(Json::Null);
         if flag && let Some(said) = value.as_str() {
             match said.parse::<bool>() {

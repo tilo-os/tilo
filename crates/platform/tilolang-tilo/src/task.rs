@@ -819,8 +819,8 @@ fn call_of(
             app,
             target,
             field,
-            field_id,
             value,
+            ..
         } => {
             let (action, value) = match value {
                 Value::Text(text) => (crate::action::EDIT_TEXT_ACTION, json!(text)),
@@ -832,11 +832,13 @@ fn call_of(
                     ));
                 }
             };
+            // The edit verbs take a field by its name, as the surface offers it; the binding
+            // refuses an id the verb does not offer, and the program named the field by name.
             Ok(json!({
                 "app": app,
                 "resource": resource_id(app, &target.id_string()),
                 "action": action,
-                "arguments": {"field": field_id, "value": value},
+                "arguments": {"field": field, "value": value},
             }))
         }
     }
