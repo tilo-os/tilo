@@ -256,6 +256,8 @@ pub struct Facts {
     items: Vec<Fact>,
     rect: Rect,
     dirty: bool,
+    /// What it says changed its size since the layout pass last placed it.
+    layout_dirty: bool,
     layout_theme: Theme,
 }
 
@@ -272,6 +274,7 @@ impl Facts {
         }
         self.items = facts;
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     #[must_use]
@@ -280,6 +283,7 @@ impl Facts {
             items: facts,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
             layout_theme: Theme::dark(),
         }
     }
@@ -297,6 +301,7 @@ impl Widget for Facts {
         if self.layout_theme != *theme {
             self.layout_theme = theme.clone();
             self.dirty = true;
+            self.layout_dirty = true;
         }
         let style = Style {
             size: Size::auto(),
@@ -341,9 +346,7 @@ impl Widget for Facts {
         }
     }
 
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -360,15 +363,6 @@ impl Widget for Facts {
     }
 
     crate::redraw_flag!();
-
-    /// What the facts say decides the room the row takes.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
 
     fn name(&self) -> &'static str {
         "Facts"

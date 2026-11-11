@@ -102,6 +102,9 @@ pub struct QrWidget {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// A new payload or module width changed the room a code drawn at a named module size
+    /// takes, since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 impl QrWidget {
@@ -110,6 +113,7 @@ impl QrWidget {
     pub fn new(payload: impl Into<Vec<u8>>) -> Self {
         let mut w = Self {
             dirty: true,
+            layout_dirty: true,
             rect: Rect::ZERO,
             test_id: "qr_widget".to_owned(),
             alt: "QR code".to_owned(),
@@ -168,6 +172,7 @@ impl QrWidget {
     #[must_use]
     pub fn with_module_px(mut self, px: u32) -> Self {
         self.dirty = true;
+        self.layout_dirty = true;
         self.module_px = Some(px.max(1));
         self
     }
@@ -203,6 +208,7 @@ impl QrWidget {
     /// chosen EC level) is stored in `self.error` for inline display.
     pub fn set_payload(&mut self, payload: impl Into<Vec<u8>>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.payload = Zeroizing::new(payload.into());
         if self.payload.is_empty() {
             self.matrix = Zeroizing::new(Vec::new());
@@ -292,7 +298,7 @@ impl Widget for QrWidget {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     // The QR spec caps `matrix_size` at 177 (version 40) and `quiet_modules`
     // is a small widget-construction constant, so every `usize -> f64` cast
@@ -382,11 +388,6 @@ impl Widget for QrWidget {
 
     fn needs_redraw(&self) -> bool {
         crate::widget::redraw_or_children(self.dirty, self)
-    }
-    /// A code drawn at a named module size takes the room its payload needs,
-    /// so a new payload lays it out again as well as paints it.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty && self.module_px.is_some()
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;

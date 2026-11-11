@@ -1774,6 +1774,8 @@ pub struct StatusLine {
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// What it says changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1789,6 +1791,7 @@ impl StatusLine {
     fn with(status: OwnedStatus, text: impl Into<String>) -> Self {
         Self {
             dirty: true,
+            layout_dirty: true,
             status,
             text: text.into(),
             rect: Rect::ZERO,
@@ -1826,6 +1829,7 @@ impl StatusLine {
     /// Replace the sentence (a live count).
     pub fn set_text(&mut self, text: impl Into<String>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.text = text.into();
     }
 
@@ -1914,7 +1918,7 @@ impl Widget for StatusLine {
         }
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -1956,11 +1960,6 @@ impl Widget for StatusLine {
         crate::widget::Widget::mark_children_drawn(self);
     }
 
-    /// What it says decides the room it takes.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
-
     fn name(&self) -> &'static str {
         "StatusLine"
     }
@@ -1989,6 +1988,8 @@ pub struct ObjectHeader {
     metrics: Option<ObjectMetrics>,
     /// What it says changed since the last frame drew it.
     dirty: bool,
+    /// What it says changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 enum ObjectLead {
@@ -2031,12 +2032,14 @@ impl ObjectHeader {
             rect: Rect::ZERO,
             metrics: None,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
     /// Another name, line under it and kind of thing before them, where the header stands.
     fn set_object(&mut self, title: String, caption: Option<String>, lead: Option<ObjectLead>) {
         self.dirty = true;
+        self.layout_dirty = true;
         self.title = title;
         self.caption = caption;
         self.lead = lead;
@@ -2149,7 +2152,7 @@ impl Widget for ObjectHeader {
         }
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -2218,11 +2221,6 @@ impl Widget for ObjectHeader {
     }
 
     crate::redraw_flag!();
-
-    /// What it says decides the room it takes.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
 
     fn name(&self) -> &'static str {
         "ObjectHeader"

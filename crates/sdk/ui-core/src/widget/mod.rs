@@ -236,7 +236,8 @@ pub fn solve_layout(
 }
 
 /// Implements [`Widget::apply_layout`] and [`Widget::get_rect`] for a widget
-/// that keeps the box layout gives it in `self.rect`.
+/// that keeps the box layout gives it in `self.rect`; `rect_geometry!(measured)`
+/// also reports and answers its `self.layout_dirty` ([`Widget::layout_measured`]).
 #[macro_export]
 macro_rules! rect_geometry {
     () => {
@@ -251,6 +252,19 @@ macro_rules! rect_geometry {
 
         fn get_rect(&self) -> $crate::kurbo::Rect {
             self.rect
+        }
+    };
+    // A leaf whose size follows what it holds: a change sets `self.layout_dirty`, and the
+    // solver that measures it answers that, drawn or not.
+    (measured) => {
+        $crate::rect_geometry!();
+
+        fn is_layout_dirty(&self) -> bool {
+            self.rect == $crate::kurbo::Rect::ZERO || self.layout_dirty
+        }
+
+        fn layout_measured(&mut self) {
+            self.layout_dirty = false;
         }
     };
 }

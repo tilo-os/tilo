@@ -152,8 +152,10 @@ impl<'a> KeyHintsFace<'a> {
 pub struct KeyHints {
     hints: Vec<KeyHint>,
     rect: Rect,
-    /// Not yet laid out in the theme last seen, or not yet drawn.
+    /// Not yet drawn as it stands.
     dirty: bool,
+    /// Not yet laid out in the theme last seen, or for the hints it shows.
+    layout_dirty: bool,
     theme: Option<Theme>,
 }
 
@@ -171,6 +173,7 @@ impl KeyHints {
         }
         self.hints = hints;
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     #[must_use]
@@ -179,6 +182,7 @@ impl KeyHints {
             hints,
             rect: Rect::ZERO,
             dirty: true,
+            layout_dirty: true,
             theme: None,
         }
     }
@@ -197,6 +201,7 @@ impl crate::widget::Widget for KeyHints {
         if self.theme.as_ref() != Some(theme) {
             self.theme = Some(theme.clone());
             self.dirty = true;
+            self.layout_dirty = true;
         }
         let width = crate::text_render::with_layout_renderer(theme.text_scale, |text| {
             KeyHintsFace::new(&self.hints).width(text, theme)
@@ -228,12 +233,7 @@ impl crate::widget::Widget for KeyHints {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
-
-    // The strip is measured again in a new theme, and when its hints change.
-    fn is_layout_dirty(&self) -> bool {
-        self.dirty
-    }
+    crate::rect_geometry!(measured);
 
     fn needs_redraw(&self) -> bool {
         self.dirty

@@ -293,6 +293,8 @@ pub struct DisclosureRow {
     /// The display the body's own layout gives it, while it is not shut.
     body_display: taffy::Display,
     dirty: bool,
+    /// Opened or shut since the layout pass last placed it.
+    layout_dirty: bool,
     /// The motion the person allows, from the last layout.
     motion: EffectiveMotion,
     /// The pace its reveal plays at, when it says something other than the theme's.
@@ -325,6 +327,7 @@ impl DisclosureRow {
             laid_reveal: (0.0, true),
             body_display: taffy::Display::default(),
             dirty: true,
+            layout_dirty: true,
             motion: EffectiveMotion::default(),
             feel: crate::motion::Feel::Standard,
         }
@@ -477,6 +480,7 @@ impl DisclosureRow {
             told(open);
         }
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     /// Close if another row of the group opened.
@@ -811,6 +815,7 @@ impl Widget for DisclosureRow {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.layout_dirty = false;
         self.header = Rect::new(
             self.rect.x0,
             self.rect.y0,
@@ -1011,7 +1016,7 @@ impl Widget for DisclosureRow {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        self.dirty
+        self.layout_dirty
             || self.state.is_moving()
             || self.body.is_layout_dirty()
             || self

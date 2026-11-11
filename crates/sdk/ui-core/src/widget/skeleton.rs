@@ -302,6 +302,8 @@ pub struct Skeleton {
     theme: Option<Theme>,
     /// Its shape changed since the last frame drew it.
     dirty: bool,
+    /// What it holds changed its size since the layout pass last placed it.
+    layout_dirty: bool,
 }
 
 impl Skeleton {
@@ -312,6 +314,7 @@ impl Skeleton {
             rect: Rect::ZERO,
             theme: None,
             dirty: true,
+            layout_dirty: true,
         }
     }
 
@@ -323,6 +326,7 @@ impl Skeleton {
         }
         self.shape = shape;
         self.dirty = true;
+        self.layout_dirty = true;
     }
 
     #[must_use]
@@ -382,7 +386,7 @@ impl Widget for Skeleton {
         }
     }
 
-    crate::rect_geometry!();
+    crate::rect_geometry!(measured);
 
     fn draw(
         &mut self,
@@ -400,10 +404,6 @@ impl Widget for Skeleton {
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             face.painted_rect(self.rect, theme),
         );
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO || self.dirty
     }
 
     crate::redraw_flag!();

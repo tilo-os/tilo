@@ -13233,6 +13233,9 @@ mod quiet_frame_tests;
 #[cfg(test)]
 #[path = "headless/replaced_composition_tests.rs"]
 mod replaced_composition_tests;
+#[cfg(test)]
+#[path = "headless/undrawn_measure_tests.rs"]
+mod undrawn_measure_tests;
 
 #[cfg(test)]
 #[path = "../../../browser/tilo-browser-runtime/src/background_work.rs"]
