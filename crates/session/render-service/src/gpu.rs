@@ -18,7 +18,7 @@ pub struct Gpu {
     pub adapter: wgpu::AdapterInfo,
     loss: ui::gpu::DeviceLossMonitor,
     #[cfg(target_os = "linux")]
-    pub allocator: Option<gbm::Device<std::fs::File>>,
+    pub allocator: Option<crate::buffers::Allocator>,
     /// Keeps the instance and the device handle alive.
     _context: ui::gpu::RenderContext,
 }
@@ -51,18 +51,12 @@ impl Gpu {
         #[cfg(target_os = "linux")]
         let allocator = match render_node.filter(|_| !software) {
             Some(path) => {
-                let file = std::fs::OpenOptions::new()
-                    .read(true)
-                    .write(true)
-                    .open(path)
-                    .map_err(|error| GpuError::Allocator {
+                Some(
+                    crate::buffers::allocator(path).map_err(|error| GpuError::Allocator {
                         path: path.display().to_string(),
                         error,
-                    })?;
-                Some(gbm::Device::new(file).map_err(|error| GpuError::Allocator {
-                    path: path.display().to_string(),
-                    error,
-                })?)
+                    })?,
+                )
             }
             None => None,
         };

@@ -21960,6 +21960,7 @@ dependencies = [
  "tilo-desktop-policy",
  "tilo-desktop-surface",
  "tilo-render-protocol",
+ "tilo-render-service",
  "tilo-resource",
  "tilo-service",
  "tilo-session-core",

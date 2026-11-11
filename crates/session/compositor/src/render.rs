@@ -15,10 +15,11 @@ use smithay::backend::renderer::Color32F;
 use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::solid::{SolidColorBuffer, SolidColorRenderElement};
 use smithay::backend::renderer::element::surface::WaylandSurfaceRenderElement;
+use smithay::backend::renderer::element::texture::TextureRenderElement;
 use smithay::backend::renderer::element::utils::{CropRenderElement, RescaleRenderElement};
 use smithay::backend::renderer::element::{AsRenderElements, Element, Id, Kind};
 use smithay::backend::renderer::utils::CommitCounter;
-use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
+use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer};
 use smithay::desktop::Window;
 use smithay::output::Output;
 use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
@@ -26,7 +27,7 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Scale, Size};
 use crate::a11y::{self, MagnifierView};
 use crate::effects::WindowEffect;
 use crate::state::State;
-use crate::uploads::Uploads;
+use crate::uploads::{Placed, Uploads};
 
 use tilo_session_core::surface::HostLayer;
 
@@ -38,9 +39,15 @@ smithay::backend::renderer::element::render_elements! {
     pub OutputRenderElement<R> where R: ImportAll + ImportMem;
     /// A client surface.
     Surface=WaylandSurfaceRenderElement<R>,
-    /// A hosted surface's layer, or a client surface's HDR rendition where the surface itself would
-    /// be.
+    /// A hosted surface's layer drawn on the CPU, or a client surface's HDR rendition where the
+    /// surface itself would be.
     Memory=MemoryRenderBufferRenderElement<R>,
+    /// A hosted surface's layer drawn on the GPU, shown from the dma-buf it was drawn into.
+    Hosted=TextureRenderElement<R::TextureId>,
+    /// A hosted surface's layer drawn on the GPU, under the magnifier.
+    ZoomedGpuHosted=RescaleRenderElement<TextureRenderElement<R::TextureId>>,
+    /// A hosted surface's layer drawn on the GPU, inside the magnifier's lens.
+    LensHosted=CropRenderElement<RescaleRenderElement<TextureRenderElement<R::TextureId>>>,
     /// The idle dim over everything, where no backlight dims.
     Dim=SolidColorRenderElement,
     /// A client surface drawn scaled: under the magnifier, or as the lock screen filling a display
@@ -115,6 +122,9 @@ where
         OutputRenderElement::Memory(e) => {
             OutputRenderElement::ZoomedHosted(scaled(e, centre, zoom))
         }
+        OutputRenderElement::Hosted(e) => {
+            OutputRenderElement::ZoomedGpuHosted(scaled(e, centre, zoom))
+        }
         OutputRenderElement::Dim(e) => OutputRenderElement::ZoomedDim(scaled(e, centre, zoom)),
         OutputRenderElement::Transformed(e) => {
             OutputRenderElement::ZoomedTransformed(scaled(e, centre, zoom))
@@ -147,6 +157,9 @@ where
         )?)),
         // A memory buffer and a window's frame are drawn the same way: a crop of a scaled copy.
         OutputRenderElement::Memory(e) => Some(OutputRenderElement::Frame(cropped(
+            e, centre, zoom, crop, scale,
+        )?)),
+        OutputRenderElement::Hosted(e) => Some(OutputRenderElement::LensHosted(cropped(
             e, centre, zoom, crop, scale,
         )?)),
         OutputRenderElement::Frame(e) => Some(OutputRenderElement::LensFrame(cropped(
@@ -241,9 +254,9 @@ fn hosted_layer<R>(
     layer: &HostLayer,
     location: Point<f64, Physical>,
     scale: f64,
-) -> Result<Option<MemoryRenderBufferRenderElement<R>>, R::Error>
+) -> Result<Option<OutputRenderElement<R>>, R::Error>
 where
-    R: ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Send + Clone + 'static,
 {
     let (width, height) = layer.frame.size();
@@ -271,19 +284,15 @@ where
     let dst = Size::from((drawn.w.max(1), drawn.h.max(1)));
     let at = location
         + Point::from((f64::from(shown.x) * across, f64::from(shown.y) * down)).to_physical(scale);
-    let Some(buffer) = uploads.draw(&layer.frame) else {
-        return Ok(None);
-    };
-    MemoryRenderBufferRenderElement::from_buffer(
+    uploads.element(
         renderer,
-        at,
-        &buffer,
-        None,
-        Some(src),
-        Some(dst),
-        Kind::Unspecified,
+        &layer.frame,
+        Placed {
+            at,
+            src: Some(src),
+            size: Some(dst),
+        },
     )
-    .map(Some)
 }
 
 /// What lies below hosted surface `host` , front first: the hosts beneath it and the windows, drawn
@@ -298,7 +307,7 @@ pub(crate) fn below_host<R>(
     bounds: Rectangle<i32, Physical>,
 ) -> Vec<OutputRenderElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Clone + Send + 'static,
 {
     let mut elements = Vec::new();
@@ -310,7 +319,7 @@ where
             let location =
                 (Point::<i32, Logical>::from(layer.location).to_f64() - origin).to_physical(scale);
             match hosted_layer(renderer, &state.uploads, &layer, location, scale) {
-                Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
+                Ok(Some(element)) => elements.push(element),
                 Ok(None) => {}
                 Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
             }
@@ -515,7 +524,7 @@ fn scene_elements<R>(
     output: &Output,
 ) -> Vec<OutputRenderElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Clone + Send + 'static,
 {
     let Some(geometry) = state.space.output_geometry(output) else {
@@ -562,7 +571,7 @@ where
                     location.to_f64(),
                     output_scale,
                 ) {
-                    Ok(Some(element)) => elements.push(OutputRenderElement::Memory(element)),
+                    Ok(Some(element)) => elements.push(element),
                     Ok(None) => {}
                     Err(error) => tracing::warn!(?error, "hosted layer: buffer not imported"),
                 }
@@ -608,7 +617,7 @@ pub(crate) fn output_elements<R>(
     output: &Output,
 ) -> Vec<OutputRenderElement<R>>
 where
-    R: Renderer + ImportAll + ImportMem,
+    R: Renderer + ImportAll + ImportMem + ImportDma,
     R::TextureId: Clone + Send + 'static,
 {
     let Some(geometry) = state.space.output_geometry(output) else {

@@ -8,8 +8,10 @@ mod host;
 
 pub use cursor_icon::CursorIcon;
 pub use host::{
-    Changed, FrameWatch, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
+    CELL, Changed, FrameWatch, HostDrag, HostFrame, HostIme, HostLayer, HostTextInput, SurfaceHost,
 };
+#[cfg(unix)]
+pub use host::{HostBuffer, HostBuffers};
 
 /// The rectangle a layer is shown on, in the host's logical layout, and the
 /// scale it is drawn at.

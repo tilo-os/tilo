@@ -84,8 +84,43 @@ pub struct VulkanDrmDeviceIdentity {
 pub fn vulkan_drm_device_identity(device: &wgpu::Device) -> Option<VulkanDrmDeviceIdentity> {
     let guard = unsafe { device.as_hal::<vulkan::Api>() }?;
     let hal_device: &vulkan::Device = &guard;
-    let phys = hal_device.raw_physical_device();
-    let instance = hal_device.shared_instance().raw_instance();
+    physical_drm_identity(
+        hal_device.shared_instance().raw_instance(),
+        hal_device.raw_physical_device(),
+    )
+}
+
+/// [`vulkan_drm_device_identity`] of an adapter not yet opened: what picks
+/// the adapter on a given GPU.
+pub fn vulkan_drm_adapter_identity(adapter: &wgpu::Adapter) -> Option<VulkanDrmDeviceIdentity> {
+    let guard = unsafe { adapter.as_hal::<vulkan::Api>() }?;
+    let hal_adapter: &vulkan::Adapter = &guard;
+    physical_drm_identity(
+        hal_adapter.shared_instance().raw_instance(),
+        hal_adapter.raw_physical_device(),
+    )
+}
+
+/// The (major, minor) of the device node at `path` (`/dev/dri/renderD128`).
+pub fn node_numbers(path: &std::path::Path) -> Option<(u32, u32)> {
+    use std::os::unix::fs::MetadataExt as _;
+    let device = std::fs::metadata(path).ok()?.rdev();
+    Some((libc::major(device), libc::minor(device)))
+}
+
+/// Whether `device` draws on the GPU whose render node is at `path`: memory
+/// allocated there is its own.
+pub fn is_on_render_node(device: &wgpu::Device, path: &std::path::Path) -> bool {
+    let Some(node) = node_numbers(path) else {
+        return false;
+    };
+    vulkan_drm_device_identity(device).is_some_and(|identity| identity.render == Some(node))
+}
+
+fn physical_drm_identity(
+    instance: &ash::Instance,
+    phys: vk::PhysicalDevice,
+) -> Option<VulkanDrmDeviceIdentity> {
     let supported = unsafe { instance.enumerate_device_extension_properties(phys).ok()? }
         .iter()
         .any(|extension| {

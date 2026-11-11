@@ -24,6 +24,8 @@ tracing.workspace = true
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
+# Frames drawn on the GPU are delivered in the dma-bufs apps' frames are.
+tilo-render-service = { path = "../render-service" }
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-action-policy = { path = "../../collab/action-policy" }
 # The shell is an installed package, as every app is: the session reads it from the person's

@@ -34,9 +34,8 @@ use std::os::fd::{AsFd as _, OwnedFd};
 use std::sync::Arc;
 
 use smithay::backend::renderer::element::Kind;
-use smithay::backend::renderer::element::memory::MemoryRenderBufferRenderElement;
 use smithay::backend::renderer::element::surface::render_elements_from_surface_tree;
-use smithay::backend::renderer::{ImportAll, ImportMem, Renderer};
+use smithay::backend::renderer::{ImportAll, ImportDma, ImportMem, Renderer};
 use smithay::input::Seat;
 use smithay::input::pointer::{ButtonEvent, GrabStartData, MotionEvent};
 use smithay::input::touch::{
@@ -401,7 +400,7 @@ impl State {
         output: &Output,
     ) -> Vec<OutputRenderElement<R>>
     where
-        R: Renderer + ImportAll + ImportMem,
+        R: Renderer + ImportAll + ImportMem + ImportDma,
         R::TextureId: Clone + Send + 'static,
     {
         let (Some(_), Some(icon)) = (&self.dnd.drag, &self.dnd.icon) else {
@@ -427,19 +426,13 @@ impl State {
             }
             DragIcon::Image { frame, hotspot } => {
                 let origin: Point<f64, Physical> = (at - hotspot.to_f64()).to_physical(scale);
-                let Some(buffer) = self.uploads.draw(frame) else {
-                    return Vec::new();
+                let placed = crate::uploads::Placed {
+                    at: origin,
+                    src: None,
+                    size: None,
                 };
-                match MemoryRenderBufferRenderElement::from_buffer(
-                    renderer,
-                    origin,
-                    &buffer,
-                    None,
-                    None,
-                    None,
-                    Kind::Unspecified,
-                ) {
-                    Ok(element) => vec![OutputRenderElement::Memory(element)],
+                match self.uploads.element(renderer, frame, placed) {
+                    Ok(element) => element.into_iter().collect(),
                     Err(error) => {
                         tracing::warn!(?error, "drag icon not imported");
                         Vec::new()

@@ -82,6 +82,7 @@ mod xdnd_bridge;
 mod xwayland;
 
 pub use seats::{Aim, Seat, WindowAim};
+pub use uploads::gpu_frames_node;
 
 use std::cell::RefCell;
 use std::os::unix::net::UnixStream;

@@ -682,7 +682,7 @@ impl SurfaceHost for WidgetHost {
             reason = "a non-negative point inside a surface on a screen"
         )]
         let (px, py) = (lx as u32, ly as u32);
-        self.frames.alpha(px, py).is_some_and(|alpha| alpha > 0)
+        self.frames.covers(px, py)
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
