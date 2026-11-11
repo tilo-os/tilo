@@ -271,6 +271,19 @@ pub enum StepKind {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         output: Option<serde_json::Value>,
     },
+    /// Read one record of the workspace as it is now, through the record
+    /// door every reader reads records through: `record` of `app` (empty for
+    /// the app's record of the workspace), or with `joined` the chain of
+    /// parts whose base it is. The output is the door's answer, `{revision,
+    /// records: [{record, value | absent | arriving}]}`. A read changes
+    /// nothing; what the run does with it, it does through actions.
+    Read {
+        app: String,
+        #[serde(default)]
+        record: String,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        joined: bool,
+    },
 }
 
 fn default_item() -> String {

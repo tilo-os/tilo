@@ -9,6 +9,11 @@
 //! app keeps beside its record (a chat's messages) are held in that
 //! record's replica, reached through the chain the app publishes, and
 //! their changes published on their own routes.
+//!
+//! Each record held keeps a copy of its whole document, as the workspace
+//! has it with what the bot's runs changed since: what the bot's record reads
+//! answer ([`DoorParticipant::record`]), for any record the bot follows,
+//! whether or not it acts on it.
 
 use std::collections::BTreeMap;
 
@@ -22,6 +27,7 @@ use super::door::{DoorParticipant, RunStep};
 use super::item_json::{OutboxRow, outbox_entries};
 use crate::apps::{AppCatalogue, ReplicaActor, Seed};
 use crate::worker::ConfinedReplica;
+use ui::permissions::policy;
 
 /// One installation's replicas of the workspace's records.
 pub struct HeldRecords {
@@ -37,6 +43,8 @@ pub struct HeldRecords {
     waiting: BTreeMap<DocumentRoute, Vec<u8>>,
     /// What runs changed, by record, not yet taken by the host.
     changed: Vec<(DocumentRoute, DocumentMutation)>,
+    /// Each record's whole document, as read.
+    copies: BTreeMap<DocumentRoute, Vec<u8>>,
 }
 
 impl HeldRecords {
@@ -51,7 +59,40 @@ impl HeldRecords {
             beside: BTreeMap::new(),
             waiting: BTreeMap::new(),
             changed: Vec::new(),
+            copies: BTreeMap::new(),
         }
+    }
+
+    /// Keep `bytes` (a whole document or changes to it) in the copy of the
+    /// record at `route`.
+    fn keep(&mut self, route: &DocumentRoute, bytes: &[u8]) -> Result<(), String> {
+        let Some(copy) = self.copies.get_mut(route) else {
+            self.copies.insert(route.clone(), bytes.to_vec());
+            return Ok(());
+        };
+        // The record as it was held before, unchanged since.
+        if copy.as_slice() == bytes {
+            return Ok(());
+        }
+        let mut doc = automerge::Automerge::load(copy).map_err(|error| error.to_string())?;
+        doc.load_incremental(bytes)
+            .map_err(|error| error.to_string())?;
+        *copy = doc.save();
+        Ok(())
+    }
+
+    /// Whether the bot may read the record at `route` now: decided at the
+    /// record's node as the workspace decides any reader's read of it.
+    fn may_read(&self, route: &DocumentRoute) -> bool {
+        use policy::{ActionKind, Answer, Context};
+        let standing = match &self.actor {
+            ReplicaActor::Bot { standing, .. } | ReplicaActor::Member { standing, .. } => standing,
+            ReplicaActor::Owner => return true,
+            ReplicaActor::Agent => return false,
+        };
+        let node = collab_types::document_node(&self.workspace, &route.app_id, &route.record);
+        let now = tilo_clock::unix_now_ms();
+        standing.answer(&node, ActionKind::Read, &Context::at(now)) == Answer::Allow
     }
 
     /// Who the replicas name as participant: `bot:<id>` for a bot.
@@ -71,6 +112,7 @@ impl HeldRecords {
     /// it through the chain as in a window; one whose app's record is not
     /// held yet is held with it once it is.
     pub fn hold(&mut self, route: &DocumentRoute, saved: Vec<u8>) -> Result<(), String> {
+        self.keep(route, &saved)?;
         if let Some(replica) = self.replicas.get(route) {
             return replica
                 .apply(&DocumentMutation::Snapshot(saved))
@@ -185,8 +227,10 @@ impl HeldRecords {
             kept
         });
         self.waiting.remove(route);
+        dropped.push(route.clone());
         self.changed
             .retain(|(changed, _)| !dropped.contains(changed));
+        self.copies.retain(|copied, _| !dropped.contains(copied));
     }
 
     /// What runs changed since the last call, by record, in the order the
@@ -212,6 +256,13 @@ impl DoorParticipant for HeldRecords {
 
     fn holds(&self, route: &DocumentRoute) -> bool {
         self.replicas.contains_key(route)
+    }
+
+    fn record(&self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
+        if !self.may_read(route) {
+            return Err(tilo_actions::remote::RECORD_READ_REFUSED.to_owned());
+        }
+        Ok(self.copies.get(route).cloned())
     }
 
     fn invoke(
@@ -243,8 +294,9 @@ impl DoorParticipant for HeldRecords {
         // see the step before the next one runs.
         let taken = replica.take_mutation().map_err(commit)?;
         let beside = replica.take_record_mutations().map_err(commit)?;
+        let mut kept = Vec::new();
         if let Some(mutation) = taken {
-            self.changed.push((route.clone(), mutation));
+            kept.push((route.clone(), mutation));
         }
         // What the step changed of the records held beside it (a post in
         // a chat's part, a part it started) goes on their own routes.
@@ -255,7 +307,17 @@ impl DoorParticipant for HeldRecords {
                 record: record.route().to_owned(),
             };
             self.beside.insert(part.clone(), route.clone());
-            self.changed.push((part, mutation));
+            kept.push((part, mutation));
+        }
+        for (changed, mutation) in kept {
+            let (DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
+                &mutation;
+            self.keep(&changed, bytes)
+                .map_err(|reason| DoorError::Unavailable {
+                    code: "commit".into(),
+                    reason,
+                })?;
+            self.changed.push((changed, mutation));
         }
         Ok(output)
     }
@@ -328,5 +390,55 @@ mod tests {
         };
         assert_eq!(held.hold(&emoji, b"not chat's record".to_vec()), Ok(()));
         assert!(held.offered().is_empty(), "nothing is held for it");
+    }
+
+    /// A bot reads the copy of each record it follows, as far as its grant
+    /// and its installer's standing reach.
+    #[test]
+    fn a_bot_reads_what_it_holds_inside_its_grant() {
+        use policy::{Answer, Grant, KindSet, Level, Rule, Standing, Subject, TreePath};
+        let workspace = "workspace-1";
+        let bot = Subject::bot("b1");
+        let chat = Rule::new(
+            TreePath::root()
+                .any(Level::Workspace)
+                .app("so.tilo.chat")
+                .any(Level::Resource),
+            KindSet::READ,
+            Answer::Allow,
+        );
+        let grants = vec![Grant::new(
+            "bot:b1:0",
+            bot.clone(),
+            chat.node,
+            chat.kinds,
+            chat.answer,
+            Subject::person("ada"),
+        )];
+        let standing = Standing::person(policy::WorkspacePolicy::new(workspace, "ada"), "ada")
+            .bounded_by(bot, grants);
+        let mut held = HeldRecords::new(
+            AppCatalogue::native(),
+            workspace.into(),
+            ReplicaActor::Bot {
+                installation: "b1".into(),
+                installer: "ada".into(),
+                standing,
+            },
+        );
+        let route = |app: &str| DocumentRoute {
+            app_id: app.into(),
+            cluster_id: workspace.into(),
+            record: collab_types::workspace_record_id("tilo.workspace.emoji"),
+        };
+        held.hold(&route("so.tilo.chat"), b"emoji".to_vec())
+            .unwrap();
+        assert_eq!(
+            held.record(&route("so.tilo.chat")),
+            Ok(Some(b"emoji".to_vec()))
+        );
+        assert_eq!(held.record(&route("so.tilo.notes")).ok(), None);
+        held.forget(&route("so.tilo.chat"));
+        assert_eq!(held.record(&route("so.tilo.chat")), Ok(None));
     }
 }

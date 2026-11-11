@@ -96,8 +96,9 @@ pub use nodes::{
 };
 pub use pending::{Abandoned, Completer, Pending, PendingPoll, pending};
 pub use record_read::{
-    RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE, RecordAddress, RecordAsk, RecordChange,
-    RecordChanges, RecordCopy, RecordReadings, RecordReads, RecordWake, read_records,
+    RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS, RECORD_READS_UNAVAILABLE, RecordAddress,
+    RecordAsk, RecordChange, RecordChanges, RecordCopy, RecordReadings, RecordReads, RecordWake,
+    read_records,
 };
 pub use search::{Found, ResourceSearch, stem_word};
 #[cfg(any(test, feature = "test-support"))]

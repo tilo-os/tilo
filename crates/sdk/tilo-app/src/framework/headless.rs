@@ -1125,6 +1125,12 @@ impl<A: ResourceApp> HeadlessApp<A> {
             .collect()
     }
 
+    /// The whole document of `id` as this window holds it: its own record,
+    /// or one it keeps beside it (a part of a chain).
+    pub fn record_document(&self, id: &RecordId) -> Option<Vec<u8>> {
+        self.records.read(id, |doc| doc.clone().save())
+    }
+
     /// Submit `submit` through the running view's own dispatcher, as a
     /// control's press or a field's edit hands it over: over the session's
     /// connection when the app is the session's, into the record here when

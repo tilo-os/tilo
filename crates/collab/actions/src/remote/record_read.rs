@@ -15,6 +15,9 @@ use super::{ActionHostError, Caller};
 /// What a host without record reads answers.
 pub const RECORD_READS_UNAVAILABLE: &str = "this host reads no records outside their apps";
 
+/// What a caller is told about a record it may not read.
+pub const RECORD_READ_REFUSED: &str = "not allowed to read this record";
+
 /// What a caller that is neither a person nor an agent task acting for its person is told.
 pub const RECORD_READS_FOR_TASKS: &str = "only a person, an app acting for its person, or an agent \
      acting for the person who admitted it, reads records outside their app; a person's device \
@@ -239,7 +242,8 @@ impl RecordReadings {
 impl RecordCopy {
     /// The record as any reader reads it, whatever app keeps it: its maps as objects, lists as
     /// arrays, text as strings, counters and scalars as numbers, strings and booleans, bytes as
-    /// their count; `null` for a record the workspace holds none of.
+    /// their count, a data enum as its `$variant` beside its fields by name; `null` for a record
+    /// the workspace holds none of.
     ///
     /// # Errors
     ///
@@ -249,9 +253,46 @@ impl RecordCopy {
             Self::Absent => Ok(serde_json::Value::Null),
             Self::Document(bytes) => {
                 let doc = automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
-                tilo_automerge::json::read_document(&doc).map_err(|error| error.to_string())
+                let mut value =
+                    tilo_automerge::json::read_document(&doc).map_err(|error| error.to_string())?;
+                name_variant_fields(&mut value);
+                Ok(value)
             }
         }
+    }
+}
+
+/// Each data enum in `value` with its fields by name: a record keeps a variant's fields under
+/// `$field/<variant>/<field>` (`%` and `/` escaped), so no two variants' fields share a key.
+fn name_variant_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Array(items) => items.iter_mut().for_each(name_variant_fields),
+        serde_json::Value::Object(map) => {
+            map.values_mut().for_each(name_variant_fields);
+            let Some(variant) = map.get("$variant").and_then(serde_json::Value::as_str) else {
+                return;
+            };
+            let prefix = format!(
+                "$field/{}/",
+                variant.replace('%', "%25").replace('/', "%2F")
+            );
+            let stored: Vec<String> = map
+                .keys()
+                .filter(|key| key.starts_with(&prefix))
+                .cloned()
+                .collect();
+            for key in stored {
+                if let Some(field) = map.remove(&key) {
+                    let name = key
+                        .get(prefix.len()..)
+                        .unwrap_or_default()
+                        .replace("%2F", "/")
+                        .replace("%25", "%");
+                    map.insert(name, field);
+                }
+            }
+        }
+        _ => {}
     }
 }
 
@@ -411,6 +452,19 @@ mod tests {
                 ),
                 ("gone".to_owned(), serde_json::Value::Null),
             ]
+        );
+    }
+
+    #[test]
+    fn a_data_enum_reads_with_its_fields_by_name() {
+        let mut doc = AutoCommit::new();
+        let attached = doc.put_object(ROOT, "attached", ObjType::Map).unwrap();
+        doc.put(&attached, "$variant", "file").unwrap();
+        doc.put(&attached, "$field/file/blob", "ab").unwrap();
+        doc.put(&attached, "$field/file/a%2Fb", 3).unwrap();
+        assert_eq!(
+            RecordCopy::Document(doc.save()).readable().unwrap(),
+            serde_json::json!({"attached": {"$variant": "file", "blob": "ab", "a/b": 3}})
         );
     }
 

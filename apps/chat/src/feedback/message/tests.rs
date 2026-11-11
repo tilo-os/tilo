@@ -174,7 +174,7 @@ fn the_masked_picture_is_the_report_messages_image() {
     assert_eq!(
         rows(&doc, &submission)[0].attachments,
         vec![tilo_reference::Attached::Image {
-            name: super::PICTURE_NAME.into(),
+            name: ui::feedback_read_out::PICTURE_NAME.into(),
             blob: "ab".repeat(32),
             w: 640,
             h: 360,

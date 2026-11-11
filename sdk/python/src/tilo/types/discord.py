@@ -593,10 +593,6 @@ class Guild(Resource):
         """Runs the app's action."""
         return self.action("link-offer", token=token)
 
-    def plan_route(self, *, event: Any) -> None:
-        """Runs the app's action."""
-        return self.action("plan-route", event=event)
-
     def plan_event(self,
         *,
         event: Any,

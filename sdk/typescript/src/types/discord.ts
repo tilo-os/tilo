@@ -451,9 +451,6 @@ export interface Guild extends tilo.Resource {
   linkOffer(args: {
     token: unknown;
   }): Promise<void>;
-  planRoute(args: {
-    event: unknown;
-  }): Promise<void>;
   planEvent(args: {
     event: unknown;
     chat: unknown;

@@ -19,23 +19,25 @@ fn guild() -> Guild {
     g
 }
 
-fn msg(id: &str, author: &str, text: &str, extra: &Value) -> Value {
+fn msg(id: &str, author: &str, text: &str, extra: &Value) -> (String, Value) {
     let mut value = json!({"channel": "c1", "author": author, "text": text, "parent": null});
     if let (Some(v), Some(extra)) = (value.as_object_mut(), extra.as_object()) {
         v.extend(extra.clone());
     }
-    json!({"id": id, "value": value})
+    (id.to_owned(), value)
 }
 
-fn chat(messages: &[Value]) -> Value {
-    json!({
-        "messages": messages,
-        "people": [
-            {"id": "u_ada", "name": "Ada", "agent": false, "avatar": "av1"},
-            {"id": "u_bo", "name": "Bo", "agent": false},
-            {"id": "agent:x", "name": "Discord Scribe", "agent": true}
-        ]
-    })
+fn chat(messages: &[(String, Value)]) -> crate::tilo::ChatRead {
+    crate::tilo::ChatRead::new(
+        json!({
+            "people": {
+                "u_ada": {"id": "u_ada", "name": "Ada", "agent": false, "avatar": "av1"},
+                "u_bo": {"id": "u_bo", "name": "Bo", "agent": false},
+                "agent:x": {"id": "agent:x", "name": "Discord Scribe", "agent": true}
+            }
+        }),
+        messages.to_vec(),
+    )
 }
 
 fn context() -> Context {
@@ -60,7 +62,7 @@ fn linked() -> Context {
     }
 }
 
-fn shared(id: &str, text: &str, share: &Value) -> Value {
+fn shared(id: &str, text: &str, share: &Value) -> (String, Value) {
     msg(
         id,
         "u_ada",

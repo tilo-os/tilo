@@ -55,7 +55,11 @@ fn discord_origin(tilo: &str, discord: &str, root: Option<&str>) -> Mapping {
 
 #[test]
 fn a_message_is_posted_with_its_authors_appearance() {
-    let plan = plan_created(&guild(), &serde_json::Value::Null, &created("dm1", "hello"));
+    let plan = plan_created(
+        &guild(),
+        &crate::tilo::ChatRead::default(),
+        &created("dm1", "hello"),
+    );
     let post = &plan.posts[0];
     assert_eq!(
         (
@@ -86,9 +90,10 @@ fn a_linked_account_speaks_as_its_tilo_person() {
         user_name: "alice".into(),
         ..Link::default()
     });
-    let chat = json!({"people": [
-        {"id": "u_ada", "value": {"id": "u_ada", "name": "Ada Lovelace", "avatar": "blob-ada"}},
-    ]});
+    let chat = crate::tilo::ChatRead::new(
+        json!({"people": {"u_ada": {"id": "u_ada", "name": "Ada Lovelace", "avatar": "blob-ada"}}}),
+        Vec::new(),
+    );
     let post = &plan_created(&g, &chat, &created("dm1", "hello")).posts[0];
     assert_eq!(
         post.appearance.name, "Ada Lovelace",
@@ -106,7 +111,7 @@ fn a_linked_account_speaks_as_its_tilo_person() {
     );
 
     // Unlinked again, or a person Chat does not know: their Discord name.
-    let unknown = json!({"people": []});
+    let unknown = crate::tilo::ChatRead::new(json!({"people": {}}), vec![]);
     let post = &plan_created(&g, &unknown, &created("dm2", "hi")).posts[0];
     assert_eq!(post.appearance.name, "alice");
     g.links.clear();
@@ -118,7 +123,11 @@ fn a_linked_account_speaks_as_its_tilo_person() {
 fn an_unknown_avatar_is_fetched_once_before_posting() {
     let mut g = guild();
     g.avatars.clear();
-    let plan = plan_created(&g, &serde_json::Value::Null, &created("dm1", "hello"));
+    let plan = plan_created(
+        &g,
+        &crate::tilo::ChatRead::default(),
+        &created("dm1", "hello"),
+    );
     assert!(plan.posts.is_empty());
     assert_eq!(plan.avatars[0].hash, "h1");
     assert_eq!(plan.avatars[0].op.max_bytes, MAX_AVATAR_BYTES);
@@ -130,20 +139,24 @@ fn echoes_and_blocked_personas_plan_nothing() {
     let mut own = created("dm1", "x");
     own.author.webhook_id = Some("wh1".into());
     assert_eq!(
-        plan_created(&g, &serde_json::Value::Null, &own),
+        plan_created(&g, &crate::tilo::ChatRead::default(), &own),
         InboundPlan::default(),
         "the bridge's own webhook"
     );
     let mut bot = created("dm2", "x");
     bot.author.id = "b0".into();
     assert_eq!(
-        plan_created(&g, &serde_json::Value::Null, &bot),
+        plan_created(&g, &crate::tilo::ChatRead::default(), &bot),
         InboundPlan::default(),
         "the bot user"
     );
     g.map.push(discord_origin("m3", "dm3", None));
     assert_eq!(
-        plan_created(&g, &serde_json::Value::Null, &created("dm3", "again")),
+        plan_created(
+            &g,
+            &crate::tilo::ChatRead::default(),
+            &created("dm3", "again")
+        ),
         InboundPlan::default(),
         "a replayed event"
     );
@@ -155,7 +168,11 @@ fn blocked_persona_is_skipped_for_every_event() {
     g.blocked_personas.insert("u7".into());
     g.map.push(discord_origin("m1", "dm1", None));
     assert_eq!(
-        plan_created(&g, &serde_json::Value::Null, &created("dm9", "spam")),
+        plan_created(
+            &g,
+            &crate::tilo::ChatRead::default(),
+            &created("dm9", "spam")
+        ),
         InboundPlan::default()
     );
     let update = MessageUpdated {
@@ -172,7 +189,7 @@ fn blocked_persona_is_skipped_for_every_event() {
         ..ReactionChanged::default()
     };
     assert_eq!(
-        plan_reaction(&g, &reaction, &json!({}), true),
+        plan_reaction(&g, &reaction, &crate::tilo::ChatRead::default(), true),
         InboundPlan::default()
     );
     assert_eq!(
@@ -190,7 +207,7 @@ fn replies_join_the_roots_thread_and_quote_a_reply_to_a_reply() {
     let mut reply = created("d_new", "me too");
     reply.reply_to = Some("d_root".into());
     assert_eq!(
-        plan_created(&g, &serde_json::Value::Null, &reply).posts[0]
+        plan_created(&g, &crate::tilo::ChatRead::default(), &reply).posts[0]
             .parent
             .as_deref(),
         Some("root")
@@ -200,7 +217,7 @@ fn replies_join_the_roots_thread_and_quote_a_reply_to_a_reply() {
     deep.reply_to = Some("d_r1".into());
     deep.reply_author = Some("bo".into());
     deep.reply_text = Some("first line\nsecond".into());
-    let post = &plan_created(&g, &serde_json::Value::Null, &deep).posts[0];
+    let post = &plan_created(&g, &crate::tilo::ChatRead::default(), &deep).posts[0];
     assert_eq!(post.parent.as_deref(), Some("root"));
     assert_eq!(post.text, "> bo: first line\nagreed");
 }
@@ -215,7 +232,7 @@ fn a_message_in_a_discord_thread_replies_to_its_root() {
         id: "d_thread".into(),
         parent: "d1".into(),
     });
-    let post = &plan_created(&g, &serde_json::Value::Null, &event).posts[0];
+    let post = &plan_created(&g, &crate::tilo::ChatRead::default(), &event).posts[0];
     assert_eq!(
         (post.channel.as_str(), post.parent.as_deref()),
         ("c1", Some("root"))
@@ -242,7 +259,7 @@ fn attachments_are_copied_up_to_chats_limit_and_linked_beyond() {
             ..AttachmentInfo::default()
         },
     ];
-    let plan = plan_created(&guild(), &serde_json::Value::Null, &event);
+    let plan = plan_created(&guild(), &crate::tilo::ChatRead::default(), &event);
     assert_eq!(plan.files.len(), 1);
     assert!(matches!(
         plan.files[0].fetch.attachment,
@@ -275,7 +292,7 @@ fn a_fetched_attachment_is_one_chat_posts() {
         file("notes.txt", "text/plain", 0),
     ];
     let posted: Vec<tilo_reference::Attached> =
-        plan_created(&guild(), &serde_json::Value::Null, &event)
+        plan_created(&guild(), &crate::tilo::ChatRead::default(), &event)
             .files
             .into_iter()
             .map(|post| {
@@ -351,7 +368,7 @@ fn deleting_a_discord_post_removes_every_attachment_copy() {
             ..AttachmentInfo::default()
         })
         .collect();
-    let posted = plan_created(&g, &serde_json::Value::Null, &event);
+    let posted = plan_created(&g, &crate::tilo::ChatRead::default(), &event);
     assert_eq!(posted.files.len(), 3);
     for (index, file) in posted.files.iter().enumerate() {
         g.map.push(discord_origin(
@@ -419,7 +436,7 @@ fn reactions_carry_the_persona() {
         animated: true,
         ..ReactionChanged::default()
     };
-    let plan = plan_reaction(&g, &event, &json!({}), false);
+    let plan = plan_reaction(&g, &event, &crate::tilo::ChatRead::default(), false);
     assert_eq!(plan.unreacts[0].message, "m1");
     assert_eq!(plan.unreacts[0].emoji, ":tilo_hello:");
     assert_eq!(plan.unreacts[0].appearance.name, "bo");
@@ -432,8 +449,13 @@ fn reactions_carry_the_persona() {
 fn a_unicode_reaction_takes_the_spelling_the_message_already_has() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "x",
-        "reactions": [{"emoji": "❤", "by": "u_ada", "at": 1}]}}]});
+    let chat = crate::tilo::ChatRead::new(
+        serde_json::Value::Null,
+        vec![(
+            "m1".into(),
+            json!({"channel": "c1", "author": "u_ada", "text": "x", "reactions": [{"emoji": "❤", "by": "u_ada", "at": 1}]}),
+        )],
+    );
     let event = ReactionChanged {
         message_id: "dm1".into(),
         user_id: "u8".into(),
@@ -456,8 +478,13 @@ fn a_unicode_reaction_takes_the_spelling_the_message_already_has() {
 fn a_reaction_taken_off_by_id_alone_keeps_the_name_it_was_given() {
     let mut g = guild();
     g.map.push(mapping(MappedKind::Message, "m1", "dm1"));
-    let chat = json!({"messages": [{"id": "m1", "value": {"channel": "c1", "author": "u_ada", "text": "x",
-        "reactions": [{"emoji": "🎉", "by": "bot", "persona": "discord/u8", "name": "Bo", "at": 1}]}}]});
+    let chat = crate::tilo::ChatRead::new(
+        serde_json::Value::Null,
+        vec![(
+            "m1".into(),
+            json!({"channel": "c1", "author": "u_ada", "text": "x", "reactions": [{"emoji": "🎉", "by": "bot", "persona": "discord/u8", "name": "Bo", "at": 1}]}),
+        )],
+    );
     // Discord's removal names the member by id, without their name.
     let removed = ReactionChanged {
         message_id: "dm1".into(),
@@ -491,7 +518,7 @@ fn the_bots_own_reactions_are_echoes() {
         ..ReactionChanged::default()
     };
     assert_eq!(
-        plan_reaction(&g, &echo, &json!({}), true),
+        plan_reaction(&g, &echo, &crate::tilo::ChatRead::default(), true),
         InboundPlan::default()
     );
 }
@@ -536,8 +563,11 @@ fn named(user_name: &str, display_name: Option<&str>) -> UserName {
     }
 }
 
-fn chat_with_ada() -> serde_json::Value {
-    json!({"people": [{"id": "u_ada", "name": "Ada Lovelace"}]})
+fn chat_with_ada() -> crate::tilo::ChatRead {
+    crate::tilo::ChatRead::new(
+        json!({"people": {"u_ada": {"id": "u_ada", "name": "Ada Lovelace"}}}),
+        vec![],
+    )
 }
 
 #[test]
@@ -552,7 +582,7 @@ fn link_offers_the_account_under_the_tokens_check_only() {
         avatar: Some("a1b2".into()),
         ..Command::default()
     };
-    let plan = plan_command(&g, &json!({}), &linking);
+    let plan = plan_command(&g, &crate::tilo::ChatRead::default(), &linking);
     assert_eq!(
         plan.offers,
         [OfferItem {
@@ -574,7 +604,9 @@ fn link_offers_the_account_under_the_tokens_check_only() {
         ..linking
     };
     assert!(
-        plan_command(&g, &json!({}), &without).offers.is_empty(),
+        plan_command(&g, &crate::tilo::ChatRead::default(), &without)
+            .offers
+            .is_empty(),
         "no token, nothing to offer"
     );
 }

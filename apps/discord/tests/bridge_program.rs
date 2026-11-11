@@ -11,9 +11,9 @@
 //! surfaces, stores the grant its steps derive, and fails when the file is
 //! stale; `BLESS=1` rewrites it.
 //!
-//! The program is a fixed run of loops: `plan-route` names the Chat message
-//! the event is about, then up to six passes each read the workspace's chat, ask
-//! `plan-event` what to do and loop over its lists. A pass runs only while
+//! The program is a fixed run of loops: up to six passes each read Chat's
+//! records through the record door, ask `plan-event` what to do and loop over
+//! its lists. A pass runs only while
 //! the previous plan asked for another, so a reply waits for its thread and
 //! a post for its author's avatar.
 
@@ -199,22 +199,35 @@ fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
 fn pass() -> Vec<Step> {
     let plan_step = |id: &str, pointer: &str| Binding::step(id, pointer);
     vec![
-        invoke(
-            "read",
-            ActionKey::new(CHAT_APP, CHAT_KIND, "read-workspace"),
-            Selector::FirstOfKind(CHAT_KIND.into()),
-            &[
-                ("message", plan_step("route", "/message")),
-                ("channel", plan_step("route", "/channel")),
-            ],
-            None,
+        // Chat's record of the workspace, and its messages' chain of parts.
+        Step::new(
+            "chat",
+            StepKind::Read {
+                app: CHAT_APP.into(),
+                record: String::new(),
+                joined: false,
+            },
+        ),
+        Step::new(
+            "messages",
+            StepKind::Read {
+                app: CHAT_APP.into(),
+                record: chat::parts::chain().route().to_owned(),
+                joined: true,
+            },
         ),
         guild(
             "plan",
             "plan-event",
             &[
                 ("event", input("event")),
-                ("chat", plan_step("read", "")),
+                (
+                    "chat",
+                    Binding::Object(BTreeMap::from([
+                        ("chat".to_owned(), plan_step("chat", "")),
+                        ("messages".to_owned(), plan_step("messages", "")),
+                    ])),
+                ),
                 ("context", input("context")),
                 // The host tells a program the workspace's members and
                 // their roles under this input's name.
@@ -771,7 +784,6 @@ fn program() -> Shortcut {
             ),
         ],
         steps: vec![
-            guild("route", "plan-route", &[("event", input("event"))]),
             Step::new(
                 "start",
                 StepKind::SetVar {
@@ -983,7 +995,7 @@ fn blocking_a_persona_removes_what_was_mirrored_of_them() {
     let plan = discord::bridge::plan(
         discord::bridge::Reading {
             guild: &state,
-            chat: &json!({}),
+            chat: &discord::tilo::ChatRead::default(),
             context: &discord::outbound::Context::default(),
             workspace: &Value::Null,
             emoji: None,

@@ -668,9 +668,11 @@ async fn the_host_installs_a_bot_as_a_member_and_renews_it_as_it_runs_out() {
     );
 }
 
+/// A bot's run reads the records it follows through the record door: Chat's
+/// record of the workspace and its messages' chain, with what was just posted.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_bot_step_reads_through_a_records_registered_read() {
-    use tilo_automation::{ActorFilter, Selector, Shortcut, Step, StepKind, TriggerSpec};
+async fn a_bot_step_reads_the_records_it_follows_through_the_record_door() {
+    use tilo_automation::{ActorFilter, Shortcut, Step, StepKind, TriggerSpec};
     let scratch = tempfile::tempdir().unwrap();
     let (key, cert) = governor();
     let relay = bot_host(scratch.path(), &key, &cert).await;
@@ -686,15 +688,24 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
         id: "reader".into(),
         name: "Reader".into(),
         inputs: trigger.payload().to_vec(),
-        steps: vec![Step::new(
-            "digest",
-            StepKind::Invoke {
-                action: tilo_actions::ActionKey::new(CHAT, "chat.workspace", "read-workspace"),
-                resource: Selector::FirstOfKind("chat.workspace".into()),
-                args: std::collections::BTreeMap::new(),
-                appearance: None,
-            },
-        )],
+        steps: vec![
+            Step::new(
+                "chat",
+                StepKind::Read {
+                    app: CHAT.into(),
+                    record: String::new(),
+                    joined: false,
+                },
+            ),
+            Step::new(
+                "messages",
+                StepKind::Read {
+                    app: CHAT.into(),
+                    record: chat::parts::chain().route().to_owned(),
+                    joined: true,
+                },
+            ),
+        ],
         step_timeout_secs: None,
         output: None,
         grant: Vec::new(),
@@ -730,10 +741,35 @@ async fn a_bot_step_reads_through_a_records_registered_read() {
     assert!(runner.step().await.unwrap().is_empty());
     ada_says(&workspaces, &workspace, &cert, &general, "what is here?").await;
     let reports = runner.step().await.unwrap();
-    assert!(
-        matches!(reports[..], [ref report] if report.outcome == tilo_automation::RunOutcome::Completed),
-        "{reports:?}"
+    let [report] = &reports[..] else {
+        panic!("one run: {reports:?}");
+    };
+    assert_eq!(
+        report.outcome,
+        tilo_automation::RunOutcome::Completed,
+        "{report:?}"
     );
+    let read = |step: &str| {
+        report
+            .steps
+            .iter()
+            .find_map(|record| match &record.status {
+                tilo_automation::StepStatus::Succeeded { output } if record.step == step => {
+                    output.clone()
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{step} read nothing: {report:?}"))
+    };
+    let chat = read("chat");
+    assert!(
+        chat["records"][0]["value"]["channels"]
+            .as_object()
+            .is_some_and(|channels| channels.contains_key(&general)),
+        "{chat}"
+    );
+    let messages = read("messages").to_string();
+    assert!(messages.contains("what is here?"), "{messages}");
 }
 
 #[tokio::test(flavor = "multi_thread")]

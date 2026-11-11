@@ -19,17 +19,14 @@ use std::sync::{Arc, Weak};
 
 use tilo_action_policy::{ActionKind, Answer};
 use tilo_actions::remote::{
-    ActionHostError, Caller, CallerPrincipal, RECORD_READS_FOR_TASKS, RecordAddress, RecordChange,
-    RecordChanges, RecordCopy, RecordReads, RecordWake,
+    ActionHostError, Caller, CallerPrincipal, RECORD_READ_REFUSED, RECORD_READS_FOR_TASKS,
+    RecordAddress, RecordChange, RecordChanges, RecordCopy, RecordReads, RecordWake,
 };
 
 use runtime_collab::committed_document::MAX_DOCUMENT_BYTES;
 
 use super::committed_document::{NativeDocumentRead, NativeDocumentReadContext, RecordRead};
 use super::{AppBrokerState, CrdtRoute};
-
-/// What a caller is told about a record it may not read.
-pub const RECORD_READ_REFUSED: &str = "not allowed to read this record";
 
 impl AppBrokerState {
     /// The record read door, when this host keeps a workspace's documents and knows its person's

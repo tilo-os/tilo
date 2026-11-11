@@ -552,7 +552,8 @@ fn bound_names(steps: &[Step]) -> BTreeSet<String> {
             StepKind::Invoke { .. }
             | StepKind::Ask { .. }
             | StepKind::Ai { .. }
-            | StepKind::Task { .. } => {}
+            | StepKind::Task { .. }
+            | StepKind::Read { .. } => {}
         }
     }
     bound
@@ -659,7 +660,7 @@ fn bindings_of(steps: &mut [Step]) -> Vec<&mut Binding> {
             }
             StepKind::SetVar { value, .. } => out.push(value),
             StepKind::Ai { input, .. } => out.extend(input.as_mut()),
-            StepKind::Ask { .. } | StepKind::Task { .. } => {}
+            StepKind::Ask { .. } | StepKind::Task { .. } | StepKind::Read { .. } => {}
         }
     }
     out

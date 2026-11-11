@@ -294,84 +294,10 @@ chat-sheet-topic-placeholder = Wofür dieser Kanal da ist (optional)
 # Rückmeldungsauswahl („Nachricht in Chat“).
 chat-message-kind = Nachricht
 
-## Eine abgegebene Rückmeldung, wie ihr Kanal sie zeigt
-# Ein gewählter Teil des Bildschirms: sein Ort, was er war, und die App.
-chat-feedback-pick = { $index }. { $what } in { $app }
-# Ein gewählter Teil aus einer App ohne bekannten Namen: sein Ort und was er
-# war, nie die Kennung der App.
-chat-feedback-pick-alone = { $index }. { $what }
-# Was ein gewählter Teil war, wenn die App gesagt hat, was für ein Ding er ist.
-chat-feedback-part-kind = { $kind }
-# Was ein gewählter Teil war, nach dem eigenen Namen der App und seiner Rolle.
-chat-feedback-part-named = { $role ->
-    [Button] Die Schaltfläche „{ $name }“
-    [ToggleButton] Die Schaltfläche „{ $name }“
-    [Link] Der Link „{ $name }“
-    [Tab] Der Reiter „{ $name }“
-    [MenuItem] Der Menüeintrag „{ $name }“
-    [Checkbox] Das Kästchen „{ $name }“
-    [Switch] Der Schalter „{ $name }“
-    [TextInput] Das Feld „{ $name }“
-    [MultilineTextInput] Das Feld „{ $name }“
-    [Heading] Die Überschrift „{ $name }“
-   *[other] „{ $name }“ als { $role }
-}
-# Was ein gewählter Teil war, nur an seiner Rolle erkannt.
-chat-feedback-part-role = { $role ->
-    [ListItem] Ein Listeneintrag
-    [Row] Eine Zeile
-    [Cell] Eine Zelle
-    [Button] Eine Schaltfläche
-    [ToggleButton] Eine Schaltfläche
-    [Link] Ein Link
-    [Image] Ein Bild
-    [TextInput] Ein Feld
-    [MultilineTextInput] Ein Feld
-    [StaticText] Ein Text
-    [Paragraph] Ein Absatz
-    [Heading] Eine Überschrift
-    [List] Eine Liste
-    [Group] Eine Gruppe
-    [Window] Ein Fenster
-    [Toolbar] Eine Werkzeugleiste
-    [Menu] Ein Menü
-    [MenuItem] Ein Menüeintrag
-    [Tab] Ein Reiter
-   *[other] Ein Teil
-}
-chat-feedback-note = „{ $note }“
-# Ein Text, den ein gewählter Teil zeigte, wie er geprüft wurde.
-chat-feedback-text = { $text }
-# Eine der letzten Aktionen der meldenden Person, nach dem Namen, den ihre App
-# ihr gibt; $outcome ist done, refused oder failed.
-chat-feedback-action = { $outcome ->
-    [refused] { $label } (abgelehnt)
-    [failed] { $label } (fehlgeschlagen)
-   *[done] { $label }
-}
-# Eine Aktion, deren App ihr keinen Namen gab, nach ihrer Kennung und Art des Objekts.
-chat-feedback-action-unnamed = { $action } an { $resource }
-chat-feedback-recent = Kurz davor: { $actions }
-# Die Aufzeichnung, die eine Meldung trägt: die App, deren Verlauf aufgezeichnet
-# wurde, Anfang und Ende und wie viele Änderungen sie durchläuft.
-chat-feedback-recording = Aufzeichnung von { $app } von { $from } bis { $to }, { $steps ->
-    [one] eine Änderung
-   *[other] { $steps } Änderungen
-}
+## Die Aufzeichnung einer abgegebenen Rückmeldung
 chat-feedback-replay = Aufzeichnung abspielen
 chat-feedback-replay-failed = Die Aufzeichnung ging nicht auf
 chat-feedback-replay-description = Die Aufzeichnung in { $app } öffnen und Schritt für Schritt durchgehen
-chat-feedback-slow = Langsam: { $slow } der letzten { $frames } Bilder brauchten über { $budget } ms, das langsamste { $worst } ms
-# Ein ausgeblendeter Abschnitt eines gemeldeten Textes, nach dem, was er verbarg.
-chat-feedback-hidden = { $kind ->
-    [name] ‹Name›
-    [email] ‹E-Mail›
-    [phone] ‹Telefon›
-    [address] ‹Adresse›
-    [account] ‹Kontonummer›
-    [credential] ‹Zugangsdaten›
-   *[personal] ‹Persönlich›
-}
 
 ## Die eigenen Bedienelemente und Bezeichnungen der Unterhaltung
 chat-surface = Chat
