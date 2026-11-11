@@ -622,6 +622,22 @@ impl Workspaces {
         let seconds = args
             .integer("expires_in_seconds")?
             .unwrap_or(OWN_INVITATION_SECONDS);
+        // A grant for one workspace enters that one, already made: it makes no other.
+        let makes = device
+            .capabilities
+            .agent
+            .is_none_or(|scope| scope.makes_workspaces());
+        if !makes
+            && (name.is_some()
+                || !moving.is_some_and(|room| {
+                    device
+                        .capabilities
+                        .agent
+                        .is_some_and(|scope| scope.reaches(room))
+                }))
+        {
+            return Err(refused(&NOT_YOUR_OWN));
+        }
         let making = own.making.lock().await;
         let mine = own.of(&person);
         let theirs = moving.filter(|moving| mine.iter().any(|own| own == moving));
@@ -654,6 +670,8 @@ impl Workspaces {
         {
             // A plain ask for "my workspace" answers the first they made.
             self.summary(first).await.map_err(|error| refused(&error))?
+        } else if !makes {
+            return Err(refused(&NOT_YOUR_OWN));
         } else {
             // Another one: there is no bound on how many a person keeps.
             let name = name.unwrap_or(OWN_WORKSPACE_NAME);

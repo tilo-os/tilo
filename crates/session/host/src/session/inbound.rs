@@ -152,7 +152,7 @@ impl Task {
             }
             content @ Envelope::RecordContent { .. } => self.record_content(content, now),
             envelope => {
-                if let Some(event) = addressed(envelope) {
+                if let Some(event) = addressed(envelope, self.config.host_cert.device_public_key) {
                     self.emit(&event);
                 }
             }
@@ -180,7 +180,7 @@ impl Task {
         let device = self.config.cert.device_public_key;
         if let Some(arrived) = self.surface_wants.piece(&device, frame, now) {
             self.surfaces_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
-        } else if let Some(event) = addressed(envelope) {
+        } else if let Some(event) = addressed(envelope, self.config.host_cert.device_public_key) {
             self.emit(&event);
         }
     }
@@ -614,5 +614,48 @@ impl Task {
                 return;
             }
         }
+    }
+}
+
+/// What the host addressed to this device that it only passes on: an
+/// action frame or what became of one, a piece of content, a member's
+/// coming or going. `host` is the host's own device, which answers its own operations.
+fn addressed(envelope: Envelope, host: [u8; 32]) -> Option<PeerEvent> {
+    match envelope {
+        Envelope::HostAction { frame } => Some(PeerEvent::Remote(Heard::Action {
+            workspace_id: HOST_ITSELF,
+            from: host,
+            frame,
+        })),
+        Envelope::RemoteAction {
+            workspace_id,
+            from_device_public_key,
+            frame,
+            ..
+        } => Some(PeerEvent::Remote(Heard::Action {
+            workspace_id,
+            from: from_device_public_key,
+            frame,
+        })),
+        Envelope::RecordContent {
+            workspace_id,
+            from_device_public_key,
+            frame,
+            ..
+        } => Some(PeerEvent::RecordContent {
+            workspace_id,
+            from: from_device_public_key,
+            frame,
+        }),
+        Envelope::RemoteActionUndeliverable {
+            workspace_id,
+            to_device_public_key,
+            reason,
+        } => Some(PeerEvent::Remote(Heard::Undeliverable {
+            workspace_id,
+            to: to_device_public_key,
+            reason,
+        })),
+        _ => None,
     }
 }

@@ -18,14 +18,16 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::cell::Cell;
+use std::sync::Arc;
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use serde_json::{Map, json};
 use tilo_relay::workspaces::OwnWorkspaceOffer;
+use tilo_session_host::PeerConfig;
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::invite::guest_certificate;
-use tilo_user_identity::{DeviceCapabilities, UserIdentity};
+use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
 
 use support::{door, enrol, enter as enter_as, start_workspace_host};
 
@@ -80,7 +82,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // A host that keeps no workspaces of people's own says so in a code the page reads, not in
     // words it would have to match.
     let none = device
-        .enter_own_workspace(lounge.workspace_id, None, None, "Bob", |_| false)
+        .enter_own_workspace(None, None, "Bob", |_| false)
         .await
         .unwrap_err();
     assert_eq!(none.code, "unknown_action", "{none:?}");
@@ -99,7 +101,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let named = "5c1f2e7a-8b3d-4e6f-9a0b-1c2d3e4f5a6b";
     let asked = Cell::new(0);
     let own = device
-        .enter_own_workspace(lounge.workspace_id, None, Some(named), "Bob", |_| {
+        .enter_own_workspace(None, Some(named), "Bob", |_| {
             asked.set(asked.get() + 1);
             false
         })
@@ -120,9 +122,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     // Asked again, it answers the same workspace; one this device is in already is not redeemed
     // again.
     let again = device
-        .enter_own_workspace(lounge.workspace_id, None, None, "Bob", |id| {
-            id == own.workspace
-        })
+        .enter_own_workspace(None, None, "Bob", |id| id == own.workspace)
         .await
         .unwrap();
     assert_eq!(again.workspace, own.workspace);
@@ -162,7 +162,7 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
         "Laptop",
     );
     let theirs = laptop
-        .enter_own_workspace(lounge.workspace_id, None, Some(named), "Bob", |_| false)
+        .enter_own_workspace(None, Some(named), "Bob", |_| false)
         .await
         .unwrap();
     assert_eq!(theirs.workspace, own.workspace);
@@ -173,12 +173,57 @@ async fn a_device_in_the_lounge_enters_its_persons_own_workspace_with_its_own_ke
     let mut not_his = Map::new();
     not_his.insert("room".into(), json!(elsewhere.workspace));
     let refused = device
-        .own_workspace(lounge.workspace_id, not_his, "Firefox on Linux")
+        .own_workspace(not_his, "Firefox on Linux")
         .await
         .unwrap_err();
     assert_eq!(refused.code, "refused", "{refused:?}");
     assert!(!refused.message.is_empty());
     assert_ne!(refused.code, HostRefusal::UNANSWERED);
+
+    // A key Bob made for that one workspace enters it straight from its session with the host, in
+    // no other workspace first: the host invites it in on the session and it redeems there.
+    let script_key = new_key();
+    let script_cert = tilo_session_host::issue_agent_grant(
+        &bob,
+        script_key.verifying_key().to_bytes(),
+        "A script",
+        DeviceCapabilities::agent_grant(AgentScope::parse(&own.workspace).unwrap()),
+        Some(tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000)),
+    )
+    .await
+    .unwrap();
+    let script = Device::over(
+        PeerConfig {
+            host: host.iroh(),
+            cert: script_cert,
+            host_cert: host_device.cert.clone(),
+            revocations: tilo_user_identity::RevocationList::new(),
+            entering: None,
+        },
+        Arc::new(script_key),
+        "A script",
+    );
+    script.connected().await.unwrap();
+    assert_eq!(
+        script
+            .enter_workspace(&own.workspace, "A script")
+            .await
+            .unwrap(),
+        own.workspace_id
+    );
+    // It makes no workspace, and enters no other.
+    let made = script
+        .own_workspace(Map::from_iter([("name".into(), json!("More"))]), "A script")
+        .await
+        .unwrap_err();
+    assert_eq!(made.code, "refused", "{made:?}");
+    assert!(
+        script
+            .enter_workspace(&elsewhere.workspace, "A script")
+            .await
+            .is_err()
+    );
+    script.close();
 
     laptop_peer.close();
     tab.close();

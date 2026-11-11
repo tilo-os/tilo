@@ -20,7 +20,7 @@ use tilo_relay_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 use web_time::{Duration as Wait, Instant};
 
-use crate::session::{AgentRunCompletion, PeerConfig, PeerHandle, TransportPhase};
+use crate::session::{AgentRunCompletion, HOST_ITSELF, PeerConfig, PeerHandle, TransportPhase};
 use crate::session_actions::SessionActions;
 use crate::{MemoryPeerStore, PeerStore};
 
@@ -116,8 +116,9 @@ impl Device {
         )
     }
 
-    /// Take `sign_in`'s device into the workspace its link names, through the site's door where it
-    /// names one and the person's own workspace where the door leads elsewhere.
+    /// Take `sign_in`'s device into the workspace its link names ([`Self::enter_workspace`]). The
+    /// site's `door`, where it names one, lets the person in on the session as it opens: how a host
+    /// lets in someone it does not know yet, before it makes them a workspace of their own.
     ///
     /// # Errors
     /// The workspace's id is not one, the host could not be asked, or the workspace refused.
@@ -130,12 +131,8 @@ impl Device {
         let workspace = sign_in.link.workspace_id();
         tilo_relay_protocol::room_workspace_id(&workspace)
             .map_err(|error| CertifyError::Request(error.to_string()))?;
-        // The site's door lets the person in on this device's session as it opens; without one,
-        // the host must already admit this device.
-        let lobby = door.and_then(Door::workspace);
-        let entering = lobby
-            .clone()
-            .map(|workspace| tilo_relay_protocol::entering::Entering {
+        let entering = door.and_then(Door::workspace).map(|workspace| {
+            tilo_relay_protocol::entering::Entering {
                 workspace,
                 name: tilo_relay_protocol::web::kept(
                     &sign_in.agent,
@@ -143,50 +140,19 @@ impl Device {
                 ),
                 request_id: rand::random(),
                 through: tilo_relay_protocol::entering::Through::Door,
-            });
+            }
+        });
         let door_entered = entering.is_some();
         let device = Self::entering(sign_in, signer, entering);
         if door_entered {
             entered(&device.peer).await?;
+        } else {
+            device.connected().await?;
         }
-        // The door lets the person into the site's home workspace, which admits the person's own
-        // by an invitation this device asks for and redeems.
-        if let Some(lobby) = lobby.as_deref().filter(|lobby| *lobby != workspace) {
-            let lobby_id = device.join(lobby).await.map_err(|error| {
-                refused(
-                    error,
-                    "The site's workspace let this computer join, but its session is not admitted \
-                     to it.",
-                )
-            })?;
-            // The link names the workspace: the person's own, which the tab that wrote the link
-            // may not have made yet (it names one before it is let in anywhere), so this device
-            // asks for that one, and the host makes it under that name for a person who has
-            // none. A host that answers otherwise is asked for the person's own as before.
-            let mut named = Map::new();
-            named.insert("room".to_owned(), Value::String(workspace.clone()));
-            let invitation = match device.own_workspace(lobby_id, named, "tilo login").await {
-                Ok((_, invitation)) => invitation,
-                Err(_) => {
-                    device
-                        .own_workspace(lobby_id, Map::new(), "tilo login")
-                        .await?
-                        .1
-                }
-            };
-            device.redeem(&invitation, &sign_in.label).await?;
-        }
-        let entered = device.join(&workspace).await.map_err(|error| {
-            refused(
-                error,
-                if door.is_some() {
-                    "This workspace let this computer join, but its session is not admitted to it."
-                } else {
-                    "This workspace did not let this computer in, and its site names no door to \
-                     ask."
-                },
-            )
-        })?;
+        let entered = device
+            .enter_workspace(&workspace, &sign_in.label)
+            .await
+            .map_err(CertifyError::from)?;
         let device = Self {
             workspace_id: entered,
             ..device
@@ -298,20 +264,81 @@ impl Device {
         })
     }
 
-    /// The person's own workspace on the host, asked from inside `workspace_id`, and the invitation
-    /// into it: its `name` makes another, or the `room` it must be.
+    /// Have this device in `workspace` (its UUID) on its host, the one way every program enters
+    /// one: a workspace of its person's own, or one they were invited into, which the host invites
+    /// this device into and it redeems; or one the host admits it to already. `shown_as` is the
+    /// name its members see. Its id on the session.
+    ///
+    /// # Errors
+    /// The host refused (as it said) or did not answer, or the workspace did not admit this device.
+    pub async fn enter_workspace(
+        &self,
+        workspace: &str,
+        shown_as: &str,
+    ) -> Result<u64, HostRefusal> {
+        let id = tilo_relay_protocol::room_workspace_id(workspace).map_err(|error| {
+            HostRefusal::malformed(format!("{workspace} names no workspace: {error}"))
+        })?;
+        if self.peer.status().workspaces.get(&id) == Some(&true) {
+            return Ok(id);
+        }
+        let mut named = Map::new();
+        named.insert("room".to_owned(), Value::String(workspace.to_owned()));
+        let asked = match self.own_workspace(named, &self.label).await {
+            Ok((listing, invitation)) if listing.workspace == workspace => {
+                self.redeem(&invitation, shown_as).await?;
+                None
+            }
+            Ok(_) => Some(HostRefusal::malformed(
+                "The host answered another workspace than the one asked for.".to_owned(),
+            )),
+            Err(refusal) => Some(refusal),
+        };
+        // A workspace the host invites no one into on its own may admit this device already.
+        match self.join(workspace).await {
+            Ok(id) => Ok(id),
+            Err(error) => Err(asked.unwrap_or_else(|| error.into())),
+        }
+    }
+
+    /// Wait until the session is connected: what asking its host anything takes.
+    ///
+    /// # Errors
+    /// The host refused the session, or it did not connect in time.
+    pub async fn connected(&self) -> Result<(), HostRefusal> {
+        let started = Instant::now();
+        loop {
+            let status = self.peer.status();
+            match status.phase {
+                TransportPhase::Connected => return Ok(()),
+                TransportPhase::Failed | TransportPhase::Closed => {
+                    return Err(status.failures.last().map_or_else(
+                        || HostRefusal::unanswered("the session with the host ended"),
+                        |failure| HostRefusal::failed(&failure.message),
+                    ));
+                }
+                _ => {}
+            }
+            if started.elapsed() >= ADMITTING {
+                return Err(HostRefusal::unanswered(
+                    "the workspace's host did not take the session in time",
+                ));
+            }
+            n0_future::time::sleep(POLL).await;
+        }
+    }
+
+    /// The person's own workspace on the host, and the invitation into it: its `name` makes
+    /// another, or the `room` it must be.
     ///
     /// # Errors
     /// The host did not answer, refused, or answered no invitation.
     pub async fn own_workspace(
         &self,
-        workspace_id: u64,
         arguments: Map<String, Value>,
         caller: &str,
     ) -> Result<(WorkspaceListing, Vec<u8>), HostRefusal> {
-        let output = self
-            .host_action(workspace_id, CREATE_OWN_ROOM, arguments, caller)
-            .await?;
+        let output = self.host_action(CREATE_OWN_ROOM, arguments, caller).await?;
         let malformed = |why: String| {
             HostRefusal::malformed(format!(
                 "The host made no workspace of the person's own: {why}"
@@ -327,8 +354,7 @@ impl Device {
         Ok((made.workspace, invitation))
     }
 
-    /// Have this device in the person's own workspace on the host, asked from inside
-    /// `workspace_id`: the host makes it the first time, or answers the one the person has (another
+    /// Have this device in the person's own workspace on the host: the host makes it the first time, or answers the one the person has (another
     /// for each `name` they give; the one called `room`, a UUID, when it says, made under that name
     /// for a person who has none yet), and this very device redeems the invitation into it, so the
     /// key this session holds is the one that opens it next. A workspace `entered` says this device is
@@ -339,7 +365,6 @@ impl Device {
     /// device.
     pub async fn enter_own_workspace(
         &self,
-        workspace_id: u64,
         name: Option<&str>,
         room: Option<&str>,
         shown_as: &str,
@@ -352,9 +377,7 @@ impl Device {
         if let Some(room) = room {
             arguments.insert("room".to_owned(), Value::String(room.to_owned()));
         }
-        let (listing, invitation) = self
-            .own_workspace(workspace_id, arguments, &self.label)
-            .await?;
+        let (listing, invitation) = self.own_workspace(arguments, &self.label).await?;
         if !entered(&listing.workspace) {
             self.redeem(&invitation, shown_as)
                 .await
@@ -363,50 +386,45 @@ impl Device {
         Ok(listing)
     }
 
-    /// The person's workspace list as the host keeps it, asked from inside `workspace_id`: every
+    /// The person's workspace list as the host keeps it: every
     /// workspace of theirs their devices said, wherever it is hosted, with the workspaces this host
     /// keeps for them, each naming its host. A key for one workspace reads that one alone.
     ///
     /// # Errors
     /// The host did not answer, refused, or answered something else.
-    pub async fn personal_list(&self, workspace_id: u64) -> Result<PersonalList, HostRefusal> {
+    pub async fn personal_list(&self) -> Result<PersonalList, HostRefusal> {
         let listed = self
-            .host_action(workspace_id, LIST_PERSONAL, Map::new(), &self.label)
+            .host_action(LIST_PERSONAL, Map::new(), &self.label)
             .await?;
         serde_json::from_value(listed).map_err(|error| {
             HostRefusal::malformed(format!("The host answered no workspace list: {error}"))
         })
     }
 
-    /// Keep `list` on the host as the person's workspace list, asked from inside `workspace_id`:
-    /// what their keys read back with [`Self::personal_list`]. Only a device of the person's own
+    /// Keep `list` on the host as the person's workspace list: what their keys read back with [`Self::personal_list`]. Only a device of the person's own
     /// keeps it.
     ///
     /// # Errors
     /// The host did not answer or refused.
-    pub async fn keep_personal(
-        &self,
-        workspace_id: u64,
-        list: &PersonalList,
-    ) -> Result<(), HostRefusal> {
+    pub async fn keep_personal(&self, list: &PersonalList) -> Result<(), HostRefusal> {
         let mut arguments = Map::new();
         arguments.insert(
             "list".to_owned(),
             serde_json::to_value(list)
                 .map_err(|error| HostRefusal::malformed(error.to_string()))?,
         );
-        self.host_action(workspace_id, KEEP_PERSONAL, arguments, &self.label)
+        self.host_action(KEEP_PERSONAL, arguments, &self.label)
             .await
             .map(drop)
     }
 
-    /// The host's own operation `action` with `arguments`, asked in `workspace_id`.
+    /// The host's own operation `action` with `arguments`, asked on the session itself: no
+    /// workspace decides it.
     ///
     /// # Errors
     /// The host did not answer, refused, or did not finish.
     pub async fn host_action(
         &self,
-        workspace_id: u64,
         action: &str,
         arguments: Map<String, Value>,
         caller: &str,
@@ -415,12 +433,12 @@ impl Device {
             provider: HOST_ACTIONS_PROVIDER.to_owned(),
             address: tilo_actions::ActionAddress::new(HOST_ROOMS_RESOURCE, action),
         };
-        self.ask_host(workspace_id, target, arguments, caller).await
+        self.ask_host(HOST_ITSELF, target, arguments, caller).await
     }
 
     /// What the host itself answers to `target` with `arguments`, asked in
-    /// `workspace_id`: one of its own operations, or the person's account
-    /// on it.
+    /// `workspace_id` ([`HOST_ITSELF`] for none): one of its own operations, or the person's
+    /// account on it.
     ///
     /// # Errors
     /// The host did not answer, refused, or did not finish.
@@ -942,15 +960,6 @@ impl From<HostRefusal> for CertifyError {
         } else {
             Self::Denied(refusal.message)
         }
-    }
-}
-
-/// A refusal the workspace made says `refusal`; anything else stands.
-#[cfg(not(target_arch = "wasm32"))]
-fn refused(error: CertifyError, refusal: &str) -> CertifyError {
-    match error {
-        CertifyError::Denied(_) => CertifyError::Denied(refusal.to_owned()),
-        other => other,
     }
 }
 

@@ -73,8 +73,7 @@ pub struct Config {
     /// The door's own origin, as agents reach it (`https://mcp.tilo.sh`): the
     /// OAuth issuer and the protected resource. No trailing slash.
     pub issuer: String,
-    /// The person's Tilo on the web, which signs them in to the door; its
-    /// `entry.json` names the door to the site's home workspace on the relay.
+    /// The person's Tilo on the web, which signs them in to the door.
     pub web_entry: String,
     /// The public origin of the relay the person's workspaces live on
     /// (`https://eu1.tilo.sh`).
@@ -180,7 +179,7 @@ impl Door {
         let sign_in_entry = url::Url::parse(&format!("{web_entry}/sign-in"))
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         Ok(Arc::new(Self {
-            relay: Arc::new(Relay::new(&http, &config.relay, &web_entry)),
+            relay: Arc::new(Relay::new(&http, &config.relay)),
             http,
             config: Config {
                 issuer: config.issuer.trim_end_matches('/').to_owned(),
@@ -998,28 +997,12 @@ impl Door {
             .connection(&grant.id, &key)
             .await
             .map_err(|error| error.to_string())?;
-        let parent = match grant.parent() {
-            Some(parent) => {
-                let parent_key = self
-                    .store
-                    .grant(parent)
-                    .and_then(|parent| parent.key())
-                    .ok_or("the key that minted this key was revoked")?;
-                Some(
-                    self.connection(parent, &parent_key)
-                        .await
-                        .map_err(|error| error.to_string())?,
-                )
-            }
-            None => None,
-        };
         Ok(Session::new(
             grant.id.clone(),
             scope,
             label,
             Arc::clone(&self.relay),
             connection,
-            parent,
             Arc::downgrade(self),
         ))
     }

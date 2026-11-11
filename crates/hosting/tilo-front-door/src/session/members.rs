@@ -84,7 +84,7 @@ impl Session {
     ) -> Result<Value, Outcome> {
         let id = self
             .relay
-            .enter(&self.connection, self.parent.as_deref(), workspace)
+            .enter(&self.connection, workspace)
             .await
             .map_err(|error| refused(&error))?;
         let target = RemoteActionTarget::workspace_governance(workspace, verb);

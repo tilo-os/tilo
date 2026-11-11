@@ -165,21 +165,13 @@ and it governs, invites and administers nothing. The relay's own operations
 treat it as its person within its scope (`host_authority`): a grant reaching
 all workspaces makes and lists the person's own; nothing else.
 
-**A grant reaching all the person's workspaces** goes through the site's door
-to the site's home workspace, as the person's page does (the door the site's
-`entry.json` names for the relay), asks the relay there for the person's own
-workspace (`room.create-own`), which answers with an invitation for the
-person, redeems it and joins.
-
-**A minted grant** reaches one workspace and never the home workspace. Its
-parent, which reaches all of them, asks for the invitation into that
-workspace (`room.create-own` naming it, which answers only the person's own
-workspace and never makes another), and the minted grant redeems it itself.
-The parent asks rather than the relay admitting the minted grant on its
-person's membership alone because a workspace's roster admits devices one by
-one, each by an invitation: the minted grant enters exactly as every device
-of the person does, and its certificate's chain is checked at that join and
-at every handshake after.
-
-A grant the person certified for one workspace directly (an agent pointed at
-`/w/<workspace>`) has no parent to ask, and is not admitted yet.
+A grant enters a workspace as every device of the person does
+(`Device::enter_workspace`): on its session with the relay, in no workspace,
+it asks the relay for the invitation into that workspace (`room.create-own`
+naming it), redeems the invitation on the same connection, and joins. A grant reaching all the person's workspaces may
+also make one; a minted grant, or one certified for one workspace directly,
+enters only its own and makes none. The relay asks for no parent and no site
+workspace first: a workspace's roster admits devices one by one, each by an
+invitation, and the grant's certificate chain is checked at that join and at
+every handshake after. Only a person the relay never let in (through its
+site's door, or an invitation) is refused a first workspace of their own.

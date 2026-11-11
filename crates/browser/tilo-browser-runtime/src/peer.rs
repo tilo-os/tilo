@@ -2545,11 +2545,10 @@ impl WasmPeer {
             .map_err(|error| js_error(&error))
     }
 
-    /// Have this page's device in the person's own workspace on the host, asked from inside
-    /// `workspace` (a UUID) through the session it holds there: made the first time, answered again
-    /// after, another for each `name`, the one called `room` (a UUID) when it is named
-    /// ([`Device::enter_own_workspace`]). This very device redeems the invitation (an entry on
-    /// its own stream of the session's connection), shown to the workspace's people as `shownAs`,
+    /// Have this page's device in the person's own workspace on the host, asked on the session it
+    /// holds there: made the first time, answered again after, another for each `name`, the one
+    /// called `room` (a UUID) when it is named ([`Device::enter_own_workspace`]). This very device
+    /// redeems the invitation on that session, shown to the workspace's people as `shownAs`,
     /// unless `entered(workspace)` says it is in already. Resolves to the workspace's listing,
     /// `{workspace, workspace_id, name, generation}` JSON.
     ///
@@ -2561,16 +2560,14 @@ impl WasmPeer {
     #[wasm_bindgen(js_name = enterOwnWorkspace)]
     pub async fn enter_own_workspace(
         &self,
-        workspace: String,
         name: Option<String>,
         room: Option<String>,
         shown_as: String,
         entered: Function,
     ) -> Result<String, JsValue> {
-        let number = workspace_number(&workspace)?;
         let listing = self
             .device
-            .enter_own_workspace(number, name.as_deref(), room.as_deref(), &shown_as, |id| {
+            .enter_own_workspace(name.as_deref(), room.as_deref(), &shown_as, |id| {
                 entered
                     .call1(&JsValue::NULL, &JsValue::from_str(id))
                     .is_ok_and(|answer| answer.is_truthy())

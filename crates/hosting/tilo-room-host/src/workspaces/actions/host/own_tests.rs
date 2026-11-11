@@ -532,6 +532,10 @@ async fn their_workspaces_of_their_own_share_the_storage_the_host_gives_them() {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "each scope of grant, from the one that makes none to the one that makes them all"
+)]
 async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspaces() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -559,10 +563,20 @@ async fn an_agents_grant_makes_its_persons_own_workspace_when_it_makes_workspace
         sign_device_cert(&mut cert, &root).unwrap();
         cert
     };
+    // A grant for one workspace makes none, and asks for no other than its own.
     let narrow = grant(AgentScope::Workspace([7; 16]));
     assert!(matches!(
         create_own(&host, &narrow, json!({})).await,
-        Err(ActionHostError::UnknownAction)
+        Err(ActionHostError::Refused { .. })
+    ));
+    assert!(matches!(
+        create_own(
+            &host,
+            &narrow,
+            json!({"room": "08080808-0808-4808-8808-080808080808"})
+        )
+        .await,
+        Err(ActionHostError::Refused { .. })
     ));
     let all = grant(AgentScope::AllWorkspaces);
     // The grant asks as its session makes it: its person's agent.

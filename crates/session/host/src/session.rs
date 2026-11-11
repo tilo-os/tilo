@@ -403,43 +403,10 @@ pub enum PeerEvent {
     },
 }
 
-/// What the host addressed to this device that it only passes on: an
-/// action frame or what became of one, a piece of content, a member's
-/// coming or going.
-fn addressed(envelope: Envelope) -> Option<PeerEvent> {
-    match envelope {
-        Envelope::RemoteAction {
-            workspace_id,
-            from_device_public_key,
-            frame,
-            ..
-        } => Some(PeerEvent::Remote(Heard::Action {
-            workspace_id,
-            from: from_device_public_key,
-            frame,
-        })),
-        Envelope::RecordContent {
-            workspace_id,
-            from_device_public_key,
-            frame,
-            ..
-        } => Some(PeerEvent::RecordContent {
-            workspace_id,
-            from: from_device_public_key,
-            frame,
-        }),
-        Envelope::RemoteActionUndeliverable {
-            workspace_id,
-            to_device_public_key,
-            reason,
-        } => Some(PeerEvent::Remote(Heard::Undeliverable {
-            workspace_id,
-            to: to_device_public_key,
-            reason,
-        })),
-        _ => None,
-    }
-}
+/// The workspace id a session asks the host's own operations under: none of its workspaces, the
+/// host itself (creating, listing and entering the person's workspaces). Its answers come back
+/// from the host's device under the same id.
+pub const HOST_ITSELF: u64 = 0;
 
 /// One Opus frame of a page's microphone, as its call publishes it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -2137,6 +2104,19 @@ impl Task {
             }));
             return;
         };
+        // The host's own operations, which no workspace decides, go to it on the session itself.
+        if workspace_id == HOST_ITSELF {
+            if to != self.config.host_cert.device_public_key {
+                self.emit(&PeerEvent::Remote(Heard::Undeliverable {
+                    workspace_id,
+                    to,
+                    reason: "outside a workspace, only the host itself is asked".into(),
+                }));
+                return;
+            }
+            let _ = client.send(Envelope::HostAction { frame });
+            return;
+        }
         if self.admitted_to(workspace_id) == Some(false) {
             if self.held_actions.len() >= MAX_HELD_ACTIONS {
                 let dropped = self.held_actions.remove(0);

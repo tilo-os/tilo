@@ -1032,7 +1032,7 @@ async function connect({
      * `{workspace, workspace_id, name}`; rejects with the host's refusal as it
      * typed it (`HostRefusal`: `code`, and `refusal` where the host gave one). */
     enterOwnWorkspace: async ({name = null, room = null, entered = () => false} = {}) => JSON.parse(
-      await peer.enterOwnWorkspace(workspace, name, room, fitDisplayName(displayName || label), entered)),
+      await peer.enterOwnWorkspace(name, room, fitDisplayName(displayName || label), entered)),
     /** Who is in the workspace, for its owner (`rooms.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },

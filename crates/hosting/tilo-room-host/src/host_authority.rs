@@ -19,7 +19,7 @@
 //! An agent's grant (a key the person certified for a service that acts for
 //! an agent they approved, [`tilo_user_identity::AgentScope`]) is the person
 //! too, within its scope: it makes workspaces when it reaches all of them,
-//! lists the ones it reaches, and reads the person's revocations. Nothing
+//! enters the ones it reaches, lists them, and reads the person's revocations. Nothing
 //! else here is an agent's: not entering a workspace as its owner, not the
 //! host's compute, not which hosts serve a workspace.
 
@@ -128,11 +128,15 @@ impl HostOperation {
             return true;
         };
         match self {
-            Self::CreateWorkspace | Self::CreateOwnWorkspace | Self::DeleteOwnWorkspace => {
-                scope.makes_workspaces()
-            }
-            // The listing answers only the workspaces the scope reaches.
-            Self::ListWorkspaces | Self::ListRevocations | Self::ReadPersonalList => true,
+            Self::CreateWorkspace | Self::DeleteOwnWorkspace => scope.makes_workspaces(),
+            // The listing answers only the workspaces the scope reaches. A grant for one
+            // workspace asks for the invitation into that one, which its person already has:
+            // making another is for a grant reaching all of them, and the handler holds a
+            // narrower one to the workspace it names.
+            Self::ListWorkspaces
+            | Self::ListRevocations
+            | Self::ReadPersonalList
+            | Self::CreateOwnWorkspace => true,
             // The list is what the person's own devices hold; a grant reads it.
             Self::KeepPersonalList
             | Self::EnterWorkspace
@@ -245,9 +249,10 @@ mod tests {
                 "{}",
                 operation.name()
             );
+            // It asks to enter its own workspace (the handler holds it to that one).
             assert_eq!(
                 operation.permits(&host, &one),
-                reads,
+                reads || operation == HostOperation::CreateOwnWorkspace,
                 "{}",
                 operation.name()
             );

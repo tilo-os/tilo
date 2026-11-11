@@ -12,10 +12,11 @@
 //!   device asks it. The device serves the agent's MCP itself, with its own
 //!   presence and history, so this side carries the lines.
 //! - **A dedicated host** (a relay) hosts it: the key opens a session with the
-//!   host as one of the person's devices ([`tilo_session_host::device::Device`])
-//!   and joins the workspace, which admits it when it redeemed its person's
-//!   invitation there; the agent surface ([`crate::mcp::McpServer`]) runs here
-//!   over the host's actions.
+//!   host as one of the person's devices and enters the workspace as every
+//!   device does ([`tilo_session_host::device::Device::enter_workspace`]): the
+//!   host invites it in on that session and it redeems the invitation there.
+//!   The agent surface ([`crate::mcp::McpServer`]) runs here over the host's
+//!   actions.
 //!
 //! Either way the caller gets an [`Entered`], which answers MCP JSON-RPC.
 
@@ -136,24 +137,43 @@ pub async fn enter(
                 Arc::new(key.key.clone()),
                 &key.cert.device_label,
             );
-            let workspace_id = match device.join(workspace).await {
-                Ok(id) => id,
-                Err(error) => {
-                    device.close();
-                    return Err(format!("{} did not let this key in: {error}", address.name));
+            let entered = match device.connected().await {
+                Ok(()) => {
+                    device
+                        .enter_workspace(workspace, &key.cert.device_label)
+                        .await
                 }
+                Err(refusal) => Err(refusal),
             };
-            let person = collab_types::Principal::of_person(key.cert.user_public_key)
-                .id()
-                .to_owned();
-            let server = McpServer::new(device.actions(workspace_id), workspace.to_owned(), person)
-                .with_surface(Surface::Agent)
-                .with_agent_run(uuid::Uuid::new_v4().simple().to_string(), name.to_owned());
-            Ok(Entered::Host {
-                server: Box::new(server),
-                device: Box::new(device),
-                workspace_id,
-            })
+            match entered {
+                Ok(workspace_id) => Ok(Entered::on_host(device, workspace_id, workspace, name)),
+                Err(refusal) => {
+                    device.close();
+                    Err(format!(
+                        "{} did not let this key in: {}",
+                        address.name, refusal.message
+                    ))
+                }
+            }
+        }
+    }
+}
+
+impl Entered {
+    /// `device`'s entry into `workspace` (`workspace_id` on its session), which a dedicated host
+    /// serves: the agent surface runs here over the host's actions, as the run called `name`.
+    #[must_use]
+    pub fn on_host(device: Device, workspace_id: u64, workspace: &str, name: &str) -> Self {
+        let person = collab_types::Principal::of_person(device.cert().user_public_key)
+            .id()
+            .to_owned();
+        let server = McpServer::new(device.actions(workspace_id), workspace.to_owned(), person)
+            .with_surface(Surface::Agent)
+            .with_agent_run(uuid::Uuid::new_v4().simple().to_string(), name.to_owned());
+        Self::Host {
+            server: Box::new(server),
+            device: Box::new(device),
+            workspace_id,
         }
     }
 }

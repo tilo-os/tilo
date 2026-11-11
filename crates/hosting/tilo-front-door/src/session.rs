@@ -93,9 +93,6 @@ pub struct Session {
     relay: Arc<Relay>,
     /// The grant's session with the relay.
     connection: Arc<Connection>,
-    /// For a minted grant, the session of the grant that minted it, which
-    /// asks for its invitation.
-    parent: Option<Arc<Connection>>,
     /// The door, which answers the account's own actions.
     door: std::sync::Weak<crate::Door>,
     served: tokio::sync::Mutex<HashMap<String, Arc<Served>>>,
@@ -156,7 +153,6 @@ impl Session {
         label: String,
         relay: Arc<Relay>,
         connection: Arc<Connection>,
-        parent: Option<Arc<Connection>>,
         door: std::sync::Weak<crate::Door>,
     ) -> Self {
         Self {
@@ -169,7 +165,6 @@ impl Session {
                 .to_owned(),
             relay,
             connection,
-            parent,
             door,
             served: tokio::sync::Mutex::default(),
             on_devices: tokio::sync::Mutex::default(),
@@ -203,10 +198,7 @@ impl Session {
         if let Some(known) = runs.get(workspace) {
             return Ok(Arc::clone(known));
         }
-        let id = self
-            .relay
-            .enter(&self.connection, self.parent.as_deref(), workspace)
-            .await?;
+        let id = self.relay.enter(&self.connection, workspace).await?;
         let device = &self.connection.device;
         let actions = device.actions(id);
         // The records the run works in open as windows on the workspace's
@@ -315,19 +307,14 @@ impl Session {
     }
 
     /// Where `workspace` is hosted when one of the person's devices hosts it,
-    /// as their list says: a key reaching all their workspaces reads it, and
-    /// a minted one's parent does.
+    /// as their list says (a key for one workspace reads that one's).
     async fn device_address(
         &self,
         workspace: &str,
     ) -> Option<tilo_relay_session::workspaces::WorkspaceHostAddress> {
-        let lister = self.parent.as_deref().unwrap_or(&self.connection);
-        if lister.key.scope() != tilo_user_identity::AgentScope::AllWorkspaces {
-            return None;
-        }
         let address = self
             .relay
-            .workspaces(lister)
+            .workspaces(&self.connection)
             .await
             .ok()?
             .into_iter()
