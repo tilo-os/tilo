@@ -64,6 +64,9 @@ hyper-util = { version = "0.1.20", features = ["tokio"] }
 futures-util.workspace = true
 # The endpoint joined rooms sync over, keyed by this device's key.
 iroh.workspace = true
+# The relays that endpoint uses, as the person set them, held back until
+# something needs this device reachable.
+tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }
 iroh-blobs.workspace = true
 # The launcher's manifest view, service names and developer-override gate;
 # its binary builds every Linux app sandbox.

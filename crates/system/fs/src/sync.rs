@@ -185,11 +185,12 @@ impl Ticket {
 /// a restart.
 pub async fn bind_endpoint_with_key(secret: iroh::SecretKey) -> Result<(Endpoint, MemoryLookup)> {
     let lookup = MemoryLookup::new();
-    let endpoint = endpoint_builder(secret, &lookup).bind().await?;
+    let relays = tilo_endpoint_reachability::relays();
+    let endpoint = endpoint_builder(secret, &lookup, &relays).bind().await?;
     Ok((endpoint, lookup))
 }
 
-/// [`bind_endpoint_with_key`], with the default relays held back until
+/// [`bind_endpoint_with_key`], with the person's relays held back until
 /// something may need to dial this device: no home relay, net report,
 /// address discovery or port mapping until the returned
 /// [`crate::reachability::Reachability`] is woken. For a daemon
@@ -199,13 +200,14 @@ pub async fn bind_dormant_endpoint_with_key(
     secret: iroh::SecretKey,
 ) -> Result<(Endpoint, MemoryLookup, crate::reachability::Reachability)> {
     let lookup = MemoryLookup::new();
-    let endpoint = endpoint_builder(secret, &lookup)
+    let relays = tilo_endpoint_reachability::relays();
+    let endpoint = endpoint_builder(secret, &lookup, &relays)
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()))
         .bind()
         .await?;
     let reachability = crate::reachability::Reachability::defer(
         &endpoint,
-        &iroh::endpoint::default_relay_mode().relay_map(),
+        &relays.relays,
         tokio::runtime::Handle::current(),
         None,
     );
@@ -229,11 +231,17 @@ pub(crate) const IDLE_KEEP_ALIVE: Duration = Duration::from_secs(25);
 /// a 25 s keep-alive would not reliably beat.
 pub(crate) const IDLE_TIMEOUT_MS: u32 = 60_000;
 
-/// The endpoint a mount or a `fs serve` reaches its peers on: number 0's
-/// relays, and number 0's directory only as a reader — a filesystem peer is
-/// dialled by the devices that mounted it, which hold its address already,
-/// so publishing its key would only sign in for a lookup nothing makes.
-fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::endpoint::Builder {
+/// The endpoint a mount or a `fs serve` reaches its peers on: the person's
+/// relays ([`tilo_endpoint_reachability::relays`]), and number 0's directory
+/// only as a reader — a filesystem peer is dialled by the devices that
+/// mounted it, which hold its address already, so publishing its key would
+/// only sign in for a lookup nothing makes. With a relay of the person's own
+/// (or none) number 0's directory is not read either.
+fn endpoint_builder(
+    secret: iroh::SecretKey,
+    lookup: &MemoryLookup,
+    relays: &tilo_endpoint_reachability::EndpointRelays,
+) -> iroh::endpoint::Builder {
     use iroh::endpoint::{QuicTransportConfig, VarInt};
     /// Unacknowledged bytes one stream, and one connection, may have in
     /// flight. QUIC's defaults (1.25 MB per stream, 10 MB per connection)
@@ -251,12 +259,15 @@ fn endpoint_builder(secret: iroh::SecretKey, lookup: &MemoryLookup) -> iroh::end
         .default_path_max_idle_timeout(Duration::from_millis(u64::from(IDLE_TIMEOUT_MS)))
         .max_idle_timeout(Some(VarInt::from_u32(IDLE_TIMEOUT_MS).into()))
         .build();
-    Endpoint::builder(presets::Minimal)
-        .address_lookup(tilo_endpoint_reachability::Watchonly)
-        .relay_mode(iroh::endpoint::default_relay_mode())
+    let mut builder = Endpoint::builder(presets::Minimal)
+        .relay_mode(iroh::RelayMode::Custom(relays.relays.clone()))
         .transport_config(transport)
         .secret_key(secret)
-        .address_lookup(lookup.clone())
+        .address_lookup(lookup.clone());
+    if relays.n0_dns {
+        builder = builder.address_lookup(tilo_endpoint_reachability::Watchonly);
+    }
+    builder
 }
 
 /// Bind an endpoint under a freshly-generated key. **The node id differs

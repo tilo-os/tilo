@@ -109,6 +109,7 @@ pub mod personal_dictionary;
 pub mod placement;
 pub mod power;
 pub mod published;
+pub mod relay;
 pub mod roaming_provenance;
 pub mod search_history;
 mod section_digest;

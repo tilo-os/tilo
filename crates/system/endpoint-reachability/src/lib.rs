@@ -17,6 +17,9 @@
 //! connections stay as they are. Outbound dials work while dormant too: a
 //! peer address that names a relay gets an on-demand connection to it.
 //!
+//! Which relays those are is the person's call ([`relays`]): number 0's
+//! public ones and its DNS unless they named their own relay, or none.
+//!
 //! Who can dial in? Only a party that already knows this device: a member
 //! of a room it is in, someone holding an invite it minted, one of the
 //! person's own devices (continuity, the device fabric, disk unlock), a
@@ -39,8 +42,10 @@
 
 pub mod directory;
 pub mod lan;
+pub mod relays;
 pub use directory::{Gate, Watchonly, collaborating};
 pub use lan::lan;
+pub use relays::{EndpointRelays, relays};
 
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
