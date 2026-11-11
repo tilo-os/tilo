@@ -72,6 +72,10 @@ note() { printf '  %s\n' "$*" >&2; }
 # hook is the fast answer, not the only one.
 python3 "$root/tools/policy/check_app_text_contract.py" --staged
 python3 "$root/tools/policy/check_session_copy_contract.py"
+# A catalogue is judged against its siblings, not by its own text: half a
+# translation or a key defined twice reads as drift or breaks the file only
+# beside the others. It reads every catalogue in well under a second.
+python3 "$root/tools/policy/check_catalogue_coverage.py"
 python3 "$root/tools/policy/check_ui_host_inputs_contract.py" --staged
 python3 "$root/tools/policy/check_ui_clock_contract.py" --staged
 python3 "$root/tools/policy/check_formats.py" --staged || fail=1
