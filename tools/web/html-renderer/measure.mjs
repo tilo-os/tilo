@@ -120,7 +120,7 @@ const FRAMES = `(() => {
   window.renderMarks.domFrames = [];
   const pct = (values, p) => { if (!values.length) return null; const s = [...values].sort((a, b) => a - b); return Math.round(s[Math.min(s.length - 1, Math.floor(p * s.length))] * 10) / 10; };
   const column = k => frames.map(f => f[k]);
-  return JSON.stringify({frames: frames.length, writesP50: pct(column(0), 0.5), writesMax: pct(column(0), 1), createdP50: pct(column(1), 0.5), createdMax: pct(column(1), 1), presentMsP50: pct(column(2), 0.5), presentMsMax: pct(column(2), 1)});
+  return JSON.stringify({frames: frames.length, writesP50: pct(column(0), 0.5), writesMax: pct(column(0), 1), createdP50: pct(column(1), 0.5), createdMax: pct(column(1), 1), presentMsP50: pct(column(2), 0.5), presentMsMax: pct(column(2), 1), layoutMsP50: pct(column(3), 0.5), layoutMsP90: pct(column(3), 0.9), layoutMsMax: pct(column(3), 1), encodeMsP50: pct(column(4), 0.5), encodeMsMax: pct(column(4), 1), drawsP50: pct(column(5), 0.5), textsP50: pct(column(6), 0.5)});
 })()`;
 // Where the semantic elements live: inside the painted widget they describe
 // (one tree), or in the mirror's own layer; and whether any painted text is
@@ -235,6 +235,10 @@ async function run({page, render, width, height, dark = false, shot, interact = 
       result.typing = {n: typed.keydown.length, p50: pct(typed.keydown, 0.5), p90: pct(typed.keydown, 0.9), max: pct(typed.keydown, 1)};
       if (render === 'dom') result.typingFrames = await tab.evaluate(FRAMES).then(JSON.parse);
       result.typingChanged = {p50: pct(typed.keydownChanged, 0.5), p90: pct(typed.keydownChanged, 0.9)};
+      // Where a key's time goes: from the event to the frame that answers it
+      // being handed over, and from there to the browser's next paint.
+      const behind = (later, earlier) => ({p50: pct(later, 0.5) - pct(earlier, 0.5), p90: pct(later, 0.9) - pct(earlier, 0.9)});
+      result.typingBreakdown = {toPresent: result.typingChanged, toPaint: behind(typed.keydown, typed.keydownChanged)};
       if (shot) writeFileSync(join(out, shot.replace('.png', '-typed.png')), await tab.screenshot());
       for (let i = 0; i < 30 * rounds; i++) {
         await tab.send('Input.dispatchMouseEvent', {type: 'mouseWheel', x: target.x, y: target.y, deltaX: 0, deltaY: i % 20 < 10 ? 120 : -120});
