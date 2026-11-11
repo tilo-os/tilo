@@ -332,6 +332,75 @@ fn a_tree_with_nothing_to_fold_keeps_no_chevrons_column() {
     );
 }
 
+/// A tree whose first level stops folding anything while its rows stay keeps the column it
+/// gave its chevrons: a task ticked off takes its subtasks out of a list of open tasks, and the
+/// rows the person is looking at, the one under their finger too, stay where they stood. Rows
+/// read anew line up with the words over them again, and a row that comes to fold takes its
+/// column at once.
+#[test]
+fn a_tree_keeps_its_chevrons_column_while_its_rows_stay() {
+    let probe = |_: &Nested, _: usize, key: &u64| -> Element {
+        Box::new(super::tests::ProbeRow::new(
+            key.to_string(),
+            20.0,
+            false,
+            Rc::new(Cell::new(0)),
+        ))
+    };
+    let mut list = VirtualList::new(
+        Nested {
+            keys: vec![0, 1, 2],
+            parents: HashMap::from([(1, 0)]),
+            groups: HashMap::new(),
+        },
+        20.0,
+        probe,
+    )
+    .with_viewport_height(200.0)
+    .with_tree(Rc::new(TreeMarks::default()));
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    let column = list.lead;
+    assert!(
+        column > list.bleed + 0.5,
+        "a row with subtasks hands its chevron a column: {column} in from {}",
+        list.bleed
+    );
+
+    // The subtask leaves the list; the rows it stood among stay.
+    list.update_model(|model| model.keys = vec![0, 2]);
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        (list.lead - column).abs() < 0.5,
+        "the rows that stay keep their column: {} against {column}",
+        list.lead
+    );
+
+    // Other rows altogether: the list reads them anew, and nothing of them folds.
+    list.update_model(|model| {
+        model.keys = vec![5, 6];
+        model.parents.clear();
+    });
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        (list.lead - list.bleed).abs() < 0.5,
+        "rows read anew with nothing to fold keep no column: {} in from {}",
+        list.lead,
+        list.bleed
+    );
+
+    // A row of them comes to hold a subtask: its chevron takes the column at once.
+    list.update_model(|model| {
+        model.keys = vec![5, 7, 6];
+        model.parents.insert(7, 5);
+    });
+    let _ = super::tests::lay_out(&mut list, 300.0);
+    assert!(
+        (list.lead - column).abs() < 0.5,
+        "a first level that comes to fold takes its column: {} against {column}",
+        list.lead
+    );
+}
+
 /// A tree reads as a tree: the list says what it is, each row says how deep it stands, and a
 /// row with subtasks says whether they show.
 #[test]
