@@ -494,7 +494,7 @@ tying those primitives to role admission/revocation. Production broker startup
 installs the Secret Service provider with no automatic file-key fallback; a sealed owner-only
 file store is used only when `TILO_SECRETS_DIR` is set explicitly (headless machines;
 `crates/platform/tilo-secrets/src/lib.rs`, acknowledged in
-`crates/session/session/src/channels/vault.rs`). Its document
+`crates/session/client/src/channels/vault.rs`). Its document
 store fsyncs encrypted compaction snapshots before minting route-bound receipts;
 restart, wrong-route and tamper behavior are covered by hermetic provider tests.
 The remaining work at the time was user-facing device/member provisioning and
