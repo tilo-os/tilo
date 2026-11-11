@@ -668,19 +668,18 @@ impl Panel {
         self.open.set(false);
     }
 
-    /// Open the card a face, a wave or the launcher asked for where the roster stands, and draw it:
-    /// the person's card, as the web desk shows it, from the same model. The card is the roster's
-    /// detail — the person, with their devices — not a second panel beside it. Answers whether the
-    /// card now stands there.
-    fn draw_card(
-        &mut self,
-        scene: &mut ui::vello::Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        presence: &ui::presence::PresenceCtx,
-        shown: &mut Shown,
-    ) -> bool {
+    /// Open the card a face, a wave or the launcher asked for where the roster stands, or close the
+    /// one the roster came back in place of: the person's card, as the web desk shows it, from the
+    /// same model. The card is the roster's detail — the person, with their devices — not a second
+    /// panel beside it.
+    ///
+    /// Opening a card builds its widgets anew and drops the ones that stood there, so it is done
+    /// as the panel is laid out, never while it draws: the frame's layout maps point at the
+    /// widgets it laid out, and input read through them until the next frame (the pointer's
+    /// shape, a tooltip) would reach freed ones.
+    fn settle_card(&mut self, theme: &Theme) {
+        let roster = Rc::clone(&self.shown);
+        let mut shown = roster.borrow_mut();
         if shown.close_card {
             shown.close_card = false;
             self.profile.close();
@@ -707,6 +706,24 @@ impl Panel {
                 shown.card_open = self.profile.is_open().then_some(who);
             }
         }
+    }
+
+    /// Whether a card was asked to open or close since the panel was last laid out
+    /// ([`Self::settle_card`]).
+    fn card_asked(&self) -> bool {
+        let shown = self.shown.borrow();
+        shown.close_card || shown.own_card || shown.card_of.is_some()
+    }
+
+    /// Draw the card standing in the roster's place. Answers whether one stands there.
+    fn draw_card(
+        &mut self,
+        scene: &mut ui::vello::Scene,
+        transform: Affine,
+        text: &mut TextRenderer,
+        theme: &Theme,
+        presence: &ui::presence::PresenceCtx,
+    ) -> bool {
         if self.profile.is_open() {
             self.profile
                 .draw_overlay(scene, transform, text, theme, presence);
@@ -1337,11 +1354,7 @@ impl Panel {
         shown: &mut Shown,
         panel: Option<Rect>,
     ) {
-        let card_stands = if shown.card_of.is_some() || shown.own_card || self.profile.is_open() {
-            self.draw_card(scene, transform, text, theme, presence, shown)
-        } else {
-            false
-        };
+        let card_stands = self.draw_card(scene, transform, text, theme, presence);
         if card_stands {
             return;
         }
@@ -1526,6 +1539,7 @@ impl Widget for Panel {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         use ui::widget::TaffyTreeExt;
+        self.settle_card(theme);
         // The card belongs to the roster: a roster that closed took it with it, and the card's
         // place among these children with that.
         if !self.open.get() {
@@ -1638,7 +1652,7 @@ impl Widget for Panel {
     fn take_structure_dirty(&mut self) -> bool {
         let open = self.profile.is_open();
         let card = self.profile.take_structure_dirty();
-        card || open != self.card_node.is_some()
+        card || open != self.card_node.is_some() || self.card_asked()
     }
 
     fn draw(
