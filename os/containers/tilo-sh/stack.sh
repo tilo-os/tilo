@@ -80,7 +80,9 @@ trust the local Caddy's CA through the fixed bundle path Tilo's programs read,
 which bwrap (bubblewrap) puts in front of this machine's own for those
 processes alone. Nothing runs as root, and no process sees this session's
 D-Bus or runtime directory. TILO_SH_BUNDLE names a built desktop bundle
-(build.sh --bundle desktop) instead of building one.
+(build.sh --bundle desktop) instead of building one; TILO_SH_BUNDLE_NAMES=1
+builds it with its function names kept, for profiling the page
+(stack.sh restart web).
 Images: TILO_SH_IMAGE_LOUNGE, TILO_SH_IMAGE_DOOR and TILO_SH_IMAGE_WEB name an
 OCI archive or a registry reference instead of this checkout's t build (e.g.
 the registry.tilo.so/tilo/lounge@sha256:… production pins).
@@ -624,12 +626,15 @@ lay_out_lounge() {
 # The desktop bundle the web entry serves (build.sh --bundle desktop, the
 # web-desktop-bundle check's build), its compile on t; TILO_SH_BUNDLE names a
 # built one instead. Built into a new directory and swapped in.
+# TILO_SH_BUNDLE_NAMES=1 builds it with its function names kept (build.sh
+# --names), for profiling the page: otherwise the bundle that ships.
 build_bundle() {
   if [[ -n ${TILO_SH_BUNDLE:-} ]]; then return; fi
-  local began=$SECONDS next=${native:?}/bundle.next
-  say "building the desktop bundle (build.sh --bundle desktop, compiled by ${TILO_SH_CARGO:-t})"
+  local began=$SECONDS next=${native:?}/bundle.next names=()
+  [[ ${TILO_SH_BUNDLE_NAMES:-0} != 1 ]] || names=(--names)
+  say "building the desktop bundle (build.sh --bundle desktop ${names[*]}, compiled by ${TILO_SH_CARGO:-t})"
   rm -rf "${next:?}"
-  CARGO=$here/cargo.sh "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$next" --bundle desktop >&2 \
+  CARGO=$here/cargo.sh "$repo/crates/browser/tilo-browser-runtime/scripts/build.sh" "$next" --bundle desktop "${names[@]}" >&2 \
     || die 'the desktop bundle did not build (above)'
   rm -rf "${native:?}/bundle"
   mv "$next" "$native/bundle"

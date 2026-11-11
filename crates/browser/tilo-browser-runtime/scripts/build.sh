@@ -10,7 +10,7 @@
 #                       the Typst editor's fonts), with sizes and hashes
 #   build.json          revision, tools, profile and output hashes
 #
-# usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt]
+# usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names]
 #                 [--bundle runtime|desktop] [--no-split] [--update]
 #                 [--wasm-only | --wasm-from WASM_DIR]
 # `--profile release` compiles with Cargo's `wasm-release` profile and runs
@@ -33,6 +33,11 @@
 # copied again, and fonts, data and the compute module are kept. A loop that
 # edits only web/*.mjs takes seconds; one that edits Rust,
 # the compile, wasm-bindgen and, unless `--no-split`, the split.
+# `--names` (desktop bundle) keeps the modules' function names (their wasm
+# name section), which a shipped bundle strips: a profile of the page then
+# names the functions it spends its time in rather than numbering them. It is
+# otherwise the same build, compiled, split and optimized alike, so it
+# measures what ships; build.json records the wasm-opt flags it ran with.
 # `--wasm-only` builds only what Cargo compiles (pkg/ with the compute module,
 # data/ and apps.json) and records how in wasm.json; it reads no git
 # metadata, so a build cache can key it by its sources alone. `--module-only`
@@ -50,7 +55,7 @@ set -euo pipefail
 
 crate=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$crate/../../.." && pwd)
-usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only]'
+usage='usage: build.sh OUTPUT_DIR [--profile release|assert|dev|quick] [--[no-]wasm-opt] [--names] [--bundle runtime|desktop] [--no-split] [--update] [--wasm-only | --wasm-from WASM_DIR] [--module-only]'
 out=${1:?$usage}
 shift
 profile=release
@@ -61,6 +66,7 @@ update=0
 wasm_only=0
 module_only=0
 wasm_from=
+names=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --profile) profile=${2:?--profile needs a value}; shift 2 ;;
@@ -68,6 +74,7 @@ while [[ $# -gt 0 ]]; do
     --no-wasm-opt) optimize=0; shift ;;
     --bundle) bundle=${2:?--bundle needs a value}; shift 2 ;;
     --no-split) split=0; shift ;;
+    --names) names=1; shift ;;
     --update) update=1; shift ;;
     --wasm-only) wasm_only=1; shift ;;
     --module-only) module_only=1; shift ;;
@@ -94,6 +101,9 @@ esac
 [[ $update == 0 || ( $wasm_only == 0 && -z $wasm_from ) ]] || {
   echo '--update builds whole bundles; not with --wasm-only or --wasm-from' >&2; exit 2;
 }
+# The runtime bundle's profile strips the symbols at link time; the desktop's
+# keeps them for its splitter.
+[[ $names == 0 || $bundle == desktop ]] || { echo '--names is for the desktop bundle' >&2; exit 2; }
 case "$bundle" in
   runtime) package=tilo-browser-runtime ;;
   desktop) package=tilo-web-desktop ;;
@@ -220,6 +230,11 @@ fi
 # What the app SDK's own web build passes wasm-opt, so the module a size gate
 # measures is the module the site serves (tools/web/wasm-opt-flags).
 wasm_opt_flags=$(grep -v '^[[:space:]]*#' "$repo/tools/web/wasm-opt-flags" | xargs)
+# With --names, the same passes, writing the name section the splitter keeps
+# (-g: binaryen writes no names without it) instead of dropping it.
+if [[ $names == 1 ]]; then
+  wasm_opt_flags="$(printf '%s\n' $wasm_opt_flags | grep -vx -- --strip-debug | xargs) -g"
+fi
 if [[ $optimize == 1 ]]; then
   command -v wasm-opt >/dev/null || { echo 'wasm-opt (binaryen) is required; pass --no-wasm-opt to skip' >&2; exit 2; }
   # A few at a time: the start module alone takes gigabytes to optimize.
