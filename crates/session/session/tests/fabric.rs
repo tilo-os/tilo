@@ -31,7 +31,7 @@ use tilo_session::platform::fabric::{
 };
 use tilo_session::platform::fabric::{FabricLink as _, SharedLink};
 use tilo_session::sync::{Client, Entry, OwnPresence};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+use tilo_user_identity::DeviceCapabilities;
 
 /// One pass of the session's loop, as the session runs it on its own clock.
 const PASS: Duration = Duration::from_millis(20);
@@ -80,18 +80,8 @@ fn kept_device(
     label: &str,
     kept: Option<&std::path::Path>,
 ) -> Device {
-    let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: person.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, person).expect("the person signs their own device");
+    let key = test_relay::signing_key(seed);
+    let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
     let client = Client::start(
         Entry {
             identity: Some(HostIdentity::kept(cert, key)),
@@ -100,7 +90,7 @@ fn kept_device(
             continuity: permitted(),
             wake: Arc::new(|| {}),
             fabric: kept.map(std::path::Path::to_path_buf),
-            relays: tilo_endpoint_reachability::relays(),
+            relays: test_relay::loopback(),
         },
         None,
         None,

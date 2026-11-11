@@ -176,6 +176,8 @@ collab-types = { path = "../../collab/collab-types" }
 tempfile.workspace = true
 tilo-resource = { path = "../../sdk/tilo-resource" }
 tilo-test-env = { path = "../../dev/test-env" }
+# A relay on this machine's loopback, which is what a test's devices relay through.
+test-relay = { path = "../../dev/test-relay" }
 # Paused time drives the watch lease's expiry.
 tokio = { workspace = true, features = ["test-util"] }
 

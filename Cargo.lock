@@ -16817,6 +16817,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "test-relay"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "iroh",
+ "settings-store",
+ "tempfile",
+ "tilo-clock",
+ "tilo-endpoint-reachability",
+ "tilo-relay",
+ "tilo-test-env",
+ "tilo-user-identity",
+ "tilo-workspace-join",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "themes"
 version = "0.1.0"
 dependencies = [
@@ -21164,6 +21184,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
+ "test-relay",
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",
@@ -21451,6 +21472,7 @@ dependencies = [
  "smithay-client-toolkit",
  "tempfile",
  "test-http",
+ "test-relay",
  "threshold-identity",
  "tilo-accessibility-settings",
  "tilo-action-broker",
@@ -21616,6 +21638,7 @@ dependencies = [
  "sha2 0.11.0",
  "tempfile",
  "test-http",
+ "test-relay",
  "tilo-action-broker",
  "tilo-action-policy",
  "tilo-actions",

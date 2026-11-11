@@ -35,15 +35,16 @@ pub const BOTH: Directions = Directions {
     subscribe: true,
 };
 
-/// An endpoint whose key is the device's own, as a device dials with.
 /// An endpoint whose key is the device's own, as a device dials with: relays
-/// and discovery on, as a page and a desk reach a host they were handed a
-/// link to. An endpoint bound with relays off could redeem an invitation only
-/// while links carried a direct address of the host's own network; a link
-/// names what a stranger can dial instead — the host's relay and its public
-/// addresses.
+/// on, as a page and a desk reach a host they were handed a link to. An
+/// endpoint bound with relays off could redeem an invitation only while links
+/// carried a direct address of the host's own network; a link names what a
+/// stranger can dial instead — the host's relay and its public addresses. The
+/// relay is one on this machine's loopback, so nothing here reaches the
+/// internet.
 pub async fn endpoint(key: &SigningKey) -> iroh::Endpoint {
-    iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+    iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Custom(test_relay::loopback().relays))
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()))
         .bind()
         .await

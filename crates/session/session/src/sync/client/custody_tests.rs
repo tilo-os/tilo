@@ -17,161 +17,12 @@ use std::time::Duration;
 use ed25519_dalek::SigningKey;
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_user_identity::{DeviceCapabilities, DeviceCert};
+use tilo_user_identity::DeviceCapabilities;
 
 use super::{Client, Enrolling, Entering, Entry, OwnPresence};
 use crate::channels::ChannelLink;
 use crate::engine::Engine;
 use crate::platform::fabric::Continuity;
-
-/// `key` 's certificate as a device of the person whose root key is `root` .
-fn certified(
-    root: &SigningKey,
-    key: &SigningKey,
-    label: &str,
-    capabilities: DeviceCapabilities,
-) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.to_owned(),
-        capabilities,
-        issued_at_ns: tilo_clock::unix_now_ns(),
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, root).expect("a certified device");
-    cert
-}
-
-/// A host on this machine governing one workspace, certified so that it takes part in no channels:
-/// what its members record is committed in the clear. It runs its own packet relay on this
-/// machine's loopback, the one its devices relay through: nothing a test does reaches a relay or
-/// directory out on the internet, where every other run of it would meet this one.
-struct Host {
-    relay: Option<tilo_relay::daemon::Relay>,
-    relays: tilo_endpoint_reachability::EndpointRelays,
-    workspaces: tilo_relay::workspaces::Workspaces,
-    cert: DeviceCert,
-    workspace: String,
-    runtime: tokio::runtime::Runtime,
-    _state: tempfile::TempDir,
-}
-
-impl Drop for Host {
-    fn drop(&mut self) {
-        if let Some(relay) = self.relay.take() {
-            self.runtime.block_on(relay.shutdown());
-        }
-    }
-}
-
-impl Host {
-    /// A host of the person `owner_key` , on this machine, a device of its own.
-    fn of(owner_key: &SigningKey) -> Self {
-        let state = tempfile::tempdir().expect("the host's directory");
-        let runtime = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .enable_all()
-            .build()
-            .expect("the host's runtime");
-        // A host is a device of its own, and its relay answers on the Iroh node that device's key
-        // names. Two hosts sharing a key are one node to every dialer, so either answers the
-        // other's joins and the other's members' links: each host mints a key from its own
-        // directory.
-        let host_key = SigningKey::from_bytes(&blake3::derive_key(
-            "the notes host",
-            state.path().as_os_str().as_encoded_bytes(),
-        ));
-        let cert = certified(
-            owner_key,
-            &host_key,
-            "The notes host",
-            DeviceCapabilities {
-                can_own_workspaces: false,
-                ..tilo_user_identity::cloud_enrollment::host_capabilities()
-            },
-        );
-        let (relay, relays, workspaces, workspace) = runtime.block_on(async {
-            let relay = tilo_relay::daemon::Relay::start(
-                tilo_relay::RelayConfig {
-                    state_root: state.path().join("host"),
-                    packet_relay: Some((std::net::Ipv4Addr::LOCALHOST, 0).into()),
-                    ..tilo_relay::RelayConfig::default()
-                },
-                tilo_relay::daemon::RelayIdentity {
-                    user_public_key: owner_key.verifying_key().to_bytes(),
-                    device_signing_key: host_key.clone(),
-                    device_cert: cert.clone(),
-                    revocations: tilo_user_identity::RevocationList::new(),
-                },
-            )
-            .await
-            .expect("the host starts");
-            tilo_test_env::within("the host's packet relay is up", relay.endpoint.online()).await;
-            let url = relay
-                .node_addr()
-                .relay_urls()
-                .next()
-                .expect("the host names its packet relay")
-                .to_string();
-            let relays = tilo_endpoint_reachability::EndpointRelays::for_choice(
-                &settings_store::relay::Relays::Own(url),
-            );
-            let workspaces = relay
-                .workspaces()
-                .expect("the host governs workspaces")
-                .clone();
-            let workspace = workspaces
-                .create("Notes")
-                .await
-                .expect("the workspace")
-                .workspace;
-            (relay, relays, workspaces, workspace)
-        });
-        Self {
-            relay: Some(relay),
-            relays,
-            workspaces,
-            cert,
-            workspace,
-            runtime,
-            _state: state,
-        }
-    }
-
-    /// An invitation to the workspace that only `person` 's devices redeem.
-    fn invitation(&self, person: [u8; 32], request: u8) -> String {
-        let issued = self
-            .runtime
-            .block_on(self.workspaces.issue(
-                &self.workspace,
-                &self.cert,
-                tilo_workspace_join::invitations::IssueInvitationRequest {
-                    request_id: [request; 32],
-                    role: tilo_workspace_join::MemberRole::Editor,
-                    recipient_user_public_key: Some(person),
-                    invitee_name: None,
-                    expires_at_ns: tilo_clock::unix_now_ns().saturating_add(3_600_000_000_000),
-                    inviter_name: None,
-                },
-            ))
-            .expect("an invitation to the workspace");
-        tilo_workspace_join::encode_invitation_text(&issued.signed_invitation)
-    }
-
-    /// Where this host is reached for its workspace, as it signed it: what a device of the person
-    /// is told to dial.
-    fn host_hint(&self) -> tilo_peer_state::join::TransportHint {
-        self.runtime
-            .block_on(self.workspaces.hosts(&self.workspace))
-            .expect("the host signs its own address")
-            .into_iter()
-            .next()
-            .expect("the host serves its workspace")
-    }
-}
 
 /// One session's side of the workspace: its engine, and its plane.
 struct Device {
@@ -182,17 +33,12 @@ struct Device {
 
 impl Device {
     /// A session of a device certified by `root`, relaying through `host`'s relay: two of them
-    /// are two devices of one person. A device is reached on the Iroh node its key names, found on
-    /// the local network too: a key one run shared with another running beside it would make the
-    /// two one node, each answering the other's dials. Each device mints a key from its own
-    /// directory, as each host does.
-    fn of(root: &SigningKey, label: &str, host: &Host) -> Self {
+    /// are two devices of one person. Each device mints a key no other run shares, as each host
+    /// does.
+    fn of(root: &SigningKey, label: &str, host: &test_relay::Host) -> Self {
         let state = tempfile::tempdir().expect("the session's directory");
-        let key = SigningKey::from_bytes(&blake3::derive_key(
-            "a custody test's device",
-            state.path().as_os_str().as_encoded_bytes(),
-        ));
-        let cert = certified(root, &key, label, DeviceCapabilities::member());
+        let key = test_relay::fresh_signing_key(label);
+        let cert = test_relay::certified(root, &key, label, DeviceCapabilities::member());
         let identity = tilo_network_actor::HostIdentity::kept(cert, key);
         let engine = std::sync::Arc::new(
             Engine::open(
@@ -212,7 +58,7 @@ impl Device {
                 continuity: Continuity::default(),
                 wake: std::sync::Arc::new(|| ()),
                 fabric: None,
-                relays: host.relays.clone(),
+                relays: host.relays(),
             },
             Some(std::sync::Arc::clone(&engine)),
             None,
@@ -233,8 +79,8 @@ impl Device {
 
     /// Join the host's workspace with an invitation for this person, and wait until the workspace
     /// is held here.
-    fn join(&self, host: &Host, request: u8) -> WorkspaceId {
-        let workspace_id = WorkspaceId::parse(&host.workspace).expect("a workspace id");
+    fn join(&self, host: &test_relay::Host, request: u8) -> WorkspaceId {
+        let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
         let slot = WorkspaceSlot::of_workspace(workspace_id);
         self.engine.bind(slot, workspace_id);
         self.plane
@@ -272,8 +118,8 @@ impl Device {
     /// Enter the host's workspace as a further device of this person, at the host's own signed
     /// address: nothing is invited here, and the workspace answers with what it holds, so this
     /// device takes part in it from then on.
-    fn enter(&self, host: &Host) -> WorkspaceId {
-        let workspace_id = WorkspaceId::parse(&host.workspace).expect("a workspace id");
+    fn enter(&self, host: &test_relay::Host) -> WorkspaceId {
+        let workspace_id = WorkspaceId::parse(host.workspace()).expect("a workspace id");
         self.plane
             .enter(Entering {
                 slot: WorkspaceSlot::of_workspace(workspace_id),
@@ -335,7 +181,7 @@ fn holds_receipt(device: &Device, workspace_id: WorkspaceId, invocation: uuid::U
 /// then holds it too.
 #[test]
 fn a_receipt_the_owner_commits_reaches_the_workspaces_other_session() {
-    let host = Host::of(&SigningKey::from_bytes(&[0x71; 32]));
+    let host = test_relay::Host::of(&SigningKey::from_bytes(&[0x71; 32]), "Notes");
     let writer = Device::of(&SigningKey::from_bytes(&[0x51; 32]), "The writer", &host);
     let reader = Device::of(&SigningKey::from_bytes(&[0x61; 32]), "The reader", &host);
     let workspace = writer.join(&host, 0x01);
@@ -394,7 +240,7 @@ fn wait_for(device: &Device, workspace_id: WorkspaceId, invocation: uuid::Uuid) 
 #[test]
 fn a_person_s_further_device_enters_their_workspace_at_its_host() {
     let root = SigningKey::from_bytes(&[0x71; 32]);
-    let host = Host::of(&root);
+    let host = test_relay::Host::of(&root, "Notes");
     let laptop = Device::of(&root, "The laptop", &host);
     let desktop = Device::of(&root, "The desktop", &host);
     assert_eq!(laptop.person(), desktop.person(), "one person, two devices");

@@ -2242,7 +2242,7 @@ mod transfers_between_devices {
         Capability, DesktopTree, FsMode, GRANT_SESSION, Workspace, WorkspaceId, WorkspaceSlot,
     };
     use tilo_network_actor::HostIdentity;
-    use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
+    use tilo_user_identity::DeviceCapabilities;
 
     use super::{FILES_APP_ID, NearbyTransfer};
     use crate::platform::fabric::Continuity;
@@ -2350,18 +2350,8 @@ mod transfers_between_devices {
         spool: &Path,
         peer_id: u64,
     ) -> Device {
-        let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: person.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: label.to_owned(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: tilo_clock::unix_now_ns(),
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, person).expect("the person signs their own device");
+        let key = test_relay::signing_key(seed);
+        let cert = test_relay::certified(person, &key, label, DeviceCapabilities::member());
         let client = Client::start(
             Entry {
                 identity: Some(HostIdentity::kept(cert, key)),
@@ -2370,7 +2360,7 @@ mod transfers_between_devices {
                 continuity: permitted(),
                 wake: Arc::new(|| {}),
                 fabric: None,
-                relays: tilo_endpoint_reachability::relays(),
+                relays: test_relay::loopback(),
             },
             None,
             None,
