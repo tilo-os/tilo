@@ -1076,17 +1076,12 @@ try {
     const shown = found.find(([x0, y0, x1, y1]) => x0 >= 0 && y0 >= 0 && x1 <= r.width && y1 <= r.height);
     return JSON.stringify(shown ? {bounds: shown} : null);
   })()`).then(JSON.parse);
-  // Right-click a window bar on screen and choose the menu's strip row: what
-  // the row was, and whether the window filled the strip before and after.
-  const fillFromMenu = async what => {
-    const desk = await centreOf(a.tab);
-    const barRow = await shownRow('Maximize') ?? await shownRow('Close');
-    const bar = {x: desk.corner.x + 400, y: desk.corner.y + 40};
-    if (barRow) {
-      const [x0, y0, x1, y1] = barRow.bounds;
-      bar.x = desk.corner.x + (x0 + x1) / 2;
-      bar.y = desk.corner.y + (y0 + y1) / 2;
-    }
+  // Right-click a window's bar and choose the menu's strip row: what the row
+  // was, and whether the window filled the strip before and after. The menu
+  // acts on the window whose bar it was opened from, and the desk says only
+  // of the focused window whether it fills the strip: the window is focused
+  // first, by a press in its body below the bar.
+  const fillFromMenu = async (what, bar) => {
     const was = (await nav(a.tab))?.maximized;
     await rightClick(a.tab, bar.x, bar.y);
     // The menu is the frame after the click's, and a busy desk draws a few a
@@ -1100,11 +1095,18 @@ try {
     }
     await settle(a.tab, 1);
     const now = (await nav(a.tab))?.maximized;
-    if (now === was) failed(`${what}: the window menu's row changed nothing: ${JSON.stringify({row, was})}`);
+    if (now === was) failed(`${what}: the window menu's row changed nothing: ${JSON.stringify({row, was, bar})}`);
     return {row, was, now};
   };
-  const filled = await fillFromMenu('the window menu');
-  const given = await fillFromMenu('the window menu again');
+  const desk = await centreOf(a.tab);
+  const barRow = await shownRow('Maximize') ?? await shownRow('Close');
+  if (!barRow) failed(`no window bar on screen to open the window menu from: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
+  const [bx0, by0, bx1, by1] = barRow.bounds;
+  const bar = {x: desk.corner.x + (bx0 + bx1) / 2, y: desk.corner.y + (by0 + by1) / 2};
+  await click(a.tab, bar.x, desk.y);
+  await settle(a.tab, 2);
+  const filled = await fillFromMenu('the window menu', bar);
+  const given = await fillFromMenu('the window menu again', bar);
   report.windowMenu = {filled, given};
   console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled.row}, then ${given.row})`);
 
