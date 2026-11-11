@@ -621,6 +621,7 @@ fn start(
             return ExitCode::FAILURE;
         }
     };
+    let serves_an_environment = hosted_browser.is_some();
     // Who sits here, read now and kept current by workers: nothing the loop asks of the identity
     // directory waits on the disk.
     tilo_session::identity::install();
@@ -682,7 +683,12 @@ fn start(
     let mut options = Options {
         services,
         wake,
-        setup: tilo_session::startup::before_desk(identity, host_desktop),
+        // A session in a browser environment is not a first use of a computer: its identity is the
+        // one the relay handed it, so nothing is left to set up and nothing stands over the window
+        // it was started for.
+        setup: (!serves_an_environment)
+            .then(|| tilo_session::startup::before_desk(identity, host_desktop))
+            .flatten(),
         captures: Some(captures),
         questions: desktop.as_ref().map(|desktop| desktop.questions().clone()),
         apps: Some(std::rc::Rc::clone(&launch) as std::rc::Rc<dyn tilo_session::AppActions>),
