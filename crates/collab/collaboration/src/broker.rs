@@ -9993,14 +9993,27 @@ mod tests {
     /// A cluster-scope route (an empty app id, the workspace-wide discovery
     /// route an agent joins) names no app, so the identity service could
     /// never grant it channel keys — it refuses the question, and a route
-    /// left waiting for that answer asks again every second for the whole
-    /// life of the connection. It carries no record and seals nothing, so it
-    /// asks for no keys at all, and its timer stays quiet: the desktop's log
-    /// held thousands of refusals a second for one agent before.
+    /// left waiting for that answer is asked again every second by the key
+    /// timer for the whole life of the connection. It carries no record and
+    /// writes nothing, so it asks for no keys at all, and its timer never
+    /// names it.
+    ///
+    /// The broker here pushes channel changes, so the timer asks only a
+    /// route still waiting for keys. The app's own route holds the keys its
+    /// join round got; the cluster route holds none but, being plaintext,
+    /// is not asked. Across several timer rounds the count must not move —
+    /// pre-fix, one more question a second named the cluster route forever.
     #[test]
     #[cfg(unix)]
     fn a_cluster_route_asks_for_no_channel_keys_and_polls_nothing() {
-        let broker = FakeBroker::default();
+        let changes = Arc::new(tokio::sync::watch::Sender::new(0_u64));
+        let broker = FakeBroker {
+            captures: Arc::new(std::sync::Mutex::new(Captures {
+                key_changes: Some(Arc::clone(&changes)),
+                ..Captures::default()
+            })),
+            ..FakeBroker::default()
+        };
         let (fd, _captures, thread) = stand_up_fake_broker(broker);
         let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let sdk = CollaborationManager::spawn_sdk(
@@ -10024,32 +10037,38 @@ mod tests {
             handle: None,
         }));
         manager.await_primary_route().unwrap();
-        // The app's own route learns its keys and settles, which disarms the
-        // key timer; from then on an idle endpoint asks only when told its
-        // channel changed.
-        tilo_test_env::wait_until("the app route's endpoint to settle on its keys", || {
-            let seen = key_schedule(&manager);
-            !seen.armed && seen.timer_rounds == 0
+        // The app's route learns its keys at its join round and holds them:
+        // its timer is disarmed from then on.
+        tilo_test_env::wait_until("the app route's join round to be applied", || {
+            asked.load(std::sync::atomic::Ordering::Acquire) > 0
         });
-        let settled = asked.load(std::sync::atomic::Ordering::Acquire);
         manager.join_route(
             RouteSpec::cluster(Uuid::new_v4()),
             crate::record::RecordKind::new(""),
         );
         // The join's key round, were there one, has run before this probe is
         // answered (the shovel serves its commands in order, and the probe
-        // applies any round still out). A cluster route asks nothing and
-        // waits for nothing, so the timer stays disarmed and no route was
-        // asked for keys.
-        let seen = key_schedule(&manager);
-        assert!(
-            !seen.armed && seen.timer_rounds == 0,
-            "a cluster route leaves the key timer armed to ask forever: {seen:?}"
+        // applies any round still out). Pre-fix the cluster route is still
+        // waiting and arms the timer; post-fix nothing does.
+        let before = key_schedule(&manager).timer_rounds;
+        tilo_test_env::wait_until("five key timer rounds after the cluster join", || {
+            key_schedule(&manager).timer_rounds >= before + 5
+        });
+        let settled = asked.load(std::sync::atomic::Ordering::Acquire);
+        // The app's route is told its channel changed once more; the cluster
+        // route is never asked by the timer. One more ask than the join's is
+        // the app's own change, never a cluster-route question.
+        changes.send_replace(9);
+        tilo_test_env::wait_until(
+            "the app route to be asked after its channel changed",
+            || asked.load(std::sync::atomic::Ordering::Acquire) > settled,
         );
+        let after = asked.load(std::sync::atomic::Ordering::Acquire);
         assert_eq!(
-            asked.load(std::sync::atomic::Ordering::Acquire),
-            settled,
-            "a cluster route asked the identity service for channel keys it cannot be granted"
+            after,
+            settled + 1,
+            "only the app route's own one change asked; the cluster route was asked for keys it \
+             cannot be granted"
         );
         drop(manager);
         thread.join().unwrap();
