@@ -344,6 +344,35 @@ class PageHolds(unittest.TestCase):
         self.heard(host, lambda e: e['event'] == 'download' and e['id'] == prompt['id']
                    and e['state'] == 'cancelled')
 
+    def test_a_hold_whose_page_went_away_ends_and_is_set_down_as_gone(self):
+        # The tab shows another page. What the page before it was held from
+        # sending has no page to leave from: the hold ends, the app is told,
+        # and the record says that the page went away, naming that page.
+        host = self.open('/auto')
+        held = self.heard(host, lambda e: e['event'] == 'held')
+        host.navigate(self.url + '/')
+        self.heard(host, lambda e: e['event'] == 'held_closed' and e['id'] == held['id'])
+        gone = self.set_down(host, 'gone')
+        self.assertEqual((gone['how'], gone['actor'], gone['url'], gone['to_url'], gone['message']),
+                         ('hold', '', self.url + '/auto', self.url, 'POST ' + self.url), gone)
+        self.assertEqual([e['action'] for e in self.record(host)], ['request', 'gone'])
+
+    def test_a_held_submission_does_not_leave_from_another_page(self):
+        # A held submission is issued again when the person allows it. Once
+        # the tab shows another page, an allow that comes late sends nothing:
+        # the form does not leave from a page the person never saw it on.
+        host = self.open('/')
+        self.click(host, 'button "Submit application"')
+        held = self.heard(host, lambda e: e['event'] == 'held')
+        host.navigate(self.url + '/script')
+        self.heard(host, lambda e: e['event'] == 'held_closed' and e['id'] == held['id'])
+        self.set_down(host, 'gone')
+        host.send(op='hold_answer', tab=held['tab'], id=held['id'], allow=True)
+        host.settle(1.5)
+        self.assertEqual(host.latest_title(), 'Script departures')
+        self.assertNotIn('Application received', [e.get('title') for e in host.seen])
+        self.assertEqual([e['action'] for e in self.record(host)], ['click', 'submit', 'gone'])
+
     def test_a_held_download_is_set_down_with_its_file_and_who_answered(self):
         host = self.open('/download.html')
         self.click(host, 'link "Receipt"')

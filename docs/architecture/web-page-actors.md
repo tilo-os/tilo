@@ -110,8 +110,8 @@ when the page sent it on its own. The entry names the page, the origin it
 would go to and its method there, and of a download the file's name. When
 the hold ends the engine sets down how: `allow` when it was let leave, `keep`
 when the page was kept as it is, `drop` when nobody answered, `too_many` when
-it was turned away at once. Who answered the engine cannot know, so the
-window says it with its answer. It is the
+it was turned away at once, `gone` when the page it was held on went away.
+Who answered the engine cannot know, so the window says it with its answer. It is the
 person when their allow ran again the invocation that reached the hold: that
 invocation is its actor's, whom the held entry already names, and only the
 person's own answer runs it a second time. It is whoever the action system
@@ -123,7 +123,13 @@ the action whose run reached it is told why, so a page that posts in a loop
 never has more than those paused and no request waits on questions the
 person has not seen. Every hold ends: the engine drops one no app answers at
 a deadline of its own, a little after the window's, so nothing a page was
-about to send stays paused for good. An entry that comes while an action runs takes its
+about to send stays paused for good. A hold also ends when the tab shows
+another page: what was held has no page to leave from, and a submission
+allowed late would leave from a page the person never saw it on, so the
+engine drops it and the record names the page it was held on. The action
+whose run reached a hold that ended without leaving is not run again when
+the person's allow comes after all: it is told that nothing left. An entry
+that comes while an action runs takes its
 place after that action's own, as typing does. Neither entry carries what
 was about to leave: no request's body, no field's value and no secret.
 
@@ -188,7 +194,8 @@ with who did each action; what a person typed stands there as typing, and
 what was written into a secret field as set, not shown. What the window held
 stands there in plain words: what waited for the person and whose action
 reached it, who let it leave, who kept the page as it is, and what was
-dropped, with nobody answering or as one too many. The Page menu, a key, the palette and an agent all
+dropped, with nobody answering, as one too many or because its page went
+away. The Page menu, a key, the palette and an agent all
 open it through that one action, and `show-page` closes it. The review keeps
 nothing: it is drawn from the forms, fields and record reads, made as the
 tab's unnamed actor, so they take no place in the record and tell no agent
@@ -333,7 +340,9 @@ reason under "Not built yet".
   window is not told: the hold is set down as dropped once the window's own
   deadline passes, not as kept when they said no. A held download the person
   cancels in the downloads list, instead of answering it, has no entry for
-  how it ended. A tab that closes with something held sets nothing more down.
+  how it ended, and a download is not ended by its page going away: the offer
+is the engine's. A tab that closes with something held sets nothing more
+down.
   The record does not tell a departure the page sent on its own from one the
   person at the window started: both are under nobody's name.
 - **Presence on the page.** Where each actor is acting, drawn on the page

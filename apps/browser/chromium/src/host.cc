@@ -370,7 +370,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void NoteHold(const tilo::HoldNote& note) {
     if(!page_automation_) return;
     if(note.began) page_automation_->HoldBegan(note.action,note.method,note.origin,note.file);
-    else page_automation_->HoldEnded(note.action,note.actor,note.method,note.origin,note.file);
+    else page_automation_->HoldEnded(note.action,note.actor,note.method,note.origin,note.file,note.page);
   }
   // A window an agent operates (holds_): a request the page makes of its own
   // that leaves with data is paused here, and answered by the app. A
@@ -844,7 +844,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     composition_scripts_=nullptr;
     if(service_session_import_)service_session_import_->Detach();service_session_import_=nullptr;
     browser_=nullptr;
-    if(departures) departures->Closed(id_);
+    if(departures) departures->Gone(id_);
     download_owners.Destroy(id_);
     // Its popups go with it: nothing is left for them to answer.
     std::vector<CefRefPtr<Client>> popups;
@@ -950,6 +950,11 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void OnLoadStart(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,TransitionType) override {
     if(!frame->IsMain()) return;
     tilo::ForgetBootstrap(browser);
+    // A new document: what the page before it was held from sending has no
+    // page to leave from any more. Each such hold ends, and the tab's record
+    // names the page it was held on.
+    if(departures) departures->Gone(id_,committed_url_);
+    committed_url_=frame->GetURL().ToString();
     // A new document: no script context a page action kept is one of its own.
     if(page_automation_) page_automation_->DocumentCommitted();
     // A new document has no field focused yet.
@@ -2149,6 +2154,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // request, on its IO thread.
   std::atomic<bool> holds_{false};
   std::atomic<int64_t> hold_wait_ms_{tilo::kHoldWaitMs};
+  // The address of the document the main frame shows: the page a hold of
+  // this tab was held on, said of it once the tab shows another.
+  std::string committed_url_;
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;

@@ -1028,3 +1028,94 @@ fn a_hold_somebody_kept_is_no_longer_published_at_once() {
         "the engine heard one answer"
     );
 }
+
+/// What `submit`, whose run reached a hold that then ended without the
+/// person's answer, is told when their allow comes after all: the request was
+/// dropped. The page action is not run a second time, on whatever page the
+/// tab shows by then, and nothing is answered to the engine.
+fn allowed_after_its_hold_ended(
+    engine: &TestEngine,
+    widget: &mut BrowserWidget,
+    doc: &AutoCommit,
+    root: &ObjId,
+    submit: ui::tilo_actions::InvocationId,
+) {
+    let (sent, answered) = (page_requests(engine).len(), held_answers(engine));
+    let again = widget.admit(submit, effect_operation(&submit_payload(widget)));
+    assert!(
+        matches!(again, Ok(ui::framework::Effected::Pending)),
+        "the invocation is taken and answered"
+    );
+    widget.sync(doc, root);
+    assert_eq!(
+        page_requests(engine).len(),
+        sent,
+        "the page action is not run a second time"
+    );
+    assert_eq!(held_answers(engine), answered, "and nothing is released");
+    let update = answer(widget, doc, root, submit);
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } = &update else {
+        panic!("the allow is told the request was dropped: {update:?}");
+    };
+    assert_eq!(error.code, "browser.page.hold_ended");
+    assert!(
+        error.message.contains("https://visa.example") && error.message.contains("nothing left"),
+        "{}",
+        error.message
+    );
+}
+
+/// The page a submission was held on went away, and the engine ended the
+/// hold itself. Whoever waited on it is answered: the page no longer offers
+/// it, and the person's late allow of the action that reached it is told it
+/// was dropped instead of running that action again on another page.
+#[test]
+fn a_hold_whose_page_went_away_is_answered_to_whoever_waits() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    engine.hold(held_submit(1));
+    let submit = start(
+        &mut widget,
+        "submit-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    widget.sync(&doc, &root);
+    let asked = answer(&mut widget, &doc, &root, submit);
+    assert!(needs_the_person(&asked), "{asked:?}");
+    // The page posts on its own as well: that hold is published.
+    let mut request = HeldRequest::new(2, HeldKind::Request);
+    request.method = "POST".into();
+    request.origin = "https://orders.example".into();
+    engine.hold(request);
+    widget.sync(&doc, &root);
+    assert_eq!(published_answers(&widget).len(), 1);
+    // The tab shows another page: the engine says both holds are over.
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 2 });
+    widget.sync(&doc, &root);
+    assert!(
+        published_answers(&widget).is_empty(),
+        "nothing is offered for an answer that can no longer leave"
+    );
+    allowed_after_its_hold_ended(&engine, &mut widget, &doc, &root, submit);
+}
+
+/// The same holds for a hold the window dropped at its own deadline: an allow
+/// that comes later does not run the action again.
+#[test]
+fn an_allow_that_comes_after_the_windows_deadline_does_not_run_the_action_again() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    engine.hold(held_submit(1));
+    let submit = start(
+        &mut widget,
+        "submit-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    widget.sync(&doc, &root);
+    let asked = answer(&mut widget, &doc, &root, submit);
+    assert!(needs_the_person(&asked), "{asked:?}");
+    widget.expire_holds_at(std::time::Instant::now() + std::time::Duration::from_secs(60 * 60));
+    assert_eq!(held_answers(&engine), vec![(1, false)]);
+    allowed_after_its_hold_ended(&engine, &mut widget, &doc, &root, submit);
+}

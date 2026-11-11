@@ -55,7 +55,8 @@ inline bool WebAddress(const std::string& url) {
 // it carries: no request's body and nothing a form's fields hold.
 struct HoldNote {
   // What the record names it by: the kind of what was held (`submit`,
-  // `request`, `download`), or how a held one ended (`allow`, `keep`, `drop`).
+  // `request`, `download`), or how a held one ended (`allow`, `keep`, `drop`,
+  // `too_many`, `gone`).
   std::string action;
   // Whether it says that a hold began.
   bool began=false;
@@ -64,6 +65,8 @@ struct HoldNote {
   // nobody answered. A hold that begins is the running action's actor's.
   std::string actor;
   std::string method,origin,file;
+  // The page it was held on, when that is no longer the page the tab shows.
+  std::string page;
 };
 using NoteHold=std::function<void(int,const HoldNote&)>;
 // How long a hold waits for its answer when the app names no time of its own,
@@ -164,9 +167,13 @@ class Departures final : public std::enable_shared_from_this<Departures> {
       departure.frame->LoadRequest(departure.request);
     }
   }
-  // The tab closed or navigated away from what it held: nothing of it leaves,
-  // and its requests are dropped.
-  void Closed(int tab) {
+  // The page a tab held something on is gone: the tab closed, or its main
+  // frame shows another document. What was held there has no page to leave
+  // from any more, and a submission issued again would leave from a page the
+  // person never saw it on. So nothing of it leaves: each of the tab's holds
+  // ends, the app is told, and the tab's record says that its page went
+  // away, naming `page`, the page it was held on.
+  void Gone(int tab,const std::string& page={}) {
     std::vector<int> ids;
     for(const auto& entry:held_) if(entry.second.tab==tab) ids.push_back(entry.first);
     for(int id:ids) {
@@ -174,15 +181,15 @@ class Departures final : public std::enable_shared_from_this<Departures> {
       if(found==held_.end()) continue;
       Departure departure=std::move(found->second);
       held_.erase(found);
-      Note(departure,HoldEnding(false,"expired"),false,{});
+      Note(departure,"gone",false,{},page);
       Closed(tab,id);
       if(departure.load) departure.load->Cancel();
     }
   }
  private:
-  void Note(const Departure& departure,const char* action,bool began,const std::string& actor) {
+  void Note(const Departure& departure,const char* action,bool began,const std::string& actor,const std::string& page={}) {
     if(!note_) return;
-    note_(departure.tab,HoldNote{action,began,actor,departure.method,departure.origin,{}});
+    note_(departure.tab,HoldNote{action,began,actor,departure.method,departure.origin,{},page});
   }
   void Closed(int tab,int id) {
     auto fields=CefDictionaryValue::Create();

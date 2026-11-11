@@ -675,6 +675,7 @@ fn hold_row(step: &Step, hold: HoldStep) -> Element {
         (HoldStep::Kept, _) => t("browser-review-hold-kept"),
         (HoldStep::Dropped, _) => t("browser-review-hold-dropped"),
         (HoldStep::TooMany, _) => t("browser-review-hold-too-many"),
+        (HoldStep::Gone, _) => t("browser-review-hold-gone"),
         (HoldStep::Submit, _) => waits("browser-review-held-submit"),
         (HoldStep::Request, _) => waits("browser-review-held-request"),
         (HoldStep::Download, _) => waits("browser-review-held-download"),
@@ -691,7 +692,7 @@ fn hold_row(step: &Step, hold: HoldStep) -> Element {
     // nobody answered. A hold no actor's action reached names nobody: the
     // page sent it on its own, or the person at the window did.
     let by = match (hold, who) {
-        (HoldStep::Allowed | HoldStep::Dropped | HoldStep::TooMany, _) => None,
+        (HoldStep::Allowed | HoldStep::Dropped | HoldStep::TooMany | HoldStep::Gone, _) => None,
         (_, Some(name)) => Some(named("browser-review-by", &name)),
         (HoldStep::Kept, None) => Some(t("browser-review-by-you")),
         (_, None) => None,

@@ -617,8 +617,8 @@ may act and passes the name of the invoker it admitted.
   origin it would go to, and `message` its method and that origin
   (`POST https://visa.example`), or of a download the file's name (at most
   120 bytes) and the origin. The second is set down when it ends, with the
-  same `to_url` and `message`: its `action` is `allow`, `keep`, `drop` or
-  `too_many`. The
+  same `to_url` and `message`: its `action` is `allow`, `keep`, `drop`,
+  `too_many` or `gone`. The
   host cannot know who answered, so `hold_answer` and `download_decision` may
   say: `actor`, a name as a page action carries one, and `reason`, which is
   `expired` when nobody answered and the app dropped it at its own deadline,
@@ -633,8 +633,14 @@ may act and passes the name of the invoker it admitted.
   `actor`, which is how an app that knows of neither field is read. Neither
   entry carries a request's body, a field's value or a secret. Each takes the
   next `seq` when it is set down, after the action that is running, and is
-  told by `page_record` as direct input is. A tab that closes with something
-  held sets nothing more down: its record ends with it.
+  told by `page_record` as direct input is. When the tab's main frame shows
+  another document, every hold of the tab ends: nothing of it leaves,
+  `held_closed` says so, and the record sets down `gone` with the page it was
+  held on as `url`. An answer that comes after that answers nothing, so a
+  held submission is never issued again from another page. A download the
+  page offered is not ended by this: the offer is the host's, not the
+  page's. A tab that closes ends its holds the same way and sets nothing
+  more down: its record ends with it.
 - **The engine says when the page changes itself.** The event `page_changed`
   tells whoever reviews a page that something other than an action's own edit
   changed what a field holds or what a form asks, so nobody reads the page

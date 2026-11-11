@@ -308,6 +308,7 @@ browser-review-hold-allowed-by-you = Von Ihnen freigegeben
 browser-review-hold-kept = Unverändert belassen
 browser-review-hold-dropped = Verworfen, niemand hat geantwortet
 browser-review-hold-too-many = Verworfen, zu viele warteten bereits
+browser-review-hold-gone = Verworfen, die Seite wurde verlassen
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = Noch keine Downloads

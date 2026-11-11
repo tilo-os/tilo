@@ -569,8 +569,8 @@ fn what_was_held_is_listed_with_who_let_it_leave() {
     );
 }
 
-/// What was dropped says why: nobody answered, or it was one more than the
-/// window asks the person about.
+/// What was dropped says why: nobody answered, it was one more than the
+/// window asks the person about, or the page it was held on went away.
 #[test]
 fn what_was_dropped_is_listed_with_why() {
     let (engine, mut app) = window();
@@ -579,7 +579,11 @@ fn what_was_dropped_is_listed_with_why() {
         json!({"seq": seq, "actor": "", "how": "hold", "action": action, "ok": true,
             "message": tracker, "url": FORM})
     };
-    let record = [dropped(1, "drop"), dropped(2, "too_many")];
+    let record = [
+        dropped(1, "drop"),
+        dropped(2, "too_many"),
+        dropped(3, "gone"),
+    ];
     page_holds(
         &engine,
         &[("Email", "email", "ada@example.org", json!({"how": "input"}))],
@@ -589,7 +593,11 @@ fn what_was_dropped_is_listed_with_why() {
     eventually(&mut app, "the review lists what was dropped", |app| {
         row(app, "Dropped, nobody answered").is_some()
     });
-    for why in ["Dropped, nobody answered", "Dropped, too many were waiting"] {
+    for why in [
+        "Dropped, nobody answered",
+        "Dropped, too many were waiting",
+        "Dropped, the page went away",
+    ] {
         assert_eq!(
             row(&mut app, why).as_deref(),
             Some(tracker),

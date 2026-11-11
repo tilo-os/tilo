@@ -27,6 +27,14 @@
 //! caller the truth while it can still act on it. The engine ends a hold no
 //! app answers at a deadline of its own, a little after this window's.
 //!
+//! A hold also ends with nobody's answer: the engine drops it when the tab
+//! shows another page, since what was held has no page to leave from, and at
+//! a deadline. Whoever waited is answered. A published hold leaves the page.
+//! The action whose run reached a hold that ended without leaving, so or
+//! because somebody kept the page as it is, is remembered: an allow that
+//! comes after all is told that nothing left ([`HOLD_ENDED`]), and the
+//! action is not run a second time on whatever page the tab shows by then.
+//!
 //! What the page publishes is what waits. A hold somebody answered, to let it
 //! leave or to keep the page as it is, is offered for an answer no longer from
 //! that moment, though the window keeps it until the engine says the request
@@ -66,6 +74,9 @@ const MAX_HELD: usize = 8;
 /// What a page action answers when what its run reached was turned away as
 /// one request too many.
 pub(crate) const TOO_MANY: &str = "browser.page.too_many_held";
+/// What an invocation answers when the person allows it after the hold its
+/// run reached ended without leaving.
+pub(crate) const HOLD_ENDED: &str = "browser.page.hold_ended";
 /// The most of a download's file name the person's question shows.
 const MAX_SHOWN_FILE: usize = 120;
 /// What a page action answers when what its run reached waits for the person:
@@ -177,6 +188,10 @@ pub(crate) struct Holds {
     held: Vec<Held>,
     /// The number the window gave the hold it took last.
     last: u32,
+    /// The invocations whose run reached a hold that ended without leaving,
+    /// each with what was held: an allow that comes after all is answered
+    /// from here. As many are remembered as holds may wait.
+    ended: Vec<(InvocationId, String)>,
     /// What the invocations that released a hold are answered, once the
     /// engine said their departure is over, until each is read. They are not
     /// the tab's one answer: another actor's action may hold the tab by then.
@@ -281,7 +296,31 @@ impl Holds {
     /// The engine says `key` is over: released, dropped, or its page went.
     pub(crate) fn closed(&mut self, key: HeldKey) -> Option<Held> {
         let found = self.held.iter().position(|held| held.key == key)?;
-        Some(self.held.remove(found))
+        let held = self.held.remove(found);
+        self.note_ended(&held);
+        Some(held)
+    }
+
+    /// `held` is over. Unless it was let leave, the invocation whose run
+    /// reached it, when one did, is remembered with what was held.
+    fn note_ended(&mut self, held: &Held) {
+        let Some(invocation) = held.asked.filter(|_| !held.allowed()) else {
+            return;
+        };
+        if self.ended.len() >= MAX_HELD {
+            self.ended.remove(0);
+        }
+        self.ended.push((invocation, held.describing()));
+    }
+
+    /// What the hold `invocation`'s run reached was, when that hold ended
+    /// without leaving: said once.
+    pub(crate) fn take_ended(&mut self, invocation: InvocationId) -> Option<String> {
+        let found = self
+            .ended
+            .iter()
+            .position(|(ended, _)| *ended == invocation)?;
+        Some(self.ended.remove(found).1)
     }
 
     /// Drop the holds nobody answered by `now`: what the window lets go at
@@ -297,6 +336,9 @@ impl Holds {
             }
         }
         self.held = kept;
+        for held in &dropped {
+            self.note_ended(held);
+        }
         dropped
     }
 
@@ -374,6 +416,35 @@ impl BrowserWidget {
             })),
         ));
         self.structure_dirty = true;
+    }
+
+    /// `invocation` is run again: the person allowed the departure its first
+    /// run reached. That departure leaves now, and what reached it, a page
+    /// action or a form's own action, is not run a second time. A hold that
+    /// ended meanwhile with nobody's answer has nothing left to release: the
+    /// invocation is answered that the request was dropped, and the action
+    /// is not run again on whatever page the tab shows by now. `None` for an
+    /// invocation whose run reached no hold.
+    pub(crate) fn release_reached(
+        &mut self,
+        invocation: InvocationId,
+    ) -> Option<ui::framework::Effected> {
+        if let Some(held) = self.holds.release_for(invocation) {
+            self.release_held(held, true, AnsweredBy::Person);
+            return Some(ui::framework::Effected::Pending);
+        }
+        let what = self.holds.take_ended(invocation)?;
+        self.holds.answer(action_failed(
+            invocation,
+            HOLD_ENDED,
+            format!(
+                "{what}: it is no longer held and nothing left: its page went away, nobody \
+                 answered in time, or the page was kept as it is. Read the page and act again \
+                 if it is still wanted"
+            ),
+            None,
+        ));
+        Some(ui::framework::Effected::Pending)
     }
 
     /// Who answers a hold when the action door admitted the answer for

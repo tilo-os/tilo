@@ -468,6 +468,8 @@ pub(crate) enum HoldStep {
     /// It never waited: as many as the window asks the person about already
     /// did, and it was dropped at once.
     TooMany,
+    /// What waited was dropped because the page it was held on went away.
+    Gone,
 }
 
 impl HoldStep {
@@ -481,6 +483,7 @@ impl HoldStep {
             "keep" => Self::Kept,
             "drop" => Self::Dropped,
             "too_many" => Self::TooMany,
+            "gone" => Self::Gone,
             _ => Self::Other,
         }
     }
@@ -489,7 +492,7 @@ impl HoldStep {
     pub(crate) const fn ended(self) -> bool {
         matches!(
             self,
-            Self::Allowed | Self::Kept | Self::Dropped | Self::TooMany
+            Self::Allowed | Self::Kept | Self::Dropped | Self::TooMany | Self::Gone
         )
     }
 }
@@ -888,15 +891,15 @@ mod tests {
                 "message": "POST https://visa.example", "to_url": "https://visa.example"})
         };
         record.take(
-            &json!({"entries": [dropped(1, "drop"), dropped(2, "too_many")],
-            "next": 2, "more": false}),
+            &json!({"entries": [dropped(1, "drop"), dropped(2, "too_many"), dropped(3, "gone")],
+            "next": 3, "more": false}),
         );
         let said: Vec<String> = record
             .steps
             .iter()
             .map(|step| format!("{:?}", step.kind))
             .collect();
-        assert_eq!(said, ["Hold(Dropped)", "Hold(TooMany)"]);
+        assert_eq!(said, ["Hold(Dropped)", "Hold(TooMany)", "Hold(Gone)"]);
     }
 
     #[test]

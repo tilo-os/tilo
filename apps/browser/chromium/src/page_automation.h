@@ -161,11 +161,14 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     NoteHold(kind,pending_ && pending_->seq?pending_->actor:std::string(),method,origin,file);
   }
   // A held departure ended, and the record says how: it was let leave
-  // (`allow`), the page was kept as it is (`keep`), or it was dropped with
-  // nobody answering (`drop`). `actor` is who answered, as the app says:
-  // nobody's name for the person at the window.
-  void HoldEnded(const std::string& how,const std::string& actor,const std::string& method,const std::string& origin,const std::string& file) {
-    NoteHold(how,actor,method,origin,file);
+  // (`allow`), the page was kept as it is (`keep`), it was dropped with
+  // nobody answering (`drop`), it was turned away as one too many
+  // (`too_many`), or the page it was held on went away (`gone`). `actor` is
+  // who answered, as the app says: nobody's name for the person at the
+  // window. `page` is the page it was held on, when the tab shows another by
+  // now.
+  void HoldEnded(const std::string& how,const std::string& actor,const std::string& method,const std::string& origin,const std::string& file,const std::string& page={}) {
+    NoteHold(how,actor,method,origin,file,page);
   }
   // What was done in this tab, in the order it was done, after the place
   // `since` names: who asked, what they asked for, what it acted on and how
@@ -3017,7 +3020,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   // ended, and the message what the person was asked about, by its method
   // and where it would go, and of a download by the file it would save.
   // Nothing of what it carries is known here, so none of it is set down.
-  void NoteHold(const std::string& action,const std::string& actor,const std::string& method,const std::string& origin,const std::string& file) {
+  void NoteHold(const std::string& action,const std::string& actor,const std::string& method,const std::string& origin,const std::string& file,const std::string& page={}) {
     if(!browser_) return;
     auto entry=CefDictionaryValue::Create();
     entry->SetDouble("time_ms",NowMs());entry->SetString("actor",Clip(actor,kMaxActorBytes));entry->SetString("how","hold");
@@ -3025,7 +3028,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
     std::string said=file.empty()?method:Clip(file,kMaxHeldFile);
     if(!said.empty() && !origin.empty()) said+=file.empty()?" ":", ";
     entry->SetString("message",Clip(said+origin,kMaxLedgerText));
-    entry->SetString("url",browser_->GetMainFrame()->GetURL());
+    entry->SetString("url",page.empty()?browser_->GetMainFrame()->GetURL():CefString(page));
     if(!origin.empty()) entry->SetString("to_url",origin);
     SetDownInTurn(entry);
   }

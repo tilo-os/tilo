@@ -6146,15 +6146,14 @@ impl BrowserWidget {
             return self.remembered_forms(all);
         }
         // The person allowed the departure this invocation reached: it
-        // leaves now, and what reached it, a page action or a form's own
-        // action, is not run a second time.
+        // leaves now, or is said to have been dropped meanwhile, and what
+        // reached it, a page action or a form's own action, is not run again.
         if matches!(
             operation,
             BrowserOperation::Form(_) | BrowserOperation::Page(_)
-        ) && let Some(held) = self.holds.release_for(invocation)
+        ) && let Some(released) = self.release_reached(invocation)
         {
-            self.release_held(held, true, ui::webview::AnsweredBy::Person);
-            return Ok(ui::framework::Effected::Pending);
+            return Ok(released);
         }
         if let BrowserOperation::Form(run) = operation {
             self.start_form_run(invocation, actor, &run)?;

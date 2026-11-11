@@ -36,8 +36,9 @@
 //! What a window an agent operates held is no action either. The engine sets
 //! down that something the page was about to send waits for the person (a
 //! form submission, a request with data, a download), and then how that
-//! ended: let leave, kept as the page is, dropped with nobody answering, or
-//! turned away at once as one more than the window asks the person about.
+//! ended: let leave, kept as the page is, dropped with nobody answering,
+//! turned away at once as one more than the window asks the person about, or
+//! dropped because the page it was held on went away.
 //! Such an entry has `how: "hold"`. One that says a hold began names what
 //! waits as its `action`, where it would go as `to_url` and its method there
 //! as its message, under the actor whose action reached it. One that says how
@@ -108,7 +109,7 @@ pub struct PageAction {
     pub how: Atom,
     /// What was asked for (`click`, `fill`, `select`). Of a hold, what was
     /// held (`submit`, `request`, `download`) or how it ended (`allow`,
-    /// `keep`, `drop`, `too_many`).
+    /// `keep`, `drop`, `too_many`, `gone`).
     pub action: Atom,
     /// Whether it did what was asked.
     pub ok: bool,

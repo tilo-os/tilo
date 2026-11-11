@@ -262,8 +262,9 @@ page action, for that one request. Denied or unanswered, the session runs
 own window holds none of this: what they click leaves as they click it.
 
 The tab's record says what was held, whose action reached it and how it
-ended: let leave and by whom, kept as it is, or dropped with nobody answering
-([web page actors](architecture/web-page-actors.md)).
+ended: let leave and by whom, kept as it is, or dropped and why: nobody
+answered, as many as the window asks about already waited, or the page it
+was held on went away ([web page actors](architecture/web-page-actors.md)).
 
 A key can carry the authority to operate the pages its workspaces' Browser
 holds without asking each time: the person ticks **Operate web pages in

@@ -308,6 +308,7 @@ browser-review-hold-allowed-by-you = Let leave by you
 browser-review-hold-kept = Kept as it is
 browser-review-hold-dropped = Dropped, nobody answered
 browser-review-hold-too-many = Dropped, too many were waiting
+browser-review-hold-gone = Dropped, the page went away
 
 ## Downloads: the list in the Library and its progress
 browser-downloads-empty = No downloads yet
