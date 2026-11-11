@@ -128,9 +128,11 @@ def bars_in(path, rect) -> list[list[int]]:
     return [bar for bar in bars if 1 <= bar[2] - bar[0] <= 4]
 
 
-def carets_in(session, rect, shot=None, frames: int = 2) -> list[list[int]]:
-    """The caret bars inside `rect` now: `shot` first when there is one, then fresh frames until a
-    caret is found, so a caret on any side of its blink counts."""
+def carets_in(session, rect, shot=None, frames: int = 3) -> list[list[int]]:
+    """The caret bars inside `rect`: `shot` first when there is one, then fresh frames until a
+    caret is found, so a caret on any side of its blink counts. A caller looking for the caret of a
+    field that holds the keyboard asks for more frames than one looking for a caret that must not
+    be there."""
     if shot is not None:
         bars = bars_in(shot, rect)
         if bars:
@@ -250,7 +252,7 @@ def main() -> int:
         # The pane holds the keyboard, so the page's field under it keeps its text and gives up its
         # caret: the pane's search is the only caret the desk shows.
         pane_at = pane(session) or [0, 0, 0, 0]
-        on_pane = carets_in(session, pane_at, shot)
+        on_pane = carets_in(session, pane_at, shot, frames=6)
         on_page = carets_in(session, around(at), shot)
         check("the pane's search is the only caret over the page's field",
               bool(on_pane) and not on_page,
@@ -347,7 +349,7 @@ def main() -> int:
         # search it opened over (which keeps its text and takes its caret back with the pane gone).
         pane_at = pane(session) or [0, 0, 0, 0]
         on_search = carets_in(session, around(search_caret or [0, 0, 0, 0]), over)
-        on_pane = carets_in(session, pane_at, over)
+        on_pane = carets_in(session, pane_at, over, frames=6)
         check("the search under the pane keeps its text and shows no caret", not on_search,
               f"search carets {json.dumps(on_search)}, search caret {json.dumps(search_caret)}")
         check("the pane's search is the one caret the desk shows", bool(on_pane) and not on_search,
@@ -362,7 +364,7 @@ def main() -> int:
         # The search under it takes the keyboard, and its caret, back.
         back = wait_for("the search's caret again", lambda: settled(lambda: caret(session)))
         back_bars = carets_in(session, around(back or [0, 0, 0, 0]),
-                              SHOTS / "07-entered-into-search.png")
+                              SHOTS / "07-entered-into-search.png", frames=6)
         check("the search under the pane shows the caret again", bool(back_bars),
               f"carets {json.dumps(back_bars)}, search caret {json.dumps(back)}")
         session.type("!")
