@@ -98,7 +98,7 @@ mod support {
             .expect("the pane opens");
         app.harness()
             .relayout_themed(ui::headless::viewport((w, h)), theme)
-            .expect("settings lays out at the fixture size");
+            .unwrap_or_else(|error| panic!("{category:?} does not lay out at {w}x{h}: {error}"));
         assert!(
             app.harness()
                 .wait_until(tilo_test_env::hang_bound(), |harness| !settling(
