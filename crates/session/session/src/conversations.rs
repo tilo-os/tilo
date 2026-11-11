@@ -14,7 +14,6 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
@@ -25,8 +24,8 @@ use tilo_broker_core::services::{NativeTaskActionRequirement, TrackerRun, Tracke
 use tilo_clock::wall;
 use tilo_resource::{Id, Resource as _};
 use ui::permissions::{LivePermissions, PermissionContext, UserId};
+use ui::record::RecordId;
 use ui::record::workspace::WorkspaceRecords;
-use ui::record::{RecordId, RecordOwners};
 
 /// The app that keeps the conversations: its own record of a workspace.
 const CHAT_OWNER: &str = "so.tilo.chat";
@@ -332,8 +331,8 @@ pub(crate) struct WorkspaceFacts {
 /// holds.
 pub(crate) struct Conversations {
     runs: Arc<Runs>,
-    /// Where this device keeps its apps' records.
-    owners: RecordOwners,
+    /// The workspaces' records, as the workspace holds them.
+    records: crate::engine_records::EngineRecords,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
     /// Each workspace's records, opened here and followed change by change.
@@ -352,9 +351,12 @@ struct Opened {
 }
 
 impl Conversations {
-    /// The conversations over the store at `root` , waking the session's loop through `wake` when a
+    /// The conversations in the workspaces' copy of them (`records`), waking the session's loop through `wake` when a
     /// change lands.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(
+        records: crate::engine_records::EngineRecords,
+        wake: tilo_service::Wake,
+    ) -> Self {
         let mut scope = ui::WakeScope::new();
         let waking = Arc::clone(&wake);
         if let Err(error) = scope.bind(move |_| waking()) {
@@ -362,7 +364,7 @@ impl Conversations {
         }
         Self {
             runs: Arc::new(Runs::new(wake)),
-            owners: RecordOwners::new(root),
+            records,
             wake: scope,
             open: RefCell::default(),
         }
@@ -874,11 +876,9 @@ impl Conversations {
         }
         let opened = open.entry(id).or_insert_with(|| Opened {
             policy: workspace.policy.clone(),
-            records: WorkspaceRecords::in_workspace(
-                self.owners.clone(),
-                workspace.workspace.clone(),
-                UserId(person.to_owned()),
-            ),
+            records: self
+                .records
+                .in_workspace(&workspace.workspace, UserId(person.to_owned())),
             chat: None,
             part: None,
         });

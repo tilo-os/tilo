@@ -371,12 +371,13 @@ impl Session {
         // each workspace keeps, both read from Chat's record of them: made
         // here, before the door, because what text that asks does reads them
         // and the desk in front (shell.md §8.1, "Asking from the canvas").
+        let records = crate::engine_records::EngineRecords::new();
         let conversations = Rc::new(crate::conversations::Conversations::new(
-            cli::data_home(),
+            records.clone(),
             options.wake.handle(),
         ));
         let agents = Rc::new(crate::agents::Agents::new(
-            cli::data_home(),
+            records.clone(),
             options.wake.handle(),
         ));
         let ask: crate::arrangement::Ask = {
@@ -578,18 +579,24 @@ impl Session {
         // The agent door toward the person's other devices: answered on this device's
         // endpoint, and served by the agent door once it opens.
         let remote = crate::remote_door::Remote::new(options.wake.handle());
+        let peer_documents = crate::sync::PeerDocuments::new(
+            std::sync::Arc::clone(&channels_broker),
+            std::sync::Arc::clone(&channels_fanout),
+            record_changes.clone(),
+            engine.as_ref().map(|engine| engine.arrivals()),
+        );
         let sync = start_collaboration(
             &options,
             continuity.clone(),
             engine.clone(),
             (beside, &remote),
-            Some(crate::sync::PeerDocuments::new(
-                std::sync::Arc::clone(&channels_broker),
-                std::sync::Arc::clone(&channels_fanout),
-                record_changes.clone(),
-                engine.as_ref().map(|engine| engine.arrivals()),
-            )),
+            Some(peer_documents.clone()),
         );
+        // The records the session itself writes are the workspaces' own, and its writes reach this
+        // device's apps as a member's do.
+        if let Some(engine) = &engine {
+            records.attach(std::sync::Arc::clone(engine), Some(peer_documents));
+        }
         // The content the workspaces' records reference: kept beside their
         // records under this session's state, and asked of the workspace's
         // other devices on the topic the records travel.
@@ -1309,7 +1316,7 @@ impl Session {
             Rc::clone(&services),
         );
         let workspace_tabs =
-            crate::workspace_settings::WorkspaceTabs::new(cli::data_home(), options.wake.handle());
+            crate::workspace_settings::WorkspaceTabs::new(&records, options.wake.handle());
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
@@ -1407,6 +1414,7 @@ impl Session {
             workspace_tabs,
             conversations,
             agents,
+            records,
             directory,
             invite,
             inviting,

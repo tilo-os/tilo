@@ -691,45 +691,105 @@ impl Engine {
     pub fn found_record(
         &self,
         workspace: WorkspaceId,
-        (app, record): (&str, &str),
+        record: (&str, &str),
         changes: &[u8],
         sealed: Option<&channel_crypto::ChannelContentKeys>,
     ) -> Result<(), String> {
+        self.write_record(workspace, record, changes, true, sealed)
+            .map(|_| ())
+    }
+
+    /// Write `changes` to `record` of `app` in `workspace` as this device's own write, and publish
+    /// it to the workspace's other devices: the record's founding write when `founding` (the whole
+    /// document, which the workspace must not hold yet), a change of it otherwise. Sealed under
+    /// `sealed` , the keys of the record's channel, where the workspace's records are its members'
+    /// sealed channels — a founding write as a checkpoint, so the record is sealed from the start —
+    /// and in the clear where they are documents this device commits.
+    /// Answers the write as this device's apps take a member's: their copies of the record follow
+    /// it only once it is handed to them.
+    /// # Errors
+    /// The workspace is not held here, a founding write finds the record held already, or the
+    /// workspace refused the write.
+    #[cfg(target_os = "linux")]
+    pub fn write_record(
+        &self,
+        workspace: WorkspaceId,
+        (app, record): (&str, &str),
+        changes: &[u8],
+        founding: bool,
+        sealed: Option<&channel_crypto::ChannelContentKeys>,
+    ) -> Result<tilo_peer_state::owner::session::AppWrite, String> {
         use tilo_broker_core::custody::OwnerCustody as _;
         let key = self.identity.signing_key()?;
+        let device = self.identity.device_cert.device_public_key;
         let now = SystemTime::now();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
+        let mut written = None;
         self.owner.commit_document_with_current(
             workspace,
             |view| {
-                if view.peer().document(app, record).is_some() {
+                if founding && view.peer().document(app, record).is_some() {
                     return Err(format!("{record} of {app} is in the workspace already"));
                 }
+                let author = view
+                    .peer()
+                    .permissions(device, now)
+                    .map(tilo_peer_state::MemberAuthority::standing)
+                    .map_err(|error| error.to_string())?;
                 let mut peer = view.peer().clone();
                 let publication = peer.publication_mut();
                 let message = match sealed {
                     None => {
                         publication.publish_incremental(app, record, changes.to_vec(), &key, now)?
                     }
-                    Some(keys) => publication.publish_sealed_checkpoint(
-                        app,
-                        record,
-                        changes.to_vec(),
-                        &mut |plaintext: &[u8]| {
-                            keys.seal_content(
-                                artifact,
-                                collab_types::ContentRetention::Checkpoint,
-                                plaintext,
-                            )
-                            .map_err(|error| error.to_string())
-                        },
-                        &key,
-                        now,
-                    )?,
+                    Some(keys) => {
+                        let retention = if founding {
+                            collab_types::ContentRetention::Checkpoint
+                        } else {
+                            collab_types::ContentRetention::Delta
+                        };
+                        let mut seal = |plaintext: &[u8]| {
+                            keys.seal_content(artifact, retention, plaintext)
+                                .map_err(|error| error.to_string())
+                        };
+                        if founding {
+                            publication.publish_sealed_checkpoint(
+                                app,
+                                record,
+                                changes.to_vec(),
+                                &mut seal,
+                                &key,
+                                now,
+                            )?
+                        } else {
+                            publication.publish_sealed_incremental(
+                                app,
+                                record,
+                                changes.to_vec(),
+                                &mut seal,
+                                &key,
+                                now,
+                            )?
+                        }
+                    }
                 };
-                let neighbour_wire::NeighbourMsg::AppDocument { envelope, .. } = message else {
-                    return Err("a record's founding write is not a document write".to_owned());
+                let neighbour_wire::NeighbourMsg::AppDocument {
+                    peer: writer,
+                    envelope,
+                    ..
+                } = message
+                else {
+                    return Err("a record's write is not a document write".to_owned());
                 };
+                written = Some(tilo_peer_state::owner::session::AppWrite {
+                    peer: writer,
+                    app_id: app.to_owned(),
+                    cluster_id: workspace.to_string(),
+                    record_id: record.to_owned(),
+                    author,
+                    replayed: false,
+                    envelope: (*envelope).clone(),
+                });
                 Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
                     workspace: workspace.to_string(),
                     operation: tilo_peer_state::owner_commit::CommitOperation::Document {
@@ -742,7 +802,7 @@ impl Engine {
             now,
         )?;
         self.schedule_publication(workspace);
-        Ok(())
+        written.ok_or_else(|| "the write was not made".to_owned())
     }
 
     /// [`Self::record`] of a sealed record, opened with `keys` rather than this device's channel

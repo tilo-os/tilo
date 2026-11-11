@@ -1865,8 +1865,13 @@ impl PeerDocuments {
         }
     }
 
-    /// Hand one app write another device made to this device's apps on its route.
-    fn deliver_write(&self, workspace: &str, write: tilo_peer_state::owner::session::AppWrite) {
+    /// Hand one app write to this device's apps on its route: another device's, or one the
+    /// session wrote into the engine itself.
+    pub(crate) fn deliver_write(
+        &self,
+        workspace: &str,
+        write: tilo_peer_state::owner::session::AppWrite,
+    ) {
         let author = write.envelope.author.as_bytes().to_owned();
         let (app, record) = (write.app_id.clone(), write.record_id.clone());
         tilo_action_broker::collab_inbound::deliver(

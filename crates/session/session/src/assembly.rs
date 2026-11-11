@@ -143,6 +143,10 @@ pub(crate) struct Shared {
     /// admits an agent's session on.
     #[cfg(target_os = "linux")]
     pub(crate) agents: std::rc::Rc<crate::agents::Agents>,
+    /// The workspaces' records the session reads and writes itself — Chat's agents, emoji and
+    /// conversations — as the workspace holds them: replicated with the engine every pass.
+    #[cfg(target_os = "linux")]
+    pub(crate) records: crate::engine_records::EngineRecords,
     /// The agents the person admitted at its agent door, as the desk and the bar show them.
     #[cfg(target_os = "linux")]
     pub(crate) seats: std::sync::Arc<crate::agent_door::Seats>,

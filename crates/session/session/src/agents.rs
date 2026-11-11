@@ -11,7 +11,6 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use tilo_action_policy::{Standing, WorkspacePolicy};
@@ -21,7 +20,6 @@ use tilo_app::tilo_workspace_agent::{
 };
 use tilo_resource::Id;
 use ui::permissions::{LivePermissions, PermissionContext};
-use ui::record::RecordOwners;
 use ui::record::workspace::WorkspaceRecords;
 
 /// How this session names a record it opened, where the record's history is told.
@@ -72,8 +70,8 @@ impl tilo_broker_core::services::AgentRoster for Roster {
 /// The workspaces' agents, read from each workspace's record of them.
 pub(crate) struct Agents {
     roster: Arc<Roster>,
-    /// Where this device keeps its apps' records.
-    owners: RecordOwners,
+    /// The workspaces' records, as the workspace holds them.
+    records: crate::engine_records::EngineRecords,
     /// Wakes the session's loop when a change to a record lands.
     wake: ui::WakeScope,
     /// Each workspace's records and its agents record, opened here and kept at the grants they were
@@ -92,16 +90,19 @@ struct Opened {
 }
 
 impl Agents {
-    /// The workspaces' agents over the store at `root` , waking the session's loop through `wake`
+    /// The workspaces' agents in the workspaces' copy of them (`records`), waking the session's loop through `wake`
     /// when a change lands.
-    pub(crate) fn new(root: PathBuf, wake: tilo_service::Wake) -> Self {
+    pub(crate) fn new(
+        records: crate::engine_records::EngineRecords,
+        wake: tilo_service::Wake,
+    ) -> Self {
         let mut scope = ui::WakeScope::new();
         if let Err(error) = scope.bind(move |_| wake()) {
             tracing::warn!(%error, "the workspaces' agents are not woken");
         }
         Self {
             roster: Arc::default(),
-            owners: RecordOwners::new(root),
+            records,
             wake: scope,
             open: RefCell::default(),
         }
@@ -257,11 +258,9 @@ impl Agents {
         }
         let opened = open.entry(workspace.to_owned()).or_insert_with(|| Opened {
             policy: policy.clone(),
-            records: WorkspaceRecords::in_workspace(
-                self.owners.clone(),
-                workspace.to_owned(),
-                ui::permissions::UserId(person.to_owned()),
-            ),
+            records: self
+                .records
+                .in_workspace(workspace, ui::permissions::UserId(person.to_owned())),
             record: None,
         });
         if opened.record.is_none() {
@@ -299,6 +298,9 @@ impl crate::Shared {
     /// device's to run: it starts each one's process, which answers the turns the broker delivers
     /// it.
     pub(crate) fn feed_agents(&self) {
+        // What the workspaces' records hold since the last pass, and what this session wrote into
+        // them, before anything here reads them.
+        self.records.replicate();
         let workspaces: Vec<(String, tilo_action_policy::WorkspacePolicy)> =
             self.handle.read(|tree| {
                 tree.workspaces
