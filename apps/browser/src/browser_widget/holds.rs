@@ -21,7 +21,7 @@
 use ui::tilo_actions::InvocationId;
 use ui::webview::HeldRequest;
 
-use super::*;
+use super::{BrowserWidget, WebViewCommand, action_failed};
 
 /// How long a held request waits for the person before the window drops it.
 pub(crate) const HELD_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
@@ -125,11 +125,12 @@ impl Holds {
             .held
             .iter()
             .position(|held| held.request.id == id && !held.answered())?;
-        self.held[found].allowed = allow;
-        if self.held[found].request.kind == ui::webview::HeldKind::Download {
+        let held = self.held.get_mut(found)?;
+        held.allowed = allow;
+        if held.request.kind == ui::webview::HeldKind::Download {
             return Some(self.held.remove(found));
         }
-        let held = &self.held[found];
+        let held = &*held;
         Some(Held {
             request: held.request.clone(),
             asked: held.asked,
@@ -176,7 +177,7 @@ impl Holds {
 impl BrowserWidget {
     /// What the person is asked about `request`, whose run reached it: the
     /// action answers that it needs them, and their allow releases it.
-    pub(crate) fn hold_asked(&mut self, request: HeldRequest) {
+    pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
         if self.holds.hold(request.clone()).is_none() {
             return;
         }
@@ -228,7 +229,7 @@ impl BrowserWidget {
 
     /// Let `id` leave, or cancel it: the engine resumes it exactly once, or
     /// drops it and leaves the page as it was.
-    pub(crate) fn release_held(&mut self, id: u32, kind: ui::webview::HeldKind, allow: bool) {
+    pub(crate) fn release_held(&self, id: u32, kind: ui::webview::HeldKind, allow: bool) {
         if kind == ui::webview::HeldKind::Download {
             // A download the page offers is the engine's own question, and
             // its answer is the one a person's click on the offer gives.
@@ -288,7 +289,7 @@ impl BrowserWidget {
         let mut request = HeldRequest::new(id, ui::webview::HeldKind::Download);
         request.method = "GET".into();
         request.origin = origin_of(url);
-        if self.holds.hold(request.clone()).is_none() {
+        if self.holds.hold(request).is_none() {
             return false;
         }
         let _ = name;

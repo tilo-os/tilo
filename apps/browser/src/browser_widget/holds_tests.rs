@@ -58,7 +58,7 @@ fn start(
 /// What `invocation` answered with, once the window has synced.
 fn answer(
     widget: &mut BrowserWidget,
-    doc: &mut AutoCommit,
+    doc: &AutoCommit,
     root: &ObjId,
     invocation: ui::tilo_actions::InvocationId,
 ) -> ui::tilo_actions::InvocationUpdate {
@@ -125,7 +125,7 @@ fn only_a_window_an_agent_operates_holds_what_its_page_sends() {
 
 #[test]
 fn a_form_fills_without_asking_and_asks_once_when_it_is_submitted() {
-    let (engine, mut widget, mut doc, root) =
+    let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://visa.example/apply");
     let steps = [
         (
@@ -144,7 +144,7 @@ fn a_form_fills_without_asking_and_asks_once_when_it_is_submitted() {
     for (id, args) in steps {
         let invocation = start(&mut widget, id, &args);
         widget.sync(&doc, &root);
-        let update = answer(&mut widget, &mut doc, &root, invocation);
+        let update = answer(&mut widget, &doc, &root, invocation);
         assert!(
             matches!(update, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
             "{id} fills without asking anyone: {update:?}"
@@ -172,7 +172,7 @@ fn a_form_fills_without_asking_and_asks_once_when_it_is_submitted() {
         }),
         "the submission is asked of the page"
     );
-    let update = answer(&mut widget, &mut doc, &root, submit);
+    let update = answer(&mut widget, &doc, &root, submit);
     assert!(
         needs_the_person(&update),
         "the submission waits for the person: {update:?}"
@@ -194,7 +194,7 @@ fn a_form_fills_without_asking_and_asks_once_when_it_is_submitted() {
 
 #[test]
 fn the_persons_allow_releases_the_held_submission_instead_of_submitting_again() {
-    let (engine, mut widget, mut doc, root) =
+    let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://visa.example/apply");
     engine.hold(held_submit(1));
     let submit = start(
@@ -203,7 +203,7 @@ fn the_persons_allow_releases_the_held_submission_instead_of_submitting_again() 
         &serde_json::json!({"element": "d1e9"}),
     );
     widget.sync(&doc, &root);
-    let asked = answer(&mut widget, &mut doc, &root, submit);
+    let asked = answer(&mut widget, &doc, &root, submit);
     assert!(needs_the_person(&asked));
     let sent = page_requests(&engine).len();
     // The person allowed it: the same invocation comes back, as the relay
@@ -226,7 +226,7 @@ fn the_persons_allow_releases_the_held_submission_instead_of_submitting_again() 
         "the page action is not run a second time"
     );
     engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
-    let released = answer(&mut widget, &mut doc, &root, submit);
+    let released = answer(&mut widget, &doc, &root, submit);
     let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = &released else {
         panic!("the released submission answers what left: {released:?}");
     };
@@ -258,7 +258,7 @@ fn submit_payload(widget: &BrowserWidget) -> Vec<u8> {
 
 #[test]
 fn a_click_on_the_submit_button_is_held_and_the_page_stays() {
-    let (engine, mut widget, mut doc, root) =
+    let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://visa.example/apply");
     engine.hold(held_submit(2));
     let click = start(
@@ -267,7 +267,7 @@ fn a_click_on_the_submit_button_is_held_and_the_page_stays() {
         &serde_json::json!({"element": "d1e9"}),
     );
     widget.sync(&doc, &root);
-    let update = answer(&mut widget, &mut doc, &root, click);
+    let update = answer(&mut widget, &doc, &root, click);
     assert!(needs_the_person(&update), "{update:?}");
     assert_eq!(
         page_requests(&engine),
@@ -332,7 +332,7 @@ fn a_hold_one_departure_names_does_not_answer_another() {
 
 #[test]
 fn enter_in_a_field_is_held() {
-    let (engine, mut widget, mut doc, root) =
+    let (engine, mut widget, doc, root) =
         page_in(BrowsingMode::Visitor, "https://visa.example/apply");
     engine.hold(held_submit(3));
     let press = start(
@@ -341,7 +341,7 @@ fn enter_in_a_field_is_held() {
         &serde_json::json!({"key": "Enter", "element": "d1e1"}),
     );
     widget.sync(&doc, &root);
-    let update = answer(&mut widget, &mut doc, &root, press);
+    let update = answer(&mut widget, &doc, &root, press);
     assert!(needs_the_person(&update), "{update:?}");
     assert_eq!(
         page_requests(&engine),

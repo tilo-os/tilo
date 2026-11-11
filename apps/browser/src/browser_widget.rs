@@ -3529,7 +3529,7 @@ impl BrowserWidget {
                         self.settle_page_operation_on_question();
                     }
                 }
-                WebViewEvent::HeldRequest(request) => self.hold_asked(request),
+                WebViewEvent::HeldRequest(request) => self.hold_asked(&request),
                 WebViewEvent::HeldRequestClosed { id } => self.held_closed(id),
                 event @ (WebViewEvent::DownloadRequested { .. }
                 | WebViewEvent::DownloadProgress { .. }
