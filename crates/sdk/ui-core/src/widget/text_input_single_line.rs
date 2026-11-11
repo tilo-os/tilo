@@ -14,6 +14,76 @@ use crate::text_selection::TextPosition;
 use crate::theme::Theme;
 
 impl TextInput {
+    /// Say what the field asks a browser or password manager to fill in
+    /// (`None`: nothing), instead of what its [kind](Self::with_kind)
+    /// implies: a password being chosen rather than entered, a one-time
+    /// code.
+    #[must_use]
+    pub fn with_autofill(mut self, purpose: Option<crate::a11y::Autofill>) -> Self {
+        self.autofill = purpose;
+        self.autofill_said = true;
+        self
+    }
+
+    /// What the field asks a browser or password manager to fill in: what
+    /// its owner said, or what its kind implies. A multiline field asks for
+    /// nothing.
+    #[must_use]
+    pub fn autofill(&self) -> Option<crate::a11y::Autofill> {
+        use crate::a11y::Autofill;
+        if self.multiline {
+            return None;
+        }
+        if self.autofill_said {
+            return self.autofill;
+        }
+        match self.kind {
+            super::TextInputKind::Username => Some(Autofill::Username),
+            super::TextInputKind::Email => Some(Autofill::Email),
+            super::TextInputKind::Password => Some(Autofill::CurrentPassword),
+            super::TextInputKind::Phone => Some(Autofill::Tel),
+            _ => None,
+        }
+    }
+
+    /// Hand the field's line to a host that shows the field itself (a
+    /// page's `<input>`, [`crate::scene_parts::native_field`]): then the
+    /// host sets its text, caret and selection where they would have been
+    /// drawn, and this frame draws none of them.
+    pub(super) fn hand_line_to_host(
+        &mut self,
+        text_renderer: &mut TextRenderer,
+        transform: Affine,
+        theme: &Theme,
+        text_size: f32,
+        padding_x: f64,
+        text_y: f64,
+    ) {
+        let text_color = if self.effectively_disabled() {
+            theme.text_dim
+        } else {
+            theme.text_primary
+        };
+        let family = self.family.clone().unwrap_or_else(|| self.role_family());
+        let mut area = self.rect;
+        area.x1 =
+            (area.x1 - self.trailing_text_inset(padding_x) - self.accessory_room()).max(area.x0);
+        #[allow(
+            clippy::arithmetic_side_effects,
+            reason = "Affine transform composition over f64 screen coordinates"
+        )]
+        let line_origin = transform * Affine::translate((self.single_origin.x, text_y));
+        self.host_shows_text = crate::scene_parts::native_field(
+            text_renderer,
+            &crate::scene_parts::FieldText {
+                style: &TextStyle::new(text_size).with_family(family),
+                origin: line_origin,
+                area: transform.transform_rect_bbox(area),
+                color: text_color,
+            },
+        );
+    }
+
     /// Rebuilds `self.char_x_positions` (and, when unmasked, `self.single_layout`)
     /// for the current single-line text and returns the total shaped width.
     pub(super) fn build_single_line_metrics(
@@ -324,7 +394,9 @@ impl TextInput {
         )]
         let text_origin =
             transform * Affine::translate((self.single_origin.x - self.scroll_x, text_y));
-        if !self.masked() {
+        if self.host_shows_text {
+            // The host sets the value itself.
+        } else if !self.masked() {
             if let Some(layout) = &self.single_layout {
                 text_renderer.draw_rich(scene, layout, text_origin, text_color);
                 self.tint_selected_emoji(scene, text_origin, theme, layout);

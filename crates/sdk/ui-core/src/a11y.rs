@@ -142,6 +142,31 @@ pub struct AccessState {
     pub multiline: bool,
     /// When set, widgets must NOT place the secret in [`AccessNode::value`].
     pub protected: bool,
+    /// What a text field asks for, so a browser or password manager can
+    /// fill it in and a page can offer passkeys on it. `None` for fields
+    /// that ask for nothing a person keeps.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autofill: Option<Autofill>,
+}
+
+/// What a text field asks for, in the terms browsers and password managers
+/// fill fields by (HTML's `autocomplete` tokens).
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize)]
+pub enum Autofill {
+    /// The name the person signs in with; a page offers passkeys here too.
+    Username,
+    Email,
+    /// The password the person signs in with.
+    CurrentPassword,
+    /// A password the person is choosing.
+    NewPassword,
+    /// A code sent to the person or shown by their authenticator.
+    OneTimeCode,
+    /// The person's own full name.
+    Name,
+    /// A telephone number.
+    Tel,
 }
 
 impl AccessState {
@@ -195,6 +220,11 @@ impl AccessState {
     }
     pub fn protected(mut self, v: bool) -> Self {
         self.protected = v;
+        self
+    }
+    /// Sets [`autofill`](Self::autofill).
+    pub fn autofill(mut self, purpose: Option<Autofill>) -> Self {
+        self.autofill = purpose;
         self
     }
     pub fn modal(mut self, v: bool) -> Self {

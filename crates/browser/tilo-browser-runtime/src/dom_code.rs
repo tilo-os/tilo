@@ -45,10 +45,16 @@ impl DomPresent for Presenter {
         let started = web_time::Instant::now();
         ui::scene_parts::retain_shown(frame.scene);
         self.scrolls = ui::scene_parts::drawn_scrolls();
-        // A widget that scrolls natively stays elements; pictures and
-        // widgets of many draws become images.
-        let keep: std::collections::HashSet<u64> =
-            self.scrolls.iter().map(|scroll| scroll.key).collect();
+        let drawn_fields = ui::scene_parts::drawn_fields();
+        let fields = self.fields_json(&drawn_fields);
+        // A widget that scrolls natively or holds a field the page shows
+        // stays elements; pictures and widgets of many draws become images.
+        let keep: std::collections::HashSet<u64> = self
+            .scrolls
+            .iter()
+            .map(|scroll| scroll.key)
+            .chain(drawn_fields.iter().map(|field| field.key))
+            .collect();
         let pictures = ui::scene_parts::drawn_pictures();
         let encoded = self.encoder.encode_with(
             frame.scene.encoding(),
@@ -86,6 +92,7 @@ impl DomPresent for Presenter {
             "draws": encoded.draws,
             "bytes": encoded.ops.len(),
             "scrolls": scrolls_json(&self.scrolls),
+            "fields": fields,
             "theme": theme,
         });
         let args = js_sys::Array::new();
@@ -140,6 +147,37 @@ fn new_images(images: &[tilo_cpu_raster::dom::NewImage]) -> js_sys::Array {
         list.push(&entry);
     }
     list
+}
+
+impl Presenter {
+    /// The text fields the frame left to the page, as it shows them: each
+    /// widget's key, where its text shows and where its line starts on its
+    /// baseline, and the face, size and colour it is set in. A face the
+    /// page was not given yet goes with this frame's fonts.
+    fn fields_json(&mut self, fields: &[ui::scene_parts::DrawnField]) -> Vec<serde_json::Value> {
+        fields
+            .iter()
+            .map(|field| {
+                let (family, variations) = self.encoder.text_face(&field.font, &field.coords);
+                let color = field.color.to_rgba8();
+                serde_json::json!({
+                    "key": format!("{:016x}", field.key),
+                    "area": [field.area.x0, field.area.y0, field.area.width(), field.area.height()],
+                    "baseline": [field.baseline.x, field.baseline.y],
+                    "size": field.size,
+                    "family": family,
+                    "variations": variations,
+                    "color": format!(
+                        "rgba({},{},{},{})",
+                        color.r,
+                        color.g,
+                        color.b,
+                        f32::from(color.a) / 255.0
+                    ),
+                })
+            })
+            .collect()
+    }
 }
 
 /// The scroll regions a frame drew, as the page reads them: in CSS pixels.
