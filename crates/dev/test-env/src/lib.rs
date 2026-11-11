@@ -53,7 +53,9 @@
 //!   a tool a test starts as a process of its own — which the run's harness
 //!   builds before the tests start.
 //! - [`in_own_process`] runs a test that changes what the whole process
-//!   sees, such as a held wall clock, in a process no other test shares.
+//!   sees, such as a held wall clock, in a process no other test shares;
+//!   [`in_own_process_here`] is the same for a test that drives its own
+//!   future.
 //! - [`held_wall_clock`] holds this thread's wall clock at the instant a
 //!   test environment and a capture start at, so two pictures of the desk a
 //!   test compares show the same date and time.
@@ -141,7 +143,7 @@ pub use hang::{Within, hang_bound, hang_deadline, recv, wait_for, wait_until, wi
 #[cfg(feature = "document")]
 pub use net::document::{FakeDocumentNet, at_path};
 pub use net::{Converged, FakeNet, Peer};
-pub use own_process::in_own_process;
+pub use own_process::{in_own_process, in_own_process_here};
 #[cfg(target_os = "linux")]
 pub use stand_in::{StandIn, stand_in};
 pub use wall::held_wall_clock;

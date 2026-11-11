@@ -261,6 +261,15 @@ mod tests {
         reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
     async fn another_roots_revocation_of_a_device_is_not_taken() {
+        // The authority epoch is the whole process's, which every test that
+        // narrows anything bumps: only in a process of its own is the epoch
+        // standing still this relay's own doing.
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "another_roots_revocation_of_a_device_is_not_taken",
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let relay = test_host(dir.path(), &key, &cert).await;
@@ -320,6 +329,15 @@ mod tests {
         reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
     async fn a_strangers_flood_leaves_room_for_a_members_revocation() {
+        // The authority epoch is the whole process's, which every test that
+        // narrows anything bumps: only in a process of its own is the epoch
+        // standing still this relay's own doing.
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_strangers_flood_leaves_room_for_a_members_revocation",
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let relay = test_host(dir.path(), &key, &cert).await;
@@ -379,6 +397,15 @@ mod tests {
         reason = "the relay a test binds is kept until it ends; dropping it earlier closes the host the test drives"
     )]
     async fn a_full_log_still_refuses_the_revocation_it_cannot_keep() {
+        // The authority epoch is the whole process's, which every test that
+        // narrows anything bumps: only in a process of its own is the bump
+        // this test reads the log's own.
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_full_log_still_refuses_the_revocation_it_cannot_keep",
+        ) {
+            return;
+        }
         let dir = tempfile::tempdir().unwrap();
         let (key, cert) = governor();
         let relay = test_host(dir.path(), &key, &cert).await;
