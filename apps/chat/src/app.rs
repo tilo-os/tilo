@@ -2278,6 +2278,16 @@ impl Widget for ChatApp {
         {
             children.push(menu_node);
         }
+        // The text menu a composer opened on its words stands over the
+        // timeline: read where it is drawn, as the surface's own menu is.
+        for composer in [&self.composer_main, &self.composer_thread] {
+            if !composer.is_focused() {
+                continue;
+            }
+            if let Some(menu) = composer.text_menu_accessibility() {
+                children.push(menu);
+            }
+        }
         // Existing Chat controls are exported by their typed domain resources,
         // which carry device and destructive-operation metadata. Keep their
         // synthetic accessibility subtrees outside generic action projection.
@@ -2354,6 +2364,20 @@ impl Widget for ChatApp {
         let (state, path) = ui::doc::document(state, path);
         if target.starts_with("context-menu:item:") {
             return self.perform_menu_semantic_action(target, action, state, path);
+        }
+        // A row of the text menu a composer opened runs as the click that row
+        // makes: the editor takes the row, and what it wrote is read back.
+        if target.starts_with("editor.text-menu:") {
+            let composer = if self.focus == Focus::Thread {
+                &mut self.composer_thread
+            } else {
+                &mut self.composer_main
+            };
+            if !composer.perform_semantic_action(target, action, state, path) {
+                return false;
+            }
+            self.reload(state);
+            return true;
         }
         let hit = self
             .semantic_hits()

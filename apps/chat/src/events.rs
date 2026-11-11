@@ -182,12 +182,7 @@ impl ChatApp {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
-            } => {
-                if let Some(hit) = self.hit_at(self.last_mouse) {
-                    self.on_right_click(hit);
-                    *handled = true;
-                }
-            }
+            } => self.handle_right_press(event, scale, modifiers, doc, handled),
             WindowEvent::KeyboardInput {
                 event:
                     KeyEvent {
@@ -438,6 +433,57 @@ impl ChatApp {
             None => {}
         }
         focus_requested
+    }
+
+    /// A secondary press: the text field under the pointer opens its own menu
+    /// on the words there, as every editor does; everywhere else the surface
+    /// offers what it can do at the place.
+    fn handle_right_press(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+        handled: &mut bool,
+    ) {
+        if self.focused_text_field_takes_secondary_press(event, scale, modifiers, doc) {
+            *handled = true;
+            return;
+        }
+        if let Some(hit) = self.hit_at(self.last_mouse) {
+            self.on_right_click(hit);
+            *handled = true;
+        }
+    }
+
+    /// A secondary press inside a text field is that field's: the field takes
+    /// the keyboard, as a left press gives it, and opens its own menu on the
+    /// words under the pointer — cut, copy and paste — rather than the
+    /// surface's menu for the place. Whether a field took the press.
+    fn focused_text_field_takes_secondary_press(
+        &mut self,
+        event: &WindowEvent,
+        scale: f64,
+        modifiers: Modifiers,
+        doc: &mut ui::widget::Edits<'_>,
+    ) -> bool {
+        let Some(hit @ (Hit::FocusMain | Hit::FocusThread | Hit::FocusEdit)) =
+            self.hit_at(self.last_mouse)
+        else {
+            return false;
+        };
+        self.on_hit(hit.clone(), doc);
+        let taken = match hit {
+            Hit::FocusMain => self.composer_main.handle(event, scale, modifiers, doc),
+            Hit::FocusThread => self.composer_thread.handle(event, scale, modifiers, doc),
+            _ => self.edit_input.handle(event, scale, modifiers, doc),
+        };
+        if taken {
+            // The menu stands over the timeline, drawn with the field that
+            // opened it as a field the person is in.
+            self.set_composer_focus();
+        }
+        taken
     }
 
     /// A left-button release: ends any overlay drag or composer

@@ -191,8 +191,10 @@ impl BlockEditor {
     }
 
     /// The open text menu's node of the accessibility tree: its rows, each
-    /// an action an assistive technology runs as a click does.
-    pub(super) fn text_menu_access_node(&self) -> Option<crate::a11y::AccessNode> {
+    /// an action an assistive technology runs as a click does. A host that
+    /// publishes nodes of its own — an app painting its own chrome, with the
+    /// editor embedded under it — adds this where the menu is drawn.
+    pub fn text_menu_access_node(&self) -> Option<crate::a11y::AccessNode> {
         fn namespace_targets(node: &mut crate::a11y::AccessNode) {
             if let Some(target) = node.action_target.take() {
                 node.action_target = Some(format!("{TEXT_MENU_TARGET}{target}"));
