@@ -694,7 +694,19 @@ impl ImapOrigin {
         let Some(state) = self.state.as_mut() else {
             return Ok(false);
         };
-        match take_in_step(host, now, state, changes) {
+        // A change of a person's the server answered nothing to yet: what a server says of that
+        // message's fields was read before it was told of them, so it is no news of them.
+        let waiting = |account: &str, key: &str| {
+            self.pending.values().any(|pending| match pending {
+                Pending::Write {
+                    account: asked_of,
+                    key: asked,
+                    ..
+                } => asked_of == account && asked == key,
+                Pending::Send(_) => false,
+            })
+        };
+        match take_in_step(host, now, state, changes, waiting) {
             Ok(wrote) => Ok(wrote),
             Err(error) => {
                 // Read again by [`Origin::poll`], which reads the workspace whole or not at all.
@@ -835,6 +847,11 @@ impl ImapOrigin {
 
     /// What people changed in the fields people change, handed to the servers.
     fn push(&mut self, host: &Host, now: &str) -> bool {
+        // A workspace not read yet has nobody's change to take: what it holds waits for the
+        // poll that reads it.
+        if self.state.is_none() {
+            return false;
+        }
         let keys: Vec<FieldKey> = std::mem::take(&mut *self.changed.borrow_mut());
         let touched = {
             let Some(state) = self.state.as_mut() else {
@@ -1057,6 +1074,7 @@ fn take_in_step(
     now: &str,
     state: &mut State,
     changes: &Changes,
+    waiting: impl Fn(&str, &str) -> bool,
 ) -> Result<bool, RuntimeError> {
     let t = &state.types;
     let Some(threads_field) = t.account.field("threads") else {
@@ -1089,7 +1107,9 @@ fn take_in_step(
                         flagged: m.flagged,
                         mailbox: m.mailbox.clone(),
                     };
-                    if held.confirmed != server {
+                    // An answer about a message the server has not answered the person's change
+                    // to was read before it was told of that change: it is no news of it.
+                    if !waiting(&changes.account, &m.key) && held.confirmed != server {
                         held.confirmed = server.clone();
                         writes.push(people_write(t, &held.record, &server));
                         touched.insert(held.thread.clone());
@@ -1119,7 +1139,7 @@ fn take_in_step(
                         flagged: *flagged,
                         mailbox: held.confirmed.mailbox.clone(),
                     };
-                    if held.confirmed != server {
+                    if !waiting(&changes.account, key) && held.confirmed != server {
                         held.confirmed = server.clone();
                         writes.push(people_write(t, &held.record, &server));
                         touched.insert(held.thread.clone());
@@ -1427,6 +1447,12 @@ impl Origin for ImapOrigin {
         // What the workspace could not take last time, before anything newer: a step waits
         // until it is written, never behind newer mail.
         polled.wrote |= self.take_again(cx.host, &cx.now);
+        // What people changed is handed to the servers before what the servers say is taken in:
+        // an answer already on its way was read before the change was told, so taking it in
+        // first would put the change back.
+        if !self.reload {
+            polled.wrote |= self.push(cx.host, &cx.now);
+        }
         let events = self.take_events(cx.host, &cx.now);
         polled.wrote |= events.wrote;
         polled.settle |= events.settle;
@@ -1450,7 +1476,6 @@ impl Origin for ImapOrigin {
                 );
             }
         }
-        polled.wrote |= self.push(cx.host, &cx.now);
         polled.wrote |= self.write_account_state(cx.host, &cx.now);
         polled
     }
