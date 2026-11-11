@@ -1075,11 +1075,17 @@ impl AppBrokerState {
             let first = rows.len();
             let workspace_id = workspace.id().to_string();
             let mut live_apps = std::collections::HashSet::new();
+            // The apps with a window here: one running only without a window
+            // is still opened, which gives that instance its window.
+            let mut windowed_apps = std::collections::HashSet::new();
             for surface in surfaces
                 .iter()
                 .filter(|surface| surface.live && surface.route.cluster_id == workspace_id)
             {
                 live_apps.insert(surface.app_id.clone());
+                if !self.is_windowless(surface.peer_id) {
+                    windowed_apps.insert(surface.app_id.clone());
+                }
                 providers.push(CatalogueProvider {
                     provider: surface.peer_id.to_string(),
                     app_id: surface.app_id.clone(),
@@ -1285,7 +1291,7 @@ impl AppBrokerState {
                 for app in applications
                     .iter()
                     .filter(|app| scope.wants_app(&app.package_id))
-                    .filter(|app| !live_apps.contains(&app.package_id))
+                    .filter(|app| !windowed_apps.contains(&app.package_id))
                 {
                     if policy.may_in(
                         &workspace,
@@ -2523,7 +2529,9 @@ impl AppBrokerState {
 
     /// The ready publisher of `address` and the address it publishes it
     /// under: the exact one, else (when `aliases`) one whose resource is a
-    /// bound alias of `address`'s resource.
+    /// bound alias of `address`'s resource, or the one alias of the same
+    /// resource now when `address` names an alias an instance that ended
+    /// published ([`super::PublishedSurface::current_resource`]).
     fn publisher_of(
         &self,
         app_id: &str,
@@ -2549,23 +2557,34 @@ impl AppBrokerState {
                     && subscribers.contains_key(&surface.peer_id)
             })
             .filter_map(|surface| {
-                let published = surface
-                    .actions
-                    .iter()
-                    .find(|action| {
-                        action.action == address.action && action.resource == address.resource
-                    })
-                    .or_else(|| {
-                        surface.actions.iter().find(|action| {
-                            aliases
-                                && action.action == address.action
-                                && tilo_actions::selection::logical_resource_id(&action.resource)
-                                    == address.resource
-                        })
-                    })?;
+                let resource = if aliases {
+                    surface
+                        .current_resource(&address.resource, &address.action)
+                        .or_else(|| {
+                            surface
+                                .actions
+                                .iter()
+                                .find(|action| {
+                                    action.action == address.action
+                                        && tilo_actions::selection::logical_resource_id(
+                                            &action.resource,
+                                        ) == address.resource
+                                })
+                                .map(|action| action.resource.as_str())
+                        })?
+                } else {
+                    surface
+                        .actions
+                        .iter()
+                        .find(|action| {
+                            action.action == address.action && action.resource == address.resource
+                        })?
+                        .resource
+                        .as_str()
+                };
                 Some((
                     surface.peer_id,
-                    tilo_actions::ActionAddress::new(&published.resource, &published.action),
+                    tilo_actions::ActionAddress::new(resource, &address.action),
                 ))
             })
             .min_by_key(|(peer_id, _)| *peer_id)

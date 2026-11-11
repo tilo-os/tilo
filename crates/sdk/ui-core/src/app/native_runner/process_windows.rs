@@ -6,7 +6,8 @@
 //! connections; this hands each the events of its windows, and the events of
 //! no window to all of them or to the one in front. A window that is done
 //! closes alone; the last one ends the loop, as a process's only window
-//! always has.
+//! always has. A process the session started with no window runs its app
+//! unshown until the shell asks it for a window, which then takes its place.
 
 use super::{App, AppHandler, UserEvent};
 use winit::application::ApplicationHandler;
@@ -107,6 +108,11 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         let mut handler = app.into_handler(&self.proxy, None, |_| {});
         handler.resumed(event_loop);
         self.windows.push(handler);
+        // The app ran with no window until now: the window serves what it
+        // served, so it goes, and the process is a windowed one from here.
+        for unshown in self.windows.iter().filter(|handler| handler.windowless) {
+            unshown.closing.set(true);
+        }
     }
 }
 

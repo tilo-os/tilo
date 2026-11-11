@@ -38,6 +38,7 @@ const MAX_WAITING_LAUNCHES: usize = 64;
 /// One launch the session made: which app it started, in which workspace,
 /// the process that runs it, and whether the launch bound the documents store
 /// into it.
+#[derive(Clone)]
 struct Launch {
     app: String,
     workspace: String,
@@ -47,9 +48,13 @@ struct Launch {
     /// the person chose for it: the launcher does that for a package, whose sandbox holds nothing
     /// else of the host, and for no other kind.
     sandboxed: bool,
-    /// The launch runs with no window (see [`Launches::windowless`]): it takes the app's actions on
-    /// its records and is never handed an `open`.
+    /// The launch runs with no window: it takes the app's actions on its records and is never
+    /// handed an `open`. An app the session started so shows a window once the shell asks its
+    /// process for one ([`Launches::window`]).
     windowless: bool,
+    /// The launch serves every workspace its connections name: an endpoint of the app's records
+    /// the login runs beside the session ([`Launches::endpoint`]).
+    every_workspace: bool,
 }
 
 /// One window of a running app the session is connecting: the window's own instance, and the launch
@@ -78,14 +83,17 @@ pub(crate) struct LaunchRequest {
     /// What a tool was asked to show, for the tool the launch opens (`TILO_TOOL_CONTEXT`): a
     /// terminal at a folder, a settings route.
     pub context: Option<String>,
+    /// The app is to run with no window, for an action that shows nothing
+    /// ([`LauncherServices::windowless`]).
+    pub windowless: bool,
     /// Told once the launch was made, or why it was not.
-    reply: SyncSender<Result<(), String>>,
+    reply: Box<dyn FnOnce(Result<(), String>) + Send>,
 }
 
 impl LaunchRequest {
     /// Tell the asker how the launch went.
     pub(crate) fn answer(self, result: Result<(), String>) {
-        let _ = self.reply.send(result);
+        (self.reply)(result);
     }
 }
 
@@ -158,24 +166,18 @@ impl Launches {
         place: LaunchPlace,
         context: Option<String>,
     ) -> Result<(), String> {
-        let (reply, answered) = std::sync::mpsc::sync_channel(1);
-        {
-            let mut waiting = self.waiting.lock_recover();
-            if waiting.len() >= MAX_WAITING_LAUNCHES {
-                return Err("too many launches are waiting for this session".into());
-            }
-            waiting.push(LaunchRequest {
-                launch,
-                workspace: workspace.to_owned(),
-                place,
-                context,
-                reply,
-            });
-        }
-        let wake = self.wake.lock_recover().clone();
-        if let Some(wake) = wake {
-            wake();
-        }
+        let (reply, answered): (SyncSender<Result<(), String>>, _) =
+            std::sync::mpsc::sync_channel(1);
+        self.hand_over(LaunchRequest {
+            launch,
+            workspace: workspace.to_owned(),
+            place,
+            context,
+            windowless: false,
+            reply: Box::new(move |result| {
+                let _ = reply.send(result);
+            }),
+        })?;
         match answered.recv_timeout(LAUNCH_ANSWER_WAIT) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
@@ -185,6 +187,25 @@ impl Launches {
                 Err("the session gave the launch up".into())
             }
         }
+    }
+
+    /// Hand `request` to the session's loop, the only thread that starts a process, and wake it.
+    ///
+    /// # Errors
+    /// More launches are waiting than a person's apps ask for.
+    fn hand_over(&self, request: LaunchRequest) -> Result<(), String> {
+        {
+            let mut waiting = self.waiting.lock_recover();
+            if waiting.len() >= MAX_WAITING_LAUNCHES {
+                return Err("too many launches are waiting for this session".into());
+            }
+            waiting.push(request);
+        }
+        let wake = self.wake.lock_recover().clone();
+        if let Some(wake) = wake {
+            wake();
+        }
+        Ok(())
     }
 
     /// The launches waiting for this pass, oldest first: taken once, by the loop that starts them.
@@ -213,6 +234,17 @@ impl Launches {
     /// `sandboxed` is whether the launch bound the session's documents store into it, which only a
     /// package's sandbox is given.
     pub fn started(&self, pid: u32, app: &str, workspace: &str, sandboxed: bool) {
+        self.record(pid, app, workspace, sandboxed, false);
+    }
+
+    /// [`Self::started`] for a package launch with no window
+    /// ([`LauncherServices::windowless`]): its connection takes the app's actions on its records
+    /// and is never handed an `open`, until the shell asks its process for a window.
+    pub fn started_windowless(&self, pid: u32, app: &str, workspace: &str) {
+        self.record(pid, app, workspace, true, true);
+    }
+
+    fn record(&self, pid: u32, app: &str, workspace: &str, sandboxed: bool, windowless: bool) {
         let Some(start) = start_time(pid) else {
             tracing::warn!(
                 pid,
@@ -228,7 +260,8 @@ impl Launches {
                 workspace: workspace.to_owned(),
                 start,
                 sandboxed,
-                windowless: false,
+                windowless,
+                every_workspace: false,
             },
         );
     }
@@ -238,25 +271,11 @@ impl Launches {
     /// Files daemon. Its connections are admitted as the app's and take its actions on its records,
     /// for every workspace it names, since the endpoint serves them all; an `open` is never handed
     /// to it. A pid whose process cannot be read is recorded by nothing.
-    pub fn windowless(&self, pid: u32, app: &str, workspace: &str) {
-        let Some(start) = start_time(pid) else {
-            tracing::warn!(
-                pid,
-                %app,
-                "a windowless endpoint's process could not be read: its connection reaches no service"
-            );
-            return;
-        };
-        self.started.lock_recover().insert(
-            pid,
-            Launch {
-                app: app.to_owned(),
-                workspace: workspace.to_owned(),
-                start,
-                sandboxed: false,
-                windowless: true,
-            },
-        );
+    pub fn endpoint(&self, pid: u32, app: &str, workspace: &str) {
+        self.record(pid, app, workspace, false, true);
+        if let Some(launch) = self.started.lock_recover().get_mut(&pid) {
+            launch.every_workspace = true;
+        }
     }
 
     /// Record that the session is about to connect window `instance` of `app` in `workspace` , a
@@ -264,6 +283,12 @@ impl Launches {
     /// recording it again replaces the one it had. Only the session records windows, and only the
     /// connection naming the instance spends the record.
     pub fn window(&self, app: &str, workspace: &str, instance: u64, launch: Option<u32>) {
+        // A launch that ran with no window shows one from here on.
+        if let Some(pid) = launch
+            && let Some(launched) = self.started.lock_recover().get_mut(&pid)
+        {
+            launched.windowless = false;
+        }
         let mut windows = self.windows.lock_recover();
         windows.retain(|window| !window.is(app, workspace, instance));
         windows.push(Window {
@@ -324,7 +349,7 @@ impl Launches {
         self.started
             .lock_recover()
             .iter()
-            .filter(|(pid, launch)| start_time(**pid) == Some(launch.start))
+            .filter(|(pid, launch)| !launch.windowless && start_time(**pid) == Some(launch.start))
             .map(|(_, launch)| launch.app.clone())
             .collect()
     }
@@ -332,15 +357,8 @@ impl Launches {
     /// The workspace of the launch that `pid` is or was started by, when it runs `app` : the app a
     /// connection came from, as the window it names.
     pub fn workspace_of(&self, pid: u32, app: &str) -> Option<String> {
-        let lineage = ancestry(pid);
-        let launched = self
-            .started
-            .lock_recover()
-            .iter()
-            .find(|(launched, launch)| launch.app == app && lineage.contains(launched))
-            .map(|(launched, launch)| (*launched, launch.start, launch.workspace.clone()))?;
-        let (launched, start, workspace) = launched;
-        (start_time(launched) == Some(start)).then_some(workspace)
+        self.ancestor(pid, |launch| launch.app == app)
+            .map(|(_, launch)| launch.workspace)
     }
 
     /// The launch `pid` is or descends from, while that launch still runs: the app window a process
@@ -348,14 +366,7 @@ impl Launches {
     /// as a whole.
     #[must_use]
     pub fn launch_of(&self, pid: u32) -> Option<u32> {
-        let lineage = ancestry(pid);
-        let launched = self
-            .started
-            .lock_recover()
-            .iter()
-            .find(|(launched, _)| lineage.contains(launched))
-            .map(|(launched, launch)| (*launched, launch.start))?;
-        (start_time(launched.0) == Some(launched.1)).then_some(launched.0)
+        self.ancestor(pid, |_| true).map(|(launched, _)| launched)
     }
 
     /// The app this session launched that `pid` descends from, while that launch still runs: the
@@ -363,15 +374,19 @@ impl Launches {
     /// no launch is an ancestor of `pid` .
     #[must_use]
     pub fn app_of_descendant(&self, pid: u32) -> Option<String> {
+        self.ancestor(pid, |_| true).map(|(_, launch)| launch.app)
+    }
+
+    /// The first launch `pid` is or descends from that `wanted` takes, while it still runs.
+    fn ancestor(&self, pid: u32, wanted: impl Fn(&Launch) -> bool) -> Option<(u32, Launch)> {
         let lineage = ancestry(pid);
-        let launched = self
+        let (launched, launch) = self
             .started
             .lock_recover()
             .iter()
-            .find(|(launched, _)| lineage.contains(launched))
-            .map(|(launched, launch)| (*launched, launch.start, launch.app.clone()))?;
-        let (launched, start, app) = launched;
-        (start_time(launched) == Some(start)).then_some(app)
+            .find(|(launched, launch)| wanted(launch) && lineage.contains(launched))
+            .map(|(launched, launch)| (*launched, launch.clone()))?;
+        (start_time(launched) == Some(launch.start)).then_some((launched, launch))
     }
 
     /// The start time of the process `pid` started and whether that launch runs with no window,
@@ -381,7 +396,8 @@ impl Launches {
     fn live_launch(&self, pid: u32, app: &str, workspace: &str) -> Option<(u64, bool)> {
         let (start, windowless) = match self.started.lock_recover().get(&pid) {
             Some(launch)
-                if launch.app == app && (launch.windowless || launch.workspace == workspace) =>
+                if launch.app == app
+                    && (launch.every_workspace || launch.workspace == workspace) =>
             {
                 (launch.start, launch.windowless)
             }
@@ -494,6 +510,40 @@ impl LauncherServices for Launches {
         self.served.lock_recover().get(app).cloned()
     }
 
+    /// Have package `app` run with no window in `workspace`, for an action that shows nothing:
+    /// the session's loop starts it unless a process of it runs there already, and the start's
+    /// answer is the one returned. An app this session runs itself, or one that is no package,
+    /// has no such instance.
+    ///
+    /// # Errors
+    /// More launches are waiting than a person's apps ask for.
+    fn windowless(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<tilo_broker_core::services::WindowlessStart>, String> {
+        if self.served(app).is_some() {
+            return Ok(None);
+        }
+        let Some(launch @ tilo_app_launch::Launch::Package { open: None, .. }) =
+            tilo_app_launch::Launch::parse(app)
+        else {
+            return Ok(None);
+        };
+        let (reply, started) = tokio::sync::oneshot::channel();
+        self.hand_over(LaunchRequest {
+            launch,
+            workspace: workspace.to_owned(),
+            place: LaunchPlace::Aside,
+            context: None,
+            windowless: true,
+            reply: Box::new(move |result| {
+                let _ = reply.send(result);
+            }),
+        })?;
+        Ok(Some(started))
+    }
+
     /// The connection proved the process the session started is the one holding it (the kernel's
     /// credentials and the challenge answered on them): the launch stands only while both name it.
     fn attest_executing_process(
@@ -596,6 +646,29 @@ mod tests {
                 .is_none(),
             "spent by its connection"
         );
+    }
+
+    /// An app started with no window is admitted as such in its own workspace alone, is no app
+    /// the person opened, and shows a window once the shell asks its process for one.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn a_windowless_launch_is_admitted_as_one_until_it_shows_a_window() {
+        let launches = Launches::default();
+        let (app, workspace) = ("so.tilo.chat", "workspace-windowless");
+        let process = std::process::id();
+        launches.started_windowless(process, app, workspace);
+
+        let admitted = |workspace| launches.authenticated_launch(process, app, workspace, None);
+        assert!(admitted(workspace).unwrap().expect("its launch").windowless);
+        assert!(admitted("another-workspace").unwrap().is_none());
+        assert!(
+            launches.running_apps().is_empty(),
+            "no app the person opened"
+        );
+
+        launches.window(app, workspace, 7, Some(process));
+        assert!(!admitted(workspace).unwrap().expect("its launch").windowless);
+        assert!(launches.running_apps().contains(app));
     }
 
     /// The session gave the connection up before the broker saw it: the record ends with it, and
@@ -724,7 +797,7 @@ mod tests {
             .arg("30")
             .spawn_locked()
             .expect("a process to launch");
-        launches.windowless(child.id(), app, workspace);
+        launches.endpoint(child.id(), app, workspace);
 
         assert!(
             launches

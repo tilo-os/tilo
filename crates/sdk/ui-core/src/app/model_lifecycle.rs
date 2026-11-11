@@ -73,6 +73,15 @@ impl super::App {
         self.pump_hosted_model_as(host_perf_baseline());
     }
 
+    /// One wake of an app the session runs with no window
+    /// ([`crate::host::WINDOWLESS_ENV`]): the passes a frame runs before it
+    /// paints, so it takes its actions and publishes. Answers when it wakes
+    /// next.
+    pub(crate) fn wake_unshown(&mut self) -> Option<crate::time::Instant> {
+        self.pump_hosted_model();
+        self.root_widget.next_wake_deadline()
+    }
+
     /// Presence and connection changes can change pixels without dirtying a widget.
     #[cfg(feature = "native")]
     pub(super) fn pump_embedded_model(&mut self) -> bool {

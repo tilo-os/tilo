@@ -42,7 +42,7 @@ pub fn record(launches: Arc<Launches>, cluster: Option<String>) {
                 );
                 return;
             };
-            launches.windowless(pid, FILES_APP, &cluster);
+            launches.endpoint(pid, FILES_APP, &cluster);
         });
     if let Err(error) = recorded {
         tracing::warn!(%error, "the files daemon's launch cannot be recorded");

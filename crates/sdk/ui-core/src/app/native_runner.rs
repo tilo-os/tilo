@@ -195,6 +195,11 @@ struct AppHandler {
     /// The window is done: the last window of the process ends its loop, any
     /// other closes alone ([`process_windows`]).
     closing: std::cell::Cell<bool>,
+    /// The session started this app with no window
+    /// ([`crate::host::WINDOWLESS_ENV`]): it serves its actions and records
+    /// and makes no window. The first window the shell asks of the process
+    /// takes its place ([`process_windows`]).
+    windowless: bool,
 }
 
 #[cfg(test)]
@@ -3669,6 +3674,9 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             window.request_redraw();
             return;
         }
+        if self.windowless {
+            return;
+        }
         // Required, not incidental: the compositor only accepts
         // `set_selection` from the connection that owns the focused surface.
         if self.clipboard_attachment.is_none() {
@@ -3893,6 +3901,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         let _entry = self.app.enter_wake_scope();
         let Some(window) = self.window.clone() else {
+            // With no window to draw, a wake runs the passes a frame runs
+            // before it paints: the app takes its actions and publishes.
+            if self.windowless {
+                event_loop.set_control_flow(
+                    self.app
+                        .wake_unshown()
+                        .map_or(ControlFlow::Wait, ControlFlow::WaitUntil),
+                );
+            }
             return;
         };
         // Both volume keys have been held long enough, or a finger rested.
@@ -5039,7 +5056,8 @@ impl App {
         // takes a window as it maps as one this process serves, and only a
         // process that answered its door before that is served more.
         let door = open.and_then(|open| process_windows::serve_door(&proxy).map(|()| open));
-        let handler = self.into_handler(&proxy, native_scenario, setup);
+        let mut handler = self.into_handler(&proxy, native_scenario, setup);
+        handler.windowless = crate::host::environment().windowless;
         let mut handler = process_windows::ProcessWindows::new(handler, proxy, door);
         // Run on demand, so a window that gives its place to the next one
         // (`hand_over`) keeps the loop for that window to run on. On every
@@ -5210,6 +5228,7 @@ impl App {
             _settings_watch: settings_watch,
             handing_over: false,
             closing: std::cell::Cell::new(false),
+            windowless: false,
         }
     }
 }

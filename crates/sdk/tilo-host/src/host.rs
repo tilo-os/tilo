@@ -40,7 +40,8 @@ mod recording;
 
 pub use environment::{
     AccessibilityInputs, ContinuationMetadata, HostEnvironment, HostIdentity, HostPaths,
-    REVEAL_ENV, RunnerDiagnostics, environment, install_environment, parse_posix_locale,
+    REVEAL_ENV, RunnerDiagnostics, WINDOWLESS_ENV, environment, install_environment,
+    parse_posix_locale,
 };
 pub use recording::HostRecorder;
 

@@ -1596,7 +1596,8 @@ mod tests {
     /// alias (as the session's windowless Tasks does): an application target
     /// written with the app's own resource id reaches it, handed over under
     /// the alias it published, rather than waiting for a publisher of the
-    /// plain id that never comes.
+    /// plain id that never comes; so does one naming the alias of a window
+    /// of the app that closed.
     #[test]
     fn an_application_target_reaches_an_instance_publishing_an_alias() {
         let (state, workspace) = broker(&workspace());
@@ -1640,6 +1641,23 @@ mod tests {
             ),
             Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
             "the instance publishing the alias is the one ready"
+        );
+        // A target kept from a window of the app that has since closed names
+        // that window's alias; the running instance takes it under its own.
+        let ended = format!(
+            "{}0b7c4e52-1f0a-4d7e-9a43-6c1d2e8f7a90:{}",
+            tilo_actions::BOUND_RESOURCE_PREFIX,
+            hex::encode("files.app")
+        );
+        assert_eq!(
+            state.ready_delivery(
+                APP,
+                &workspace,
+                None,
+                &tilo_actions::ActionAddress::new(&ended, "new-window"),
+            ),
+            Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+            "an alias of an instance that ended reaches the one running"
         );
         invoke(&state, &owner, &target.provider, "new-window", None)
             .expect("the instance publishing the alias takes it");

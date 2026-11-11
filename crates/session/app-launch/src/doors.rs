@@ -138,16 +138,6 @@ impl Doors {
             .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    /// Whether a process of `app` already serves `workspace` and opens the
-    /// windows asked of it: another window of the app there is a new window
-    /// in that process, not a second copy.
-    #[must_use]
-    pub fn opens_more_windows(&self, app: &str, workspace: &str) -> bool {
-        self.doors()
-            .get(&key(app, workspace))
-            .is_some_and(|door| door.serves == Serves::Yes)
-    }
-
     /// Reserve the door of the process about to start for `app` in `workspace`,
     /// unless one is reserved already. Later windows of the app there are
     /// routed to it. The reservation is given up when it is dropped
@@ -325,6 +315,25 @@ impl Doors {
             tracing::info!("an app built before the window door starts a process per window");
         }
         start_alone(alone);
+    }
+
+    /// Reserve the door of a process about to start for `app` in `workspace`
+    /// with no window: `None` when a process of the app runs there already,
+    /// or is starting, and serves the workspace in its place.
+    ///
+    /// # Errors
+    /// No door could be made for the process.
+    pub fn reserve_unless_running(
+        self: &Rc<Self>,
+        app: &str,
+        workspace: &str,
+    ) -> Result<Option<Reservation>, String> {
+        if self.doors().contains_key(&key(app, workspace)) {
+            return Ok(None);
+        }
+        self.reserve(app, workspace)
+            .map(Some)
+            .ok_or_else(|| format!("no window door for {app}"))
     }
 
     /// Where a window of `app` in `workspace` opens: in the process already

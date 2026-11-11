@@ -171,7 +171,7 @@ pub fn session(
     // would have recorded for it names that process.
     let launches = std::sync::Arc::new(Launches::default());
     if windowless {
-        launches.windowless(std::process::id(), app, cluster);
+        launches.endpoint(std::process::id(), app, cluster);
     } else {
         launches.started(std::process::id(), app, cluster, true);
     }

@@ -74,6 +74,48 @@ fn hosted_model_advances_retained_job_once_without_draw_or_private_fixture_drain
     )).count(), 1, "one actual completion emits exactly one terminal update");
 }
 
+/// An app the session runs with no window publishes its actions and answers
+/// one on its wakes alone: nothing is laid out or drawn for it.
+#[test]
+fn an_app_with_no_window_publishes_and_answers_on_its_wakes() {
+    let mut app = App::new_with_controlled_inputs(
+        State::new(),
+        Box::new(CounterCard::with_async_post_bump_reset()),
+    );
+    app.action_registry_mut()
+        .register::<CounterAction>(COUNTER_TYPE);
+    let sent = Rc::new(RefCell::new(vec![]));
+    app.collaboration.manager =
+        CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
+    app.wake_unshown();
+    assert!(
+        app.actions
+            .last_published_actions
+            .as_ref()
+            .is_some_and(|actions| !actions.is_empty()),
+        "its actions are published before anything shows"
+    );
+    let invocation = tilo_actions::InvocationId::new();
+    app.invoke_published_action(
+        871,
+        invocation,
+        "test.counter".into(),
+        "async-bump".into(),
+        None,
+        "original-caller",
+        None,
+    );
+    for _ in 0..3 {
+        app.wake_unshown();
+    }
+    assert_eq!(counter(&app), 1, "the action ran");
+    assert!(
+        sent.borrow().iter().any(|request| matches!(request,
+            CollabRequest::UpdateInvocation { update: tilo_actions::InvocationUpdate::Succeeded { invocation: observed, .. }, .. } if *observed == invocation)),
+        "its caller is answered"
+    );
+}
+
 fn hosted_directory_fixture() -> App {
     let mut app = App::new_with_controlled_inputs(
         State::new(),

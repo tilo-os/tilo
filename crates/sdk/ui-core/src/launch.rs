@@ -889,12 +889,15 @@ fn run_parsed(
     if opens_native_window(&args) {
         crate::window_door::announce();
     }
+    // A process started with no window makes none until the shell asks for
+    // one: nothing is drawn, so nothing is prepared to draw.
+    let shows = opens_native_window(&args) && !crate::host::environment().windowless;
     // The font database is built on its own thread, so the app's first text
     // renderer finds the catalog verified and the fonts read. It starts
     // first: the renderer preparation below also opens the early window on
     // this thread and waits there for the compositor's first configure,
     // and nothing in the font database waits for either.
-    if opens_native_window(&args) || args.first_frame {
+    if shows || args.first_frame {
         prepare_font_database_beside();
     }
     // A window's GPU device and vello's pipelines are prepared on their own
@@ -902,7 +905,7 @@ fn run_parsed(
     // instead of starting them after the compositor's first configure. Never
     // inside the event loop's `resumed`: see `prepare_native_renderer`.
     #[cfg(any(windows, target_os = "linux"))]
-    let mut renderer = if opens_native_window(&args) {
+    let mut renderer = if shows {
         crate::app::prepare_native_renderer()
     } else {
         None
