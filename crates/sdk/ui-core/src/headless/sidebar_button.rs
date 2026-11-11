@@ -5,9 +5,34 @@
 //! hands the app what was pressed, as the live window's bar does. What the
 //! press did is read back from the window's sidebar ([`NavShell`]), the
 //! slots the app declares and the frame laid out after it.
+//!
+//! An app whose own header row is the window's bar ([`FrameHarness::row_holds_bar`])
+//! declares no slots: its row holds the shell's own toggle, and the click lands
+//! there, in the frame.
 
 use super::FrameHarness;
 use crate::widget::{NavPane, NavShell, SidebarPlacement, Widget};
+use vello::kurbo::Rect;
+
+/// The shell's own sidebar toggle, the button the app's header row holds while the row
+/// is the window's bar.
+const SIDEBAR_TOGGLE: &str = "nav-shell-sidebar";
+
+/// The shell's own way back, the button the row holds where it puts the sidebar toggle
+/// aside for it.
+const BACK_BUTTON: &str = "nav-shell-back";
+
+/// Where the window's bar keeps its sidebar button, and what the button says.
+struct BarSidebarButton {
+    /// Where it stands, in logical window coordinates.
+    spot: Rect,
+    /// The desktop's bar draws it as one of the app's slots, so the press
+    /// lands on the bar's row. Otherwise the app's header row is the bar and
+    /// the button is a widget in the frame.
+    on_the_row: bool,
+    /// It says it hides the sidebar: the sidebar stands shown.
+    shown: bool,
+}
 
 /// Where the window's sidebar stands after a press on the bar's button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -30,20 +55,72 @@ impl SidebarShown {
 }
 
 impl FrameHarness {
-    /// Click the sidebar button where the window's bar, as the desktop
-    /// draws it across the window, puts it, and hand the app what the press
-    /// runs ([`Self::press_window_slot`]).
+    /// The sidebar button the window's bar shows: the desktop's own slot, or —
+    /// while the app's header row is the bar — the shell's toggle in that row.
+    /// `None` while the bar shows neither.
+    fn bar_sidebar_button(&mut self) -> Option<BarSidebarButton> {
+        let width = f64::from(self.viewport.0);
+        let bar = self.painted_window_bar(width);
+        let row = bar.toolbar_row();
+        if let Some(shown) = row.toolbar().and_then(|toolbar| toolbar.sidebar) {
+            let spot = row.slots().sidebar;
+            return (spot.area() > 0.0).then_some(BarSidebarButton {
+                spot,
+                on_the_row: true,
+                shown,
+            });
+        }
+        let (spot, name) = self.row_button(SIDEBAR_TOGGLE)?;
+        let hide = crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar");
+        Some(BarSidebarButton {
+            spot,
+            on_the_row: false,
+            shown: name.as_deref() == Some(hide.as_str()),
+        })
+    }
+
+    /// The button the app's header row holds for `id`, while that row is the
+    /// window's bar ([`FrameHarness::row_holds_bar`]): where it stands in the
+    /// window, and the words assistive technology reads for it. `None` while the
+    /// row is not the bar, or holds no such button.
+    fn row_button(&self, id: &str) -> Option<(Rect, Option<String>)> {
+        /// The button's place and its words, at any depth under `node`.
+        fn find(node: &super::InspectionNode, id: &str) -> Option<(Rect, Option<String>)> {
+            if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+                let [x, y, width, height] = node.rect;
+                return Some((
+                    Rect::new(x, y, x + width, y + height),
+                    node.semantics
+                        .as_ref()
+                        .and_then(|semantics| semantics.name.clone()),
+                ));
+            }
+            node.children.iter().find_map(|child| find(child, id))
+        }
+        if !self.row_holds_bar() {
+            return None;
+        }
+        find(&self.inspection().root, id)
+    }
+
+    /// Click the sidebar button where the window's bar, as the desktop or the
+    /// app's own row draws it across the window, puts it, and hand the app what
+    /// the press runs ([`Self::press_window_slot`]).
     ///
     /// # Errors
     /// When the bar shows no sidebar button, or the click runs nothing.
     pub fn click_window_sidebar_button(&mut self) -> Result<(), String> {
         let width = f64::from(self.viewport.0);
-        let mut bar = self.painted_window_bar(width);
-        let rect = bar.toolbar_row().slots().sidebar;
-        if rect.area() <= 0.0 {
+        let Some(button) = self.bar_sidebar_button() else {
             return Err(format!("the bar shows no sidebar button at {width} px"));
+        };
+        let at = button.spot.center();
+        if !button.on_the_row {
+            // The app's own row: the button takes the press as any widget does.
+            self.click_at(at.x, at.y);
+            return Ok(());
         }
-        let at = rect.center();
+        let mut bar = self.painted_window_bar(width);
         let row = bar.toolbar_row_mut();
         if !(row.press(at) && row.release(at)) {
             return Err(format!("the sidebar button took no press at {at:?}"));
@@ -56,20 +133,9 @@ impl FrameHarness {
     /// window's shell holds and what its frame lays out.
     ///
     /// # Errors
-    /// While the bar has neither a sidebar button nor the way back, or no
-    /// shell with a sidebar is laid out.
+    /// While no shell with a sidebar is laid out under the bar.
     pub fn window_sidebar_shown(&mut self) -> Result<SidebarShown, String> {
-        let width = f64::from(self.viewport.0);
-        let toolbar = self
-            .painted_window_bar(width)
-            .toolbar_row()
-            .toolbar()
-            .cloned()
-            .ok_or("the window bar shows none of the app's slots")?;
-        let back = toolbar
-            .leading
-            .iter()
-            .any(|action| action.id == crate::widget::WINDOW_BACK);
+        let button = self.bar_sidebar_button();
         let shell = window_sidebar_shell(self.root.as_ref()).ok_or_else(|| {
             format!(
                 "no nav shell with a sidebar is laid out under the bar: {}",
@@ -77,20 +143,18 @@ impl FrameHarness {
             )
         })?;
         let geometry = shell.geometry();
+        let front_is_sidebar = shell.front_pane() == NavPane::Sidebar;
         // A narrow window's bar puts the button aside for the way back: on a screen in front of
         // the sidebar's own, which that bar shows hidden, and on the sidebar's own screen, whose
         // way out is Back to the screen the button covered, which shows it.
-        let bar = match toolbar.sidebar {
-            Some(shown) => shown,
-            None if back => {
-                geometry.sidebar == SidebarPlacement::Screen
-                    && shell.front_pane() == NavPane::Sidebar
-            }
-            None => {
-                return Err(format!(
-                    "the window bar shows no sidebar button: {toolbar:?}"
-                ));
-            }
+        let bar = match button {
+            Some(button) => button.shown,
+            // The bar shows the way back in the button's place: hidden on a screen in front of
+            // the sidebar's own, and shown on the sidebar's own screen, which is what Back there
+            // returns to. A shell whose own row is the bar may hold neither on that screen: the
+            // person leaves it by choosing what it lists, and nothing on the row says where the
+            // sidebar stands but the row the shell laid out.
+            None => geometry.sidebar == SidebarPlacement::Screen && front_is_sidebar,
         };
         let frame = match geometry.sidebar {
             SidebarPlacement::None => false,
@@ -122,9 +186,29 @@ impl FrameHarness {
     ) -> Result<Vec<SidebarShown>, String> {
         let _landed = crate::motion::testing::settled();
         self.relayout_until_still()?;
-        self.reach_the_bars_sidebar_button()?;
         let read = |harness: &mut Self| harness.window_sidebar_shown();
         let mut states = vec![read(self)?];
+        if !self.window_bar_controls().0 {
+            self.reach_the_bars_sidebar_button()?;
+            self.relayout_until_still()?;
+            let reached = read(self)?;
+            if !self.window_bar_controls().0 && reached.agreed() != Some(true) {
+                return Err(format!(
+                    "the screen the bar's way back leads to shows no sidebar button at {} px and \
+                     is not the sidebar's own; the shell now: {}",
+                    self.viewport.0,
+                    self.sidebar_diagnosis()
+                ));
+            }
+            // Getting to the screen that holds the button is navigation, not a click: it
+            // counts where it showed the sidebar (the screen it led to is the sidebar's
+            // own), and otherwise stands where the first state would.
+            if reached.agreed() == states[0].agreed() {
+                states[0] = reached;
+            } else {
+                states.push(reached);
+            }
+        }
         for _ in 0..presses {
             if !self.window_bar_controls().0 {
                 break;
@@ -137,9 +221,17 @@ impl FrameHarness {
         Ok(states)
     }
 
-    /// Whether the window's bar shows its sidebar button, and whether it
-    /// shows its way back to the screen that holds one.
+    /// Whether the window's bar shows its sidebar button, and — where it shows
+    /// none — whether it shows its way back to the screen that holds one.
     fn window_bar_controls(&mut self) -> (bool, bool) {
+        let button = self.bar_sidebar_button().is_some();
+        (button, !button && self.window_bar_shows_back())
+    }
+
+    /// Whether the window's bar shows the way back to the screen that holds
+    /// its sidebar button: the desktop's own slot, or — while the app's header
+    /// row is the bar — the shell's Back button in that row.
+    fn window_bar_shows_back(&mut self) -> bool {
         let width = f64::from(self.viewport.0);
         let toolbar = self
             .painted_window_bar(width)
@@ -147,16 +239,46 @@ impl FrameHarness {
             .toolbar()
             .cloned()
             .unwrap_or_default();
-        let back = toolbar
+        toolbar
             .leading
             .iter()
-            .any(|action| action.id == crate::widget::WINDOW_BACK);
-        (toolbar.sidebar.is_some(), back)
+            .any(|action| action.id == crate::widget::WINDOW_BACK)
+            || self.row_button(BACK_BUTTON).is_some()
     }
 
-    /// Get to the screen whose bar holds the sidebar button: a narrow window
-    /// puts the button aside for the way back on a screen that went
-    /// somewhere deeper, and the sidebar's own screen holds it.
+    /// Press the window bar's way back.
+    ///
+    /// # Errors
+    /// When the bar shows no way back.
+    fn press_the_bars_back(&mut self) -> Result<(), String> {
+        let width = f64::from(self.viewport.0);
+        let toolbar = self
+            .painted_window_bar(width)
+            .toolbar_row()
+            .toolbar()
+            .cloned()
+            .unwrap_or_default();
+        if toolbar
+            .leading
+            .iter()
+            .any(|action| action.id == crate::widget::WINDOW_BACK)
+        {
+            self.press_window_slot(crate::window_toolbar::ToolbarEvent::Back);
+            return Ok(());
+        }
+        // The app's own row: its Back button takes the press as any widget does.
+        let (spot, _) = self
+            .row_button(BACK_BUTTON)
+            .ok_or_else(|| format!("the bar shows no way back at {width} px"))?;
+        let at = spot.center();
+        self.click_at(at.x, at.y);
+        Ok(())
+    }
+
+    /// Take the bar's way back: a narrow window puts its sidebar button aside
+    /// for it on a screen that went somewhere deeper, and the screen it leads
+    /// to holds the button — or is the sidebar's own, in an app whose header
+    /// row is the bar.
     ///
     /// # Errors
     /// When the bar shows no sidebar button and no way back to the screen
@@ -174,15 +296,7 @@ impl FrameHarness {
                 self.sidebar_diagnosis()
             ));
         }
-        self.press_window_slot(crate::window_toolbar::ToolbarEvent::Back);
-        self.relayout_until_still()?;
-        if !self.window_bar_controls().0 {
-            return Err(format!(
-                "the screen the bar's way back leads to shows no sidebar button at {width} px; \
-                 the shell now: {}",
-                self.sidebar_diagnosis()
-            ));
-        }
+        self.press_the_bars_back()?;
         Ok(())
     }
 
