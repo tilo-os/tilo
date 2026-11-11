@@ -6191,6 +6191,13 @@ impl FrameHarness {
     pub fn send_host_event(&mut self, event: &WindowEvent) {
         let _wake = self.enter_wake();
         crate::motion::note_input(event);
+        // A widget can replace children after the last frame admitted the
+        // layout maps (while it drew, or answering the host between frames):
+        // admit the composition it left before tooltips, dispatch or the
+        // pointer's shape read a widget through them.
+        if self.composition_changed() {
+            self.readmit_replaced_composition();
+        }
         self.track_tooltip(event);
         // Focus rings show for keyboard focus only: a click hides them.
         crate::focus_visible::note(event);
