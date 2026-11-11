@@ -22,14 +22,17 @@
 //!   host device) and is handed to the device holding the window, stamped
 //!   with the caller, so it runs there as the caller's: History records the
 //!   agent's run for the person it acts for. The relay runs none of it.
-//! - **Ask** ([`HostedBrowsers::confirm`]): a page action asks the person
-//!   first, and nobody stands in front of a window in a VM to ask. The
-//!   window refuses such an action for want of their answer; this host puts
-//!   the question to their approving devices, as it does for its own agents'
-//!   actions, and answers with their confirmation of that one invocation,
-//!   signed by its own device key. The window that certified it accepts that
-//!   answer for its own person and runs the action without asking again;
-//!   nothing else is a confirmation there.
+//! - **Ask** ([`HostedBrowsers::ask`]): a page action asks the person first,
+//!   and nobody stands in front of a window in a VM to ask. The window refuses
+//!   such an action for want of their answer; this host puts the question to
+//!   their approving devices itself, as it does for its own agents' actions,
+//!   and answers its caller that the invocation waits. Allowed, the same
+//!   invocation goes to the window again carrying their confirmation —
+//!   signed by this host's own device key, for that one invocation — which
+//!   the window that certified it accepts for its own person, running it
+//!   without asking again; nothing else is a confirmation there. Denied or
+//!   unanswered, it ends refused. A caller needs nothing beyond asking and
+//!   following what it asked for.
 //! - **Meter** ([`BrowserMeter`]): every page action is admitted for the
 //!   workspace's account before it is handed over, and counted once the
 //!   window answers that it ran. A refused one is answered with the host's
@@ -52,20 +55,24 @@
 //! and the certificate's expiry bounds whatever is missed.
 
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::certification::CertificationProtocol;
 use ed25519_dalek::SigningKey;
 use iroh::EndpointAddr;
 use tilo_actions::remote::host_account::{NextStep, NextStepKind, Reason, Refusal};
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Confirmation,
-    ConfirmedInvocation, InvokeRequest, Pending, RemoteActionMessage, RemoteActionTarget,
-    argument_digest, pending, provider_workspace,
+    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, Completer,
+    Confirmation, ConfirmedInvocation, InvocationReceipt, InvocationState, InvokeRequest, Pending,
+    ReceiptStatus, RemoteActionMessage, RemoteActionTarget, argument_digest, pending,
+    provider_workspace,
 };
 use tilo_actions::selection::logical_resource_id;
+use tilo_actions::{ActionFailure, InvocationUpdate};
 use tilo_lock::MutexRecover as _;
-use tilo_relay_protocol::certify::PendingConfirmation;
+use tilo_relay_protocol::certify::{ConfirmationAnswer, PendingConfirmation};
 use tilo_user_identity::{
     Answered, DeviceCapabilities, DeviceCert, HostWitness, Parties, sign_device_cert,
 };
@@ -86,7 +93,11 @@ pub const RECONNECT: Duration = Duration::from_secs(30);
 /// it: their confirmation of that invocation, not a standing grant.
 pub const WITNESS_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
 /// How long a page action's question waits for the person.
-const ANSWER_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
+pub const ANSWER_WAIT: Duration = Duration::from_secs(2 * 60);
+/// `answer_wait` in nanoseconds.
+fn answer_wait_ns(answer_wait: Duration) -> u64 {
+    u64::try_from(answer_wait.as_nanos()).unwrap_or(u64::MAX)
+}
 /// The label the workspace shows the session's device under.
 pub const DEVICE_LABEL: &str = "Browser";
 /// The address the sessions in the sessions reach this host at, written
@@ -209,6 +220,9 @@ pub struct Authority {
     /// Where the person is asked about an action their agent made: the
     /// channel their approving devices answer on.
     pub certification: crate::certification::CertificationProtocol,
+    /// Where a page action the person allowed is handed to the window that
+    /// refused it, as the caller asked it: the host's own delivery.
+    pub hand: crate::app_serving::Hand,
 }
 
 /// One workspace's window, while its session runs.
@@ -221,15 +235,47 @@ struct Open {
 }
 
 /// A page action handed to a window, as the host handed it there: whose it
-/// is, which window has it, and what the window said of it.
+/// is, which window has it, and how far its answer has come.
 struct Handed {
-    caller: [u8; 32],
+    /// The caller, as the window hears it and the person's question names it.
+    caller: Caller,
     window: [u8; 32],
     /// The workspace, by its UUID: whose account it is counted on.
     workspace: String,
-    /// The window refused it for want of the person's confirmation: the
-    /// action asks first, so nothing more is handed over until they answer.
-    asks: bool,
+    /// The action as the caller asked it: what the person's question shows,
+    /// and what runs once they allow it.
+    request: InvokeRequest,
+    stage: Stage,
+    /// Callers asking how it went, waiting for it to move, by the number
+    /// that finds them again once their wait is over.
+    waiting: Vec<(u64, Completer<RemoteActionMessage>)>,
+}
+
+/// How far a handed page action has come.
+enum Stage {
+    /// With the window, which answers the caller itself — as it answers a
+    /// caller asking after it.
+    Running,
+    /// The window refused it for want of the person's word: this host asks
+    /// them, and the caller waits for their answer.
+    Asking,
+    /// The person allowed it: with the window again, carrying their answer.
+    Allowed,
+    /// It is over: the update a caller asking after it is answered with.
+    Over(InvocationUpdate),
+}
+
+impl Stage {
+    /// The state an invocation in this stage is answered with when a caller
+    /// asks how it went.
+    fn state(&self, invocation: tilo_actions::InvocationId) -> InvocationUpdate {
+        match self {
+            Self::Running | Self::Asking | Self::Allowed => {
+                InvocationUpdate::Accepted { invocation }
+            }
+            Self::Over(update) => update.clone(),
+        }
+    }
 }
 
 /// How many handed page actions are remembered while their windows answer:
@@ -248,10 +294,15 @@ pub struct HostedBrowsers {
     authority: Mutex<Option<Authority>>,
     /// The page actions handed to a window and not yet answered, by
     /// invocation: what a count is owed for once it ran, and what asks first.
-    handed: Mutex<HashMap<tilo_actions::InvocationId, Handed>>,
+    handed: Arc<Mutex<HashMap<tilo_actions::InvocationId, Handed>>>,
+    /// The number naming the next caller waiting for an invocation to move.
+    next_waiter: AtomicU64,
     /// How long an environment device that disconnected has to come back
     /// before its environment stops ([`RECONNECT`]).
     reconnect: Duration,
+    /// How long a page action's question waits for the person
+    /// ([`ANSWER_WAIT`]).
+    answer_wait: Duration,
 }
 
 #[allow(
@@ -272,8 +323,10 @@ impl HostedBrowsers {
             account,
             open: Mutex::default(),
             authority: Mutex::default(),
-            handed: Mutex::default(),
+            handed: Arc::default(),
+            next_waiter: AtomicU64::new(0),
             reconnect: RECONNECT,
+            answer_wait: ANSWER_WAIT,
         }
     }
 
@@ -282,6 +335,14 @@ impl HostedBrowsers {
     #[must_use]
     pub const fn with_reconnect(mut self, reconnect: Duration) -> Self {
         self.reconnect = reconnect;
+        self
+    }
+
+    /// Wait `answer_wait` for the person's answer to a page action's question
+    /// before it is refused ([`ANSWER_WAIT`]).
+    #[must_use]
+    pub const fn with_answer_wait(mut self, answer_wait: Duration) -> Self {
+        self.answer_wait = answer_wait;
         self
     }
 
@@ -346,23 +407,23 @@ impl HostedBrowsers {
     }
 
     /// Where `workspace_id`'s page action goes: to the device holding its
-    /// window, once the meter admits it for the workspace's account; refused
-    /// with the host's typed refusal otherwise. `None` for an action that is
-    /// not a page action of that window, which this host serves itself.
+    /// window, once the meter admits it for the workspace's account; answered
+    /// here with the host's typed refusal otherwise. `None` for an action
+    /// that is not a page action of that window, which this host serves
+    /// itself.
     ///
-    /// An action the window refused for want of the person's confirmation is
-    /// handed over again only with their answer
-    /// ([`Self::confirm`]): without one it is refused
-    /// [`ActionHostError::ConfirmationRequired`], so the caller knows to ask.
+    /// A caller asking how one of those went is answered here too
+    /// ([`Self::observe`]): by the window while it runs there, and by this
+    /// host while the person is being asked and once it is over.
     #[must_use]
     pub fn route(
         &self,
         workspace_id: u64,
-        caller: [u8; 32],
+        caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
         let RemoteActionMessage::Invoke(request) = message else {
-            return None;
+            return self.asked_after(caller, message);
         };
         let (provider, window) = {
             let open = self.open.lock_recover();
@@ -372,167 +433,292 @@ impl HostedBrowsers {
         if !page_action(&request.target, &provider) {
             return None;
         }
-        let witnessed = match &request.confirmation {
+        let device = *caller.device_public_key()?;
+        let permitted = match &request.confirmation {
+            None => true,
             Some(Confirmation::Witnessed(token)) => {
-                self.witnessed(token, workspace_id, caller, request)
+                self.witnessed(token, workspace_id, device, request)
             }
-            _ => false,
+            Some(_) => false,
         };
-        if request.confirmation.is_some() && !witnessed {
-            return Some(crate::app_serving::Routing::Refused(
-                ActionHostError::NotPermitted,
-            ));
+        if !permitted {
+            return answered_with(message, ActionHostError::NotPermitted);
         }
-        if !witnessed {
-            let handed = self.handed.lock_recover();
-            if handed.get(&request.invocation).is_some_and(|handed| {
-                handed.asks && handed.caller == caller && handed.window == window
-            }) {
-                return Some(crate::app_serving::Routing::Refused(
-                    ActionHostError::ConfirmationRequired,
-                ));
-            }
+        // A page action the person is already being asked about waits for
+        // their answer: a caller that asks again is told so, not handed over
+        // twice.
+        if request.confirmation.is_none() && self.waits_for_the_person(request, device) {
+            return Some(waiting(request.invocation));
         }
-        Some(match self.meter.admit(&self.account) {
+        match self.meter.admit(&self.account) {
             Ok(()) => {
-                self.hand_over(workspace_id, caller, window, request.invocation);
-                crate::app_serving::Routing::Device(window)
+                self.hand_over(workspace_id, caller.clone(), window, request);
+                Some(crate::app_serving::Routing::Device(window))
             }
-            Err(refusal) => crate::app_serving::Routing::Refused(ActionHostError::Refused {
-                reason: refusal.to_reason(),
-            }),
-        })
+            Err(refusal) => answered_with(
+                message,
+                ActionHostError::Refused {
+                    reason: refusal.to_reason(),
+                },
+            ),
+        }
     }
 
-    /// The window's answer to a page action this host handed it: the action
-    /// ran (`Completed`), so it is counted; it asked first
-    /// (`ConfirmationRequired`), so it is remembered as one that does, and
-    /// counted when it runs after the person answered; anything else ran
-    /// nothing and is counted not at all.
-    pub fn relayed(&self, workspace_id: u64, from: [u8; 32], message: &RemoteActionMessage) {
+    /// The window's answer to a page action this host handed it: it ran
+    /// (`Completed`), so it is counted — once, when it ran — and its caller is
+    /// answered with the page's receipt; the window asks the person first
+    /// (`ConfirmationRequired`), so this host puts the question to them and
+    /// answers the caller that its invocation waits, rather than refused.
+    /// Anything else ran nothing and is counted not at all.
+    pub fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &RemoteActionMessage,
+    ) -> Option<RemoteActionMessage> {
         let RemoteActionMessage::Receipt(receipt) = message else {
-            return;
+            return None;
         };
         if !self.open.lock_recover().contains_key(&workspace_id) {
-            return;
+            return None;
         }
         let mut handed = self.handed.lock_recover();
-        let Some(entry) = handed.get(&receipt.invocation) else {
-            return;
-        };
+        let entry = handed.get_mut(&receipt.invocation)?;
         if entry.window != from {
-            return;
+            return None;
         }
         match &receipt.status {
-            tilo_actions::remote::ReceiptStatus::Completed { .. } => {
-                let counted = handed.remove(&receipt.invocation);
+            ReceiptStatus::Completed { .. } => {
+                // The action ran where the window says it did, and nowhere
+                // else: a count is owed once.
+                let allowed = matches!(entry.stage, Stage::Allowed);
+                let ran = allowed || matches!(entry.stage, Stage::Running);
+                let workspace = entry.workspace.clone();
+                answered(entry, &receipt.status);
+                let update = entry.stage.state(receipt.invocation);
                 drop(handed);
-                if let Some(counted) = counted {
-                    self.meter.record(&counted.workspace, &self.account);
+                if ran {
+                    self.meter.record(&workspace, &self.account);
                 }
+                // The caller's own invocation was answered with "accepted,
+                // it waits": what ran is told to it as the state it follows,
+                // not as a second receipt for the same invocation.
+                allowed.then(|| state_message(receipt.invocation, update))
             }
-            tilo_actions::remote::ReceiptStatus::Rejected {
+            ReceiptStatus::Rejected {
                 error: ActionHostError::ConfirmationRequired,
-            } => {
-                if let Some(entry) = handed.get_mut(&receipt.invocation) {
-                    entry.asks = true;
-                }
+            } if !matches!(entry.stage, Stage::Over(_)) => {
+                entry.stage = Stage::Asking;
+                let caller = entry.caller.clone();
+                let request = entry.request.clone();
+                drop(handed);
+                self.ask(workspace_id, &caller, &request);
+                Some(waiting_receipt(request.invocation))
             }
             // Running, or to be followed: the answer is still to come, and
             // what it settles is counted then.
-            tilo_actions::remote::ReceiptStatus::Accepted => {}
-            tilo_actions::remote::ReceiptStatus::Rejected { .. }
-            | tilo_actions::remote::ReceiptStatus::Failed { .. }
-            | tilo_actions::remote::ReceiptStatus::Cancelled { .. } => {
-                handed.remove(&receipt.invocation);
+            ReceiptStatus::Accepted => None,
+            ReceiptStatus::Rejected { .. }
+            | ReceiptStatus::Failed { .. }
+            | ReceiptStatus::Cancelled { .. } => {
+                answered(entry, &receipt.status);
+                None
             }
         }
     }
 
-    /// Put `request` — a page action of `workspace_id`'s window — to the
-    /// person on their approving devices and answer with their confirmation
-    /// for that one invocation, signed by this host's own device key: the
-    /// witness the window it certified accepts, and no other.
-    ///
-    /// # Errors
-    ///
-    /// [`ActionHostError::UnknownAction`] for anything that is not a page
-    /// action of a window up here, [`ActionHostError::NotPermitted`] when the
-    /// person declined, and [`ActionHostError::ConfirmationRequired`] when
-    /// nobody answered.
-    pub fn confirm(
-        &self,
-        workspace_id: u64,
-        caller: &tilo_actions::remote::Caller,
-        request: &InvokeRequest,
-    ) -> Pending<Result<ConfirmedInvocation, ActionHostError>> {
-        let (window, certification, person, key) = {
-            let open = self.open.lock_recover();
-            let Some(up) = open.get(&workspace_id) else {
-                return Pending::ready(Err(ActionHostError::UnknownAction));
-            };
-            if !page_action(&request.target, &up.window.provider) {
-                return Pending::ready(Err(ActionHostError::UnknownAction));
-            }
-            let authority = self.authority.lock_recover();
-            let Some(authority) = authority.as_ref() else {
-                return Pending::ready(Err(ActionHostError::UnknownAction));
-            };
-            (
-                up.window.device,
-                authority.certification.clone(),
-                authority.user_public_key,
-                authority.key.clone(),
-            )
+    /// Ask the person `caller` acts for whether `request` — a page action of
+    /// `workspace_id`'s window — may run, once. Their answer runs it as the
+    /// caller asked it, carrying the witness the window accepts; a denial, or
+    /// a question nobody answers, ends the invocation refused and nothing
+    /// runs.
+    fn ask(&self, workspace_id: u64, caller: &Caller, request: &InvokeRequest) {
+        let Some(window) = self.window_of(workspace_id, request) else {
+            return;
         };
-        let Some(&caller_device) = caller.device_public_key() else {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
+        let (Some(&person), Some(&device)) = (caller.user_public_key(), caller.device_public_key())
+        else {
+            return;
         };
-        if caller.user_public_key() != Some(&person) {
-            return Pending::ready(Err(ActionHostError::NotPermitted));
-        }
-        let workspace = caller.workspace().unwrap_or_default().to_owned();
-        let question = question(&workspace, caller, request);
-        let (completer, answer) = pending();
-        let request = request.clone();
+        let (Some((certification, key)), Some(hand)) = (self.certifying(), self.hand()) else {
+            return;
+        };
+        let asked = Asked {
+            person,
+            window,
+            device,
+            request: request.clone(),
+            until_ns: tilo_clock::unix_now_ns().saturating_add(answer_wait_ns(self.answer_wait)),
+        };
+        let question = asked.question(caller);
+        let invocation = request.invocation;
+        let mut run = request.clone();
+        let handed = Arc::clone(&self.handed);
         tokio::runtime::Handle::current().spawn(async move {
-            let witnessed = match certification.confirm(question).await {
-                // The question shows no draft, so nothing in it is changed.
-                Ok(tilo_relay_protocol::certify::ConfirmationAnswer::AllowOnce) => {
-                    let now = tilo_clock::unix_now_ns();
-                    let mut witness = HostWitness::unsigned(
-                        Parties {
-                            person,
-                            host: key.verifying_key().to_bytes(),
-                            caller: caller_device,
-                            target: window,
-                        },
-                        Answered {
-                            invocation: *request.invocation.0.as_bytes(),
-                            provider: request.target.provider.clone(),
-                            resource: request.target.address.resource.clone(),
-                            action: request.target.address.action.clone(),
-                            argument: argument_digest(request.argument.to_slot().as_deref()),
-                        },
-                        (now, now.saturating_add(WITNESS_LIFETIME)),
-                    );
-                    match witness.sign(&key) {
-                        Ok(()) => Ok(ConfirmedInvocation::unchanged(Confirmation::Witnessed(
-                            witness.encode(),
-                        ))),
-                        Err(error) => Err(ActionHostError::Unavailable {
-                            reason: format!("the host could not answer for the person: {error}"),
-                        }),
-                    }
-                }
-                Ok(tilo_relay_protocol::certify::ConfirmationAnswer::Deny) => {
-                    Err(ActionHostError::NotPermitted)
-                }
-                Err(_) => Err(ActionHostError::ConfirmationRequired),
+            let confirmed =
+                asked.confirmed(certification.confirm_for(person, question).await, &key);
+            let mut handed = handed.lock_recover();
+            let Some(entry) = handed.get_mut(&invocation) else {
+                // The caller stopped waiting while the person decided: the
+                // action runs not at all.
+                return;
             };
-            completer.complete(witnessed);
+            match confirmed {
+                Ok(confirmed) => {
+                    confirmed.apply(&mut run);
+                    entry.stage = Stage::Allowed;
+                    drop(handed);
+                    // The invocation runs once, as the caller asked it, with
+                    // the person's answer: the window that refused it accepts
+                    // this one, and answers the caller itself.
+                    hand.hand(
+                        workspace_id,
+                        (device, person),
+                        window,
+                        RemoteActionMessage::Invoke(run),
+                    );
+                }
+                Err(error) => over(entry, update_of_error(invocation, &error)),
+            }
         });
-        answer
+    }
+
+    /// Whether `request` of `device`'s is one this host is already asking the
+    /// person about, or has handed over with their answer.
+    fn waits_for_the_person(&self, request: &InvokeRequest, device: [u8; 32]) -> bool {
+        self.handed
+            .lock_recover()
+            .get(&request.invocation)
+            .is_some_and(|entry| {
+                entry.caller.device_public_key() == Some(&device)
+                    && matches!(entry.stage, Stage::Asking | Stage::Allowed)
+            })
+    }
+
+    /// Answer a caller asking how one of a window's invocations went
+    /// ([`RemoteActionMessage::Observe`]) or stopping one
+    /// ([`RemoteActionMessage::Cancel`]).
+    fn asked_after(
+        &self,
+        caller: &Caller,
+        message: &RemoteActionMessage,
+    ) -> Option<crate::app_serving::Routing> {
+        match message {
+            RemoteActionMessage::Observe {
+                invocation,
+                wait_ms,
+                ..
+            } => self.observe(caller, *invocation, *wait_ms),
+            RemoteActionMessage::Cancel { invocation } => self.cancel(caller, *invocation),
+            _ => None,
+        }
+    }
+
+    /// How `invocation` of `caller`'s went: its state now, or — for a caller
+    /// that waits — as soon as it moves or its wait is over. `None` for one
+    /// this host does not hold, which is answered as it always was.
+    fn observe(
+        &self,
+        caller: &Caller,
+        invocation: tilo_actions::InvocationId,
+        wait_ms: Option<u32>,
+    ) -> Option<crate::app_serving::Routing> {
+        let device = *caller.device_public_key()?;
+        let mut handed = self.handed.lock_recover();
+        let entry = handed.get_mut(&invocation)?;
+        if entry.caller.device_public_key() != Some(&device) {
+            return None;
+        }
+        match &entry.stage {
+            // The window holds it, and answers whoever asks after it.
+            Stage::Running => return Some(crate::app_serving::Routing::Device(entry.window)),
+            Stage::Over(update) => {
+                return Some(state_routing(invocation, update.clone()));
+            }
+            Stage::Asking | Stage::Allowed => {}
+        }
+        let wait = Duration::from_millis(u64::from(wait_ms.unwrap_or_default()));
+        if wait.is_zero() {
+            return Some(state_routing(invocation, entry.stage.state(invocation)));
+        }
+        let token = self.next_waiter.fetch_add(1, Ordering::Relaxed);
+        let (completer, answer) = pending();
+        entry.waiting.push((token, completer));
+        let handed = Arc::clone(&self.handed);
+        tokio::runtime::Handle::current().spawn(async move {
+            tokio::time::sleep(wait).await;
+            let found = {
+                let mut handed = handed.lock_recover();
+                handed.get_mut(&invocation).and_then(|entry| {
+                    let at = entry
+                        .waiting
+                        .iter()
+                        .position(|(found, _)| *found == token)?;
+                    let (_, waiting) = entry.waiting.remove(at);
+                    Some((waiting, entry.stage.state(invocation)))
+                })
+            };
+            if let Some((waiting, state)) = found {
+                waiting.complete(state_message(invocation, state));
+            }
+        });
+        Some(crate::app_serving::Routing::Answer(answer))
+    }
+
+    /// Stop `invocation` of `caller`'s: while the person is asked it never
+    /// runs, and while the window has it the window stops it.
+    fn cancel(
+        &self,
+        caller: &Caller,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<crate::app_serving::Routing> {
+        let device = *caller.device_public_key()?;
+        let mut handed = self.handed.lock_recover();
+        let entry = handed.get_mut(&invocation)?;
+        if entry.caller.device_public_key() != Some(&device) {
+            return None;
+        }
+        let stopped = match &entry.stage {
+            Stage::Running | Stage::Allowed => {
+                return Some(crate::app_serving::Routing::Device(entry.window));
+            }
+            Stage::Asking => Ok(()),
+            Stage::Over(_) => Err(ActionHostError::NotCancellable {
+                reason: "it is over".to_owned(),
+            }),
+        };
+        if stopped.is_ok() {
+            handed.remove(&invocation);
+        }
+        Some(crate::app_serving::Routing::Answer(Pending::ready(
+            RemoteActionMessage::CancelResponse {
+                invocation,
+                result: stopped,
+            },
+        )))
+    }
+
+    /// The window `workspace_id`'s page action `request` is about: `None` for
+    /// anything that is not a page action of a window up here.
+    fn window_of(&self, workspace_id: u64, request: &InvokeRequest) -> Option<[u8; 32]> {
+        let open = self.open.lock_recover();
+        let up = open.get(&workspace_id)?;
+        page_action(&request.target, &up.window.provider).then_some(up.window.device)
+    }
+
+    /// Where the person is asked about a page action, and the key their answer
+    /// is witnessed with: this host's own, once it runs.
+    fn certifying(&self) -> Option<(CertificationProtocol, SigningKey)> {
+        let authority = self.authority.lock_recover();
+        let authority = authority.as_ref()?;
+        Some((authority.certification.clone(), authority.key.clone()))
+    }
+
+    /// Where a frame this host hands over after its own answer goes: the
+    /// relay's own delivery to the device holding the window.
+    fn hand(&self) -> Option<crate::app_serving::Hand> {
+        let authority = self.authority.lock_recover();
+        Some(authority.as_ref()?.hand.clone())
     }
 
     /// Whether `token` is this host's answer for exactly this page action:
@@ -570,14 +756,14 @@ impl HostedBrowsers {
             && !self.handed.lock_recover().is_empty()
     }
 
-    /// Remember that `invocation` of `caller`'s is with the window, for what
-    /// it answers to be counted by.
+    /// Remember that `invocation` of `caller`'s is with the window: what its
+    /// answer is counted by, and what its caller is told about.
     fn hand_over(
         &self,
         workspace_id: u64,
-        caller: [u8; 32],
+        caller: Caller,
         window: [u8; 32],
-        invocation: tilo_actions::InvocationId,
+        request: &InvokeRequest,
     ) {
         let workspace = self
             .open
@@ -586,16 +772,18 @@ impl HostedBrowsers {
             .map(|up| up.workspace.clone())
             .unwrap_or_default();
         let mut handed = self.handed.lock_recover();
-        if handed.len() >= HANDED && !handed.contains_key(&invocation) {
+        if handed.len() >= HANDED && !handed.contains_key(&request.invocation) {
             handed.clear();
         }
         handed.insert(
-            invocation,
+            request.invocation,
             Handed {
                 caller,
                 window,
                 workspace,
-                asks: false,
+                request: request.clone(),
+                stage: Stage::Running,
+                waiting: Vec::new(),
             },
         );
     }
@@ -885,6 +1073,172 @@ pub fn page_action(target: &RemoteActionTarget, provider: &str) -> bool {
     target.provider == provider && logical_resource_id(&target.address.resource) == PAGE_RESOURCE
 }
 
+/// One page action the person is asked about, and what their answer is
+/// turned into for the window that refused it.
+struct Asked {
+    /// The person asked: their approving devices answer it.
+    person: [u8; 32],
+    /// The window's device, which their answer names as its target.
+    window: [u8; 32],
+    /// The caller's device, which it names as the one that asked.
+    device: [u8; 32],
+    /// The action as the caller asked it: what the question shows, and what
+    /// their answer is good for running.
+    request: InvokeRequest,
+    /// When the question stops waiting for an answer.
+    until_ns: u64,
+}
+
+impl Asked {
+    /// The question this puts to the person, which they answer once.
+    fn question(&self, caller: &Caller) -> PendingConfirmation {
+        question(
+            caller.workspace().unwrap_or_default(),
+            caller,
+            &self.request,
+            self.until_ns,
+        )
+    }
+
+    /// `answer` as this invocation's confirmation, or the refusal it amounts
+    /// to: the witness `key` signs, for exactly this action and these
+    /// arguments, naming this caller and this window.
+    fn confirmed(
+        &self,
+        answer: Result<ConfirmationAnswer, String>,
+        key: &SigningKey,
+    ) -> Result<ConfirmedInvocation, ActionHostError> {
+        match answer {
+            // The question shows no draft, so nothing in it is changed.
+            Ok(ConfirmationAnswer::AllowOnce) => {
+                let now = tilo_clock::unix_now_ns();
+                let mut witness = HostWitness::unsigned(
+                    Parties {
+                        person: self.person,
+                        host: key.verifying_key().to_bytes(),
+                        caller: self.device,
+                        target: self.window,
+                    },
+                    Answered {
+                        invocation: *self.request.invocation.0.as_bytes(),
+                        provider: self.request.target.provider.clone(),
+                        resource: self.request.target.address.resource.clone(),
+                        action: self.request.target.address.action.clone(),
+                        argument: argument_digest(self.request.argument.to_slot().as_deref()),
+                    },
+                    (now, now.saturating_add(WITNESS_LIFETIME)),
+                );
+                witness
+                    .sign(key)
+                    .map(|()| {
+                        ConfirmedInvocation::unchanged(Confirmation::Witnessed(witness.encode()))
+                    })
+                    .map_err(|error| ActionHostError::Unavailable {
+                        reason: format!("the host could not answer for the person: {error}"),
+                    })
+            }
+            Ok(ConfirmationAnswer::Deny) => Err(ActionHostError::NotPermitted),
+            Err(_) => Err(ActionHostError::ConfirmationRequired),
+        }
+    }
+}
+
+/// `invocation` accepted, and to be followed: what a caller is answered with
+/// while the person is asked about it.
+fn waiting_receipt(invocation: tilo_actions::InvocationId) -> RemoteActionMessage {
+    RemoteActionMessage::Receipt(InvocationReceipt {
+        invocation,
+        status: ReceiptStatus::Accepted,
+    })
+}
+
+/// [`waiting_receipt`], as where a caller's frame goes.
+fn waiting(invocation: tilo_actions::InvocationId) -> crate::app_serving::Routing {
+    crate::app_serving::Routing::Answer(Pending::ready(waiting_receipt(invocation)))
+}
+
+/// `update` as the answer a caller asking after `invocation` receives.
+fn state_message(
+    invocation: tilo_actions::InvocationId,
+    update: InvocationUpdate,
+) -> RemoteActionMessage {
+    RemoteActionMessage::Update {
+        invocation,
+        state: Some(InvocationState::new(invocation, update)),
+    }
+}
+
+/// [`state_message`], as where a caller's frame goes.
+fn state_routing(
+    invocation: tilo_actions::InvocationId,
+    update: InvocationUpdate,
+) -> crate::app_serving::Routing {
+    crate::app_serving::Routing::Answer(Pending::ready(state_message(invocation, update)))
+}
+
+/// `message` — a request of a window's — answered at once with `error`.
+fn answered_with(
+    message: &RemoteActionMessage,
+    error: ActionHostError,
+) -> Option<crate::app_serving::Routing> {
+    Some(crate::app_serving::Routing::Answer(Pending::ready(
+        tilo_actions::remote::refuse(message, error)?,
+    )))
+}
+
+/// Note that a handed page action is over, as `status` says: what a caller
+/// asking after it is answered with, and what the callers waiting on it are
+/// answered with now.
+fn answered(entry: &mut Handed, status: &ReceiptStatus) {
+    over(entry, update_of(entry.request.invocation, status));
+}
+
+/// Note that a handed page action is over with `update`, and answer the
+/// callers waiting on it.
+fn over(entry: &mut Handed, update: InvocationUpdate) {
+    entry.stage = Stage::Over(update.clone());
+    let state = state_message(entry.request.invocation, update);
+    for (_, waiting) in entry.waiting.drain(..) {
+        waiting.complete(state.clone());
+    }
+}
+
+/// How an invocation ends, as `status` says: the update its callers read.
+fn update_of(invocation: tilo_actions::InvocationId, status: &ReceiptStatus) -> InvocationUpdate {
+    match status {
+        ReceiptStatus::Accepted => InvocationUpdate::Accepted { invocation },
+        ReceiptStatus::Completed { output } => InvocationUpdate::Succeeded {
+            invocation,
+            output: output.clone(),
+        },
+        ReceiptStatus::Failed { error } => InvocationUpdate::Failed {
+            invocation,
+            error: error.clone(),
+        },
+        ReceiptStatus::Rejected { error } => update_of_error(invocation, error),
+        ReceiptStatus::Cancelled { message } => InvocationUpdate::Cancelled {
+            invocation,
+            message: message.clone(),
+        },
+    }
+}
+
+/// `error` as the failure a caller reads: its typed code and what it says.
+fn update_of_error(
+    invocation: tilo_actions::InvocationId,
+    error: &ActionHostError,
+) -> InvocationUpdate {
+    InvocationUpdate::Failed {
+        invocation,
+        error: ActionFailure {
+            code: error.code().to_owned(),
+            message: error.to_string(),
+            details: None,
+            retryable: false,
+        },
+    }
+}
+
 /// The question `request` puts to the person, as their approving devices
 /// draw it: the agent that asked, by the name it goes by, the action as the
 /// caller described it, and the workspace it acts in.
@@ -892,6 +1246,7 @@ fn question(
     workspace: &str,
     caller: &tilo_actions::remote::Caller,
     request: &InvokeRequest,
+    until_ns: u64,
 ) -> PendingConfirmation {
     let mut id = [0_u8; 32];
     let _ = getrandom::fill(&mut id);
@@ -925,7 +1280,7 @@ fn question(
             })
             .map_or_else(|| "destructive".to_owned(), |facet| facet.value.clone()),
         workspace: workspace.to_owned(),
-        expires_at_ns: tilo_clock::unix_now_ns().saturating_add(ANSWER_WAIT_NS),
+        expires_at_ns: until_ns,
         ..PendingConfirmation::default()
     }
 }

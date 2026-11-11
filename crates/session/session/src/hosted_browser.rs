@@ -223,9 +223,14 @@ impl HostedBrowser {
         let Some(apps) = &shared.launch else {
             return;
         };
+        // The window is opened for the agent that works it, not for the
+        // person: it browses as any visitor would, on a fresh profile of its
+        // own, so an agent's page actions take no authority over the person's
+        // sign-ins — and what acts on the page still asks them.
         let launch = tilo_app_launch::Launch::Record {
             app: BROWSER.to_owned(),
             record: self.material.record.clone(),
+            visitor: true,
         };
         let workspace = apps.workspace_named(&self.material.workspace);
         match apps.start(&launch, &workspace) {

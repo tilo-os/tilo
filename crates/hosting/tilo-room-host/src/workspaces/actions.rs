@@ -1874,7 +1874,7 @@ impl AppServingPlane for GovernedPlane {
     fn route(
         &self,
         workspace_id: u64,
-        sender: [u8; 32],
+        caller: &Caller,
         message: &RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
         // Governance this host answers itself stays here; what its embedder's
@@ -1885,13 +1885,16 @@ impl AppServingPlane for GovernedPlane {
         {
             return None;
         }
-        self.apps.as_ref()?.route(workspace_id, sender, message)
+        self.apps.as_ref()?.route(workspace_id, caller, message)
     }
 
-    fn relayed(&self, workspace_id: u64, from: [u8; 32], message: &RemoteActionMessage) {
-        if let Some(apps) = self.apps.as_ref() {
-            apps.relayed(workspace_id, from, message);
-        }
+    fn relayed(
+        &self,
+        workspace_id: u64,
+        from: [u8; 32],
+        message: &RemoteActionMessage,
+    ) -> Option<RemoteActionMessage> {
+        self.apps.as_ref()?.relayed(workspace_id, from, message)
     }
 
     fn run_arrived(&self, workspace_id: u64, caller: &Caller) {

@@ -859,6 +859,22 @@ impl Relay {
             .await?)
     }
 
+    /// Where a plane hands a frame to a device of one of its workspaces after
+    /// answering its caller itself (a page action the person allowed, running
+    /// on the window that refused it): this host's own delivery, stamped as
+    /// every frame it forwards is.
+    ///
+    /// # Panics
+    ///
+    /// Outside a runtime, where there is nothing to deliver on.
+    #[must_use]
+    pub fn hand(&self) -> crate::app_serving::Hand {
+        crate::app_serving::Hand::new(
+            self.sessions.workspaces.clone(),
+            tokio::runtime::Handle::current(),
+        )
+    }
+
     /// The workspaces this relay governs, when it hosts the workspace authority.
     #[must_use]
     pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {

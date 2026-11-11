@@ -95,17 +95,45 @@ pub(super) async fn handle_remote_action(
     if to == *session.own_device_public_key {
         // An action of a window this host serves but does not hold (a Browser
         // whose page runs on a VM host) is handed to the device that holds it,
-        // stamped with this sender, or refused as the plane says.
+        // stamped with this sender, or answered by the plane itself, which may
+        // take its time about it.
         if let Some(plane) = session.app_serving
             && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
-            && let Some(route) = plane.route(workspace_id, peer.device_public_key, &decoded.message)
+            && let Ok(caller) = session_caller(peer, session)
+            && let Some(route) = plane.route(workspace_id, &caller, &decoded.message)
         {
             match route {
                 crate::app_serving::Routing::Device(holder) => {
                     return hand_over(peer, session, &mut wr, workspace_id, version, holder, frame);
                 }
-                crate::app_serving::Routing::Refused(error) => {
-                    return refused_answer(peer, session, workspace_id, version, &decoded, error);
+                crate::app_serving::Routing::Answer(answer) => {
+                    let abandoned = tilo_actions::remote::refuse(
+                        &decoded.message,
+                        tilo_actions::remote::ActionHostError::Unavailable {
+                            reason: "the host dropped the request".into(),
+                        },
+                    );
+                    let outbound = session.outbound.clone();
+                    let to_device_public_key = peer.device_public_key;
+                    let from_device_public_key = *session.own_device_public_key;
+                    let from_user_public_key = *session.own_user_public_key;
+                    answer_later(answer, abandoned, move |answer| {
+                        let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
+                            .encode()
+                            .ok()?;
+                        Some((
+                            outbound,
+                            Envelope::RemoteAction {
+                                workspace_id,
+                                version,
+                                to_device_public_key,
+                                from_device_public_key,
+                                from_user_public_key,
+                                frame,
+                            },
+                        ))
+                    });
+                    return None;
                 }
             }
         }
@@ -160,11 +188,14 @@ fn hand_over(
             "addressed device may not act in the workspace",
         );
     }
+    let mut frame = frame;
     if let Some(plane) = session.app_serving
         && plane.tracks(workspace_id)
         && let Ok(decoded) = tilo_actions::remote::RemoteActionFrame::decode(&frame)
+        && let Some(answer) = plane.relayed(workspace_id, peer.device_public_key, &decoded.message)
+        && let Ok(encoded) = tilo_actions::remote::RemoteActionFrame::new(answer).encode()
     {
-        plane.relayed(workspace_id, peer.device_public_key, &decoded.message);
+        frame = encoded;
     }
     let stamped = Envelope::RemoteAction {
         workspace_id,
@@ -183,30 +214,6 @@ fn hand_over(
             "addressed device is not connected to the workspace",
         )
     }
-}
-
-/// Answer `request` to `peer` as refused with `error`: what it asked for is
-/// not served for it now, and it is told so in the answer its request takes.
-fn refused_answer(
-    peer: &AuthenticatedPeer,
-    session: &SessionCtx<'_>,
-    workspace_id: u64,
-    version: u16,
-    request: &tilo_actions::remote::RemoteActionFrame,
-    error: tilo_actions::remote::ActionHostError,
-) -> Option<Envelope> {
-    let answer = tilo_actions::remote::refuse(&request.message, error)?;
-    let frame = tilo_actions::remote::RemoteActionFrame::new(answer)
-        .encode()
-        .ok()?;
-    Some(Envelope::RemoteAction {
-        workspace_id,
-        version,
-        to_device_public_key: peer.device_public_key,
-        from_device_public_key: *session.own_device_public_key,
-        from_user_public_key: *session.own_user_public_key,
-        frame,
-    })
 }
 
 /// Handle an inbound `HostAction`: one of this host's own operations

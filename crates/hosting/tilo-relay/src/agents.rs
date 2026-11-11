@@ -460,10 +460,10 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
     fn route(
         &self,
         workspace_id: u64,
-        sender: [u8; 32],
+        caller: &Caller,
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
-        self.browsers.as_ref()?.route(workspace_id, sender, message)
+        self.browsers.as_ref()?.route(workspace_id, caller, message)
     }
 
     fn relayed(
@@ -471,10 +471,8 @@ impl crate::AppServingPlane for WorkspaceRecordsPlane {
         workspace_id: u64,
         from: [u8; 32],
         message: &tilo_actions::remote::RemoteActionMessage,
-    ) {
-        if let Some(browsers) = self.browsers.as_ref() {
-            browsers.relayed(workspace_id, from, message);
-        }
+    ) -> Option<tilo_actions::remote::RemoteActionMessage> {
+        self.browsers.as_ref()?.relayed(workspace_id, from, message)
     }
 
     fn tracks(&self, workspace_id: u64) -> bool {
@@ -515,10 +513,10 @@ impl crate::AppServingPlane for HostActionsPlane {
     fn route(
         &self,
         workspace_id: u64,
-        sender: [u8; 32],
+        caller: &Caller,
         message: &tilo_actions::remote::RemoteActionMessage,
     ) -> Option<crate::app_serving::Routing> {
-        self.browsers.as_ref()?.route(workspace_id, sender, message)
+        self.browsers.as_ref()?.route(workspace_id, caller, message)
     }
 
     fn relayed(
@@ -526,10 +524,8 @@ impl crate::AppServingPlane for HostActionsPlane {
         workspace_id: u64,
         from: [u8; 32],
         message: &tilo_actions::remote::RemoteActionMessage,
-    ) {
-        if let Some(browsers) = self.browsers.as_ref() {
-            browsers.relayed(workspace_id, from, message);
-        }
+    ) -> Option<tilo_actions::remote::RemoteActionMessage> {
+        self.browsers.as_ref()?.relayed(workspace_id, from, message)
     }
 
     fn tracks(&self, workspace_id: u64) -> bool {
@@ -554,38 +550,17 @@ impl crate::AppServingPlane for HostActionsPlane {
 /// Serve a workspace's message, placing its Browser after an answered
 /// `app.so.tilo.browser#open`: the open answers once the window is live, and
 /// a Browser this host cannot place is refused in words that say so rather
-/// than as an app it does not know. A page action of a window up here that
-/// asks the person first is put to them here
-/// ([`crate::hosted_browser::HostedBrowsers::confirm`]): this host is what
-/// reaches their approving devices.
+/// than as an app it does not know.
 fn serve_with_browser(
     browsers: Option<&Arc<crate::hosted_browser::HostedBrowsers>>,
     workspace_id: u64,
-    caller: &tilo_actions::remote::Caller,
+    _caller: &tilo_actions::remote::Caller,
     message: tilo_actions::remote::RemoteActionMessage,
     serve: impl FnOnce(
         tilo_actions::remote::RemoteActionMessage,
     ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>>,
 ) -> Option<Pending<tilo_actions::remote::RemoteActionMessage>> {
     use tilo_actions::remote::RemoteActionMessage;
-    if let (
-        Some(browsers),
-        RemoteActionMessage::Confirm {
-            correlation,
-            request,
-        },
-    ) = (browsers, &message)
-    {
-        let correlation = *correlation;
-        return Some(
-            browsers
-                .confirm(workspace_id, caller, request)
-                .map(move |result| RemoteActionMessage::ConfirmResponse {
-                    correlation,
-                    result: result.map(Box::new),
-                }),
-        );
-    }
     let opens = match &message {
         RemoteActionMessage::Invoke(request) if crate::hosted_browser::opens_browser(request) => {
             Some(request.invocation)
@@ -855,6 +830,7 @@ fn attach_records(
             environments: relay.web_context().relay.environments.clone(),
             runtime: tokio::runtime::Handle::current(),
             certification: relay.confirmations(),
+            hand: relay.hand(),
         });
     }
     let shell = shell.map(|shell| shell as Arc<dyn WorkspaceShell>);

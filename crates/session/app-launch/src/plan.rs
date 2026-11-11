@@ -209,15 +209,19 @@ impl Planned {
     /// cannot be written, or the launch is one that starts nothing.
     pub fn of(launch: &Launch, context: &PlanContext<'_>) -> Result<Self, PlanError> {
         match launch {
-            Launch::Package { app, open } => Self::package(app, open.as_ref(), context),
+            Launch::Package { app, open } => Self::package(app, open.as_ref(), false, context),
             // The record is opened by the app the launch names: the launch
             // asks it for that record, and the app opens on it.
-            Launch::Record { app, record } => {
+            Launch::Record {
+                app,
+                record,
+                visitor,
+            } => {
                 let open = crate::routing::record(record).ok_or_else(|| PlanError::NotARecord {
                     app: app.clone(),
                     record: record.clone(),
                 })?;
-                Self::package(app, Some(&open), context)
+                Self::package(app, Some(&open), *visitor, context)
             }
             Launch::Content { app, .. } => Err(PlanError::ContentUnavailable { app: app.clone() }),
             Launch::Host { desktop_id, open } => Self::host(desktop_id, open.as_ref(), context),
@@ -234,6 +238,7 @@ impl Planned {
     pub fn package(
         app: &str,
         open: Option<&Open>,
+        visitor: bool,
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
         let launcher = context.launcher.clone().ok_or(PlanError::NoLauncher)?;
@@ -247,7 +252,7 @@ impl Planned {
             manifest: &installed.manifest_path,
             payload_root: &installed.payload_root,
         };
-        Self::planned_package(package, launcher, open, context)
+        Self::planned_package(package, launcher, open, visitor, context)
     }
 
     /// The launcher's command line and environment for `package`.
@@ -255,6 +260,7 @@ impl Planned {
         package: Package<'_>,
         launcher: PathBuf,
         open: Option<&Open>,
+        visitor: bool,
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
         let capabilities = context
@@ -318,6 +324,12 @@ impl Planned {
             Some(Open::Uri(uri)) => {
                 args.push("--open-uri".to_owned());
                 args.push(uri.clone());
+                if visitor {
+                    // A window opened for whoever works the record rather
+                    // than for the person: it browses as a visitor, with none
+                    // of their sign-ins.
+                    args.push("--open-as-visitor".to_owned());
+                }
             }
             None => {}
         }
@@ -556,6 +568,7 @@ mod tests {
             package,
             PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
             Some(&Open::File("/home/you/notes.tilo-note".into())),
+            false,
             &context,
         )
         .expect("a plan");
@@ -628,6 +641,7 @@ mod tests {
             package,
             PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
             None,
+            false,
             &handed,
         )
         .expect("a plan");
@@ -661,6 +675,7 @@ mod tests {
                 package,
                 PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
                 None,
+                false,
                 &blind,
             )
             .expect("a plan")
@@ -761,6 +776,7 @@ mod tests {
             package,
             PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
             open.as_ref(),
+            false,
             &context,
         )
         .expect("a plan");
@@ -771,6 +787,32 @@ mod tests {
                 .any(|pair| pair[0] == "--open-uri" && pair[1] == record.uri()),
             "the app is asked for the record itself: {:?}",
             planned.args
+        );
+        assert!(
+            !planned.args.iter().any(|arg| arg == "--open-as-visitor"),
+            "the person's own window browses with their sign-ins: {:?}",
+            planned.args
+        );
+
+        // A window opened for whoever works the record — an agent's — browses
+        // as a visitor: the launcher hands the app the switch that says so.
+        let visitor = Planned::planned_package(
+            Package {
+                id: "so.tilo.notes",
+                title: "Notes",
+                manifest: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/manifest.toml"),
+                payload_root: Path::new("/home/you/.local/share/tilo/apps/so.tilo.notes/payload"),
+            },
+            PathBuf::from("/usr/libexec/tilo/tilo-launcher"),
+            open.as_ref(),
+            true,
+            &context,
+        )
+        .expect("a plan");
+        assert!(
+            visitor.args.iter().any(|arg| arg == "--open-as-visitor"),
+            "a window for an agent browses as a visitor: {:?}",
+            visitor.args
         );
 
         // A record the launch string misspells is refused before any app is

@@ -484,6 +484,7 @@ impl LauncherServices for Launches {
             tilo_app_launch::Launch::Record {
                 app: app.to_owned(),
                 record: record.to_owned(),
+                visitor: false,
             }
         } else {
             match tilo_app_launch::Launch::parse(app) {
