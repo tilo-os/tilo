@@ -1721,8 +1721,15 @@ try {
         const listsRun = said => Boolean(said) && !/^(no runs yet|runs, with none listed)$/i.test(said.name);
         const openCard = async () => {
           if (cardSays(await semantics(tab))) return;
-          await press(tab, /^claude code, agent$/i, {what: "the agent's face"});
-          await untilDrawn(tab, async () => matching(await semantics(tab), /^open card$/i), 3000, 200);
+          // The face's card may stand already (a face pressed again brings everyone here in its
+          // place): its Open card is pressed where it is. Otherwise the face opens it, and Open
+          // card is pressed once a frame drew the card, not where an earlier frame had it.
+          if (!matching(await semantics(tab), /^open card$/i)) {
+            const before = await presentedFrames(tab);
+            await press(tab, /^claude code, agent$/i, {what: "the agent's face"});
+            await untilDrawn(tab, async () => ((await presentedFrames(tab)) ?? 0) > (before ?? 0)
+              && matching(await semantics(tab), /^open card$/i), 3000, 200);
+          }
           await press(tab, /^open card$/i, {what: "the agent's card"});
         };
         await openCard();
