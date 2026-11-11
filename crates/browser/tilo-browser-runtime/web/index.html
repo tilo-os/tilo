@@ -372,7 +372,7 @@ if(navigator.gpu&&!/[?&]unsafeWebKitGPU=0(&|$)/.test(location.search))globalThis
     #first-run .fr-quiet { min-height: 44px; padding: 0 12px; border: 0; border-radius: 8px; background: none; color: var(--fr-muted); font-size: 15px; }
     #first-run .fr-quiet:hover, #first-run .fr-quiet[aria-expanded=true] { background: var(--fr-quiet-hover); color: var(--fr-ink); }
     #first-run .fr-secondary { display: inline-flex; align-items: center; justify-content: center; gap: 8px; box-sizing: border-box; width: 100%; min-height: 44px; padding: 0 16px; border: 1px solid var(--fr-edge); border-radius: 10px; background: var(--fr-well); font-weight: 500; }
-    #first-run .fr-secondary + .fr-secondary { margin-top: 10px; }
+    #first-run .fr-secondary ~ .fr-secondary { margin-top: 10px; }
     #first-run .fr-secondary:hover { border-color: var(--fr-faint); }
     .fr-aside { padding-top: 28px; border-top: 1px solid var(--fr-line); }
     .fr-eyebrow { margin: 0 0 4px; font-size: 13px; color: var(--fr-faint); }
