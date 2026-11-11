@@ -5388,11 +5388,18 @@ impl BrowserWidget {
         use crate::effects::BrowserEffect as E;
         use ui::tilo_resource::Effect as _;
         const MATERIALIZED_LIMIT: usize = 100;
-        // The page is named by its site, not its title. A title arrives while
-        // the page loads and a page's script changes it at will, and a person
-        // asked about an action here is shown this name: it has to be the same
-        // when they answer, or what they allowed is refused as another action.
-        let site = window_bar::site_label(&self.current_uri);
+        // The page is named by its site, not its title, and from the moment
+        // its window opens: by the address it is opening until the engine
+        // reports one. A person asked about an action here is shown this
+        // name, and it has to be the same when they answer, or what they
+        // allowed is refused as another action. A title arrives while the
+        // page loads and its script changes it at will, and a first address
+        // that arrived after the asking would rename the page just the same.
+        let site = window_bar::site_label(if self.current_uri.is_empty() {
+            &self.initial_url
+        } else {
+            &self.current_uri
+        });
         let mut page = ResourceSpec::new(
             "browser.page",
             "browser.page",

@@ -337,14 +337,15 @@ fn a_jump_within_the_page_keeps_find_and_reader_view() {
 /// A person asked about an action on the page is shown the page's name, and
 /// what they allow is that action only while the name stands: the name is
 /// the published resource's label, which a question keeps and the answer is
-/// checked against. A title arrives while the page loads and a page's script
-/// changes it at will, so an agent's navigation asked about on a loading
-/// page was refused once the person allowed it. The page is named by its
-/// site: the name stands through both, and another site is another name.
+/// checked against. A new window's page had no name of its own until the
+/// engine reported its address, and took its title's once that came, so an
+/// agent's navigation asked about while the home page loaded was refused
+/// once the person allowed it. The page is named by the site its window is
+/// opening, from the start: the name stands while the address and the title
+/// arrive and while the page retitles itself, and another site is another
+/// name.
 #[test]
-fn the_page_keeps_its_name_while_its_title_changes() {
-    let engine = TestEngine::new();
-    let mut widget = BrowserWidget::with_engine(engine.clone(), true);
+fn the_page_has_its_name_from_the_start_and_keeps_it_while_it_loads() {
     let named = |widget: &BrowserWidget| {
         widget
             .published()
@@ -355,14 +356,28 @@ fn the_page_keeps_its_name_while_its_title_changes() {
             .label
             .clone()
     };
-    assert_eq!(named(&widget), "Web page", "a page with no address yet");
+    let nowhere =
+        BrowserWidget::with_engine(TestEngine::new(), true).with_initial_uri(String::new());
+    assert_eq!(named(&nowhere), "Web page", "a window opening no address");
+
+    let engine = TestEngine::new();
+    let mut widget = BrowserWidget::with_engine(engine.clone(), true)
+        .with_initial_uri("https://www.shop.test/cart".into());
+    // The window is opening the address and the engine has reported nothing:
+    // an agent that asks now is asked about under the name the page keeps.
+    assert!(widget.current_uri.is_empty(), "nothing is reported yet");
+    assert_eq!(
+        named(&widget),
+        "shop.test",
+        "the page its window is opening"
+    );
 
     engine.push_event(WebViewEvent::UriChanged(
         "https://www.shop.test/cart".into(),
     ));
     widget.apply_engine_events();
     assert!(widget.title.is_empty(), "the page is still loading");
-    assert_eq!(named(&widget), "shop.test");
+    assert_eq!(named(&widget), "shop.test", "its address arrived");
 
     engine.push_event(WebViewEvent::TitleChanged("Your cart".into()));
     widget.apply_engine_events();
