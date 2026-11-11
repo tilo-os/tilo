@@ -2338,7 +2338,20 @@ impl SlidesApp {
                 tr("slides-a11y-edit-notes"),
                 AccessState::new(),
             ),
-            Hit::OpenLayoutMenu => (Role::Button, tr("slides-a11y-layout"), AccessState::new()),
+            Hit::OpenLayoutMenu => (
+                Role::Button,
+                tr_args(
+                    "slides-a11y-layout-menu",
+                    &[(
+                        "name",
+                        ArgValue::from(
+                            self.slide()
+                                .map_or_else(String::new, |slide| slide.layout.label().to_string()),
+                        ),
+                    )],
+                ),
+                AccessState::new(),
+            ),
         }
     }
 }
