@@ -189,9 +189,10 @@ jobs:
           # Tilo app lints below compile tilo-app-cli and need that linker.
           command -v cc
 
-      # crates/workspace-hack unifies third-party features across members; a
+      # crates/workspace-hack unifies third-party features across members and
+      # crates/workspace-unify does the same for members' selectable features; a
       # dependency change that is not regenerated splits the shared builds again.
-      # Fail before the app lints that build from it.
+      # Fail before the app lints that build from them.
       - name: Workspace-hack matches the dependency graph
         shell: bash
         run: |
@@ -201,6 +202,9 @@ jobs:
             exit 1
           fi
           cargo hakari verify
+
+      - name: The unified workspace matches the members' features
+        run: python3 tools/ci/workspace_unify.py --check
 
       # The lint app developers run locally: an app that adds platform code
       # without moving it into a platform crate or declaring itself native
