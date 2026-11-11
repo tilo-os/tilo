@@ -1,11 +1,12 @@
-//! Hosted VMs: one Linux VM per hosted workspace environment, metered per
-//! second.
+//! Hosted VMs: one VM per hosted workspace, which runs its Linux programs
+//! and its Browser.
 //!
 //! On a host that serves other people's workspaces, the Linux programs a
-//! workspace's shell runs (tier 3: `cargo`, `npm`, `python`, …) run in a VM
-//! of the workspace's own, never in a job sharing the host's kernel. The
-//! shell's own commands, Tilo actions and the browser need no VM and are not
-//! billed as VM time.
+//! workspace's shell runs (tier 3: `cargo`, `npm`, `python`, …) and the web
+//! pages its Browser shows run in a VM of the workspace's own, never in a
+//! job sharing the host's kernel. The shell's own commands and Tilo actions
+//! need no VM. Its time is billed from the first Linux action until it
+//! sleeps; Browser's page actions are counted instead.
 //!
 //! A hosted VM is the legacy VM's sibling: the same guest agent and
 //! protocol over vsock ([`legacy_agent_protocol`]), the same
@@ -19,10 +20,8 @@
 //! - once no command has run for the idle limit, it is snapshotted to disk
 //!   and its process ends; the next command restores it;
 //! - every VM has a [`size`] and a persistent disk of that size;
-//! - a workspace's Browser runs in one too ([`browser`]): its size's guest
-//!   image, started directly rather than for a command, never snapshotted,
-//!   and deleted with everything it wrote when it ends — with spares booted
-//!   for the next workspace;
+//! - the same VM holds the workspace's Browser ([`browser`]): a headless
+//!   session the first browser action starts in it, which needs no card;
 //! - [`meter`] records each run and each held snapshot, per second, in the
 //!   account's ledger, and [`plan`] refuses what the account's plan does not
 //!   cover, in words an agent can act on;

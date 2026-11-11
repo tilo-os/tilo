@@ -197,7 +197,7 @@ fn only_the_hosts_own_devices_may_ask_and_only_for_runs() {
     );
 }
 
-/// A member whose host runs browser environments on `socket`.
+/// A member whose host runs its workspaces' VMs on `socket`.
 fn browser_member(dir: &std::path::Path, socket: std::path::PathBuf) -> EnvironmentRuns {
     let files = dir.join("replicas");
     EnvironmentRuns::new(
@@ -245,7 +245,7 @@ fn fake_hosted(
     (socket, asked)
 }
 
-/// A browser environment to open, as the relay asks for it.
+/// A Browser to open, as the relay asks for it.
 fn opening(material: &str) -> InvokeRequest {
     use tilo_actions::remote::browser;
     let asked = browser::OpenBrowser {
@@ -295,7 +295,7 @@ fn opened(
 }
 
 #[test]
-fn opening_a_browser_environment_asks_the_hosts_service() {
+fn opening_browser_asks_the_hosts_service_for_the_workspaces_vm() {
     use legacy_vm::hosted::control::{OpenBrowser, Reply, Request};
     let dir = tempfile::tempdir().unwrap();
     let (socket, asked) = fake_hosted(
@@ -325,6 +325,7 @@ fn opening_a_browser_environment_asks_the_hosts_service() {
             OpenBrowser {
                 workspace,
                 account,
+                size,
                 material,
             },
     } = &asked[0]
@@ -336,15 +337,20 @@ fn opening_a_browser_environment_asks_the_hosts_service() {
         ("ws-1", "acct-1", "{\"record\":\"r1\"}"),
         "the caller's workspace, and the material word for word"
     );
+    assert_eq!(
+        *size,
+        legacy_vm::hosted::size::VmSize::Small,
+        "in the workspace's VM, at the size its shells run at"
+    );
 }
 
 #[test]
-fn a_member_that_runs_no_vms_opens_no_browser_environment() {
+fn a_member_that_runs_no_vms_opens_no_browser() {
     let dir = tempfile::tempdir().unwrap();
     let runs = member(dir.path());
     let refused = answered(runs.invoke(&host(), opening("{}")));
     assert!(
         matches!(refused, Err(ActionHostError::Unavailable { .. })),
-        "a host with no Linux VMs has no browser environment: {refused:?}"
+        "a host with no workspace VMs has no Browser: {refused:?}"
     );
 }

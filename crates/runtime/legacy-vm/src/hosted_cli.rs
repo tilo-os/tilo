@@ -20,9 +20,7 @@ usage: tilo-legacy hosted <command>
   serve --state DIR --run DIR --kernel VMLINUX [--initramfs FILE] [--cmdline TEXT]
         [--disk-image RAW] [--firecracker PATH] [--plans FILE] [--idle-suspend SECONDS]
         [--evict-notice FILE] [--memory-mib MIB] [--status-listen ADDR]
-        [--browser --browser-kernel VMLINUX --browser-disk-image RAW
-         [--browser-spares N] [--browser-idle-stop SECONDS] [--browser-lifetime SECONDS]
-         --relay-endpoint ADDR:PORT]
+        [--relay-endpoint ADDR:PORT]
         (--jail-helper PATH [--jail-config FILE] | --unjailed)
                          own this host's workspace VMs; listens on RUN/hosted.sock.
                          Each VM runs jailed, with a network, through the
@@ -36,18 +34,13 @@ usage: tilo-legacy hosted <command>
                          together, by their sizes; a wake past it waits.
                          --status-listen answers Status alone over TCP, for a
                          placer.
-                         --browser also runs the workspaces' browser
-                         environments from the browser guest image: N spares
-                         (default 2) boot with a session waiting for a
-                         workspace, each environment ends after its idle limit
-                         (default 600 s) or its lifetime (default 7200 s), and
-                         it keeps nothing when it stops. ADDR:PORT is where a
-                         browser environment's session reaches the relay, the
-                         one address besides the internet those VMs may reach:
-                         the relay's public address, or its cluster address
-                         when the relay is not reachable from outside, or a
-                         loopback address when the relay runs on the host
-                         itself.
+                         --relay-endpoint serves the workspaces' Browser in
+                         their VMs: ADDR:PORT is where the browser session in a
+                         VM reaches the relay, the one address besides the
+                         internet a VM may reach: the relay's public address,
+                         or its cluster address when the relay is not
+                         reachable from outside, or a loopback address when
+                         the relay runs on the host itself.
   status --run DIR       every VM, its phase and its last wake
   place --listen ADDR --record FILE --statefulset NAMESPACE/NAME --max N
         --status-port PORT
@@ -55,10 +48,9 @@ usage: tilo-legacy hosted <command>
                          it, else the first with room), and start hosts, the
                          StatefulSet's pods NAME-0, NAME-1, …, as their VMs fill
                          them: past three quarters, or for any VM waiting
-  fetch-guest --images DIR [--ref REF] [--browser]
+  fetch-guest --images DIR [--ref REF]
                          fetch the pinned guest image into DIR and print the
-                         kernel's and the root filesystem's paths; --browser
-                         fetches the browser guest instead
+                         kernel's and the root filesystem's paths
   usage --run DIR --account ID [--from MS] [--to MS]
                          the account's usage records and totals, as JSON
   run --run DIR --workspace ID --account ID [--environment ID] [--size SIZE]
@@ -68,11 +60,11 @@ usage: tilo-legacy hosted <command>
                          with its status. For operators checking a host
   suspend --run DIR WORKSPACE ENVIRONMENT
   stop --run DIR WORKSPACE ENVIRONMENT
-  browser-open --run DIR --workspace ID --account ID [--material JSON]
-                         open or attach a workspace's browser environment, and
-                         say what it took
+  browser-open --run DIR --workspace ID --account ID [--size SIZE] [--material JSON]
+                         open or attach the browser session in a workspace's
+                         VM, and say what it took
   browser-stop --run DIR WORKSPACE
-                         end a workspace's browser environment now
+                         end the browser session in a workspace's VM now
 ";
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -133,9 +125,9 @@ impl Flags {
 pub fn main(args: &[String]) -> Result<ExitCode, String> {
     let (command, rest) = args.split_first().ok_or(USAGE)?;
     match command.as_str() {
-        "serve" => serve(&Flags::parse(rest, &["--unjailed", "--browser"])?),
+        "serve" => serve(&Flags::parse(rest, &["--unjailed"])?),
         "files-serve" => files_serve(&Flags::parse(rest, &["--read-only"])?),
-        "fetch-guest" => fetch_guest(&Flags::parse(rest, &["--browser"])?),
+        "fetch-guest" => fetch_guest(&Flags::parse(rest, &[])?),
         "status" => ask(&Flags::parse(rest, &[])?, &Request::Status),
         "run" => run(rest),
         "place" => place(&Flags::parse(rest, &[])?),
@@ -147,6 +139,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
                     browser: control::OpenBrowser {
                         workspace: flags.need("--workspace")?.to_string(),
                         account: flags.need("--account")?.to_string(),
+                        size: vm_size(&flags)?,
                         material: flags.get("--material").unwrap_or("{}").to_string(),
                     },
                 },
@@ -211,12 +204,7 @@ pub fn main(args: &[String]) -> Result<ExitCode, String> {
 /// the root filesystem's path, one per line.
 fn fetch_guest(flags: &Flags) -> Result<ExitCode, String> {
     let images = flags.path("--images")?;
-    let guest = if flags.has("--browser") {
-        guest::Guest::Browser
-    } else {
-        guest::Guest::Linux
-    };
-    let reference = guest::reference(guest, flags.get("--ref")).map_err(|e| e.to_string())?;
+    let reference = guest::reference(flags.get("--ref")).map_err(|e| e.to_string())?;
     let guest = guest::ensure_guest(&images, &reference).map_err(|e| e.to_string())?;
     println!("kernel {}", guest.kernel.display());
     println!("rootfs {}", guest.rootfs.display());
@@ -265,11 +253,13 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
             idle_suspend: Duration::from_secs(idle.max(1)),
             self_exe: std::env::current_exe().map_err(|e| e.to_string())?,
             jail,
-            browser: if flags.has("--browser") {
-                Some(browser_guest(flags)?)
-            } else {
-                None
-            },
+            // The browser session in a VM joins its workspace through the
+            // relay, inside the host's network: the one address besides the
+            // internet a VM may reach.
+            relay: flags
+                .get("--relay-endpoint")
+                .map(legacy_vm::hosted::network::Endpoint::parse)
+                .transpose()?,
         },
     };
     // SAFETY: the handler only stores to an atomic.
@@ -302,38 +292,12 @@ fn serve(flags: &Flags) -> Result<ExitCode, String> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The browser environments' settings: the browser guest image, where their
-/// sessions reach the relay, the spares kept booted, and how long one lives.
-fn browser_guest(flags: &Flags) -> Result<legacy_vm::hosted::browser::BrowserGuest, String> {
-    let seconds = |name: &str, default: u64| {
-        flags
-            .get(name)
-            .map_or(Ok(default), str::parse::<u64>)
-            .map_err(|_| format!("{name} takes seconds"))
-    };
-    let machine = Machine {
-        firecracker: PathBuf::from(flags.get("--firecracker").unwrap_or("firecracker")),
-        kernel: flags.path("--browser-kernel")?,
-        initramfs: None,
-        cmdline: flags
-            .get("--cmdline")
-            .unwrap_or(Machine::DEFAULT_CMDLINE)
-            .to_string(),
-        base_disk: flags.get("--browser-disk-image").map(PathBuf::from),
-    };
-    // A session in an environment joins its workspace through the relay, and
-    // the relay is inside the host's network: this is the one address besides
-    // the internet the environment's VM may reach.
-    let relay = legacy_vm::hosted::network::Endpoint::parse(flags.need("--relay-endpoint")?)?;
-    let mut guest = legacy_vm::hosted::browser::BrowserGuest::new(machine, relay);
-    if let Some(spares) = flags.get("--browser-spares") {
-        guest.spares = spares
-            .parse()
-            .map_err(|_| "--browser-spares takes a count".to_string())?;
-    }
-    guest.idle_stop = Duration::from_secs(seconds("--browser-idle-stop", 600)?.max(1));
-    guest.lifetime = Duration::from_secs(seconds("--browser-lifetime", 7_200)?.max(1));
-    Ok(guest)
+/// The size `--size` names; small when it names none.
+fn vm_size(flags: &Flags) -> Result<legacy_vm::hosted::size::VmSize, String> {
+    use legacy_vm::hosted::size::VmSize;
+    flags.get("--size").map_or(Ok(VmSize::Small), |name| {
+        VmSize::parse(name).ok_or_else(|| format!("no VM size {name:?}"))
+    })
 }
 
 /// The VM hosts as a Kubernetes `StatefulSet`: its replicas, read and set
@@ -455,7 +419,6 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
     use legacy_agent_protocol::client::{self, LaunchIo};
     use legacy_agent_protocol::{AGENT_PORT, Display, Launch, Stdio};
     use legacy_vm::hosted::control::VmRequest;
-    use legacy_vm::hosted::size::VmSize;
 
     let mut parts = args.splitn(2, |arg| arg == "--");
     let options = parts.next().unwrap_or_default();
@@ -464,12 +427,7 @@ fn run(args: &[String]) -> Result<ExitCode, String> {
         return Err(format!("run: the program follows --\n{USAGE}"));
     }
     let flags = Flags::parse(options, &[])?;
-    let size = match flags.get("--size") {
-        Some(name) => VmSize::parse(name)
-            .filter(|size| *size != VmSize::Browser)
-            .ok_or_else(|| format!("run: no VM size {name:?}"))?,
-        None => VmSize::Small,
-    };
+    let size = vm_size(&flags).map_err(|error| format!("run: {error}"))?;
     let request = Request::Ensure {
         vm: VmRequest {
             workspace: flags.need("--workspace")?.to_string(),

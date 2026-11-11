@@ -16,6 +16,10 @@ use super::size::VmSize;
 
 pub const FRAMING: Framing = Framing::little_endian(16 * 1024 * 1024).reject_empty();
 
+/// The environment a workspace's VM is: one per workspace, which runs both
+/// its Linux programs and its Browser.
+pub const ENVIRONMENT: &str = "default";
+
 /// Which VM, whose, and how large.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct VmRequest {
@@ -32,14 +36,17 @@ pub struct ShareRequest {
     pub read_only: bool,
 }
 
-/// A workspace's browser environment, to start or attach to: the machine runs
-/// a headless session with Browser, which joins the workspace with `material`.
+/// A workspace's browser session, to start or attach to: a headless session
+/// with Browser in the workspace's VM, which joins the workspace with
+/// `material`.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct OpenBrowser {
     pub workspace: String,
-    /// Who the machine's time is booked to, as the relay knows the account;
-    /// no plan admits a browser environment, and no card is needed for one.
+    /// Whose the workspace's VM is, as the relay knows the account. Opening
+    /// Browser needs no card: its page actions are counted instead.
     pub account: String,
+    /// The size the workspace's VM runs at, as its shells ask for it.
+    pub size: VmSize,
     /// What its session joins the workspace with — the workspace, the record
     /// to open and the device certificate — opaque here, and passed to the
     /// guest as one line of its session's input.
@@ -77,12 +84,13 @@ pub enum Request {
     Place {
         vm: VmRequest,
     },
-    /// Start `workspace`'s browser environment, or attach to the one already
-    /// serving it.
+    /// Start the browser session in `workspace`'s VM, waking the VM if it
+    /// sleeps, or attach to the session already running.
     OpenBrowser {
         browser: OpenBrowser,
     },
-    /// End `workspace`'s browser environment now, with everything it wrote.
+    /// End the browser session in `workspace`'s VM now; the VM sleeps like
+    /// any idle VM.
     StopBrowser {
         workspace: String,
     },
@@ -148,9 +156,9 @@ pub enum Reply {
     Placed {
         host: String,
     },
-    /// A workspace's browser environment is up, its session in the workspace.
+    /// A workspace's browser session is up, joined to the workspace.
     /// `opened_ms`: what opening took, when this request opened it; `None`
-    /// when it attached to the environment someone else opened. `provider`:
+    /// when it attached to the session someone else opened. `provider`:
     /// the token the window it holds publishes under, which the relay routes
     /// page actions on that window by.
     Opened {

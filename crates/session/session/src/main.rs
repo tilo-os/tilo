@@ -610,7 +610,7 @@ fn start(
     // file is written beside them.
     tilo_startup_metrics::start_writer();
     tilo_startup_metrics::mark("services-start");
-    // A session in a browser environment takes the device identity its host handed it before it
+    // A session in a workspace's VM takes the device identity its host handed it before it
     // reads anything of itself: the workspace, the record whose window it opens and the key it acts
     // with are the relay's placement record, the first line of its standard input
     // (`docs/hosted-browser.md`, "What the session in the VM is handed").
@@ -683,7 +683,7 @@ fn start(
     let mut options = Options {
         services,
         wake,
-        // A session in a browser environment is not a first use of a computer: its identity is the
+        // A session in a workspace's VM is not a first use of a computer: its identity is the
         // one the relay handed it, so nothing is left to set up and nothing stands over the window
         // it was started for.
         setup: (!serves_an_environment)

@@ -1,22 +1,22 @@
-//! A hosted workspace's Browser: a window that runs in a VM of the
-//! workspace's own, reached through this host.
+//! A hosted workspace's Browser: a window that runs in the workspace's own
+//! VM, reached through this host.
 //!
 //! The relay runs no apps. Browser's page actions exist only on a live
 //! Browser window, so a workspace hosted here opens Browser by starting a
-//! *browser environment*: a short-lived VM beside the workspace's Linux VM,
-//! running a headless Tilo session (`docs/hosted-browser.md`). That session
-//! is a device of the workspace — a fresh key this host certifies for this
-//! one workspace — and it opens the Browser window on the record the open
-//! made, so the window is live and published like any other.
+//! headless Tilo session in the workspace's VM, the one its Linux programs
+//! run in (`docs/hosted-browser.md`). That session is a device of the
+//! workspace — a fresh key this host certifies for this one workspace — and it
+//! opens the Browser window on the record the open made, so the window is
+//! live and published like any other.
 //!
 //! This module is what the relay does about it:
 //!
 //! - **Place** ([`HostedBrowsers::place`]): after `app.so.tilo.browser#open`
-//!   made a record, certify a device for the environment scoped to the
-//!   workspace, list it as a member device, ask the environments service to
-//!   start it ([`BrowserEnvironments::start`]) with that material, and
+//!   made a record, certify a device for the session scoped to the
+//!   workspace, list it as a member device, ask the hosted-VM service to
+//!   start it ([`BrowserSessions::start`]) with that material, and
 //!   remember the window it answered. The open answers once the window is
-//!   live; a second open attaches to the same environment.
+//!   live; a second open attaches to the same session.
 //! - **Route** ([`HostedBrowsers::route`]): an action addressed to that
 //!   window reaches this host (a door agent's calls go to the workspace's
 //!   host device) and is handed to the device holding the window, stamped
@@ -36,8 +36,8 @@
 //!   typed [`Refusal`] — the VM path's refusal, not a second one — and one
 //!   the person did not allow is never counted.
 //!
-//! What starts and stops environments is the hosted-VM service's
-//! ([`BrowserEnvironments`]): this host places, routes and counts.
+//! What starts and stops sessions is the hosted-VM service's
+//! ([`BrowserSessions`]): this host places, routes and counts.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
@@ -63,27 +63,27 @@ pub const APP: &str = "so.tilo.browser";
 /// The resource the window's page actions are actions of (`browser.page`);
 /// their provider names the window (`browser@42`).
 pub const PAGE_RESOURCE: &str = "browser.page";
-/// How long a device certified for an environment lasts: as long as the
-/// environment may run.
+/// How long a device certified for a session lasts: as long as the session
+/// may run.
 pub const DEVICE_LIFETIME: Duration = Duration::from_secs(2 * 60 * 60);
 /// How long the person's answer to one page action stays good for running
 /// it: their confirmation of that invocation, not a standing grant.
 pub const WITNESS_LIFETIME: u64 = 5 * 60 * 1_000_000_000;
 /// How long a page action's question waits for the person.
 const ANSWER_WAIT_NS: u64 = 2 * 60 * 1_000_000_000;
-/// The label the workspace shows the environment's device under.
+/// The label the workspace shows the session's device under.
 pub const DEVICE_LABEL: &str = "Browser";
-/// The address the sessions in the environments reach this host at, written
+/// The address the sessions in the sessions reach this host at, written
 /// `KEY@HOST:PORT` ([`tilo_relay_protocol::hosted::endpoint`]): this host's
 /// device key and its **public** address.
 ///
-/// A browser environment's network reaches the public internet and nothing
+/// A browser session's network reaches the public internet and nothing
 /// else — no cluster-internal, private or link-local address answers it — so
-/// a host that places environments names the address they reach it at, and
+/// a host that places sessions names the address they reach it at, and
 /// never its own local one.
 pub const RELAY_ENV: &str = "TILO_HOSTED_BROWSER_RELAY";
 
-/// Where the sessions in this host's browser environments reach it: the
+/// Where the sessions in this host's browser sessions reach it: the
 /// address [`RELAY_ENV`] names, which the host must set to serve them.
 ///
 /// # Errors
@@ -92,20 +92,20 @@ pub const RELAY_ENV: &str = "TILO_HOSTED_BROWSER_RELAY";
 pub fn relay_address() -> Result<EndpointAddr, String> {
     let named = std::env::var(RELAY_ENV).map_err(|_| {
         format!(
-            "a host that places browser environments sets {RELAY_ENV} to the address their \
+            "a host that places Browser sets {RELAY_ENV} to the address its \
              sessions reach it at (KEY@HOST:PORT): their network reaches no private one"
         )
     })?;
     tilo_relay_protocol::hosted::endpoint(&named)
 }
 
-/// What a host hands a browser environment when it gives it a workspace: the
+/// What a host hands a browser session when it gives it a workspace: the
 /// device it certified for it, and where to be that device. The session in
-/// the environment reads the same type, so the two ends of the hand-off
+/// the session reads the same type, so the two ends of the hand-off
 /// cannot disagree about what it holds.
 pub use tilo_relay_protocol::hosted::Material;
 
-/// A browser environment that is up, and the window it holds.
+/// A browser session that is up, and the window it holds.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Window {
     /// The device of the workspace the session in the VM joined as.
@@ -115,14 +115,14 @@ pub struct Window {
     pub provider: String,
 }
 
-/// The service that starts and stops a workspace's browser environments.
+/// The service that starts and stops a workspace's browser sessions.
 ///
 /// The hosted-VM service's client implements this: it asks the placer for the
-/// host of `<workspace>/browser`, asks that host's member device to start the
-/// environment with the [`Material`], and answers once the session in it
-/// reports its window live.
-pub trait BrowserEnvironments: Send + Sync {
-    /// Start the workspace's environment with `material`, and answer its
+/// host of the workspace's VM, asks that host's member device to start the
+/// session in it with the [`Material`], and answers once the session reports
+/// its window live.
+pub trait BrowserSessions: Send + Sync {
+    /// Start the workspace's browser session with `material`, and answer its
     /// window once it is live.
     ///
     /// # Errors
@@ -131,8 +131,8 @@ pub trait BrowserEnvironments: Send + Sync {
     /// would not start it.
     fn start(&self, material: &Material) -> Result<Window, String>;
 
-    /// The workspace's environment stopped, or must: its device is forgotten
-    /// and its window no longer exists.
+    /// The workspace's browser session stopped, or must: its device is
+    /// forgotten and its window no longer exists.
     fn stop(&self, workspace: &str);
 }
 
@@ -166,21 +166,21 @@ impl BrowserMeter for Unmetered {
 }
 
 /// What placing needs of the host itself, once it runs: the certificate it
-/// makes environments' devices with, where it is reached, the workspaces it
-/// serves, and the register that confines each environment's device to the one
+/// makes browser sessions' devices with, where it is reached, the workspaces
+/// it serves, and the register that confines each session's device to the one
 /// record it was placed for.
 pub struct Authority {
     pub user_public_key: [u8; 32],
     /// The person's stand-in approver for this host
-    /// ([`tilo_user_identity::prepare_stand_in_cert`]): what an environment's
+    /// ([`tilo_user_identity::prepare_stand_in_cert`]): what a session's
     /// device is certified with, as a member device of the workspace's person
-    /// for as long as the environment may run. A host the person did not give
-    /// one holds no certificate to make an environment a device, and placing
+    /// for as long as the session may run. A host the person did not give
+    /// one holds no certificate to make a session a device, and placing
     /// one is refused.
     pub cert: DeviceCert,
     /// That stand-in's own signing key.
     pub key: SigningKey,
-    /// Where the session in the environment joins the workspace.
+    /// Where the session joins the workspace.
     pub relay: EndpointAddr,
     pub workspaces: Option<crate::workspaces::Workspaces>,
     /// The relay's environments' devices, confined to the record each was
@@ -195,9 +195,9 @@ pub struct Authority {
     pub certification: crate::certification::CertificationProtocol,
 }
 
-/// One workspace's window, while its environment runs.
+/// One workspace's window, while its session runs.
 struct Open {
-    /// The workspace, by its UUID, as its environment is named.
+    /// The workspace, by its UUID, as its VM is named.
     workspace: String,
     window: Window,
     /// The device the workspace lists for it, forgotten when it stops.
@@ -223,7 +223,7 @@ const HANDED: usize = 8192;
 /// The Browser this host places for its workspaces, and the page actions it
 /// hands to the windows.
 pub struct HostedBrowsers {
-    environments: Box<dyn BrowserEnvironments>,
+    sessions: Box<dyn BrowserSessions>,
     meter: Box<dyn BrowserMeter>,
     /// Who pays for the workspaces' VMs, as this host knows it.
     account: String,
@@ -237,18 +237,18 @@ pub struct HostedBrowsers {
 
 #[allow(
     clippy::significant_drop_tightening,
-    reason = "each method holds one guard for one answer; placing holds it so two opens make one environment"
+    reason = "each method holds one guard for one answer; placing holds it so two opens make one session"
 )]
 impl HostedBrowsers {
-    /// A host that places Browser through `environments`, counting page
+    /// A host that places Browser through `sessions`, counting page
     /// actions of `account` in `meter`.
     pub fn new(
-        environments: Box<dyn BrowserEnvironments>,
+        sessions: Box<dyn BrowserSessions>,
         meter: Box<dyn BrowserMeter>,
         account: String,
     ) -> Self {
         Self {
-            environments,
+            sessions,
             meter,
             account,
             open: Mutex::default(),
@@ -257,25 +257,25 @@ impl HostedBrowsers {
         }
     }
 
-    /// The Browser this host's environment names, when it runs environments
+    /// The Browser this host's environment names, when it serves Browser
     /// at all: where they start and stop (a placer and its VM hosts,
     /// [`crate::placed_browsers::PlacedBrowsers`]), the ledger their page
     /// actions are counted in ([`crate::browser_actions::BrowserMeter`]), and
-    /// the address the sessions in them reach this host at.
+    /// the address the sessions reach this host at.
     ///
     /// # Errors
     ///
-    /// Environments are named but cannot be started, or their page actions
+    /// Sessions are named but cannot be started, or their page actions
     /// cannot be counted: a host that runs browsers without counting them
     /// would serve them free of charge, so the start fails rather than run
     /// half of it.
     pub fn from_env() -> Result<Option<Self>, String> {
-        let Some(environments) = crate::placed_browsers::PlacedBrowsers::from_env()? else {
+        let Some(sessions) = crate::placed_browsers::PlacedBrowsers::from_env()? else {
             return Ok(None);
         };
         let meter = crate::browser_actions::BrowserMeter::from_env()?.ok_or_else(|| {
             format!(
-                "{} names where browser environments start, so {} must name the ledger their \
+                "{} names where Browser sessions start, so {} must name the ledger their \
                  page actions are counted in",
                 crate::placed_shells::PLACER_ENV,
                 tilo_host_account::browser_actions::LEDGER_ENV
@@ -284,16 +284,16 @@ impl HostedBrowsers {
         // The address their sessions reach this host at is part of serving
         // them: a host that cannot say it fails here, not at the first open.
         relay_address()?;
-        let account = environments.account().to_owned();
+        let account = sessions.account().to_owned();
         Ok(Some(Self::new(
-            Box::new(environments),
+            Box::new(sessions),
             Box::new(meter),
             account,
         )))
     }
 
     /// Name the host's identity and workspaces, once it runs: needed to
-    /// certify an environment's device and to list it in its workspace.
+    /// certify an session's device and to list it in its workspace.
     pub fn serve_from(&self, authority: Authority) {
         *self.authority.lock_recover() = Some(authority);
     }
@@ -563,7 +563,7 @@ impl HostedBrowsers {
     }
 
     /// The UUID of the workspace this host carries as `workspace_id`, when it
-    /// serves one: what a page action and an environment's device name it by.
+    /// serves one: what a page action and an session's device name it by.
     #[must_use]
     pub fn workspace_name(&self, workspace_id: u64) -> Option<String> {
         let authority = self.authority.lock_recover();
@@ -582,7 +582,7 @@ impl HostedBrowsers {
     /// # Errors
     ///
     /// The words to refuse the open with: this host is not running, no device
-    /// could be certified, or the environment would not start.
+    /// could be certified, or the session would not start.
     pub fn place(
         &self,
         workspace: &str,
@@ -609,11 +609,11 @@ impl HostedBrowsers {
             };
             (device, material)
         };
-        let window = self.environments.start(&material)?;
-        // The workspace lists the environment's device while it runs, so the
-        // window's actions reach it, and confines it to that record before its
-        // session can ask for anything: the scope is registered here, at the
-        // relay, and the device itself is asked nothing.
+        let window = self.sessions.start(&material)?;
+        // The workspace lists the session's device while it runs, so the
+        // window's actions reach it, and confines it to that record before
+        // the session can ask for anything: the scope is registered here, at
+        // the relay, and the device itself is asked nothing.
         self.confine(
             &device,
             Some(crate::environment::EnvironmentScope::for_record(
@@ -634,19 +634,19 @@ impl HostedBrowsers {
         Ok(window)
     }
 
-    /// The workspace's environment stopped: forget its device and its window.
+    /// The workspace's browser session stopped: forget its device and its window.
     pub fn stopped(&self, workspace_id: u64) {
         let stopped = self.open.lock_recover().remove(&workspace_id);
         let Some(stopped) = stopped else {
             return;
         };
-        self.environments.stop(&stopped.workspace);
+        self.sessions.stop(&stopped.workspace);
         self.confine(&stopped.device, None);
         self.list(workspace_id, &stopped.device, false);
     }
 
-    /// Register the scope an environment's device reaches, or forget it and
-    /// with it everything the device could reach.
+    /// Register the scope a session's device reaches, or forget it and with
+    /// it everything the device could reach.
     fn confine(&self, device: &DeviceCert, scope: Option<crate::environment::EnvironmentScope>) {
         let authority = self.authority.lock_recover();
         let Some(authority) = authority.as_ref() else {
@@ -655,7 +655,7 @@ impl HostedBrowsers {
         crate::environment::confine(&authority.environments, device.device_public_key, scope);
     }
 
-    /// List (or forget) the environment's device in the workspace it serves,
+    /// List (or forget) the session's device in the workspace it serves,
     /// as a member device of the person the workspace belongs to.
     fn list(&self, workspace_id: u64, device: &DeviceCert, listed: bool) {
         let authority = self.authority.lock_recover();
@@ -674,20 +674,20 @@ impl HostedBrowsers {
             tracing::warn!(
                 %error,
                 device = %hex::encode(device.device_public_key),
-                "a browser environment's device was not listed in its workspace"
+                "a browser session's device was not listed in its workspace"
             );
         }
     }
 }
 
-/// A fresh device for an environment, certified by the host's stand-in as a
-/// member device of the workspace's person, for as long as the environment
+/// A fresh device for a session, certified by the host's stand-in as a
+/// member device of the workspace's person, for as long as the session
 /// may run.
 fn certified(stand_in: &DeviceCert, key: &SigningKey) -> Result<(DeviceCert, [u8; 32]), String> {
     if !stand_in.capabilities.stand_in {
         return Err(
             "this host holds no stand-in certificate for the workspace's person, so it cannot \
-             make an environment a device"
+             make a browser session a device"
                 .to_owned(),
         );
     }
@@ -780,10 +780,10 @@ pub fn no_payment_method(free: u64) -> Refusal {
 }
 
 /// What a host that places no Browser refuses an open of it with: words that
-/// say why, since a Browser window needs an environment this host has not.
+/// say why, since a Browser window needs a session this host has not.
 #[must_use]
 pub fn unplaced() -> String {
-    "Browser does not open here: this host places no browser environment, and a Browser \
+    "Browser does not open here: this host places no browser session, and a Browser \
      window needs one. Open it on your own device instead."
         .to_owned()
 }
@@ -791,7 +791,7 @@ pub fn unplaced() -> String {
 /// The answer to an open of Browser that ran in `workspace_id`: `message`
 /// with the window placed, or the refusal in its place.
 ///
-/// The open answered once its record was made; this places the environment on
+/// The open answered once its record was made; this places the session on
 /// that record, and the open answers once the window is live.
 #[must_use]
 pub fn placed(
@@ -825,7 +825,7 @@ pub fn refused(invocation: tilo_actions::InvocationId, reason: String) -> Remote
 }
 
 /// Whether `request` opens Browser (`app.so.tilo.browser#open`): the open the
-/// plane places an environment after.
+/// plane places a session after.
 #[must_use]
 pub fn opens_browser(request: &InvokeRequest) -> bool {
     provider_workspace(&request.target.provider).is_some()
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn an_open_of_browser_is_the_one_that_places_an_environment() {
+    fn an_open_of_browser_is_the_one_that_places_a_session() {
         use tilo_actions::remote::{APPLICATION_OPEN_ACTION, workspace_provider};
         let open = |resource: &str, action: &str| InvokeRequest {
             invocation: tilo_actions::InvocationId::new(),
@@ -976,7 +976,7 @@ mod tests {
     #[test]
     fn a_host_that_places_nothing_says_why_instead_of_naming_an_unknown_app() {
         let words = unplaced();
-        assert!(words.contains("browser environment"), "{words}");
+        assert!(words.contains("browser session"), "{words}");
         assert!(!words.contains("no app"), "{words}");
     }
 }

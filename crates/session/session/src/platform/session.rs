@@ -681,7 +681,7 @@ impl Session {
         // A window another device shares is decoded on the same waker, so a
         // picture that comes out late lands without waiting for the next
         // frame the desk draws for something else.
-        // A hosted browser environment runs for the workspace's members: nobody sits at it, so
+        // A session holding a hosted Browser runs for the workspace's members: nobody sits at it, so
         // its windows are shared the moment they open.
         let hosted_browser =
             std::env::var_os("TILO_HOSTED_BROWSER").is_some_and(|mark| mark == "1");
@@ -1028,7 +1028,7 @@ impl Session {
         if let Some(launch) = &options.launch {
             launch.lend_broker(action_plane.as_ref().and_then(Plane::agent_broker));
         }
-        // A session in a browser environment is started for one workspace, and everything it does
+        // A session in a workspace's VM is started for one workspace, and everything it does
         // of what a person's session does is the window it holds: it is told here what wakes its
         // loop when the relay answers, and what the broker admits of its window's page.
         if let Some(hosted) = &mut options.hosted_browser {

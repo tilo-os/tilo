@@ -1,9 +1,8 @@
 # Tilo VM host
 
 One per VM-host node of a Tilo host that serves other people's workspaces
-(tilo.sh): `tilo-legacy hosted serve`, which runs each workspace
-environment's Linux programs in a jailed Firecracker VM, and its Browser in a
-microVM of its own when `TILO_VM_BROWSER` is set
+(tilo.sh): `tilo-legacy hosted serve`, which runs each
+workspace's Linux programs and its Browser in one jailed Firecracker VM
 ([`docs/app-model/environments.md`](../../../docs/app-model/environments.md),
 "Hosted workspace VMs"). `entrypoint.sh` says what the start does.
 
@@ -30,17 +29,13 @@ microVM of its own when `TILO_VM_BROWSER` is set
   admits wakes against.
 - **The guest**: the digest this build pins (`os/hosted-guest-snapshot.env`),
   or `TILO_VM_GUEST_REF`; either way only an image the release key signed.
-- **Browser environments** (optional): `TILO_VM_BROWSER=1` has the host run
-  each workspace's Browser in a microVM of its own beside its Linux VM, from
-  the browser guest image the same file pins (`HOSTED_BROWSER_GUEST_<ARCH>_REF`).
-  Two spares stay booted for the next workspace (`TILO_VM_BROWSER_SPARES`);
-  each environment keeps nothing and ends after ten minutes without page
-  activity, or two hours alive. It takes its share of the memory budget.
-  Their sessions join their workspaces through the relay at
-  `TILO_VM_RELAY_ENDPOINT` (`ADDR:PORT`, required with the browser): the
-  relay's address as a VM reaches it, and the only address besides the
-  internet an environment's VM may reach. A relay on the host's own loopback
-  (a local stack) is reached at `10.0.2.4`, which `pasta` maps there.
+- **Browser** (optional): `TILO_VM_RELAY_ENDPOINT` (`ADDR:PORT`) has the
+  host serve each workspace's Browser in its VM: the browser session there
+  joins its workspace through the relay at that address, the relay's address
+  as a VM reaches it and the only address besides the internet a VM may
+  reach. A relay on the host's own loopback (a local stack) is reached at
+  `10.0.2.4`, which `pasta` maps there. A session ends after ten minutes
+  without page activity, or two hours alive; the VM then sleeps like any.
 
 | | |
 | --- | --- |

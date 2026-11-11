@@ -23,9 +23,9 @@ use std::time::Duration;
 
 use legacy_agent_protocol::link::AgentLink;
 
-use super::browser::{self, Browser, Named, Pool, UP_PATIENCE};
+use super::browser::{self, Browser, Launcher, Life, Limits, UP_PATIENCE};
 use super::control::{
-    FRAMING, HostLoad, OpenBrowser, Reply, Request, ShareRequest, VmRequest, VmStatus,
+    ENVIRONMENT, FRAMING, HostLoad, OpenBrowser, Reply, Request, ShareRequest, VmRequest, VmStatus,
 };
 use super::files::Served;
 use super::firecracker::VmFiles;
@@ -47,6 +47,10 @@ pub const BUSY: &str = "Starting another machine for it, about 3 minutes.";
 /// How long a waiting wake counts as demand after it last asked: its
 /// caller asks again every few seconds while it waits.
 const WAITING_FOR_MS: u64 = 15_000;
+
+/// How long a browser session is given to write its profile and end before
+/// it is killed.
+const BROWSER_GRACE: Duration = Duration::from_secs(5);
 
 /// Where a host keeps its VMs and what it boots them with.
 #[derive(Clone, Debug)]
@@ -99,6 +103,8 @@ struct Entry {
     /// Admitted and not yet seen asleep. Read without the VM's lock.
     awake: AtomicBool,
     vm: Mutex<HostedVm>,
+    /// The browser session in this VM, once a browser action started one.
+    browser: Mutex<Option<Arc<Browser>>>,
 }
 
 impl Entry {
@@ -120,36 +126,46 @@ pub struct Service {
     memory_budget_mib: Option<u64>,
     /// Wakes waiting for room: what each asks for, and when it last asked.
     waiting: Mutex<BTreeMap<String, (u64, u64)>>,
-    /// The browser environments it runs, and the spares kept for the next
-    /// workspace.
-    browsers: Mutex<Pool>,
+    /// How long a browser session may be idle, and live.
+    browser_limits: Limits,
 }
 
-/// Why a workspace's browser environment did not open.
+/// Why a workspace's Browser did not open.
 #[derive(Debug)]
 pub enum BrowserError {
-    /// This host runs no browser environments: its service was started
-    /// without the browser guest image.
+    /// This host serves no Browser: its service was started without the
+    /// relay's endpoint, so no session in its VMs could join a workspace.
     NotOffered,
     Invalid(String),
     /// Not now: every machine is full ([`BUSY`]). The caller waits for
     /// room and asks again.
     Full(String),
-    /// The environment's session did not come up.
+    /// The session in the workspace's VM did not come up.
     Session(String),
     Vm(VmError),
+}
+
+impl From<EnsureError> for BrowserError {
+    fn from(error: EnsureError) -> Self {
+        match error {
+            EnsureError::HostFull => Self::Full(BUSY.to_owned()),
+            EnsureError::Vm(error) => Self::Vm(error),
+            EnsureError::Invalid(message) => Self::Invalid(message),
+            other => Self::Session(other.to_string()),
+        }
+    }
 }
 
 impl std::fmt::Display for BrowserError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NotOffered => {
-                f.write_str("this host runs no browser environments: it has no browser guest image")
-            }
+            Self::NotOffered => f.write_str(
+                "this host serves no Browser: it was started without the relay's endpoint",
+            ),
             Self::Invalid(message) => f.write_str(message),
             Self::Full(words) => f.write_str(words),
-            Self::Session(message) => write!(f, "the browser environment did not open: {message}"),
-            Self::Vm(error) => write!(f, "the browser environment could not boot: {error}"),
+            Self::Session(message) => write!(f, "Browser did not open: {message}"),
+            Self::Vm(error) => write!(f, "the workspace's VM could not start: {error}"),
         }
     }
 }
@@ -188,8 +204,7 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Service {
     /// Open every VM the host has, closing runs a previous service left
-    /// open. A browser environment keeps nothing, so what a service that
-    /// stopped mid-life left of one is deleted, not reopened.
+    /// open.
     pub fn open(config: ServiceConfig, clock: Clock) -> Result<Self, VmError> {
         std::fs::create_dir_all(&config.state)?;
         std::fs::create_dir_all(&config.run)?;
@@ -202,7 +217,7 @@ impl Service {
             evicting: AtomicBool::new(false),
             memory_budget_mib: None,
             waiting: Mutex::new(BTreeMap::new()),
-            browsers: Mutex::new(Pool::default()),
+            browser_limits: Limits::default(),
             config,
         };
         let vms_dir = service.config.state.join("vms");
@@ -212,19 +227,6 @@ impl Service {
                 let Some(meter) = Meter::load(&files.meter()) else {
                     continue;
                 };
-                if meter.identity.size == VmSize::Browser {
-                    let left = HostedVm::open(
-                        meter.identity,
-                        files,
-                        Arc::new(service.config.settings.clone()),
-                        None,
-                        Arc::clone(&service.clock),
-                    );
-                    if let Ok(mut vm) = left {
-                        let _ = vm.stop();
-                    }
-                    continue;
-                }
                 service.insert(meter.identity, files)?;
             }
         }
@@ -246,9 +248,7 @@ impl Service {
     }
 
     fn insert(&self, identity: VmIdentity, files: VmFiles) -> Result<Arc<Entry>, VmError> {
-        // A browser environment is not billed to an account: the relay counts
-        // the page actions, and the machine it runs on is the host's cost.
-        let ledger = (identity.size != VmSize::Browser).then(|| self.ledger.clone());
+        let ledger = Some(self.ledger.clone());
         let entry = Arc::new(Entry {
             workspace: identity.workspace.clone(),
             environment: identity.environment.clone(),
@@ -262,6 +262,7 @@ impl Service {
                 ledger,
                 Arc::clone(&self.clock),
             )?),
+            browser: Mutex::new(None),
         });
         lock(&self.vms).insert(entry.id(), Arc::clone(&entry));
         Ok(entry)
@@ -283,12 +284,6 @@ impl Service {
                 return Err(EnsureError::Invalid(format!("{name:?} is not a {what} id")));
             }
         }
-        if request.size == VmSize::Browser {
-            return Err(EnsureError::Invalid(
-                "a browser environment is opened with its own request, not by a shell run"
-                    .to_owned(),
-            ));
-        }
         let served: Vec<Served> = shares
             .iter()
             .map(|share| {
@@ -305,12 +300,12 @@ impl Service {
                 }
             })
             .collect::<Result<_, _>>()?;
-        let entry = self.admit(request)?;
+        let entry = self.admit(request, true)?;
         let mut vm = lock(&entry.vm);
         let result = (|| {
             vm.resize(request.size)?;
             *lock(&entry.size) = request.size;
-            let (link, woke) = vm.ensure(&served)?;
+            let (link, woke) = vm.ensure(&served, true)?;
             Ok((link, woke.map(|wake| wake.millis)))
         })();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -318,8 +313,11 @@ impl Service {
         result.map_err(EnsureError::Vm)
     }
 
-    /// The entry for `request`, reserved as awake, or why not.
-    fn admit(&self, request: &VmRequest) -> Result<Arc<Entry>, EnsureError> {
+    /// The entry for `request`, reserved as awake, or why not. A Linux
+    /// action (`linux`) needs the account's plan to allow it, and a card on
+    /// a host that sells its VMs; a browser action needs neither, as its
+    /// page actions are counted instead.
+    fn admit(&self, request: &VmRequest, linux: bool) -> Result<Arc<Entry>, EnsureError> {
         let _admission = lock(&self.admission);
         // Under the admission lock, so no wake slips in after the eviction's
         // suspends began.
@@ -364,18 +362,20 @@ impl Service {
                 request.workspace
             )));
         }
-        admit(
-            &plans,
-            &request.account,
-            &id,
-            request.size,
-            &awake,
-            existing,
-            existing_entry.is_some(),
-        )
-        .map_err(|refusal| {
-            EnsureError::Refused(refusal.typed(plans.sells.as_ref(), &request.account))
-        })?;
+        if linux {
+            admit(
+                &plans,
+                &request.account,
+                &id,
+                request.size,
+                &awake,
+                existing,
+                existing_entry.is_some(),
+            )
+            .map_err(|refusal| {
+                EnsureError::Refused(refusal.typed(plans.sells.as_ref(), &request.account))
+            })?;
+        }
         let entry = match existing_entry {
             Some(entry) => entry,
             None => self
@@ -443,192 +443,117 @@ impl Service {
             .cloned()
     }
 
-    /// Open `request`'s workspace's browser environment: the one already
-    /// serving it, a spare, or a freshly booted one. `Some(ms)` when this
+    /// Open `request`'s workspace's Browser: the session in the workspace's
+    /// VM, started now with the workspace's material, the VM woken for it if
+    /// it sleeps; or the session already running. `Some(ms)` when this
     /// request handed it the workspace; `None` when it attached to the
-    /// environment a person already opened. Either way, the provider token of
-    /// the window it holds, which page actions on it name.
+    /// session someone already opened. Either way, the provider token of the
+    /// window it holds, which page actions on it name.
     pub fn open_browser(
         &self,
         request: &OpenBrowser,
     ) -> Result<(Option<u64>, String), BrowserError> {
-        if !valid_name(&request.workspace) {
-            return Err(BrowserError::Invalid(format!(
-                "{:?} is not a workspace id",
-                request.workspace
-            )));
-        }
-        self.config
-            .settings
-            .browser
-            .as_ref()
-            .ok_or(BrowserError::NotOffered)?;
-        // Before anything boots: a material the session could not join with
-        // refuses the open, and no spare is spent on it.
+        // Before anything wakes: a material the session could not join with
+        // refuses the open.
         let material = self.hand_off(&request.material)?;
-        let named = self.browser_for(&request.workspace, &request.account)?;
-        match named.browser.open(&material, UP_PATIENCE) {
+        let vm = VmRequest {
+            workspace: request.workspace.clone(),
+            environment: ENVIRONMENT.to_owned(),
+            account: request.account.clone(),
+            size: request.size,
+        };
+        for (what, name) in [("workspace", &vm.workspace), ("account", &vm.account)] {
+            if !valid_name(name) {
+                return Err(BrowserError::Invalid(format!(
+                    "{name:?} is not a {what} id"
+                )));
+            }
+        }
+        let entry = self.admit(&vm, false)?;
+        let browser = self.browser_in(&entry, request.size)?;
+        match browser.open(&material, UP_PATIENCE) {
             Ok(opened_ms) => {
-                lock(&self.waiting).remove(&browser::environment(&request.workspace));
-                let provider = named.browser.life().provider().ok_or_else(|| {
-                    BrowserError::Session(
-                        "the browser environment came up without a window".to_owned(),
-                    )
+                let provider = browser.life().provider().ok_or_else(|| {
+                    BrowserError::Session("the session came up without a window".to_owned())
                 })?;
                 if let Some(opened_ms) = opened_ms {
                     eprintln!(
-                        "tilo-legacy hosted: {}: up {provider} {}ms after hand-off",
-                        browser::environment(&request.workspace),
-                        opened_ms
+                        "tilo-legacy hosted: {}: Browser up {provider} {opened_ms}ms after hand-off",
+                        entry.id()
                     );
                 }
                 Ok((opened_ms, provider))
             }
             Err(message) => {
-                // A spare or a fresh environment that did not come up is of
-                // no use to this workspace: end it, and say why.
-                let _ = self.stop_browser(&request.workspace);
+                end_browser(&entry, BROWSER_GRACE);
                 Err(BrowserError::Session(message))
             }
         }
     }
 
     /// The line a workspace's session is handed: the relay's material, with
-    /// the relay's address replaced by the one this VM dials
+    /// the relay's address replaced by the one its VM dials
     /// ([`browser::hand_off`]).
     fn hand_off(&self, material: &str) -> Result<String, BrowserError> {
-        let guest = self
-            .config
-            .settings
-            .browser
-            .as_ref()
-            .ok_or(BrowserError::NotOffered)?;
-        browser::hand_off(material, guest.relay.guest()).map_err(BrowserError::Invalid)
+        let relay = self.config.settings.relay.ok_or(BrowserError::NotOffered)?;
+        browser::hand_off(material, relay.guest()).map_err(BrowserError::Invalid)
     }
 
-    /// The environment serving `workspace`: the one it has, a spare it takes,
-    /// or one booted for it.
-    fn browser_for(&self, workspace: &str, account: &str) -> Result<Named, BrowserError> {
-        let claimed = lock(&self.browsers).claim(workspace);
-        if let Some(named) = claimed {
-            return Ok(named);
-        }
-        let environment = browser::environment(workspace);
-        if !self.room_for(VmSize::Browser, &environment) {
-            self.waits(&environment, VmSize::Browser);
-            return Err(BrowserError::Full(BUSY.to_owned()));
-        }
-        let named = self.boot_browser(&environment, account)?;
-        if lock(&self.browsers).serve(workspace, named.clone()) {
-            return Ok(named);
-        }
-        // Another request served the workspace while this one booted it: this
-        // environment waits for the next workspace, and this call follows the
-        // one that got there first.
-        lock(&self.browsers).spare_booted(named);
-        lock(&self.browsers).serving(workspace).ok_or_else(|| {
-            BrowserError::Session("the workspace's browser environment went away".to_owned())
-        })
-    }
-
-    /// End `workspace`'s browser environment now, with everything it wrote.
-    pub fn stop_browser(&self, workspace: &str) -> Result<(), VmError> {
-        let Some(named) = lock(&self.browsers).close(workspace) else {
-            return Ok(());
-        };
-        self.end_environment(&named.environment, "the workspace closed it")
-    }
-
-    /// Stop and delete one browser environment's VM.
-    fn end_environment(&self, environment: &str, why: &str) -> Result<(), VmError> {
-        let entry = lock(&self.vms).remove(environment);
-        let Some(entry) = entry else {
-            return Ok(());
-        };
-        eprintln!("tilo-legacy hosted: {environment}: ended ({why})");
+    /// The browser session in `entry`'s VM, woken at `size`: the one running,
+    /// or one that starts when the workspace's material is handed to it.
+    fn browser_in(&self, entry: &Entry, size: VmSize) -> Result<Arc<Browser>, BrowserError> {
         let mut vm = lock(&entry.vm);
-        let stopped = vm.stop();
-        entry.awake.store(false, Ordering::SeqCst);
-        drop(vm);
-        stopped
-    }
-
-    /// Boot a browser environment named `environment` (a workspace's
-    /// `<workspace>/browser`, or a spare's): the VM boots from the browser
-    /// guest image on a fresh disk, its guest agent answers, and its session
-    /// starts when a workspace is handed to it — never before, as a session
-    /// reads its identity once, before it builds anything.
-    fn boot_browser(&self, environment: &str, account: &str) -> Result<Named, BrowserError> {
-        let (workspace, name) = match environment.split_once('/') {
-            Some((workspace, name)) => (workspace.to_owned(), name.to_owned()),
-            None => (environment.to_owned(), browser::BROWSER.to_owned()),
-        };
-        let files = self.config.files(&workspace, &name);
-        let entry = self
-            .insert(
-                VmIdentity {
-                    vm: environment.to_owned(),
-                    workspace,
-                    environment: name,
-                    account: account.to_owned(),
-                    size: VmSize::Browser,
-                },
-                files,
-            )
-            .map_err(BrowserError::Vm)?;
-        let booted = (|| {
-            let link = {
-                let mut vm = lock(&entry.vm);
-                let (link, _) = vm.ensure(&[]).map_err(BrowserError::Vm)?;
-                link
-            };
-            entry.awake.store(true, Ordering::SeqCst);
-            let log = self
-                .config
-                .files(&entry.workspace, &entry.environment)
-                .state
-                .join("session.log");
-            let life = Arc::new(browser::Life::new((self.clock)()));
-            let starts =
-                browser::Launcher::new(link, Arc::clone(&life), log, Arc::clone(&self.clock));
-            Ok(Arc::new(Browser::booted(life, Box::new(starts))))
+        let woke = (|| {
+            vm.resize(size)?;
+            *lock(&entry.size) = size;
+            vm.ensure(&[], false)
         })();
-        match booted {
-            Ok(browser) => Ok(Named {
-                environment: environment.to_owned(),
-                browser,
-            }),
-            Err(error) => {
-                let _ = self.end_environment(environment, "it did not come up");
-                Err(error)
-            }
+        entry.awake.store(vm.awake(), Ordering::SeqCst);
+        drop(vm);
+        let (link, _) = woke.map_err(BrowserError::Vm)?;
+        let log = self
+            .config
+            .files(&entry.workspace, &entry.environment)
+            .state
+            .join("browser.log");
+        let mut held = lock(&entry.browser);
+        let running = held
+            .as_ref()
+            .filter(|browser| browser.life().ended_because().is_none())
+            .cloned();
+        let browser = running.unwrap_or_else(|| {
+            let life = Arc::new(Life::new((self.clock)()));
+            let starts = Launcher::new(link, Arc::clone(&life), log, Arc::clone(&self.clock));
+            let browser = Arc::new(Browser::booted(life, Box::new(starts)));
+            *held = Some(Arc::clone(&browser));
+            browser
+        });
+        drop(held);
+        Ok(browser)
+    }
+
+    /// End the browser session in `workspace`'s VM now; the VM sleeps like
+    /// any idle VM.
+    pub fn stop_browser(&self, workspace: &str) {
+        if let Some(entry) = self.entry(workspace, ENVIRONMENT) {
+            end_browser(&entry, BROWSER_GRACE);
         }
     }
 
-    /// End the browser environments that are at their end, and keep the
-    /// spares the host wants. Called between polls.
-    pub fn maintain(self: &Arc<Self>) {
-        let Some(guest) = self.config.settings.browser.clone() else {
-            return;
-        };
+    /// End the browser sessions at their limits, each on a thread of its
+    /// own, as a session is given time to write its profile. Called between
+    /// polls.
+    pub fn maintain(&self) {
         let now = (self.clock)();
-        let work = lock(&self.browsers).maintain(now, guest.limits(), guest.spares);
-        for (environment, end) in work.end {
-            let _ = self.end_environment(&environment, &end.to_string());
-        }
-        for _ in 0..work.boot {
-            if !self.room_for(VmSize::Browser, "") {
-                break;
+        let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
+        for entry in entries {
+            let end = lock(&entry.browser)
+                .as_ref()
+                .and_then(|browser| browser.expired(now, self.browser_limits));
+            if let Some(end) = end {
+                eprintln!("tilo-legacy hosted: {}: Browser ended ({end})", entry.id());
+                std::thread::spawn(move || end_browser(&entry, BROWSER_GRACE));
             }
-            let environment = lock(&self.browsers).spare_opening();
-            let service = Arc::clone(self);
-            std::thread::spawn(move || match service.boot_browser(&environment, "") {
-                Ok(named) => lock(&service.browsers).spare_booted(named),
-                Err(error) => {
-                    lock(&service.browsers).spare_failed();
-                    eprintln!("tilo-legacy hosted: {environment}: {error}");
-                }
-            });
         }
     }
 
@@ -636,6 +561,7 @@ impl Service {
         let Some(entry) = self.entry(workspace, environment) else {
             return Ok(());
         };
+        end_browser(&entry, BROWSER_GRACE);
         let mut vm = lock(&entry.vm);
         let result = vm.suspend();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -646,6 +572,7 @@ impl Service {
         let Some(entry) = self.entry(workspace, environment) else {
             return Ok(());
         };
+        end_browser(&entry, BROWSER_GRACE);
         let mut vm = lock(&entry.vm);
         let result = vm.stop();
         entry.awake.store(vm.awake(), Ordering::SeqCst);
@@ -656,6 +583,7 @@ impl Service {
     pub fn suspend_all(&self) {
         let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
         for entry in entries {
+            end_browser(&entry, BROWSER_GRACE);
             let mut vm = lock(&entry.vm);
             if vm.awake() && vm.suspend().is_err() {
                 let _ = vm.stop();
@@ -673,13 +601,12 @@ impl Service {
             let _admission = lock(&self.admission);
             self.evicting.store(true, Ordering::SeqCst);
         }
-        let (browsers, others): (Vec<Arc<Entry>>, Vec<Arc<Entry>>) = lock(&self.vms)
-            .values()
-            .cloned()
-            .partition(|entry| *lock(&entry.size) == VmSize::Browser);
+        let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
         std::thread::scope(|scope| {
-            for entry in &others {
+            for entry in &entries {
                 scope.spawn(move || {
+                    // A short grace: the notice is about 30 seconds.
+                    end_browser(entry, Duration::from_secs(2));
                     let mut vm = lock(&entry.vm);
                     if vm.awake()
                         && let Err(error) = vm.suspend()
@@ -691,13 +618,6 @@ impl Service {
                 });
             }
         });
-        // A browser environment keeps nothing, and a snapshot of a page is
-        // worth no host: they are stopped with everything they wrote.
-        let environments: Vec<String> = browsers.iter().map(|entry| entry.id()).collect();
-        *lock(&self.browsers) = Pool::default();
-        for environment in environments {
-            let _ = self.end_environment(&environment, "the host is being taken back");
-        }
     }
 
     /// Whether the host is being taken back.
@@ -774,9 +694,10 @@ impl Service {
                 Err(BrowserError::Full(words)) => Reply::Busy(words),
                 Err(error) => Reply::Error(error.to_string()),
             },
-            Request::StopBrowser { workspace } => self
-                .stop_browser(&workspace)
-                .map_or_else(|error| Reply::Error(error.to_string()), |()| Reply::Done),
+            Request::StopBrowser { workspace } => {
+                self.stop_browser(&workspace);
+                Reply::Done
+            }
             Request::Place { .. } => {
                 Reply::Error("a host runs VMs; a placer answers where".to_owned())
             }
@@ -865,6 +786,15 @@ impl Service {
     }
 }
 
+/// End the browser session in `entry`'s VM, if one runs, giving it `grace`
+/// to write its profile to the VM's disk.
+fn end_browser(entry: &Entry, grace: Duration) {
+    let browser = lock(&entry.browser).take();
+    if let Some(browser) = browser {
+        browser.end(grace);
+    }
+}
+
 fn accept_loop(listener: &UnixListener, service: &Arc<Service>) {
     for stream in listener.incoming() {
         let Ok(stream) = stream else {
@@ -921,7 +851,7 @@ mod tests {
                 idle_suspend: Duration::from_secs(30),
                 self_exe: dir.join("tilo-legacy"),
                 jail: None,
-                browser: None,
+                relay: None,
             },
         }
     }
@@ -964,6 +894,7 @@ mod tests {
             Some(OpenRun {
                 start_ms: 1_000,
                 last_seen_ms: 61_500,
+                billed_from_ms: Some(1_500),
             }),
         );
         let service = Service::open(config.clone(), clock(90_000)).unwrap();
@@ -1041,7 +972,10 @@ mod tests {
             .with_memory_budget(12 * 1024);
         let admitted = |workspace: &str, size: VmSize| {
             service
-                .admit(&request(workspace, &format!("acct-{workspace}"), size))
+                .admit(
+                    &request(workspace, &format!("acct-{workspace}"), size),
+                    true,
+                )
                 .map(|_| ())
         };
         admitted("ws1", VmSize::Default).unwrap();
@@ -1079,60 +1013,47 @@ mod tests {
     }
 
     #[test]
-    fn browser_environments_count_in_the_hosts_memory_and_keep_nothing() {
+    fn a_workspace_without_a_card_gets_its_vm_for_browser_and_no_linux_action() {
         let dir = tempfile::tempdir().unwrap();
         let config = config(dir.path());
-        let service = Service::open(config.clone(), clock(0))
-            .unwrap()
-            .with_memory_budget(4 * 1024);
-        let entry = service
-            .insert(
-                VmIdentity {
-                    vm: "ws1/browser".into(),
-                    workspace: "ws1".into(),
-                    environment: "browser".into(),
-                    account: "acct-1".into(),
-                    size: VmSize::Browser,
-                },
-                config.files("ws1", "browser"),
-            )
+        std::fs::write(
+            &config.plans,
+            r#"{"accounts":{"acct-card":{"max_running":2,"max_vms":2,"sizes":["small"]}},"sells":{"host":"tilo.sh","plans":[],
+                "add_payment_method":"https://tilo.sh/card","browser_free_actions":300}}"#,
+        )
+        .unwrap();
+        let service = Service::open(config, clock(0)).unwrap();
+        // phase: Browser wakes the workspace's VM, card or not
+        service
+            .admit(&request("ws1", "acct-free", VmSize::Small), false)
             .unwrap();
-        entry.awake.store(true, Ordering::SeqCst);
+        // phase: a Linux action in that same VM needs the card
+        let Reply::Refused(refusal) = service.handle(Request::Ensure {
+            vm: request("ws1", "acct-free", VmSize::Small),
+            shares: Vec::new(),
+        }) else {
+            panic!("a Linux action without a card is refused");
+        };
+        assert_eq!(refusal.reason, host_account::Reason::NoPaymentMethod);
         assert_eq!(
-            service.load().awake_mib,
-            2 * 1024,
-            "a browser environment takes its size of the budget, like any VM"
+            service.status().len(),
+            1,
+            "one VM for the workspace, which Browser and Linux share"
         );
-        assert!(
-            matches!(
-                service.admit(&request("ws2", "acct-2", VmSize::Small)),
-                Err(EnsureError::HostFull)
-            ),
-            "a 4 GiB Linux VM no longer fits beside it"
-        );
-        // phase: stopping it deletes what it wrote, and bills nobody
-        lock(&entry.vm).stop().unwrap();
-        assert!(
-            !config.files("ws1", "browser").state.exists(),
-            "a browser environment keeps nothing"
-        );
-        assert!(
-            service.ledger.records("acct-1").unwrap().is_empty(),
-            "the relay counts page actions, not the machine"
-        );
+        // phase: with a card, the same VM takes Linux actions
+        service
+            .admit(&request("ws2", "acct-card", VmSize::Small), true)
+            .unwrap();
     }
 
     #[test]
     fn a_workspace_is_handed_the_address_its_session_dials_the_relay_at() {
-        use super::super::browser::{self, BrowserGuest};
         use super::super::network::Endpoint;
 
         let dir = tempfile::tempdir().unwrap();
         let with_relay = |relay: &str| {
             let mut config = config(dir.path());
-            let machine = config.settings.machine.clone();
-            config.settings.browser =
-                Some(BrowserGuest::new(machine, Endpoint::parse(relay).unwrap()));
+            config.settings.relay = Some(Endpoint::parse(relay).unwrap());
             Service::open(config, clock(0)).unwrap()
         };
         let dialled = |line: &str| -> std::net::SocketAddr {
@@ -1164,60 +1085,32 @@ mod tests {
             .hand_off(&browser::test_material("203.0.113.9:7704"))
             .unwrap();
         assert_eq!(dialled(&line), "10.0.0.9:7704".parse().unwrap());
-        // phase: a host that runs no browser environments hands nothing on
-        let none = Service::open(config(dir.path()), clock(0)).unwrap();
-        assert!(matches!(
-            none.hand_off(&browser::test_material("127.0.0.1:7704")),
-            Err(BrowserError::NotOffered)
-        ));
         // and a material the session could not join with refuses the open
         assert!(matches!(
             local.hand_off("{}"),
             Err(BrowserError::Invalid(_))
         ));
     }
-    #[test]
-    fn a_service_restarted_mid_life_deletes_a_browser_environment() {
-        let dir = tempfile::tempdir().unwrap();
-        let config = config(dir.path());
-        let files = config.files("spare", "browser-1");
-        let mut meter = Meter::new(VmIdentity {
-            vm: "spare/browser-1".into(),
-            workspace: "spare".into(),
-            environment: "browser-1".into(),
-            account: "spare".into(),
-            size: VmSize::Browser,
-        });
-        meter.started(1_000);
-        meter.save(&files.meter()).unwrap();
-        std::fs::create_dir_all(files.vmm()).unwrap();
-        std::fs::write(files.disk(), b"a disk").unwrap();
-
-        let service = Service::open(config, clock(10_000)).unwrap();
-        assert!(
-            service.status().is_empty(),
-            "a browser environment is not reopened where it was left"
-        );
-        assert!(!files.state.exists(), "what it left is deleted");
-    }
 
     #[test]
-    fn a_host_without_a_browser_guest_runs_no_browser_environments() {
+    fn a_host_without_the_relays_endpoint_serves_no_browser() {
         let dir = tempfile::tempdir().unwrap();
         let service = Service::open(config(dir.path()), clock(0)).unwrap();
         let Reply::Error(message) = service.handle(Request::OpenBrowser {
             browser: OpenBrowser {
                 workspace: "ws1".into(),
                 account: "acct-1".into(),
-                material: "{}".into(),
+                size: VmSize::Small,
+                material: browser::test_material("127.0.0.1:7704"),
             },
         }) else {
-            panic!("a host with no browser guest image opens nothing");
+            panic!("a host with no relay endpoint opens nothing");
         };
         assert_eq!(
             message,
-            "this host runs no browser environments: it has no browser guest image"
+            "this host serves no Browser: it was started without the relay's endpoint"
         );
+        assert!(service.status().is_empty(), "and woke nothing");
         assert_eq!(
             service.handle(Request::StopBrowser {
                 workspace: "ws1".into()

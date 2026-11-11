@@ -1,28 +1,28 @@
-//! A workspace's browser environment, started on the member device that runs
-//! the workspace's VMs (`docs/hosted-browser.md`, "Where it runs").
+//! A workspace's Browser, started on the member device that runs
+//! the workspace's VM (`docs/hosted-browser.md`, "Where it runs").
 //!
 //! A workspace hosted on a relay opens Browser like any app, and the page has
-//! to run somewhere: in a microVM of the workspace's own, on the host that
-//! keeps the workspace's VMs. The relay asks that host's member device over
+//! to run somewhere: in the workspace's own VM, on the host that
+//! keeps that VM. The relay asks that host's member device over
 //! the device plane, as the device it is, the way it asks for a shell command
 //! ([`environment_runs`](super::environment_runs)):
 //!
-//! - [`target`] names an environment's open, an action of the workspace's
+//! - [`target`] names a Browser open, an action of the workspace's
 //!   environment ([`RESOURCE`]); the argument is an [`OpenBrowser`].
-//! - It succeeds with an [`OpenedBrowser`] once the environment's session is
+//! - It succeeds with an [`OpenedBrowser`] once the session is
 //!   up in the workspace: what opening took, whether this call opened it or
 //!   attached to the one already serving the workspace, and the provider
 //!   token of the window it holds (what a page action names). A host with no
 //!   room answers
 //!   [`Unavailable`](super::ActionHostError::Unavailable) with the words to
 //!   wait on.
-//! - [`STOP`] ends it, with everything it wrote.
+//! - [`STOP`] ends the session; the VM then sleeps like any idle VM.
 //!
-//! The session in the environment reports through its standard output, one
+//! The session in the workspace's VM reports through its standard output, one
 //! line per event ([`Report`]): [`READY`] once its engine is up with no
 //! workspace, [`UP`] with the window's provider once it has joined and opened
 //! the window, and [`USED`] whenever the page is used. [`MARK`] is set in its
-//! environment, so the session knows it serves an environment.
+//! environment, so the session knows it holds a hosted Browser.
 //!
 //! Only the workspace's host asks, as a device of the operator the member's
 //! own identity belongs to: the workspace it opens is the caller's, never one
@@ -33,16 +33,16 @@ use serde::{Deserialize, Serialize};
 use super::RemoteActionTarget;
 use crate::door::ActionAddress;
 
-/// The provider a member answers browser environments under.
+/// The provider a member answers the workspaces' Browser under.
 pub const PROVIDER: &str = "tilo.environment";
 /// The resource opening one is an action of: the workspace's environment.
 pub const RESOURCE: &str = "environment";
-/// Start a workspace's browser environment, or attach to it.
+/// Start the browser session in a workspace's VM, or attach to it.
 pub const OPEN: &str = "open-browser";
 /// End it now.
 pub const STOP: &str = "stop-browser";
 
-/// Set in the environment session's own environment: it serves a browser
+/// Set in the session's own environment: it serves a browser
 /// environment, and reports on its standard output.
 pub const MARK: &str = "TILO_HOSTED_BROWSER";
 /// The line the session prints once its engine is up and it waits for a
@@ -55,7 +55,7 @@ pub const UP: &str = "up";
 /// somebody is viewing it.
 pub const USED: &str = "used";
 
-/// What the session in a browser environment printed on its standard output.
+/// What the session in a workspace's VM printed on its standard output.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Report {
     /// Its engine is up, and it waits for a workspace.
@@ -112,7 +112,7 @@ pub fn stop_target() -> RemoteActionTarget {
     }
 }
 
-/// A workspace's browser environment to open, and what its session joins the
+/// A workspace's Browser to open, and what its session joins the
 /// workspace with.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenBrowser {
@@ -127,14 +127,14 @@ pub struct OpenBrowser {
     pub material: String,
 }
 
-/// A workspace's browser environment, up.
+/// A workspace's Browser, up.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OpenedBrowser {
     /// What opening took, when this call opened it; absent when it attached
-    /// to the environment already serving the workspace.
+    /// to the session already running.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub opened_ms: Option<u64>,
-    /// The provider token of the window the environment holds (`42`): what a
+    /// The provider token of the window the session holds (`42`): what a
     /// page action on it is addressed to.
     pub provider: String,
 }

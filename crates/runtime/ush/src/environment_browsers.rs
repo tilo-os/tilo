@@ -1,22 +1,19 @@
-//! A workspace's browser environment, opened on the member device that runs
-//! the workspace's VMs (`docs/hosted-browser.md`, "Where it runs").
+//! A workspace's Browser, opened in the workspace's VM on the member device
+//! that runs it (`docs/hosted-browser.md`).
 //!
-//! A hosted workspace's Browser runs in a microVM of the workspace's own,
-//! which this host's hosted-VM service (`legacy_vm::hosted`, the one that runs
-//! the workspace's Linux VM) boots and keeps. So the member device answers the
-//! relay's ask by asking that service over its socket
-//! ([`Request::OpenBrowser`]), and waits while it says the host is full: an
-//! idle environment says the same thing as a machine starting (a few
-//! minutes), and a browser opens sooner than it.
+//! The member device answers the relay's ask by asking this host's hosted-VM
+//! service (`legacy_vm::hosted`, the one that runs the workspace's VM) over
+//! its socket ([`Request::OpenBrowser`]) to start the browser session in that
+//! VM, and waits while it says the host is full.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use legacy_vm::hosted::control::{self, Reply, Request};
+use legacy_vm::hosted::size::VmSize;
 use tilo_actions::remote::browser::{OpenBrowser, OpenedBrowser};
 
-/// How long one answer is waited for: a boot and its session, when the host
-/// has no spare to hand over.
+/// How long one answer is waited for: a wake and the session starting.
 const ANSWER_PATIENCE: Duration = Duration::from_secs(300);
 
 /// How long a host with no room is waited for before it is reported.
@@ -25,26 +22,28 @@ const ROOM_PATIENCE: Duration = Duration::from_secs(10 * 60);
 /// How often a host with no room is asked again.
 const ASK_AGAIN: Duration = Duration::from_secs(2);
 
-/// The hosted-VM service on this member, as the place browser environments
-/// start.
+/// The hosted-VM service on this member, as the place the workspaces'
+/// Browser starts, in their VMs of `size`.
 #[derive(Clone, Debug)]
 pub struct BrowserHost {
     socket: PathBuf,
+    size: VmSize,
 }
 
 impl BrowserHost {
     #[must_use]
-    pub const fn new(socket: PathBuf) -> Self {
-        Self { socket }
+    pub const fn new(socket: PathBuf, size: VmSize) -> Self {
+        Self { socket, size }
     }
 
-    /// Open `asked`'s workspace's browser environment, or attach to the one
-    /// already serving it, waiting while the host has no room.
+    /// Open `asked`'s workspace's Browser, or attach to the session already
+    /// running, waiting while the host has no room.
     pub fn open(&self, asked: &OpenBrowser) -> Result<OpenedBrowser, String> {
         let request = Request::OpenBrowser {
             browser: control::OpenBrowser {
                 workspace: asked.workspace.clone(),
                 account: asked.account.clone(),
+                size: self.size,
                 material: asked.material.clone(),
             },
         };
@@ -75,7 +74,7 @@ impl BrowserHost {
         }
     }
 
-    /// End `workspace`'s browser environment now.
+    /// End the browser session in `workspace`'s VM now.
     pub fn stop(&self, workspace: &str) -> Result<(), String> {
         match self.ask(&Request::StopBrowser {
             workspace: workspace.to_owned(),

@@ -1,7 +1,7 @@
-//! A session in a browser environment: the device, the workspace and the window its host handed
+//! A session in a workspace's VM: the device, the workspace and the window its host handed
 //! it (`docs/hosted-browser.md`, "What the session in the VM is handed").
 //!
-//! An environment is a microVM whose disk is fresh from the image every boot, so the session in it
+//! The session in a workspace's VM is started at the first browser action, so it
 //! holds nothing of its own: the relay placement record on its standard input is the workspace it
 //! joins, the record whose Browser window it opens, and the device certificate and key it joins
 //! as. It is a device of the workspace like any other — the relay lists it, and its window is
@@ -26,21 +26,21 @@ use tilo_relay_protocol::hosted::Material;
 
 use crate::Shared;
 
-/// The app whose window an environment holds.
+/// The app whose window a session holds.
 pub const BROWSER: &str = "so.tilo.browser";
 /// How long the invitation the relay answers the join with stays redeemable.
 const ENTER_INVITATION_SECONDS: u64 = 600;
 /// How often the page's use is reported while it is in use: one an action or a viewer is what the
 /// host counts its idle limit from, and a page being read for an hour is in use the whole time.
 const USED_EVERY: Duration = Duration::from_secs(60);
-/// The colour the record of the person an environment serves carries, as a device that joined
+/// The colour the record of the person a session serves carries, as a device that joined
 /// without their root gets it.
 const ENVIRONMENT_AVATAR: [u8; 3] = [88, 101, 242];
 
 /// What the session reports on its standard output: the host relays every line.
 pub type Reports = Box<dyn FnMut(Report) + Send>;
 
-/// The session an environment runs: the identity it was handed, the join it asked of its relay,
+/// The session in a workspace's VM: the identity it was handed, the join it asked of its relay,
 /// and the window it holds.
 pub struct HostedBrowser {
     /// The relay's placement record: what this session joins, opens and is.
@@ -86,7 +86,7 @@ enum Window {
 }
 
 impl HostedBrowser {
-    /// The environment's session, joining as the device `material`, the relay's placement record
+    /// The session, joining as the device `material`, the relay's placement record
     /// names: its identity is taken here, before anything reads this device of itself, and `ready`
     /// is reported. `reports` is where the session says what it became.
     ///
@@ -124,7 +124,7 @@ impl HostedBrowser {
             return;
         };
         let Ok(runtime) = tilo_rt::try_app() else {
-            tracing::warn!("a browser environment's page is not watched: no task to watch it on");
+            tracing::warn!("a hosted Browser's page is not watched: no task to watch it on");
             return;
         };
         let mut activity = broker.subscribe_execution_activity();
@@ -187,7 +187,7 @@ impl HostedBrowser {
         }
     }
 
-    /// Ask this environment's relay to enter the device into the workspace, once: as the device the
+    /// Ask its relay to enter the device into the workspace, once: as the device the
     /// material certifies, it answers with an invitation, which the session redeems.
     fn join(&mut self) {
         if !matches!(self.join, Join::Waiting) {
@@ -231,7 +231,7 @@ impl HostedBrowser {
         match apps.start(&launch, &workspace) {
             Ok(()) => self.window = Window::Opening,
             Err(error) => {
-                tracing::warn!(%error, record = %self.material.record, "the environment's Browser did not open");
+                tracing::warn!(%error, record = %self.material.record, "the session's Browser did not open");
                 self.window = Window::Failed;
             }
         }
@@ -272,7 +272,7 @@ impl HostedBrowser {
 }
 
 impl crate::Shared {
-    /// The environment's session follows its join and its window each pass: this is all it does of
+    /// The session follows its join and its window each pass: this is all it does of
     /// what a person's session does, so what it opened and what it reports is followed here.
     pub(crate) fn follow_hosted_browser(&self) {
         if let Some(hosted) = &mut *self.hosted_browser.borrow_mut() {
@@ -281,7 +281,7 @@ impl crate::Shared {
     }
 }
 
-/// The session this environment's host started, when the environment says so: what a spare is
+/// The session its host started, when its host says so: what it is
 /// started with is the material as the first line of its standard input, and nothing else.
 ///
 /// # Errors
@@ -303,11 +303,11 @@ pub fn handed() -> Result<Option<HostedBrowser>, String> {
 }
 
 /// Every report, one line on the session's standard output: what the host that started the
-/// session reads, and the log is the environment's stderr only.
+/// session reads, and the log is its stderr only.
 fn say_on_stdout(report: &Report) {
     println!("{}", report.line());
     if let Err(error) = std::io::stdout().flush() {
-        tracing::warn!(%error, "a browser environment's report was not written");
+        tracing::warn!(%error, "a hosted Browser's report was not written");
     }
 }
 
@@ -345,7 +345,7 @@ fn take_identity(material: &Material) -> Result<(), String> {
     Ok(())
 }
 
-/// Ask this environment's relay to enter the session's device into the workspace, the way a member
+/// Ask its relay to enter the session's device into the workspace, the way a member
 /// device asks to enter a workspace its relay hosts, and answer the invitation text it redeems.
 async fn invitation(material: &Material) -> Result<String, String> {
     let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
@@ -410,7 +410,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
-    /// A session in an environment, holding the window `provider` and reporting into `said`.
+    /// A session in a workspace's VM, holding the window `provider` and reporting into `said`.
     fn holding(provider: u64, said: &Arc<Mutex<Vec<String>>>) -> HostedBrowser {
         let reports = Arc::clone(said);
         let (sender, arrived) = std::sync::mpsc::channel();

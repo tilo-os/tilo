@@ -19,7 +19,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_relay::certify::ConfirmationAnswer;
 use tilo_relay::hosted_browser::{
-    BrowserEnvironments, BrowserMeter, HostedBrowsers, Material, PAGE_RESOURCE, Window,
+    BrowserMeter, BrowserSessions, HostedBrowsers, Material, PAGE_RESOURCE, Window,
     no_payment_method,
 };
 use tilo_relay::transport::REMOTE_ACTION_ENVELOPE_VERSION;
@@ -55,7 +55,7 @@ impl InProcessEnvironments {
     }
 }
 
-impl BrowserEnvironments for InProcessEnvironments {
+impl BrowserSessions for InProcessEnvironments {
     fn start(&self, material: &Material) -> Result<Window, String> {
         self.starts.lock().unwrap().push(material.clone());
         Ok(Window {
@@ -483,7 +483,7 @@ async fn fixture(meter: Arc<Counting>) -> Fixture {
 /// The environments a test started, behind the trait the relay holds.
 struct EnvironmentsHandle(Arc<InProcessEnvironments>);
 
-impl BrowserEnvironments for EnvironmentsHandle {
+impl BrowserSessions for EnvironmentsHandle {
     fn start(&self, material: &Material) -> Result<Window, String> {
         self.0.start(material)
     }

@@ -29,7 +29,7 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use iroh::{Endpoint, EndpointAddr, EndpointId};
-use legacy_vm::hosted::control::{self, Reply, Request, VmRequest};
+use legacy_vm::hosted::control::{self, ENVIRONMENT, Reply, Request, VmRequest};
 use legacy_vm::hosted::size::VmSize;
 use serde::Deserialize;
 use tilo_actions::remote::environment_runs::{self, CommandRan, RunCommand, RunOutput};
@@ -44,8 +44,6 @@ pub const PLACER_ENV: &str = "TILO_HOSTED_PLACER";
 /// where it is reached ([`Members`]).
 pub const MEMBERS_ENV: &str = "TILO_HOSTED_MEMBERS";
 
-/// The environment a workspace's VM is: one per workspace.
-const ENVIRONMENT: &str = "default";
 /// How often a run waiting for room asks the placer again.
 const BUSY_RETRY: Duration = Duration::from_secs(2);
 /// How long the placer is given to answer.
@@ -150,22 +148,20 @@ impl PlacedShells {
         &self.members
     }
 
-    /// The host that runs the VM of `workspace`'s `environment` (of `size`),
-    /// waiting while none has room and keeping the line that said so in
-    /// `waited`; `None` when `stop` ended the wait.
+    /// The host that runs `workspace`'s VM, which holds its shells and its
+    /// Browser, waiting while none has room and keeping the line that said so
+    /// in `waited`; `None` when `stop` ended the wait.
     pub(crate) fn placed(
         &self,
         workspace: &str,
-        environment: &str,
-        size: VmSize,
         waited: &mut Option<String>,
         stop: Option<&(dyn Fn() -> bool + Sync)>,
     ) -> Result<Option<String>, String> {
         let vm = VmRequest {
             workspace: workspace.to_owned(),
-            environment: environment.to_owned(),
+            environment: ENVIRONMENT.to_owned(),
             account: self.account.clone(),
-            size,
+            size: self.size,
         };
         loop {
             if stop.is_some_and(|stop| stop()) {
@@ -202,14 +198,7 @@ impl PlacedShells {
     ) -> Result<ShellRan, String> {
         let (plane, endpoint) = self.asking()?;
         let mut waited = None;
-        let Some(host) = self.placed(
-            workspace,
-            ENVIRONMENT,
-            self.size,
-            &mut waited,
-            watching.stop,
-        )?
-        else {
+        let Some(host) = self.placed(workspace, &mut waited, watching.stop)? else {
             return Ok(shell_ran(stopped_before_start(command, waited)));
         };
         let member = self.members.get(&host).ok_or_else(|| {

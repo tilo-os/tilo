@@ -1,9 +1,9 @@
-//! What a host hands a workspace's browser environment when it gives it the
+//! What a host hands the browser session in a workspace's VM when it gives it the
 //! workspace (`docs/hosted-browser.md`).
 //!
-//! A hosted workspace's Browser runs in a microVM of the workspace's own,
+//! A hosted workspace's Browser runs in the workspace's own VM,
 //! beside its Linux VM, and the session in that VM is a device of the
-//! workspace: this host certifies it one, for as long as the environment may
+//! workspace: this host certifies it one, for as long as the session may
 //! run, and lists it in that one workspace. [`Material`] is what the session
 //! is started with — the workspace it joins, the record whose window it
 //! opens, its own device certificate and key, and where the host is reached.
@@ -16,7 +16,7 @@ use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_user_identity::DeviceCert;
 
-/// What a host hands a browser environment when it gives it a workspace: the
+/// What a host hands a workspace's Browser when it gives it a workspace: the
 /// device it certified for it, and where to be that device.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Material {
@@ -26,11 +26,11 @@ pub struct Material {
     pub workspace_id: u64,
     /// The Browser record the window opens on.
     pub record: String,
-    /// The device the workspace lists while the environment runs, and no
+    /// The device the workspace lists while the workspace's VM runs, and no
     /// other: certified by the host as a member device of the person the
     /// workspace belongs to.
     pub device: DeviceCert,
-    /// That device's signing key, the only copy: the environment holds it.
+    /// That device's signing key, the only copy: the session holds it.
     pub secret: [u8; 32],
     /// Where the session joins the workspace: the host's endpoint, at the
     /// address a machine outside its network reaches it by.
