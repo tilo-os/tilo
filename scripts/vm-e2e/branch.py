@@ -527,8 +527,13 @@ def keep_session(run: Run, name: str, label: str) -> None:
 def keep_actions(run: Run, name: str, label: str) -> None:
     """What the desktop lists, by provider and id, for steps that address its actions."""
     try:
-        rows = [f"{r.get('provider')}  {str(r.get('id')).replace(chr(31), ' | ')}  {r.get('title')}"
-                for r in listed_actions(run.vm(name))]
+        listed = listed_actions(run.vm(name))
+        # The desk's own chrome last: what an app offers is what a failing step looks for, and the
+        # evidence keeps the file's end.
+        listed.sort(key=lambda r: r.get("provider") not in ("so.tilo.session", "applications"))
+        rows = [f"{r.get('provider')}  {r.get('application') or ''}  "
+                f"{str(r.get('id')).replace(chr(31), ' | ')[:160]}  {r.get('operation')}  "
+                f"{r.get('title')}" for r in listed]
         run.write(f"{label}-{name}-actions.txt", "\n".join(rows))
     except VmError as exc:
         run.write(f"{label}-{name}-actions.txt", f"could not list: {exc}")
@@ -621,9 +626,9 @@ def configure_passwords(facts: dict, run: Run) -> None:
 
 
 def open_passwords(vm: TiloVm) -> None:
-    if not [r for r in app_rows(vm, "", "save-login") if PASSWORDS in r["id"]]:
+    if not of_app(app_rows(vm, "", "save-login"), PASSWORDS):
         open_app(vm, PASSWORDS)
-    if not wait_until(lambda: [r for r in app_rows(vm, "", "save-login") if PASSWORDS in r["id"]],
+    if not wait_until(lambda: of_app(app_rows(vm, "", "save-login"), PASSWORDS),
                       60, interval=1.0):
         keep_actions(run_of[vm.vm], vm.vm, "S03d")
         raise Failed(f"Passwords is open on {vm.vm}, but the desktop lists none of its "
@@ -697,15 +702,28 @@ def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
 
 
 def app_rows(vm: TiloVm, query: str, action: str) -> list[dict]:
-    """The app actions named `action` (the last part of a row's id) the desktop lists."""
-    return [row for row in listed_actions(vm, *([query] if query else []))
-            if row.get("provider") == "app-actions" and row["id"].split("\x1f")[-1] == action]
+    """The app actions named `action` the desktop lists: an app the desktop launches is listed
+    under `app-actions`, a running app's instance under a provider of its own, naming its app
+    (`application`) and its action (`operation`)."""
+    def offered(row: dict) -> bool:
+        if row.get("provider") in ("so.tilo.session", "applications"):
+            return False
+        named = row.get("operation") or str(row.get("id", "")).split("\x1f")[-1]
+        return named == action and (row.get("provider") == "app-actions"
+                                    or bool(row.get("application")))
+    return [row for row in listed_actions(vm, *([query] if query else [])) if offered(row)]
+
+
+def of_app(rows: list[dict], app: str) -> list[dict]:
+    """The rows of `rows` that are `app`'s."""
+    return [r for r in rows if r.get("application") == app or app in str(r.get("id", ""))]
 
 
 def app_action(vm: TiloVm, query: str, action: str, args: dict | None = None, part: str = "") -> dict:
     """Invoke the app action `action` a live window offers (else its directory's row), as the
     agent-chat e2e does, and its answer once it succeeded."""
-    rows = sorted((r for r in app_rows(vm, query, action) if part in r["id"]),
+    rows = sorted((r for r in app_rows(vm, query, action)
+                   if part in r["id"] or part == r.get("application")),
                   key=lambda row: row["id"].startswith("directory"))
     expect(rows, f"{vm.vm} offers no {action} (asked for {query!r})")
     argv = ["actions", "invoke", rows[0]["provider"], rows[0]["id"], "--wait=20000"]
@@ -853,7 +871,8 @@ def open_window(vm: TiloVm, ws: dict) -> object:
 # What the person's session says of its workspaces' sync, at debug: set on box before it is
 # branched, so a and b inherit it. Read back only when a window does not travel.
 SYNC_LOG = ("info,tilo_session::sync=debug,tilo_session::shared_desktop=debug,"
-            "tilo_session::workspaces=debug,tilo_peer_state=debug,tilo::join_flow=debug")
+            "tilo_session::workspaces=debug,tilo_peer_state=debug,tilo::join_flow=debug,"
+            "tilo_network_actor=debug")
 
 
 def log_sync(vm: TiloVm) -> None:
@@ -892,9 +911,9 @@ def sync_excerpt(vm: TiloVm) -> str:
     text = vm.root_exec("journalctl -m --since \"$(uptime -s)\" --no-pager -o short-iso "
                         "SYSLOG_IDENTIFIER=tilo-session-me 2>&1 "
                         "| grep -av 'FRAME-LIFECYCLE\\|paint-stats\\|HEAP-MILESTONE\\|MESA\\|app_output\\|frames=' "
-                        "| grep -a 'sync\\|shared_desktop\\|workspaces\\|peer_state\\|join_flow\\|WARN\\|ERROR' "
+                        "| grep -a 'sync\\|shared_desktop\\|workspaces\\|peer_state\\|join_flow\\|network_actor\\|WARN\\|ERROR' "
                         "| grep -av 'has no live plane' "
-                        "| tail -n 250 | cut -c1-500", timeout=120, check=False)
+                        "| tail -n 400 | cut -c1-500", timeout=120, check=False)
     return text or "(nothing)"
 
 

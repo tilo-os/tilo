@@ -94,7 +94,7 @@ if (( status != 0 )); then
   for f in "$reports"/data/*-boot.txt "$reports"/data/*-session.txt "$reports"/data/*-session.log "$reports"/data/S03-box-person.txt "$reports"/data/*-actions.txt; do
     [[ -f $f ]] || continue
     echo "== evidence: ${f##*/}"
-    { grep -av 'FRAME-LIFECYCLE\|paint-stats' "$f" | tail -n 300 | cut -c1-1500; } || true
+    { grep -av 'FRAME-LIFECYCLE\|paint-stats' "$f" | tail -n 450 | cut -c1-1500; } || true
   done
 fi
 phase 'done'
