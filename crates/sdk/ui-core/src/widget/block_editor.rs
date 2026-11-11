@@ -8506,8 +8506,10 @@ impl BlockEditor {
                 && is_paragraph[i]
                 && i.checked_sub(1)
                     .is_some_and(|previous| is_paragraph[previous]);
-            // An embed (an embedded note, an image) is an object in the
-            // flow: it stands a group gap from the text on either side.
+            // An embed (an embedded note, an image) is an object in the flow: the text it
+            // stands between is one group of prose, so it sits a group gap from the line
+            // above it and from the one below, the same distance a page puts between the
+            // groups a person reads down.
             let around_embed = embeds.get(i).copied().unwrap_or(false)
                 || i.checked_sub(1)
                     .and_then(|previous| embeds.get(previous).copied())
@@ -8525,9 +8527,11 @@ impl BlockEditor {
             };
             stack_box.margin_top = if i == 0 || b.soft_break || continues_code_block {
                 0.0
-            } else if heading_above {
+            } else if heading_above || around_embed {
+                // A heading opens its section, and an embed stands apart from the text on
+                // either side: both take the gap between groups.
                 theme.tokens.spacing.s6 * theme.text_scale
-            } else if against_surface || around_embed {
+            } else if against_surface {
                 theme.tokens.spacing.s4 * theme.text_scale
             } else if heading_below {
                 theme.tokens.spacing.s3 * theme.text_scale
