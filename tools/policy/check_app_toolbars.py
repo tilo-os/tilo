@@ -80,6 +80,7 @@ EXEMPT = {
     "fullscreen": "presenting or playing back with the window's chrome hidden",
     "fallback": "drawn only when no window bar hosts the window",
     "wizard": "step navigation inside a flow",
+    "list-new": "a list column's own New, heading the list it adds to, so the bar's one \"+\" stays the strip's new tab",
 }
 EXEMPTION = re.compile(r"//\s*window-bar:\s*([A-Za-z-]*)")
 

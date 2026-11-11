@@ -57,9 +57,8 @@ thread_local! {
 }
 
 /// What the window's bar was last declared with: the note shown (its title
-/// and anchor), whether the page tree is open, and whether New note is
-/// offered.
-type DeclaredBar = (Option<(String, String)>, bool, bool);
+/// and anchor), and whether the page tree is open.
+type DeclaredBar = (Option<(String, String)>, bool);
 
 /// The test id of the sidebar header's "New note" button.
 pub(crate) const NEW_NOTE_BUTTON_ID: &str = "new-note";
@@ -361,8 +360,6 @@ pub struct NotesApp {
     /// The note title and sidebar state the bar's slots were last declared
     /// with.
     declared_bar: Option<DeclaredBar>,
-    /// The window bar's entries, each carrying the header request it makes.
-    bar: ui::framework::BarCommands<window_bar::BarCommand>,
     /// Whether the headers offer New note: the person may make one.
     offers_new_note: bool,
     /// Cached taffy node IDs. Filled in `build_layout`, used by
@@ -756,7 +753,6 @@ impl NotesApp {
             header,
             header_in_bar: false,
             declared_bar: None,
-            bar: ui::framework::BarCommands::new(),
             offers_new_note: true,
             shell_node: None,
             sidebar_node: None,

@@ -90,23 +90,12 @@ fn nodes_named(
         .collect()
 }
 
-/// The band the window's own controls stand in: the bar, whatever holds it.
-fn bar_band(harness: &FrameHarness) -> (f64, f64) {
-    let close = nodes_named(harness, "Close")
-        .into_iter()
-        .find_map(|(_, node)| node.bounds())
-        .expect("the window's own close control is drawn in its bar");
-    (close.y0, close.y1)
-}
-
-/// A window of Notes with no note in it still offers New note, in the bar it
-/// draws: the app declares the slot the moment its window is up, and the
-/// window stops handing its bar to the app's own row for it, so the control
-/// stands in the same row as the window's own controls, named for a screen
-/// reader and an agent, and pressing it makes the note. Both widths a person
-/// meets it at: a window of a desk, and a phone's.
+/// A window of Notes with no note in it still offers New note, in the notebook itself (the
+/// page tree's header, or the empty notebook's own call), never in the window's bar, whose
+/// one "+" is the strip's: named for a screen reader and an agent, and pressing it makes the
+/// note. Both widths a person meets it at: a window of a desk, and a phone's.
 #[test]
-fn an_empty_notes_window_offers_new_note_in_its_bar_and_it_makes_a_note() {
+fn an_empty_notes_window_offers_new_note_and_it_makes_a_note() {
     ui::i18n::I18nManager::init("en-US");
     for width in [1280, 390] {
         let f = NotebookFixture::empty();
@@ -117,21 +106,12 @@ fn an_empty_notes_window_offers_new_note_in_its_bar_and_it_makes_a_note() {
             "{width}px: the notebook is empty"
         );
 
-        let (bar_y0, bar_y1) = bar_band(&harness);
         let offered = nodes_named(&harness, &ui::i18n!("notes-affordance-new-note"));
-        assert!(
-            !offered.is_empty(),
-            "{width}px: an empty window of Notes offers New note"
-        );
-        let new_note = offered
+        let Some((new_note, _)) = offered
             .into_iter()
-            .find(|(_, node)| {
-                node.bounds()
-                    .is_some_and(|bounds| bounds.y0 >= bar_y0 - 1.0 && bounds.y1 <= bar_y1 + 1.0)
-            })
-            .map(|(id, _)| id);
-        let Some(new_note) = new_note else {
-            panic!("{width}px: New note stands in the window's bar, in the row its own controls do")
+            .find(|(_, node)| node.bounds().is_some())
+        else {
+            panic!("{width}px: an empty window of Notes offers New note")
         };
 
         harness
@@ -144,7 +124,7 @@ fn an_empty_notes_window_offers_new_note_in_its_bar_and_it_makes_a_note() {
         assert_eq!(
             page_count(&f, &checkout),
             1,
-            "{width}px: the bar's New note makes the notebook's first note"
+            "{width}px: New note makes the notebook's first note"
         );
     }
 }
