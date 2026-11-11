@@ -1255,6 +1255,9 @@ impl DesktopSurface {
                     let dock = &mut shared.dock;
                     dock.cards.retain(|group, _| floats.contains_key(group));
                     dock.slots.retain(|group, _| floats.contains_key(group));
+                    // A window that left the column is not folded: it opens whole the next
+                    // time it is sent here.
+                    dock.collapsed.retain(|group, _| floats.contains_key(group));
                 }
                 floats
                     .into_iter()
