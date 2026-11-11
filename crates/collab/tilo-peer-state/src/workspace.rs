@@ -321,10 +321,17 @@ pub fn sent_change(mut change: automerge::Change) -> Vec<u8> {
 }
 
 pub fn candidate(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
+    candidate_on(before.cloned().unwrap_or_else(AutoCommit::new), changes)
+}
+
+/// [`candidate`] built on `candidate`, taken rather than copied.
+///
+/// # Errors
+/// As [`candidate`].
+pub fn candidate_on(mut candidate: AutoCommit, changes: &[Vec<u8>]) -> Result<AutoCommit, String> {
     // Each entry is one complete change chunk; their concatenation is ordinary
     // storage, admitted like any other untrusted document mutation.
     let storage = changes.concat();
-    let mut candidate = before.cloned().unwrap_or_else(AutoCommit::new);
     candidate.reset_diff_cursor();
     if storage.is_empty() {
         return Ok(candidate);

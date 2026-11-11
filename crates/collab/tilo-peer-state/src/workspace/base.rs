@@ -60,9 +60,15 @@ pub(crate) enum Lineage {
         replaced: Vec<ChangeHash>,
     },
     /// It carries a newer base, which replaces the receiver's document: the
-    /// base and the changes of the batch not shown to belong to another
-    /// history.
-    Newer(Vec<Vec<u8>>),
+    /// document the base builds, and the changes of the batch beside the base
+    /// not shown to belong to another history. The base is built once, here,
+    /// where its generation is read: a newcomer's base holds the whole
+    /// workspace, and building it a second time to admit it was a second load
+    /// of everything a workspace of hundreds governs.
+    Newer {
+        base: Box<AutoCommit>,
+        changes: Vec<Vec<u8>>,
+    },
 }
 
 /// Sort `changes` against `before`. A change with no dependencies starts a
@@ -93,7 +99,7 @@ pub(crate) fn lineage(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Linea
         .iter()
         .map(|bytes| automerge::Change::try_from(bytes.as_slice()).ok())
         .collect();
-    let mut newest: Option<(u64, usize)> = None;
+    let mut newest: Option<(u64, usize, AutoCommit)> = None;
     for (index, (change, bytes)) in decoded.iter().zip(changes).enumerate() {
         let Some(change) = change else {
             continue;
@@ -101,15 +107,28 @@ pub(crate) fn lineage(before: Option<&AutoCommit>, changes: &[Vec<u8>]) -> Linea
         if !change.deps().is_empty() {
             continue;
         }
-        let started =
-            super::candidate(None, std::slice::from_ref(bytes)).map_or(0, |doc| generation(&doc));
-        if started > held && newest.is_none_or(|(generation, _)| started > generation) {
-            newest = Some((started, index));
+        let Ok(started) = super::candidate(None, std::slice::from_ref(bytes)) else {
+            continue;
+        };
+        let at = generation(&started);
+        if at > held
+            && newest
+                .as_ref()
+                .is_none_or(|(generation, ..)| at > *generation)
+        {
+            newest = Some((at, index, started));
         }
     }
-    if let Some((_, base)) = newest {
-        let (changes, _) = sorted(changes, &decoded, Some(base), None);
-        return Lineage::Newer(changes);
+    if let Some((_, base, built)) = newest {
+        let (kept, _) = sorted(changes, &decoded, Some(base), None);
+        let base_bytes = changes.get(base);
+        return Lineage::Newer {
+            base: Box::new(built),
+            changes: kept
+                .into_iter()
+                .filter(|bytes| Some(bytes) != base_bytes)
+                .collect(),
+        };
     }
     let Some(before) = before.filter(|_| held > 0) else {
         return Lineage::Same {
@@ -355,8 +374,17 @@ mod tests {
         let mut base = rebase(&old, ActorId::random()).unwrap();
         let based = changes(&mut base, &[]);
 
-        assert!(matches!(lineage(Some(&old), &based), Lineage::Newer(kept) if kept == based));
-        assert!(matches!(lineage(None, &based), Lineage::Newer(kept) if kept == based));
+        for held in [Some(&old), None] {
+            let Lineage::Newer {
+                base: mut built,
+                changes,
+            } = lineage(held, &based)
+            else {
+                panic!("a newer base replaces what is held");
+            };
+            assert!(changes.is_empty(), "the base is all the batch carries");
+            assert_eq!(built.get_heads(), base.get_heads());
+        }
         assert!(matches!(
             lineage(Some(&base), &history),
             Lineage::Same { changes: kept, replaced } if kept.is_empty() && replaced.is_empty()
@@ -383,7 +411,9 @@ mod tests {
                 let pruned = pruned(doc, replaced);
                 super::super::candidate(pruned.as_ref().or(doc), &changes).unwrap()
             }
-            Lineage::Newer(changes) => super::super::candidate(None, &changes).unwrap(),
+            Lineage::Newer { base, changes } => {
+                super::super::candidate_on(*base, &changes).unwrap()
+            }
         }
     }
 
