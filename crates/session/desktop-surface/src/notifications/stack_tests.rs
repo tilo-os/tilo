@@ -397,7 +397,7 @@ fn compact_viewport_keeps_notification_inside_both_edges() {
     stack.set_viewport(Rect::new(0.0, 0.0, 320.0, 480.0));
     let width = stack.toast_width();
     let x0 = stack.viewport.x1 - CORNER_INSET - width;
-    assert_eq!(width, 272.0);
+    assert_eq!(width, 320.0 - CORNER_INSET * 2.0);
     assert_eq!(x0, CORNER_INSET);
 }
 
@@ -598,8 +598,8 @@ fn banners_that_do_not_fit_fold_into_a_more_card_and_do_not_age() {
         let ids: Vec<u64> = (0..super::super::MAX_NOTIFICATIONS)
             .map(|i| host.push(Notification::new(format!("Banner {i}"), "Body")))
             .collect();
-        // Three stand at most, and this corner has room for two of them.
-        let viewport = Rect::new(0.0, 0.0, 800.0, 240.0);
+        // Three stand at most, and this corner has room for one of them.
+        let viewport = Rect::new(0.0, 0.0, 800.0, 180.0);
         let mut stack = NotificationStack::new();
         stack.set_viewport(viewport);
         draw(&mut stack, &host, &theme);

@@ -300,9 +300,8 @@ fn the_bell_opens_and_closes_the_centre() {
 fn banners_line_up_with_the_centre_and_quick_settings() {
     let banner =
         tilo_desktop_surface::notifications::transient_slot(DISPLAY, 48.0, (360.0, 72.0), &[]);
-    assert_eq!(
-        banner.x1,
-        DISPLAY.x1 - POPOVER_MARGIN,
+    assert!(
+        (banner.x1 - (DISPLAY.x1 - POPOVER_MARGIN)).abs() < f64::EPSILON,
         "a banner keeps the corner margin"
     );
     let notifications = DesktopNotifications::default();
@@ -310,8 +309,8 @@ fn banners_line_up_with_the_centre_and_quick_settings() {
     notifications.ask_centre(true);
     frame.relayout();
     let centre = overlays.place(Slot::Centre).expect("the centre is placed");
-    assert_eq!(
-        banner.x1, centre.x1,
+    assert!(
+        (banner.x1 - centre.x1).abs() < f64::EPSILON,
         "the banner's edge is the centre's edge"
     );
 }
