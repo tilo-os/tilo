@@ -27,8 +27,9 @@ use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_client::Event;
 use tilo_session_host::device::{Entering, door_entry};
-use tilo_session_host::{Host, MemoryPeerStore, PeerEvent, PeerHandle, TransportPhase};
+use tilo_session_host::{Host, MemoryPeerStore, PeerHandle, TransportPhase};
 use tilo_user_identity::UserIdentity;
 
 use support::{enrol, enter_page, start_workspace_host_relaying};
@@ -843,19 +844,19 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
         }
         for event in page.drain() {
             match &event {
-                PeerEvent::Landed {
+                Event::Landed {
                     route,
                     author: Some(_),
                 } if route == place.desktop => {
                     desktop_doc.get_or_insert_with(|| started.elapsed());
                 }
-                PeerEvent::Landed {
+                Event::Landed {
                     route,
                     author: Some(_),
                 } if route.app_id == place.note.app_id || route.app_id == place.chat.app_id => {
                     notes_before += 1;
                 }
-                PeerEvent::Ready {
+                Event::HostReady {
                     records_when_opened,
                     ..
                 } => when_opened = Some(*records_when_opened),
@@ -889,14 +890,18 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     while !note || opened.is_none() || when_opened.is_none() {
         for event in page.drain() {
             match event {
-                PeerEvent::Landed {
+                Event::Landed {
                     route,
                     author: Some(_),
                 } if route == *place.note => note = true,
-                PeerEvent::RecordOpened { route, frames, .. } if route == *place.note => {
+                Event::RecordOpened {
+                    route: Some(route),
+                    frames,
+                    ..
+                } if route == *place.note => {
                     opened = Some(frames);
                 }
-                PeerEvent::Ready {
+                Event::HostReady {
                     records_when_opened,
                     ..
                 } => when_opened = Some(records_when_opened),
@@ -931,11 +936,15 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     while !part || answered.is_none() {
         for event in page.drain() {
             match event {
-                PeerEvent::Landed {
+                Event::Landed {
                     route,
                     author: Some(_),
                 } if route == *place.chat => part = true,
-                PeerEvent::RecordOpened { route, frames, .. } if route == head => {
+                Event::RecordOpened {
+                    route: Some(route),
+                    frames,
+                    ..
+                } if route == head => {
                     answered = Some(frames);
                 }
                 _ => {}

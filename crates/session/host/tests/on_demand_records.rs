@@ -25,7 +25,8 @@ use std::collections::BTreeMap;
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_host::{PeerEvent, PeerHandle};
+use tilo_session_client::Event;
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, hears, ready, route, say, start_host, start_peer, wait_for, workspace};
@@ -67,14 +68,18 @@ impl Received {
     fn take(&mut self, peer: &PeerHandle) {
         for event in peer.drain() {
             match event {
-                PeerEvent::Landed {
+                Event::Landed {
                     route,
                     author: Some(_),
                 } => {
                     let landed = self.documents.entry(route.record).or_default();
                     *landed = landed.saturating_add(1);
                 }
-                PeerEvent::RecordOpened { route, frames, .. } => {
+                Event::RecordOpened {
+                    route: Some(route),
+                    frames,
+                    ..
+                } => {
                     self.opened.push((route.record, frames));
                 }
                 _ => {}

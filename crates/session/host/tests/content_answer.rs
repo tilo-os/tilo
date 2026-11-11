@@ -14,7 +14,7 @@ tilo_automerge_isolate::test_worker!();
 use std::sync::Arc;
 
 use neighbour_wire::content::ContentWants;
-use tilo_session_host::PeerEvent;
+use tilo_session_client::Event;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, start_host, start_peer, wait_for};
@@ -73,9 +73,7 @@ async fn a_member_asking_for_content_a_page_keeps_is_answered_by_its_session() {
         .unwrap();
     let arrived = wait_for("the page's pieces", || {
         let whole = heard.drain().into_iter().find_map(|event| match event {
-            PeerEvent::RecordContent { from, frame, .. }
-                if from == keeper.cert.device_public_key =>
-            {
+            Event::RecordContent { from, frame, .. } if from == keeper.cert.device_public_key => {
                 wants.piece(&device, &frame, tilo_clock::unix_now_ms())
             }
             _ => None,

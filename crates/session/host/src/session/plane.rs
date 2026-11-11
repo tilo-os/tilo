@@ -27,7 +27,7 @@ use tilo_live::roster::Roster;
 use tilo_live::scope::Scope;
 use tilo_peer_state::document_frame::DocumentRoute;
 
-use super::{Command, PeerEvent, Task, lock};
+use super::{Command, Task, lock};
 use channel_crypto::ChannelContentKeys;
 
 /// The message a page shows in its members' place when its live plane cannot
@@ -739,7 +739,7 @@ impl Task {
 
     /// Take what `workspace_id`'s plane heard since the last call: each
     /// member's track object, already opened with the scope's keys, as
-    /// [`PeerEvent::LivePlane`].
+    /// [`tilo_session_client::Event::LivePlane`].
     pub(super) fn plane_heard(&mut self, workspace_id: u64) {
         use tilo_live::live::Track;
         let heard: Vec<_> = match self.planes.joined(workspace_id) {
@@ -751,8 +751,8 @@ impl Task {
             // as the page's app plays it.
             if heard.track == Track::Audio {
                 if let Ok(object) = tilo_live::voice::VoiceObject::decode(&heard.body) {
-                    self.emit(&PeerEvent::CallAudio {
-                        workspace_id,
+                    self.emit(&tilo_session_client::Event::CallAudio {
+                        ws: workspace_id,
                         from: heard.sender,
                         sequence: object.sequence,
                         timestamp_48k: object.timestamp,
@@ -769,8 +769,8 @@ impl Task {
                         Track::Screen(_) => tilo_live::video::Source::Screen,
                         _ => tilo_live::video::Source::Camera,
                     };
-                    self.emit(&PeerEvent::CallPicture {
-                        workspace_id,
+                    self.emit(&tilo_session_client::Event::CallPicture {
+                        ws: workspace_id,
                         from: heard.sender,
                         source,
                         keyframe: object.keyframe,
@@ -781,7 +781,7 @@ impl Task {
             }
             // A record's preview frame is still sealed with that record's
             // keys inside the plane's own layer: it opens into the canonical
-            // frame the page's live layer reads ([`PeerEvent::Live`]).
+            // frame the page's live layer reads ([`tilo_session_client::Event::Live`]).
             if heard.track == Track::Activity {
                 self.live_frame(
                     crate::held_live::Waiting::Receive {
@@ -799,8 +799,8 @@ impl Task {
             {
                 continue;
             }
-            self.emit(&PeerEvent::LivePlane {
-                workspace_id,
+            self.emit(&tilo_session_client::Event::LivePlane {
+                ws: workspace_id,
                 from: heard.sender,
                 track: heard.track,
                 sequence: heard.sequence,
@@ -833,8 +833,8 @@ impl Task {
             }
         };
         if let Some((wanted, keyframes)) = demand {
-            self.emit(&PeerEvent::CallDemand {
-                workspace_id,
+            self.emit(&tilo_session_client::Event::CallDemand {
+                ws: workspace_id,
                 wanted,
                 keyframes,
             });

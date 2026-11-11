@@ -6,13 +6,13 @@ use super::*;
 
 impl PeerHandle {
     /// Ask the host for the calls of `workspace_id`; the answer arrives as
-    /// [`VoiceEvent::Calls`](crate::voice::VoiceEvent::Calls).
+    /// [`VoiceEvent::Calls`](tilo_session_client::VoiceEvent::Calls).
     pub fn voice_calls(&self, workspace_id: u64) -> Result<(), String> {
         self.send(Command::VoiceCalls(workspace_id))
     }
 
     /// Start, end or moderate a call of `workspace_id`; the answer arrives
-    /// as [`VoiceEvent::CallResult`](crate::voice::VoiceEvent::CallResult)
+    /// as [`VoiceEvent::CallResult`](tilo_session_client::VoiceEvent::CallResult)
     /// for `request`.
     pub fn voice_call(
         &self,
@@ -51,10 +51,12 @@ impl Task {
         if let Some(client) = client {
             client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
         } else {
-            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::Calls {
-                workspace_id,
-                result: Err("not connected to the host".into()),
-            }));
+            self.emit(&tilo_session_client::Event::Voice(
+                tilo_session_client::VoiceEvent::Calls {
+                    ws: workspace_id,
+                    result: Err("not connected to the host".into()),
+                },
+            ));
             true
         }
     }
@@ -75,11 +77,13 @@ impl Task {
                 })
                 .is_ok()
         } else {
-            self.emit(&PeerEvent::Voice(crate::voice::VoiceEvent::CallResult {
-                workspace_id,
-                request,
-                result: Err("not connected to the host".into()),
-            }));
+            self.emit(&tilo_session_client::Event::Voice(
+                tilo_session_client::VoiceEvent::CallResult {
+                    ws: workspace_id,
+                    request,
+                    result: Err("not connected to the host".into()),
+                },
+            ));
             true
         }
     }

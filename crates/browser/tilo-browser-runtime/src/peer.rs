@@ -34,10 +34,11 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_relay_protocol::web::{PageHost, PageHostAddress};
+use tilo_session::sync::Event;
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::{
-    DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvent,
-    PeerEvents, PeerHandle, PeerRecord, PeerStore, SignError, SignFuture,
+    DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvents,
+    PeerHandle, PeerRecord, PeerStore, SignError, SignFuture,
 };
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use wasm_bindgen::prelude::*;
@@ -1380,13 +1381,13 @@ fn workspace_of(
 }
 
 fn voice_event(
-    event: tilo_session_host::VoiceEvent,
+    event: tilo_session::sync::VoiceEvent,
     workspaces: &RefCell<std::collections::HashMap<u64, String>>,
 ) -> JsVoiceEvent {
-    use tilo_session_host::VoiceEvent;
+    use tilo_session::sync::VoiceEvent;
     match event {
         VoiceEvent::Calls {
-            workspace_id,
+            ws: workspace_id,
             result,
         } => {
             let (calls, error) = match result {
@@ -1417,7 +1418,7 @@ fn voice_event(
             }
         }
         VoiceEvent::CallResult {
-            workspace_id,
+            ws: workspace_id,
             request,
             result,
         } => {
@@ -1433,7 +1434,7 @@ fn voice_event(
             }
         }
         VoiceEvent::Granted {
-            workspace_id,
+            ws: workspace_id,
             grant,
         } => {
             let grant = *grant;
@@ -1448,7 +1449,7 @@ fn voice_event(
             }
         }
         VoiceEvent::Ended {
-            workspace_id,
+            ws: workspace_id,
             call,
             reason,
         } => JsVoiceEvent::Ended {
@@ -2171,9 +2172,9 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Voice(event) => Some(voice_event(event, &self.voice_workspaces)),
-                PeerEvent::CallAudio {
-                    workspace_id,
+                Event::Voice(event) => Some(voice_event(event, &self.voice_workspaces)),
+                Event::CallAudio {
+                    ws: workspace_id,
                     from,
                     sequence,
                     timestamp_48k,
@@ -2185,8 +2186,8 @@ impl WasmPeer {
                     timestamp48k: timestamp_48k,
                     opus: hex::encode(opus),
                 }),
-                PeerEvent::CallPicture {
-                    workspace_id,
+                Event::CallPicture {
+                    ws: workspace_id,
                     from,
                     source,
                     keyframe,
@@ -2198,8 +2199,8 @@ impl WasmPeer {
                     keyframe,
                     object: hex::encode(object),
                 }),
-                PeerEvent::CallDemand {
-                    workspace_id,
+                Event::CallDemand {
+                    ws: workspace_id,
                     wanted,
                     keyframes,
                 } => {
@@ -2406,8 +2407,8 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::LivePlane {
-                    workspace_id,
+                Event::LivePlane {
+                    ws: workspace_id,
                     from,
                     track: Track::Presence,
                     body,
@@ -2418,8 +2419,8 @@ impl WasmPeer {
                 }
                 // A window's page: the display list the device hosting it publishes, drawn in the
                 // tab of that window.
-                PeerEvent::LivePlane {
-                    workspace_id,
+                Event::LivePlane {
+                    ws: workspace_id,
                     from,
                     track: Track::Page(tab),
                     body,
@@ -2428,8 +2429,8 @@ impl WasmPeer {
                     crate::pages::heard(self.id, workspace_id, tab, &body);
                     None
                 }
-                PeerEvent::Live {
-                    workspace_id,
+                Event::Live {
+                    ws: workspace_id,
                     from,
                     frame,
                 } if from != self.device_key => {
@@ -2474,7 +2475,7 @@ impl WasmPeer {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Landed { route, .. } => Some(JsDurable::Durable {
+                Event::Landed { route, .. } => Some(JsDurable::Durable {
                     record: JsRecord {
                         app: route.app_id,
                         record: route.record,

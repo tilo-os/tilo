@@ -6,6 +6,7 @@
 
 use iroh::{EndpointAddr, EndpointId};
 use neighbour_wire::{NeighbourMsg, PeerId};
+use tilo_peer_state::document_frame::DocumentRoute;
 
 /// A host's own transport of the plane: the client says `outgoing`, reads `arrived` and what became
 /// of what it asked a host for, and the transport holds the other ends.
@@ -69,7 +70,7 @@ pub struct Device {
 }
 
 /// Something the plane heard, as every host hands it to the client.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Event {
     /// A member of `ws` said `msg`.
     Msg {
@@ -96,12 +97,80 @@ pub enum Event {
         records_when_opened: bool,
     },
     /// A host of `ws` sent everything it retains of a record this device opened on `channel`,
-    /// `frames` of them — none when the workspace has none of it.
+    /// `frames` of them — none when the workspace has none of it — each landed before this; its
+    /// changes keep arriving from now on. `route` names the record where the host carrying it
+    /// opens records by route.
     RecordOpened {
         ws: Topic,
         channel: [u8; 32],
+        route: Option<DocumentRoute>,
         frames: u32,
     },
+    /// A write to `route` landed in this device's replica of its workspace — `author`'s, or
+    /// `None` when keys arrived that open what it held sealed: read it again from the
+    /// [`crate::engine::Engine`].
+    Landed {
+        route: DocumentRoute,
+        author: Option<[u8; 32]>,
+    },
+    /// The host refused this device's write to `route`: `changes` are the Automerge changes it
+    /// would have brought, which whoever holds the record withdraws.
+    Refused {
+        route: DocumentRoute,
+        changes: Vec<[u8; 32]>,
+        reason: String,
+    },
+    /// A live frame the device `from` published on `ws`, opened with its record's channel keys.
+    Live {
+        ws: Topic,
+        from: [u8; 32],
+        frame: Vec<u8>,
+    },
+    /// A remote-action frame another device of the workspace addressed to this one, or word that
+    /// one this device sent could not be delivered.
+    Remote(tilo_session_core::remote::Heard),
+    /// A piece of content `ws`'s records reference, which `from` sent this device alone: a
+    /// postcard-encoded `NeighbourMsg::RecordContentPiece`.
+    RecordContent {
+        ws: Topic,
+        from: [u8; 32],
+        frame: Vec<u8>,
+    },
+    /// What `from` sealed on `track` of `ws`'s live plane, object `sequence`, opened.
+    LivePlane {
+        ws: Topic,
+        from: [u8; 32],
+        track: tilo_live::live::Track,
+        sequence: u32,
+        body: Vec<u8>,
+    },
+    /// One Opus frame of `from`'s voice in a call on `ws`, `sequence` in its stream, starting at
+    /// `timestamp_48k` in the sender's 48 kHz timeline.
+    CallAudio {
+        ws: Topic,
+        from: [u8; 32],
+        sequence: u64,
+        timestamp_48k: u64,
+        opus: Vec<u8>,
+    },
+    /// One tilo-video/1 object of `from`'s camera or screen in a call on `ws`; a `keyframe`
+    /// starts a group.
+    CallPicture {
+        ws: Topic,
+        from: [u8; 32],
+        source: tilo_live::video::Source,
+        keyframe: bool,
+        object: Vec<u8>,
+    },
+    /// What this device's call on `ws` now encodes: the layers of its camera and screen the
+    /// call's devices show, and the sources they need a keyframe of.
+    CallDemand {
+        ws: Topic,
+        wanted: Vec<(tilo_live::video::Source, tilo_live::video::Layer)>,
+        keyframes: Vec<tilo_live::video::Source>,
+    },
+    /// What the host said about this device's calls.
+    Voice(VoiceEvent),
     /// One of the person's devices proved itself, or proved itself anew.
     Sibling {
         peer: EndpointId,
@@ -114,6 +183,39 @@ pub enum Event {
     SiblingMsg {
         peer: EndpointId,
         msg: Box<NeighbourMsg>,
+    },
+}
+
+/// What the host said about this device's calls.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VoiceEvent {
+    /// The answer to asking for a workspace's calls.
+    Calls {
+        ws: Topic,
+        /// Its calls, or why it lists none.
+        result: Result<Vec<tilo_relay_protocol::voice::CallSummary>, String>,
+    },
+    /// The answer to the call change `request`.
+    CallResult {
+        ws: Topic,
+        /// The request's id.
+        request: [u8; 16],
+        /// The call now, or why the change was refused.
+        result: Result<tilo_relay_protocol::voice::CallState, String>,
+    },
+    /// The participation's current grant: the first after a join, then
+    /// whenever the roster, the directions or the token change.
+    Granted {
+        ws: Topic,
+        grant: Box<tilo_relay_protocol::voice::VoiceGrant>,
+    },
+    /// The participation ended: the call ended, the device may no longer
+    /// take part, or the host refused the join.
+    Ended {
+        ws: Topic,
+        call: [u8; 32],
+        /// Why.
+        reason: String,
     },
 }
 

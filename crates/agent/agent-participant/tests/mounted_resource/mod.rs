@@ -304,7 +304,8 @@ pub async fn run() {
     .await;
     let voice_channel = common::channel(&doc, chat::model::ChannelKind::Voice);
     if voice_journey {
-        use tilo_session_host::{PeerEvent, VoiceEvent};
+        use tilo_session_client::Event;
+        use tilo_session_client::VoiceEvent;
         native
             .peer
             .voice_call(
@@ -324,7 +325,7 @@ pub async fn run() {
         tilo_test_env::within("the governor answers the mounted Chat call", async {
             loop {
                 for event in native.events.drain() {
-                    if let PeerEvent::Voice(VoiceEvent::CallResult {
+                    if let Event::Voice(VoiceEvent::CallResult {
                         request, result, ..
                     }) = event
                         && request == [40; 16]

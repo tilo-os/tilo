@@ -33,8 +33,9 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
+use tilo_session_client::Event;
 use tilo_session_core::remote::Heard;
-use tilo_session_host::{Host, PeerEvent, PeerEvents, PeerHandle};
+use tilo_session_host::{Host, PeerEvents, PeerHandle};
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
@@ -151,9 +152,9 @@ impl Page {
 
     /// Take one event: a record that changed is kept as it stands then,
     /// everything else is the caller's to read.
-    pub fn take(&mut self, event: PeerEvent) -> Option<PeerEvent> {
-        if let PeerEvent::LivePlane {
-            workspace_id,
+    pub fn take(&mut self, event: Event) -> Option<Event> {
+        if let Event::LivePlane {
+            ws: workspace_id,
             from,
             track: tilo_live::live::Track::Presence,
             body,
@@ -164,8 +165,8 @@ impl Page {
             self.board
                 .heard(*from, body, tilo_clock::unix_now_ms() as f64);
         }
-        if let PeerEvent::Live {
-            workspace_id,
+        if let Event::Live {
+            ws: workspace_id,
             from,
             frame,
         } = &event
@@ -179,7 +180,7 @@ impl Page {
                 self.narrated.push((record, work));
             }
         }
-        let PeerEvent::Landed { route, author } = event else {
+        let Event::Landed { route, author } = event else {
             return Some(event);
         };
         let own = self.peer.engine().identity().device_cert.device_public_key;
@@ -221,13 +222,11 @@ impl Page {
     pub fn pump(&mut self) {
         for event in self.events.drain() {
             match self.take(event) {
-                Some(PeerEvent::Remote(Heard::Action { from, frame, .. }))
-                    if from == self.host_key =>
-                {
+                Some(Event::Remote(Heard::Action { from, frame, .. })) if from == self.host_key => {
                     self.answers
                         .push(RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                Some(PeerEvent::Remote(Heard::Undeliverable { reason, .. })) => {
+                Some(Event::Remote(Heard::Undeliverable { reason, .. })) => {
                     panic!("undeliverable: {reason}")
                 }
                 Some(_) | None => {}

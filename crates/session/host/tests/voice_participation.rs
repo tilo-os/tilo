@@ -20,7 +20,9 @@ tilo_automerge_isolate::test_worker!();
 
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
-use tilo_session_host::{PeerEvent, PeerHandle, VoiceEvent};
+use tilo_session_client::Event;
+use tilo_session_client::VoiceEvent;
+use tilo_session_host::PeerHandle;
 
 use call::{GovernedCall, native, operate};
 use support::{ready, start_peer, wait_for};
@@ -28,7 +30,7 @@ use support::{ready, start_peer, wait_for};
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(
     peer: &PeerHandle,
-    pending: &mut Vec<PeerEvent>,
+    pending: &mut Vec<Event>,
     what: &str,
     mut pick: impl FnMut(&VoiceEvent) -> Option<T>,
 ) -> T {
@@ -38,7 +40,7 @@ async fn voice<T>(
             .iter()
             .enumerate()
             .find_map(|(index, event)| match event {
-                PeerEvent::Voice(event) => pick(event).map(|value| (index, value)),
+                Event::Voice(event) => pick(event).map(|value| (index, value)),
                 _ => None,
             });
         let found = found.map(|(index, value)| {

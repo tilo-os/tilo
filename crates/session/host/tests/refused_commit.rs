@@ -23,7 +23,8 @@ use tilo_app::prelude::*;
 use tilo_peer_state::document_frame::ContentCipher;
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
-use tilo_session_host::{PeerEvent, PeerHandle};
+use tilo_session_client::Event;
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, door, enrol, enter, route, start_host_limiting, wait_for, workspace};
@@ -109,7 +110,7 @@ async fn answer(peer: &PeerHandle) -> Answer {
     peer.drain()
         .into_iter()
         .find_map(|event| match event {
-            PeerEvent::Refused {
+            Event::Refused {
                 changes, reason, ..
             } => Some(Answer::Refused { changes, reason }),
             _ => None,

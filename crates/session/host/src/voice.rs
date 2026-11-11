@@ -13,44 +13,8 @@
 use std::collections::HashMap;
 
 use tilo_relay_protocol::Envelope;
-use tilo_relay_protocol::voice::{CallState, CallSummary, Showing, VoiceGrant};
-
-/// What the host said about this device's calls.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum VoiceEvent {
-    /// The answer to [`crate::PeerHandle::voice_calls`].
-    Calls {
-        /// The workspace.
-        workspace_id: u64,
-        /// Its calls, or why it lists none.
-        result: Result<Vec<CallSummary>, String>,
-    },
-    /// The answer to [`crate::PeerHandle::voice_call`] `request`.
-    CallResult {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The request's id.
-        request: [u8; 16],
-        /// The call now, or why the change was refused.
-        result: Result<CallState, String>,
-    },
-    /// The participation's current grant: the first after a join, then
-    /// whenever the roster, the directions or the token change.
-    Granted {
-        /// The workspace id.
-        workspace_id: u64,
-        grant: Box<VoiceGrant>,
-    },
-    /// The participation ended: the call ended, the device may no longer
-    /// take part, or the host refused the join.
-    Ended {
-        /// The workspace id.
-        workspace_id: u64,
-        call: [u8; 32],
-        /// Why.
-        reason: String,
-    },
-}
+use tilo_relay_protocol::voice::Showing;
+use tilo_session_client::VoiceEvent;
 
 struct Joined {
     call: [u8; 32],
@@ -183,7 +147,7 @@ impl Participations {
                 result,
             } => (
                 Some(VoiceEvent::Calls {
-                    workspace_id: *workspace_id,
+                    ws: *workspace_id,
                     result: result.clone(),
                 }),
                 None,
@@ -194,7 +158,7 @@ impl Participations {
                 result,
             } => (
                 Some(VoiceEvent::CallResult {
-                    workspace_id: *workspace_id,
+                    ws: *workspace_id,
                     request: *request,
                     result: result.clone(),
                 }),
@@ -219,7 +183,7 @@ impl Participations {
                     joined.joining = false;
                     (
                         Some(VoiceEvent::Granted {
-                            workspace_id: *workspace_id,
+                            ws: *workspace_id,
                             grant: grant.clone(),
                         }),
                         fresh.then_some(Envelope::VoiceShow {
@@ -270,7 +234,7 @@ impl Participations {
                     self.joined.remove(workspace_id);
                     (
                         Some(VoiceEvent::Ended {
-                            workspace_id: *workspace_id,
+                            ws: *workspace_id,
                             call: *call,
                             reason: reason.clone(),
                         }),
@@ -287,7 +251,7 @@ impl Participations {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_relay_protocol::voice::Directions;
+    use tilo_relay_protocol::voice::{Directions, VoiceGrant};
 
     const WORKSPACE: u64 = 7;
 

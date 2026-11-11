@@ -21,6 +21,7 @@ use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use std::time::Duration;
+use tilo_session_client::Event;
 use tilo_session_client::content::Kept;
 use tilo_session_core::remote::Heard;
 
@@ -277,132 +278,6 @@ impl PeerStatus {
     }
 }
 
-/// Something the session produced for its consumers.
-#[derive(Clone, Debug)]
-pub enum PeerEvent {
-    /// A write to `route` landed in this device's replica of its workspace, or keys arrived
-    /// that open what it holds of it: read it again with
-    /// [`tilo_session_client::engine::Engine::read_record`].
-    Landed {
-        route: DocumentRoute,
-        /// The device whose write landed; `None` when keys arrived that open what the replica
-        /// held sealed.
-        author: Option<[u8; 32]>,
-    },
-    /// The host refused a write this device made to `route`: `changes` are the Automerge
-    /// changes it would have brought, which whoever holds the record withdraws, and `reason`
-    /// the host's words.
-    Refused {
-        route: DocumentRoute,
-        changes: Vec<[u8; 32]>,
-        reason: String,
-    },
-    /// The host admitted a workspace subscription.
-    Ready {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The workspace sends this device its records only when it opens
-        /// them, as a public workspace does: a record this device holds no
-        /// copy of, or one from before, is asked for when it is opened
-        /// ([`PeerHandle::open_record`]), and is new only once the host
-        /// answered it has none ([`PeerEvent::RecordOpened`]).
-        records_when_opened: bool,
-    },
-    /// A live frame another member published, opened with its record's
-    /// channel keys.
-    Live {
-        /// The workspace id.
-        workspace_id: u64,
-        /// Host-stamped publisher.
-        from: [u8; 32],
-        /// Canonical live frame.
-        frame: Vec<u8>,
-    },
-    /// A remote-action frame another device of the workspace addressed to this one (a request, or
-    /// the answer to one this device sent), or word that one it sent could not be delivered.
-    Remote(Heard),
-    /// A piece of content a workspace's records reference, sent to this device
-    /// alone by a member that keeps it (the host's own device included),
-    /// in answer to [`PeerHandle::want_content`].
-    RecordContent {
-        /// The workspace id.
-        workspace_id: u64,
-        /// Host-stamped sending device.
-        from: [u8; 32],
-        /// A `NeighbourMsg::RecordContentPiece`, postcard-encoded.
-        frame: Vec<u8>,
-    },
-    /// A frame another member published on the workspace's live plane
-    /// ([`plane`]), opened with the scope's channel keys: what a device
-    /// seals on its tracks, carried by the relay that serves the workspace
-    /// rather than by this session.
-    LivePlane {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The device that sealed it.
-        from: [u8; 32],
-        /// The track it came from ([`tilo_live::live::Track`]).
-        track: tilo_live::live::Track,
-        /// The object's sequence on that track.
-        sequence: u32,
-        /// The opened body.
-        body: Vec<u8>,
-    },
-    /// A call's voice heard on `workspace_id`'s plane
-    /// ([`plane`]): one Opus frame, opened with the scope's keys, as
-    /// the device `from` published it.
-    CallAudio {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The device whose voice it is.
-        from: [u8; 32],
-        /// The frame's place in that device's voice stream.
-        sequence: u64,
-        /// The first sample's place in the sender's 48 kHz timeline.
-        timestamp_48k: u64,
-        /// The Opus frame.
-        opus: Vec<u8>,
-    },
-    /// One picture of a call on `workspace_id`'s plane: an encoded
-    /// tilo-video/1 object of `from`'s camera or screen, opened with the
-    /// scope's keys.
-    CallPicture {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The device whose picture it is.
-        from: [u8; 32],
-        /// The camera or screen it shows.
-        source: tilo_live::video::Source,
-        /// Whether it starts a group: the app's decoder starts here.
-        keyframe: bool,
-        /// The tilo-video/1 object, header and access unit.
-        object: Vec<u8>,
-    },
-    /// What this page's call now encodes and starts over: the layers of its
-    /// camera and screen the call's devices show, and the sources they need
-    /// afresh.
-    CallDemand {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The layers shown of each source.
-        wanted: Vec<(tilo_live::video::Source, tilo_live::video::Layer)>,
-        /// The sources a device needs a keyframe of.
-        keyframes: Vec<tilo_live::video::Source>,
-    },
-    /// What the host said about this device's calls.
-    Voice(crate::voice::VoiceEvent),
-    /// The host sent everything it holds of a record this device opened
-    /// ([`PeerHandle::open_record`]), each landed before this event; its changes keep arriving from now on.
-    RecordOpened {
-        /// The workspace id.
-        workspace_id: u64,
-        /// The record.
-        route: DocumentRoute,
-        /// How many frames the host sent.
-        frames: u32,
-    },
-}
-
 /// The workspace id a session asks the host's own operations under: none of its workspaces, the
 /// host itself (creating, listing and entering the person's workspaces). Its answers come back
 /// from the host's device under the same id.
@@ -563,15 +438,15 @@ pub type LiveCompletion = Box<dyn FnOnce(Option<Vec<u8>>) + Send>;
 /// Called once with the host's answer, see [`PeerHandle::rooms_then`].
 pub type RoomsCompletion =
     Box<dyn FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + Send>;
-type Queue = Arc<Mutex<VecDeque<PeerEvent>>>;
+type Queue = Arc<Mutex<VecDeque<Event>>>;
 
 struct Shared {
     status: PeerStatus,
-    queues: Vec<std::sync::Weak<Mutex<VecDeque<PeerEvent>>>>,
+    queues: Vec<std::sync::Weak<Mutex<VecDeque<Event>>>>,
     wakes: Vec<Wake>,
     /// Wakes that last as long as their consumer's event queue
     /// ([`PeerHandle::on_event`]), dropped with it.
-    listeners: Vec<(std::sync::Weak<Mutex<VecDeque<PeerEvent>>>, Wake)>,
+    listeners: Vec<(std::sync::Weak<Mutex<VecDeque<Event>>>, Wake)>,
     /// The current session's bearer token for its host's fetch proxy
     /// (`tilo_net::proxy`, at `/peer/v1/fetch`); kept apart from
     /// [`PeerStatus`], which diagnostics show.
@@ -597,7 +472,7 @@ pub struct PeerEvents(Queue);
 
 impl PeerEvents {
     /// Take every event produced since the last call.
-    pub fn drain(&self) -> Vec<PeerEvent> {
+    pub fn drain(&self) -> Vec<Event> {
         self.0.lock_recover().drain(..).collect()
     }
 }
@@ -774,7 +649,7 @@ impl PeerHandle {
     }
 
     /// This device's replicas of its workspaces: what reads a record whose writes
-    /// [`PeerEvent::Landed`] said arrived.
+    /// [`Event::Landed`] said arrived.
     #[must_use]
     pub fn engine(&self) -> &Arc<tilo_session_client::engine::Engine> {
         &self.engine
@@ -851,8 +726,8 @@ impl PeerHandle {
 
     /// Open `route`, an on-demand record of the joined workspace `workspace_id`
     /// (`neighbour_wire::record_sync`): one a join does not replay. Its
-    /// history arrives as [`PeerEvent::Document`]s, then
-    /// [`PeerEvent::RecordOpened`]; its changes keep arriving after, and
+    /// history lands ([`Event::Landed`]), then
+    /// [`Event::RecordOpened`]; its changes keep arriving after, and
     /// the record is opened again whenever the session reconnects.
     pub fn open_record(&self, workspace_id: u64, route: DocumentRoute) -> Result<(), String> {
         self.send(Command::OpenRecord(workspace_id, route))
@@ -951,7 +826,7 @@ impl PeerHandle {
     /// is a postcard-encoded `NeighbourMsg::RecordContentWant`. The host
     /// fans it out to every member and answers itself from what it keeps;
     /// the pieces come back to this device alone as
-    /// [`PeerEvent::RecordContent`]. Dropped while disconnected: the caller
+    /// [`Event::RecordContent`]. Dropped while disconnected: the caller
     /// asks again.
     pub fn want_content(&self, workspace_id: u64, request: Vec<u8>) -> Result<(), String> {
         self.send(Command::WantContent(workspace_id, request))
@@ -1171,7 +1046,7 @@ impl PeerHandle {
 
     /// Take every event produced since the last call on this handle's own
     /// queue. Other consumers use [`Self::events`].
-    pub fn drain(&self) -> Vec<PeerEvent> {
+    pub fn drain(&self) -> Vec<Event> {
         PeerEvents(self.events.clone()).drain()
     }
 
@@ -1217,7 +1092,7 @@ struct Answered {
     /// Durable at this order, or refused with the host's reason.
     outcome: Result<u64, String>,
     /// What a refusal withdraws from the replica.
-    withdrawn: Option<PeerEvent>,
+    withdrawn: Option<Event>,
 }
 
 /// A document the host delivered, waiting for its workspace's replica to decide it.
@@ -1576,7 +1451,7 @@ impl Task {
         change_status(&self.shared, change);
     }
 
-    fn emit(&self, event: &PeerEvent) {
+    fn emit(&self, event: &Event) {
         let wakes = {
             let mut shared = lock(&self.shared);
             shared.queues.retain(|queue| {
@@ -2060,7 +1935,7 @@ impl Task {
                 return Err(Exit::Lost("host session saturated".into()));
             }
             if let Some(event) = event {
-                self.emit(&PeerEvent::Voice(event));
+                self.emit(&Event::Voice(event));
             }
             return Ok(());
         }
@@ -2097,7 +1972,7 @@ impl Task {
         client: Option<&RelayClient>,
     ) {
         let Some(client) = client else {
-            self.emit(&PeerEvent::Remote(Heard::Undeliverable {
+            self.emit(&Event::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
                 reason: "not connected to the host".into(),
@@ -2107,7 +1982,7 @@ impl Task {
         // The host's own operations, which no workspace decides, go to it on the session itself.
         if workspace_id == HOST_ITSELF {
             if to != self.config.host_cert.device_public_key {
-                self.emit(&PeerEvent::Remote(Heard::Undeliverable {
+                self.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id,
                     to,
                     reason: "outside a workspace, only the host itself is asked".into(),
@@ -2120,7 +1995,7 @@ impl Task {
         if self.admitted_to(workspace_id) == Some(false) {
             if self.held_actions.len() >= MAX_HELD_ACTIONS {
                 let dropped = self.held_actions.remove(0);
-                self.emit(&PeerEvent::Remote(Heard::Undeliverable {
+                self.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id: dropped.workspace_id,
                     to: dropped.to,
                     reason: "too many actions waited for the workspace's admission".into(),
@@ -2588,8 +2463,8 @@ impl Task {
             } => match self.open_live(workspace_id, &frame) {
                 // A run's narration is the host's own, signed outside the plane.
                 Opening::Opened(opened) if host_voice::plane_narrates_a_run(&opened) => {}
-                Opening::Opened(opened) => self.emit(&PeerEvent::Live {
-                    workspace_id,
+                Opening::Opened(opened) => self.emit(&Event::Live {
+                    ws: workspace_id,
                     from,
                     frame: opened,
                 }),
@@ -3210,7 +3085,7 @@ impl tilo_session_core::remote::RemoteSession for Asking {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Remote(heard) => Some(heard),
+                Event::Remote(heard) => Some(heard),
                 _ => None,
             })
             .collect()

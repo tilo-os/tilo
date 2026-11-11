@@ -4,7 +4,7 @@
 //! every record when opened (a public one), each route this session opens
 //! is asked for that way ([`Task::records_when_opened`]).
 
-use super::{DocumentRoute, Envelope, PeerEvent, RelayClient, Task};
+use super::{DocumentRoute, Envelope, RelayClient, Task};
 
 impl Task {
     /// Open the on-demand record `route` of `workspace_id`, and ask for its
@@ -77,9 +77,10 @@ impl Task {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
         if let Some((_, route)) = self.opened_records.get(&channel) {
-            self.emit(&PeerEvent::RecordOpened {
-                workspace_id,
-                route: route.clone(),
+            self.emit(&tilo_session_client::Event::RecordOpened {
+                ws: workspace_id,
+                channel,
+                route: Some(route.clone()),
                 frames,
             });
         }

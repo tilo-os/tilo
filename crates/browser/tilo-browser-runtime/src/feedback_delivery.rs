@@ -16,8 +16,9 @@ use tilo_app::feedback::{MaskedScreenshot, ReviewText};
 use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
+use tilo_session::sync::Event;
 use tilo_session_core::remote::Heard;
-use tilo_session_host::{PeerEvent, PeerEvents, PeerHandle};
+use tilo_session_host::{PeerEvents, PeerHandle};
 use tilo_user_identity::DeviceCert;
 
 /// How long the owner's admission of this reporter stands: long enough to
@@ -329,7 +330,7 @@ pub(crate) fn pump(id: u32) {
     for event in events {
         let mut state = connection.borrow_mut();
         match event {
-            PeerEvent::Remote(Heard::Action {
+            Event::Remote(Heard::Action {
                 workspace_id,
                 from,
                 frame,
@@ -403,7 +404,7 @@ pub(crate) fn pump(id: u32) {
                     }
                 }
             }
-            PeerEvent::Remote(Heard::Undeliverable {
+            Event::Remote(Heard::Undeliverable {
                 workspace_id, to, ..
             }) if workspace_id == state.workspace && to == state.owner.device_public_key => {
                 state.admission = None;

@@ -33,7 +33,9 @@ use tilo_live::roster::Roster;
 use tilo_live::video::{Codec, Layer, Source, VideoObject};
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
-use tilo_session_host::{PeerEvent, PeerHandle, VoiceEvent};
+use tilo_session_client::Event;
+use tilo_session_client::VoiceEvent;
+use tilo_session_host::PeerHandle;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 /// One tick of the native participant: a page publishes its pictures as its
@@ -137,10 +139,10 @@ impl Page {
             .drain()
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Voice(VoiceEvent::Granted { grant, .. }) => Some(
+                Event::Voice(VoiceEvent::Granted { grant, .. }) => Some(
                     json!({"room": self.workspace, "kind": "granted", "grant": grant_json(&grant)}),
                 ),
-                PeerEvent::Voice(VoiceEvent::CallResult { request, result, .. }) => {
+                Event::Voice(VoiceEvent::CallResult { request, result, .. }) => {
                     Some(match result {
                         Ok(state) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "call": {
                             "call": hex::encode(state.call), "epoch": state.epoch, "active": state.active,
@@ -149,10 +151,10 @@ impl Page {
                         Err(error) => json!({"room": self.workspace, "kind": "callResult", "request": hex::encode(request), "error": error}),
                     })
                 }
-                PeerEvent::Voice(VoiceEvent::Ended { call, reason, .. }) => Some(
+                Event::Voice(VoiceEvent::Ended { call, reason, .. }) => Some(
                     json!({"room": self.workspace, "kind": "ended", "call": hex::encode(call), "reason": reason}),
                 ),
-                PeerEvent::CallPicture {
+                Event::CallPicture {
                     from,
                     source,
                     keyframe,
@@ -162,7 +164,7 @@ impl Page {
                     "room": self.workspace, "kind": "picture", "from": hex::encode(from),
                     "source": source_name(source), "keyframe": keyframe, "object": hex::encode(object),
                 })),
-                PeerEvent::CallDemand {
+                Event::CallDemand {
                     wanted, keyframes, ..
                 } => {
                     let mut by_source: Vec<Value> = Vec::new();
@@ -177,7 +179,7 @@ impl Page {
                         "keyframes": keyframes.into_iter().map(source_name).collect::<Vec<_>>(),
                     }))
                 }
-                PeerEvent::Voice(VoiceEvent::Calls { result, .. }) => Some(match result {
+                Event::Voice(VoiceEvent::Calls { result, .. }) => Some(match result {
                     Ok(calls) => json!({"room": self.workspace, "kind": "calls", "calls": calls.iter().map(|call| json!({
                         "call": hex::encode(call.state.call), "epoch": call.state.epoch, "active": call.state.active,
                         "app": call.app_id, "record": call.record_id, "channel": call.channel_id,

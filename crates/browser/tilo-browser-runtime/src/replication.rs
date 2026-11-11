@@ -11,7 +11,7 @@
 //!   record)`, the native shell's own `AppDocument` wire; a record's first
 //!   publication in a session is a snapshot, which the host retains as the
 //!   route's checkpoint for peers that join later. What lands in this
-//!   device's replica of the workspace ([`PeerEvent::Landed`]) is read from
+//!   device's replica of the workspace ([`Event::Landed`]) is read from
 //!   the session's engine and merges into the open record
 //!   (`RecordStore::merge_replica`, Automerge semantics, local undo untouched)
 //!   or, when no mount has it open, into the record's stored document so
@@ -43,7 +43,8 @@ use durable_store::{DurableStore as _, MemoryStore, StorageKey, WriteOp};
 use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_host::{PeerEvent, PeerEvents, PeerHandle};
+use tilo_session::sync::Event;
+use tilo_session_host::{PeerEvents, PeerHandle};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordId, RecordStore, RecordSync};
@@ -878,9 +879,10 @@ impl Joined {
         let mut content_arrived = false;
         for event in self.events.drain() {
             match event {
-                PeerEvent::Ready {
-                    workspace_id,
+                Event::HostReady {
+                    ws: workspace_id,
                     records_when_opened,
+                    ..
                 } if workspace_id == self.workspace => {
                     self.ready = true;
                     self.when_opened = records_when_opened;
@@ -891,27 +893,28 @@ impl Joined {
                     // app full tab, untouched) does not stay read-only.
                     woken.extend(self.mounts.keys().copied());
                 }
-                PeerEvent::Landed { route, .. } if route.cluster_id == self.uuid => {
+                Event::Landed { route, .. } if route.cluster_id == self.uuid => {
                     landed.insert(route);
                 }
-                PeerEvent::RecordContent {
-                    workspace_id,
+                Event::RecordContent {
+                    ws: workspace_id,
                     frame,
                     ..
                 } if workspace_id == self.workspace => {
                     content_arrived |= self.content_piece(&frame);
                 }
-                PeerEvent::Refused {
+                Event::Refused {
                     route,
                     changes,
                     reason,
                 } if route.cluster_id == self.uuid => {
                     refusals.push((route, changes, reason));
                 }
-                PeerEvent::RecordOpened {
-                    workspace_id,
-                    route,
+                Event::RecordOpened {
+                    ws: workspace_id,
+                    route: Some(route),
                     frames: 0,
+                    ..
                 } if workspace_id == self.workspace => opened.push(route),
                 _ => {}
             }

@@ -43,6 +43,7 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
         } => Event::RecordOpened {
             ws,
             channel,
+            route: None,
             frames,
         },
         NetEvent::HostMember {

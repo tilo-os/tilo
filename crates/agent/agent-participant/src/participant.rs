@@ -38,9 +38,10 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
+use tilo_session_client::Event;
 use tilo_session_client::content::Kept;
 use tilo_session_host::{
-    Host, MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle, TransportPhase,
+    Host, MemoryPeerStore, PeerConfig, PeerEvents, PeerHandle, TransportPhase,
 };
 use tilo_user_identity::DeviceCert;
 
@@ -704,11 +705,12 @@ impl AgentParticipant {
         }
     }
 
-    fn receive(&mut self, event: PeerEvent) {
+    fn receive(&mut self, event: Event) {
         match event {
-            PeerEvent::Ready {
-                workspace_id,
+            Event::HostReady {
+                ws: workspace_id,
                 records_when_opened,
+                ..
             } if workspace_id == self.workspace_id => {
                 if !self.ready {
                     self.settling = Some(Instant::now());
@@ -723,21 +725,22 @@ impl AgentParticipant {
                     self.control.set_status(AgentStatus::Waiting);
                 }
             }
-            PeerEvent::RecordOpened {
-                workspace_id,
-                route,
+            Event::RecordOpened {
+                ws: workspace_id,
+                route: Some(route),
                 frames,
+                ..
             } if workspace_id == self.workspace_id => self.record_answered(route, frames),
-            PeerEvent::Landed { route, author } => self.document_said(route, author),
-            PeerEvent::Remote(tilo_session_core::remote::Heard::Action {
+            Event::Landed { route, author } => self.document_said(route, author),
+            Event::Remote(tilo_session_core::remote::Heard::Action {
                 workspace_id,
                 from,
                 frame,
             }) if workspace_id == self.workspace_id && from != self.device() => {
                 self.remote.push((from, frame));
             }
-            PeerEvent::LivePlane {
-                workspace_id,
+            Event::LivePlane {
+                ws: workspace_id,
                 from,
                 track: tilo_live::live::Track::Presence,
                 body,

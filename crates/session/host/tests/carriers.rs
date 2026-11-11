@@ -36,9 +36,10 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::VoiceGrant;
+use tilo_session_client::{Event, VoiceEvent};
 use tilo_session_host::{
-    Carrier, Host, MemoryPeerStore, PeerEvent, PeerHandle, TransportPhase, VoiceEvent,
-    answer_pairing, certify, pending_pairings,
+    Carrier, Host, MemoryPeerStore, PeerHandle, TransportPhase, answer_pairing, certify,
+    pending_pairings,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -353,8 +354,8 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
         let events = events.drain();
         async move {
             events.into_iter().find_map(|event| match event {
-                PeerEvent::LivePlane {
-                    workspace_id,
+                Event::LivePlane {
+                    ws: workspace_id,
                     from,
                     track,
                     body,
@@ -378,7 +379,7 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(
     peer: &PeerHandle,
-    pending: &mut Vec<PeerEvent>,
+    pending: &mut Vec<Event>,
     what: &str,
     mut pick: impl FnMut(&VoiceEvent) -> Option<T>,
 ) -> T {
@@ -388,7 +389,7 @@ async fn voice<T>(
             .iter()
             .enumerate()
             .find_map(|(index, event)| match event {
-                PeerEvent::Voice(event) => pick(event).map(|value| (index, value)),
+                Event::Voice(event) => pick(event).map(|value| (index, value)),
                 _ => None,
             });
         let found = found.map(|(index, value)| {

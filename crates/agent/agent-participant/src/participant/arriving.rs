@@ -3,12 +3,12 @@
 //! A public workspace — one listed in its host's directory, which anyone may
 //! walk into — replays a newcomer only its governance and its shared desktop,
 //! and sends every other record to a device once that device opens it,
-//! saying so in the [`PeerEvent::Ready`] that ends the replay. So a record
+//! saying so in the [`Event::HostReady`] that ends the replay. So a record
 //! the agent does not hold there is not a record the workspace does not
 //! have: it is asked for ([`PeerHandle::open_route`], which asks the host
 //! for it and delivers it as an ordinary change when it comes), and it is
 //! the agent's to make only once the host answered it holds none of it
-//! ([`PeerEvent::RecordOpened`] with no frames). Without that, an agent
+//! ([`Event::RecordOpened`] with no frames). Without that, an agent
 //! opening a record before it arrived founded one of its own, and the first
 //! change it published forked the workspace's document.
 

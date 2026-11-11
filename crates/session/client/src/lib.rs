@@ -27,7 +27,7 @@ pub mod presence;
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
 pub use plane::{
-    Cmd, Device, Event, Outbox, RosterDevice, SayPresence, Topic, Transport, topic_of,
+    Cmd, Device, Event, Outbox, RosterDevice, SayPresence, Topic, Transport, VoiceEvent, topic_of,
 };
 pub use presence::OwnPresence;
 pub use tilo_live::presence::Call as InCall;

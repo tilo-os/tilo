@@ -4,8 +4,8 @@
 //! The host's session signs each frame with this device's key and hands it
 //! to the relay that is the host; a member's session takes a frame only when
 //! the host this session is pinned to signed it, and hands it on as the
-//! plane's own events would carry it ([`PeerEvent::LivePlane`] for a run's
-//! presence, [`PeerEvent::Live`] for its narration), from the host's device.
+//! plane's own events would carry it ([`tilo_session_client::Event::LivePlane`] for a run's
+//! presence, [`tilo_session_client::Event::Live`] for its narration), from the host's device.
 //! Readers keep their one rule: what is said for a run is taken only from
 //! the device the workspace's governance pins as its host.
 //!
@@ -18,7 +18,7 @@ use tilo_relay_protocol::live::{LiveFrame, OpsFrame};
 use tilo_relay_protocol::transport::Envelope;
 use tilo_relay_session::RelayClient;
 
-use super::{Command, PeerEvent, PeerHandle, Task};
+use super::{Command, PeerHandle, Task};
 
 impl PeerHandle {
     /// Say `words` for a run this host executes, in `workspace_id`, signed
@@ -93,8 +93,8 @@ impl Task {
                 let Ok(body) = presence.encode() else {
                     return;
                 };
-                self.emit(&PeerEvent::LivePlane {
-                    workspace_id,
+                self.emit(&tilo_session_client::Event::LivePlane {
+                    ws: workspace_id,
                     from: host,
                     track: tilo_live::live::Track::Presence,
                     sequence: 0,
@@ -106,8 +106,8 @@ impl Task {
                 else {
                     return;
                 };
-                self.emit(&PeerEvent::Live {
-                    workspace_id,
+                self.emit(&tilo_session_client::Event::Live {
+                    ws: workspace_id,
                     from: host,
                     frame,
                 });

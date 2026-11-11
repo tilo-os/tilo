@@ -21,7 +21,8 @@ tilo_automerge_isolate::test_worker!();
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
-use tilo_session_host::{PeerEvent, PeerHandle};
+use tilo_session_client::Event;
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, hears, holds, ready, route, say, start_host_at, start_peer, wait_for};
@@ -31,7 +32,7 @@ fn landed(peer: &PeerHandle) -> usize {
     peer.drain()
         .into_iter()
         .filter(|event| {
-            matches!(event, PeerEvent::Landed { author: Some(author), .. } if !support::is_host(author))
+            matches!(event, Event::Landed { author: Some(author), .. } if !support::is_host(author))
         })
         .count()
 }

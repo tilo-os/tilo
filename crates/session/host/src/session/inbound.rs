@@ -30,7 +30,7 @@ impl Task {
     /// Tell this device's readers that `route` changed in its replica.
     pub(super) fn landed(&self, route: &DocumentRoute, author: Option<[u8; 32]>) {
         self.engine.arrivals().landed();
-        self.emit(&PeerEvent::Landed {
+        self.emit(&tilo_session_client::Event::Landed {
             author,
             route: route.clone(),
         });
@@ -73,10 +73,14 @@ impl Task {
         // The workspace is ready once what the host replayed before it is in the replica:
         // whoever waits for it reads every write the replay carried.
         self.keep_arrived();
-        self.emit(&PeerEvent::Ready {
-            workspace_id,
-            records_when_opened: when_opened,
-        });
+        // A host is dialled by its certified key, so a session that got this far holds a valid one.
+        if let Ok(peer) = iroh::EndpointId::from_bytes(&self.config.host_cert.device_public_key) {
+            self.emit(&tilo_session_client::Event::HostReady {
+                ws: workspace_id,
+                peer,
+                records_when_opened: when_opened,
+            });
+        }
     }
 
     pub(super) fn inbound(&mut self, envelope: Envelope) {
@@ -623,9 +627,9 @@ impl Task {
 /// What the host addressed to this device that it only passes on: an
 /// action frame or what became of one, a piece of content, a member's
 /// coming or going. `host` is the host's own device, which answers its own operations.
-fn addressed(envelope: Envelope, host: [u8; 32]) -> Option<PeerEvent> {
+fn addressed(envelope: Envelope, host: [u8; 32]) -> Option<Event> {
     match envelope {
-        Envelope::HostAction { frame } => Some(PeerEvent::Remote(Heard::Action {
+        Envelope::HostAction { frame } => Some(Event::Remote(Heard::Action {
             workspace_id: HOST_ITSELF,
             from: host,
             frame,
@@ -635,7 +639,7 @@ fn addressed(envelope: Envelope, host: [u8; 32]) -> Option<PeerEvent> {
             from_device_public_key,
             frame,
             ..
-        } => Some(PeerEvent::Remote(Heard::Action {
+        } => Some(Event::Remote(Heard::Action {
             workspace_id,
             from: from_device_public_key,
             frame,
@@ -645,8 +649,8 @@ fn addressed(envelope: Envelope, host: [u8; 32]) -> Option<PeerEvent> {
             from_device_public_key,
             frame,
             ..
-        } => Some(PeerEvent::RecordContent {
-            workspace_id,
+        } => Some(Event::RecordContent {
+            ws: workspace_id,
             from: from_device_public_key,
             frame,
         }),
@@ -654,7 +658,7 @@ fn addressed(envelope: Envelope, host: [u8; 32]) -> Option<PeerEvent> {
             workspace_id,
             to_device_public_key,
             reason,
-        } => Some(PeerEvent::Remote(Heard::Undeliverable {
+        } => Some(Event::Remote(Heard::Undeliverable {
             workspace_id,
             to: to_device_public_key,
             reason,

@@ -20,7 +20,8 @@ mod support;
 // Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
-use tilo_session_host::{FailureSubject, LocalState, PeerEvent};
+use tilo_session_client::Event;
+use tilo_session_host::{FailureSubject, LocalState};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{
@@ -128,7 +129,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         peer.drain()
             .iter()
             .any(|event| {
-                matches!(event, PeerEvent::Ready { workspace_id, .. } if *workspace_id == workspace())
+                matches!(event, Event::HostReady { ws: workspace_id, .. } if *workspace_id == workspace())
             })
             .then_some(())
     })
@@ -143,7 +144,7 @@ async fn a_session_told_the_network_is_back_reconnects_now_instead_of_after_its_
         !peer
             .drain()
             .iter()
-            .any(|event| matches!(event, PeerEvent::Ready { .. })),
+            .any(|event| matches!(event, Event::HostReady { .. })),
         "a connected session is left as it is"
     );
 

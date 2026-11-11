@@ -3,11 +3,11 @@
 //! A public workspace — one listed in its host's directory, which anyone may
 //! walk into — replays a joining device only its governance and its shared
 //! desktop, and sends every other record once that device opens it, saying so
-//! in the [`tilo_session_host::PeerEvent::Ready`] that ends the replay. So a
+//! in the [`tilo_session_client::Event::HostReady`] that ends the replay. So a
 //! record this service holds none of is not one the workspace lacks: it is
 //! asked for ([`PeerHandle::open_route`], which asks the host and delivers
 //! what arrives as an ordinary change), and it is absent only once the host
-//! answered it holds none of it ([`tilo_session_host::PeerEvent::RecordOpened`]
+//! answered it holds none of it ([`tilo_session_client::Event::RecordOpened`]
 //! with no frames). Without that, every read and action about a record the
 //! host had not replayed was refused as one the workspace has none of, and a
 //! member's own records could neither be read nor acted on in the workspace
@@ -66,7 +66,7 @@ impl Workspace {
     /// are opened sends nothing else, so a record not here is one the
     /// workspace may still hold: it is asked for rather than taken as absent,
     /// and is absent only once the host answered it holds none of it
-    /// ([`tilo_session_host::PeerEvent::RecordOpened`] with no frames).
+    /// ([`tilo_session_client::Event::RecordOpened`] with no frames).
     pub(super) fn ask(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
         if !self.when_opened {
             return false;

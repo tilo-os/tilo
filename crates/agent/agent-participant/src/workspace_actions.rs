@@ -93,7 +93,8 @@ use tilo_actions::{
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::room_workspace_id;
-use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerEvent, PeerEvents, PeerHandle};
+use tilo_session_client::Event;
+use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerEvents, PeerHandle};
 use tilo_user_identity::RevocationList;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
@@ -833,7 +834,7 @@ struct Workspace {
     /// be sent, never one the workspace lacks.
     when_opened: bool,
     /// The records this member asked the workspace's host for and that it
-    /// has not answered yet ([`PeerEvent::RecordOpened`]).
+    /// has not answered yet ([`Event::RecordOpened`]).
     asked: HashSet<DocumentRoute>,
     /// The records the host answered it holds none of.
     absent: HashSet<DocumentRoute>,
@@ -897,17 +898,19 @@ impl Workspace {
     fn pump(&mut self, workspace_id: u64) {
         for event in self.events.drain() {
             match event {
-                PeerEvent::Ready {
-                    workspace_id: ready,
+                Event::HostReady {
+                    ws: ready,
                     records_when_opened,
+                    ..
                 } if ready == workspace_id => {
                     self.ready = true;
                     self.when_opened = records_when_opened;
                 }
-                PeerEvent::RecordOpened {
-                    workspace_id: opened,
-                    route,
+                Event::RecordOpened {
+                    ws: opened,
+                    route: Some(route),
                     frames,
+                    ..
                 } if opened == workspace_id => {
                     // The host sent all it holds of a record this member
                     // asked for: none means it holds none of it.
@@ -915,7 +918,7 @@ impl Workspace {
                         self.absent.insert(route);
                     }
                 }
-                PeerEvent::Landed { route, .. } => {
+                Event::Landed { route, .. } => {
                     if room_workspace_id(&route.cluster_id).ok() != Some(workspace_id) {
                         continue;
                     }

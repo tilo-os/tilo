@@ -345,6 +345,7 @@ impl Seat {
                     ws,
                     channel,
                     frames,
+                    ..
                 } => {
                     link.record_opened(*ws, *channel, *frames);
                 }

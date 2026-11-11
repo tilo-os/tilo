@@ -71,8 +71,9 @@ use tilo_relay_protocol::agents::{
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_session_client::Event;
 use tilo_session_core::remote::Heard;
-use tilo_session_host::{PeerEvent, PeerHandle, certify};
+use tilo_session_host::{PeerHandle, certify};
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,
@@ -230,7 +231,7 @@ async fn call(
             agent.pump();
         }
         let receipt = events.drain().into_iter().find_map(|event| match event {
-            PeerEvent::Remote(Heard::Action { from, frame, .. }) if from == host_device => {
+            Event::Remote(Heard::Action { from, frame, .. }) if from == host_device => {
                 match RemoteActionFrame::decode(&frame).unwrap().message {
                     RemoteActionMessage::Receipt(receipt) if receipt.invocation == invocation => {
                         Some(receipt)
@@ -238,7 +239,7 @@ async fn call(
                     _ => None,
                 }
             }
-            PeerEvent::Remote(Heard::Undeliverable { reason, .. }) => {
+            Event::Remote(Heard::Undeliverable { reason, .. }) => {
                 panic!("undeliverable: {reason}")
             }
             _ => None,
@@ -296,7 +297,7 @@ async fn receive_until(
         let own = browser.engine().identity().device_cert.device_public_key;
         let mut landed = false;
         for event in events.drain() {
-            if let PeerEvent::Landed {
+            if let Event::Landed {
                 route: changed,
                 author: wrote,
             } = event
@@ -568,7 +569,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     assert_eq!(held.agents[0].tasks[1].state, TaskState::Queued);
     assert!(
         !browser_events.drain().iter().any(
-            |event| matches!(event, PeerEvent::Landed { route: changed, .. } if *changed == route)
+            |event| matches!(event, Event::Landed { route: changed, .. } if *changed == route)
         ),
         "a paused agent edits nothing"
     );
@@ -739,7 +740,7 @@ async fn an_agent_edits_beside_a_browser_and_both_see_each_other() {
     let no_edit = |what: &str| {
         assert!(
             !browser_events.drain().iter().any(
-                |event| matches!(event, PeerEvent::Landed { route: changed, .. } if *changed == route)
+                |event| matches!(event, Event::Landed { route: changed, .. } if *changed == route)
             ),
             "{what}"
         );

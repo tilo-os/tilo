@@ -57,8 +57,8 @@ pub use custody::{MemoryPeerStore, PeerRecord, PeerStore};
 pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
 pub use session::{
     CallFrame, CallPicture, CallShown, Completion, Entry, EntryCompletion, Failure, FailureSubject,
-    LocalState, PAGE_FAILURE_CODES, PageShown, PeerConfig, PeerEvent, PeerEvents, PeerHandle,
-    PeerStatus, RoomsCompletion, SessionMemberHost, TransportPhase,
+    LocalState, PAGE_FAILURE_CODES, PageShown, PeerConfig, PeerEvents, PeerHandle, PeerStatus,
+    RoomsCompletion, SessionMemberHost, TransportPhase,
 };
 /// The identity layer's device side, re-exported for this crate's own tests
 /// and its peers.
@@ -68,4 +68,3 @@ pub use tilo_relay_client::{
     SignFuture, answer_pairing, certify, certify_with_root, decide_pairing, invite,
     issue_agent_grant, issue_device_cert, issue_stand_in, pending_pairings, revoke_device,
 };
-pub use voice::VoiceEvent;

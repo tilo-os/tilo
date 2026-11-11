@@ -9,7 +9,7 @@
 
 use super::{
     Answered, Arc, BTreeMap, BTreeSet, CoeditPayload, Completion, CustodyEntry, DocumentRoute,
-    Envelope, FailureSubject, PeerEvent, RelayClient, Task, route_of,
+    Envelope, FailureSubject, RelayClient, Task, route_of,
 };
 
 impl Task {
@@ -286,7 +286,7 @@ impl Task {
                 .custody(workspace)
                 .into_iter()
                 .find(|entry| entry.0 == id)
-                .map(|entry| PeerEvent::Refused {
+                .map(|entry| tilo_session_client::Event::Refused {
                     route: route.clone(),
                     changes: tilo_peer_state::document_frame::claimed_changes(&entry.1),
                     reason: reason.clone(),

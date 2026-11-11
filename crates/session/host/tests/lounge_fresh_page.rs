@@ -44,6 +44,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
 
 use std::time::Duration;
+use tilo_session_client::Event;
 use tilo_session_host::HttpFuture;
 
 use collab_types::presence::Presence;
@@ -53,7 +54,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
 use tilo_session_host::invite::guest_certificate;
-use tilo_session_host::{Host, PeerEvent, PeerHandle};
+use tilo_session_host::{Host, PeerHandle};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -795,7 +796,7 @@ fn room_id(lounge: &Lounge) -> u64 {
 /// anything: presence is a live frame the host fans out and never keeps, so
 /// the frames are gathered over a while and replayed into a board. A page
 /// takes another device's presence off its plane's presence track
-/// ([`PeerEvent::LivePlane`] with `Track::Presence`): the plane opened the
+/// ([`Event::LivePlane`] with `Track::Presence`): the plane opened the
 /// scope's seal, and the body is the [`Presence`] frame the device said.
 async fn presence_frames(
     page: &PeerHandle,
@@ -825,7 +826,7 @@ fn gather_presence(
 ) -> bool {
     let mut heard = false;
     for event in page.drain() {
-        if let PeerEvent::LivePlane {
+        if let Event::LivePlane {
             from,
             track: tilo_live::live::Track::Presence,
             body,

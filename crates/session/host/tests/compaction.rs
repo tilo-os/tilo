@@ -27,7 +27,7 @@ use tilo_automerge::ApplyIncoming as _;
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
-use tilo_session_host::PeerEvent;
+use tilo_session_client::Event;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{durable, enrol, ready, route, start_host, start_peer, wait_for, workspace};
@@ -76,7 +76,7 @@ async fn join_late(
         .drain()
         .into_iter()
         .filter(|event| {
-            matches!(event, PeerEvent::Landed { route: landed, author: Some(_) } if *landed == route())
+            matches!(event, Event::Landed { route: landed, author: Some(_) } if *landed == route())
         })
         .count();
     joiner.close();

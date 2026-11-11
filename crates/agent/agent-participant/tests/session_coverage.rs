@@ -50,8 +50,8 @@ use tilo_agent_participant::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
+use tilo_session_client::Event;
 use tilo_session_core::remote::Heard;
-use tilo_session_host::PeerEvent;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, enrol, ready, start_host, start_peer, wait_for, workspace};
@@ -106,11 +106,11 @@ async fn ask(
         let mut answer = None;
         for event in events.drain() {
             match event {
-                PeerEvent::Remote(Heard::Action { from, frame, .. }) if from == agent_key => {
+                Event::Remote(Heard::Action { from, frame, .. }) if from == agent_key => {
                     answer
                         .get_or_insert_with(|| RemoteActionFrame::decode(&frame).unwrap().message);
                 }
-                PeerEvent::Remote(Heard::Undeliverable { reason, .. }) => {
+                Event::Remote(Heard::Undeliverable { reason, .. }) => {
                     panic!("undeliverable: {reason}")
                 }
                 _ => {}
@@ -179,7 +179,7 @@ fn held(browser: &tilo_session_host::PeerHandle, route: &DocumentRoute) -> Optio
 /// Take the browser's events: every write that landed is one of `writers`'.
 fn only_written_by(events: &tilo_session_host::PeerEvents, writers: &[[u8; 32]]) {
     for event in events.drain() {
-        if let PeerEvent::Landed {
+        if let Event::Landed {
             author: Some(author),
             ..
         } = event

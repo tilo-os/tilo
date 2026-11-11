@@ -45,7 +45,8 @@ use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
-use tilo_session_host::{PeerEvent, PeerHandle};
+use tilo_session_client::Event;
+use tilo_session_host::PeerHandle;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
 use support::{door, enrol, enter, start_workspace_host, wait_for};
@@ -373,7 +374,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         .drain()
         .into_iter()
         .filter(|event| {
-            matches!(event, PeerEvent::Landed { route, author: Some(author) }
+            matches!(event, Event::Landed { route, author: Some(author) }
                 if *route == chat_route && *author == agent_key)
         })
         .count();
@@ -402,11 +403,11 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         async move { posted.ok().map(drop) }
     })
     .await;
-    let parts_written = |events: Vec<PeerEvent>| -> Vec<String> {
+    let parts_written = |events: Vec<Event>| -> Vec<String> {
         events
             .into_iter()
             .filter_map(|event| match event {
-                PeerEvent::Landed {
+                Event::Landed {
                     route,
                     author: Some(author),
                 } if author == agent_key

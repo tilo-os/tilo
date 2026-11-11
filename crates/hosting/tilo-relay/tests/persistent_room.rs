@@ -619,7 +619,7 @@ async fn assert_page_reads_the_chat(
     route: &tilo_peer_state::document_frame::DocumentRoute,
     channels: &[&str],
 ) -> automerge::AutoCommit {
-    use tilo_session_host::PeerEvent;
+    use tilo_session_client::Event;
 
     let mut ready = false;
     let mut doc = automerge::AutoCommit::new();
@@ -629,13 +629,11 @@ async fn assert_page_reads_the_chat(
         || {
             for event in visiting.drain() {
                 match &event {
-                    PeerEvent::Ready {
-                        workspace_id: at, ..
-                    } if *at == workspace_id => {
+                    Event::HostReady { ws: at, .. } if *at == workspace_id => {
                         ready = true;
                     }
                     // The room's other records land too; only the chat is read.
-                    PeerEvent::Landed { route: landed, .. } if landed == route => {
+                    Event::Landed { route: landed, .. } if landed == route => {
                         if let Ok(Some(bytes)) = visiting.engine().record(
                             &route.cluster_id,
                             &route.app_id,
@@ -952,7 +950,7 @@ async fn persons_read_the_room_and_are_refused(
     (writing_key, writing_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
     (sibling_key, sibling_cert): (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
 ) {
-    use tilo_session_host::PeerEvent;
+    use tilo_session_client::Event;
 
     let (host, host_cert, route) = chat_route(plain, cluster).await;
 
@@ -1007,7 +1005,7 @@ async fn persons_read_the_room_and_are_refused(
         !other
             .drain()
             .iter()
-            .any(|event| matches!(event, PeerEvent::Ready { .. })),
+            .any(|event| matches!(event, Event::HostReady { .. })),
         "a sibling device was admitted: {refused:?}"
     );
 
