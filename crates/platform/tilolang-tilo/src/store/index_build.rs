@@ -15,6 +15,7 @@ use std::path::Path;
 use std::sync::Arc;
 
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
+use tilolang_runtime::store::doc_of;
 
 use super::reading::{build, everything, mirror_of, scan};
 use super::{Doc, Inner, Nested, TiloStore};
@@ -949,11 +950,12 @@ fn derive(
         }
     };
     let now = stamps_after(chunks, from, part);
-    // The index of an app the changes reached nothing of is not written: a change one app made
-    // writes that app's index alone, whatever else the store holds. What the stamps say the
-    // index has taken in is kept here; the index's own are written with its next derivation,
-    // and one that opens before then catches up from them.
-    if !reached_app(docs, app, &reached) {
+    // An index with nothing of the changes in it derives no row: a change one app made is that
+    // app's, whatever else the store holds. What it has taken in is not a row but the heads, and
+    // they are written: an index that kept the heads it had catches up from these chunks again
+    // at every open.
+    if !reached_app(docs, app, &reached, &ends) {
+        index.write(|writer| writer.set_heads(&now))?;
         return Ok((now, DocReads::default()));
     }
     // The chunks the step derives from their first change: a step of a build, or a chunk read
@@ -983,17 +985,27 @@ fn derive(
     Ok((now, written))
 }
 
-/// Whether what the changes reached names anything of `app`: whether its index has anything to
-/// take in. A document no index names — one just removed — may be any app's, so every app is
-/// derived for it.
+/// Whether a change gave `app`'s index anything to take in: a document of it the change
+/// reached, or a resource of it the change made a version of. A version is not always of the
+/// app that made the change: what an action was made from changed too, so a comment made from a
+/// task is a version of the task, and the tasks' index takes it in. A document no index names —
+/// one just removed — may be any app's, so every app is derived for it.
 pub(crate) fn reached_app(
     docs: &BTreeMap<DocId, (AppId, TypeId)>,
     app: &str,
     reached: &Reached,
+    made: &BTreeMap<String, idx::reflect::Ends>,
 ) -> bool {
     let mut unknown = false;
     for doc in reached.docs.keys().chain(reached.placed.keys()) {
         match docs.get(doc) {
+            Some((held, _)) if held == app => return true,
+            Some(_) => {}
+            None => unknown = true,
+        }
+    }
+    for resource in made.keys() {
+        match docs.get(doc_of(resource)) {
             Some((held, _)) if held == app => return true,
             Some(_) => {}
             None => unknown = true,

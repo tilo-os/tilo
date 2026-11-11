@@ -1716,22 +1716,17 @@ impl Inner {
         if !self.chunks.has_record() {
             return (moved, wholes, notified);
         }
-        // A change one app made writes that app's index alone: an app it reached nothing of has
-        // nothing to take in, and a write for it is a commit of nothing. What such an index has
-        // taken in moves with the chunks here, as its rows are the ones they were: its own
-        // stamps are written with its next derivation, and one that opens before then catches up
-        // from them.
-        let mut apps: Vec<AppId> = Vec::new();
-        for (app, held) in &mut self.apps {
-            if !held.ready() {
-                continue;
-            }
-            if reached_app(&self.index, app, reached) {
-                apps.push(app.clone());
-            } else {
-                held.heads = stamps_after(&self.chunks, &held.heads);
-            }
-        }
+        // A change writes the index of each app it has something of to take in, and no other: an
+        // app with nothing of it keeps its rows, and a write for it is a commit of nothing. What
+        // such an index has taken in moves with the chunks here, as its rows are the ones they
+        // were: its own stamps are written with its next derivation, and one that opens before
+        // then catches up from them.
+        let apps: Vec<AppId> = self
+            .apps
+            .iter()
+            .filter(|(_, held)| held.ready())
+            .map(|(app, _)| app.clone())
+            .collect();
         for app in apps {
             let Some(held) = self.apps.get(&app) else {
                 continue;
@@ -1767,6 +1762,12 @@ impl Inner {
                     (&own, &own_placed)
                 }
             };
+            if !reached_app(docs, &app, reached, ends) {
+                if let Some(held) = self.apps.get_mut(&app) {
+                    held.heads = seen;
+                }
+                continue;
+            }
             let nested = &self.nested;
             self.stats.index_writes = self.stats.index_writes.saturating_add(1);
             let written = index.write(|writer| {
