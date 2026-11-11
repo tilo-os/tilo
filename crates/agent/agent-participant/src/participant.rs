@@ -45,6 +45,7 @@ use tilo_session_host::{
 use tilo_user_identity::DeviceCert;
 
 pub mod actions;
+mod arriving;
 mod authors;
 mod bound;
 mod context;
@@ -137,7 +138,8 @@ const WORKSPACE_SETTLE: Duration = Duration::from_millis(300);
 /// would not find it.
 const COMMIT_WAIT: Duration = Duration::from_secs(20);
 
-/// The longest a plan waits for the keys of a record it is about. Keys no
+/// The longest a plan waits for the host: the keys of a record it is about,
+/// or a record the workspace sends only once it is opened. Keys no
 /// participant sends (to a device none admits any more) must not hold the
 /// agent forever: the task is planned with what the workspace shows.
 const KEYS_WAIT: Duration = Duration::from_secs(10);
@@ -220,6 +222,12 @@ type WitnessAnswer =
     Result<tilo_actions::remote::ConfirmedInvocation, tilo_actions::remote::ActionHostError>;
 
 /// One agent in one workspace.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each is a different fact: whether a plan checks its work, whether \
+              the workspace was admitted, whether the agent left, and whether the \
+              workspace sends its records only when they are opened"
+)]
 pub struct AgentParticipant {
     identity: AgentIdentity,
     control: Arc<AgentControl>,
@@ -285,6 +293,16 @@ pub struct AgentParticipant {
     exported: Vec<facts::Exported>,
     /// The host admitted the workspace; everything it replayed has arrived.
     ready: bool,
+    /// The workspace sends this agent a record only once it opens it (a
+    /// public workspace, one anyone may walk into): what the workspace holds
+    /// is asked for and never founded here before the host answered it holds
+    /// none of it ([`Self::record_on_its_way`]).
+    when_opened: bool,
+    /// The records asked of the workspace's host and not answered yet.
+    asked_records: BTreeSet<DocumentRoute>,
+    /// The records the host answered it holds none of: the ones this agent
+    /// may make itself.
+    absent_records: BTreeSet<DocumentRoute>,
     /// When the workspace last delivered a record the agent had not seen, since
     /// it was admitted: a newly joined agent plans once the workspace's records
     /// stop arriving ([`WORKSPACE_SETTLE`]).
@@ -295,7 +313,7 @@ pub struct AgentParticipant {
     finishing: Option<Finishing>,
     /// The task begun but waiting for the keys of a record it names.
     starting: Option<(String, String)>,
-    /// Since when a plan waits for a record's keys ([`KEYS_WAIT`]).
+    /// Since when a plan waits for the host ([`KEYS_WAIT`]).
     keys_wait: Option<Instant>,
     /// The records the current task's steps acted on, and the previous
     /// task's: a task that follows on ("the same suppliers", "the end
@@ -436,6 +454,9 @@ impl AgentParticipant {
             own_wrote: BTreeSet::new(),
             exported: Vec::new(),
             ready: false,
+            when_opened: false,
+            asked_records: BTreeSet::new(),
+            absent_records: BTreeSet::new(),
             settling: None,
             finishing: None,
             starting: None,
@@ -666,15 +687,24 @@ impl AgentParticipant {
 
     fn receive(&mut self, event: PeerEvent) {
         match event {
-            PeerEvent::Ready { workspace_id, .. } if workspace_id == self.workspace_id => {
+            PeerEvent::Ready {
+                workspace_id,
+                records_when_opened,
+            } if workspace_id == self.workspace_id => {
                 if !self.ready {
                     self.settling = Some(Instant::now());
                 }
                 self.ready = true;
+                self.when_opened = records_when_opened;
                 if self.control.status() == AgentStatus::Starting {
                     self.control.set_status(AgentStatus::Waiting);
                 }
             }
+            PeerEvent::RecordOpened {
+                workspace_id,
+                route,
+                frames,
+            } if workspace_id == self.workspace_id => self.record_answered(route, frames),
             PeerEvent::Document(document) => self.document_said(&document),
             PeerEvent::Remote(tilo_session_host::session_actions::Heard::Action {
                 workspace_id,
@@ -825,13 +855,17 @@ impl AgentParticipant {
         let waits = if matches!(step.action, StepAction::Continue(_)) {
             self.touched_keys_pending()
         } else {
-            self.step_record_pending(&step) || self.edits_arriving(&step)
+            self.step_record_pending(&step)
+                || self.edits_arriving(&step)
+                || self.step_record_arriving(&step)
         };
-        if waits && self.may_wait_for_keys() {
+        if waits && self.may_wait_for_host() {
             // A record the task just opened is planned with once it opens,
-            // and a step acts on a record once the edits others sealed for
-            // it are open: an export or an edit taken from half the record
-            // would drop or overwrite what is still held back.
+            // a record the workspace sends when it is opened is waited for
+            // rather than founded here, and a step acts on a record once the
+            // edits others sealed for it are open: an export or an edit taken
+            // from half the record would drop or overwrite what is still held
+            // back.
             if let Some(running) = self.running.as_mut() {
                 running.steps.push_front(step);
             }
@@ -1036,13 +1070,16 @@ impl AgentParticipant {
 
     /// Start the next queued task and have it planned. A record of an app
     /// the task names that arrived sealed opens once the agent holds its
-    /// keys: the task is planned then, so it sees what the workspace holds.
-    /// Records of other apps do not hold it up.
+    /// keys, and one the workspace sends only when it is opened is asked for
+    /// and arrives: the task is planned then, so it sees what the workspace
+    /// holds. Records of other apps do not hold it up.
     fn begin_task(&mut self) {
         let Some((id, text)) = self.starting.take().or_else(|| self.control.begin_next()) else {
             return;
         };
-        if self.keys_pending_for(&text) && self.may_wait_for_keys() {
+        if (self.keys_pending_for(&text) || self.task_records_arriving(&text))
+            && self.may_wait_for_host()
+        {
             self.starting = Some((id, text));
             return;
         }
@@ -1522,22 +1559,26 @@ impl AgentParticipant {
         false
     }
 
-    /// The wait for keys is over (they arrived, or it gave up).
+    /// The wait for the host is over (what it was asked for arrived, or it
+    /// gave up).
     fn end_keys_wait(&mut self) {
         if let Some(since) = self.keys_wait.take() {
-            tracing::debug!(after = ?since.elapsed(), "agent: keys waited for");
+            tracing::debug!(after = ?since.elapsed(), "agent: the host's answer waited for");
         }
     }
 
-    /// Whether a plan may still wait for keys: [`KEYS_WAIT`] from the first
-    /// time it did.
-    fn may_wait_for_keys(&mut self) -> bool {
+    /// Whether a plan may still wait for the host: a record's keys, or a
+    /// record the workspace sends only when it is opened ([`KEYS_WAIT`] from
+    /// the first time it did).
+    fn may_wait_for_host(&mut self) -> bool {
         let since = *self.keys_wait.get_or_insert_with(Instant::now);
         if since.elapsed() < KEYS_WAIT {
             return true;
         }
-        tracing::debug!(after = ?since.elapsed(), "agent: waited for keys");
-        tracing::warn!("agent: a record's keys did not arrive; planning without them");
+        tracing::debug!(after = ?since.elapsed(), "agent: waited for the host");
+        tracing::warn!(
+            "agent: a record's keys or the record itself did not arrive; going on without it"
+        );
         false
     }
 
@@ -1901,18 +1942,16 @@ impl AgentParticipant {
         if !self.identity.delegation.permits_app(app_id) {
             return Err(format!("the agent is not delegated {app_id}"));
         }
+        let (app, workspace) = (app_id.to_owned(), self.workspace.clone());
         let route = |record: &str| DocumentRoute {
-            app_id: app_id.to_owned(),
-            cluster_id: self.workspace.clone(),
+            app_id: app.clone(),
+            cluster_id: workspace.clone(),
             record: record.to_owned(),
         };
         // An app that keeps one record per workspace (Chat) has one route, named
         // empty: asked for a new record, the agent joins the workspace's own once
         // the workspace has it, so every agent sees what the others wrote there.
-        let workspace_record = self
-            .catalogue
-            .get(app_id)
-            .is_some_and(ui::application::ApplicationDefinition::keeps_workspace_record);
+        let workspace_record = self.keeps_workspace_record(app_id);
         // A part of a chain is held beside its record, never opened: asked
         // for one, the agent opens the record that keeps it.
         let record = record
@@ -1932,6 +1971,15 @@ impl AgentParticipant {
                             changes: vec![saved?],
                         };
                         (seed, Some(route))
+                    }
+                    // The workspace may hold the record and send it only now
+                    // that it is opened: it is never founded here meanwhile.
+                    None if self.record_on_its_way(&route) => {
+                        return Err(if record.is_empty() {
+                            format!("the workspace's own {app_id} record is on its way")
+                        } else {
+                            format!("the workspace's {app_id} record {record} is on its way")
+                        });
                     }
                     // Nobody has written the workspace's record yet: its genesis
                     // is the same on every member, so this one converges

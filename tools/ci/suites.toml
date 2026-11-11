@@ -1427,6 +1427,7 @@ readers = [
   "crates/agent/agent-participant/tests/host_agents.rs",
   "crates/agent/agent-participant/tests/session_coverage.rs",
   "crates/agent/agent-participant/tests/shared_session.rs",
+  "crates/agent/agent-participant/tests/public_workspace_records.rs",
 ]
 
 [[cargo]]
