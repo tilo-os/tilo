@@ -697,6 +697,7 @@ mod tests {
             app_id: "so.tilo.chat".into(),
             cluster_id: "workspace".into(),
             hash: "ab".repeat(32),
+            have: Vec::new(),
         };
         let heard = |message: NeighbourMsg| tilo_peer_state::direct::Heard {
             author: device,
@@ -767,6 +768,7 @@ mod tests {
             app_id: "so.tilo.notes".into(),
             cluster_id: "workspace".into(),
             hash: "ab".repeat(32),
+            have: Vec::new(),
         };
         for message in [genesis, asking, routed, want] {
             assert_eq!(carried(&message), Some(Carried::Link), "{}", message.kind());
