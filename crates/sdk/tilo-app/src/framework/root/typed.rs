@@ -161,6 +161,11 @@ pub(crate) trait TypedRoot {
     /// The edits the views bound over `state`.
     fn declarations(&self, state: &dyn Any) -> Box<dyn Any>;
 
+    /// How many times the list of bound edits changed
+    /// ([`Bindings::generation`](super::super::view::Bindings)): a reader that
+    /// saw the same count reads the same views' edits, over the same state.
+    fn bindings_generation(&self) -> u64;
+
     /// The ids of `declarations` (from [`Self::declarations`]).
     fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str>;
 
@@ -482,6 +487,10 @@ impl<R: Resource> TypedRoot for Typed<R> {
             .map(|state| self.bindings.declarations(state))
             .unwrap_or_default();
         Box::new(declarations)
+    }
+
+    fn bindings_generation(&self) -> u64 {
+        self.bindings.generation()
     }
 
     fn declaration_ids(&self, declarations: &dyn Any) -> Vec<&'static str> {

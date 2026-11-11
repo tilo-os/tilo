@@ -38,6 +38,8 @@ use ui_core::widget::DrawChild;
 mod controls;
 mod facts;
 mod live_head;
+mod overlay;
+use overlay::OverlayCache;
 mod read;
 mod search;
 mod shared_tree;
@@ -158,6 +160,8 @@ pub(crate) struct ResourceRoot {
     /// document the host lends each pass, or the session over the app's one
     /// connection ([`super::Source`]).
     source: super::Source,
+    /// The edits the views bound, as last built ([`OverlayCache`]).
+    overlay: std::cell::RefCell<Option<OverlayCache>>,
 }
 
 impl ResourceRoot {
@@ -569,6 +573,7 @@ impl ResourceRoot {
             native_presentation,
             share: super::share_link::ShareLinks::default(),
             source: super::Source::Document,
+            overlay: std::cell::RefCell::new(None),
         }
     }
 
@@ -868,10 +873,10 @@ impl ResourceRoot {
         let base = self.binding_base(head);
         let overlay = self.binding_overlay(&base);
         let mut resource = (*base.resource).clone();
-        for spec in overlay {
+        for spec in overlay.iter() {
             match resource.actions.iter_mut().find(|own| own.id == spec.id) {
-                Some(own) => *own = spec,
-                None => resource.actions.push(spec),
+                Some(own) => *own = spec.clone(),
+                None => resource.actions.push(spec.clone()),
             }
         }
         resource
@@ -918,78 +923,6 @@ impl ResourceRoot {
         base
     }
 
-    /// What the views add over `base` now, as
-    /// [`Self::decorate_publication`] adds it: the edits they bound, their
-    /// availability, and the app's effects. Few actions, built per refresh.
-    fn binding_overlay(&self, base: &BindingBase) -> Vec<tilo_actions::ActionSpec> {
-        let state = self.typed.state();
-        let bound = {
-            let _profile = tilo_resource::profiling::Phase::start("framework.bound_declarations");
-            self.typed.declarations(&*state)
-        };
-        let mut availability = Vec::new();
-        self.surfaces(&mut |surface| {
-            let _profile = tilo_resource::profiling::Phase::start("framework.surface_publication");
-            availability.extend(surface.availability());
-        });
-        let own = base
-            .resource
-            .actions
-            .get(..base.head_len)
-            .unwrap_or_default();
-        let shadows = base
-            .resource
-            .actions
-            .get(..base.shadow_len)
-            .unwrap_or_default();
-        // The head's actions the edits bind over, refined where they say so.
-        let ids = self.typed.declaration_ids(&*bound);
-        let mut overlay = ResourceSpec::new("", "", "");
-        overlay.actions = own
-            .iter()
-            .filter(|spec| ids.contains(&spec.id.as_str()))
-            .cloned()
-            .collect();
-        overlay = self.typed.bind(overlay, bound);
-        for status in &availability {
-            if !overlay.actions.iter().any(|spec| spec.id == status.id())
-                && let Some(spec) = own.iter().find(|spec| spec.id == status.id())
-            {
-                overlay.actions.push(spec.clone());
-            }
-            for spec in overlay
-                .actions
-                .iter_mut()
-                .filter(|spec| spec.id == status.id())
-            {
-                status.overlay(spec);
-            }
-        }
-        let effects = {
-            let _profile = tilo_resource::profiling::Phase::start("framework.effect_specs");
-            self.typed.effect_specs()
-        };
-        for spec in effects {
-            let shadowed = shadows
-                .iter()
-                .chain(&overlay.actions)
-                .any(|existing| existing.id == spec.id);
-            debug_assert!(!shadowed, "effect `{}` shadows an action", spec.id);
-            if shadowed {
-                tracing::warn!(effect = spec.id, "effect shadows an action; not published");
-                continue;
-            }
-            overlay.actions.push(spec);
-        }
-        if base.key.causal {
-            mark_document_jobs(&mut overlay);
-        }
-        if let Some(unreadable) = &base.key.unreadable {
-            tilo_resource::withhold_document_actions(&mut overlay, unreadable);
-        }
-        overlay.actions
-    }
-
     /// Refresh the actions bound controls look up, reusing `head` while the
     /// live state and locale are those it was built at. Answers the head
     /// they were refreshed from.
@@ -1007,11 +940,12 @@ impl ResourceRoot {
         // to are of the last state that read, not what it holds now.
         let overlay = if self.typed.unreadable().is_some() {
             overlay
-                .into_iter()
+                .iter()
                 .filter(|spec| spec.id != tilo_resource::FIELD_EDIT)
+                .cloned()
                 .collect()
         } else {
-            overlay
+            (*overlay).clone()
         };
         self.action_bindings
             .update_shared(Rc::clone(&base.resource), overlay);
