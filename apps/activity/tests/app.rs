@@ -71,6 +71,9 @@ fn every_scenario_shows_its_place_built_from_components() {
         for target in targets {
             assert!(shows(&mut app, target), "{scenario} shows {target}");
         }
+        // Facts are parts of a row, never joined with a glyph: where the
+        // person left off names its app and its time apart.
+        assert!(!says(&mut app, "·"), "{scenario} joins facts with a dot");
     }
 }
 

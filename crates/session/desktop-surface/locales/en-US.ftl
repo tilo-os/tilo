@@ -210,7 +210,6 @@ activity-pane-timeline = Timeline
 activity-pane-browse = Browse
 activity-pane-details = Details
 activity-resume-heading = Where you left off
-activity-resume-context = { $app } · { $when }
 activity-resume-button = Resume
 activity-pending-edits = Waiting for current edits to finish
 activity-catch-up-quiet = { $workspace } · Nothing new needs your attention

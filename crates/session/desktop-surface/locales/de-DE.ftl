@@ -222,7 +222,6 @@ activity-pane-timeline = Zeitleiste
 activity-pane-browse = Durchsuchen
 activity-pane-details = Details
 activity-resume-heading = Zuletzt bearbeitet
-activity-resume-context = { $app } · { $when }
 activity-resume-button = Fortsetzen
 activity-pending-edits = Warte auf laufende Bearbeitungen
 activity-catch-up-quiet = { $workspace } · Nichts Neues braucht deine Aufmerksamkeit

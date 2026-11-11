@@ -13,7 +13,6 @@ activity-see-history = See history
 activity-history-pending = History is waiting for current edits to finish
 activity-summary-on-device = On-device summary
 activity-resume-heading = Where you left off
-activity-resume-context = { $app }, { $when }
 activity-resume-button = Resume
 activity-brief-open-explorer = Open this work session in History
 activity-brief-no-changes = No content differences in this work session

@@ -11,7 +11,7 @@ use ui::prelude::*;
 use ui::tilo_actions::remote::workspace_activity as wire;
 use ui::widget::{DisclosureRow, DisclosureState, ListRow, Section};
 
-use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr, trf};
+use crate::{ActivityEffect, Filter, Nav, Provider, ago, page, tr};
 
 /// The place's content and its header's commands.
 pub(crate) fn view(cx: &ViewCx<Filter>, nav: &Nav) -> (Element, Vec<Element>) {
@@ -93,27 +93,22 @@ fn narrative_section(narrative: &str) -> Element {
 fn resume_section(provider: &Provider, resume: &wire::Resume) -> Element {
     let target = resume.target.clone();
     let open = provider.clone();
-    let context = trf(
-        "activity-resume-context",
-        &[
-            (
-                "app",
-                resume
-                    .app
-                    .clone()
-                    .or_else(|| resume.target.app_label.clone())
-                    .unwrap_or_default()
-                    .into(),
-            ),
-            ("when", ago(resume.at_ms).into()),
-        ],
-    );
-    let row = ListRow::new("activity-resume", resume.target.label.clone())
-        .subtitle(context)
-        .trailing(Box::new(
-            Button::new("activity-resume-open", "activity-resume-button")
-                .on_view(move || open.ask(wire::OPEN, &target)),
-        ));
+    // The app the place is in and when the person was last there are two
+    // facts: the app under the place's name, the time at the row's end.
+    let app = resume
+        .app
+        .clone()
+        .or_else(|| resume.target.app_label.clone())
+        .filter(|app| !app.is_empty());
+    let mut row =
+        ListRow::new("activity-resume", resume.target.label.clone()).meta(ago(resume.at_ms));
+    if let Some(app) = app {
+        row = row.subtitle(app);
+    }
+    let row = row.trailing(Box::new(
+        Button::new("activity-resume-open", "activity-resume-button")
+            .on_view(move || open.ask(wire::OPEN, &target)),
+    ));
     Box::new(Section::titled(
         tr("activity-resume-heading"),
         vec![Box::new(ui::author_face(row, &resume.author))],
