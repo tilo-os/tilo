@@ -270,7 +270,7 @@ fn engine_error_text(context: &str, message: &str, account: &str) -> String {
     match context {
         "connect" | "fetch" if signed_out => {
             format!(
-                "Can’t sign in to {account}. Check its password in Settings, External Accounts."
+                "Can’t sign in to {account}. Check its password in Settings, External accounts."
             )
         }
         "connect" | "fetch" if offline => "You’re offline. Mail will check again.".to_owned(),

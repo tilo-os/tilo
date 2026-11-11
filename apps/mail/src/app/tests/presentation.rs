@@ -94,7 +94,7 @@ fn presentation_state_stays_local() {
         assert_eq!(semantics.name.as_deref(), Some("No email account yet"));
         assert!(semantics.children.iter().any(|node| {
             node.role == ui::a11y::Role::Button
-                && node.name.as_deref() == Some("Open External Accounts")
+                && node.name.as_deref() == Some("Open External accounts")
         }));
         assert!(
             first.first_run.perform_action(
