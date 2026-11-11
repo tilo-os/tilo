@@ -45,7 +45,7 @@ pub(crate) enum SendToAction {
     /// agent, an agent, a person or a conversation, by its id, or by its name alone to be found.
     #[effect(job)]
     Send {
-        #[param("Who it goes to: kind new_agent, agent, person or conversation, by id or name")]
+        #[param("Who it goes to: kind new-agent, agent, person or conversation, by id or name")]
         to: Vec<Recipient>,
         #[param("What it carries besides its words")]
         attached: Option<Vec<tilo_reference::Attached>>,

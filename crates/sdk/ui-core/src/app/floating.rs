@@ -1434,17 +1434,26 @@ fn tab_request_message(
 
 /// The app that publishes what `subject` names, as the window's published
 /// resources tell it: a subject keeps the publisher of its record, which is
-/// where the message about it travels, whatever window showed it.
+/// where the message about it travels, whatever window showed it. An item the
+/// window names but publishes no resource of (a message among thousands) is
+/// this app's own.
 #[cfg(feature = "native")]
 fn publishing_app<'a>(
     subject: &crate::shared_selection::SharedSelection,
     published: &'a [tilo_actions::ResourceSpec],
 ) -> Option<&'a str> {
+    fn find<'a>(
+        specs: &'a [tilo_actions::ResourceSpec],
+        resource: &tilo_actions::ActionResource,
+    ) -> Option<&'a tilo_actions::ResourceSpec> {
+        specs.iter().find_map(|spec| {
+            (spec.kind == resource.kind && spec.id.as_str() == resource.id.as_str())
+                .then_some(spec)
+                .or_else(|| find(&spec.children, resource))
+        })
+    }
     let resource = subject.resource.as_ref()?;
-    let spec = published
-        .iter()
-        .find(|spec| spec.kind == resource.kind && spec.id.as_str() == resource.id.as_str())?;
-    spec.app_id.as_deref()
+    find(published, resource)?.app_id.as_deref()
 }
 
 impl App {
@@ -1477,8 +1486,10 @@ impl App {
             let Some(subject) = subject else {
                 continue;
             };
-            let app = publishing_app(&subject, &published);
-            if let Some(sent) = subject.to_attached(app, None) {
+            let app = publishing_app(&subject, &published)
+                .map(str::to_owned)
+                .or_else(|| crate::host::environment().identity.package_id.clone());
+            if let Some(sent) = subject.to_attached(app.as_deref(), None) {
                 attached.push(sent);
             }
         }
