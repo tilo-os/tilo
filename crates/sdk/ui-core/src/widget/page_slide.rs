@@ -256,8 +256,7 @@ impl Decorator for PageSlide {
             );
             self.aimed = Some(self.level);
         }
-        let node = self.page.build_layout(taffy, theme, node_map);
-        node
+        self.page.build_layout(taffy, theme, node_map)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

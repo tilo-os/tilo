@@ -606,7 +606,7 @@ unsafe fn solve_widget_layout(
             // controls, a row a scroll hides) would otherwise ask again on
             // every frame after, and re-measure its path to the root.
             let mut sweep = crate::bound_dispatch::NodeSweep::new(bindings, nodes);
-            for node in asked.drain(..) {
+            for node in std::mem::take(&mut asked) {
                 // SAFETY: the caller's exact live-tree ownership contract.
                 let _ = unsafe { sweep.layout(node, |widget| widget.layout_measured()) };
             }
