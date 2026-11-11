@@ -1173,6 +1173,46 @@ fn where_i_am_is_said_with_the_rest_of_the_word_and_only_when_it_moves() {
     assert!(!sync.take_said().is_empty());
 }
 
+/// A page names the host it was admitted by as its workspace's host itself, and its session can
+/// tell no host of its own: following its workspaces again keeps the run that host speaks for, so
+/// the agent stays in the bar rather than leaving on every pass until its next keep-alive.
+#[test]
+fn a_run_the_page_host_speaks_for_stays_while_the_page_follows_its_workspaces() {
+    let publisher = device(0x33);
+    let (outgoing, _said) = tokio::sync::mpsc::unbounded_channel();
+    let (_heard, arrived) = std::sync::mpsc::channel();
+    let (_landed, enrolled) = std::sync::mpsc::channel();
+    let sync = Client::over(
+        Transport {
+            outgoing: Arc::new(outgoing),
+            arrived,
+            enrolled,
+            saying: None,
+        },
+        Device {
+            publisher,
+            endpoint: EndpointAddr::new(publisher),
+            person: Some(root(0x05)),
+            name: "Page".to_owned(),
+        },
+        OwnPresence::default(),
+    );
+    let showing = [(topic(WORKSPACE), WORKSPACE.to_owned())];
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    let host = device(0x40);
+    sync.set_workspace_host(WORKSPACE, Some(*host.as_bytes()));
+    let run = Presence::desktop(WORKSPACE, Payload::Arrived).spoken_for("run-1");
+    sync.heard_presence(WORKSPACE, host, &run);
+    assert_eq!(sync.members(WORKSPACE).len(), 1, "the run is here");
+
+    sync.follow_workspaces(&showing, Some(topic(WORKSPACE)));
+    assert_eq!(
+        sync.members(WORKSPACE).len(),
+        1,
+        "following the same workspaces again keeps the run the host speaks for"
+    );
+}
+
 /// A host that names the workspaces it shows itself — a page's mounts, each showing one — takes
 /// part in each of them, says its word in the one in front, and keeps a schedule of its own for
 /// each: what one of them owes is pumped without the other hearing it.

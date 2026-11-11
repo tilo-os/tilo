@@ -47,6 +47,7 @@ pub trait Host: 'static {
 
     /// The device `workspace`'s governance pins as its host, as this device verified it: the only
     /// one whose word for the runs it executes this session hears ([`Client::set_workspace_host`]).
+    /// `None` when this host cannot tell, which leaves the host the board has.
     fn workspace_host(&self, _workspace: &str) -> Option<[u8; 32]> {
         None
     }
@@ -229,11 +230,14 @@ impl Client {
                 let _ = outgoing.send(Cmd::Leave(topic));
             },
         );
-        // Each workspace's board hears the runs its host speaks for from that host alone.
+        // Each workspace's board hears the runs its host speaks for from that host alone. A host
+        // that cannot tell (a page's session, which holds no workspace of its own and names the
+        // host it was admitted by itself) leaves the board's host as it is: taking its "don't
+        // know" for "nobody" dropped every run that host speaks for on each pass.
         let hosted = self.host.borrow().clone().is_some_and(|host| {
             live.iter().fold(false, |moved, (_, workspace)| {
-                self.presence
-                    .set_host(workspace, host.workspace_host(workspace))
+                host.workspace_host(workspace)
+                    .is_some_and(|device| self.presence.set_host(workspace, Some(device)))
                     || moved
             })
         });
