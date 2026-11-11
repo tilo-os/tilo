@@ -479,6 +479,62 @@ impl NativeWorkspaceOwner {
         self.commit_document_with_current(workspace, |_| Ok(request), now)
     }
 
+    /// [`Self::commit_document`] for a write one of this device's local
+    /// writers signed, sequenced in the owner's turn
+    /// ([`StatePeer::sequenced_local_document`]) by `key`, the device: the
+    /// write as the record took it, and its receipt.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::commit_document`], and when `key` is not the write's author.
+    pub fn commit_local_document(
+        &self,
+        request: crate::owner_commit::OwnerCommitRequest,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<
+        (
+            crate::owner_commit::OwnerCommitRequest,
+            crate::owner_commit::OwnerCommitReceipt,
+        ),
+        String,
+    > {
+        use crate::owner_commit::CommitOperation;
+        let workspace =
+            WorkspaceId::parse(&request.workspace).ok_or("invalid native document workspace")?;
+        let mut committed = None;
+        let receipt = self.commit_document_with_current(
+            workspace,
+            |view| {
+                let CommitOperation::Document {
+                    app,
+                    record,
+                    envelope,
+                } = request.operation
+                else {
+                    return Err("unsupported native owner commit family".into());
+                };
+                // The live replica holds the record's floor as the turn admits.
+                let envelope = view
+                    .replica()
+                    .lock()
+                    .sequenced_local_document(&app, &record, *envelope, key, now)?;
+                let sequenced = crate::owner_commit::OwnerCommitRequest {
+                    workspace: request.workspace,
+                    operation: CommitOperation::Document {
+                        app,
+                        record,
+                        envelope: Box::new(envelope),
+                    },
+                };
+                committed = Some(sequenced.clone());
+                Ok(sequenced)
+            },
+            now,
+        )?;
+        Ok((committed.ok_or("the write was never prepared")?, receipt))
+    }
+
     /// [`Self::commit_document`] for several writes of this device to
     /// `workspace`, in order and in one owner turn: one durable publication
     /// for all of them. Commits as many as its outgoing custody takes and

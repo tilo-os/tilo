@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::owner_commit::{
-    CommitFuture, CommitOperation, OwnerCommitRequest, OwnerCommitService,
+    CommitFuture, CommitOperation, LocalDocumentFuture, OwnerCommitRequest, OwnerCommitService,
 };
 
 pub use tilo_broker_core::custody::OwnerCustody;
@@ -85,13 +85,14 @@ impl OwnerCommitService for NativeOwnerCommits {
             .opened_owner("native durable owner unavailable")?
             .health()
     }
-    /// A document write is admitted by the owner as it is, whole record or
-    /// change: a record `workspace` does not hold yet is founded by the
-    /// write itself, sealed, never by one this device publishes ahead of it.
+    /// A document write commits through [`Self::commit_local_document`].
     fn commit(&self, request: OwnerCommitRequest) -> CommitFuture {
+        if matches!(request.operation, CommitOperation::Document { .. }) {
+            let committed = self.commit_local_document(request, None);
+            return Box::pin(async move { Ok(committed.await?.1) });
+        }
         let custody = Arc::clone(&self.custody);
         let writes = self.writes.clone();
-        let changes = self.changes.clone();
         Box::pin(writes.run(move || {
             let owner = custody
                 .resolve_owner()
@@ -100,20 +101,7 @@ impl OwnerCommitService for NativeOwnerCommits {
             let now = std::time::SystemTime::now();
             if !matches!(request.operation, CommitOperation::EffectReceipt { .. }) {
                 custody.check_custody(&owner, room)?;
-                let record = match &request.operation {
-                    CommitOperation::Document { app, record, .. } => {
-                        Some((request.workspace.clone(), app.clone(), record.clone()))
-                    }
-                    _ => None,
-                };
                 let receipt = owner.commit_document(request, now)?;
-                // What search holds of the record is read again from what it
-                // now holds.
-                if let (Some(changes), Some((workspace, app, record))) = (&changes, record) {
-                    changes.changed(&workspace, &app, &record);
-                }
-                // What the owner committed leaves for the workspace's peers
-                // from its custody, the one copy every write goes through.
                 custody.schedule_publication(room);
                 return Ok(receipt);
             }
@@ -124,6 +112,41 @@ impl OwnerCommitService for NativeOwnerCommits {
             let receipt = owner.commit_effect_receipt(&request, &key, now)?;
             custody.schedule_publication(room);
             Ok(receipt)
+        }))
+    }
+    /// A document write is admitted by the owner as it is, whole record or
+    /// change: a record `workspace` does not hold yet is founded by the
+    /// write itself, sealed, never by one this device publishes ahead of it.
+    /// The owner sequences it in its turn with this device's key: the
+    /// device's several local writers sign before that turn orders them.
+    fn commit_local_document(
+        &self,
+        request: OwnerCommitRequest,
+        _record_kind: Option<String>,
+    ) -> LocalDocumentFuture {
+        let custody = Arc::clone(&self.custody);
+        let writes = self.writes.clone();
+        let changes = self.changes.clone();
+        Box::pin(writes.run(move || {
+            let owner = custody
+                .resolve_owner()
+                .map_err(|error| format!("native durable owner unavailable: {error}"))?;
+            let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
+            custody.check_custody(&owner, room)?;
+            let key = custody.signing_key(&owner, room)?;
+            let (committed, receipt) =
+                owner.commit_local_document(request, &key, std::time::SystemTime::now())?;
+            // What search holds of the record is read again from what it now
+            // holds.
+            if let (Some(changes), CommitOperation::Document { app, record, .. }) =
+                (&changes, &committed.operation)
+            {
+                changes.changed(&committed.workspace, app, record);
+            }
+            // What the owner committed leaves for the workspace's peers from
+            // its custody, the one copy every write goes through.
+            custody.schedule_publication(room);
+            Ok((committed, receipt))
         }))
     }
 }

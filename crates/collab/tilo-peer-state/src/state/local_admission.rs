@@ -25,6 +25,56 @@ impl StatePeer {
         )
     }
 
+    /// `envelope`, this device's own write to `app`'s `record`, as the record
+    /// takes it next. A device has several local writers (each instance of an
+    /// app, the file daemon), and each signs its writes with the device's key
+    /// before its owner's turn orders them: a write can reach the turn after a
+    /// write another writer signed later took a greater sequence, and the
+    /// record would refuse it as a replay. Such a write is signed again by
+    /// `key`, the device, under a sequence past the record's floor. A write
+    /// the record holds already, or one still past the floor, stays as it is.
+    ///
+    /// # Errors
+    ///
+    /// `key` is not the write's author, or the write does not sign.
+    pub fn sequenced_local_document(
+        &self,
+        app: &str,
+        record: &str,
+        mut envelope: SignedOp,
+        key: &ed25519_dalek::SigningKey,
+        now: SystemTime,
+    ) -> Result<SignedOp, String> {
+        if envelope.author.as_bytes() != &key.verifying_key().to_bytes() {
+            return Err("a local write is sequenced by its own device".into());
+        }
+        let route = Route {
+            app: app.into(),
+            record: record.into(),
+        };
+        let Some(floor) = self
+            .core
+            .documents
+            .get(&route)
+            .and_then(|document| document.channel.last_seq_per_author.get(&envelope.author))
+            .copied()
+            .filter(|floor| envelope.seq <= *floor)
+        else {
+            return Ok(envelope);
+        };
+        if self
+            .lookup_exact_local_document(app, record, &envelope, now)
+            .map_err(|error| error.to_string())?
+            .is_some()
+        {
+            return Ok(envelope);
+        }
+        envelope.seq = collab_types::next_unordered_document_sequence(now)
+            .max(floor.checked_add(1).ok_or("sequence exhausted")?);
+        collab_types::sign_op(&mut envelope, key).map_err(|error| error.to_string())?;
+        Ok(envelope)
+    }
+
     /// Admit `envelope`, a local app's signed write to `record`, as a new
     /// exact admission: refused unless it is admitted now, completely and
     /// not as a duplicate, with evidence of it in the exact admission index.

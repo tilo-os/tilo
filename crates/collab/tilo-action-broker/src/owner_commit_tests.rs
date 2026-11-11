@@ -445,7 +445,7 @@ mod owner_commit_tests {
                     };
                     let state = fixture.state.clone();
                     let response = tokio::task::spawn_local(async move {
-                        state.commit_owner_request(request, None).await
+                        state.commit_owner_document(request, None).await
                     });
                     let pending = tilo_test_env::within(
                         "owner did not receive the actual commit",
@@ -471,6 +471,34 @@ mod owner_commit_tests {
                         assert!(!error.reason.contains("interrupted"));
                     }
                 }
+            })
+            .await;
+    }
+
+    /// A document write the owner refuses is its writer's alone: the writer
+    /// is answered the refusal, and every other action and write goes on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_owners_refusal_of_a_document_write_leaves_the_owner_healthy() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let root = canonical_tempdir();
+                let fixture = owner_fixture(root.path());
+                // A write naming another workspace than its route's: the owner
+                // refuses it.
+                let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    workspace: uuid::Uuid::new_v4().to_string(),
+                    operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                        app: fixture.route.app_id.clone(),
+                        record: fixture.route.record_id.clone(),
+                        envelope: Box::new(owner_snapshot(&fixture)),
+                    },
+                };
+                fixture
+                    .state
+                    .commit_owner_document(request, None)
+                    .await
+                    .unwrap_err();
+                assert_eq!(fixture.state.owner_health(), Ok(()));
             })
             .await;
     }

@@ -3192,41 +3192,49 @@ impl AppBrokerState {
     async fn commit_owner_request(
         &self,
         request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        record_kind: Option<String>,
     ) -> Result<(), BrokerError> {
-        // Dropping the waiting RPC cannot convert an admitted effect into a
-        // refusal or leave the standalone capability apparently healthy.
-        struct Waiting<'a> {
-            failure: &'a Mutex<Option<String>>,
-            complete: bool,
-        }
-        impl Drop for Waiting<'_> {
-            fn drop(&mut self) {
-                if !self.complete
-                    && let Ok(mut failure) = self.failure.lock()
-                {
-                    failure
-                        .get_or_insert_with(|| "owner commit interrupted; outcome unknown".into());
-                }
-            }
-        }
         self.owner_health().map_err(BrokerError::failed)?;
-        let mut waiting = Waiting {
-            failure: &self.owner_commit_failure,
-            complete: false,
-        };
-        let result = self.publisher.commit_owner(request, record_kind).await;
-        waiting.complete = true;
-        match result {
-            Ok(_) => Ok(()),
-            Err(reason) => {
-                // The owner answered: retain its actual refusal/failure for
-                // later clients instead of labeling this as a dropped RPC.
-                if let Ok(mut failure) = self.owner_commit_failure.lock() {
-                    failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
-                }
-                Err(BrokerError::failed(reason))
-            }
+        let waiting = OwnerWait::on(&self.owner_commit_failure);
+        let result = self.publisher.commit_owner(request, None).await;
+        waiting.answered();
+        result.map(drop).map_err(|reason| {
+            // The owner answered: retain its actual refusal/failure for
+            // later clients instead of labeling this as a dropped RPC.
+            self.retain_owner_failure(&reason);
+            BrokerError::failed(reason)
+        })
+    }
+
+    /// Commit a document write of this device through the owner: the write as
+    /// the record took it. A write the owner refuses is its writer's alone: it
+    /// is answered the refusal and takes the write back out, and nothing else
+    /// waits on it. An answer that does not prove the write leaves the owner
+    /// unknown, as a dropped wait does.
+    async fn commit_owner_document(
+        &self,
+        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        record_kind: Option<String>,
+    ) -> Result<tilo_peer_state::owner_commit::OwnerCommitRequest, BrokerError> {
+        self.owner_health().map_err(BrokerError::failed)?;
+        let waiting = OwnerWait::on(&self.owner_commit_failure);
+        let answered = self
+            .publisher
+            .commit_owner_document(request.clone(), record_kind)
+            .await;
+        waiting.answered();
+        let (committed, receipt) = answered.map_err(BrokerError::failed)?;
+        receipt
+            .validate_local_document(&request, &committed)
+            .map_err(|reason| {
+                self.retain_owner_failure(&reason);
+                BrokerError::failed(reason)
+            })?;
+        Ok(committed)
+    }
+
+    fn retain_owner_failure(&self, reason: &str) {
+        if let Ok(mut failure) = self.owner_commit_failure.lock() {
+            failure.get_or_insert_with(|| format!("owner commit failed: {reason}"));
         }
     }
 
@@ -3295,7 +3303,7 @@ impl AppBrokerState {
                 .map_err(BrokerError::failed)?;
             durable.wait().await.map_err(BrokerError::failed)?;
         }
-        self.commit_owner_request(request, None).await
+        self.commit_owner_request(request).await
     }
 
     /// Reconcile an inert saved receipt, never dispatch or reconstruct action authority.
@@ -8849,6 +8857,38 @@ impl AppBrokerState {
         let personal = self.services.personal.as_ref()?;
         (personal.read(tilo_peer_state::PersonalStore::store_key) == route.cluster_id)
             .then_some(personal)
+    }
+}
+
+/// An owner commit being waited for: dropping the wait before the owner
+/// answered cannot convert an admitted effect into a refusal or leave the
+/// standalone capability apparently healthy, so the owner's outcome is unknown
+/// from then on.
+struct OwnerWait<'a> {
+    failure: &'a Mutex<Option<String>>,
+    answered: bool,
+}
+
+impl<'a> OwnerWait<'a> {
+    const fn on(failure: &'a Mutex<Option<String>>) -> Self {
+        Self {
+            failure,
+            answered: false,
+        }
+    }
+
+    fn answered(mut self) {
+        self.answered = true;
+    }
+}
+
+impl Drop for OwnerWait<'_> {
+    fn drop(&mut self) {
+        if !self.answered
+            && let Ok(mut failure) = self.failure.lock()
+        {
+            failure.get_or_insert_with(|| "owner commit interrupted; outcome unknown".into());
+        }
     }
 }
 

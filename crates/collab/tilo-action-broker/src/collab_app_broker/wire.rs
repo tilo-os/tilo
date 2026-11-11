@@ -380,22 +380,34 @@ impl JoinedChannel {
         } else {
             None
         };
-        if owner_required {
+        // The write as the owner took it: signed again where another local
+        // writer's later write passed its sequence.
+        let envelope = if owner_required {
             state.revalidate_admission(&route, &self.verified_identity)?;
-            state
-                .commit_owner_request(
+            let committed = state
+                .commit_owner_document(
                     tilo_peer_state::owner_commit::OwnerCommitRequest {
                         workspace: route.cluster_id.clone(),
                         operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                             app: route.app_id.clone(),
                             record: route.record_id.clone(),
-                            envelope: Box::new(envelope.clone()),
+                            envelope: Box::new(envelope),
                         },
                     },
                     self.record_kind.clone(),
                 )
                 .await?;
-        }
+            let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
+                committed.operation
+            else {
+                return Err(BrokerError::failed(
+                    "the owner committed another write than the one asked".into(),
+                ));
+            };
+            *envelope
+        } else {
+            envelope
+        };
         let current_identity = state.revalidate_admission(&route, &self.verified_identity)?;
         let authorized =
             state.authorize_certified_document(&route, &current_identity, &envelope)?;
@@ -654,18 +666,14 @@ impl JoinedChannel {
                 let _order = state.owner_commit_order.lock().await;
                 state.revalidate_admission(&route, &identity)?;
                 state
-                    .commit_owner_request(
-                        tilo_peer_state::owner_commit::OwnerCommitRequest {
-                            workspace: surface.route.cluster_id,
-                            operation:
-                                tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
-                                    invocation: update.invocation().0,
-                                    redacted: serde_json::to_vec(&receipt)
-                                        .map_err(|e| BrokerError::failed(e.to_string()))?,
-                                },
+                    .commit_owner_request(tilo_peer_state::owner_commit::OwnerCommitRequest {
+                        workspace: surface.route.cluster_id,
+                        operation: tilo_peer_state::owner_commit::CommitOperation::EffectReceipt {
+                            invocation: update.invocation().0,
+                            redacted: serde_json::to_vec(&receipt)
+                                .map_err(|e| BrokerError::failed(e.to_string()))?,
                         },
-                        None,
-                    )
+                    })
                     .await?;
                 state.revalidate_admission(&route, &identity)?;
                 Ok(())

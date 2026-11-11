@@ -421,6 +421,72 @@ fn a_write_signed_outside_the_owner_turn_commits_with_exact_admission_evidence()
         .unwrap();
 }
 
+/// Two local writers of this device sign their writes before the owner's
+/// turn orders them. The write that reaches the turn second, though signed
+/// first, is taken all the same, signed again past the record's floor; one
+/// still past the floor, and an exact retry of a taken write, are taken as
+/// they are.
+#[test]
+fn a_write_another_local_writer_passed_is_sequenced_in_the_owners_turn() {
+    let joined = enrolled();
+    let key = member();
+    let envelope = |request: &OwnerCommitRequest| match &request.operation {
+        CommitOperation::Document { envelope, .. } => (**envelope).clone(),
+        _ => unreachable!("a document write"),
+    };
+    let earlier = unordered_edit(&joined, "signed first");
+    let later = unordered_edit(&joined, "signed second");
+    assert!(envelope(&earlier).seq < envelope(&later).seq);
+    let (taken, _) = joined
+        .owner
+        .commit_local_document(later.clone(), &key, joined.now)
+        .unwrap();
+    assert_eq!(
+        envelope(&taken),
+        envelope(&later),
+        "a write past the floor is taken as it is"
+    );
+    assert_eq!(
+        joined
+            .owner
+            .commit_document(earlier.clone(), joined.now)
+            .unwrap_err(),
+        "native local document signed sequence is stale",
+        "the passed write as it was signed is a replay"
+    );
+    let (taken, receipt) = joined
+        .owner
+        .commit_local_document(earlier.clone(), &key, joined.now)
+        .unwrap();
+    assert!(earlier.committed_as(&taken) && envelope(&taken) != envelope(&earlier));
+    assert!(envelope(&taken).seq > envelope(&later).seq);
+    receipt.validate_for(&taken).unwrap();
+    let (again, _) = joined
+        .owner
+        .commit_local_document(taken.clone(), &key, joined.now)
+        .unwrap();
+    assert_eq!(
+        envelope(&again),
+        envelope(&taken),
+        "an exact retry is the write already taken"
+    );
+    joined
+        .owner
+        .with_current(joined.workspace, |view| {
+            for write in [&later, &taken] {
+                assert!(
+                    view.peer()
+                        .lookup_exact_local_document(APP, "", &envelope(write), joined.now)
+                        .map_err(|error| error.to_string())?
+                        .is_some(),
+                    "both writes are the record's"
+                );
+            }
+            Ok(())
+        })
+        .unwrap();
+}
+
 #[test]
 fn an_uncertain_write_fences_every_workspace_until_reopened() {
     use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
