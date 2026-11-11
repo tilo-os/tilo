@@ -1161,6 +1161,11 @@ fn unknown_action() -> Outcome {
     Outcome::Rejected(ActionHostError::UnknownAction)
 }
 
+/// Whether the page a request names was listed before `current` moved on.
+fn stale_revision(revision: Option<&str>, current: &str) -> bool {
+    revision.is_some_and(|revision| revision != current)
+}
+
 /// Whether `caller` is `person`, or an agent a device of theirs handed its
 /// session to.
 fn acts_for(caller: &Caller, person: &str) -> bool {
@@ -2254,17 +2259,15 @@ impl Worker {
         let state = self
             .refresh(workspace_id, keys.needs())
             .map_err(Outcome::Rejected)?;
-        if request
-            .revision
-            .as_ref()
-            .is_some_and(|revision| *revision != state.revision.to_string())
-        {
-            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
-        }
+        // A page names its source's revision: the workspace's, or a registered
+        // read's committed source (checked where that source is read, below).
         let workspace = state.workspace.clone();
         let target = &request.target;
         let owner = self.serves_as_owner(caller);
         if let Some(named) = provider_workspace(&target.provider) {
+            if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+                return Err(Outcome::Rejected(ActionHostError::StaleRevision));
+            }
             return self
                 .open_asked(workspace_id, caller, named, target)
                 .map(|output| (output, None));
@@ -2287,6 +2290,9 @@ impl Worker {
                 .map_err(|error| *error)?
         {
             return Ok((output, None));
+        }
+        if stale_revision(request.revision.as_deref(), &state.revision.to_string()) {
+            return Err(Outcome::Rejected(ActionHostError::StaleRevision));
         }
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
