@@ -1422,3 +1422,22 @@ fn a_past_version_reads_and_shows_its_event() {
         "{texts:?}"
     );
 }
+
+/// An agent edits the open event's notes through the notes' own resource:
+/// the editor publishes them at their own address, and an action addressed
+/// there applies as the calendar's field edit.
+#[test]
+fn an_agent_edits_the_open_events_notes_through_their_own_resource() {
+    let mut app = TestApp::<CalendarShell>::new().expect("test app");
+    app.harness().key("n");
+    let id = state_of(&app).events.first().expect("n makes an event").id;
+    app.invoke_child::<RichText>(
+        &crate::resource::notes_resource_id(&id),
+        Invoke::apply(&RichTextAction::ReplaceBody {
+            markdown: "Sponsors at four".into(),
+        })
+        .expect("a notes edit"),
+    )
+    .expect("the notes are published at their own address");
+    assert!(state_of(&app).notes_text(id).contains("Sponsors at four"));
+}

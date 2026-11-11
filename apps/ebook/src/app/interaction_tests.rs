@@ -5386,3 +5386,55 @@ fn the_empty_library_keeps_saying_why_an_open_failed() {
     );
     assert_eq!(app.open_failure, None, "another import clears it");
 }
+
+/// An agent rewrites a note through the note's own resource: the composer
+/// publishes the note's text at its own address, and an action there applies
+/// as the library's field edit.
+#[test]
+fn an_agent_edits_a_notes_text_through_its_own_resource() {
+    use ui::framework::testing::TestApp;
+
+    const BOOK: &str = "book:0123456789abcdef0123456789abcdef";
+    ui::i18n::I18nManager::init("en-US");
+    let mut app = TestApp::<crate::resource::EbookShell>::new().unwrap();
+    app.invoke(crate::resource::shelve(&crate::model::LibraryEntry {
+        id: BOOK.into(),
+        title: "Annotated".into(),
+        ..crate::model::LibraryEntry::default()
+    }))
+    .unwrap();
+    app.call(
+        "add-note",
+        serde_json::json!({
+            "passage": {
+                "book": BOOK, "chapter": 0, "block": 2, "start": 0, "end": 4,
+                "excerpt": "door",
+            },
+            "color": "yellow",
+            "text": "Remember this",
+        }),
+    )
+    .unwrap();
+    let id = app.state().annotations_for(BOOK)[0].id;
+    app.with_widget(move |app: &mut BooksApp| {
+        let dispatch = app.dispatch.clone();
+        app.note_composer.open(id, Some(&dispatch));
+    })
+    .unwrap();
+    app.harness().relayout();
+    app.invoke_child::<tilo_document::RichText>(
+        &crate::resource::note_text_resource_id(id),
+        ui::tilo_resource::Invoke::apply(&tilo_document::RichTextAction::ReplaceBody {
+            markdown: "Rewritten".into(),
+        })
+        .unwrap(),
+    )
+    .expect("the note's text is published at its own address");
+    let note = app
+        .state()
+        .annotations_for(BOOK)
+        .into_iter()
+        .find(|annotation| annotation.id == id)
+        .expect("the note");
+    assert_eq!(note.note, "Rewritten");
+}

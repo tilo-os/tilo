@@ -62,11 +62,13 @@ impl TextBoxEditor {
     /// Edit through the deck's dispatcher.
     pub(super) fn attach(&mut self, deck: &Dispatcher<DeckRecord>) {
         let (slide, element) = (self.slide_id.clone(), self.element_id.clone());
-        self.host.widget_mut().source_mut().attach(
-            deck.child::<tilo_document::RichText>(&actions::slide_resource_id(&slide), move |op| {
-                actions::edit_text_action(&slide, &element, op)
-            }),
-        );
+        self.host
+            .widget_mut()
+            .source_mut()
+            .attach(deck.child::<tilo_document::RichText>(
+                &actions::text_resource_id(&slide, &element),
+                move |op| actions::edit_text_action(&slide, &element, op),
+            ));
     }
 
     /// Give the words the keyboard, the caret after the last of them (a

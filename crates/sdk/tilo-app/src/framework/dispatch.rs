@@ -187,6 +187,12 @@ impl DispatchCore {
     fn applied_as_kind(&self) -> Option<&'static str> {
         self.applied_as.map(|(kind, _)| kind)
     }
+
+    /// The nested editors the views opened ([`Dispatcher::child`]), at their
+    /// own addresses, to publish beside this resource.
+    pub(crate) fn nested_resources(&self) -> Vec<(String, tilo_actions::ResourceSpec)> {
+        self.nested.borrow().clone()
+    }
 }
 
 impl std::ops::Deref for DispatchCore {
@@ -289,6 +295,11 @@ pub(crate) struct DispatchState {
     /// document the host lends the pass, or the session over the app's one
     /// connection ([`super::Source`]).
     source: super::Source,
+    /// The nested editors the views opened ([`Dispatcher::child`]), each
+    /// published at its own address beside this resource: what the palette,
+    /// agents and scripts address. Kept once made, so an editor acts on its
+    /// record after it was last shown.
+    nested: Rc<RefCell<Vec<(String, tilo_actions::ResourceSpec)>>>,
 }
 
 impl Clone for DispatchCore {
@@ -328,6 +339,7 @@ impl Clone for DispatchCore {
             continuable: self.continuable.clone(),
             gesture: self.gesture.clone(),
             source: self.source.clone(),
+            nested: Rc::clone(&self.nested),
         }))
     }
 }
@@ -420,6 +432,7 @@ impl DispatchCore {
             gesture: Rc::default(),
             source: super::Source::Document,
             applied_as: None,
+            nested: Rc::default(),
         }))
     }
 
@@ -465,6 +478,7 @@ impl DispatchCore {
             // kept here: only the source of this one may be the session's.
             source: super::Source::Document,
             applied_as: None,
+            nested: Rc::default(),
         })
     }
 
@@ -1927,23 +1941,28 @@ impl<R: Resource> Dispatcher<R> {
     /// [`apply_now`](Self::apply_now) take `C`'s own actions, coalesce into
     /// undo steps by `C`'s [`Resource::coalesces`], and history names them
     /// after `C`'s labels. Underneath, each applies as this resource's
-    /// action: the same permission check, history, undo and replay. Queued
-    /// invocations are addressed to the child resource `id`, so this
-    /// resource publishes the child at the same id with the same `wrap`
-    /// ([`tilo_resource::publish_child`] in [`Resource::children`]), which
-    /// is also what lets the palette, agents and scripts reach it.
+    /// action: the same permission check, history, undo and replay.
+    ///
+    /// The child is published with this one, at its own address `id`, with
+    /// `C`'s actions and the same `wrap`
+    /// ([`tilo_resource::publish_child`]): the palette, agents and scripts
+    /// reach it like any resource, and an invocation addressed to it resolves
+    /// and applies here. Publishing is the framework's, from this call, so no
+    /// resource can offer an editor it does not publish.
     #[must_use]
     pub fn child<C: Resource>(
         &self,
         id: &str,
-        wrap: impl Fn(C::Action) -> R::Action + 'static,
+        wrap: impl Fn(C::Action) -> R::Action + Send + Sync + 'static,
     ) -> Dispatcher<C> {
         let parent = Rc::clone(&self.submit_now);
         let parent_permission = Rc::clone(&self.permission_of);
-        let wrap = Rc::new(wrap);
-        let wrap_for_permission = Rc::clone(&wrap);
-        let wrap_for_report = Rc::clone(&wrap);
+        let wrap: std::sync::Arc<dyn Fn(C::Action) -> R::Action + Send + Sync> =
+            std::sync::Arc::new(wrap);
+        let wrap_for_permission = std::sync::Arc::clone(&wrap);
+        let wrap_for_report = std::sync::Arc::clone(&wrap);
         let parent_report = self.clone();
+        self.publish_child::<C>(id, std::sync::Arc::clone(&wrap));
         Dispatcher {
             core: self.core.child(id, (C::KIND, C::LABEL)),
             group: Rc::default(),
@@ -1962,6 +1981,28 @@ impl<R: Resource> Dispatcher<R> {
                 parent_report.reported(&Invoke::<R>::apply(&wrap_for_report(action)).ok()?)
             })),
         }
+    }
+
+    /// Publish the nested editor `id` beside this resource, once per address:
+    /// built the first time a view opens it, and kept from then on.
+    fn publish_child<C: Resource>(
+        &self,
+        id: &str,
+        wrap: std::sync::Arc<dyn Fn(C::Action) -> R::Action + Send + Sync>,
+    ) {
+        let mut nested = self.core.nested.borrow_mut();
+        if nested.iter().any(|(published, _)| published == id) {
+            return;
+        }
+        let mut child =
+            tilo_resource::publish_child::<C, R>(id, C::LABEL, None, move |action| wrap(action));
+        // The child's actions are what it applies here; its views are the
+        // app's, offered while it shows the editor, and a host refuses a view
+        // operation nothing handles.
+        child
+            .actions
+            .retain(|spec| spec.kind == tilo_actions::OperationKind::Document);
+        nested.push((id.to_owned(), child));
     }
 
     fn capture_nonlocal(&self) -> Option<ui_core::local_document_action::Scope> {

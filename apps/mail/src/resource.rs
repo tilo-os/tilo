@@ -1428,6 +1428,16 @@ pub(crate) fn draft_body_object(
     draft_body(draft).object(doc)
 }
 
+/// The resource the body of the draft `draft` is published as, beside the
+/// mailbox.
+pub(crate) fn draft_body_resource_id(draft: Option<&str>) -> String {
+    let child = match draft.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
+        Some(id) => format!("draft-body:{id}"),
+        None => "draft-body".to_owned(),
+    };
+    tilo_resource::child_resource_id::<Mail>(&child)
+}
+
 /// The dispatcher the composer edits the body of the draft `draft` through:
 /// each edit is the mailbox's field edit of that body.
 pub(crate) fn draft_body_dispatcher(
@@ -1435,19 +1445,14 @@ pub(crate) fn draft_body_dispatcher(
     draft: Option<&str>,
 ) -> Dispatcher<RichText> {
     let body = draft_body(draft).some();
-    let child = match draft.map(draft_named).filter(|id| *id != COMPOSER_DRAFT) {
-        Some(id) => format!("draft-body:{id}"),
-        None => "draft-body".to_owned(),
-    };
-    dispatcher.child::<RichText>(
-        &tilo_resource::child_resource_id::<Mail>(&child),
-        move |op| tilo_resource::Stamped {
+    dispatcher.child::<RichText>(&draft_body_resource_id(draft), move |op| {
+        tilo_resource::Stamped {
             operation: MailAction::FieldEdit(body.edit(tilo_resource::EditOp::Rich {
                 rich: serde_json::to_value(&op).unwrap_or_default(),
             })),
             now_ms: 0,
-        },
-    )
+        }
+    })
 }
 
 /// What a test reads of the mailbox its document holds, and the edits it
@@ -2489,18 +2494,14 @@ mod tests {
         #[test]
         fn an_agent_edits_the_draft_body_through_its_own_address() {
             let mut app = composing();
-            app.call(
-                "field-edit",
-                serde_json::json!({
-                    "edit": crate::resource::draft_body(None)
-                        .some()
-                        .perform(&RichTextAction::ReplaceBody {
-                            markdown: "from an agent".into(),
-                        })
-                        .unwrap(),
-                }),
+            app.invoke_child::<tilo_document::RichText>(
+                &crate::resource::draft_body_resource_id(None),
+                ui::tilo_resource::Invoke::apply(&RichTextAction::ReplaceBody {
+                    markdown: "from an agent".into(),
+                })
+                .unwrap(),
             )
-            .unwrap();
+            .expect("the draft body is published at its own address");
             assert_eq!(body(&app), ["from an agent"]);
             let shown = app.harness().inspection_json().unwrap();
             assert!(shown.contains("from an agent"), "the composer shows it");

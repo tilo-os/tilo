@@ -920,6 +920,12 @@ pub(crate) fn note_text(id: Uuid) -> tilo_resource::Path<Ebook, tilo_document::R
     Ebook::paths().annotations.item(&annotation_key(id)).text
 }
 
+/// The resource the text of the note or comment `id` is published as, beside
+/// the library.
+pub(crate) fn note_text_resource_id(id: Uuid) -> String {
+    tilo_resource::child_resource_id::<Ebook>(&format!("note:{id}"))
+}
+
 /// The dispatcher the editor of the note or comment `id` writes through:
 /// each of its edits is the library's field edit of the note's text.
 pub(crate) fn note_text_dispatcher(
@@ -927,15 +933,14 @@ pub(crate) fn note_text_dispatcher(
     id: Uuid,
 ) -> ui::framework::Dispatcher<tilo_document::RichText> {
     let text = note_text(id);
-    library.child::<tilo_document::RichText>(
-        &tilo_resource::child_resource_id::<Ebook>(&format!("note:{id}")),
-        move |op| tilo_resource::Stamped {
+    library.child::<tilo_document::RichText>(&note_text_resource_id(id), move |op| {
+        tilo_resource::Stamped {
             operation: EbookAction::FieldEdit(text.edit(tilo_resource::EditOp::Rich {
                 rich: serde_json::to_value(&op).unwrap_or_default(),
             })),
             now_ms: 0,
-        },
-    )
+        }
+    })
 }
 
 /// How an annotation is named: its note, else the passage it marks, on

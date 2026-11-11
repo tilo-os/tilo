@@ -1082,6 +1082,19 @@ impl ResourceRoot {
             merge(&mut resource.children, rows);
             let _profile = tilo_resource::profiling::Phase::start("framework.row_declarations");
             self.bind_row_declarations(&mut resource.children);
+            // The nested editors the views opened ([`Dispatcher::child`]):
+            // each is published at its own address, with its actions applying
+            // as this resource's, so the palette, agents and scripts address
+            // it like any resource.
+            for (id, nested) in self.dispatch.nested_resources() {
+                if !resource
+                    .children
+                    .iter()
+                    .any(|known| known.id.as_str() == id)
+                {
+                    resource.children.push(nested);
+                }
+            }
         }
         resource = self.with_presentation_specs(resource);
         // The app's own effects come before the framework's history and

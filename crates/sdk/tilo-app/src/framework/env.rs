@@ -226,11 +226,12 @@ impl<R: Resource> RecordEnv<R> {
 
     /// The dispatcher of the resource nested in this one at `id`, whose
     /// edits are this resource's action `wrap(edit)`: a rich-text body, a
-    /// draft, a SQL buffer. See [`Dispatcher::child`].
+    /// draft, a SQL buffer. It is published with this resource, at `id`, so
+    /// an agent or a script addresses it too. See [`Dispatcher::child`].
     pub fn child<C: Resource>(
         &self,
         id: &str,
-        wrap: impl Fn(C::Action) -> R::Action + 'static,
+        wrap: impl Fn(C::Action) -> R::Action + Send + Sync + 'static,
     ) -> Dispatcher<C> {
         self.dispatch.child(id, wrap)
     }

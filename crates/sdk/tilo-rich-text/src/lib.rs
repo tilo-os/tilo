@@ -97,13 +97,13 @@ impl<T: 'static> RichTextViews for ViewCx<RichText, T> {
 pub trait RichTextFieldViews<R: Resource> {
     /// The rich text `locate` finds in the resource's document, the child
     /// resource `id` of it, edited as the resource's own action
-    /// `wrap(edit)`. The resource publishes the child at the same `id` with
-    /// the same `wrap` ([`publish_child`](ui::tilo_resource::publish_child)).
+    /// `wrap(edit)`. The framework publishes the child at the same `id` with
+    /// the same `wrap` ([`Dispatcher::child`](ui::framework::Dispatcher::child)).
     fn rich_text_field(
         &self,
         id: &str,
         locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
-        wrap: impl Fn(RichTextAction) -> R::Action + 'static,
+        wrap: impl Fn(RichTextAction) -> R::Action + Send + Sync + 'static,
     ) -> Element;
 }
 
@@ -112,7 +112,7 @@ impl<R: Resource, T: 'static> RichTextFieldViews<R> for ViewCx<R, T> {
         &self,
         id: &str,
         locate: impl Fn(&Doc) -> Option<ObjId> + 'static,
-        wrap: impl Fn(RichTextAction) -> R::Action + 'static,
+        wrap: impl Fn(RichTextAction) -> R::Action + Send + Sync + 'static,
     ) -> Element {
         Box::new(RichTextSurface::field(RichTextField::new(
             self.child::<RichText>(id, wrap),
