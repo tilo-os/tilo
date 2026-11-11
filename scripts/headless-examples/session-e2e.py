@@ -11,9 +11,9 @@ unit tests and found only by starting a session by hand:
   audio    the session's sound is its own: one null output, no device of the machine's in its
            graph, and the session manager answers (that output is the default sink).
            Catches WirePlumber's audio monitor enumerating the machine's ALSA cards inside the
-           session: a card the host's PipeWire holds makes it retry without pause, spending a
-           core per running session, and Settings then lists hardware the session does not
-           own.
+           session: a card the host's PipeWire holds makes it retry without pause, spinning at
+           nearly half a core for as long as the session runs, and Settings then lists hardware
+           the session does not own.
 
   open     the four apps, opened at once onto the workspace's canvas, each present a first
            frame on the first try.
@@ -791,7 +791,7 @@ def main() -> int:
     began = time.monotonic()
     build = build_session(out) if args.build else Path(
         os.environ.get("TILO_NESTED_SESSION_BUILD", REPO / "target/nested-session")).resolve()
-    if not (build / "bin/shell").is_file():
+    if not (build / "bin/tilo-session").is_file():
         print(f"session-e2e: no nested-session build at {build} (pass --build, or set "
               "TILO_NESTED_SESSION_BUILD)", file=sys.stderr)
         return 2
