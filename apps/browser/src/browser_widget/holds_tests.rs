@@ -460,3 +460,170 @@ fn a_hold_nobody_answers_is_dropped_and_the_page_stays() {
     );
     assert_eq!(page_requests(&engine), Vec::new(), "nothing left the page");
 }
+
+/// The visa form as the engine reads it: what the page publishes its form's
+/// own actions from.
+fn visa_form() -> serde_json::Value {
+    serde_json::json!({
+        "form": "form1", "label": "Apply for a visitor visa", "method": "POST",
+        "action": "/apply", "signature": "5f1c2a9b", "submit": ["Send application"],
+        "fields": [{"name": "Full name", "kind": "text", "required": true,
+            "value": "Ada Lovelace", "element": "d1e2"}],
+    })
+}
+
+/// An agent's window on the visa page, whose forms the window has read: the
+/// page publishes the form's own actions. A window its app host shows reads
+/// them by itself; this one, which nothing hosts, is told what that read
+/// answers.
+fn visa_page() -> (Arc<TestEngine>, BrowserWidget, AutoCommit, ObjId) {
+    let url = "https://visa.example/apply";
+    let (engine, mut widget, doc, root) = page_in(BrowsingMode::Visitor, url);
+    let place = crate::site_memory::Place::of(url).expect("a page of the web");
+    widget.heard_own_read(&place, serde_json::json!({ "forms": [visa_form()] }));
+    widget.sync(&doc, &root);
+    (engine, widget, doc, root)
+}
+
+/// The payload of the page's action `id` with no arguments, as a caller
+/// sends it again.
+fn payload_of(widget: &BrowserWidget, id: &str) -> Vec<u8> {
+    page_resource(widget)
+        .actions
+        .into_iter()
+        .find(|action| action.id == id)
+        .unwrap_or_else(|| panic!("{id} is published on the page"))
+        .build_json(&serde_json::Map::new())
+        .expect("the action takes no arguments")
+        .payload
+}
+
+/// A form's own sending action reaches the same departure a click on its
+/// button does. The person's allow releases that one submission: the form is
+/// not answered and sent a second time, which would only be held again.
+#[test]
+fn a_forms_own_sending_held_for_the_person_leaves_once_when_they_allow() {
+    let (engine, mut widget, doc, root) = visa_page();
+    engine.hold(held_submit(1));
+    let send = start(&mut widget, "send-form-5f1c2a9b", &serde_json::json!({}));
+    widget.sync(&doc, &root);
+    let asked = answer(&mut widget, &doc, &root, send);
+    assert!(
+        needs_the_person(&asked),
+        "sending the form waits for the person: {asked:?}"
+    );
+    let sent = page_requests(&engine).len();
+    // The person allowed it: the same invocation comes back.
+    assert!(
+        matches!(
+            widget.admit(
+                send,
+                effect_operation(&payload_of(&widget, "send-form-5f1c2a9b"))
+            ),
+            Ok(ui::framework::Effected::Pending)
+        ),
+        "the invocation runs again"
+    );
+    assert_eq!(
+        held_answers(&engine),
+        vec![(1, true)],
+        "the held submission leaves, exactly once"
+    );
+    widget.sync(&doc, &root);
+    assert_eq!(
+        page_requests(&engine).len(),
+        sent,
+        "the form is not answered and sent a second time"
+    );
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
+    let released = answer(&mut widget, &doc, &root, send);
+    let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = &released else {
+        panic!("the released submission answers what left: {released:?}");
+    };
+    assert_eq!(output.value.clone().unwrap()["released"], true);
+}
+
+/// Several actors work in one tab. One's action reaches a departure and
+/// waits for the person; the tab is not held meanwhile, and the action of the
+/// next actor runs on the page as it stands.
+#[test]
+fn a_departure_held_for_the_person_leaves_the_tab_to_the_next_actor() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    engine.hold(held_submit(1));
+    let submit = start(
+        &mut widget,
+        "submit-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    // Admitted while the submission holds the tab: it waits its turn.
+    let fill = start(
+        &mut widget,
+        "fill-page",
+        &serde_json::json!({"element": "d1e1", "text": "Ada"}),
+    );
+    widget.sync(&doc, &root);
+    let asked = answer(&mut widget, &doc, &root, submit);
+    assert!(
+        needs_the_person(&asked),
+        "the submission waits for the person: {asked:?}"
+    );
+    // Its answer read, the tab is the next actor's: its action goes to the
+    // page, and the page answers it.
+    widget.sync(&doc, &root);
+    widget.sync(&doc, &root);
+    let filled = answer(&mut widget, &doc, &root, fill);
+    assert!(
+        matches!(filled, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the next actor's action ran while the person had not answered: {filled:?}"
+    );
+    assert!(
+        widget.holds.waiting().next().is_none(),
+        "the submission its action asked about is the person's to answer by that action"
+    );
+    assert!(held_answers(&engine).is_empty(), "nothing left meanwhile");
+}
+
+/// The person allows a held submission while another actor's action runs in
+/// the tab. Both are answered: the release as what left, the other action as
+/// what it did. Neither answer takes the other's place.
+#[test]
+fn a_release_and_another_actors_action_are_both_answered() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://visa.example/apply");
+    engine.hold(held_submit(1));
+    let submit = start(
+        &mut widget,
+        "submit-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    widget.sync(&doc, &root);
+    let asked = answer(&mut widget, &doc, &root, submit);
+    assert!(needs_the_person(&asked));
+    // The person allowed it: the held submission is on its way out.
+    assert!(matches!(
+        widget.admit(submit, effect_operation(&submit_payload(&widget))),
+        Ok(ui::framework::Effected::Pending)
+    ));
+    assert_eq!(held_answers(&engine), vec![(1, true)]);
+    // Another actor acts in the tab before the engine says the submission
+    // is over.
+    let fill = start(
+        &mut widget,
+        "fill-page",
+        &serde_json::json!({"element": "d1e1", "text": "Ada"}),
+    );
+    widget.sync(&doc, &root);
+    engine.push_event(WebViewEvent::HeldRequestClosed { id: 1 });
+    widget.sync(&doc, &root);
+    let filled = answer(&mut widget, &doc, &root, fill);
+    assert!(
+        matches!(filled, ui::tilo_actions::InvocationUpdate::Succeeded { .. }),
+        "the other actor's action is answered: {filled:?}"
+    );
+    let released = answer(&mut widget, &doc, &root, submit);
+    let ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } = &released else {
+        panic!("the released submission answers what left: {released:?}");
+    };
+    assert_eq!(output.value.clone().unwrap()["released"], true);
+}

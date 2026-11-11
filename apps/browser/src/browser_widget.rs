@@ -5844,6 +5844,9 @@ impl BrowserWidget {
         {
             return Some(stopped);
         }
+        if let Some(released) = self.holds.take_answer(invocation) {
+            return Some(released);
+        }
         self.drive_page_operation();
         if self
             .page_operation_result
@@ -6144,17 +6147,22 @@ impl BrowserWidget {
         if let BrowserOperation::RememberedForms { all } = operation {
             return self.remembered_forms(all);
         }
+        // The person allowed the departure this invocation reached: it
+        // leaves now, and what reached it, a page action or a form's own
+        // action, is not run a second time.
+        if matches!(
+            operation,
+            BrowserOperation::Form(_) | BrowserOperation::Page(_)
+        ) && let Some((id, kind)) = self.holds.release_for(invocation)
+        {
+            self.release_held(id, kind, true);
+            return Ok(ui::framework::Effected::Pending);
+        }
         if let BrowserOperation::Form(run) = operation {
             self.start_form_run(invocation, actor, &run)?;
             return Ok(ui::framework::Effected::Pending);
         }
         if let BrowserOperation::Page(request) = operation {
-            // The person allowed the departure this invocation reached: it
-            // leaves now, and the page action is not run a second time.
-            if let Some((id, kind)) = self.holds.release_for(invocation) {
-                self.release_held(id, kind, true);
-                return Ok(ui::framework::Effected::Pending);
-            }
             self.start_page_operation(invocation, actor, request)?;
             return Ok(ui::framework::Effected::Pending);
         }

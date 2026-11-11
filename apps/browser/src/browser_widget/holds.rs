@@ -75,6 +75,10 @@ impl Held {
 #[derive(Default)]
 pub(crate) struct Holds {
     held: Vec<Held>,
+    /// What the invocations that released a hold are answered, once the
+    /// engine said their departure is over, until each is read. They are not
+    /// the tab's one answer: another actor's action may hold the tab by then.
+    answers: Vec<ui::tilo_actions::InvocationUpdate>,
 }
 
 impl Holds {
@@ -144,6 +148,27 @@ impl Holds {
         Some(answer)
     }
 
+    /// Keep `answer` for the invocation that released a hold, until it is
+    /// read. At most as many wait as holds do: the oldest goes first.
+    pub(crate) fn answer(&mut self, answer: ui::tilo_actions::InvocationUpdate) {
+        if self.answers.len() >= MAX_HELD {
+            self.answers.remove(0);
+        }
+        self.answers.push(answer);
+    }
+
+    /// What `invocation` is answered for the hold it released, once.
+    pub(crate) fn take_answer(
+        &mut self,
+        invocation: InvocationId,
+    ) -> Option<ui::tilo_actions::InvocationUpdate> {
+        let found = self
+            .answers
+            .iter()
+            .position(|answer| answer.invocation() == invocation)?;
+        Some(self.answers.remove(found))
+    }
+
     /// The engine says `id` is over: released, dropped, or its page went.
     pub(crate) fn closed(&mut self, id: u32) -> Option<Held> {
         let found = self.held.iter().position(|held| held.request.id == id)?;
@@ -192,6 +217,9 @@ impl BrowserWidget {
             return;
         };
         self.note_text_entered(&operation.acted);
+        // A form's action that reached it answered nothing of its form: the
+        // person's allow releases the departure, and no answer is to come.
+        self.forms.take_run(operation.invocation);
         self.holds.asked_by(request.id, operation.invocation);
         self.page_operation_result = Some(action_failed(
             operation.invocation,
@@ -254,7 +282,7 @@ impl BrowserWidget {
         let Some(invocation) = held.releasing else {
             return;
         };
-        self.page_operation_result = Some(if held.allowed {
+        let answer = if held.allowed {
             ui::tilo_actions::InvocationUpdate::Succeeded {
                 invocation,
                 output: ui::tilo_actions::ActionOutput {
@@ -274,7 +302,10 @@ impl BrowserWidget {
                 format!("{}: the person kept the page as it is", held.describing()),
                 None,
             )
-        });
+        };
+        // Several actors work in one tab: the tab's own answer may be
+        // another's by now, so this one waits beside it.
+        self.holds.answer(answer);
     }
 
     /// Drop the holds nobody answered: the page stays as it was filled.
