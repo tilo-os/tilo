@@ -74,16 +74,22 @@ pub(super) fn unmatched(plan: &Planner, why: &str) -> String {
 }
 
 /// How a run that the published actions decided ended, said as one sentence
-/// so the outcome does not read as a model's work.
-pub(super) fn finished(plan: &Planner, actions: usize) -> String {
+/// so the outcome does not read as a model's work. `None` for a
+/// model-planned run: its result is the model's own reply, and the agent
+/// writes no line in its place.
+pub(super) fn finished(plan: &Planner, actions: usize) -> Option<String> {
     match plan {
-        Planner::Model { .. } => format!("Completed {actions} action(s) the broker approved"),
+        Planner::Model { .. } => None,
         Planner::Words {
             reason: Words::NoModel,
-        } => format!("Done: {actions} action(s) matched to the request's words, without a model."),
+        } => Some(format!(
+            "Done: {actions} action(s) matched to the request's words, without a model."
+        )),
         Planner::Words {
             reason: Words::Asked,
-        } => format!("Done: {actions} action(s) matched to the request's words."),
+        } => Some(format!(
+            "Done: {actions} action(s) matched to the request's words."
+        )),
     }
 }
 
@@ -155,18 +161,18 @@ mod tests {
 
     #[test]
     fn an_outcome_says_whether_a_model_produced_it() {
-        assert_eq!(
-            finished(&model(), 2),
-            "Completed 2 action(s) the broker approved"
-        );
+        // A model-planned run's result is the model's own reply: the agent
+        // writes no line in its place.
+        assert_eq!(finished(&model(), 2), None);
         assert_eq!(
             finished(
                 &Planner::Words {
                     reason: Words::NoModel
                 },
                 1
-            ),
-            "Done: 1 action(s) matched to the request's words, without a model."
+            )
+            .as_deref(),
+            Some("Done: 1 action(s) matched to the request's words, without a model.")
         );
     }
 }

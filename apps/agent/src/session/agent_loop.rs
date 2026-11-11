@@ -114,6 +114,11 @@ pub(super) const DEPRECATED_TAG: &str = "tilo.deprecated:";
 /// model that corrects itself takes one of them; one that keeps calling the
 /// same way ends the task rather than looping.
 const MOST_MALFORMED_TURNS: usize = 2;
+/// How many finishes in a row a run answers with "nothing was done and nothing
+/// was said" before it ends with the clean failure row. A finish that carries
+/// neither a completed step nor words for the person is not an answer, whatever
+/// it says of itself; one that keeps making it ends the task as it began.
+const MOST_SILENT_FINISHES: usize = 2;
 /// How many times in a row a turn cut off at the model's output limit is
 /// continued from where it stopped before the run fails. Reasoning models
 /// spend part of their answer's budget thinking; an answer that keeps being
@@ -418,6 +423,10 @@ pub(super) struct LoopState {
     /// a bounded number of times, before the run fails with the clean
     /// sentence. A turn that is not cut off resets it.
     continuations: usize,
+    /// Finishes so far answered with "nothing was done and nothing was said",
+    /// bounded so a model that keeps finishing silently ends the run as failed
+    /// instead of reporting a success it never earned.
+    silent_finishes: usize,
 }
 
 /// An independent invoke running in its application while the turn goes on.
@@ -609,6 +618,7 @@ impl LoopState {
             programs: program_steps::ProgramWorld::default(),
             malformed_turns: 0,
             continuations: 0,
+            silent_finishes: 0,
         }
     }
 
@@ -1739,6 +1749,42 @@ impl Session {
                     "Finished.".into()
                 },
             );
+        }
+        // A finish that did nothing and said nothing is not an answer, whatever
+        // it says of itself: the person would get a run that reports success
+        // for work nobody read about. Feed it back as the call's error, as a
+        // malformed call is, bounded — a model that keeps finishing that way
+        // ends the run with the clean failure row, never a success.
+        let silent = finish.as_ref().is_some_and(|Finishing { said, .. }| {
+            !failed && said.done && said.reply.is_none() && state.completed == 0
+        }) && words.trim().is_empty();
+        if silent {
+            let id = finish.as_ref().map(|finishing| finishing.id.clone());
+            state.silent_finishes += 1;
+            tracing::info!(
+                turn,
+                "finish refused: nothing was done and nothing was said"
+            );
+            if state.silent_finishes > MOST_SILENT_FINISHES {
+                return Ok(Some(LoopEnd::Failed(Failure::spoken(
+                    &crate::i18n::t("agent-failure-no-answer"),
+                    "the model finished without running a step or saying anything",
+                ))));
+            }
+            if let Some(id) = id {
+                *results.entry(id).or_default() =
+                    "Not finished: nothing in this run did anything, and no reply was written. \
+                     Do the request now with invoke, then call `plan` with your reply — or, when \
+                     the operations available cannot do it, call `plan` with done: false and say \
+                     why in the reply."
+                        .into();
+            }
+            finish = None;
+        } else {
+            // A turn that did something, or said something, is progress: the
+            // count of silent finishes is how many in a row cost the run, so a
+            // real turn clears it.
+            state.silent_finishes = 0;
         }
         let ordered = calls
             .iter()

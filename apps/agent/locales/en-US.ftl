@@ -20,3 +20,4 @@ agent-failure-cancelled = The model call was stopped.
 agent-failure-truncated = The model's answer was cut off.
 agent-failure-refused = The model declined this request.
 agent-failure-transport = The model could not be reached. Try again.
+agent-failure-no-answer = The agent finished without doing anything or saying what it did.

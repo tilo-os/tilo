@@ -539,7 +539,7 @@ impl Session {
         if plan.is_model() {
             let end = self.run_task_loop(run)?;
             return match end {
-                agent_loop::LoopEnd::Finished(finish, completed) => {
+                agent_loop::LoopEnd::Finished(finish, _completed) => {
                     if !finish.done {
                         return self.fail_task(
                             run,
@@ -552,10 +552,16 @@ impl Session {
                         );
                     }
                     // The model's own reply is the run's result, whole: an
-                    // answer to a question is what the issue asked for.
-                    let message = finish.reply.unwrap_or_else(|| {
-                        format!("Completed {completed} action(s) the broker approved")
-                    });
+                    // answer to a question is what the issue asked for. A run
+                    // that ends with nothing said is not reported as a success
+                    // with a line nobody wrote: the person reads that the
+                    // agent finished without answering.
+                    let Some(message) = finish.reply else {
+                        return self.fail_task(
+                            run,
+                            &agent_loop::Failure::said(crate::i18n::t("agent-failure-no-answer")),
+                        );
+                    };
                     self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
                 }
                 agent_loop::LoopEnd::Failed(failure) => self.fail_task(run, &failure),
@@ -630,7 +636,9 @@ impl Session {
                 Err(TaskActionStop::Failed(message)) => return self.fail_task_said(run, &message),
             }
         }
-        let message = reply.unwrap_or_else(|| planning::finished(&plan, actions.len()));
+        let message = reply
+            .or_else(|| planning::finished(&plan, actions.len()))
+            .unwrap_or_else(|| crate::i18n::t("agent-failure-no-answer"));
         self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
     }
 
