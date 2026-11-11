@@ -2089,6 +2089,11 @@ impl Mount {
     fn draw(&mut self) -> Result<(), String> {
         let start = self.metric_start();
         let before = self.frames;
+        // The canvas keeps what it presented and moves it: a scroll in a
+        // window copies what stays on screen and repaints the strip it
+        // exposed ([`ui::scroll_copy`]).
+        let _copies =
+            ui::scroll_copy::HostCopies::begin_scaled(true, self.viewport.requested().dpr);
         let result = self.draw_measured();
         self.metric_end(
             if self.frames > before {
@@ -2474,7 +2479,7 @@ impl Mount {
         let parts = self.frame.scene_parts();
         // Compared with the frame the target shows, command by command: a
         // change no part proves is bounded (an unknown one) repaints it all.
-        let repaint = gpu.retained.frames.repaint(frame.scene, parts, key);
+        let (repaint, copies) = gpu.retained.frames.repaint_copying(frame.scene, parts, key);
         let (damage, full_redraw) = match &repaint {
             ui::retained_raster::Repaint::Full(_) => (&[][..], true),
             ui::retained_raster::Repaint::Regions(regions) => (regions.as_slice(), false),
@@ -2503,7 +2508,7 @@ impl Mount {
                 height: viewport.height,
                 base_color: frame.background,
                 damage_regions: damage,
-                scroll_copies: &[],
+                scroll_copies: &copies,
                 full_redraw,
                 backdrop: &ui::backdrop::BackdropFrame::default(),
             },
@@ -2897,7 +2902,11 @@ impl Mount {
             // A window a pan frame replayed instead of drawing has not noted
             // where it now paints what its semantics name.
             let stage = self.metric_start();
-            self.frame.settle_replayed_draws();
+            {
+                let _copies =
+                    ui::scroll_copy::HostCopies::begin_scaled(true, self.viewport.requested().dpr);
+                self.frame.settle_replayed_draws();
+            }
             self.metric_end("settle_replayed_draws", stage);
             let stage = self.metric_start();
             let semantics = self.frame.inspection();
