@@ -100,13 +100,22 @@ impl TopBarChrome {
                 self.center_lane.x0 + gap,
             ]
         };
+        // The first room the whole question fits in; only where none holds it whole do its words
+        // shorten, in the first room that holds them at all. Taking the first room that held any
+        // words cut "Keep your name and work?" short beside a clock with room to spare.
         let mut words = None;
+        let mut shortened = None;
         for &limit in limits {
-            words = AskWords::fit(&ask, right_x - limit, theme, text_renderer);
-            if words.is_some() {
+            let Some(fit) = AskWords::fit(&ask, right_x - limit, theme, text_renderer) else {
+                continue;
+            };
+            if fit.question == ask.question {
+                words = Some(fit);
                 break;
             }
+            shortened.get_or_insert(fit);
         }
+        let words = words.or(shortened);
         let Some(words) = words else {
             // A bar too narrow for the words beside the avatar: the ask opens under the band, where
             // a card holds them.
@@ -798,6 +807,31 @@ mod tests {
             assert!(
                 ask.x0 <= answer.x0 && answer.x1 <= ask.x1,
                 "{viewport:?}: the answer {answer:?} stands inside the ask {ask:?}"
+            );
+        }
+    }
+
+    /// Where the bar has room for the whole question beside the clock, the question stands whole:
+    /// it is not cut short in the lane's first room when a wider room beside it holds all of it.
+    #[test]
+    fn the_whole_question_stands_where_the_bar_has_room() {
+        for viewport in [
+            (1024, 768),
+            (1100, 800),
+            (1180, 800),
+            (1280, 800),
+            (1440, 900),
+        ] {
+            let (frame, _) = asking_desktop(viewport);
+            let bar = frame.bar();
+            let theme = Theme::dark();
+            let (style, _) = AskWords::styles(&theme);
+            let mut text = TextRenderer::new();
+            let (whole, _) = text.measure_style("Keep your name and work?", None, &style);
+            let room = bar.ask.later.x0 - bar.ask.pill.x0;
+            assert!(
+                room >= f64::from(whole),
+                "{viewport:?}: the question needs {whole} px but stands in {room} px"
             );
         }
     }
