@@ -11,7 +11,7 @@
 use std::collections::BTreeSet;
 
 use super::fixtures::{SealingMember, member_device};
-use super::tests::{Lounge, lounge, lounge_with_client, seal_and_send_title, title};
+use super::tests::{Lounge, lounge_with_client, seal_and_send_title, title};
 use crate::CoeditPayload;
 
 /// The chain the members write, of the lounge's app.
@@ -63,6 +63,56 @@ async fn write_part(lounge: &Lounge, client: &crate::RelayClient, index: u64) {
         }
     })
     .await;
+}
+
+/// What the host replays to `guest` until it is ready: the channels of the
+/// records it sent, and whether it says records come when opened.
+async fn replay(guest: &crate::RelayClient) -> (BTreeSet<[u8; 32]>, bool) {
+    tilo_test_env::within("the guest's replay", async {
+        let mut replayed = BTreeSet::new();
+        loop {
+            match guest.recv().await {
+                Some(crate::Envelope::Ready {
+                    records_when_opened,
+                    ..
+                }) => return (replayed, records_when_opened),
+                Some(crate::Envelope::NotAuthorised { reason, .. }) => {
+                    panic!("the guest was refused: {reason}")
+                }
+                Some(envelope) => replayed.extend(frame_channel(&envelope)),
+                None => panic!("the host closed the guest's session"),
+            }
+        }
+    })
+    .await
+}
+
+/// `guest` opens the record at `head`: the channels of the records the host
+/// sent before it answered, and the frames it says it sent.
+async fn open_head(
+    guest: &crate::RelayClient,
+    workspace_id: u64,
+    head: [u8; 32],
+) -> (BTreeSet<[u8; 32]>, u32) {
+    guest
+        .send(crate::Envelope::OpenRecord {
+            workspace_id,
+            channel: head,
+        })
+        .unwrap();
+    tilo_test_env::within("the host answers the chain's head", async {
+        let mut sent = BTreeSet::new();
+        loop {
+            match guest.recv().await {
+                Some(crate::Envelope::RecordOpened {
+                    channel, frames, ..
+                }) if channel == head => return (sent, frames),
+                Some(envelope) => sent.extend(frame_channel(&envelope)),
+                None => panic!("the host closed the guest's session"),
+            }
+        }
+    })
+    .await
 }
 
 /// A chat's newest part was replayed to every newcomer, so a guest entering a
@@ -118,23 +168,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
     guest
         .send(crate::Envelope::Subscribe { workspace_id })
         .unwrap();
-    let (replayed, when_opened) = tilo_test_env::within("the guest's replay", async {
-        let mut replayed = BTreeSet::new();
-        loop {
-            match guest.recv().await {
-                Some(crate::Envelope::Ready {
-                    records_when_opened,
-                    ..
-                }) => return (replayed, records_when_opened),
-                Some(crate::Envelope::NotAuthorised { reason, .. }) => {
-                    panic!("the guest was refused: {reason}")
-                }
-                Some(envelope) => replayed.extend(frame_channel(&envelope)),
-                None => panic!("the host closed the guest's session"),
-            }
-        }
-    })
-    .await;
+    let (replayed, when_opened) = replay(&guest).await;
     assert!(when_opened, "the guest is told records come when opened");
     for index in 0..2 {
         assert!(
@@ -145,25 +179,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
 
     // Opening the chain's head: the newest part, and only it.
     let head = neighbour_wire::app_document_channel(app, &neighbour_wire::chain_head(CHAIN));
-    guest
-        .send(crate::Envelope::OpenRecord {
-            workspace_id,
-            channel: head,
-        })
-        .unwrap();
-    let (sent, frames) = tilo_test_env::within("the host answers the chain's head", async {
-        let mut sent = BTreeSet::new();
-        loop {
-            match guest.recv().await {
-                Some(crate::Envelope::RecordOpened {
-                    channel, frames, ..
-                }) if channel == head => return (sent, frames),
-                Some(envelope) => sent.extend(frame_channel(&envelope)),
-                None => panic!("the host closed the guest's session"),
-            }
-        }
-    })
-    .await;
+    let (sent, frames) = open_head(&guest, workspace_id, head).await;
     assert!(frames > 0, "the host sent the newest part's frames");
     assert_eq!(
         sent,
@@ -197,14 +213,7 @@ async fn a_public_workspace_sends_a_chains_newest_part_to_who_opens_its_head() {
 /// takes as a chain to start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_chain_with_no_part_answers_its_head_with_nothing() {
-    let lounge = Box::new(lounge().await);
-    let guest = Box::pin(super::tests::subscribed_member(
-        &lounge.relay,
-        &lounge.member_key,
-        lounge.member_cert.clone(),
-        lounge.workspace_id,
-    ))
-    .await;
+    let (lounge, guest) = lounge_with_client().await;
     let head = neighbour_wire::app_document_channel(
         super::tests::APP,
         &neighbour_wire::chain_head("nothing yet"),
@@ -231,7 +240,7 @@ async fn a_chain_with_no_part_answers_its_head_with_nothing() {
     drop(guest);
     let Lounge {
         relay, workspaces, ..
-    } = *lounge;
+    } = lounge;
     drop(workspaces);
     relay.shutdown().await;
 }
