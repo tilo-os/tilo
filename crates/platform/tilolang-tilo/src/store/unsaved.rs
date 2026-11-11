@@ -342,18 +342,21 @@ impl Inner {
     /// ([`Self::settle_versions`]), and one the record accepted whose change the index its app
     /// reads from has taken in ([`Self::drop_committed_local`]), which leaves the store then.
     pub(super) fn rebuild_overlay(&mut self) {
+        // What each index has yet to take in of each chunk, read once per index and chunk
+        // however many writes wait on it.
+        let mut behind: BTreeMap<(AppId, ChunkNo), Behind> = BTreeMap::new();
         let accepted = std::mem::take(&mut self.accepted);
         self.accepted = accepted
             .into_iter()
             .filter(|accepted| {
-                self.apps.get(&accepted.write.app).is_some_and(|held| {
-                    !reflects(
-                        &held.heads,
-                        &self.chunks,
-                        accepted.write.chunk,
-                        &accepted.change,
-                    )
-                })
+                let write = &accepted.write;
+                let Some(held) = self.apps.get(&write.app) else {
+                    return false;
+                };
+                !behind
+                    .entry((write.app.clone(), write.chunk))
+                    .or_insert_with(|| Behind::of(&held.heads, &self.chunks, write.chunk))
+                    .reflects(&accepted.change)
             })
             .collect();
         let mut overlay = Overlay::default();
@@ -500,23 +503,46 @@ impl Inner {
     }
 }
 
-/// Whether an index stamped with `heads` reflects `change`, a change of the chunk `chunk`: the
-/// index derived the chunk up to heads that take it in. The chunk's change is in what the store
-/// holds of it, so an index at the chunk's heads reflects it, and one that never derived the
-/// chunk does not.
-fn reflects(heads: &Stamps, chunks: &Chunks, chunk: ChunkNo, change: &ChangeHash) -> bool {
-    let Some(heads) = heads.get(&chunk) else {
-        return false;
-    };
-    let Some(mirror) = chunks.mirror(chunk) else {
-        // The chunk left the store: nothing reads it to derive the write from.
-        return true;
-    };
-    let document = mirror.committed_document();
-    heads.contains(change)
-        || heads.as_slice() == document.get_heads().as_slice()
-        || !document
-            .get_changes(heads)
-            .iter()
-            .any(|since| since.hash() == *change)
+/// What an index has yet to take in of one chunk of the record.
+enum Behind {
+    /// It derived the chunk up to the heads the store holds: every change of it.
+    Nothing,
+    /// It never derived the chunk: none of its changes.
+    Everything,
+    /// The chunk's changes since the heads it derived it up to.
+    Since(BTreeSet<ChangeHash>),
+}
+
+impl Behind {
+    /// What an index stamped with `heads` has yet to take in of the chunk `chunk`. The changes
+    /// since its heads are read only when it is behind the chunk's: what it has to derive yet.
+    fn of(heads: &Stamps, chunks: &Chunks, chunk: ChunkNo) -> Self {
+        let Some(heads) = heads.get(&chunk) else {
+            return Self::Everything;
+        };
+        let Some(mirror) = chunks.mirror(chunk) else {
+            // The chunk left the store: nothing reads it to derive a write from.
+            return Self::Nothing;
+        };
+        let document = mirror.committed_document();
+        if heads.as_slice() == document.get_heads().as_slice() {
+            return Self::Nothing;
+        }
+        Self::Since(
+            document
+                .get_changes(heads)
+                .iter()
+                .map(automerge::Change::hash)
+                .collect(),
+        )
+    }
+
+    /// Whether the index holds `change`.
+    fn reflects(&self, change: &ChangeHash) -> bool {
+        match self {
+            Self::Nothing => true,
+            Self::Everything => false,
+            Self::Since(since) => !since.contains(change),
+        }
+    }
 }

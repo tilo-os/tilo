@@ -857,6 +857,7 @@ fn what_the_store_writes_while_its_index_catches_up_reads_back_at_once() {
 /// then — once, never beside the row the index brings, and never after.
 #[test]
 fn a_write_the_record_takes_while_its_index_catches_up_never_goes_missing() {
+    const WRITES: usize = 40;
     let (mut ada, root, lock) = workspace();
     let dir = TempDir::new("accepted-catching-up");
     drop(kept_in(dir.path(), &ada.doc, &lock));
@@ -896,45 +897,64 @@ fn a_write_the_record_takes_while_its_index_catches_up_never_goes_missing() {
     };
     let before = listed();
     let add = meta.actions.iter().find(|a| a.name == "add").unwrap();
-    host.runtime()
-        .invoke_action(
-            &Principal::new("ada"),
-            (
-                add.id.as_str(),
-                vec![Value::resource(&list), Value::text("accepted meanwhile")],
-            ),
-        )
-        .unwrap();
-    let written: Vec<String> = listed()
-        .into_iter()
-        .filter(|id| !before.contains(id))
-        .collect();
-    assert_eq!(written.len(), 1, "the item just written is listed");
-    // The record takes the write while the index's step is still being derived: no frame has
-    // taken that step in, so the index holds neither the write nor the change carrying it.
-    for committed in host.take_committed() {
-        ada.apply(&committed.action);
+    // Write after write, each taken by the record while the index's step is still being
+    // derived: no frame has taken that step in, so the index holds none of them.
+    let mut written: Vec<String> = Vec::new();
+    for step in 0..WRITES {
+        host.runtime()
+            .invoke_action(
+                &Principal::new("ada"),
+                (
+                    add.id.as_str(),
+                    vec![
+                        Value::resource(&list),
+                        Value::text(format!("accepted meanwhile {step}")),
+                    ],
+                ),
+            )
+            .unwrap();
+        let new: Vec<String> = listed()
+            .into_iter()
+            .filter(|id| !before.contains(id) && !written.contains(id))
+            .collect();
+        assert_eq!(new.len(), 1, "the item just written is listed");
+        written.extend(new);
+        for committed in host.take_committed() {
+            ada.apply(&committed.action);
+        }
+        assert!(host.sync_from(&ada.doc));
+        assert!(!host.index_ready(), "the index still catches up");
+        let now = listed();
+        for id in &written {
+            assert_eq!(
+                now.iter().filter(|listed| *listed == id).count(),
+                1,
+                "each write the record took is listed once while the index catches up"
+            );
+        }
     }
-    assert!(host.sync_from(&ada.doc));
-    assert!(!host.index_ready(), "the index still catches up");
-    let once = |ids: &[String]| ids.iter().filter(|id| **id == written[0]).count();
-    assert_eq!(
-        once(&listed()),
-        1,
-        "the write the record took is listed once while the index catches up"
-    );
     assert!(
         !host.store().overlay_empty(),
-        "the overlay keeps it meanwhile"
+        "the overlay keeps them meanwhile"
     );
     host.wait_index();
     assert!(host.index_ready());
     let after = listed();
-    assert_eq!(once(&after), 1, "and once the index caught up");
-    assert_eq!(after.len(), 4, "beside the three the record gained");
+    for id in &written {
+        assert_eq!(
+            after.iter().filter(|listed| *listed == id).count(),
+            1,
+            "and once the index caught up"
+        );
+    }
+    assert_eq!(
+        after.len(),
+        3 + WRITES,
+        "beside the three the record gained"
+    );
     assert!(
         host.store().overlay_empty(),
-        "the index holds it, and the overlay no more"
+        "the index holds them, and the overlay no more"
     );
 }
 
