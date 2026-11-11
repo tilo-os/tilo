@@ -23,7 +23,7 @@ contacts-account-edit = Edit association
 contacts-account-edited-unverified = The changed address needs review before messages are sent to it.
 
 contacts-account-scope = Service account
-contacts-account-review-description = { $action } for { $person }: { $recipient } at { $service }
+contacts-account-review-description = { $action }: Contact { $person }. Service { $service }. Account { $recipient }. Service account { $scope }. Identity reference { $revision }. Previous identity reference { $previous }.
 
 ## History: what each change to the address book did
 

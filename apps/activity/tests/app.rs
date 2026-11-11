@@ -210,14 +210,14 @@ fn a_refused_read_says_so_instead_of_showing_history() {
     assert!(!shows(&mut app, "activity-brief-0"));
 }
 
-/// A change one device will not take says so on its own row: where it is not,
-/// and why, beside where it is.
+/// A change one device will not take says so on the row's own line: where it
+/// is not, and why.
 #[test]
 fn a_change_a_device_refused_says_where_it_is_not() {
     english();
     let mut app = TestApp::<App>::capture(Some("history")).expect("capture");
     assert!(
-        says(&mut app, "not on Ada's laptop: no permission"),
+        says(&mut app, "Not on Ada's laptop: no permission"),
         "the row of the refused change says where it is not"
     );
 }
