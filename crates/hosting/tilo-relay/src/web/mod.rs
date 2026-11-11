@@ -268,7 +268,7 @@ impl Relay {
         let failed = |message: String| RelayError::Iroh(format!("web listener: {message}"));
         checked_origins(&config).map_err(failed)?;
         let identity = tls::Identity::load(&config.tls).map_err(failed)?;
-        let tcp = bind_listener(config.listen).map_err(|error| failed(error.to_string()))?;
+        let (tcp, udp) = bind_listeners(&config).map_err(|error| failed(error.to_string()))?;
         let addr = tcp
             .local_addr()
             .map_err(|error| failed(error.to_string()))?;
@@ -298,7 +298,7 @@ impl Relay {
         }
         let relay_url = endpoint_addr.relay_urls().next().map(ToString::to_string);
         let (link_listener, web_link) =
-            bind_link(&config, addr, public_origin.as_ref(), &identity).map_err(failed)?;
+            bind_link(&config, udp, addr, public_origin.as_ref(), &identity).map_err(failed)?;
         let web = Arc::new(Web {
             context: context.clone(),
             host_info: HostInfo {
@@ -377,17 +377,15 @@ impl Relay {
 
 impl Relay {}
 
-/// The HTTPS listener on `listen`. For port 0 the kernel picks the port.
-/// Where a page reaches this host: WebTransport, on the HTTPS listener's
-/// port and certificate unless the deployment names another way in.
+/// Where a page reaches this host: WebTransport on `socket`, at the HTTPS
+/// listener's origin and certificate unless the deployment names another way in.
 fn bind_link(
     config: &WebConfig,
+    socket: std::net::UdpSocket,
     addr: SocketAddr,
     public_origin: Option<&String>,
     identity: &tls::Identity,
 ) -> Result<(tilo_net::webtransport::Listener, WebLink), String> {
-    let socket = std::net::UdpSocket::bind(config.link.as_ref().map_or(addr, |link| link.listen))
-        .map_err(|error| format!("WebTransport listener: {error}"))?;
     let listener = tilo_net::webtransport::Listener::bind(socket, identity.certificate()?)
         .map_err(|error| format!("WebTransport listener: {error}"))?;
     let link = WebLink {
@@ -406,6 +404,41 @@ fn bind_link(
     Ok((listener, link))
 }
 
+/// How many kernel-picked ports [`bind_listeners`] tries before it gives up.
+const PORT_PAIR_ATTEMPTS: usize = 64;
+
+/// The HTTPS listener on `config.listen` and the UDP socket WebTransport takes
+/// sessions on: beside it on the same port unless [`WebConfig::link`] names
+/// its own. For port 0 the kernel picks a UDP port and the HTTPS listener takes
+/// the same one, so the pair is held from the start; a port whose TCP side is
+/// in use is passed over for the next one the kernel picks.
+fn bind_listeners(
+    config: &WebConfig,
+) -> std::io::Result<(tokio::net::TcpListener, std::net::UdpSocket)> {
+    let listen = config.listen;
+    if let Some(link) = &config.link {
+        return Ok((
+            bind_listener(listen)?,
+            std::net::UdpSocket::bind(link.listen)?,
+        ));
+    }
+    if listen.port() != 0 {
+        return Ok((bind_listener(listen)?, std::net::UdpSocket::bind(listen)?));
+    }
+    let mut last = None;
+    for _ in 0..PORT_PAIR_ATTEMPTS {
+        let udp = std::net::UdpSocket::bind(listen)?;
+        let paired = SocketAddr::new(listen.ip(), udp.local_addr()?.port());
+        match bind_listener(paired) {
+            Ok(tcp) => return Ok((tcp, udp)),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => last = Some(error),
+            Err(error) => return Err(error),
+        }
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::from(std::io::ErrorKind::AddrInUse)))
+}
+
+/// The HTTPS listener on `listen`.
 fn bind_listener(listen: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
     let socket = if listen.is_ipv4() {
         tokio::net::TcpSocket::new_v4()?
