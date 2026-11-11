@@ -542,6 +542,8 @@ pub(crate) struct Dev {
     sources: BTreeSet<PathBuf>,
     /// The program of a runtime built by hand that the window was last started on.
     runtime_taken: Option<Program>,
+    /// Every directory the loop is woken for, watched.
+    watching: BTreeMap<PathBuf, ChangeWatch>,
 }
 
 impl Dev {
@@ -563,6 +565,7 @@ impl Dev {
             repo: repo.to_path_buf(),
             sources: BTreeSet::new(),
             runtime_taken: None,
+            watching: BTreeMap::new(),
         }
     }
 
@@ -925,11 +928,10 @@ impl Dev {
     /// wakes the loop. A watch whose directory is gone, or was replaced ([`ends_watch`]), is let
     /// go before this and taken again once the directory is there: watching the directory above
     /// each one is what reports that it is back.
-    fn watch(
-        &mut self,
-        wakes: &mpsc::Sender<Wake>,
-        watching: &mut BTreeMap<PathBuf, ChangeWatch>,
-    ) -> Result<(), String> {
+    ///
+    /// This runs before the app is started, so that a save made while it starts is delivered
+    /// rather than lost: a change made before a watch is taken is reported by nothing.
+    fn watch(&mut self, wakes: &mpsc::Sender<Wake>) -> Result<(), String> {
         self.sources = self.watched_dirs()?;
         // The package's own directory, and the one above it, where the package itself may be
         // made, replaced or moved in.
@@ -955,12 +957,12 @@ impl Dev {
         }
         // A watch of a directory that went away ends: it is taken again below when the
         // directory is back, and until then what is below it is not watched.
-        watching.retain(|dir, _| dir.is_dir());
+        self.watching.retain(|dir, _| dir.is_dir());
         for (dir, tree) in dirs {
             if !dir.is_dir() {
                 continue;
             }
-            if let std::collections::btree_map::Entry::Vacant(slot) = watching.entry(dir) {
+            if let std::collections::btree_map::Entry::Vacant(slot) = self.watching.entry(dir) {
                 let watcher = if tree {
                     Watcher::tree(slot.key())
                 } else {
@@ -972,6 +974,17 @@ impl Dev {
             }
         }
         Ok(())
+    }
+
+    /// Take the watches — and, on this desktop, the wakeup the loop waits on — before the app is
+    /// started, so that a save or a new runtime made while it starts is delivered rather than
+    /// made before anything was watching for it.
+    pub(crate) fn start_watching(&mut self, sender: &mpsc::Sender<Wake>) -> Result<(), String> {
+        if self.is_local() {
+            let wake = Arc::new(WakeFd::new().map_err(|error| error.to_string())?);
+            self.wake = Some(wake);
+        }
+        self.watch(sender)
     }
 
     /// Build the runtime in its checkout. A session's is thin, and a thin binary runs only on
@@ -1033,12 +1046,15 @@ impl Dev {
         Ok(())
     }
 
-    /// Rebuild on every edit until the app (or the session) ends.
+    /// Rebuild on every edit until the app (or the session) ends. A caller that starts the app
+    /// before this watches first ([`Self::start_watching`]), so a save made while it starts is
+    /// delivered here too; taking the watches again is what the loop does after each change.
     pub(crate) fn follow(
         &mut self,
         wakes: &mpsc::Receiver<Wake>,
         sender: &mpsc::Sender<Wake>,
     ) -> Result<(), String> {
+        self.watch(sender)?;
         if self.is_local() {
             self.follow_local(wakes, sender)
         } else {
@@ -1051,8 +1067,6 @@ impl Dev {
         wakes: &mpsc::Receiver<Wake>,
         sender: &mpsc::Sender<Wake>,
     ) -> Result<(), String> {
-        let mut watching = BTreeMap::new();
-        self.watch(sender, &mut watching)?;
         loop {
             let events = match wakes.recv() {
                 Ok(Wake::File(events)) => events,
@@ -1063,9 +1077,9 @@ impl Dev {
                 Next::Changed(events) => events,
                 Next::Ended(status) => return ended(status),
             };
-            watching.retain(|dir, _| !ends_watch(dir, &events));
+            self.watching.retain(|dir, _| !ends_watch(dir, &events));
             self.handle(&events);
-            if let Err(error) = self.watch(sender, &mut watching) {
+            if let Err(error) = self.watch(sender) {
                 eprintln!("{error}");
             }
         }
@@ -1078,10 +1092,10 @@ impl Dev {
         wakes: &mpsc::Receiver<Wake>,
         sender: &mpsc::Sender<Wake>,
     ) -> Result<(), String> {
-        let wake = Arc::new(WakeFd::new().map_err(|error| error.to_string())?);
-        self.wake = Some(wake.clone());
-        let mut watching = BTreeMap::new();
-        self.watch(sender, &mut watching)?;
+        let wake = self
+            .wake
+            .clone()
+            .ok_or_else(|| "the loop is not watching".to_owned())?;
         let mut child = self
             .local_mut()
             .and_then(|local| local.child.take())
@@ -1117,9 +1131,9 @@ impl Dev {
             if let Some(local) = self.local_mut() {
                 local.child = Some(child);
             }
-            watching.retain(|dir, _| !ends_watch(dir, &events));
+            self.watching.retain(|dir, _| !ends_watch(dir, &events));
             self.handle(&events);
-            if let Err(error) = self.watch(sender, &mut watching) {
+            if let Err(error) = self.watch(sender) {
                 eprintln!("{error}");
             }
             child = self
@@ -1822,6 +1836,8 @@ fn dev_in_session(
         dev.install_runtime()?;
     }
     let apps = dev.build_and_deliver(Instant::now())?;
+    // Watched before anything of the app runs, so that a save made while it starts is delivered.
+    dev.start_watching(sender)?;
     if dev.runtime.is_some() {
         dev.restart(&apps)?;
     }
@@ -1893,11 +1909,15 @@ fn dev_on_desktop(
         .iter()
         .find(|app| app.app == dev.opened)
         .ok_or_else(|| format!("{} was not built", dev.opened))?;
+    // Watched before the window runs, so that a save made while it starts is delivered; and the
+    // program is the one the window is started on, taken here so a program that arrives while it
+    // starts is a change the loop restarts it for.
+    dev.start_watching(sender)?;
+    dev.take_note_of_runtime();
     let local = dev
         .local_mut()
         .ok_or_else(|| "the app is not run here".to_owned())?;
     local.start(app, &binary, &loaders)?;
-    dev.take_note_of_runtime();
     eprintln!(
         "==> {} is open; a saved .tl file reaches it, and so does a new build of the runtime",
         dev.opened
@@ -2002,7 +2022,7 @@ mod tests {
     }
 
     /// The program of a build is the file the build made: one renamed over the old is another
-    /// program, even when it is as long and as old.
+    /// program, even when it is as long and was written at the same moment.
     #[cfg(unix)]
     #[test]
     fn a_program_renamed_over_the_old_one_is_another_program() {
@@ -2010,8 +2030,16 @@ mod tests {
         let path = dir.path().join("tilolang-app");
         write_program(&path, "one");
         let first = program(&path).unwrap();
-        write_program(&dir.path().join(".staged"), "one");
-        std::fs::rename(dir.path().join(".staged"), &path).unwrap();
+        let staged = dir.path().join(".staged");
+        write_program(&staged, "one");
+        // Written at the moment the first was, so that only the file itself tells them apart: a
+        // filesystem's clock is coarser than two writes made one after the other, but a loaded
+        // machine may spread them over two ticks.
+        let file = std::fs::File::options().write(true).open(&staged).unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(first.written))
+            .unwrap();
+        drop(file);
+        std::fs::rename(&staged, &path).unwrap();
         let second = program(&path).unwrap();
         assert_eq!((first.size, first.written), (second.size, second.written));
         assert_ne!(first, second, "a renamed program is a new file");
