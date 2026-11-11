@@ -1398,10 +1398,7 @@ impl AppHandler {
         };
 
         let attributes = Window::default_attributes()
-            .with_title(&crate::i18n::widget_format(
-                "presentation-window-title",
-                &[],
-            ))
+            .with_title(crate::i18n::widget_format("presentation-window-title", &[]))
             .with_decorations(false)
             .with_resizable(false)
             .with_visible(false);

@@ -235,7 +235,7 @@ impl SearchField {
             input: input
                 .with_plain_chrome()
                 .with_kind(TextInputKind::Search)
-                .with_placeholder(&crate::i18n::widget_format("search-field-placeholder", &[])),
+                .with_placeholder(crate::i18n::widget_format("search-field-placeholder", &[])),
             leading: Icon::Search,
             clearable: true,
             cleared: false,

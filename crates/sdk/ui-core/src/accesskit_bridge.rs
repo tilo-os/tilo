@@ -774,7 +774,7 @@ fn build_tree_update_with_resources_impl<S: BuildHasher, const BOUND: bool>(
 
     // The synthetic window root gathers the top-level accessible nodes.
     let mut root_node = AkNode::new(AkRole::Window);
-    root_node.set_label(&crate::i18n::widget_format("window-root-name", &[]));
+    root_node.set_label(crate::i18n::widget_format("window-root-name", &[]));
 
     let mut top = AkScope::under(ROOT_ID, false);
     for root in roots {

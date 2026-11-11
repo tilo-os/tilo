@@ -512,17 +512,7 @@ fn component_as(
     let component = definition
         .instantiate(context, target, RestoreInput::None)
         .unwrap();
-    let checkout = component.record().clone();
-    let frame = ui::headless::FrameHarness::from_component(
-        component,
-        (1280, 720),
-        ComponentRunnerInputs {
-            theme: ui::Theme::dark(),
-            text_renderer: ui::font_catalog::fixture_renderer(),
-        },
-    )
-    .unwrap();
-    (frame, records, checkout)
+    (component, records)
 }
 
 fn semantic_owner_path(node: &ui::headless::InspectionNode, target: &str) -> Option<String> {
