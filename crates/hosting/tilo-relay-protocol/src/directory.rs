@@ -19,6 +19,15 @@
 //! | `<door>join` | [`DoorJoin`] | [`DoorAnswer`] |
 //! | `<door>report` | [`DoorReport`] | `204` |
 //! | `<door>errors` | [`PageError`] | `204` |
+//! | [`WAIT_LIST`] | `{email, language}` | `{email, removal, mail}` |
+//! | [`WAIT_LIST_REMOVE`] | `{secret}` | `{}` |
+//! | [`WAIT_LIST_CONFIRM`] | `{token}` | `{confirmed}` |
+//! | [`WAIT_LIST_STANDING`] | `{secret}` | `{standing}` |
+//!
+//! The wait list is what a door that takes people by invitation keeps for
+//! someone it turns away: an address it may be invited at, confirmed by the
+//! link mailed there, taken off by whoever left it. A door that keeps none
+//! answers its four routes `404`.
 //!
 //! `<door>` is a [`DirectoryEntry::door`], resolved against the directory's
 //! own address. A site names its directory in its `entry.json`
