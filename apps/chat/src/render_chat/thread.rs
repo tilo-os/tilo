@@ -16,7 +16,7 @@ use ui::tokens::TextRole;
 use ui::widget::{AvatarSize, Button, ButtonFace, ControlSize};
 
 use super::agent_work::measure_agent_work;
-use super::{clock_label, composer_editor_width, square};
+use super::{composer_editor_width, square, time_label};
 use crate::app::{ChatApp, Hit};
 use crate::model;
 use crate::model::Message;
@@ -427,7 +427,7 @@ impl ChatApp {
         let th = line_of(ctx.text, &time_style);
         text(
             &mut ctx,
-            &clock_label(m.ts),
+            &time_label(m),
             &time_style,
             theme.text_dim,
             Point::new(end_x + f64::from(sp.s2), y + nh - th),

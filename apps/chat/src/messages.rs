@@ -1002,6 +1002,10 @@ pub struct Messages {
     /// ([`crate::record::kept_messages`]): the oldest of the timeline, in
     /// no part, so no verb changes them and none of them is unread.
     kept: Rc<tilo_resource::Collection<Message>>,
+    /// The messages sent from here that wait for the part they go to, on its
+    /// way from the workspace ([`ui::framework::Chain::unwritten`]): shown as
+    /// being sent, in no part yet.
+    sending: Option<Rc<ChatPart>>,
 }
 
 impl Messages {
@@ -1012,7 +1016,23 @@ impl Messages {
         Self {
             parts,
             kept: Rc::default(),
+            sending: None,
         }
+    }
+
+    /// These parts with the messages being sent, `sending`, after them.
+    #[must_use]
+    pub fn with_sending(mut self, sending: Option<Rc<ChatPart>>) -> Self {
+        self.sending = sending;
+        self
+    }
+
+    /// The messages being sent: written once the part they go to is here.
+    pub fn sending(&self) -> impl Iterator<Item = (&Id, &Message)> + '_ {
+        self.sending
+            .iter()
+            .flat_map(|part| part.messages.iter())
+            .filter(|(id, _)| self.part_of(id).is_none())
     }
 
     /// These parts after the messages the chat record kept, `kept`.

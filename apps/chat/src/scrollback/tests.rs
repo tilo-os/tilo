@@ -81,7 +81,7 @@ fn three_parts(writer: &mut Window, per_part: usize) {
                     "u_aria",
                 )
                 .unwrap();
-            assert_eq!(at, part);
+            assert_eq!(at, Some(part));
         }
         if part == 2 {
             break;
@@ -90,7 +90,7 @@ fn three_parts(writer: &mut Window, per_part: usize) {
             if chain
                 .stage_as(&crate::demo::post(ARCHIVE, &long_post(n), None), "u_milo")
                 .unwrap()
-                != part
+                != Some(part)
             {
                 break;
             }
@@ -487,9 +487,10 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
         "the chain's head is asked for, whichever part it is"
     );
     let post = crate::demo::post(CHAT_CHANNEL, "hello", None);
-    assert!(
-        chain.stage_as(&post, "u_bo").is_err(),
-        "nothing is written before the workspace answered"
+    assert_eq!(
+        chain.stage_as(&post, "u_bo").unwrap(),
+        None,
+        "nothing is written before the workspace answered: the post waits"
     );
     assert_eq!(held(&mut bo), Vec::<u64>::new(), "no part was started");
     assert!(
@@ -501,5 +502,7 @@ fn a_newcomer_asks_for_the_chats_newest_part_and_starts_none_meanwhile() {
     bo.workspace_answered(crate::parts::chain().chain_head());
     assert!(!chain.head_arriving());
     bo.workspace_answered(crate::parts::part(0));
-    assert_eq!(chain.stage_as(&post, "u_bo").unwrap(), 0);
+    assert_eq!(held(&mut bo), [0], "the waiting post started it");
+    assert!(chain.unwritten().is_none(), "the post was written");
+    assert_eq!(chain.stage_as(&post, "u_bo").unwrap(), Some(0));
 }

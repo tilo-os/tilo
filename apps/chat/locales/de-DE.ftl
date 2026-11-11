@@ -391,6 +391,8 @@ chat-message-deleted = Nachricht gelöscht
 chat-message-edited = Bearbeitet
 # Neben der Uhrzeit einer angehefteten Nachricht.
 chat-message-pinned-marker = Angeheftet
+# Anstelle der Uhrzeit, solange die Unterhaltung noch auf dem Gerät ankommt.
+chat-message-sending = Wird gesendet…
 chat-empty-title = Noch keine Nachrichten
 chat-empty-title-read-only = Hier ist noch nichts gesagt
 chat-jump-latest = Zum Neuesten springen

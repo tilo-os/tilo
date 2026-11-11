@@ -310,19 +310,27 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
     reader.ask_workspace_for_missing();
     let chain = chain_in(&reader, "bo");
     let answers: Rc<RefCell<Vec<Result<u64, String>>>> = Rc::default();
-    for text in ["two", "three"] {
-        let answers = Rc::clone(&answers);
-        chain.invoke_then(&written(text), move |answer| {
-            answers
-                .borrow_mut()
-                .push(answer.map_err(|error| error.to_string()));
-        });
-    }
+    let answering = Rc::clone(&answers);
+    chain.invoke_then(&written("two"), move |answer| {
+        answering
+            .borrow_mut()
+            .push(answer.map_err(|error| error.to_string()));
+    });
+    assert_eq!(
+        chain.invoke(&written("three")).unwrap(),
+        None,
+        "a write nobody waits on waits for its part too, after the one before"
+    );
     assert!(answers.borrow().is_empty(), "both wait for the head");
     assert!(chain.parts().is_empty(), "nothing was started in its place");
-    assert!(
-        chain.invoke(&written("now")).is_err(),
-        "a write that cannot wait is refused, not written into a part of its own"
+    let unwritten = chain.unwritten().expect("what waits shows");
+    assert_eq!(
+        texts(&[(0, unwritten)])
+            .into_iter()
+            .map(|(_, text)| text)
+            .collect::<Vec<_>>(),
+        ["two", "three"],
+        "as its part will hold it"
     );
 
     // The workspace's part reaches the device's own copy of its records.
@@ -337,10 +345,7 @@ fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
         .into_iter()
         .map(|(_, text)| text)
         .collect();
-    assert_eq!(
-        *answers.borrow(),
-        [Ok(0), Ok(0)],
-        "each answered once written"
-    );
+    assert_eq!(*answers.borrow(), [Ok(0)], "answered once written");
     assert_eq!(lines, ["one", "two", "three"]);
+    assert!(chain.unwritten().is_none(), "nothing waits any more");
 }

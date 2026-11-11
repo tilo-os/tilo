@@ -217,16 +217,23 @@ pub(crate) struct ChainState<P: Chained> {
     looked: Cell<Option<u64>>,
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
     /// Actions asked for while the part they change was on its way from the
-    /// workspace ([`ChainState::apply_then`]), applied in order once it is here.
+    /// workspace ([`ChainState::apply_as`]), applied in order once it is here.
     pending: RefCell<VecDeque<PendingWrite<P>>>,
+    /// What [`Self::pending`] writes, as a part holding only that reads
+    /// ([`ChainState::unwritten`]); `None` while nothing waits.
+    unwritten: RefCell<Option<Rc<P::State>>>,
 }
 
+/// What to do once an action that waited for its part was applied (the
+/// part's number) or refused.
+pub(crate) type Later = Box<dyn FnOnce(Result<u64, ActionError>)>;
+
 /// An action that waits for the part it changes to arrive, with what to do
-/// once it was applied (the part's number) or refused.
+/// once it was applied or refused.
 struct PendingWrite<P: Chained> {
     action: P::Action,
     invoker: ActionInvoker,
-    then: Box<dyn FnOnce(Result<u64, ActionError>)>,
+    then: Later,
 }
 
 /// What became of an action applied to the part it changes.
@@ -238,7 +245,7 @@ enum Write {
     Arriving,
 }
 
-/// Why an action on a part still on its way is refused where it cannot wait.
+/// Why a part still on its way cannot be opened for what needs it now.
 const PART_ARRIVING: &str = "the part is on its way from the workspace";
 
 impl<P: Chained> ChainState<P> {
@@ -278,6 +285,7 @@ impl<P: Chained> ChainState<P> {
             looked: Cell::new(None),
             published: RefCell::new(None),
             pending: RefCell::default(),
+            unwritten: RefCell::default(),
         };
         // Asked for as the chain opens, with the window's other records: the
         // newest part arrives in the same round trip.
@@ -381,6 +389,7 @@ impl<P: Chained> ChainState<P> {
             _ => return,
         };
         let mut left = VecDeque::new();
+        let mut settled = false;
         for entry in queue {
             if !left.is_empty() {
                 left.push_back(entry);
@@ -388,39 +397,106 @@ impl<P: Chained> ChainState<P> {
             }
             match self.try_apply(&entry.action, &entry.invoker) {
                 Ok(Write::Arriving) => left.push_back(entry),
-                Ok(Write::Done(index, _)) => (entry.then)(Ok(index)),
-                Err(error) => (entry.then)(Err(error)),
+                Ok(Write::Done(index, _)) => {
+                    settled = true;
+                    (entry.then)(Ok(index));
+                }
+                Err(error) => {
+                    settled = true;
+                    (entry.then)(Err(error));
+                }
             }
         }
         // Asked for while these were applied: after them.
         let mut pending = self.pending.borrow_mut();
         left.append(&mut pending);
         *pending = left;
+        drop(pending);
+        if settled {
+            *self.unwritten.borrow_mut() = self.read_unwritten();
+            self.moved();
+        }
     }
 
-    /// Apply `action`, invoked by `invoker`, as [`Self::apply_as`]; when the
-    /// part it changes is still on its way from the workspace (a device back
-    /// from away opening a conversation it holds), once that part is here.
-    /// `then` is told the part it was applied to, or why it was refused.
-    pub(crate) fn apply_then(
+    /// Apply `action`, invoked by `invoker`, to the part it changes: read
+    /// against the app's record ([`Chained::prepare`]), checked against
+    /// what they may do in the workspace, attributed to them and written into
+    /// the part's history. The part it was written to, with the item
+    /// resources it created.
+    ///
+    /// While that part is on its way from the workspace (a device back from
+    /// away, before its head arrived) the action waits for it: `Ok(None)`,
+    /// and it is applied once the part is here, after those that waited
+    /// before it, `later` told the part or why it was refused then. Until
+    /// then it shows in [`Self::unwritten`]. Actions are applied in the
+    /// order they were asked for.
+    ///
+    /// # Errors
+    /// As the door refuses it now: the person may not, the app's record or
+    /// the part refused it.
+    pub(crate) fn apply_as(
         &self,
-        action: P::Action,
-        invoker: ActionInvoker,
-        then: impl FnOnce(Result<u64, ActionError>) + 'static,
-    ) {
+        action: &P::Action,
+        invoker: &ActionInvoker,
+        later: Later,
+    ) -> Result<Option<(u64, Vec<String>)>, ActionError> {
         // Behind the ones already waiting: actions are applied in the order asked.
         if self.pending.borrow().is_empty() {
-            match self.try_apply(&action, &invoker) {
-                Ok(Write::Arriving) => {}
-                Ok(Write::Done(index, _)) => return then(Ok(index)),
-                Err(error) => return then(Err(error)),
+            match self.try_apply(action, invoker)? {
+                Write::Arriving => {}
+                Write::Done(index, created) => return Ok(Some((index, created))),
             }
         }
         self.pending.borrow_mut().push_back(PendingWrite {
-            action,
-            invoker,
-            then: Box::new(then),
+            action: action.clone(),
+            invoker: invoker.clone(),
+            then: later,
         });
+        *self.unwritten.borrow_mut() = self.read_unwritten();
+        self.moved();
+        Ok(None)
+    }
+
+    /// What the actions waiting for their part write ([`Self::apply_as`]),
+    /// read as a part holding only that: what a view shows as being sent.
+    /// `None` while nothing waits.
+    pub(crate) fn unwritten(&self) -> Option<Rc<P::State>> {
+        self.unwritten.borrow().clone()
+    }
+
+    fn read_unwritten(&self) -> Option<Rc<P::State>> {
+        let pending = self.pending.borrow();
+        if pending.is_empty() {
+            return None;
+        }
+        let mut doc = ui_core::automerge::AutoCommit::new();
+        P::initialize(&mut doc).ok()?;
+        let base = (self.base)();
+        for entry in pending.iter() {
+            let mut action = entry.action.clone();
+            if P::prepare(&mut action, &base).is_err() {
+                continue;
+            }
+            let Ok(encoded) = tilo_resource::encode::<P>(&action) else {
+                continue;
+            };
+            let context = ActionContext::for_resource(&self.id, P::KIND, P::LABEL)
+                .with_app(self.workspace.app_id, self.workspace.app_title)
+                .with_invoker(entry.invoker.clone());
+            let writer = ui_core::bound_dispatch::document_writer(&entry.invoker.actor, &doc);
+            if let Err(error) = tilo_actions::apply_local_with_context(
+                &mut doc,
+                &action,
+                encoded,
+                Some(&writer),
+                context,
+            ) {
+                tracing::warn!(kind = P::KIND, %error, "a write waiting for its part cannot be shown");
+            }
+        }
+        Reader::<P>::read(&doc)
+            .map(|reader| Rc::clone(reader.state()))
+            .ok()
     }
 
     /// Whether to look for a newer head and at the parts waited for now:
@@ -739,34 +815,8 @@ impl<P: Chained> ChainState<P> {
         Ok(())
     }
 
-    /// Apply `action`, invoked by `invoker`, to the part it changes: read
-    /// against the app's record ([`Chained::prepare`]), checked against
-    /// what they may do in the workspace, attributed to them and written into
-    /// the part's history. The part it was applied to.
-    pub(crate) fn apply_as(
-        &self,
-        action: &P::Action,
-        invoker: &ActionInvoker,
-    ) -> Result<u64, ActionError> {
-        self.apply_answering(action, invoker)
-            .map(|(index, _)| index)
-    }
-
-    /// [`Self::apply_as`], with the item resources the action created: what
-    /// its invoker is answered, as for the app's own actions.
-    fn apply_answering(
-        &self,
-        action: &P::Action,
-        invoker: &ActionInvoker,
-    ) -> Result<(u64, Vec<String>), ActionError> {
-        match self.try_apply(action, invoker)? {
-            Write::Done(index, created) => Ok((index, created)),
-            Write::Arriving => Err(ActionError::Refused(PART_ARRIVING.into())),
-        }
-    }
-
-    /// [`Self::apply_answering`], telling a part on its way from the
-    /// workspace apart from a refusal.
+    /// Write `action` into its part now, as [`Self::apply_as`], or say the
+    /// part is on its way.
     fn try_apply(&self, action: &P::Action, invoker: &ActionInvoker) -> Result<Write, ActionError> {
         // Which part is the newest is on its way: a part started now would be
         // an old one, or a second first one.
@@ -1080,7 +1130,7 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
-        self.apply_as(&action, invoker)
+        self.apply_as(&action, invoker, told_in_log::<P>())
             .map(drop)
             .map_err(|error| error.to_string())
     }
@@ -1106,8 +1156,12 @@ impl<P: Chained> RecordDoor for ChainState<P> {
         }
         let action: P::Action =
             tilo_actions::decode_json(&action.payload).map_err(|error| error.to_string())?;
-        let (_, resources) = ChainState::apply_answering(self, &action, invoker)
-            .map_err(|error| error.to_string())?;
+        // One that waits for its part creates its items once it is written.
+        let resources = self
+            .apply_as(&action, invoker, told_in_log::<P>())
+            .map_err(|error| error.to_string())?
+            .map(|(_, created)| created)
+            .unwrap_or_default();
         Ok(tilo_actions::ActionOutput {
             value: None,
             resources,
@@ -1203,22 +1257,26 @@ impl<P: Chained> Chain<P> {
         self.state.waited()
     }
 
-    /// Apply `action` now, as the window's person, to the part it changes.
-    /// The part's number.
+    /// Apply `action` as the window's person to the part it changes. The
+    /// part's number; `None` while that part is on its way from the
+    /// workspace: the action waits for it, shows in [`Self::unwritten`]
+    /// meanwhile, and is written once it is here, in the order asked.
     ///
     /// # Errors
     /// As the door refuses it: the person may not, the app's record or the
     /// part refused it.
-    pub fn apply(&self, action: &P::Action) -> Result<u64, ActionError> {
+    pub fn apply(&self, action: &P::Action) -> Result<Option<u64>, ActionError> {
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
-        self.state.apply_as(action, &ActionInvoker::actor(me))
+        self.state
+            .apply_as(action, &ActionInvoker::actor(me), told_in_log::<P>())
+            .map(|written| written.map(|(index, _)| index))
     }
 
-    /// Apply what `invoke` names now, as [`Self::apply`].
+    /// Apply what `invoke` names, as [`Self::apply`].
     ///
     /// # Errors
     /// As [`Self::apply`], or the arguments do not build the action.
-    pub fn invoke(&self, invoke: &Invoke<P>) -> Result<u64, ActionError> {
+    pub fn invoke(&self, invoke: &Invoke<P>) -> Result<Option<u64>, ActionError> {
         let action = invoke
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
@@ -1228,7 +1286,7 @@ impl<P: Chained> Chain<P> {
     /// Apply what `invoke` names as the window's person, as [`Self::invoke`],
     /// and tell `then` the part's number or why it was refused: at once, or,
     /// while the part it changes is on its way from the workspace, once it
-    /// arrived. Actions are applied in the order they were asked for.
+    /// arrived.
     pub fn invoke_then(
         &self,
         invoke: &Invoke<P>,
@@ -1239,8 +1297,32 @@ impl<P: Chained> Chain<P> {
             Err(reason) => return then(Err(ActionError::Refused(reason))),
         };
         let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
-        self.state
-            .apply_then(action, ActionInvoker::actor(me), then);
+        let then: Rc<RefCell<Option<Later>>> = Rc::new(RefCell::new(Some(Box::new(then))));
+        let waiting = Rc::clone(&then);
+        let later: Later = Box::new(move |written| {
+            if let Some(then) = waiting.borrow_mut().take() {
+                then(written);
+            }
+        });
+        let now = self
+            .state
+            .apply_as(&action, &ActionInvoker::actor(me), later);
+        let answer = match now {
+            Ok(None) => return,
+            Ok(Some((index, _))) => Ok(index),
+            Err(error) => Err(error),
+        };
+        if let Some(then) = then.borrow_mut().take() {
+            then(answer);
+        }
+    }
+
+    /// What the actions waiting for their part write, read as a part holding
+    /// only that: what a view shows as being sent until it is written
+    /// ([`Self::apply`]). `None` while nothing waits.
+    #[must_use]
+    pub fn unwritten(&self) -> Option<Rc<P::State>> {
+        self.state.unwritten()
     }
 
     /// Take back the window's person's last step in part `index`, through
@@ -1288,7 +1370,7 @@ impl<P: Chained> Chain<P> {
     ///
     /// # Errors
     /// As [`Self::invoke`].
-    pub fn stage_as(&self, invoke: &Invoke<P>, author: &str) -> Result<u64, ActionError> {
+    pub fn stage_as(&self, invoke: &Invoke<P>, author: &str) -> Result<Option<u64>, ActionError> {
         self.stage_at(invoke, author, tilo_resource::origin_now_ms())
     }
 
@@ -1302,9 +1384,11 @@ impl<P: Chained> Chain<P> {
         invoke: &Invoke<P>,
         author: &str,
         now_ms: i64,
-    ) -> Result<u64, ActionError> {
+    ) -> Result<Option<u64>, ActionError> {
         let action = invoke.build(now_ms).map_err(ActionError::Refused)?;
-        self.state.apply_as(&action, &ActionInvoker::actor(author))
+        self.state
+            .apply_as(&action, &ActionInvoker::actor(author), told_in_log::<P>())
+            .map(|written| written.map(|(index, _)| index))
     }
 
     /// Write `state` into part `index` directly, as what the part starts
@@ -1444,18 +1528,64 @@ fn detached_dispatch<P: Chained>(
     state: &Rc<ChainState<P>>,
     me: &str,
 ) -> Dispatcher<P> {
+    dispatching(state, me, |apply| {
+        Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
+            state.id(),
+            false,
+            apply,
+        )
+    })
+}
+
+/// The dispatcher `make` makes of what applies an action to `state`'s parts
+/// as `me` ([`ChainState::apply_as`]): one that waits for its part is taken,
+/// as written; refused once its part arrived, it is told in the
+/// dispatcher's [`refused`](Dispatcher::refused) as one the workspace
+/// refused after this device showed it.
+pub(crate) fn dispatching<P: Chained>(
+    state: &Rc<ChainState<P>>,
+    me: &str,
+    make: impl FnOnce(Box<dyn Fn(&P::Action) -> Result<(), ActionError>>) -> Dispatcher<P>,
+) -> Dispatcher<P> {
     let applying = Rc::downgrade(state);
     let invoker = ActionInvoker::actor(me);
-    Dispatcher::<P>::new(app_id, state.id(), false, Some(me)).for_workspace_record::<P>(
-        state.id(),
-        false,
-        move |action| {
-            let state = applying
-                .upgrade()
-                .ok_or_else(|| ActionError::Refused("the chain is closed".into()))?;
-            state.apply_as(action, &invoker).map(drop)
-        },
-    )
+    let told: Rc<std::cell::OnceCell<ui_core::LocalState<Option<super::dispatch::Refused>>>> =
+        Rc::default();
+    let telling = Rc::clone(&told);
+    let dispatch = make(Box::new(move |action| {
+        let state = applying
+            .upgrade()
+            .ok_or_else(|| ActionError::Refused("the chain is closed".into()))?;
+        let refused = telling.get().cloned();
+        let named = action.clone();
+        let later: Later = Box::new(move |written| {
+            let Err(error) = written else {
+                return;
+            };
+            tracing::warn!(kind = P::KIND, %error, "a write that waited for its part was refused");
+            if let Some(refused) = refused {
+                refused.set(Some(super::dispatch::Refused {
+                    action: verb_of::<P>(&named).unwrap_or_default(),
+                    item: None,
+                    reason: error.to_string(),
+                    by_workspace: true,
+                }));
+            }
+        });
+        state.apply_as(action, &invoker, later).map(drop)
+    }));
+    let _ = told.set(dispatch.refused());
+    dispatch
+}
+
+/// What a write that waited for its part does once refused, where nobody
+/// waits for its answer: say so in the log.
+fn told_in_log<P: Chained>() -> Later {
+    Box::new(|written| {
+        if let Err(error) = written {
+            tracing::warn!(kind = P::KIND, %error, "a write that waited for its part was refused");
+        }
+    })
 }
 
 /// The chains a window's views opened, by part type and chain: one per each;

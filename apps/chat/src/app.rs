@@ -1060,7 +1060,9 @@ impl ChatApp {
     pub fn held_messages(&self) -> crate::messages::Messages {
         self.chain
             .as_ref()
-            .map(|chain| crate::messages::Messages::new(chain.parts()))
+            .map(|chain| {
+                crate::messages::Messages::new(chain.parts()).with_sending(chain.unwritten())
+            })
             .unwrap_or_default()
             .with_kept(
                 self.kept_messages

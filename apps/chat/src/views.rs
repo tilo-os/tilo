@@ -1285,6 +1285,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         }
     }
 
@@ -2189,6 +2190,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         });
         let chat = workspace.read();
         let channel = Channel::read(&chat, &rows, "c_crit", crate::model::ME, &Names::default());

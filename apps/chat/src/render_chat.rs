@@ -602,6 +602,16 @@ fn clock_label(ts: i64) -> String {
     ConversationClock::local().clock(ts)
 }
 
+/// What a message's header says where its time stands: its time, or that it
+/// is being sent.
+fn time_label(m: &crate::model::Message) -> String {
+    if m.sending {
+        crate::i18n::t("chat-message-sending")
+    } else {
+        clock_label(m.ts)
+    }
+}
+
 /// "Today", "Yesterday", the weekday, or the date: the toolkit's day label,
 /// the same rule Messages uses for its dividers.
 fn day_label(ts: i64) -> String {
@@ -882,6 +892,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         };
         // Two hours apart across midnight, and one three days later.
         let start = 1_782_828_300_i64;

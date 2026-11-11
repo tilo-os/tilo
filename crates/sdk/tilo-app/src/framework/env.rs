@@ -266,20 +266,11 @@ impl<R: Resource> RecordEnv<R> {
         &self,
         state: Rc<super::chain::ChainState<P>>,
     ) -> Option<super::Chain<P>> {
-        let applying = Rc::downgrade(&state);
         let me = self.dispatch.me()?.to_owned();
-        let dispatch = self.dispatch.for_workspace_record::<P>(
-            state.id(),
-            self.dispatch.is_past(),
-            move |action| {
-                let state = applying.upgrade().ok_or_else(|| {
-                    tilo_actions::ActionError::Refused("the chain is closed".into())
-                })?;
-                state
-                    .apply_as(action, &tilo_actions::ActionInvoker::actor(&me))
-                    .map(drop)
-            },
-        );
+        let dispatch = super::chain::dispatching(&state, &me, |apply| {
+            self.dispatch
+                .for_workspace_record::<P>(state.id(), self.dispatch.is_past(), apply)
+        });
         Some(super::Chain::new(state, dispatch))
     }
 

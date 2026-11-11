@@ -31,7 +31,7 @@ use super::agent_work::{
 };
 use super::{
     MessageColumn, RowM, TimelineItem, attachment_icon, clock_label, file_card_height,
-    header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h,
+    header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h, time_label,
 };
 use crate::app::{ChatApp, Hit};
 use crate::model::{self, AgentWork, Message};
@@ -977,7 +977,7 @@ impl ChatApp {
         // The time's line box is bottom-aligned to the name's, which keeps
         // their baselines together at any text scale.
         let time_style = theme.text(TextRole::Caption).numeric();
-        let clock = clock_label(m.ts);
+        let clock = time_label(m);
         let th = line_of(ctx.text, &time_style);
         let clock_x = end_x + f64::from(theme.tokens.spacing.s2);
         let (clock_w, clock_h) = text(

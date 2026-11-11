@@ -146,7 +146,8 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
                 &crate::demo::post("c_general", &long_post(n), None),
                 "u_aria",
             )
-            .unwrap();
+            .unwrap()
+            .expect("written into a part held here");
         if next != 0 {
             break;
         }
@@ -155,12 +156,12 @@ fn the_window_chain_rolls_over_and_reads_across_its_parts() {
     let first = chain
         .invoke(&crate::demo::post("c_general", "the first of part 1", None))
         .unwrap();
-    assert_eq!(first, 1, "posts go on in the new head");
+    assert_eq!(first, Some(1), "posts go on in the new head");
     assert_eq!(chain.head(), Some(1));
     // The new part is the chain's part 1, as every device names it.
     assert_eq!(part_index(&crate::parts::part(1)), Some(1));
     // A reaction to the demo's first message lands in part 0.
-    assert_eq!(chain.invoke(&react("m_welcome", "👍")).unwrap(), 0);
+    assert_eq!(chain.invoke(&react("m_welcome", "👍")).unwrap(), Some(0));
     let held = Messages::new(chain.parts());
     assert_eq!(held.parts().len(), 2);
     assert_eq!(held.part_of(&Id::from_raw("m_welcome")), Some(0));
@@ -238,6 +239,16 @@ struct TwoDevices {
 
 impl TwoDevices {
     fn new() -> Self {
+        Self::opened(false)
+    }
+
+    /// [`Self::new`], the guest back from away: what it does not hold yet,
+    /// it asks the workspace for, and waits for.
+    fn back_from_away() -> Self {
+        Self::opened(true)
+    }
+
+    fn opened(asks_workspace: bool) -> Self {
         let workspace = uuid::Uuid::new_v4().to_string();
         let chat = Rc::new(crate::demo::demo(crate::model::ME));
         let device = |backend: &Rc<durable_store::MemoryStore>| {
@@ -260,6 +271,9 @@ impl TwoDevices {
         .unwrap();
         let guest_backend = Rc::new(durable_store::MemoryStore::new());
         let guest_store = device(&guest_backend);
+        if asks_workspace {
+            guest_store.ask_workspace_for_missing();
+        }
         let guest =
             Chain::detached_in(guest_store.clone(), "so.tilo.chat", "u_aria", base()).unwrap();
         assert_eq!(guest.head(), None, "a fresh workspace has no part yet");
@@ -581,4 +595,57 @@ fn a_post_records_the_channel_it_went_to() {
         })
         .collect();
     assert!(places.iter().any(|place| place == "#general"), "{places:?}");
+}
+
+/// A device back from away shows a conversation before the part its messages
+/// go to arrived from the workspace. A message sent from the conversation's
+/// box meanwhile is not refused: it shows at once, as being sent, and is
+/// written once the part is here, after what was posted there meanwhile.
+#[test]
+fn a_message_sent_while_its_part_arrives_shows_as_sending_and_lands_after_it() {
+    use crate::app::{Focus, Hit};
+
+    let devices = TwoDevices::back_from_away();
+    let mut doc = crate::testing::demo_doc();
+    let mut app = crate::app::ChatApp::new_ephemeral();
+    app.attach_chain(devices.guest.as_reader(crate::model::ME));
+    app.active_channel = "c_general".into();
+    app.focus = Focus::Main;
+    app.thread_open = None;
+    crate::testing::write_draft(&mut app, &mut doc, "back again");
+    app.on_hit(Hit::Send, &mut ui::widget::Edits::lend(&mut doc));
+    assert_eq!(app.not_sent, None, "nothing is refused");
+    assert_eq!(
+        app.composer_main.value(),
+        "",
+        "sent, as far as the box knows"
+    );
+    app.reload(&doc);
+    let shown: Vec<(String, bool)> = app
+        .messages
+        .iter()
+        .map(|row| (row.text.clone(), row.sending))
+        .collect();
+    assert_eq!(
+        shown,
+        [("back again".to_owned(), true)],
+        "shown as being sent"
+    );
+
+    devices.first_post_reaches_the_guest();
+    devices.guest_store.note_kept();
+    app.reload(&doc);
+    let shown: Vec<(String, bool)> = app
+        .messages
+        .iter()
+        .map(|row| (row.text.clone(), row.sending))
+        .collect();
+    assert_eq!(
+        shown,
+        [
+            ("the first post".to_owned(), false),
+            ("back again".to_owned(), false)
+        ],
+        "written after what was posted meanwhile"
+    );
 }

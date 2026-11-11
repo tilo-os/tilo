@@ -393,6 +393,9 @@ chat-message-deleted = Message deleted
 chat-message-edited = Edited
 # Beside a pinned message's time.
 chat-message-pinned-marker = Pinned
+# Where a message's time stands while the conversation it goes to is still
+# arriving on this device; it is written once it arrived.
+chat-message-sending = Sending…
 chat-empty-title = No messages yet
 chat-empty-title-read-only = Nothing has been said here yet
 chat-jump-latest = Jump to latest

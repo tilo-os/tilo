@@ -269,6 +269,9 @@ pub struct Message {
     /// How many times a person asked the agent again for an answer to this
     /// message (`retry`): the attempt the agent answers in now.
     pub attempts: u32,
+    /// Sent from here and not written yet: the part it goes to is on its way
+    /// from the workspace. Shown as being sent, in a group of its own.
+    pub sending: bool,
 }
 
 impl Message {
@@ -683,6 +686,7 @@ pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
                     .and_then(|&last_idx| messages.get(last_idx))
                     .is_some_and(|prev| {
                         prev.appearance == m.appearance
+                            && prev.sending == m.sending
                             && (m.ts - prev.ts).abs() <= GROUP_WINDOW_SECS
                     })
         });
@@ -762,6 +766,7 @@ mod tests {
             appearance: None,
             share: None,
             attempts: 0,
+            sending: false,
         }
     }
 

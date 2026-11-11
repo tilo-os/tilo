@@ -224,7 +224,8 @@ impl Chat {
     }
 
     /// The messages of `channel` held in `messages`, oldest first, with the
-    /// feedback filed in it among them where it was filed.
+    /// feedback filed in it among them where it was filed, and the messages
+    /// being sent to it after them.
     #[must_use]
     pub fn message_rows(
         &self,
@@ -248,6 +249,15 @@ impl Chat {
                 rows.insert(at, report);
             }
         }
+        rows.extend(
+            messages
+                .sending()
+                .filter(|(_, message)| message.channel.as_str() == channel)
+                .map(|(id, message)| Message {
+                    sending: true,
+                    ..message_row(id, message)
+                }),
+        );
         rows
     }
 
@@ -361,6 +371,7 @@ pub fn message_row(id: &Id, message: &crate::record::Message) -> Message {
         appearance: message.appearance.clone().map(Into::into),
         share: message.share.clone(),
         attempts: message.attempts,
+        sending: false,
     }
 }
 
