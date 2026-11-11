@@ -54,6 +54,11 @@ impl AgentParticipant {
                 Ok(()) => {
                     tracing::debug!(part = %route.record, "agent: merged a part");
                     self.beside.insert(route.clone(), holder.clone());
+                    // What waited for the part (a post made before the chain's
+                    // newest part was here) is written now: it goes out.
+                    if let Err(error) = self.publish_parts(&holder) {
+                        tracing::warn!(%error, "agent: a part's change could not be committed");
+                    }
                     return Some(holder);
                 }
                 Err(error) => {

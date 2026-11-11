@@ -853,6 +853,9 @@ impl ConfinedReplica {
         let result = match reply {
             Ok(Reply::Done) => {
                 inner.beside.insert(record.clone(), candidate);
+                // A write that waited for this part (a post made while the
+                // chain's newest part was on its way) is applied as it lands.
+                inner.beside_dirty = true;
                 Ok(())
             }
             Ok(Reply::Failed(reason)) => Err(AppError::Merge(reason)),
