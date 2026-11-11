@@ -327,6 +327,8 @@ pub struct Board {
     /// The device the workspace's governance pins as its host: the one
     /// whose word for the runs it executes is taken here ([`Self::set_host`]).
     host: Option<Device>,
+    /// When this device last took a pass over the board, hearing or saying.
+    listened_ms: Option<f64>,
 }
 
 impl Board {
@@ -345,6 +347,7 @@ impl Board {
             members: Vec::new(),
             revision: 0,
             host: None,
+            listened_ms: None,
         }
     }
 
@@ -573,6 +576,7 @@ impl Board {
     /// Take one member's frame: theirs, as its key and payload say it.
     /// Whether what is known here changed.
     pub fn hear(&mut self, from: Device, frame: &Presence, now_ms: f64) -> bool {
+        self.listen(now_ms);
         if from == self.publisher {
             return false;
         }
@@ -594,6 +598,7 @@ impl Board {
     /// device whose page closed without saying it left, or whose link
     /// dropped, keeps no row here. Whether what is known here changed.
     pub fn forget_silent(&mut self, now_ms: f64) -> bool {
+        self.listen(now_ms);
         let before = self.members.len();
         self.members.retain(|member| {
             member
@@ -605,6 +610,26 @@ impl Board {
             self.revision = self.revision.wrapping_add(1);
         }
         changed
+    }
+
+    /// A pass over the board at `now_ms`. A device takes one at least every [`KEEPALIVE_MS`],
+    /// when its own word is due; a longer gap is time it could hear nobody, such as a page busy
+    /// drawing one slow frame, while what the others said waited for it. That time is not their
+    /// silence: a member is forgotten for [`SILENT_MS`] this device listened without hearing them.
+    fn listen(&mut self, now_ms: f64) {
+        if let Some(last) = self.listened_ms {
+            let deaf = now_ms - last - KEEPALIVE_MS;
+            if deaf > 0.0 {
+                for heard in self
+                    .members
+                    .iter_mut()
+                    .filter_map(|member| member.heard_ms.as_mut())
+                {
+                    *heard += deaf;
+                }
+            }
+        }
+        self.listened_ms = Some(self.listened_ms.map_or(now_ms, |last| last.max(now_ms)));
     }
 
     /// Take one member's frame into what is known of them.

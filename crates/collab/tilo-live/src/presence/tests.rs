@@ -484,6 +484,40 @@ fn a_member_who_goes_quiet_is_forgotten_and_one_who_keeps_talking_is_not() {
     assert_eq!(board.revision(), revision);
 }
 
+/// A page busy with one slow frame hears nobody meanwhile: what the others said waits for it. The
+/// time it could not listen is not their silence, so nobody leaves its roster for it; a member
+/// that stays quiet while it listens again still does.
+#[test]
+fn a_device_that_could_not_listen_forgets_nobody_for_it() {
+    let mut board = board();
+    board.say(&Own {
+        label: "Me".into(),
+        ..Own::default()
+    });
+    board.due(0.0);
+    for member in [[1; 32], [2; 32]] {
+        board.hear(member, &said(Payload::Arrived), 0.0);
+    }
+    // One frame took longer than a member may stay quiet.
+    let mut now = SILENT_MS + 1_000.0;
+    board.due(now);
+    let here: Vec<Device> = board.here().map(|member| member.publisher).collect();
+    assert_eq!(here, vec![[1; 32], [2; 32]], "both are still here");
+    // What the second said while the page drew arrives; the first has gone quiet.
+    board.hear([2; 32], &said(Payload::Arrived), now);
+    for _ in 0..4 {
+        now += KEEPALIVE_MS;
+        board.hear([2; 32], &said(Payload::Arrived), now);
+        board.due(now);
+    }
+    let here: Vec<Device> = board.here().map(|member| member.publisher).collect();
+    assert_eq!(
+        here,
+        vec![[2; 32]],
+        "the one quiet while it listened is gone"
+    );
+}
+
 #[test]
 fn a_member_only_the_roster_named_is_not_forgotten_for_silence() {
     let mut board = board();
