@@ -932,6 +932,29 @@ fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     Some((dialog, Plan::Confirm))
 }
 
+/// `label` as a person reads it, or empty when it is an internal address
+/// rather than a name: a control path (`i6ll2n4j~…~action-0`), or an app's
+/// own resource id (`tl:app:root-…`, `desktop:tab:7`, `tilo.control:…`). A
+/// step's sheet names what it acts on by the resource's published title
+/// ([`crate::questions`]); a title the broker could not resolve yet is
+/// dropped rather than shown as a path.
+fn readable_label(label: &str) -> String {
+    let label = label.trim();
+    let address = label.contains('~')
+        || label.contains('#')
+        || label.contains("%7E")
+        || label.starts_with("tl:")
+        || label.starts_with("desktop:")
+        || label.starts_with("app.")
+        || label.starts_with("tilo.control:")
+        || label.starts_with("session:")
+        || label.starts_with("chat.");
+    if address {
+        return String::new();
+    }
+    label.to_owned()
+}
+
 /// An agent's step inside a conversation turn, asking the person before it
 /// runs: the draft they review, row by row, and the one confirmation that
 /// answers it (`docs/designs/app-language/shell.md` §1, "Trust stays
@@ -939,6 +962,11 @@ fn device_unlock(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
 /// question.
 fn turn_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let asked: crate::turn_questions::TurnDetails = serde_json::from_value(details).ok()?;
+    // What the step acts on, as the person reads it: the resource's published
+    // title, never the internal id a control path or a raw address carries.
+    // A label that is still an address is dropped rather than shown: nothing
+    // stands as the sheet's heading, and the step is named by no place.
+    let resource = readable_label(&asked.resource_label);
     let mut rows = Vec::new();
     for field in &asked.draft.fields {
         // A value the sheet shows but does not edit (a list, a resource, a
@@ -946,7 +974,7 @@ fn turn_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
         let value = match &field.value {
             tilo_actions::draft::DraftValue::Text { text }
             | tilo_actions::draft::DraftValue::Number { text } => DraftValue::Text {
-                text: text.clone(),
+                text: field.shows.clone().unwrap_or_else(|| text.clone()),
                 multiline: field.multiline,
                 number: matches!(field.value, tilo_actions::draft::DraftValue::Number { .. }),
                 withheld: false,
@@ -955,7 +983,7 @@ fn turn_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
             tilo_actions::draft::DraftValue::List { .. }
             | tilo_actions::draft::DraftValue::Resource { .. }
             | tilo_actions::draft::DraftValue::Withheld => DraftValue::Text {
-                text: field.value.line(),
+                text: field.shows.clone().unwrap_or_else(|| field.value.line()),
                 multiline: false,
                 number: false,
                 withheld: matches!(field.value, tilo_actions::draft::DraftValue::Withheld),
@@ -971,14 +999,18 @@ fn turn_question(handle: &str, details: Value) -> Option<(Dialog, Plan)> {
     let mut dialog = review(
         handle,
         words("turn-question-title", &[("action", &asked.action_label)]),
-        asked.resource_label.clone(),
-        words(
-            "turn-question-detail",
-            &[
-                ("action", &asked.action_label),
-                ("resource", &asked.resource_label),
-            ],
-        ),
+        resource.clone(),
+        if resource.is_empty() {
+            words(
+                "turn-question-detail-here",
+                &[("action", &asked.action_label)],
+            )
+        } else {
+            words(
+                "turn-question-detail",
+                &[("action", &asked.action_label), ("resource", &resource)],
+            )
+        },
     );
     dialog.confirm_label = word("portal-allow-once");
     dialog.body = Body::Draft {
@@ -1759,6 +1791,7 @@ mod tests {
                 },
                 editable: true,
                 multiline: false,
+                shows: None,
                 role: None,
             }],
             ..tilo_actions::Draft::default()
@@ -1796,5 +1829,81 @@ mod tests {
         assert_eq!(rows[0].label, "Title");
         assert!(rows[0].editable, "the person may change it");
         assert!(choices.is_empty(), "one confirmation answers it");
+    }
+
+    /// A step whose resource label is a control path rather than a title — an
+    /// editor's "Go to" on a sidebar row, as a live run showed — names what it
+    /// acts on by a person's words, never the hundred-character id: the sheet
+    /// must not print the address of a control.
+    #[test]
+    fn a_control_path_step_names_its_resource_by_title_not_by_its_id() {
+        let draft = tilo_actions::Draft {
+            action_label: "Go to".into(),
+            resource_label: "Inbox".into(),
+            fields: vec![tilo_actions::draft::DraftField {
+                path: vec!["entry".into()],
+                label: "Entry".into(),
+                value: tilo_actions::draft::DraftValue::Text {
+                    text: "is:inbox".into(),
+                },
+                editable: false,
+                multiline: false,
+                shows: None,
+                role: None,
+            }],
+            ..tilo_actions::Draft::default()
+        };
+        let shown = sheet(
+            crate::turn_questions::KIND,
+            serde_json::to_value(crate::turn_questions::TurnDetails {
+                // The title the broker resolved for the control's resource.
+                resource_label: "Inbox".into(),
+                action_label: "Go to".into(),
+                draft: draft.clone(),
+            })
+            .unwrap(),
+        );
+        for text in [
+            &shown.dialog.title,
+            &shown.dialog.detail,
+            &shown.dialog.heading,
+        ] {
+            assert!(
+                !text.contains('~') && !text.contains("i6ll2n4j"),
+                "the sheet shows an internal control path: {text:?}"
+            );
+        }
+        assert_eq!(shown.dialog.heading, "Inbox", "{:?}", shown.dialog);
+
+        // An unresolved label is an address: the sheet drops it and names the
+        // step by what it does, rather than printing a path a person cannot
+        // read.
+        let path = "i6ll2n4j~i6ll2n4j.108~tj4z2obq.513~s7yqm7cb.for0/root-qhf2pyze/if2201f91-35~s7yqm7cb~row0~s7yqm7cb~row0.for0/root-qhf2pyze/if2201f91-35#select";
+        let raw = sheet(
+            crate::turn_questions::KIND,
+            serde_json::to_value(crate::turn_questions::TurnDetails {
+                resource_label: path.into(),
+                action_label: "Go to".into(),
+                draft,
+            })
+            .unwrap(),
+        );
+        for text in [&raw.dialog.title, &raw.dialog.detail, &raw.dialog.heading] {
+            assert!(
+                !text.contains('~') && !text.contains("i6ll2n4j"),
+                "the sheet prints the control's own path: {text:?}"
+            );
+        }
+        assert_eq!(
+            raw.dialog.heading, "",
+            "an address is no heading: {:?}",
+            raw.dialog
+        );
+        assert!(
+            raw.dialog.detail.contains("turn-question-detail-here")
+                || raw.dialog.detail.contains("Go to"),
+            "the step is still named by what it does: {:?}",
+            raw.dialog
+        );
     }
 }

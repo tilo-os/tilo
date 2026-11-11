@@ -404,3 +404,4 @@ desk-style-failed-body = { $style } could not be shown, so the desk shows Strips
 ## runs. The sheet shows the step's draft; confirming allows this one step.
 turn-question-title = Let the agent { $action }
 turn-question-detail = { $action } on { $resource }, as shown. It runs once, for this step only.
+turn-question-detail-here = { $action }, as shown. It runs once, for this step only.

@@ -408,3 +408,4 @@ desk-style-failed-body = { $style } konnte nicht angezeigt werden, daher zeigt d
 ## runs. The sheet shows the step's draft; confirming allows this one step.
 turn-question-title = Den Agenten { $action } lassen
 turn-question-detail = { $action } auf { $resource }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
+turn-question-detail-here = { $action }, wie gezeigt. Es läuft einmal, nur für diesen Schritt.
