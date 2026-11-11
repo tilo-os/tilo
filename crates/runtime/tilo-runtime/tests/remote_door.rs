@@ -31,8 +31,8 @@ use tilo_actions::remote::{
 };
 use tilo_peer_state::{PersonalStore, PersonalSync};
 use tilo_runtime::remote_door::{
-    ALPN, Arrival, Arrivals, Doors, Forward, Origin, PersonalDevices, RemoteDoor, agent_id,
-    ask_forward, forward_request, open, read_list,
+    ALPN, Arrival, Arrivals, Doors, Forward, Origin, PersonalDevices, PersonsDevices, RemoteDoor,
+    agent_id, ask_forward, forward_request, open, read_list,
 };
 use tilo_runtime::session_door::{Beside, Consent, read_first_line, serve_with};
 use tilo_user_identity::{
@@ -582,6 +582,82 @@ async fn the_persons_devices_are_listed_with_whether_each_answers() {
         listing.contains("Build box") && listing.contains("reachable"),
         "{listing}"
     );
+}
+
+/// Wait until the device holding `store` lists a device called `label`.
+async fn until_listed(store: &PersonalSync, label: &str) {
+    let devices = PersonalDevices::new(store.clone());
+    let mut changes = store.changes();
+    tokio::time::timeout(PATIENCE, async {
+        while !devices
+            .devices()
+            .iter()
+            .any(|device| device.device_label == label)
+        {
+            changes.changed().await.unwrap();
+        }
+    })
+    .await
+    .unwrap_or_else(|_| panic!("{label} is never listed"));
+}
+
+/// The person's second and third devices each linked only to the first, over
+/// the person's own store: `tilo_devices` on the third names the second,
+/// `--device` resolves it by that name, and the second lists the third.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_device_lists_and_names_the_siblings_it_never_met() {
+    let person = Person::new();
+    let third = device(&person.root, 6, "Phone");
+    // Each device's store holds its own certificate and no other.
+    let first = store(&person.root, &person.a, &[], &[]);
+    let second = store(&person.root, &person.b, &[], &[]);
+    let phone = store(&person.root, &third, &[], &[]);
+    let first_endpoint = endpoint(&person.a.0).await;
+    let _router = Router::builder(first_endpoint.clone())
+        .accept(tilo_peer_state::PERSONAL_ALPN, first.clone())
+        .spawn();
+    let second_endpoint = endpoint(&person.b.0).await;
+    let phone_endpoint = endpoint(&third.0).await;
+    let links = [
+        (second.clone(), second_endpoint.clone()),
+        (phone.clone(), phone_endpoint.clone()),
+    ]
+    .map(|(store, from)| {
+        let to = addr(&first_endpoint);
+        tokio::spawn(async move { store.connect(&from, to).await })
+    });
+    until_listed(&phone, "Build box").await;
+    until_listed(&second, "Phone").await;
+
+    let doors = Doors::new(
+        phone_endpoint,
+        Arc::new(PersonalDevices::new(phone.clone())),
+        tokio::runtime::Handle::current(),
+    );
+    let listing = tilo_runtime::remote_door::listing(&doors.reach_now().await);
+    assert!(
+        listing.contains("Build box") && listing.contains("Studio laptop"),
+        "{listing}"
+    );
+    assert_eq!(
+        doors.resolve("build box"),
+        Ok(person.b.1.device_public_key),
+        "--device names the sibling this device never met"
+    );
+    let on_second: Vec<String> = PersonalDevices::new(second.clone())
+        .devices()
+        .into_iter()
+        .map(|device| device.device_label)
+        .collect();
+    assert!(
+        ["Phone", "Studio laptop"]
+            .iter()
+            .all(|label| on_second.iter().any(|listed| listed == label)),
+        "{on_second:?}"
+    );
+    for link in links {
+        link.abort();
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
