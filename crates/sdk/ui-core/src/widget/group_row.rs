@@ -533,6 +533,9 @@ struct ApartDrawing {
     /// What of the group the drawing culled nothing in, across, from the group's left edge; `None`
     /// when nothing was culled. A replay must show no more of the group.
     seen: Option<(f64, f64)>,
+    /// The peers' carets, selections and name tags the drawing noted: a reader is told them where
+    /// the frame shows the window, so a replay notes them again moved with it.
+    notes: crate::presence::DrawnNotes,
     /// Nothing changed in the group since the drawing was made; a drawing replayed through a frame
     /// that may have changed it is not current, and is never shown.
     current: bool,
@@ -5732,6 +5735,9 @@ impl GroupRow {
             && (!on_screen || (at_rest && drawing.current && covers(drawing.seen, shows)))
         {
             drawing.current &= only_moved;
+            // The carets and tags inside the drawing are where it shows it, which in canvas
+            // coordinates is where it drew them.
+            presence.note_notes_moved(&drawing.notes, Affine::IDENTITY);
             crate::scene_parts::part(scene, key, bounds, |scene| {
                 crate::scene_parts::append(
                     scene,
@@ -5798,6 +5804,7 @@ impl GroupRow {
         let secrets = crate::secret_paint::SecretPaint::begin();
         let group = &mut self.groups[i];
         let (id, rect) = (group.id, group.get_rect());
+        let boundary = presence.notes_boundary();
         let ((), parts) = crate::scene_parts::record(&mut local, |local| {
             group.draw_child(local, transform, tr, theme, presence);
         });
@@ -5809,6 +5816,7 @@ impl GroupRow {
             parts,
             shows_secret: secrets.finish(),
             seen: seen_across(presence, rect),
+            notes: presence.notes_since(boundary),
             current: true,
         })
     }
@@ -5872,6 +5880,9 @@ impl GroupRow {
             let dx = rect.x0 - drawing.rect.x0;
             let moved =
                 Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
+            // A reader is told the carets the drawing painted where it shows them now, not where
+            // the pan it was drawn at had them.
+            presence.note_notes_moved(&drawing.notes, moved);
             crate::scene_parts::append(scene, &drawing.scene, drawing.parts.as_ref(), Some(moved));
             if drawing.shows_secret {
                 crate::secret_paint::note_secret_painted();
@@ -7486,6 +7497,7 @@ mod tests {
                 parts: None,
                 shows_secret: true,
                 seen: None,
+                notes: crate::presence::DrawnNotes::default(),
                 current: true,
             };
             secret.offer_picture();
@@ -11208,6 +11220,9 @@ mod lane_tests;
 #[cfg(test)]
 #[path = "group_row_pacing_tests.rs"]
 mod pacing_tests;
+#[cfg(test)]
+#[path = "group_row_presence_tests.rs"]
+mod presence_tests;
 #[cfg(test)]
 #[path = "group_row_sharing_tests.rs"]
 mod sharing_tests;
