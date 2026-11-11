@@ -633,9 +633,9 @@ const KEY_RECHECK: Duration = Duration::from_secs(1);
 ///
 /// The desktop's keys take none of their own: the hello carries the guest's
 /// request for them, and the Welcome is the first thing its replay writes.
-/// Five in all, which the fixed allowance reads as about four; at 400 ms the
-/// desktop shows in about 2.9 s.
-const MAX_ROUND_TRIPS: f64 = 4.75;
+/// Five in all, which the fixed allowance reads as about three; at 400 ms the
+/// desktop shows in about 2.5 s.
+const MAX_ROUND_TRIPS: f64 = 3.5;
 
 /// The HTTPS requests a fresh guest makes to enter: the host's certificate.
 /// The door and the admission ride the session.
