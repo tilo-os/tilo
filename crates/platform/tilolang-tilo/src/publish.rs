@@ -2489,15 +2489,43 @@ pub fn edit_action(
 /// The two direct edit actions of a resource, whose target is its id: a bound text input and
 /// a bound checkbox.
 fn edit_types(meta: &Meta, type_name: &str) -> [Arc<ActionType>; 2] {
+    // The fields the type declares, by the id on the wire and the name a
+    // person reads: an agent's draft shows "Body", never the `body` id the
+    // action binds.
+    let fields: Vec<(String, String)> = meta
+        .type_named(type_name)
+        .map(|ty| {
+            ty.fields
+                .iter()
+                .map(|field| {
+                    let label = if field.name.trim().is_empty() {
+                        crate::schema::spoken(&field.id)
+                    } else {
+                        field.name.clone()
+                    };
+                    (field.id.clone(), label)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let make = |action: &'static str, label: &'static str, ty: ParamType| {
         let (meta, type_name) = (meta.clone(), type_name.to_owned());
+        let field_param = if fields.is_empty() {
+            ActionParam::required("field", ParamType::Text, "The field id")
+        } else {
+            // The names the type's fields read as, without restricting the
+            // parameter to them: a nested path (`body.spans.*.text`) still
+            // names a field.
+            ActionParam::required("field", ParamType::Text, "The field id")
+                .labelling_choices(fields.clone())
+        };
         let spec = ActionSpec::typed_on(
             action,
             label,
             label,
             ExecutionLocus::ClientLocal,
             vec![
-                ActionParam::required("field", ParamType::Text, "The field id"),
+                field_param,
                 ActionParam::required("value", ty, "The new value"),
             ],
             move |target: &Target, args: &ActionArgs| {

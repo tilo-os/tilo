@@ -130,7 +130,16 @@ fn retell(paused: &TaskRunPausedStep) -> String {
         .draft
         .fields
         .iter()
-        .map(|field| format!("{}: {}", field.path.join("."), field.value.line()))
+        .map(|field| {
+            format!(
+                "{}: {}",
+                field.path.join("."),
+                field
+                    .shows
+                    .as_deref()
+                    .map_or_else(|| field.value.line(), str::to_owned)
+            )
+        })
         .collect::<Vec<_>>()
         .join("; ");
     format!(

@@ -142,6 +142,11 @@ pub struct DraftField {
     /// Whether it is prose that wants several lines.
     #[serde(default)]
     pub multiline: bool,
+    /// What the row reads instead of the raw value, where the value names one
+    /// of its parameter's choices: a field id reads as the field's name
+    /// ("Body"), a pick as the thing it picks. What runs is still `value`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shows: Option<String>,
     /// Its part in a message preview.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub role: Option<MessageRole>,
@@ -211,6 +216,18 @@ impl Draft {
                         };
                         made.editable = false;
                     }
+                    // A value that names one of the parameter's choices reads by
+                    // the label the surface publishes for it: a field id reads as
+                    // the field's name, a pick as the thing it picks. `value`
+                    // stays the value the action binds, so what runs is
+                    // unchanged; only what the person reads changes.
+                    if let (Some(made), Some(raw)) = (made.as_mut(), value.as_str())
+                        && !raw.is_empty()
+                        && let Some(label) = param.choice_label(raw)
+                        && !label.trim().is_empty()
+                    {
+                        made.shows = Some(label.to_owned());
+                    }
                     fields.extend(made);
                 }
             }
@@ -250,6 +267,13 @@ impl Draft {
         self.fields.iter().find(|field| field.role == Some(role))
     }
 
+    /// What a person reads in `field`'s one line: the label it shows where
+    /// the value names a choice, its value otherwise.
+    #[must_use]
+    pub fn shown_line(field: &DraftField) -> String {
+        field.shows.clone().unwrap_or_else(|| field.value.line())
+    }
+
     /// What the draft is about, in one line of its own values: a message's
     /// recipients and subject, otherwise its first short values. `None` for a
     /// draft with nothing to show.
@@ -259,7 +283,7 @@ impl Draft {
             let parts: Vec<String> = [MessageRole::To, MessageRole::Subject]
                 .into_iter()
                 .filter_map(|role| self.role(role))
-                .map(|field| field.value.line())
+                .map(Draft::shown_line)
                 .filter(|line| !line.is_empty())
                 .collect();
             if !parts.is_empty() {
@@ -270,7 +294,7 @@ impl Draft {
             .fields
             .iter()
             .filter(|field| !field.multiline && field.value != DraftValue::Withheld)
-            .map(|field| field.value.line())
+            .map(Draft::shown_line)
             .filter(|line| !line.is_empty())
             .take(2)
             .collect();
@@ -381,6 +405,9 @@ impl Draft {
                         text: edit.text.clone(),
                     },
                 };
+                // The person typed a new value: no label of a choice stands
+                // over what they wrote.
+                field.shows = None;
             }
         }
         draft
@@ -444,6 +471,7 @@ fn field(path: Vec<String>, name: &str, value: DraftValue) -> DraftField {
         value,
         editable: false,
         multiline: false,
+        shows: None,
         role,
     }
 }
