@@ -1238,6 +1238,60 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
     );
 }
 
+/// While following someone the bar's banner is their face: a press on it, away from its Stop,
+/// opens their card, as their face in the bar does, and leaves following as it was. On a phone the
+/// banner folds into that face beside Stop, the only one the bar shows of them while following.
+#[test]
+fn the_follow_banner_opens_the_followed_persons_card() {
+    let _settled = ui::motion::testing::settled();
+    let (_home, _settings) = settings_home();
+    let own = OwnPresence {
+        label: "Quinten".to_owned(),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), own));
+    let mut session = session(&sync);
+    sync.hear(hello(0xaa, "Framework 16"));
+    arrived_as(&sync, 0xaa, "Ada");
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    let ada = person(0xaa);
+    press_faces(&mut session);
+    let follow = holding(&people(&session), "Follow Ada");
+    press(&mut session, follow);
+    until(
+        &mut session,
+        "the banner names whose view this is",
+        |session| {
+            session
+                .a11y_windows()
+                .iter()
+                .any(|(_, _, tree)| said_by(tree).iter().any(|name| name == "Following Ada"))
+        },
+    );
+    let (x, y, _, height) = holding(&people(&session), "Following Ada");
+    press(&mut session, (x, y, 8.0, height));
+    until(
+        &mut session,
+        "the followed person's card opens",
+        |session| {
+            session
+                .accessible_labels()
+                .iter()
+                .any(|label| label == "Ada’s profile")
+        },
+    );
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("step");
+    }
+    assert_eq!(
+        sync.own().following.as_deref(),
+        Some(ada.as_str()),
+        "opening their card leaves following as it was"
+    );
+}
+
 /// Kept on screen from the start, the roster names the workspace it is of and says who is here
 /// without a label over them; one person shares their screen and one keeps where they are.
 #[test]

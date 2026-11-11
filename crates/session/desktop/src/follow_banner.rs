@@ -92,6 +92,10 @@ pub struct FollowBanner {
 
 /// The semantic action target of the banner's Stop.
 pub const STOP_TARGET: &str = "follow:stop";
+/// The semantic action target of the banner itself: pressed, it opens the card of the person it
+/// follows, as their face in the bar does. On a phone the banner folds into that face, and it is
+/// the only one the bar shows of them while following.
+pub const CARD_TARGET: &str = "follow:card";
 
 impl FollowBanner {
     /// Following `row` began.
@@ -150,6 +154,9 @@ impl FollowBanner {
             .with_name(self.said.0.clone())
             .with_live(Politeness::Polite)
             .with_bounds(self.chip);
+        if !self.stop.is_zero_area() {
+            node = node.with_action_target(CARD_TARGET);
+        }
         if !self.stop.is_zero_area() {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
