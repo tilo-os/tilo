@@ -270,6 +270,38 @@ class CopyLanguageTests(unittest.TestCase):
                 "the label a step names itself is painted as much through a closure "
                 "as in the argument itself; a word only fed to a call is not")
 
+
+    def test_a_sentence_built_around_a_value_is_copy_too(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            locales = root / "apps/demo/locales"
+            locales.mkdir(parents=True)
+            (locales / "en-US.ftl").write_text("demo-name = Demo\n")
+            (locales / "de-DE.ftl").write_text("demo-name = Demo\n")
+            source = root / "apps/demo/src"
+            source.mkdir(parents=True)
+            (source / "lib.rs").write_text("\n".join([
+                "fn facts(host: &str, track: Track, count: usize) -> Node {",
+                '    let changes = format!("{count} changes to review");',
+                "    let list = Node::new(Role::List).with_description(changes);",
+                "    Node::new(Role::Canvas)",
+                '        .with_name(format!("Play {}", track.title))',
+                '        .with_description(crate::i18n::t("demo-name"))',
+                "        .with_facts(vec![",
+                '            Property::new("Host name", host.to_owned()),',
+                '            Section::titled("Details", list),',
+                '            SectionHeader::group("Saved accounts"),',
+                "        ])",
+                '        .with_hint(pick(|word| say(word, "Grid")))',
+                "}",
+            ]) + "\n")
+            self.assertEqual(
+                [text for _, _, text in copy.source_copy_literals(root)],
+                ["{count} changes to review", "Play {}", "Host name", "Details", "Saved accounts"],
+                "a sentence built around a value is copy whether it reaches the "
+                "constructor directly or through the local it is stored in; a "
+                "property's name and a section's title are copy as well")
+
     def test_the_tree_passes(self):
         self.assertEqual(
             copy.check(copy.ROOT, copy.GLOSSARY, copy.BASELINE, copy.SAVE_EXCEPTIONS,
