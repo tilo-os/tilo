@@ -33,6 +33,7 @@
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {request} from 'node:https';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {clock} from './timing.mjs';
 import * as waits from './waits.mjs';
 
 const [site, relay, origin, out, rolesFile, earlier] = process.argv.slice(2);
@@ -641,6 +642,7 @@ const browserArgs = [
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ];
 const browsers = [];
+const mark = clock('start');
 try {
   if (earlier) {
     // A person arriving now: the chat window and the composer are the app's,
@@ -656,6 +658,7 @@ try {
       'the chat message the workspace kept from before this start', 180_000);
     report.earlier = earlier;
     console.log(`ok: the chat the workspace kept shows "${earlier}" to a person who was not here`);
+    mark('the chat the workspace kept after a restart');
     const reply = `here now ${Date.now()}`;
     if (!await press(visitor.tab, 'Message composer')) failed("V's chat has no message composer", visitor.tab);
     await type(visitor.tab, reply);
@@ -664,6 +667,7 @@ try {
     report.reply = reply;
     await dump(visitor.tab, 'earlier-chat');
     console.log('ok: the person joining after the restart wrote in the same chat');
+    mark('the person who was not here wrote in it');
     writeFileSync(`${out}/report.json`, JSON.stringify(report, null, 2));
     console.log(JSON.stringify(report, null, 2));
     await browser.close().catch(error => console.error('close:', error.message));
@@ -689,6 +693,7 @@ try {
   if (keptA.room !== keptB.room) failed('the two joined different workspaces');
   report.distinct = true;
   console.log(`ok: two browsers joined the Lounge as ${keptA.userPublicKey.slice(0, 8)} and ${keptB.userPublicKey.slice(0, 8)}`);
+  mark('two browsers joined the Lounge');
 
   // The relay describes both as here: both pages opened their HTTPS sessions.
   // That is the host's own count, not the live plane's — the plane is read
@@ -729,6 +734,7 @@ try {
     'the chat message in B', 180_000);
   report.chat = message;
   console.log('ok: the chat message from A is in B');
+  mark('A\'s chat message in B');
   await dump(a.tab, '3-a-chat');
   await dump(b.tab, '3-b-chat');
 
@@ -741,6 +747,7 @@ try {
     "A's Notes window in B", 180_000);
   report.shared = {bBefore: beforeB.windows, bAfter: (await snapshot(b.tab)).windows};
   console.log('ok: the window A opened is in B\'s strip');
+  mark('A\'s window in B\'s strip');
   await dump(a.tab, '5-a-open');
   await dump(b.tab, '5-b-open');
 
@@ -766,6 +773,7 @@ try {
   };
   report.planes = {a: await joinedPlane(a, 'A'), b: await joinedPlane(b, 'B')};
   console.log('ok: both pages joined the live plane');
+  mark('both pages on the live plane');
 
   // Each desk shows the other as here and never itself, with a window of
   // theirs focused: the desktop's People list is what presence is on the
@@ -789,6 +797,7 @@ try {
     failed(`each desk shows the same person: ${JSON.stringify(report.presence)}`);
   }
   console.log('ok: each desk shows the other person here');
+  mark('each desk shows the other here');
 
   // A call on the page both people share. A starts it from Chat's own call
   // control — the workspace's voice channel, joined muted, as every Tilo call
@@ -912,6 +921,7 @@ try {
   await search(a.tab, a.command, 'start a call', 'Start a call');
   const startedA = await untilCard(a, 'Just you', "A's call card, alone in the call");
   console.log('ok: A started a call from Chat');
+  mark('a call started from Chat');
 
   // B is rung: the workspace's voice channel, in B's own channel list, now
   // names A in it.
@@ -931,6 +941,7 @@ try {
   };
   const ring = await untilChannelPeople(b, 'voice', nameA, "the call's channel in B");
   console.log(`ok: B is rung: voice lists ${ring.join(', ')}`);
+  mark('B rung and the call listed');
   // Nobody is left in the channel: what each desk sees once the call ended.
   const untilChannelEmpty = async (person, channel, what, timeout = 120_000) => {
     const deadline = Date.now() + timeout;
@@ -953,6 +964,7 @@ try {
   const liveA = await untilLive(a, "A's call going live");
   const liveB = await untilLive(b, "B's call going live");
   console.log('ok: both pages are in the call');
+  mark('both pages in the call');
   // Unmuted, both: each page's microphone is the browser's synthetic device,
   // so unmuting is what puts audio on the plane.
   await pressWhen(a.tab, 'Unmute', "A's microphone control");
@@ -960,6 +972,7 @@ try {
   await untilCapture(a, "A's microphone running");
   await untilCapture(b, "B's microphone running");
   console.log('ok: both microphones are running');
+  mark('both microphones running');
 
   // The call's card names the other person, counts, and offers the way out:
   // on each page the same reading of the same call.
@@ -979,6 +992,7 @@ try {
   report.call.audio = {fromA, fromB};
   report.call.live = {a: liveA, b: liveB};
   console.log(`ok: each page sent audio the other heard (${JSON.stringify(report.call.audio)})`);
+  mark('the pages heard each other');
   await dump(a.tab, '6-a-call');
   await dump(b.tab, '6-b-call');
 
@@ -988,6 +1002,7 @@ try {
   await untilNotLive(a, 'A hanging up');
   await untilCard(b, 'Just you', "B's call card after A hung up");
   console.log('ok: A hung up, and B is alone in the call');
+  mark('A hung up, B alone in the call');
   await dump(a.tab, '7-a-hung-up');
 
   // B hangs up too: the call is over on both desks, and no one is in the
@@ -998,6 +1013,7 @@ try {
   await untilChannelEmpty(a, 'voice', "A's voice channel after the call");
   await untilChannelEmpty(b, 'voice', "B's voice channel after the call");
   console.log('ok: hanging up ended the call for both');
+  mark('hanging up ended the call');
   await dump(b.tab, '7-b-hung-up');
   // The desk as a laptop drives it: the launcher's search opens every app the
   // Lounge offers, two fingers sideways pan the strip over an app that does
@@ -1124,6 +1140,7 @@ try {
   if (given === filled) failed(`the window menu's "${filled}" changed nothing: the menu offered it again ${JSON.stringify({bar, openAfterClick: first.open})}`);
   report.windowMenu = {filled, given};
   console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled}, then ${given})`);
+  mark('the window menu filled and gave back the strip');
 
   // Every app the Lounge offers opens from the launcher's search.
   const offered = (await nav(a.tab))?.applications ?? [];
@@ -1142,9 +1159,12 @@ try {
   const timings = [];
   const started = Date.now();
   for (const application of applications) {
+    const appBegan = Date.now();
     await search(a.tab, a.command, application.label.toLowerCase(), application.label, application.id);
+    const searched = Date.now();
     await until(a.tab, `(globalThis.tiloMount?.navigation?.getSnapshot?.().entries ?? []).some(entry => entry.app === ${JSON.stringify(application.id)})`,
       `the window of ${application.label}`, 180_000);
+    const arrived = Date.now();
     // The entry is published in the pass that draws the window, and that
     // frame reaches the page when the GPU has room for it, which on a busy
     // software rasteriser is seconds later: the open is measured on that
@@ -1169,11 +1189,16 @@ try {
     const shot = await a.tab.screenshot();
     if (shot) writeFileSync(`${out}/app-${application.id.replace(/[^a-z0-9]+/gi, '-')}.png`, shot);
     opened.push(application.id);
+    // Where one app's open went: the search for it, its window arriving, the
+    // frame that showed it, and the picture kept of it.
+    const at = Date.now();
+    console.log(`TIMING app=${application.id} search=${((searched - appBegan) / 1000).toFixed(1)} window=${((arrived - searched) / 1000).toFixed(1)} drawn=${((at - arrived) / 1000).toFixed(1)} shot=${((Date.now() - at) / 1000).toFixed(1)}`);
   }
   const spent = Math.round((Date.now() - started) / 1000);
   report.applications = {offered: applications.map(application => application.id), opened, seconds: spent, presented: timings};
   const slow = timings.filter(timing => timing.frames > OPEN_FRAMES);
   console.log(`ok: each of the ${applications.length} apps the Lounge offers opened from the search (${spent}s)`);
+  mark('every app opened from the search');
   for (const timing of timings) {
     console.log(`  ${timing.app}: ${timing.presentMs === null ? 'on the frame that took its key' : `${timing.presentMs} ms from Enter to its window`}`);
   }
@@ -1219,6 +1244,7 @@ try {
   if ((await snapshot(a.tab)).windows.join() !== windowsBefore.join()) failed('a sideways pan changed the windows');
   if (await picture(a.tab) === frameBefore) failed('the strip did not repaint as it panned');
   console.log(`ok: two fingers sideways pan the strip over Notes (${panBefore.offset} to ${panAfter.offset})`);
+  mark('a sideways pan over Notes');
 
   // The same gesture over Sheets, whose grid scrolls sideways itself: the app
   // takes it and the strip stays where it was.
@@ -1245,6 +1271,7 @@ try {
   }
   if (await picture(a.tab) === sheetBefore) failed('Sheets did not scroll sideways with the fingers', a.tab);
   console.log('ok: the same gesture scrolls Sheets and leaves the strip');
+  mark('a sideways swipe over Sheets');
 
   let invited = null;
   if (!brief) {
@@ -1261,6 +1288,7 @@ try {
       failed(`a pinch moved the strip: ${JSON.stringify(report.pinch)}`);
     }
     console.log('ok: a pinch zooms and never pans the strip');
+    mark('a pinch zoom');
 
     // A right-click in the chat's composer is the text's menu.
     await search(a.tab, a.command, 'chat', 'Chat');
@@ -1286,6 +1314,7 @@ try {
     if (!textRow) failed('a right-click in a text field offers no text menu');
     report.contextMenu = textRow;
     console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
+    mark('the text menu');
     await key(a.tab, 'Escape');
 
     // Report a problem: the bar's own avatar, then the card's row. After a
@@ -1319,6 +1348,7 @@ try {
     }
     report.reportProblem = reportRow;
     console.log(`ok: Report a problem opens its picker (${reportRow})`);
+    mark('Report a problem');
     await key(a.tab, 'Escape');
 
     // The launcher's chord opens the search, and Escape closes it opening
@@ -1329,6 +1359,7 @@ try {
     await key(a.tab, 'Escape');
     await until(a.tab, '!globalThis.tiloMount?.state()?.searchOpen', 'the search closing', 30_000);
     console.log('ok: the search chord opens the search and Escape closes it');
+    mark('the search chord and Escape');
 
     // None of it reached the browser.
     const browser = {
@@ -1342,6 +1373,7 @@ try {
     if (Math.abs(browser.scale - 1) > 0.001) failed(`the page zoomed: ${JSON.stringify(browser)}`);
     if (browser.history !== history) failed(`the page navigated: ${JSON.stringify(browser)}`);
     console.log('ok: no wheel, key or click reached the browser');
+    mark('no wheel, key or click reached the browser');
 
     // A person the workspace lets invite, from the page itself: the workspace
     // declares them one while their page stands open (the roles file the
@@ -1356,6 +1388,7 @@ try {
     await waitFor(a.tab, 'Invite', "the bar's invite button");
     report.inviteAfterMs = Date.now() - allowedAt;
     console.log(`ok: the page offers inviting ${report.inviteAfterMs} ms after the workspace allowed it, with no reload`);
+    mark('the invite offered without a reload');
 
     // The page's own sheet, the same one a desk shows: the role a link brings
     // someone in at, chosen before the link is made.
@@ -1382,6 +1415,7 @@ try {
     const long = (await nodeValues(a.tab)).find(value => typeof value === 'string' && value.includes('invite='));
     if (long) await failed(`the sheet shows the invitation's own text beside the link: ${long.slice(0, 120)}`, a.tab);
     console.log(`ok: the sheet made a link a site keeps: handle in the path, key in the fragment (${made})`);
+    mark('the invitation link');
     await dump(a.tab, '8-a-invite-sheet');
 
     // The workspace as the invitation describes it, before this person joins:
@@ -1411,6 +1445,7 @@ try {
     }
     report.card = c.card;
     console.log(`ok: the link says who invited them, where and as what: ${c.card}`);
+    mark('the link names who invited them');
     await dump(c.tab, '9-c-invitation-card');
 
     // Joining is the whole of it: the invitation is its inviter's approval, so
@@ -1445,6 +1480,7 @@ try {
       await failed("the invitation's person is someone who was already here", c.tab);
     }
     console.log(`ok: ${keptC.userPublicKey.slice(0, 8)} arrived from the link in A's workspace, with no one letting them in`);
+    mark('the invitee arrived from the link');
     await dump(c.tab, '10-c-arrived');
 
     // The desk each person is in is the desk the new person is on too: A's
@@ -1468,6 +1504,7 @@ try {
       await failed(`A's desk shows the invitation's arrival as ${invitedRow.user}`, a.tab);
     }
     console.log(`ok: A's desk shows ${invitedRow.label} beside B`);
+    mark('A\'s desk shows the invitee');
     await dump(a.tab, '11-a-people-invited');
   }
 

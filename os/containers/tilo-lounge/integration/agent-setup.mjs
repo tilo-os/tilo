@@ -27,6 +27,7 @@ import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'no
 import {connect} from 'node:tls';
 import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
+import {clock} from './timing.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
 if (!site || !relay || !tiloBin || !siteCa || !out) {
@@ -34,6 +35,7 @@ if (!site || !relay || !tiloBin || !siteCa || !out) {
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
+const mark = clock();
 const report = {site, relay, at: new Date().toISOString(), steps: []};
 const tabs = [];
 const browsers = [];
@@ -276,6 +278,7 @@ const person = tab => tab.evaluate(`JSON.stringify({
 
 // 1. Set up through the agent.
 const first = await visit('setup');
+mark('the first browser opened the site');
 // The prompt is on the screen before the click, made without waiting for the
 // workspace to let the tab in; the click copies exactly that text.
 const visited = Date.now();
@@ -289,6 +292,7 @@ await until(first, `document.documentElement.dataset.firstRun === 'waiting'`, 't
 const prompt = await copied(first, 'the setup prompt', beforeSetup);
 if (prompt !== shown) await fail(`the click copied something else than the prompt shown: ${prompt} / ${shown}`);
 report.prompt = prompt;
+mark('the page copied its setup prompt');
 const setup = commandOf(prompt);
 if (!setup) await fail(`the prompt names no tilo login code: ${prompt}`);
 if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh && tilo login /.test(prompt) || prompt.length > 200) {
@@ -350,6 +354,7 @@ for (const deadline = Date.now() + 30_000; !await first.evaluate(ownTitle).catch
   await sleep(250);
 }
 report.workspace = await first.evaluate('document.title');
+mark('the agent logged in and the tab is in the person\'s own workspace');
 
 // The agent is present once its MCP server connects, as Claude Code starts it
 // once restarted, and what it does shows beside its name: one tool call, said
@@ -372,6 +377,7 @@ const beside = `(() => { const row = (globalThis.tiloMount?.people?.() ?? []).fi
 await until(first, beside, `Claude Code present, with "${doing}" beside its name`, 90_000);
 report.mcp = answers.slice(0, 2000);
 const signedUp = await person(first);
+mark('the agent is present beside its name');
 report.person = signedUp;
 
 // Loaded again while the agent's MCP server is still connected, the tab is the
@@ -382,6 +388,7 @@ await until(first, `!!globalThis.tiloMount && JSON.stringify(globalThis.tiloMoun
   'Claude Code present in the workspace after a reload', 60_000);
 server.stdin.end();
 const reloaded = await person(first);
+mark('the tab reloaded as the same person, with the agent still there');
 report.reloaded = reloaded;
 if (!signedUp.user || reloaded.user !== signedUp.user) {
   await fail(`after a reload the tab is ${reloaded.user ?? 'nobody'}, not the person who set up (${signedUp.user ?? 'unknown'})`);
@@ -395,6 +402,7 @@ if (/lounge/i.test(reloaded.title) || reloaded.title !== signedUp.title) {
 
 // 2. Back on a browser that keeps nothing: signed in through the agent.
 const second = await visit('returning');
+mark('a browser that keeps nothing opened the site');
 await until(second, `document.getElementById('first-run')?.dataset.signIn === 'ready'`, 'the sign-in prompt made');
 const beforeSignIn = await clipboardNow(second);
 await click(second, 'first-run-agent-sign-in');
@@ -416,4 +424,5 @@ if (!signedUp.user || back.user !== signedUp.user) {
 // Signed in, it opens the person's own workspace, as the first tab did.
 await until(second, `!/lounge/i.test(JSON.stringify({title: document.title, own: globalThis.tiloMount?.state?.()?.entry ?? null}))`,
   'the returning tab in the person\'s own workspace, not the Lounge', 60_000);
+mark('the returning tab signed in as the person, in their own workspace');
 await finish(0);

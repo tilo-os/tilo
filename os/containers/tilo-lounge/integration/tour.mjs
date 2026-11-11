@@ -19,6 +19,7 @@ import {connect} from 'node:tls';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import * as waits from './waits.mjs';
+import {clock} from './timing.mjs';
 
 const [site, relay, out, tiloBin, siteCa] = process.argv.slice(2);
 if (!site || !relay || !out) {
@@ -26,14 +27,20 @@ if (!site || !relay || !out) {
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
+const mark = clock();
 const browser = await launch({args: [
   '--ignore-certificate-errors',
   '--enable-features=Vulkan', '--use-vulkan=swiftshader', '--use-angle=swiftshader',
   '--disable-dev-shm-usage',
   ...(process.getuid?.() === 0 ? ['--no-sandbox'] : []),
 ]});
+mark('the browser started');
 const report = {site, relay, screens: [], problems: []};
 let shotNo = 0;
+// What the tour spent waiting for the desk to stand still: a fixed pause after
+// each step adds up over three appearances, and this says how much of the tour
+// it was.
+let quietMs = 0;
 
 // The computer the agent runs on, as agent-setup.mjs sets it up: its own home,
 // a `claude` that records how it was asked to add Tilo's tools, and the relay's
@@ -178,8 +185,10 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     await sleep(600);
   };
   const quiet = async (ms = 1500) => {
+    const began = Date.now();
     await waits.settle({evaluate: tab.evaluate.bind(tab), by: 3, owed: () => true, sleep, timeoutMs: 20_000});
     await sleep(ms);
+    quietMs += Date.now() - began;
   };
   // Press the control named `control` (a name, or a test of one) where the desk last laid it
   // out; `where` narrows it to the place it stands, such as the top bar.
@@ -203,11 +212,13 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     return true;
   };
   const step = async (what, run) => {
+    const began = Date.now();
     try { await run(); } catch (error) {
       report.problems.push(`${name}: ${what}: ${error.message?.slice(0, 400)}`);
       console.log(`problem in ${name}: ${what}: ${error.message?.slice(0, 400)}`);
       await shoot(`problem-${what}`).catch(() => {});
     }
+    console.log(`TIMING tour=${name} step=${what} seconds=${((Date.now() - began) / 1000).toFixed(1)}`);
   };
   const mac = false;
   const search = async (query, pick = null) => {
@@ -364,8 +375,12 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
 };
 
 await tour({name: 'desk', width: 1280, height: 800});
+mark('the desk appearance');
 await tour({name: 'dark', width: 1280, height: 800, scheme: 'dark'});
+mark('the dark appearance');
 await tour({name: 'phone', width: 390, height: 844, mobile: true});
+mark('the phone appearance');
 writeFileSync(join(out, 'report.json'), JSON.stringify(report, null, 2));
 await browser.close().catch(() => {});
+console.log(`TIMING quiet=${(quietMs / 1000).toFixed(1)}s of the tour was waiting for the desk to stand still`);
 console.log(JSON.stringify({screens: report.screens.length, problems: report.problems}));

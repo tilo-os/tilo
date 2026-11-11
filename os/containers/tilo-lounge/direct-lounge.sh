@@ -29,6 +29,7 @@ lounge_fail() {
 }
 
 start_lounge() {
+  local started=$SECONDS
   local bundle=${1:?start_lounge BUNDLE WORK} work=${2:?start_lounge BUNDLE WORK}
   local relay_bin=${TILO_RELAY_BIN:?TILO_RELAY_BIN names the relay to run}
   local crypto=${TILO_CRYPTO_BIN:?TILO_CRYPTO_BIN names the certificate mint}
@@ -98,7 +99,7 @@ start_lounge() {
     sleep 0.2
   done
   room=$(cat "$volume/lounge/room-id" 2>/dev/null) || lounge_fail 'the Lounge kept no workspace id'
-  echo "ok: the Lounge is Ready ($room)"
+  echo "ok: the Lounge is Ready ($room, $((SECONDS - started))s)"
 
   # Who the host is, as the operator hands it to the web entry
   # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
@@ -115,5 +116,5 @@ start_lounge() {
     sleep 0.1
   done
   grep -q "\"url\": *\"$site_origin\"" "$site_log" || lounge_fail "the web entry did not start: $(cat "$site_log")"
-  echo "ok: the web entry is served at $site_origin"
+  echo "ok: the web entry is served at $site_origin (the Lounge and it up in $((SECONDS - started))s)"
 }
