@@ -1262,12 +1262,14 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
 /// A host keeping workspaces of people's own, with one listed workspace its
 /// door takes people into by invitation only and keeps a wait list for: the
 /// setup the two checks below share. Returns the host's actions, its
-/// workspaces, the listed workspace, and a stranger who left an address there.
+/// workspaces, the listed workspace, a stranger who left an address there,
+/// and the state directory they live in.
 async fn gated_host() -> (
     HostWorkspaceActions,
     Workspaces,
     String,
     tilo_user_identity::DeviceCert,
+    tempfile::TempDir,
 ) {
     use tilo_relay_protocol::workspaces::WorkspaceRole;
 
@@ -1318,7 +1320,7 @@ async fn gated_host() -> (
             .await
             .is_ok()
     );
-    (host, workspaces, lounge, stranger)
+    (host, workspaces, lounge, stranger, dir)
 }
 
 /// The wait list gates the door: the invitation-only door lets nobody in on
@@ -1327,7 +1329,7 @@ async fn gated_host() -> (
 async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
     use tilo_relay_protocol::directory::DoorJoin;
 
-    let (_, workspaces, lounge, stranger) = gated_host().await;
+    let (_, workspaces, lounge, stranger, _state) = gated_host().await;
     let refused = workspaces
         .admit_listed(
             &lounge,
@@ -1361,7 +1363,7 @@ async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
 /// wait list is at the door, never in the way of someone already admitted.
 #[tokio::test]
 async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
-    let (host, workspaces, _, stranger) = gated_host().await;
+    let (host, workspaces, _, stranger, _state) = gated_host().await;
     let (guest_key, guest) = guest_device();
     let first = create_own(&host, &guest, json!({"name": "Work"}))
         .await
