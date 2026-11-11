@@ -61,7 +61,7 @@ impl Workspaces {
                 .map_err(|error| error.to_string())?;
         }
         self.inner.workspaces.lock().await.remove(workspace);
-        self.inner.direct.release(workspace_id);
+        self.inner.direct.delete(workspace_id);
         // Everyone in it hears why while their session is open, then nobody
         // is let in.
         let bound = self
@@ -103,6 +103,14 @@ impl Workspaces {
         Ok(())
     }
 
+    /// Whether the workspace whose relay workspace is `workspace_id` was
+    /// deleted here: whoever asks for it is told so
+    /// ([`WORKSPACE_DELETED`]), the same on every lane.
+    #[must_use]
+    pub fn deleted(&self, workspace_id: u64) -> bool {
+        self.inner.direct.deleted(workspace_id)
+    }
+
     /// The workspaces this host deleted, as each goes: its id and the
     /// relay workspace that carried it. Whoever keeps more of a workspace
     /// than its record (the content its members posted, app workers acting
@@ -142,16 +150,33 @@ impl Workspaces {
     }
 }
 
-/// Whether the record at `path`, in `dir`, is of a workspace deleted while
-/// the host stopped halfway: what is left of it goes, and it is not opened.
-pub(super) fn finish_deleting(dir: &Path, path: &Path) -> bool {
-    if !path.with_extension(DELETED).exists() {
-        return false;
+/// Whether the host opening the records in `dir` passes over `path`: anything but a record; the
+/// marker of a workspace deleted here, which `direct` refuses as deleted from now on, whoever asks;
+/// and the record of one deleted while the host stopped halfway, whose remains go.
+pub(super) fn passed_over(
+    dir: &Path,
+    direct: &tilo_peer_state::direct::Serving,
+    path: &Path,
+) -> bool {
+    let stem = path.file_stem().and_then(|stem| stem.to_str());
+    match path.extension().and_then(|extension| extension.to_str()) {
+        Some(DELETED) => {
+            if let Some(workspace_id) =
+                stem.and_then(|stem| tilo_relay_protocol::room_workspace_id(stem).ok())
+            {
+                direct.delete(workspace_id);
+            }
+            true
+        }
+        Some("room") if path.with_extension(DELETED).exists() => {
+            if let Some(workspace) = stem {
+                remove_files(dir, workspace);
+            }
+            true
+        }
+        Some("room") => false,
+        _ => true,
     }
-    if let Some(workspace) = path.file_stem().and_then(|stem| stem.to_str()) {
-        remove_files(dir, workspace);
-    }
-    true
 }
 
 /// Remove what the host whose workspaces' records are in `dir` keeps of

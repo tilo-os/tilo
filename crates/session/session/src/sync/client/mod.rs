@@ -225,6 +225,8 @@ enum HostEvent {
         total_bytes: u64,
         status: tilo_network_actor::PersonalTransferStatus,
     },
+    /// The host of the workspace on topic `ws` said its owner deleted it.
+    WorkspaceDeleted { ws: Topic },
 }
 
 /// The person's other devices, dialled as this device's siblings: the session between two of their
@@ -287,6 +289,9 @@ pub(crate) struct Seat {
     /// workspace it was heard in: what the desks showing those windows draw
     /// ([`Self::take_page_objects`]).
     page_objects: RefCell<Vec<(String, Heard)>>,
+    /// The workspaces whose host said their owner deleted them since the last call: what the
+    /// session takes off the desk and out of this device's record ([`Self::take_deleted`]).
+    deleted: RefCell<Vec<tilo_desktop_model::WorkspaceId>>,
     /// This device's workspaces: `None` when the session keeps no state to hold them in.
     engine: Option<Arc<Engine>>,
     /// What the session's channels hear and say on this plane. What the engine holds, so a session
@@ -497,6 +502,12 @@ impl Seat {
         std::mem::take(&mut *self.surfaces.borrow_mut())
     }
 
+    /// Take the workspaces whose host said their owner deleted them since the last call.
+    #[must_use]
+    pub(crate) fn take_deleted(&self) -> Vec<tilo_desktop_model::WorkspaceId> {
+        std::mem::take(&mut *self.deleted.borrow_mut())
+    }
+
     /// Take the call audio the workspaces' live planes heard since the last call, each with the
     /// workspace it was heard in and already opened. A call plays the frames of the devices its
     /// channel says are in it.
@@ -528,9 +539,17 @@ impl Seat {
     /// workspace.
     #[cfg(target_os = "linux")]
     /// Take what the peer actor and the fabric said that only this desktop keeps.
-    fn keep_host_events(&self) {
+    fn keep_host_events(&self, client: &SessionClient) {
         while let Ok(event) = self.host_events.try_recv() {
             match event {
+                HostEvent::WorkspaceDeleted { ws } => {
+                    if let Some(workspace) = client
+                        .workspace_id(ws)
+                        .and_then(|id| tilo_desktop_model::WorkspaceId::parse(&id))
+                    {
+                        self.deleted.borrow_mut().push(workspace);
+                    }
+                }
                 HostEvent::PersonalFabric {
                     peer,
                     payload,
@@ -942,7 +961,7 @@ impl Host for Hosting {
 
     fn pass(&self, client: &SessionClient) {
         let seat = &self.seat;
-        seat.keep_host_events();
+        seat.keep_host_events(client);
         let moved = seat.hear_live(client);
         // What arrived moved this device's fabric — a copy from another device, a device that is
         // gone: the person's other devices hear so on the same pass.
@@ -1289,6 +1308,13 @@ impl Client {
         self.hosting.seat.take_surfaces()
     }
 
+    /// Take the workspaces whose host said their owner deleted them since the last call.
+    #[must_use]
+    #[cfg(target_os = "linux")]
+    pub(crate) fn take_deleted(&self) -> Vec<tilo_desktop_model::WorkspaceId> {
+        self.hosting.seat.take_deleted()
+    }
+
     /// Take the call audio the workspaces' live planes heard since the last call, already opened.
     #[must_use]
     #[cfg(target_os = "linux")]
@@ -1594,6 +1620,7 @@ impl Seat {
                 call_audio: RefCell::new(Vec::new()),
                 call_pictures: RefCell::new(Vec::new()),
                 page_objects: RefCell::new(Vec::new()),
+                deleted: RefCell::new(Vec::new()),
                 engine,
                 link,
                 versions,
@@ -1624,6 +1651,7 @@ impl Seat {
             call_audio: RefCell::new(Vec::new()),
             call_pictures: RefCell::new(Vec::new()),
             page_objects: RefCell::new(Vec::new()),
+            deleted: RefCell::new(Vec::new()),
             engine: None,
             link: None,
             versions,

@@ -274,10 +274,25 @@ impl Dialed {
     ///
     /// # Errors
     ///
-    /// As [`DirectSync::connect`].
+    /// As [`DirectSync::connect`]; a link the other device refused ends with
+    /// the reason it gave ([`DirectSync::end`]).
     pub async fn run(self, link: &DirectSync) -> Result<(), String> {
-        link.link(&self.connection, true, self.control, self.live)
-            .await
+        let ran = link
+            .link(&self.connection, true, self.control, self.live)
+            .await;
+        refusal(&self.connection).map_or(ran, Err)
+    }
+}
+
+/// Why the device on the other end of `connection` refused it, when it did.
+fn refusal(connection: &Connection) -> Option<String> {
+    match connection.close_reason()? {
+        iroh::endpoint::ConnectionError::ApplicationClosed(close)
+            if close.error_code == REFUSED.into() =>
+        {
+            Some(String::from_utf8_lossy(&close.reason).into_owned())
+        }
+        _ => None,
     }
 }
 
@@ -315,6 +330,8 @@ struct Inner {
     /// link. The other one decides the retained history it asks for next
     /// against that governance, so the history waits for it.
     catch_up_written: watch::Sender<bool>,
+    /// Why the workspace ended for good here, once it did ([`DirectSync::end`]).
+    ended: watch::Sender<Option<String>>,
     /// Asks the link this device dialled to read the other device's retained
     /// history again ([`DirectSync::ask_replay`]).
     replay: Arc<tokio::sync::Notify>,
@@ -393,6 +410,7 @@ impl DirectSync {
             changed: watch::channel(0).0,
             caught_up: watch::channel(false).0,
             catch_up_written: watch::channel(false).0,
+            ended: watch::channel(None).0,
             replay: Arc::default(),
             fan_out: std::sync::atomic::AtomicBool::new(false),
             hearing: None,
@@ -419,6 +437,7 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
+            ended: self.0.ended.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
@@ -439,6 +458,7 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
+            ended: self.0.ended.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: Some(hearing),
@@ -492,6 +512,7 @@ impl DirectSync {
             changed: self.0.changed.clone(),
             caught_up: self.0.caught_up.clone(),
             catch_up_written: self.0.catch_up_written.clone(),
+            ended: self.0.ended.clone(),
             replay: Arc::clone(&self.0.replay),
             fan_out: std::sync::atomic::AtomicBool::new(self.fans_out()),
             hearing: self.0.hearing.clone(),
@@ -936,11 +957,23 @@ impl DirectSync {
                 }
             }
         };
+        let ended = async {
+            let mut ended = self.0.ended.subscribe();
+            ended.wait_for(Option::is_some).await.ok()?.clone()
+        };
         tokio::select! {
             result = receiving => result,
             result = sending => result,
             result = history => result,
+            Some(reason) = ended => Err(refuse(connection, &reason)),
         }
+    }
+
+    /// The workspace ended for good on this device, for `reason`: every link of
+    /// it closes, refused with that reason, which the device on the other end
+    /// reads ([`Dialed::run`]).
+    pub fn end(&self, reason: &str) {
+        self.0.ended.send_replace(Some(reason.to_owned()));
     }
 
     /// Ask the other device for the history this device lacks, round by round
@@ -1469,10 +1502,14 @@ impl ProtocolHandler for DirectSync {
 ///
 /// The dialling device names its workspace in the link's first frame; a
 /// workspace this host holds and does not serve yet is refused, one it does
-/// not hold at all is refused the same way.
+/// not hold at all is refused the same way, and one its owner deleted is
+/// refused as deleted.
 #[derive(Clone, Default)]
 pub struct Serving {
     links: Arc<RwLock<BTreeMap<u64, DirectSync>>>,
+    /// The workspaces deleted here, refused as deleted to whoever names one
+    /// ([`Self::delete`]).
+    deleted: Arc<RwLock<std::collections::BTreeSet<u64>>>,
 }
 
 impl std::fmt::Debug for Serving {
@@ -1509,6 +1546,25 @@ impl Serving {
         self.links.write_recover().remove(&workspace);
     }
 
+    /// `workspace` was deleted here, for good: every link of it ends and a
+    /// device that names it from now on is refused, each told
+    /// [`WORKSPACE_DELETED`](tilo_relay_protocol::refusal::WORKSPACE_DELETED).
+    /// A device that knows the workspace's random id learns nothing more than
+    /// that it is gone.
+    pub fn delete(&self, workspace: u64) {
+        self.deleted.write_recover().insert(workspace);
+        let link = self.links.write_recover().remove(&workspace);
+        if let Some(link) = link {
+            link.end(tilo_relay_protocol::refusal::WORKSPACE_DELETED);
+        }
+    }
+
+    /// Whether `workspace` was deleted here ([`Self::delete`]).
+    #[must_use]
+    pub fn deleted(&self, workspace: u64) -> bool {
+        self.deleted.read_recover().contains(&workspace)
+    }
+
     /// The link serving `workspace`, when this host serves it.
     #[must_use]
     pub fn link(&self, workspace: u64) -> Option<DirectSync> {
@@ -1520,6 +1576,12 @@ impl ProtocolHandler for Serving {
     async fn accept(&self, connection: Connection) -> Result<(), AcceptError> {
         let serve = async {
             let (named, send, recv) = dialed_workspace(&connection).await?;
+            if self.deleted(named) {
+                return Err(refuse(
+                    &connection,
+                    tilo_relay_protocol::refusal::WORKSPACE_DELETED,
+                ));
+            }
             let link = self
                 .link(named)
                 .ok_or_else(|| refuse(&connection, "this host holds no such workspace"))?;

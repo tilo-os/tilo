@@ -95,6 +95,40 @@ async fn invite(
         .0
 }
 
+/// Wait until `page` heard that `workspace_id` was deleted, and stopped
+/// holding it: it says `workspace-deleted`, never that it was not admitted.
+async fn heard_deleted(page: &tilo_session_host::session::PeerHandle, workspace_id: u64) {
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let status = page.status();
+        assert!(
+            !status
+                .failures
+                .iter()
+                .any(|failure| failure.code == "not-admitted"),
+            "a deleted workspace is not one that turned the page away: {status:?}"
+        );
+        if status
+            .failures
+            .iter()
+            .any(|failure| failure.code == "workspace-deleted")
+        {
+            assert!(!status.workspaces.contains_key(&workspace_id), "{status:?}");
+            assert_eq!(
+                status.phase,
+                tilo_session_host::session::TransportPhase::Failed,
+                "a page holding only it is done: {status:?}"
+            );
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the page never heard the workspace was deleted: {status:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[expect(
     clippy::too_many_lines,
@@ -161,6 +195,20 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
     );
     page.join(workspace_id).unwrap();
     ready(&[&page]).await;
+    // Another reviewer, who works in the other customer's workspace too,
+    // had it open earlier and is away while it is deleted.
+    let (sam, _) = tilo_user_identity::UserIdentity::generate("Sam Lee", 1);
+    let sam_page = invite(&mut account, &on_relay, &workspace, &sam).await;
+    let _ = invite(&mut account, &on_relay, &kept, &sam).await;
+    let away = start_peer(
+        on_relay.relay_host(),
+        sam_page.cert.clone(),
+        on_relay.host.cert.clone(),
+        sam_page.key.clone(),
+    );
+    away.join(workspace_id).unwrap();
+    ready(&[&away]).await;
+    away.close();
 
     let state = on_relay.state.path();
     let before = traces(state, &workspace, workspace_id);
@@ -231,27 +279,16 @@ async fn a_server_key_deletes_a_customers_workspace_and_everything_it_kept_goes(
         "its storage is released"
     );
     // The reviewer's page heard it was deleted, and stopped holding it.
-    loop {
-        let status = page.status();
-        if status
-            .failures
-            .iter()
-            .any(|failure| failure.code == "workspace-deleted")
-        {
-            assert!(!status.workspaces.contains_key(&workspace_id), "{status:?}");
-            assert_eq!(
-                status.phase,
-                tilo_session_host::session::TransportPhase::Failed,
-                "a page holding only it is done: {status:?}"
-            );
-            break;
-        }
-        assert!(
-            Instant::now() < deadline,
-            "the page never heard the workspace was deleted: {status:?}"
-        );
-        tokio::time::sleep(Duration::from_millis(50)).await;
-    }
+    heard_deleted(&page, workspace_id).await;
+    // The reviewer who was away comes back, and hears it was deleted too.
+    let back = start_peer(
+        on_relay.relay_host(),
+        sam_page.cert.clone(),
+        on_relay.host.cert.clone(),
+        sam_page.key.clone(),
+    );
+    back.join(workspace_id).unwrap();
+    heard_deleted(&back, workspace_id).await;
     // Deleting it again finds no such workspace.
     let again = account
         .tilo_do(json!({"path": "account/workspaces#delete", "args": {"workspace": workspace}}))

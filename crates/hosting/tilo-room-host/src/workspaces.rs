@@ -1043,14 +1043,10 @@ impl Workspaces {
         let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
         for entry in entries {
             let path = entry.map_err(|error| error.to_string())?.path();
-            if path.extension().is_none_or(|extension| extension != "room") {
-                continue;
-            }
             // A workspace this host released stays on disk, unserved.
-            if path.with_extension(RELEASED).exists() {
-                continue;
-            }
-            if delete::finish_deleting(&dir, &path) {
+            if delete::passed_over(&dir, &this.inner.direct, &path)
+                || path.with_extension(RELEASED).exists()
+            {
                 continue;
             }
             let workspace =
@@ -1399,52 +1395,6 @@ impl Workspaces {
     #[must_use]
     pub fn plane(&self) -> tilo_peer_state::actions::ActionPlane {
         self.inner.plane.clone()
-    }
-
-    /// The direct links of the workspaces governed here, as the host's own
-    /// device: a member device of a workspace syncs with it here, and catches
-    /// up from the history the host keeps.
-    #[must_use]
-    pub fn direct(&self) -> tilo_peer_state::direct::Serving {
-        self.inner.direct.clone()
-    }
-
-    /// Serve `workspace`'s replica over the direct link, keeping its history
-    /// at the host's store, and take in what its members send there.
-    fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
-        let records = self.inner.host.records.clone();
-        let workspace_id = workspace.workspace_id();
-        let link = tilo_peer_state::direct::DirectSync::over(
-            workspace.peer.clone(),
-            self.inner.host.key.clone(),
-        )
-        .with_store(Arc::clone(&self.inner.store))
-        .with_channel_history(Arc::new(move || {
-            let records = records.clone();
-            Box::pin(async move { records.channel_governance(workspace_id).await })
-        }));
-        #[cfg(test)]
-        let link = match self
-            .inner
-            .link_heard_capacity
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            0 => link,
-            capacity => link.with_heard_capacity(capacity),
-        };
-        self.inner.direct.serve(link.clone())?;
-        self.follow_link(workspace, &link);
-        Ok(())
-    }
-
-    /// Give the links of the workspaces served from now on room for only
-    /// `capacity` frames heard and not read yet: what a test that makes the
-    /// host's reader of a link fall behind sets.
-    #[cfg(all(test, feature = "agents"))]
-    pub(crate) fn bound_link_readers(&self, capacity: usize) {
-        self.inner
-            .link_heard_capacity
-            .store(capacity, std::sync::atomic::Ordering::Release);
     }
 
     /// Run the transform an offloadable action declares for the workspaces

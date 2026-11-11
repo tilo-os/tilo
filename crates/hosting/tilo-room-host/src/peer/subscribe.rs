@@ -258,6 +258,17 @@ async fn admit_subscription(
     subscribed: &[u64],
     workspace_id: u64,
 ) -> Result<SubscribeAdmission, PeerError> {
+    // A workspace its owner deleted here is gone for good: whoever asks is
+    // told so, and forgets it rather than tries again.
+    if session
+        .admin
+        .is_some_and(|workspaces| workspaces.deleted(workspace_id))
+    {
+        return Ok(SubscribeAdmission::Refused(Envelope::NotAuthorised {
+            workspace_id,
+            reason: tilo_relay_protocol::refusal::WORKSPACE_DELETED.into(),
+        }));
+    }
     // An agent outside its delegation never gets a workspace bound for it.
     if let Err(reason) = session
         .trust()

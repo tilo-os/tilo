@@ -6,6 +6,7 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
+    clippy::indexing_slicing,
     reason = "test fixtures: a failed step is the assertion"
 )]
 
@@ -358,4 +359,44 @@ fn the_settings_of_a_sole_members_workspace_offer_deleting_it() {
             .all(|held| held.id().to_string() != shown)),
         "the confirmed delete is the desk's, and it deleted the workspace"
     );
+}
+
+/// Wait until `device` neither shows nor keeps `workspace`, which its owner deleted, and said so.
+fn forgotten(device: &common::people::Device, workspace: &str) {
+    tilo_test_env::wait_until(format!("{} forgets {workspace}", device.label), || {
+        let state = device.state();
+        let shown = state["state"]["workspace_tree"]["workspaces"]
+            .as_array()
+            .is_some_and(|shown| {
+                shown
+                    .iter()
+                    .any(|held| held["room"].as_str() == Some(workspace))
+            });
+        !shown && !device.held().iter().any(|held| held == workspace)
+    });
+    assert!(
+        device
+            .log()
+            .contains("a workspace its owner deleted leaves this device"),
+        "{} says why it forgot {workspace}:\n{}",
+        device.label,
+        device.log()
+    );
+}
+
+/// The owner deletes the workspace at its site: a member's device in it takes it off the desk and
+/// out of its record and tells the person, and a member's device that was off meanwhile does the
+/// same once it is back.
+#[test]
+fn a_workspace_its_owner_deletes_leaves_every_members_device() {
+    let (site, _ada, _bob, ada_laptop, mut bob_laptop) = common::people::two_people_at_a_site();
+    ada_laptop.wait_holding(&site.workspace);
+    bob_laptop.wait_holding(&site.workspace);
+    bob_laptop.stop();
+
+    site.delete();
+    forgotten(&ada_laptop, &site.workspace);
+
+    bob_laptop.start();
+    forgotten(&bob_laptop, &site.workspace);
 }

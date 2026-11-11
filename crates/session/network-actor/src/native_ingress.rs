@@ -419,8 +419,18 @@ impl ActorState {
             .await;
     }
 
-    /// The workspace on topic `ws`'s link ended.
-    pub(super) fn native_link_closed(&mut self, ws: u64) {
+    /// The workspace on topic `ws`'s link ended: its host said its owner
+    /// `deleted` it, or the next heartbeat dials it again.
+    pub(super) async fn native_link_closed(&mut self, ws: u64, deleted: bool) {
+        if deleted {
+            tracing::info!(ws, "a workspace's owner deleted it; nothing dials it again");
+            // Its hold goes first, so letting go of the link dials nothing.
+            self.native_routes.remove(ws);
+            self.native_links.remove(&ws);
+            self.publish_to_subscriber(ws, super::NetEvent::WorkspaceDeleted { ws })
+                .await;
+            return;
+        }
         tracing::info!(
             ws,
             "a workspace's link ended; the next heartbeat dials it again"

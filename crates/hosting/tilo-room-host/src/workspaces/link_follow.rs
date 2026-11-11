@@ -48,6 +48,52 @@ pub(crate) async fn carry_admitted(
 }
 
 impl Workspaces {
+    /// The direct links of the workspaces governed here, as the host's own
+    /// device: a member device of a workspace syncs with it here, and catches
+    /// up from the history the host keeps.
+    #[must_use]
+    pub fn direct(&self) -> tilo_peer_state::direct::Serving {
+        self.inner.direct.clone()
+    }
+
+    /// Serve `workspace`'s replica over the direct link, keeping its history
+    /// at the host's store, and take in what its members send there.
+    pub(super) fn serve_direct(&self, workspace: &GovernedWorkspace) -> Result<(), String> {
+        let records = self.inner.host.records.clone();
+        let workspace_id = workspace.workspace_id();
+        let link = tilo_peer_state::direct::DirectSync::over(
+            workspace.peer.clone(),
+            self.inner.host.key.clone(),
+        )
+        .with_store(Arc::clone(&self.inner.store))
+        .with_channel_history(Arc::new(move || {
+            let records = records.clone();
+            Box::pin(async move { records.channel_governance(workspace_id).await })
+        }));
+        #[cfg(test)]
+        let link = match self
+            .inner
+            .link_heard_capacity
+            .load(std::sync::atomic::Ordering::Acquire)
+        {
+            0 => link,
+            capacity => link.with_heard_capacity(capacity),
+        };
+        self.inner.direct.serve(link.clone())?;
+        self.follow_link(workspace, &link);
+        Ok(())
+    }
+
+    /// Give the links of the workspaces served from now on room for only
+    /// `capacity` frames heard and not read yet: what a test that makes the
+    /// host's reader of a link fall behind sets.
+    #[cfg(all(test, feature = "agents"))]
+    pub(crate) fn bound_link_readers(&self, capacity: usize) {
+        self.inner
+            .link_heard_capacity
+            .store(capacity, std::sync::atomic::Ordering::Release);
+    }
+
     /// Carry `message`, `author`'s write the relay admitted for `workspace`
     /// from a relay session, to the devices on the workspace's link: live to
     /// those linked now, and kept for those that join later. A member reaches

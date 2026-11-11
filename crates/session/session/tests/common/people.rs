@@ -166,6 +166,13 @@ impl Site {
         }
     }
 
+    /// Delete the workspace, as its owner does: final, for everyone in it.
+    pub fn delete(&self) {
+        self.runtime
+            .block_on(self.workspaces.delete(&self.workspace))
+            .expect("the site deletes its workspace");
+    }
+
     /// Make the workspace public with `role` for everyone who joins at the door, as its owner does:
     /// from now on the door admits people.
     pub fn publish(&self, role: WorkspaceRole) {

@@ -469,6 +469,11 @@ pub enum NetEvent {
         certs: Vec<DeviceCert>,
         revocations: Vec<tilo_user_identity::RevocationEntry>,
     },
+    /// The host of workspace `ws` said its owner deleted it: it is gone for
+    /// good, and nothing dials it again.
+    WorkspaceDeleted {
+        ws: WorkspaceId,
+    },
     /// The session of membership `membership_epoch` with one of the
     /// person's devices ended.
     SiblingLeft {
@@ -543,6 +548,7 @@ impl NetEvent {
             Self::NativeInput(_) => "NativeInput",
             Self::Sibling { .. } => "Sibling",
             Self::SiblingLeft { .. } => "SiblingLeft",
+            Self::WorkspaceDeleted { .. } => "WorkspaceDeleted",
             Self::PeerLeft { .. } => "PeerLeft",
             Self::HostMember { .. } => "HostMember",
             Self::HostReady { .. } => "HostReady",
@@ -611,8 +617,9 @@ enum InternalEvent {
     },
     /// A workspace's link has the host's retained history in hand.
     NativeReady { ws: u64 },
-    /// A workspace's link ended.
-    NativeLinkClosed { ws: u64 },
+    /// A workspace's link ended; `deleted` when its host said the
+    /// workspace's owner deleted it.
+    NativeLinkClosed { ws: u64, deleted: bool },
     /// A workspace's hold failed to dial `via`, its `governor` or another host.
     NativeDialFailed {
         ws: u64,
@@ -2351,7 +2358,9 @@ impl ActorState {
             }
             Some(InternalEvent::MemberHeard { ws, heard }) => self.member_heard(ws, heard).await,
             Some(InternalEvent::NativeReady { ws }) => self.native_ready(ws).await,
-            Some(InternalEvent::NativeLinkClosed { ws }) => self.native_link_closed(ws),
+            Some(InternalEvent::NativeLinkClosed { ws, deleted }) => {
+                self.native_link_closed(ws, deleted).await;
+            }
             Some(InternalEvent::NativeDialFailed {
                 ws,
                 via,
@@ -4204,6 +4213,7 @@ fn spawn_direct_pump(
         };
         tokio::pin!(waiting);
         let mut announced = false;
+        let mut deleted = false;
         loop {
             // The catch-up's frames are told before it is said to be over: a channel service
             // founds no group before then.
@@ -4221,6 +4231,7 @@ fn spawn_direct_pump(
                 },
                 result = &mut running => {
                     if let Err(reason) = result {
+                        deleted = reason == tilo_relay_protocol::refusal::WORKSPACE_DELETED;
                         tracing::debug!(ws, %reason, "a workspace's link ended");
                     }
                     break;
@@ -4235,7 +4246,9 @@ fn spawn_direct_pump(
         }
         // Fence already queued evidence before notifying the actor of closure.
         scope.close();
-        let _ = tx.send(InternalEvent::NativeLinkClosed { ws }).await;
+        let _ = tx
+            .send(InternalEvent::NativeLinkClosed { ws, deleted })
+            .await;
     })
 }
 

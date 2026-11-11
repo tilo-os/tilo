@@ -134,7 +134,8 @@ tilo.workspaces.delete("applicant-jane-doe")   # {"deleted": id, "revoked_keys":
 Deleting is final: there is no undo, and nothing asks again, so the call is
 the confirmation. The host removes the workspace's records, files and history
 and stops counting them against your storage. Anyone with it open is told it
-was deleted, and their Tilo forgets it. Every key minted for it is revoked: its
+was deleted, and their Tilo forgets it; a desktop that was away is told when it
+is back. Every key minted for it is revoked: its
 agent's next call raises `KeyRevoked` (`key_revoked` on the wire), which says
 when. Only a key reaching all your workspaces deletes, and only workspaces of
 your own; one you were invited into is `not_found`.

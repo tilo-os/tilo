@@ -803,3 +803,73 @@ async fn what_the_host_wrote_long_ago_reaches_a_member_that_links_later() {
     host_endpoint.close().await;
     a_endpoint.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_deleted_workspace_ends_its_links_and_refuses_the_next_dial_as_deleted() {
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let (host_key, host_cert) = common::device_with(&root, 2, DeviceCapabilities::host());
+    let (a_key, a_cert) = device(&root, 3);
+    let now = SystemTime::now();
+    let devices = vec![host_cert.clone(), a_cert];
+    let mut govern = StatePeer::new(
+        WORKSPACE,
+        host_cert.clone(),
+        devices.clone(),
+        RevocationList::new(),
+        now,
+    )
+    .unwrap();
+    govern.select_admission_v5().unwrap();
+    govern
+        .install_seed(
+            SeedState {
+                workspace_changes: seed_workspace(WORKSPACE, &host_cert, &devices).unwrap(),
+                documents: Vec::new(),
+            },
+            &host_key,
+            now,
+        )
+        .unwrap();
+    let host = DirectSync::over(
+        tilo_peer_state::direct::Replica::new(govern),
+        host_key.clone(),
+    );
+    let serving = Serving::new();
+    serving.serve(host.clone()).unwrap();
+    let host_endpoint = localhost_endpoint(&host_key).await;
+    let _router = Router::builder(host_endpoint.clone())
+        .accept(DIRECT_ALPN, serving.clone())
+        .spawn();
+    let a = StatePeer::from_join(WORKSPACE, host_cert, devices, &[], now).unwrap();
+    let a = DirectSync::new(a, a_key.clone());
+    let a_endpoint = localhost_endpoint(&a_key).await;
+    let a_link = tokio::spawn({
+        let (a, a_endpoint, host_addr) = (a.clone(), a_endpoint.clone(), addr(&host_endpoint));
+        async move { a.connect(&a_endpoint, host_addr).await }
+    });
+    let host_rows = host.read(StatePeer::rows);
+    until(&a, "a has the host's rows", |a| a.rows() == host_rows).await;
+
+    // The workspace's owner deletes it: the member's live link ends, saying so.
+    serving.delete(workspace_number());
+    let ended = tokio::time::timeout(Duration::from_secs(30), a_link)
+        .await
+        .expect("the member's link ends")
+        .unwrap();
+    assert_eq!(
+        ended,
+        Err(tilo_relay_protocol::refusal::WORKSPACE_DELETED.to_owned())
+    );
+    // A member that was away dials it again, and hears the same.
+    let again = tokio::time::timeout(
+        Duration::from_secs(30),
+        a.connect(&a_endpoint, addr(&host_endpoint)),
+    )
+    .await
+    .expect("the dial is answered");
+    assert_eq!(
+        again,
+        Err(tilo_relay_protocol::refusal::WORKSPACE_DELETED.to_owned())
+    );
+    assert!(serving.link(workspace_number()).is_none());
+}

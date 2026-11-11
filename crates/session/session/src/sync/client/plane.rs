@@ -49,6 +49,9 @@ pub(super) fn event_of(event: NetEvent) -> Option<Result<Event, HostEvent>> {
             certs,
             revocations,
         },
+        NetEvent::WorkspaceDeleted { ws } => {
+            return Some(Err(HostEvent::WorkspaceDeleted { ws }));
+        }
         NetEvent::SiblingLeft { peer, .. } => Event::SiblingLeft { peer },
         NetEvent::SiblingMsg { peer, msg, .. } => Event::SiblingMsg {
             peer,
