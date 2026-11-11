@@ -1218,6 +1218,9 @@ impl Session {
             service.seated(&options.person, &seat.earlier);
         }
         let services = mount_services(&mut doors, started);
+        // The records the services keep themselves: the activity lists an agent's run in one and
+        // undoes it through the record's own history, as it does an app's.
+        activity.attach_services(Rc::clone(&services));
         // A launch asks the services whether one runs the app's model, and
         // where one does names the resource it publishes, so the app launches
         // hosted and opens no record of its own

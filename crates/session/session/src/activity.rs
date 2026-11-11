@@ -116,6 +116,9 @@ struct Inner {
     /// when one of them moved.
     records:
         RefCell<HashMap<String, Rc<crate::platform::records::Reading<Vec<DetachedRecordHistory>>>>>,
+    /// The records the session's services keep themselves, rather than an app's process or the
+    /// store: the workspace record a service publishes holds a root per package it runs.
+    services: RefCell<Option<Rc<RefCell<tilo_service::Services>>>>,
     store: Option<Store>,
     /// The one stream of record changes: what tells this session a workspace's records moved.
     changes: crate::platform::records::Changes,
@@ -243,6 +246,7 @@ impl Activity {
             undos: crate::task_undo::Undos::default(),
             person,
             records: RefCell::default(),
+            services: RefCell::default(),
             store,
             changes,
             seen: Cell::new(seen),
@@ -336,6 +340,12 @@ impl Activity {
     #[cfg(target_os = "linux")]
     pub(crate) fn attach_content(&self, content: Arc<crate::content::Plane>) {
         *self.0.content.borrow_mut() = Some(content);
+    }
+
+    /// Read the records the session's own services keep from `services` : what History lists and
+    /// a run is undone in, where no app's process holds the record.
+    pub(crate) fn attach_services(&self, services: Rc<RefCell<tilo_service::Services>>) {
+        *self.0.services.borrow_mut() = Some(services);
     }
 
     /// Take part in `link` 's fabric.
@@ -498,6 +508,39 @@ impl Activity {
         self.records_held(workspace_id).as_ref().clone()
     }
 
+    /// The records the session's own services keep, each as the record of its app: an agent's
+    /// run there is listed and undone in History as one in a running app's record is, though no
+    /// app's process holds it.
+    fn service_records(&self) -> Vec<DetachedRecordHistory> {
+        let Some(services) = self.services_held() else {
+            return Vec::new();
+        };
+        // A pass that is invoking a service has it borrowed: this one lists what it lists next.
+        let Ok(services) = services.try_borrow() else {
+            return Vec::new();
+        };
+        let kept = services.history_records();
+        kept.into_iter()
+            .map(|record| DetachedRecordHistory {
+                // The service's record is the app's record of the workspace, which the history
+                // names as its primary: one document may hold several apps' records, and the
+                // kind says whose steps in it this entry's are.
+                checkout: RecordCheckout::package_primary(RecordKind::new(record.kind)),
+                app: record.app,
+                document: Some(record.document),
+            })
+            .collect()
+    }
+
+    /// The services this session runs, once it has started them.
+    fn services_held(&self) -> Option<Rc<RefCell<tilo_service::Services>>> {
+        self.0
+            .services
+            .try_borrow()
+            .ok()
+            .and_then(|held| held.clone())
+    }
+
     /// The records `workspace_id` holds as last read, shared rather than copied.
     fn records_held(&self, workspace_id: WorkspaceId) -> Arc<Vec<DetachedRecordHistory>> {
         let Some(store) = self.0.store.clone() else {
@@ -582,6 +625,7 @@ impl HistorySource for Activity {
         if let Some(workspace_id) = Self::id_of(tree, workspace) {
             records.extend(self.records_of(workspace_id));
         }
+        records.extend(self.service_records());
         // What the person's devices answered when one of them asked to be unlocked is theirs and
         // not any one workspace's: it reads the same in every workspace's history.
         #[cfg(target_os = "linux")]
@@ -636,6 +680,13 @@ impl HistorySource for Activity {
         // this device is served again.
         self.0.changes.moved().hash(&mut hasher);
         self.reads().hash(&mut hasher);
+        // What the session's own services keep moves without a store's change stream: an agent's
+        // step in a record the session holds is one of its runs, and asks for the frame listing it.
+        if let Some(services) = self.services_held()
+            && let Ok(services) = services.try_borrow()
+        {
+            services.revision().hash(&mut hasher);
+        }
         hasher.finish()
     }
 

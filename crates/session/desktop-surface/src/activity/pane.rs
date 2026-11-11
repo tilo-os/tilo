@@ -1168,9 +1168,17 @@ impl WorkspaceActivityPane {
         self.record_id_is_open(&step.record)
     }
 
-    /// Whether the record `record` is open here, which undoing its share of a run needs.
+    /// Whether the record `record` is open here, which undoing its share of a run needs: whether
+    /// a document this host admitted is that record, named as the history names it — a record's
+    /// own id, or a package's record of the workspace, which travels as its primary.
     fn record_id_is_open(&self, record: &str) -> bool {
-        RecordId::parse(record).is_some_and(|id| self.open_agent_records.contains(&id))
+        let primary = RecordId::package_primary();
+        let id = if record == primary.as_str() {
+            Some(primary)
+        } else {
+            RecordId::parse(record)
+        };
+        id.is_some_and(|id| self.open_agent_records.contains(&id))
     }
 
     /// Whether one record of the selected run can be undone on its own from the task view.

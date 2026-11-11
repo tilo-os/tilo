@@ -34,6 +34,8 @@ use ed25519_dalek::SigningKey;
 use iroh::protocol::Router;
 use iroh::{Endpoint, EndpointAddr, RelayMode, SecretKey, endpoint::presets};
 use serde_json::{Value, json};
+use tilo_actions::remote::PendingPoll;
+use tilo_actions::remote::workspace_activity as wire;
 use tilo_desktop_model::{DesktopTree, Workspace, WorkspaceId, WorkspaceSlot};
 use tilo_peer_state::owner::{self, testing};
 use tilo_peer_state::{PersonalStore, PersonalSync, TransportOrigin};
@@ -870,20 +872,82 @@ fn an_agents_step_from_elsewhere_is_undone_in_the_workspace_this_desktop_holds()
     assert_eq!(undone["result"]["isError"], false, "{undone}");
     back_to_its_title(&mut session, &agent, &note);
 
-    // A later run renames it again, and the person takes that run back: History names it, and
-    // the record's own undo of the run, as the person's activity asks each record the run
-    // changed, brings the note back.
+    // A later run renames it again, and the person takes that run back from the Activity: the run
+    // is listed there although no app's process holds the note, and its Undo run asks each record
+    // the run changed for its own undo of it — the session keeps that record, so the session's
+    // provider is what answers.
     retitle(&mut session, &agent, (&note, &rename), LATER_RUN, "Errands");
     let (title, run) = run_of_retitle(&mut session, &book, "Errands");
     assert!(
         title.starts_with("Claude Code"),
         "History names the later run: {title}"
     );
-    let mut by_run = serde_json::Map::new();
-    by_run.insert("run".into(), json!(run));
-    session
-        .invoke(&book, "undo", &by_run)
-        .unwrap_or_else(|error| panic!("the person undoes the run: {error:?}"));
+    let listed = listed_run(&mut session, &computer.workspace, &seated, &run);
+    undo_from_activity(&mut session, &listed);
     back_to_its_title(&mut session, &agent, &note);
     agent.leave();
+}
+
+/// The run the Activity lists as `named` (the id History names it by), as the range its Undo run
+/// takes back: read through the model a window of the Activity follows.
+fn listed_run(session: &mut Session, workspace: &str, person: &str, named: &str) -> wire::Range {
+    let requests = session.activity();
+    let caller = tilo_actions::remote::Caller::local_person(person).in_workspace(workspace);
+    let following = tilo_actions::InvocationId::new();
+    requests
+        .follow(
+            &caller,
+            following,
+            wire::RUNS,
+            query(&wire::RunsQuery::default()),
+        )
+        .expect("the Activity follows its runs");
+    let listed: wire::Runs = activity_read(session, &requests, &following, "the runs are listed");
+    let run = listed
+        .runs
+        .iter()
+        .find(|run| run.id == named)
+        .unwrap_or_else(|| {
+            panic!("the Activity lists the run History names ({named}): {listed:?}")
+        });
+    assert_eq!(
+        run.undo_blocked, None,
+        "the run is undone from the Activity: {run:?}"
+    );
+    run.range.clone()
+}
+
+/// The person presses Undo run on `range` in the Activity, and the model takes it.
+fn undo_from_activity(session: &mut Session, range: &wire::Range) {
+    let mut asked = session.activity().act(wire::UNDO_RUN, query(range));
+    common::wait_for(session, "the Activity takes the undo", |_| {
+        match asked.poll_ready() {
+            PendingPoll::Ready(Ok(())) => Some(()),
+            PendingPoll::Ready(Err(error)) => panic!("the Activity refuses the undo: {error}"),
+            PendingPoll::Waiting => None,
+            PendingPoll::Abandoned => panic!("the Activity never took the undo"),
+        }
+    });
+}
+
+/// What the model serves the follow `following` for, once it has read it.
+fn activity_read<T: serde::de::DeserializeOwned>(
+    session: &mut Session,
+    requests: &tilo_desktop_surface::session::ActivityRequests,
+    following: &tilo_actions::InvocationId,
+    what: &str,
+) -> T {
+    common::wait_for(session, what, |_| {
+        let read = requests.served(following)?.ok()?;
+        serde_json::from_value(read).ok()
+    })
+}
+
+/// `what` as the arguments of an Activity action: a query or a range.
+fn query(what: &impl serde::Serialize) -> serde_json::Map<String, serde_json::Value> {
+    serde_json::to_value(what)
+        .expect("an argument")
+        .as_object()
+        .cloned()
+        .expect("an argument object")
 }

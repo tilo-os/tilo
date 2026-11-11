@@ -910,6 +910,33 @@ impl Service for RecordService {
             .collect()
     }
 
+    /// Every app's record this service publishes, each with the document all of them live in: the
+    /// workspace record, whose roots are the records. One document holds every app's, so each
+    /// entry names the kind of that app's records and the activity keeps its own steps out of it.
+    fn history_records(&self) -> Vec<tilo_service::HistoryRecord> {
+        // The first root of each app names the kind its records are of; a later one of the same
+        // app would list the same steps again.
+        let mut apps: std::collections::BTreeMap<&str, &str> = std::collections::BTreeMap::new();
+        for tree in self.publications.trees().values() {
+            let Some(app) = tree
+                .kind
+                .strip_prefix("tl.")
+                .and_then(|kind| kind.rsplit_once('.'))
+                .map(|(app, _)| app)
+            else {
+                continue;
+            };
+            apps.entry(app).or_insert(tree.kind.as_str());
+        }
+        apps.into_iter()
+            .map(|(app, kind)| tilo_service::HistoryRecord {
+                app: app.to_owned(),
+                kind: kind.to_owned(),
+                document: self.record.clone(),
+            })
+            .collect()
+    }
+
     fn share(&mut self, share: &tilo_service::Share<'_>) -> Result<(), String> {
         Self::share(self, share)
     }

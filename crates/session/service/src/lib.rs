@@ -168,6 +168,14 @@ pub trait Service {
         Vec::new()
     }
 
+    /// The records this service keeps, as the workspace's activity reads them: each app's record
+    /// with the document it lives in. A record no app's process holds still shows its steps in
+    /// History and takes one of its runs back through its own history, so the activity lists and
+    /// undoes those runs as it does a running app's.
+    fn history_records(&self) -> Vec<HistoryRecord> {
+        Vec::new()
+    }
+
     /// Publish the package `share` names, which the session runs itself (the shell), with the
     /// records an app's are: its roots are made, and what its parts write into the document
     /// it keeps them in (`share.records`) is published to every connection from then on.
@@ -251,6 +259,22 @@ pub struct Record {
     /// embedded: what a task's host loads to run a program that reads the record by the app's
     /// own package.
     pub packages: Vec<std::sync::Arc<[u8]>>,
+}
+
+/// One record a service keeps, as the workspace's activity reads its history: the app whose
+/// record it is, the kind it is, and the document it lives in.
+///
+/// One document may hold several apps' records (the session's own workspace record holds a root
+/// per package it runs), so `kind` says which of them this entry is: the activity keeps the steps
+/// whose resource is of that kind, and none of the others.
+pub struct HistoryRecord {
+    /// The app whose record it is, as its package names it (`so.tilo.lang.notes`).
+    pub app: String,
+    /// The record's kind, as its app publishes it (`tl.so.tilo.lang.notes.Notebook`): what tells
+    /// this app's steps in a document from another's.
+    pub kind: String,
+    /// The document, as it stands: what the activity's history reads.
+    pub document: tilo_resource::Doc,
 }
 
 /// `resource` offering every action of the vocabulary `E`.
@@ -409,6 +433,16 @@ impl Services {
         self.started
             .iter()
             .flat_map(|service| service.records())
+            .collect()
+    }
+
+    /// Every record the services keep, as the activity's history reads it; see
+    /// [`Service::history_records`].
+    #[must_use]
+    pub fn history_records(&self) -> Vec<HistoryRecord> {
+        self.started
+            .iter()
+            .flat_map(|service| service.history_records())
             .collect()
     }
 

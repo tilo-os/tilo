@@ -6,6 +6,11 @@
 //! goes through the document's own history, so edits others made since are kept and a step's
 //! compensation runs. Each document the run changed is asked through the session's action door as
 //! the person at the screen, on a thread of its own, so the activity's request answers at once.
+//!
+//! Whoever keeps the record answers: the app whose process holds it, or — a record no app's
+//! process holds, which the session's own services keep — the session's provider, at the root of
+//! that app's record there. Which publisher serves a step is read from the same catalogue either
+//! way, so a run undone across both takes the same path in each.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
@@ -27,6 +32,9 @@ const ANSWER: Duration = Duration::from_millis(100);
 /// The history verb every document publishes, and the argument naming a run.
 const UNDO: &str = "undo";
 const RUN: &str = "run";
+
+/// The provider the session's own services answer at: what keeps a record no app's process holds.
+const SESSION: &str = tilo_actions::remote::session_actions::PROVIDER;
 
 /// The session's action door, as an undo asks it: the seat's own, or a test's.
 pub(crate) trait UndoDoor: Send + Sync {
@@ -111,7 +119,7 @@ pub(crate) fn undo_task_run(
     let mut undone: usize = 0;
     let mut refused = Vec::new();
     for target in &targets {
-        let Some(address) = undo_address(door, caller, &target.provider.provider) else {
+        let Some(address) = undo_address(door, caller, &target.provider, &target.app) else {
             refused.push(format!("{} has no history to undo", target.provider.app_id));
             continue;
         };
@@ -142,19 +150,26 @@ pub(crate) fn undo_task_run(
     if !refused.is_empty() {
         tracing::warn!(run, refused = %refused.join("; "), "a run was undone only in part");
     }
-    Ok(targets.into_iter().map(|target| target.outcome).collect())
+    Ok(targets
+        .into_iter()
+        .flat_map(|target| target.outcomes)
+        .collect())
 }
 
 /// One document the run changed, and the publisher that serves it.
 struct UndoTarget {
     provider: CatalogueProvider,
-    /// The step as the run recorded it, which the outcome is reported under.
-    outcome: TaskRunDocument,
+    /// The app whose record the publisher is asked for: a running app's is the one its window
+    /// shows, and the session's own is named among the records it keeps.
+    app: String,
+    /// The steps the run recorded in that document, which the outcome is reported under.
+    outcomes: Vec<TaskRunDocument>,
 }
 
 /// The live publishers of the documents `steps` names in `workspace`: a step's record where its
 /// app publishes it, else every open document of that app — undo by run changes nothing in a
-/// document the run did not touch.
+/// document the run did not touch. A record no app's process publishes is one the session keeps
+/// itself, and its own provider answers for it.
 fn undo_targets(
     providers: &[CatalogueProvider],
     workspace: &str,
@@ -163,6 +178,9 @@ fn undo_targets(
     let live = |provider: &&CatalogueProvider| {
         provider.workspace == workspace && provider.provider.parse::<u64>().is_ok()
     };
+    let session = providers
+        .iter()
+        .find(|provider| provider.workspace == workspace && provider.provider == SESSION);
     let mut targets: Vec<UndoTarget> = Vec::new();
     for (app, record) in steps {
         let of_app: Vec<&CatalogueProvider> = providers
@@ -175,35 +193,48 @@ fn undo_targets(
             .copied()
             .filter(|provider| !record.is_empty() && &provider.record_id == record)
             .collect();
-        for provider in if exact.is_empty() { of_app } else { exact } {
-            if targets
-                .iter()
-                .any(|known| known.provider.provider == provider.provider)
+        let mut serving: Vec<&CatalogueProvider> = if exact.is_empty() { of_app } else { exact };
+        let outcome = || TaskRunDocument {
+            app: app.clone(),
+            record: record.clone(),
+        };
+        if serving.is_empty() {
+            // No app's process publishes the record: the session does, among the records its
+            // services keep.
+            serving.extend(session);
+        }
+        for provider in serving {
+            match targets
+                .iter_mut()
+                .find(|known| known.provider.provider == provider.provider)
             {
-                continue;
-            }
-            targets.push(UndoTarget {
-                provider: provider.clone(),
-                outcome: TaskRunDocument {
+                Some(known) => known.outcomes.push(outcome()),
+                None => targets.push(UndoTarget {
+                    provider: provider.clone(),
                     app: app.clone(),
-                    record: record.clone(),
-                },
-            });
+                    outcomes: vec![outcome()],
+                }),
+            }
         }
     }
     targets
 }
 
-/// The address of the history `undo` that provider `provider` publishes.
+/// The address of the history `undo` that `provider` publishes for `app`'s record.
 fn undo_address(
     door: &dyn UndoDoor,
     caller: &Caller,
-    provider: &str,
+    provider: &CatalogueProvider,
+    app: &str,
 ) -> Option<tilo_actions::ActionAddress> {
+    // A running app answers for the one record it holds; the session answers for every record its
+    // services keep, so there it is `app`'s own root — the resource the record's history is
+    // published on — that is asked.
+    let root = (provider.provider == SESSION).then(|| format!("tl:{app}:"));
     door.page(
         caller,
         CatalogueQuery {
-            provider: Some(provider.to_owned()),
+            provider: Some(provider.provider.clone()),
             needle: UNDO.to_owned(),
             max_results: MAX_CATALOGUE_PAGE,
             ..CatalogueQuery::default()
@@ -213,7 +244,11 @@ fn undo_address(
     .into_iter()
     .filter_map(|row| row.action)
     .find(|action| {
-        action.address.action == UNDO && action.params.iter().any(|param| param.name == RUN)
+        action.address.action == UNDO
+            && action.params.iter().any(|param| param.name == RUN)
+            && root
+                .as_ref()
+                .is_none_or(|root| action.address.resource.starts_with(root.as_str()))
     })
     .map(|action| action.address)
 }
@@ -289,6 +324,8 @@ mod tests {
 
     const APP: &str = "so.tilo.notes";
     const RECORD: &str = "file:/notes/release.note";
+    /// The root of an app's record as the session publishes it, where its history is answered.
+    const SESSION_ROOT: &str = "tl:so.tilo.notes:notebook";
     const WORKSPACE: &str = "workspace:1";
     const PROVIDER: &str = "7";
     const TASK: &str = "task:1";
@@ -301,6 +338,10 @@ mod tests {
         history: bool,
         /// Whether the record is open here at all.
         open: bool,
+        /// Whether the session keeps the record itself, no app's process holding it: it answers
+        /// its history at `SESSION_ROOT`, as the session's own provider lists the records its
+        /// services keep.
+        session: bool,
     }
 
     impl UndoDoor for FakeDoor {
@@ -316,14 +357,28 @@ mod tests {
                         browsable: false,
                     }];
                 }
+                if self.session && caller.workspace() == Some(WORKSPACE) {
+                    page.providers.push(CatalogueProvider {
+                        provider: SESSION.into(),
+                        app_id: SESSION.into(),
+                        workspace: WORKSPACE.into(),
+                        record_id: String::new(),
+                        browsable: true,
+                    });
+                }
                 return Some(page);
             }
             if self.history {
-                let mut spec = ResourceSpec::new(RECORD, "note", "Release notes");
+                let (provider, root) = if self.session {
+                    (SESSION, SESSION_ROOT)
+                } else {
+                    (PROVIDER, RECORD)
+                };
+                let mut spec = ResourceSpec::new(root, "note", "Release notes");
                 spec.actions = ui::history_source::verbs::specs();
                 page.rows = tilo_actions::door::survey(&[spec])
                     .into_iter()
-                    .map(|action| CatalogueRow::for_action(PROVIDER, APP, action))
+                    .map(|action| CatalogueRow::for_action(provider, provider, action))
                     .collect();
             }
             Some(page)
@@ -338,6 +393,15 @@ mod tests {
             let InvokeArgument::Json(args) = request.argument else {
                 return Err("the undo names no run".into());
             };
+            // The session's records are asked at the root of the app's record there, which is
+            // what the run names when it is taken back.
+            let asked = if self.session { SESSION_ROOT } else { RECORD };
+            if request.target.address.resource != asked {
+                return Err(format!(
+                    "the undo asks {}, not {asked}",
+                    request.target.address.resource
+                ));
+            }
             let edit = ui::history_source::verbs::HistoryEdit::Undo {
                 steps: None,
                 run: args
@@ -383,6 +447,18 @@ mod tests {
             doc: Mutex::new(doc),
             history,
             open,
+            session: false,
+        }
+    }
+
+    /// The same document, kept by the session itself: no app's process holds it, and the
+    /// session's own provider answers its history.
+    fn session_door(doc: AutoCommit) -> FakeDoor {
+        FakeDoor {
+            doc: Mutex::new(doc),
+            history: true,
+            open: false,
+            session: true,
         }
     }
 
@@ -463,5 +539,52 @@ mod tests {
             refused.contains(APP) && refused.contains("history"),
             "{refused}"
         );
+    }
+
+    /// A record the session keeps itself — no app's process holds it — is undone the same way, at
+    /// the session's own provider: the run is asked of the root of the app's record there, not of
+    /// a provider an app process never published.
+    #[test]
+    fn a_run_in_a_record_the_session_keeps_is_undone_at_the_session() {
+        let (doc, body) = edited(TASK);
+        let door = session_door(doc);
+        // The activity names a session-kept record as the app's own record of the workspace.
+        let primary = ui::record::RecordId::package_primary().as_str().to_owned();
+        let undone = undo_task_run(
+            &door,
+            &caller(),
+            TASK,
+            &[(APP.to_owned(), primary.clone())],
+            Duration::from_secs(5),
+        )
+        .expect("the session keeps the record's history");
+        assert_eq!(
+            undone,
+            vec![TaskRunDocument {
+                app: APP.into(),
+                record: primary,
+            }]
+        );
+        assert_eq!(
+            door.doc.lock_recover().text(&body).unwrap(),
+            "Shipping notes."
+        );
+    }
+
+    /// The session answers for the records its services keep: an app whose record it keeps none of
+    /// has no history to undo there, and the refusal says so rather than claiming the undo.
+    #[test]
+    fn a_record_the_session_does_not_keep_has_no_history_to_undo_there() {
+        let (doc, _) = edited(TASK);
+        let door = session_door(doc);
+        let refused = undo_task_run(
+            &door,
+            &caller(),
+            TASK,
+            &[("so.tilo.elsewhere".to_owned(), RECORD.to_owned())],
+            Duration::from_secs(5),
+        )
+        .unwrap_err();
+        assert!(refused.contains("no history"), "{refused}");
     }
 }

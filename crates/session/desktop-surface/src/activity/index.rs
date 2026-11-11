@@ -79,6 +79,31 @@ impl DetachedRecordHistory {
             kind: self.checkout.kind.clone(),
         }
     }
+
+    /// Whether `entry` is one of this record's steps.
+    ///
+    /// One document may hold several apps' records: the workspace record the session keeps holds
+    /// a root per package it runs, and each app's record is admitted as one of its own, all over
+    /// that same document. Such a record's kind (`tl.<app>.<Type>`) says whose steps are its own;
+    /// every other record is a document of one app's, and every step in it is that record's.
+    fn holds(&self, entry: &HistoryEntry) -> bool {
+        let Some(app) = self
+            .checkout
+            .kind
+            .as_str()
+            .strip_prefix("tl.")
+            .and_then(|kind| kind.rsplit_once('.'))
+            .map(|(app, _)| app)
+        else {
+            return true;
+        };
+        let of_app = format!("tl.{app}.");
+        entry
+            .context
+            .as_ref()
+            .and_then(|context| context.resource.as_ref())
+            .is_some_and(|resource| resource.kind.starts_with(&of_app))
+    }
 }
 
 /// A globally unambiguous change address.  Both fields are required: two
@@ -419,6 +444,10 @@ impl WorkspaceHistoryIndex {
                 doc,
             );
             logs.insert(key, log);
+            let rows = rows
+                .into_iter()
+                .filter(|entry| record.holds(entry))
+                .collect::<Vec<_>>();
             insert_rows(&mut by_id, &origin, rows);
             coverage.indexed_records = coverage.indexed_records.saturating_add(1);
         }
