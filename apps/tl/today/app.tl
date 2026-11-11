@@ -4,8 +4,8 @@ use so.tilo.lang.notes as notes
 use so.tilo.lang.tasks as todo
 use so.tilo.lang.chat as chat
 
-/// The day at a glance, over other apps' roots: it draws their resources with their views, so
-/// each part keeps its own app's authority.
+/// The day at a glance, over other apps' roots: each part is a place of its own app, drawn by
+/// that app.
 type Today {
 }
 

@@ -4,7 +4,7 @@
 d-so-tilo-lang-today = Today
 
 d-2lehvjd6 = Today
-    .doc = The day at a glance, over other apps' roots: it draws their resources with their views, so each part keeps its own app's authority.
+    .doc = The day at a glance, over other apps' roots: each part is a place of its own app, drawn by that app.
     .noun = { $count ->
         [one] today
        *[other] todays

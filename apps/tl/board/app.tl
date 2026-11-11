@@ -4,7 +4,7 @@ app so.tilo.lang.board "Board" (icon: .layout_grid, category: .office)
 type Card {
     title: Text
     notes: Text
-    /// The column it was in, before cards were kept in their columns.
+    /// The column it was in, in a board whose cards were not yet kept in their columns.
     column: Column
 }
 
@@ -18,7 +18,7 @@ type Column {
 /// The workspace's board: its columns, left to right, each with its cards.
 type Board {
     columns: Collection<Column>
-    /// Every card, before cards were kept in their columns.
+    /// Every card, in a board whose cards were not yet kept in their columns.
     cards: Collection<Card>
 }
 
@@ -28,8 +28,8 @@ default view board for Board
 
 default view card_page for Card
 
-/// Puts each card of a board from before cards were kept in their columns into its column, in
-/// the order the board showed them.
+/// Puts each card of a board kept before cards stood in their columns into the column it was in,
+/// in the order the board showed them.
 migration action place_cards(b: Board) {
     for card in b.cards {
         let col = card.column

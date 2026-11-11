@@ -215,7 +215,7 @@ d-gkuo27e6 = Drafts
 d-z3zcztpz = Labels
 
 d-4ow5ydy5 = Hold
-    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and what rules out holding it not at all.
+    .doc = How many seconds a sent message waits before it goes, so it can be taken back: the person's setting, ten by default, and no wait at all when it is zero.
 
 d-su4h67i5-filter-hold = Hold
 

@@ -132,7 +132,7 @@ type Mail {
     drafts: Collection<Draft>
     labels: Collection<Label>
     /// How many seconds a sent message waits before it goes, so it can be taken back: the
-    /// person's setting, ten by default, and what rules out holding it not at all.
+    /// person's setting, ten by default, and no wait at all when it is zero.
     hold: Int = 10
 }
 

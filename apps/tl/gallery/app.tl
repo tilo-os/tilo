@@ -1,7 +1,7 @@
 app so.tilo.lang.gallery "Gallery" (icon: .layout_grid, category: .system)
 
-/// The toolkit's components as an app written in tilolang places them: each `ui.*` component,
-/// in the groups people meet them in, with the values an app would give it. Each group is a
+/// The toolkit's components as an app written in tilolang places them: each component of the
+/// toolkit, in the groups people meet them in, with the values an app would give it. Each group is a
 /// file of its own (`controls.tl`, `charts.tl`, ...) with its own window and scenario, and a
 /// test fails while a component of the toolkit is shown in none of them.
 /// A piece of work on the team's board, in its list, and talked about.

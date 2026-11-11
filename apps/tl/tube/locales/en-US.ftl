@@ -136,11 +136,12 @@ d-dmm6f63t = Watched
 d-omff5ciz = Progress
     .doc = How far in they were, as a share of its length; zero when they watched it to the end.
 
-d-thwdswkk = You tube
+# refined
+d-thwdswkk = YouTube
     .doc = What the client holds: the channels, videos and playlists the service answered with, the person's subscriptions, their watch history, and how the last search stands.
     .noun = { $count ->
-        [one] you tube
-       *[other] you tubes
+        [one] channel
+       *[other] channels
     }
 
 d-olrung72 = Title
