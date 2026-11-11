@@ -2330,6 +2330,48 @@ mod tests {
         assert!(hint.contains("\"parameters\": {\"value\": …}"), "{hint}");
     }
 
+    /// `edit-text` names the type's editable fields in its `field` parameter, so
+    /// `describe_operation` and the refusal hint show an agent the field to set instead of its
+    /// guessing at an internal record id.
+    #[test]
+    fn describe_operation_names_an_edit_verbs_fields() {
+        let mut catalogue = workspace();
+        let mut edit = offer(
+            "notes",
+            "notes.note:n1",
+            "tl.so.tilo.lang.notes.Note",
+            "edit-text",
+            "Edit a text field",
+            InputSpec::None,
+        );
+        edit.descriptor.params = vec![
+            tilo_actions::ActionParam::required(
+                "field",
+                tilo_actions::ParamType::Text,
+                "The field's name, one of: title, body",
+            ),
+            tilo_actions::ActionParam::required(
+                "value",
+                tilo_actions::ParamType::Text,
+                "The new value",
+            ),
+        ];
+        catalogue.offers.push(edit.clone());
+        let mut revealed = Revealed::new();
+        let described = describe(&json!({"operation": edit.id()}), &catalogue, &mut revealed);
+        assert!(
+            described.contains("field: text (required)"),
+            "the field parameter is listed: {described}"
+        );
+        assert!(
+            described.contains("one of: title, body"),
+            "the fields an agent may set, by their names: {described}"
+        );
+        // A refused invoke's hint names them too, so the next attempt needs no describe turn.
+        let hint = parameter_hint(&edit);
+        assert!(hint.contains("one of: title, body"), "{hint}");
+    }
+
     #[test]
     fn discovery_answers_list_and_describe_only_what_the_workspace_offers() {
         {
