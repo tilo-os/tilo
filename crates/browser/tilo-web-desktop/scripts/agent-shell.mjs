@@ -1431,6 +1431,9 @@ try {
         await tab.waitFor(`document.getElementById('first-run') && getComputedStyle(document.getElementById('first-run')).display !== 'none'`,
           {timeout: 180000});
         await sleep(600);
+        // The workspace the first screen stands in, which is the one the agent is let into.
+        const firstWhere = await tab.evaluate('location.hash');
+        log(`${combo}: the first screen is at ${firstWhere || '/'}`);
         await shot(tab, combo, 'first-screen');
         // The button waits for the page to offer setup (it can make codes once
         // it is in the site's workspace): press it once the page is in.
@@ -1543,9 +1546,9 @@ try {
         // one); the agent is in the site's workspace, so go back to it, as
         // the workspace menu does.
         const where = await tab.evaluate('location.hash');
-        if (!/#\/.*\/w\//.test(where)) {
+        if (!/#\/(?:.*\/)?w\//.test(where)) {
           log(`${combo}: the person's own desktop (${where || '/'}); opening the workspace where the agent is`);
-          await tab.navigate(`${siteOrigin}/`);
+          await tab.navigate(`${siteOrigin}/${/#\/(?:.*\/)?w\//.test(firstWhere) ? firstWhere : ''}`);
           const back = await until(async () => {
             const page = await tab.evaluate(PAGE);
             return page.entry === 'open' && page.mount ? page : undefined;
