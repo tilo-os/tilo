@@ -41,6 +41,7 @@ pub mod testing;
 mod tests;
 mod vouched;
 mod workspace_membership;
+mod write;
 
 pub use certified::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 pub use checkpoint::{
@@ -63,6 +64,7 @@ pub use record::{
     EnrollmentTarget, NativeAuthorityStorage, PendingEnrollmentId, PendingEnrollmentStatus,
     StoredPendingEnrollment,
 };
+pub use write::{Committed, Write};
 
 use crate::replica::Replica;
 use crate::{AdmissionReport, StatePeer, TransportOrigin};
@@ -174,6 +176,9 @@ struct SharedOwner {
     /// The committed record; replaced only inside a publication's `install`.
     authority: RwLock<NativeAuthorityStorage>,
     mutation: Mutex<()>,
+    /// One write of this device at a time, from its draft to its commit
+    /// ([`NativeWorkspaceOwner::write`]).
+    writes: tokio::sync::Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
     /// Who hands on what this device commits to a workspace it hosts itself
@@ -522,6 +527,7 @@ impl NativeWorkspaceOwner {
             store,
             authority: RwLock::new(NativeAuthorityStorage::default()),
             mutation: Mutex::new(()),
+            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
@@ -563,6 +569,7 @@ impl NativeWorkspaceOwner {
             store,
             authority: RwLock::new(authority),
             mutation: Mutex::new(()),
+            writes: tokio::sync::Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
             kept_here: Mutex::new(Vec::new()),
@@ -825,15 +832,19 @@ impl NativeWorkspaceOwner {
         let previous_publication = candidate.record.publication.clone();
         let device = candidate.device().clone();
         let mut reports = Vec::with_capacity(inputs.len());
-        let mut governed = BTreeSet::new();
+        // The workspace changes admitted from its other devices, as they came:
+        // their hashes are read only to retire changes of this device's own
+        // ([`publication::retire_member_changes`]), which a device that
+        // published none (a page entering a workspace) never has.
+        let mut governed: Vec<Vec<Vec<u8>>> = Vec::new();
         let mut verdicts = false;
         for (origin, message) in inputs {
-            let received = Self::received_changes(origin, &message);
+            let received = Self::received_changes(origin, &message).cloned();
             let report = Self::admit_input(&candidate, origin, message.clone(), now);
             if report.is_ok()
                 && let Some(changes) = received
             {
-                governed.extend(changes);
+                governed.push(changes);
             }
             // A refused write reaches its author: this device's verdict on it
             // is kept in its own slice of the workspace, which the next sync
@@ -898,24 +909,17 @@ impl NativeWorkspaceOwner {
     /// carries what this device published retires it
     /// ([`publication::retire_member_changes`]). A delta that does not
     /// carry them all retires nothing.
-    fn received_changes(
-        origin: TransportOrigin,
-        message: &NeighbourMsg,
-    ) -> Option<BTreeSet<automerge::ChangeHash>> {
+    fn received_changes(origin: TransportOrigin, message: &NeighbourMsg) -> Option<&Vec<Vec<u8>>> {
         if !matches!(
             origin,
             TransportOrigin::RelayDelta(_) | TransportOrigin::RetainedRelayDelta(_)
         ) {
             return None;
         }
-        if !matches!(message, NeighbourMsg::SyncResp { .. }) {
-            return None;
+        match message {
+            NeighbourMsg::SyncResp { changes, .. } => Some(changes),
+            _ => None,
         }
-        publication::change_hashes(match message {
-            NeighbourMsg::SyncResp { changes, .. } => changes,
-            _ => return None,
-        })
-        .ok()
     }
     /// Decide one input into the workspace's live replica: refused, it changes nothing.
     ///

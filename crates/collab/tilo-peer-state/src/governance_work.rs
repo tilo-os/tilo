@@ -24,6 +24,9 @@ pub struct GovernanceWork {
     pub replays: u64,
     /// Invitation receipts read back from the governance and checked.
     pub receipts_read: u64,
+    /// Security bases worked out over every member's row
+    /// ([`crate::StatePeer::security_basis`]).
+    pub security_bases: u64,
 }
 
 thread_local! {
@@ -33,6 +36,7 @@ thread_local! {
         governance_reads: 0,
         replays: 0,
         receipts_read: 0,
+        security_bases: 0,
     }) };
 }
 
@@ -73,6 +77,10 @@ pub(crate) fn governance_read() {
 
 pub(crate) fn receipt_read() {
     add(|work| work.receipts_read = work.receipts_read.saturating_add(1));
+}
+
+pub(crate) fn security_basis_worked_out() {
+    add(|work| work.security_bases = work.security_bases.saturating_add(1));
 }
 
 pub(crate) fn replayed() {

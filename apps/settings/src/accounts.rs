@@ -42,6 +42,7 @@
 
 use std::path::PathBuf;
 
+#[cfg(feature = "tilo-os")]
 use accounts::email::AccountConfig;
 use serde::{Deserialize, Serialize};
 
@@ -117,12 +118,14 @@ impl VaultOpener {
 
     /// Credential custody over the same stores, which opens the vault
     /// itself when it publishes.
+    #[cfg(feature = "tilo-os")]
     pub fn custodian(&self) -> account_custody::Custodian {
         account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
     }
 
     /// Which of the accounts `ids` custody holds an `OAuth` grant for: it
     /// opens the vault, a Secret Service round trip on the live root.
+    #[cfg(feature = "tilo-os")]
     pub fn oauth_granted(&self, ids: Vec<String>) -> std::collections::BTreeSet<String> {
         self.reach();
         let custodian = self.custodian();
@@ -211,6 +214,7 @@ impl AccountRoot {
     }
 
     /// Credential custody for cloud accounts over the same stores.
+    #[cfg(feature = "tilo-os")]
     pub fn custodian(&self) -> account_custody::Custodian {
         account_custody::Custodian::for_root(self.explicit.clone()).with_apple_icloud()
     }
@@ -653,6 +657,7 @@ impl AccountKind {
     }
 
     /// The canonical store's type id for accounts of this kind.
+    #[cfg(feature = "tilo-os")]
     pub fn type_id(self) -> &'static str {
         match self {
             AccountKind::Mail => MAIL_TYPE,
@@ -670,6 +675,7 @@ impl AccountKind {
         Self::ALL.into_iter().find(|kind| kind.slug() == slug)
     }
 
+    #[cfg(feature = "tilo-os")]
     pub fn from_type_id(type_id: &str) -> Option<Self> {
         if type_id == accounts::thunderbird::PENDING_TYPE {
             return Some(Self::Mail);
@@ -678,18 +684,21 @@ impl AccountKind {
     }
 
     /// The `OAuth` provider behind a cloud storage kind.
+    #[cfg(feature = "tilo-os")]
     pub fn oauth_cloud(self) -> Option<account_custody::OAuthCloud> {
         account_custody::OAuthCloud::from_type_id(self.type_id())
     }
 
     /// Google Drive, `OneDrive`, Dropbox and `iCloud` Drive: accounts held
     /// entirely by credential custody, listed from the canonical store.
+    #[cfg(feature = "tilo-os")]
     pub fn is_cloud_storage(self) -> bool {
         self.oauth_cloud().is_some() || self == AccountKind::ICloudDrive
     }
 
     /// Whether accounts of this kind are connected through a sign-in flow
     /// (browser or Apple ID) rather than a typed password.
+    #[cfg(feature = "tilo-os")]
     pub fn signs_in(self) -> bool {
         self.is_cloud_storage() || self == AccountKind::Nextcloud
     }
@@ -701,6 +710,7 @@ impl AccountKind {
     }
 }
 
+#[cfg(feature = "tilo-os")]
 /// A uniform, read-only view of one account for the panel. This is
 /// render-only; edits go through the canonical store.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -714,6 +724,7 @@ pub struct AccountView {
     pub tint: u8,
 }
 
+#[cfg(feature = "tilo-os")]
 /// The accounts the panel shows: the canonical store's, of every kind it
 /// lists.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -721,6 +732,7 @@ pub struct AccountDirectory {
     pub accounts: Vec<accounts::Account>,
 }
 
+#[cfg(feature = "tilo-os")]
 impl AccountDirectory {
     /// Loads the directory from the store under `root`.
     pub fn load_in(root: &AccountRoot) -> Self {
@@ -764,6 +776,7 @@ impl AccountDirectory {
     }
 }
 
+#[cfg(feature = "tilo-os")]
 /// A string field of an account's configuration, empty when absent.
 fn config_str<'a>(account: &'a accounts::Account, key: &str) -> &'a str {
     account
@@ -773,6 +786,7 @@ fn config_str<'a>(account: &'a accounts::Account, key: &str) -> &'a str {
         .unwrap_or_default()
 }
 
+#[cfg(feature = "tilo-os")]
 fn account_view(kind: AccountKind, account: &accounts::Account) -> Option<AccountView> {
     let id = account.id.to_string();
     Some(match kind {
@@ -809,6 +823,7 @@ fn account_view(kind: AccountKind, account: &accounts::Account) -> Option<Accoun
     })
 }
 
+#[cfg(feature = "tilo-os")]
 fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
     let identity = account
         .config
@@ -834,6 +849,7 @@ fn cloud_view(kind: AccountKind, account: &accounts::Account) -> AccountView {
     }
 }
 
+#[cfg(feature = "tilo-os")]
 /// Trim a URL to host[/first-segment] for compact display.
 pub fn short_url(url: &str) -> String {
     url.trim_start_matches("https://")
@@ -842,12 +858,15 @@ pub fn short_url(url: &str) -> String {
         .to_string()
 }
 
+#[cfg(feature = "tilo-os")]
 /// The shared-store type id for email accounts (Mail contributes these).
 const MAIL_TYPE: &str = "email";
 /// The shared-store type id for `CalDAV` accounts (Calendar contributes these).
+#[cfg(feature = "tilo-os")]
 const CALDAV_TYPE: &str = "caldav";
 pub use accounts::cloud_types::{NEXTCLOUD as NEXTCLOUD_TYPE, WEBDAV as WEBDAV_TYPE};
 
+#[cfg(feature = "tilo-os")]
 /// A deterministic, populated directory for `--shots` and tests so the
 /// panel renders a realistic accounts list without touching disk.
 pub fn sample_directory() -> AccountDirectory {
@@ -1141,6 +1160,7 @@ mod tests {
         assert!(record.get().store().get(&local.id).is_none());
     }
 
+    #[cfg(feature = "tilo-os")]
     #[test]
     fn account_directory_views_summarise_and_autofill() {
         let dir = sample_directory();
@@ -1175,6 +1195,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "tilo-os")]
     #[test]
     fn journal_recovers_each_interrupted_removal_phase() {
         for phase in 1..=3 {

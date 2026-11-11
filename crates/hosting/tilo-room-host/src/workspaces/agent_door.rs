@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 
 use tilo_actions::remote::agent_door::{Door, Grant, Reach, Run};
 use tilo_lock::MutexRecover as _;
-use tilo_user_identity::DeviceCert;
+use tilo_user_identity::{AgentScope, DeviceCert};
 use tokio::sync::{Notify, watch};
 
 /// One session of an agent's device, open now.
@@ -34,9 +34,8 @@ struct Agent {
     granted_ms: i64,
     last_ms: i64,
     runs: Vec<OpenRun>,
-    /// Its certificate lets it operate web pages in Browser
-    /// ([`DeviceCapabilities::browser_pages`]).
-    browser_pages: bool,
+    /// What its key's certificate says of it.
+    cert: DeviceCert,
 }
 
 /// The agent door of the host's own person.
@@ -70,14 +69,14 @@ impl AgentDoor {
                 granted_ms: i64::try_from(cert.issued_at_ns / 1_000_000).unwrap_or(i64::MAX),
                 last_ms: now,
                 runs: Vec::new(),
-                browser_pages: cert.capabilities.browser_pages,
+                cert: cert.clone(),
             });
         name.clone_into(&mut agent.name);
         agent.last_ms = now;
         // The key it is set up with may be replaced by another of the
         // person's keys between sessions: what it may do is the certificate
         // it came in with now.
-        agent.browser_pages = cert.capabilities.browser_pages;
+        agent.cert = cert.clone();
         if !agent.runs.iter().any(|run| Arc::ptr_eq(&run.stop, stop)) {
             agent.runs.push(OpenRun {
                 started_ms: now,
@@ -152,7 +151,23 @@ impl AgentDoor {
             .map(|(device, agent)| Grant {
                 id: hex::encode(device),
                 agent: agent.name.clone(),
-                reach: Reach::Account,
+                reach: match agent.cert.capabilities.agent {
+                    Some(AgentScope::Workspace(id)) => {
+                        let id = AgentScope::Workspace(id).name();
+                        Reach::Workspace {
+                            name: id.clone(),
+                            id,
+                        }
+                    }
+                    Some(AgentScope::AllWorkspaces) | None => Reach::Account,
+                },
+                runs_on: agent.cert.device_label.clone(),
+                expires_ms: agent
+                    .cert
+                    .expires_at_ns
+                    .map(|ns| i64::try_from(ns / 1_000_000).unwrap_or(i64::MAX)),
+                browser_pages: agent.cert.capabilities.browser_pages,
+                script_key: agent.cert.capabilities.server_key,
                 granted_ms: agent.granted_ms,
                 last_ms: Some(agent.last_ms),
                 runs: agent
@@ -163,7 +178,6 @@ impl AgentDoor {
                         started_ms: open.started_ms,
                     })
                     .collect(),
-                browser_pages: agent.browser_pages,
             })
             .collect::<Vec<_>>();
         drop(agents);
@@ -236,6 +250,30 @@ mod tests {
         }
     }
 
+    fn grant_cert(key: u8, scope: AgentScope, browser_pages: bool, server_key: bool) -> DeviceCert {
+        DeviceCert {
+            user_public_key: [1; 32],
+            device_public_key: [key; 32],
+            device_label: "Framework 16".into(),
+            capabilities: DeviceCapabilities {
+                can_own_workspaces: false,
+                can_admit_devices: false,
+                can_act_as_host: false,
+                can_read_all_workspaces: false,
+                foreign: false,
+                can_administer_devices: false,
+                agent: Some(scope),
+                stand_in: false,
+                server_key,
+                browser_pages,
+            },
+            issued_at_ns: 5_000_000_000,
+            expires_at_ns: Some(9_000_000_000),
+            signature: [0; 64],
+            issuer: None,
+        }
+    }
+
     /// The door says of each agent whether the key it came in with operates
     /// web pages in Browser, as that key's certificate carries it: a key
     /// without it is asked about every page action.
@@ -254,5 +292,52 @@ mod tests {
         let asked = cert(DeviceCapabilities::agent_grant(AgentScope::AllWorkspaces));
         door.note(&asked, "Claude Code", &stop);
         assert!(!door.door().grants[0].browser_pages);
+    }
+
+    /// The door reads each grant as its key's certificate says it: where the
+    /// agent runs, the one workspace it reaches, until when, whether it may
+    /// operate web pages in Browser, and whether it is a script's key.
+    #[test]
+    fn a_grant_reads_as_its_certificate_says() {
+        let door = AgentDoor::default();
+        let workspace = [7; 16];
+        let stop = Arc::new(Notify::new());
+        door.note(
+            &grant_cert(2, AgentScope::Workspace(workspace), true, false),
+            "Claude Code #1",
+            &stop,
+        );
+        door.note(
+            &grant_cert(3, AgentScope::AllWorkspaces, false, true),
+            "Nightly export #1",
+            &Arc::new(Notify::new()),
+        );
+        let read = door.door();
+        let agent = read
+            .grants
+            .iter()
+            .find(|grant| grant.id == hex::encode([2u8; 32]))
+            .expect("the agent's grant");
+        let id = AgentScope::Workspace(workspace).name();
+        assert_eq!(
+            agent.reach,
+            Reach::Workspace {
+                id: id.clone(),
+                name: id
+            }
+        );
+        assert_eq!(agent.runs_on, "Framework 16");
+        assert_eq!(agent.expires_ms, Some(9_000));
+        assert!(agent.browser_pages);
+        assert!(!agent.script_key);
+        assert_eq!(agent.runs.len(), 1);
+        let script = read
+            .grants
+            .iter()
+            .find(|grant| grant.id == hex::encode([3u8; 32]))
+            .expect("the script's key");
+        assert_eq!(script.reach, Reach::Account);
+        assert!(script.script_key);
+        assert!(!script.browser_pages);
     }
 }

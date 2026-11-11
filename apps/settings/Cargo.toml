@@ -18,6 +18,16 @@ name = "settings"
 path = "src/main.rs"
 
 [features]
+default = ["tilo-os"]
+# The panes that administer the device Settings runs on: its hardware
+# (displays, sound, Bluetooth, power, printers, disks, network), its OS
+# services (users, updates, time, default apps, notifications' app list,
+# storage, device sync) and the accounts it keeps in its own vault (mail,
+# calendars, cloud storage, model providers). They need the device's
+# programs, files, sockets and system bus. A browser tab has none of them,
+# so the web build (and the agent host, which has no device to administer)
+# leaves the feature off: those panes are compiled out, not shown broken.
+tilo-os = ["dep:bounded-command", "dep:desktop-entry", "dep:os-actions", "dep:tilo-session-power", "dep:tilo-ntfs-mount", "dep:runtime-fs", "dep:tilo-bluez", "dep:account-custody", "dep:media", "dep:tilo-audio-service", "dep:rustls", "dep:tilo-dav", "dep:async-imap", "dep:tokio", "dep:tokio-rustls", "dep:tilo-capture"]
 thin = ["dep:runtime-dylib"]
 # Run the app from the Settings engine library in the runtime bundle
 # (libtilo_settings_engine.so, crates/runtime/engines/settings), which carries
@@ -43,7 +53,7 @@ tilo-locale = { path = "../../crates/platform/tilo-locale" }
 tilo-wallpapers = { version = "0.1.0", path = "../../crates/platform/tilo-wallpapers" }
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
-bounded-command = { path = "../../crates/system/bounded-command" }
+bounded-command = { path = "../../crates/system/bounded-command", optional = true }
 # One owner for ~/.config/tilo/settings.json.
 settings-store = { path = "../../crates/system/settings-store", features = ["model"] }
 # The sections Settings edits, which the session keeps as records too.
@@ -56,7 +66,7 @@ package-store = { path = "../../crates/packaging/package-store" }
 tilo-app-package = { path = "../../crates/packaging/tilo-app-package" }
 # The same freedesktop scanner the shell uses for host and Flatpak launches;
 # notification rules must be keyed by those canonical desktop identities.
-desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry" }
+desktop-entry = { package = "tilo-desktop-entry", path = "../../crates/system/desktop-entry", optional = true }
 # The one capability vocabulary the compositor persists. Depending on this
 # lightweight *types* crate (not the compositor) lets the Permissions pane
 # deserialise the per-workspace grants the shell writes to
@@ -73,20 +83,20 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # network, bluetooth). The crate lives at the workspace root so both
 # `shell` and the Settings app drive the same hardware bindings without
 # this app depending on the compositor crate.
-os-actions = { path = "../../crates/system/os-actions" }
+os-actions = { path = "../../crates/system/os-actions", optional = true }
 # The session's `power:battery` resource: the pack's charge limit is read and
 # set through the service that owns it, not by the app itself.
-tilo-session-power = { path = "../../crates/session/power-service", default-features = false }
+tilo-session-power = { path = "../../crates/session/power-service", default-features = false, optional = true }
 # Remembered NTFS drives: the mount service's protocol (panes::drives).
-tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false }
+tilo-ntfs-mount = { path = "../../crates/system/ntfs-mount", default-features = false, optional = true }
 # Public identity summaries, as the host's identity actions answer them. The
 # identity store itself is the host's: no record or secret enters Settings.
 runtime-identity = { package = "tilo-identity-client", path = "../../crates/runtime/tilo-identity-client" }
-runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client" }
+runtime-fs = { package = "tilo-fs-client", path = "../../crates/runtime/tilo-fs-client", optional = true }
 # Device role, workspace residency and server relay policy use the same types
 # the tilo-relay daemon loads; Settings never keeps a shadow sync model.
 tilo-relay-protocol = { path = "../../crates/hosting/tilo-relay-protocol" }
-tilo-bluez = { path = "../../crates/system/tilo-bluez" }
+tilo-bluez = { path = "../../crates/system/tilo-bluez", optional = true }
 # The shared multi-account store + encrypted secret vault. Settings reads and
 # writes email + CalDAV accounts through this one canonical store, so it and
 # the Mail / Calendar apps can no longer disagree on the on-disk shape.
@@ -94,17 +104,17 @@ accounts = { path = "../../crates/system/accounts", features = ["person"] }
 # Credential custody for cloud accounts: the shared OAuth client, Nextcloud
 # Login Flow v2, iCloud sessions and the short-lived handoff to the storage
 # daemon.
-account-custody = { path = "../../crates/system/account-custody" }
+account-custody = { path = "../../crates/system/account-custody", optional = true }
 # Provider metadata is shared with the headless agent runner. This dependency
 # contains no HTTP client and no secret values.
 agent-provider-config = { path = "../../crates/agent/provider-config", features = ["model"] }
 # The bounded audio diagnostics the Sound pane starts (a channel test, a
 # microphone and an output meter), and the event-sound themes it lists.
-media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media", optional = true }
 # The session's `sound` resource: the reading the Sound pane shows and the
 # actions its controls take. Without the `service` feature: the pane needs
 # the resource's spec and types, the session runs the service.
-tilo-audio-service = { path = "../../crates/session/audio-service", default-features = false }
+tilo-audio-service = { path = "../../crates/session/audio-service", default-features = false, optional = true }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.
@@ -113,14 +123,14 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
-rustls = { workspace = true, features = ["std", "tls12"] }
+rustls = { workspace = true, features = ["std", "tls12"], optional = true }
 tilo-net = { path = "../../crates/platform/tilo-net" }
 # Account probes speak DAV through the shared bounded client and IMAP through
 # async-imap, the client Mail uses, on a per-probe current-thread runtime.
-tilo-dav = { path = "../../crates/system/tilo-dav" }
-async-imap.workspace = true
-tokio = { workspace = true, features = ["rt", "net", "time"] }
-tokio-rustls.workspace = true
+tilo-dav = { path = "../../crates/system/tilo-dav", optional = true }
+async-imap = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["rt", "net", "time"], optional = true }
+tokio-rustls = { workspace = true, optional = true }
 zeroize.workspace = true
 # The shared account + region/format stores Settings owns are plain
 # serde-serialisable JSON documents that other apps (Mail, Calendar,
@@ -136,7 +146,7 @@ uuid.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The installer service, for the language packs Region & formats offers.
 runtime-portal = { path = "../../crates/runtime/runtime-portal" }
-tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
+tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"], optional = true }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
@@ -186,6 +196,8 @@ tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scann
 [[test]]
 name = "it"
 path = "tests/it.rs"
+# The suites drive the device panes.
+required-features = ["tilo-os"]
 
 # These suites deliberately redirect the process-global XDG config root.
 # Keep them out of `it` so they never share a process with the UI interaction
@@ -193,6 +205,12 @@ path = "tests/it.rs"
 [[test]]
 name = "xdg"
 path = "tests/xdg.rs"
+# The suites drive the device panes.
+required-features = ["tilo-os"]
+
+[package.metadata.tilo]
+# The web desktop links Settings without its device panes (`tilo-os`).
+web-features = []
 
 [lints]
 workspace = true

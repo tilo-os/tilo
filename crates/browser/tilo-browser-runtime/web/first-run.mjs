@@ -310,6 +310,14 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
       close();
     });
   };
+  // Signed in: open what the page opens for the person (`whenDone`), once it can.
+  let signedIn = false;
+  const openSignedIn = () => {
+    if (!signedIn || !onDone || closed) return;
+    leaving = true;
+    onDone();
+    close();
+  };
   // Leave the screen for the person's own workspace (`whenDone`). Until it
   // opens the screen says so, and the setup is kept as opening: a reload in
   // between opens it as well, never the site's home workspace.
@@ -333,8 +341,10 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     const heading = mode === 'sign-in' ? 'You’re signed in' : `${agent || 'Your agent'} is in your workspace`;
     view.connected({mode, agent, heading});
     if (mode === 'sign-in') {
-      // Signing in loads the page anew through the pairing link.
-      leaveTimer = later(() => { leaving = true; onDone?.(); close(); }, CONNECTED_MS);
+      // Signing in loads the page anew through the pairing link, once the
+      // page can open the person's own workspace: until then the screen
+      // stays, rather than closing on the workspace the tab was let into.
+      leaveTimer = later(() => { signedIn = true; openSignedIn(); }, CONNECTED_MS);
       return;
     }
     save({step: 'connected'});
@@ -708,6 +718,7 @@ export function createFirstRun({view: drawn, clipboard, storage = null, now = ()
     whenDone(open) {
       if (closed) return;
       onDone = open;
+      openSignedIn();
       openOwn();
     },
     /** Sign in with a passkey: at once once the page offers it, else once it

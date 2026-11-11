@@ -334,6 +334,28 @@ test('returning: the agent claims the code, the tab asks to be that person, and 
   assert.equal(names().at(-1), 'close');
 });
 
+test('returning: signed in before the page can open their workspace, the tab opens it once it can', async () => {
+  const {run, last, names, state, tick} = fixture();
+  const code = fakeCode();
+  run.offerAgentSignIn(maker(code).make);
+  await settle();
+  await run.signInWithAgent();
+  await settle();
+  Object.assign(code.polled, {resolved: true, steps: ['resolved'], claimed: {user: 'ab'.repeat(32), invite: 'cd'.repeat(16), by: 'Claude Code'}});
+  await tick();
+  await settle();
+  assert.deepEqual(last('connected'), ['connected', {mode: 'sign-in', agent: null, heading: 'You’re signed in'}]);
+  // The moment it said so is over before the page can open anything.
+  [...state.timers.values()].find(timer => timer.ms === CONNECTED_MS).run();
+  assert.notEqual(names().at(-1), 'close', 'the screen waits for what it opens, rather than leaving the tab where it stands');
+  let opened = 0;
+  run.whenDone(() => { opened += 1; });
+  assert.equal(opened, 1, 'the person\'s own workspace opens once the page can');
+  assert.equal(names().at(-1), 'close');
+  run.whenDone(() => { opened += 1; });
+  assert.equal(opened, 1, 'and only once');
+});
+
 test('returning: a sign-in the page could not finish says why', async () => {
   const {run, last, tick} = fixture();
   const code = fakeCode();

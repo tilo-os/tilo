@@ -16,34 +16,60 @@
 //!   populated, realistic sample so the surface reads as designed. Each
 //!   pane's docstring states which parts are live vs. sample.
 
+#[cfg(feature = "tilo-os")]
 pub mod about;
 pub mod accessibility;
+#[cfg(feature = "tilo-os")]
 pub mod accounts;
+#[cfg(feature = "tilo-os")]
 pub mod agent_models;
+#[cfg(feature = "tilo-os")]
 pub mod agent_sign_in;
+#[cfg(feature = "tilo-os")]
 pub mod agent_vertex;
 pub mod appearance;
+#[cfg(feature = "tilo-os")]
 pub mod audio;
 pub mod billing;
+#[cfg(feature = "tilo-os")]
 pub mod bluetooth;
+#[cfg(feature = "tilo-os")]
 pub mod device_mesh;
+#[cfg(feature = "tilo-os")]
+pub mod devices_access;
+#[cfg(feature = "tilo-os")]
 pub mod disk_unlock;
+#[cfg(feature = "tilo-os")]
 pub mod display;
+#[cfg(feature = "tilo-os")]
 pub mod display_arrangement;
+#[cfg(feature = "tilo-os")]
 pub mod drives;
 pub mod keyboard_shortcuts;
+#[cfg(feature = "tilo-os")]
 pub mod mouse_keyboard;
+#[cfg(feature = "tilo-os")]
 pub mod network;
+#[cfg(feature = "tilo-os")]
 pub mod notifications;
+#[cfg(feature = "tilo-os")]
 pub mod permissions;
+#[cfg(feature = "tilo-os")]
 pub mod personal_apps;
+#[cfg(feature = "tilo-os")]
 pub mod power;
+#[cfg(feature = "tilo-os")]
 pub mod printers;
 pub mod region;
+#[cfg(feature = "tilo-os")]
 pub mod speakers;
+#[cfg(feature = "tilo-os")]
 pub mod storage;
+#[cfg(feature = "tilo-os")]
 pub mod time_date;
+#[cfg(feature = "tilo-os")]
 pub mod updates;
+#[cfg(feature = "tilo-os")]
 pub mod users;
 
 mod part;
@@ -63,39 +89,65 @@ pub(crate) fn view(
     match category {
         crate::categories::Category::Appearance => appearance::view(cx, app),
         crate::categories::Category::Accessibility => accessibility::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Notifications => notifications::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Power => power::view(cx, app),
         crate::categories::Category::RegionFormats => region::view(cx, app),
         crate::categories::Category::KeyboardShortcuts => keyboard_shortcuts::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Sound => audio::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Speakers => speakers::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Bluetooth => bluetooth::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Network => network::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Keyboard => {
             mouse_keyboard::view(cx, app, mouse_keyboard::InputPage::Keyboard)
         }
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Pointing => {
             mouse_keyboard::view(cx, app, mouse_keyboard::InputPage::Pointing)
         }
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Spelling => {
             mouse_keyboard::view(cx, app, mouse_keyboard::InputPage::Spelling)
         }
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Users => users::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Printers => printers::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Storage => storage::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Updates => updates::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Permissions => permissions::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::Displays => display::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::DefaultApps => personal_apps::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::TimeDate => time_date::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::DeviceMesh => device_mesh::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::About => about::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::ExternalAccounts => accounts::view(cx, app),
+        #[cfg(feature = "tilo-os")]
         crate::categories::Category::AgentModels => agent_models::view(cx, app),
         crate::categories::Category::Billing => billing::view(cx, app),
+        #[cfg(feature = "tilo-os")]
+        crate::categories::Category::DevicesAccess => devices_access::view(cx, app),
+        #[cfg(not(feature = "tilo-os"))]
+        _ => None,
     }
 }
 
+#[cfg(feature = "tilo-os")]
 /// Why this process cannot tell which programs the device has installed,
 /// when it cannot: no directory on `PATH` is visible to it. A lookup would
 /// then report every program as missing, which says nothing about the device.
@@ -103,6 +155,13 @@ pub(crate) fn installed_programs_unreadable() -> Option<String> {
     programs_unreadable_on(std::env::var_os("PATH").as_deref())
 }
 
+/// A build without the device panes (`tilo-os`) looks no program up.
+#[cfg(not(feature = "tilo-os"))]
+pub(crate) fn installed_programs_unreadable() -> Option<String> {
+    None
+}
+
+#[cfg(feature = "tilo-os")]
 fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
     let Some(path) = path else {
         return Some("PATH is not set".to_string());
@@ -118,6 +177,7 @@ fn programs_unreadable_on(path: Option<&std::ffi::OsStr>) -> Option<String> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 mod tests {
     use super::*;
 

@@ -216,8 +216,10 @@ impl<'a> Splitter<'a> {
         let data_layout = DataLayout::new(self.original)?;
         let data_refs = data_layout.function_refs(&self.source_module);
         let data_claimants = self.data_claimants(&chunk_parts, &module_parts);
+        let loaded = loaded_with(&module_parts, chunk_parts.len());
 
-        let (main, data) = self.emit_main_module(&data_layout, &data_refs, data_claimants)?;
+        let (main, data) =
+            self.emit_main_module(&data_layout, &data_refs, data_claimants, &loaded)?;
         let main = merged(main)?;
 
         // Each module being emitted holds a parse of its own; run only as
@@ -279,6 +281,7 @@ impl<'a> Splitter<'a> {
         data_layout: &DataLayout,
         data_refs: &HashMap<FunctionId, Vec<u32>>,
         mut data_claimants: Vec<(Claimant, Vec<FunctionId>)>,
+        loaded: &[Vec<usize>],
     ) -> Result<(SplitModule, DataPlan)> {
         tracing::info!("Emitting main bundle split module");
 
@@ -287,15 +290,17 @@ impl<'a> Splitter<'a> {
         self.keep_referenced(&mut unused_symbols);
 
         let mut out = std::mem::take(&mut self.source_module);
+        let hole = self.make_dummy_func(&mut out);
 
         // 1. Clear out the active segments that try to initialize functions for modules we just split off.
         //    When the side modules load, they will initialize functions into the table where the "holes" are.
-        self.replace_segments_with_holes(&mut out, &unused_symbols);
+        self.replace_segments_with_holes(&mut out, &unused_symbols, hole);
 
         // 2. Change the functions called from split modules to be local
         //    functions that call the indirect function, while the lazy
         //    exports' functions are still there to read their types from
-        self.create_ifunc_table(&mut out, &unused_symbols);
+        self.create_ifunc_table(&mut out, &unused_symbols, hole);
+        leave_holes_empty(&mut out, hole);
 
         // 3. Wipe away the unused functions and data symbols
         self.prune_main_symbols(&mut out, &unused_symbols)?;
@@ -312,8 +317,7 @@ impl<'a> Splitter<'a> {
         // 8. Leave out the static data only other modules reach: the
         //    functions left are exactly the code the main module runs
         data_claimants.push((Claimant::Start, out.funcs.iter().map(|f| f.id()).collect()));
-        let modules = self.split_points.len() + self.chunks.len();
-        let data = data_layout.plan(&out, data_refs, data_claimants, modules);
+        let data = data_layout.plan(&out, data_refs, data_claimants, loaded);
         data.apply_to_start(&mut out);
 
         let main = SplitModule {
@@ -698,9 +702,13 @@ impl<'a> Splitter<'a> {
     /// This is because these imports are going to be delayed until the split module is loaded
     /// and loading in the main module these as imports won't be possible since the imports won't
     /// be resolved until the split module is loaded.
-    fn create_ifunc_table(&self, out: &mut Module, unused_symbols: &HashSet<Node>) {
+    fn create_ifunc_table(
+        &self,
+        out: &mut Module,
+        unused_symbols: &HashSet<Node>,
+        dummy_func: FunctionId,
+    ) {
         let ifunc_table = self.load_funcref_table(out);
-        let dummy_func = self.make_dummy_func(out);
 
         out.exports.add("__indirect_function_table", ifunc_table);
 
@@ -829,8 +837,12 @@ impl<'a> Splitter<'a> {
 
     // 2.1 Create a dummy func that will be overridden later as modules pop in
     // 2.2 swap the segment entries with the dummy func, leaving hole in its placed that will be filled in later
-    fn replace_segments_with_holes(&self, out: &mut Module, unused_symbols: &HashSet<Node>) {
-        let dummy_func = self.make_dummy_func(out);
+    fn replace_segments_with_holes(
+        &self,
+        out: &mut Module,
+        unused_symbols: &HashSet<Node>,
+        dummy_func: FunctionId,
+    ) {
         for element in out.elements.iter_mut() {
             match &mut element.items {
                 ElementItems::Functions(vec) => {
@@ -2157,6 +2169,104 @@ fn parse_bytes_to_data_segment(bytes: &[u8]) -> Result<RawDataSection<'_>> {
     })
 }
 
+/// For each split module, then each shared chunk (as data.rs numbers
+/// them), the modules always in memory while its code runs: a split module
+/// and the chunks it loads before it; a chunk, and what every module loading
+/// it loads, since its code only runs once one of those is in.
+fn loaded_with(module_parts: &[SplitParts], chunks: usize) -> Vec<Vec<usize>> {
+    let modules = module_parts.len();
+    let mut loaded: Vec<Vec<usize>> = module_parts
+        .iter()
+        .enumerate()
+        .map(|(index, parts)| {
+            let mut set: Vec<usize> = std::iter::once(index)
+                .chain(parts.relies_on_chunks.iter().map(|chunk| modules + chunk))
+                .collect();
+            set.sort_unstable();
+            set
+        })
+        .collect();
+    for chunk in 0..chunks {
+        let me = modules + chunk;
+        let mut always: Option<Vec<usize>> = None;
+        for set in loaded[..modules].iter().filter(|set| set.contains(&me)) {
+            always = Some(match always {
+                None => set.clone(),
+                Some(mut always) => {
+                    always.retain(|module| set.contains(module));
+                    always
+                }
+            });
+        }
+        // A chunk no module loads never runs; it counts on itself alone.
+        let mut set = always.unwrap_or_default();
+        set.retain(|module| *module >= modules);
+        if !set.contains(&me) {
+            set.push(me);
+        }
+        set.sort_unstable();
+        loaded.push(set);
+    }
+    loaded
+}
+
+/// Drop the start module's table entries for slots a split module or
+/// shared chunk fills when it loads (`hole`, a function that traps): an
+/// empty slot traps the same way when called, and costs no bytes. A run of
+/// holes too short to pay for the segment it splits stays.
+fn leave_holes_empty(out: &mut Module, hole: FunctionId) {
+    /// Holes in a row worth another segment's header (its offset and
+    /// count) to leave out: each written entry costs two or three bytes.
+    const MIN_HOLES: usize = 4;
+    let segments: Vec<_> = out
+        .elements
+        .iter()
+        .filter_map(|element| match (&element.kind, &element.items) {
+            (
+                ElementKind::Active {
+                    table,
+                    offset: ConstExpr::Value(ir::Value::I32(offset)),
+                },
+                ElementItems::Functions(items),
+            ) if items.contains(&hole) => Some((element.id(), *table, *offset, items.clone())),
+            _ => None,
+        })
+        .collect();
+    for (id, table, offset, items) in segments {
+        out.tables.get_mut(table).elem_segments.remove(&id);
+        out.elements.delete(id);
+        let mut runs: Vec<(usize, Vec<FunctionId>)> = Vec::new();
+        let mut at = 0;
+        while at < items.len() {
+            let holes = items[at..].iter().take_while(|item| **item == hole).count();
+            if holes >= MIN_HOLES || (holes > 0 && at + holes == items.len()) {
+                at += holes;
+                continue;
+            }
+            let start = at;
+            // Up to the next run of holes worth leaving out.
+            while at < items.len() {
+                let holes = items[at..].iter().take_while(|item| **item == hole).count();
+                if holes >= MIN_HOLES || (holes > 0 && at + holes == items.len()) {
+                    break;
+                }
+                at += holes.max(1);
+            }
+            runs.push((start, items[start..at].to_vec()));
+        }
+        for (start, run) in runs {
+            let element = out.elements.add(
+                ElementKind::Active {
+                    table,
+                    offset: ConstExpr::Value(ir::Value::I32(offset + start as i32)),
+                },
+                ElementItems::Functions(run),
+            );
+            out.tables.get_mut(table).elem_segments.insert(element);
+        }
+    }
+}
+
 impl Splitter<'_> {
     /// Keep in the main module every function that code staying there calls
     /// or takes the address of. The relocation call graph can miss an edge
@@ -2371,4 +2481,70 @@ fn self_names(module: &Module, id: FunctionId) -> String {
         .chars()
         .take(160)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::leave_holes_empty;
+    use walrus::{ConstExpr, ElementItems, ElementKind, FunctionBuilder, Module, ir};
+
+    /// Each table slot's function in `module`'s active segments, `None`
+    /// where no segment writes one.
+    fn slots(module: &Module, len: usize) -> Vec<Option<walrus::FunctionId>> {
+        let mut slots = vec![None; len];
+        for element in module.elements.iter() {
+            let (
+                ElementKind::Active {
+                    offset: ConstExpr::Value(ir::Value::I32(offset)),
+                    ..
+                },
+                ElementItems::Functions(items),
+            ) = (&element.kind, &element.items)
+            else {
+                panic!("an unexpected segment");
+            };
+            for (at, item) in items.iter().enumerate() {
+                slots[*offset as usize + at] = Some(*item);
+            }
+        }
+        slots
+    }
+
+    #[test]
+    fn the_start_module_writes_no_slot_a_split_module_fills() {
+        let mut module = Module::default();
+        let table = module
+            .tables
+            .add_local(false, 32, Some(32), walrus::RefType::Funcref);
+        let mut function = |name: &str| {
+            let mut builder = FunctionBuilder::new(&mut module.types, &[], &[]);
+            builder.name(name.into()).func_body().unreachable();
+            builder.finish(vec![], &mut module.funcs)
+        };
+        let (hole, a, b) = (function("hole"), function("a"), function("b"));
+        // Slot 1 on: a, a hole, a, five holes, b, b, then holes to the end.
+        let items = vec![a, hole, a, hole, hole, hole, hole, hole, b, b, hole, hole];
+        let element = module.elements.add(
+            ElementKind::Active {
+                table,
+                offset: ConstExpr::Value(ir::Value::I32(1)),
+            },
+            ElementItems::Functions(items.clone()),
+        );
+        module.tables.get_mut(table).elem_segments.insert(element);
+
+        leave_holes_empty(&mut module, hole);
+
+        let mut want = vec![None; 32];
+        for (at, item) in items.iter().enumerate() {
+            want[1 + at] = Some(*item);
+        }
+        // The five holes in a row and the trailing ones are left empty; the
+        // single one between two functions is cheaper to write.
+        for at in [4, 5, 6, 7, 8, 11, 12] {
+            want[at] = None;
+        }
+        assert_eq!(slots(&module, 32), want);
+        assert_eq!(module.tables.get(table).elem_segments.len(), 2);
+    }
 }

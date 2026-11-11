@@ -688,7 +688,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, it holds the record already, or it refused the write.
     #[cfg(target_os = "linux")]
-    pub fn found_record(
+    pub async fn found_record(
         &self,
         workspace: WorkspaceId,
         record: (&str, &str),
@@ -696,6 +696,7 @@ impl Engine {
         sealed: Option<&channel_crypto::ChannelContentKeys>,
     ) -> Result<(), String> {
         self.write_record(workspace, record, changes, true, sealed)
+            .await
             .map(|_| ())
     }
 
@@ -710,7 +711,7 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, a founding write finds the record held already, or the
     /// workspace refused the write.
-    pub fn write_record(
+    pub async fn write_record(
         &self,
         workspace: WorkspaceId,
         (app, record): (&str, &str),
@@ -719,89 +720,78 @@ impl Engine {
         sealed: Option<&channel_crypto::ChannelContentKeys>,
     ) -> Result<tilo_peer_state::owner::AppWrite, String> {
         use tilo_broker_core::custody::OwnerCustody as _;
-        let key = self.identity.signing_key()?;
         let device = self.identity.device_cert.device_public_key;
         let now = SystemTime::now();
         let artifact = collab_types::document_artifact_id(app, &workspace.to_string(), record);
-        let mut written = None;
-        self.owner.commit_document_with_current(
-            workspace,
-            |view| {
-                if founding && view.peer().document(app, record).is_some() {
-                    return Err(format!("{record} of {app} is in the workspace already"));
-                }
-                let author = view
-                    .peer()
+        let frame = if founding {
+            collab_types::DocumentMutation::Snapshot(changes.to_vec())
+        } else {
+            collab_types::DocumentMutation::Incremental(changes.to_vec())
+        }
+        .encode()
+        .map_err(|error| error.to_string())?;
+        let mut author = None;
+        let draft = |view: &tilo_peer_state::owner::NativeCommittedView| {
+            if founding && view.peer().document(app, record).is_some() {
+                return Err(format!("{record} of {app} is in the workspace already"));
+            }
+            author = Some(
+                view.peer()
                     .permissions(device, now)
                     .map(tilo_peer_state::MemberAuthority::standing)
-                    .map_err(|error| error.to_string())?;
-                let mut peer = view.peer().clone();
-                let publication = peer.publication_mut();
-                let message = match sealed {
-                    None => {
-                        publication.publish_incremental(app, record, changes.to_vec(), &key, now)?
-                    }
-                    Some(keys) => {
-                        let retention = if founding {
-                            collab_types::ContentRetention::Checkpoint
-                        } else {
-                            collab_types::ContentRetention::Delta
-                        };
-                        let mut seal = |plaintext: &[u8]| {
-                            keys.seal_content(artifact, retention, plaintext)
-                                .map_err(|error| error.to_string())
-                        };
-                        if founding {
-                            publication.publish_sealed_checkpoint(
-                                app,
-                                record,
-                                changes.to_vec(),
-                                &mut seal,
-                                &key,
-                                now,
-                            )?
-                        } else {
-                            publication.publish_sealed_incremental(
-                                app,
-                                record,
-                                changes.to_vec(),
-                                &mut seal,
-                                &key,
-                                now,
-                            )?
-                        }
-                    }
-                };
-                let neighbour_wire::NeighbourMsg::AppDocument {
-                    peer: writer,
-                    envelope,
-                    ..
-                } = message
-                else {
-                    return Err("a record's write is not a document write".to_owned());
-                };
-                written = Some(tilo_peer_state::owner::AppWrite {
-                    peer: writer,
-                    app_id: app.to_owned(),
-                    cluster_id: workspace.to_string(),
-                    record_id: record.to_owned(),
-                    author,
-                    replayed: false,
-                    envelope: (*envelope).clone(),
-                });
-                Ok(tilo_peer_state::owner_commit::OwnerCommitRequest {
+                    .map_err(|error| error.to_string())?,
+            );
+            let mut seal = sealed.map(|keys| {
+                move |plaintext: &[u8]| {
+                    keys.seal_content(
+                        artifact,
+                        collab_types::ContentRetention::of_frame(plaintext),
+                        plaintext,
+                    )
+                    .map_err(|error| error.to_string())
+                }
+            });
+            let op = view.peer().draft_write(
+                (app, record),
+                &frame,
+                seal.as_mut()
+                    .map(|seal| seal as &mut tilo_peer_state::SealCheckpoint<'_>),
+                device,
+                0,
+                now,
+            )?;
+            Ok(vec![tilo_peer_state::owner::Write::Draft(
+                tilo_peer_state::owner_commit::OwnerCommitRequest {
                     workspace: workspace.to_string(),
                     operation: tilo_peer_state::owner_commit::CommitOperation::Document {
                         app: app.to_owned(),
                         record: record.to_owned(),
-                        envelope,
+                        envelope: Box::new(op),
                     },
-                })
-            },
-            now,
-        )?;
+                },
+            )])
+        };
+        let committed = self
+            .owner
+            .write(workspace, draft, self.identity.signer.as_ref(), true, now)
+            .await?
+            .pop()
+            .ok_or("the workspace has no room for the write now")?;
         self.schedule_publication(workspace);
-        written.ok_or_else(|| "the write was not made".to_owned())
+        let tilo_peer_state::owner_commit::CommitOperation::Document { envelope, .. } =
+            committed.0.operation
+        else {
+            return Err("a record's write is not a document write".to_owned());
+        };
+        Ok(tilo_peer_state::owner::AppWrite {
+            peer: neighbour_wire::peer_handle(&device),
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_string(),
+            record_id: record.to_owned(),
+            author: author.ok_or("the write was not made")?,
+            replayed: false,
+            envelope: *envelope,
+        })
     }
 
     /// [`Self::record`] of a sealed record, opened with `keys` rather than this device's channel

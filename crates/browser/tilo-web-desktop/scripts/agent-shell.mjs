@@ -1081,7 +1081,9 @@ async function palette(tab, words) {
  * card. A palette still up after the press is the answer: the press went under it instead. */
 async function pressBesideSearch(tab, {height}) {
   const mac = await tab.evaluate('/Mac|iPhone|iPad/.test(navigator.platform ?? navigator.userAgent ?? "")');
-  const showing = async () => (await semantics(tab)).some(node => /search apps, windows, documents/i.test(node.name));
+  // The field is named "Search", and what it covers is its description: either is what a reader
+  // hears of it.
+  const showing = async () => (await semantics(tab)).some(node => speaks(node, /search apps, windows, documents/i));
   await key(tab, 'k', 'KeyK', 75, mac ? 4 : 2);
   if (!await untilDrawn(tab, showing, 8000)) return `the search chord opened no search: ${names(await semantics(tab))}`;
   const searchOpen = () => tab.evaluate('globalThis.tiloMount?.state()?.searchOpen ?? null');

@@ -245,7 +245,7 @@ impl Held for Engine {
         } else {
             Some(seal_keys(self, workspace, app, record)?)
         };
-        self.found_record(workspace, (app, record), changes, sealed.as_ref())
+        pollster::block_on(self.found_record(workspace, (app, record), changes, sealed.as_ref()))
     }
 }
 
@@ -1190,12 +1190,12 @@ mod tests {
             record: &str,
             changes: &[u8],
         ) -> Result<(), String> {
-            self.engine.found_record(
+            pollster::block_on(self.engine.found_record(
                 workspace,
                 (app, record),
                 changes,
                 Some(&self.unit(workspace, app, record)),
-            )
+            ))
         }
     }
 

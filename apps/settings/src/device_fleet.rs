@@ -9,8 +9,9 @@
 use ui::tilo_actions::remote::identity_admin::{self, FleetDevice};
 use ui::tilo_actions::remote::{Confirmation, InvokeArgument};
 
+/// One of the person's devices, as the host listed it.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct DeviceView {
+pub struct DeviceView {
     pub label: String,
     pub key: [u8; 32],
     pub fingerprint: String,

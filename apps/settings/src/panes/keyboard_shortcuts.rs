@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use provider_settings_ui::bound::{SettingRows as _, record_item};
-use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
+#[cfg(any(test, feature = "tilo-os"))]
+use settings_store::hardware::ShortcutAction;
+use settings_store::hardware::{KeyChord, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use ui::LocalState;
 use ui::framework::{Actions, EffectAnswer, EffectCx, Effected, ViewCx};
@@ -139,12 +141,14 @@ fn app_name(id: &str) -> String {
 }
 
 /// Every rebindable action, in catalogue order.
+#[cfg(any(test, feature = "tilo-os"))]
 fn rebindable() -> impl Iterator<Item = ShortcutAction> {
     ShortcutAction::ALL.into_iter()
 }
 
 /// Every shortcut the page lists, with its name, in page order — what a pen
 /// or pad button can be set to run.
+#[cfg(feature = "tilo-os")]
 pub(crate) fn shortcut_actions() -> Vec<(ShortcutAction, String)> {
     rebindable()
         .map(|action| (action, t(&action.label_key())))

@@ -177,6 +177,13 @@
       "module": "scratchpad"
     },
     {
+      "id": "so.tilo.settings",
+      "name": "Settings",
+      "category": "System",
+      "version": "0.1.0",
+      "module": "settings"
+    },
+    {
       "id": "so.tilo.sheets",
       "name": "Sheets",
       "category": "Office",

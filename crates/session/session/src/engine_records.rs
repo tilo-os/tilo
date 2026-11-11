@@ -367,13 +367,14 @@ impl Inner {
                         }
                     }
                 };
-                match engine.write_record(
+                // The desktop's custody answers at once: its key is this process's own.
+                match pollster::block_on(engine.write_record(
                     room,
                     (&app, &record),
                     &changes,
                     founding,
                     sealed.as_ref(),
-                ) {
+                )) {
                     Ok(write) => {
                         if let Some(replica) = self.replicas.borrow_mut().get_mut(&(
                             workspace.clone(),

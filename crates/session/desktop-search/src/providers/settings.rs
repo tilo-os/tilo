@@ -134,7 +134,9 @@ impl Settings {
     ) -> Self {
         let mut rows = Vec::new();
         let mut fields = Vec::new();
-        for page in index::PAGES {
+        // A page Settings has not here (a device's hardware, on the web)
+        // is not offered, nor any setting on it.
+        for page in index::PAGES.iter().filter(|page| page.here()) {
             let title = t(&page.title_key());
             let subtitle = t(&page.subtitle_key());
             let mut found = vec![
@@ -164,7 +166,7 @@ impl Settings {
             let Some((at, page)) = index::PAGES
                 .iter()
                 .enumerate()
-                .find(|(_, page)| page.slug == setting.page)
+                .find(|(_, page)| page.slug == setting.page && page.here())
             else {
                 continue;
             };

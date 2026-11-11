@@ -5,14 +5,14 @@
 # Production's names become loopback ports (stack.sh sets them):
 #   eu1.tilo.sh       https://127.0.0.1:{$TILO_SH_RELAY_PORT}
 #   live-eu1.tilo.sh  https://127.0.0.1:{$TILO_SH_LIVE_PORT}
+#   tilo.sh           https://127.0.0.1:{$TILO_SH_SITE_PORT}
 # and Cloudflare's certificate becomes Caddy's own local CA, whose root
 # stack.sh puts in the bundle the containers trust, as production's roots are.
 #
-# The front door and the web entry are not behind it: production
-# serves both as plain HTTP behind Cloudflare, and on loopback the product
-# takes them as plain HTTP on http://localhost (a development origin the
-# sign-in page, the door and the tilo command all accept), so no client needs
-# this CA to reach them.
+# The front door is not behind it: production serves it as plain HTTP behind
+# Cloudflare, and on loopback the product takes it as plain HTTP on
+# http://localhost (a development origin the sign-in page, the door and the
+# tilo command all accept), so no client needs this CA to reach it.
 {
 	admin off
 	auto_https disable_redirects
@@ -39,4 +39,15 @@ https://127.0.0.1:{$TILO_SH_RELAY_PORT} {
 https://127.0.0.1:{$TILO_SH_LIVE_PORT} {
 	tls internal
 	reverse_proxy 127.0.0.1:{$TILO_SH_PACKET_PORT}
+}
+
+# The site: the web entry's image serves plain HTTP, as it does behind
+# Cloudflare, and this plays Cloudflare's edge in front of it. A browser
+# speaks HTTP/2 only over TLS, so this is what lets the page's modules arrive
+# over one connection as they do from tilo.sh, rather than over HTTP/1.1's
+# six. A browser reaching it trusts this CA (stack.sh env, local-ca.pem) or,
+# headless and measuring, runs with --ignore-certificate-errors.
+https://127.0.0.1:{$TILO_SH_SITE_PORT} {
+	tls internal
+	reverse_proxy 127.0.0.1:{$TILO_SH_WEB_PORT}
 }

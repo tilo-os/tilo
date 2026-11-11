@@ -1678,7 +1678,7 @@ fn binary_is_executable(metadata: &fs::Metadata) -> bool {
     }
     #[cfg(not(unix))]
     {
-        let _metadata = metadata;
+        let _ = metadata;
         false
     }
 }

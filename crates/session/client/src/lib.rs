@@ -29,7 +29,6 @@ pub mod custody;
 /// A device's entry into its person's workspaces: the one the CLI, agents, the front door and the
 /// page all take.
 pub mod device;
-pub mod document;
 pub mod engine;
 pub mod entered;
 pub mod gate;

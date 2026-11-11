@@ -64,6 +64,7 @@ pdf-viewer = { path = "../../../apps/pdf-viewer" }
 photos = { path = "../../../apps/photos" }
 poker = { path = "../../../apps/poker" }
 scratchpad = { path = "../../../apps/scratchpad" }
+settings = { path = "../../../apps/settings", default-features = false, features = [] }
 sheets = { path = "../../../apps/sheets" }
 shortcuts = { path = "../../../apps/shortcuts" }
 slides = { path = "../../../apps/slides" }

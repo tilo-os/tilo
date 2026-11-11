@@ -339,6 +339,7 @@ fn the_door() -> door::Door {
                     started_ms: minutes_ago_ms(14),
                 }],
                 browser_pages: true,
+                ..door::Grant::default()
             },
             door::Grant {
                 id: "grant:codex".to_owned(),
@@ -351,6 +352,7 @@ fn the_door() -> door::Door {
                 last_ms: Some(minutes_ago_ms(80)),
                 runs: Vec::new(),
                 browser_pages: false,
+                ..door::Grant::default()
             },
         ],
         workspaces: vec![

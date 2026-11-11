@@ -89,11 +89,15 @@ pub enum Category {
     Updates,
     About,
     Billing,
+    DevicesAccess,
 }
 
 impl Category {
     /// Canonical ordering used by the sidebar, grouped by [`Section`]: the
-    /// index's page order ([`settings_store::index::PAGES`]).
+    /// index's page order ([`settings_store::index::PAGES`]). Only the panes
+    /// this build carries: without the device panes (`tilo-os`, off on the
+    /// web) the device's hardware and OS services are not listed at all.
+    #[cfg(feature = "tilo-os")]
     pub const ALL: &'static [Category] = &[
         // Connectivity
         Category::Network,
@@ -117,6 +121,7 @@ impl Category {
         Category::Printers,
         Category::Power,
         // Hubs
+        Category::DevicesAccess,
         Category::Users,
         Category::Billing,
         Category::ExternalAccounts,
@@ -128,8 +133,35 @@ impl Category {
         Category::About,
     ];
 
+    /// The panes a build without the device's own (`tilo-os`) carries, as on
+    /// the web: the person's look, language and shortcuts, and their billing.
+    pub const WEB: &'static [Category] = &[
+        // Personal
+        Category::Appearance,
+        Category::Accessibility,
+        Category::RegionFormats,
+        // Devices
+        Category::KeyboardShortcuts,
+        // Hubs
+        Category::Billing,
+    ];
+
+    /// The panes a build without the device's own (`tilo-os`) carries.
+    #[cfg(not(feature = "tilo-os"))]
+    pub const ALL: &'static [Category] = Self::WEB;
+
     /// The category shown when Settings first opens and no link names one.
+    #[cfg(feature = "tilo-os")]
     pub const DEFAULT: Category = Category::Network;
+
+    /// The category shown when Settings first opens and no link names one.
+    #[cfg(not(feature = "tilo-os"))]
+    pub const DEFAULT: Category = Category::Appearance;
+
+    /// Whether this build carries the category's pane.
+    pub fn is_built(self) -> bool {
+        Self::ALL.contains(&self)
+    }
 
     /// Which section this category groups under.
     pub fn section(self) -> Section {
@@ -150,7 +182,8 @@ impl Category {
             | Category::Spelling
             | Category::RegionFormats
             | Category::TimeDate => Section::Personal,
-            Category::Users
+            Category::DevicesAccess
+            | Category::Users
             | Category::Billing
             | Category::ExternalAccounts
             | Category::AgentModels
@@ -215,6 +248,7 @@ impl Category {
             Category::Updates => Icon::Refresh,
             Category::About => Icon::Info,
             Category::Billing => Icon::Landmark,
+            Category::DevicesAccess => Icon::MonitorSmartphone,
         }
     }
 
@@ -303,6 +337,7 @@ impl Category {
             Category::Updates => "updates",
             Category::About => "about",
             Category::Billing => "billing",
+            Category::DevicesAccess => "devices_access",
         }
     }
 }
@@ -310,6 +345,14 @@ impl Category {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A build without the device's own panes carries exactly the pages
+    /// search offers on the web, so a page found there opens.
+    #[test]
+    fn the_web_build_carries_the_pages_web_search_offers() {
+        let built: Vec<&str> = Category::WEB.iter().map(|c| c.slug()).collect();
+        assert_eq!(built, settings_store::index::WEB_PAGES);
+    }
 
     /// Every category is unique, fully described, keyworded and sits in exactly
     /// one listed section; slugs are unique too.

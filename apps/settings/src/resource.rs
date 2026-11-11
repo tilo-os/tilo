@@ -43,6 +43,7 @@ impl Settings {
 /// The effect a system tool's intent opens Settings with: VPN's list, a
 /// profile's page or its import. Network's pane when the VPN effects are not
 /// in this build.
+#[cfg(feature = "tilo-os")]
 pub fn tool_effect(intent: &os_actions::ToolIntent) -> Result<SettingsEffect, String> {
     let os_actions::ToolIntent::Vpn { route, profile } = intent else {
         return Err("Settings opens only the VPN tool".into());
@@ -156,10 +157,13 @@ impl ResourceApp for SettingsShell {
         let parsed = match input.argument() {
             Some(argument) => parse_settings_uri(argument),
             // Opened as a system tool (VPN): where the tool's intent says.
+            #[cfg(feature = "tilo-os")]
             None => match os_actions::tool_intent_from_env() {
                 Some(intent) => tool_effect(&intent),
                 None => return Vec::new(),
             },
+            #[cfg(not(feature = "tilo-os"))]
+            None => return Vec::new(),
         };
         match parsed {
             Ok(effect) => vec![Invoke::effect(&effect)],
@@ -204,6 +208,7 @@ impl ResourceApp for SettingsShell {
 }
 
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 mod tests {
     use super::*;
     use crate::panes::agent_models::AgentModelsEffect;

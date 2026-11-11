@@ -68,7 +68,9 @@ pub mod categories;
 pub mod channel;
 pub mod resource;
 pub mod scenarios;
+#[cfg(feature = "tilo-os")]
 pub use os_actions::codec_pack;
+#[cfg(feature = "tilo-os")]
 pub use os_actions::windows_compat;
 pub mod continuity;
 pub mod device_read;
@@ -87,19 +89,32 @@ pub mod setting;
 pub mod settings_app;
 pub mod sidebar;
 #[cfg(test)]
+#[cfg(feature = "tilo-os")]
 pub(crate) mod stall;
 #[cfg(test)]
+#[cfg_attr(
+    not(feature = "tilo-os"),
+    allow(dead_code, reason = "some helpers serve only the device panes' tests")
+)]
 pub(crate) mod testing;
+#[cfg(feature = "tilo-os")]
 pub mod watch;
 pub mod window;
 
+#[cfg(feature = "tilo-os")]
 pub mod account_probe;
+#[cfg(feature = "tilo-os")]
 pub mod device_fleet;
+#[cfg(feature = "tilo-os")]
 pub mod dispatcher;
+#[cfg(feature = "tilo-os")]
 pub(crate) mod input_sources;
+#[cfg(feature = "tilo-os")]
 pub mod keyboard_preview;
+#[cfg(feature = "tilo-os")]
 pub(crate) mod keyboard_watch;
 pub mod panes;
+#[cfg(feature = "tilo-os")]
 pub mod speaker_setup;
 
 pub use settings_app::SettingsApp;

@@ -120,8 +120,9 @@ impl OwnerCommitService for NativeOwnerCommits {
     /// A document write is admitted by the owner as it is, whole record or
     /// change: a record `workspace` does not hold yet is founded by the
     /// write itself, sealed, never by one this device publishes ahead of it.
-    /// The owner sequences it in its turn with this device's key: the
-    /// device's several local writers sign before that turn orders them.
+    /// The owner drafts it again past its record's floor when the device's
+    /// several local writers signed out of the order its turns take them,
+    /// for this device's key to sign.
     fn commit_local_document(
         &self,
         request: OwnerCommitRequest,
@@ -137,8 +138,11 @@ impl OwnerCommitService for NativeOwnerCommits {
             let room = WorkspaceId::parse(&request.workspace).ok_or("invalid native room")?;
             custody.check_custody(&owner, room)?;
             let key = custody.signing_key(&owner, room)?;
-            let (committed, receipt) =
-                owner.commit_local_document(request, &key, std::time::SystemTime::now())?;
+            let (committed, receipt) = futures::executor::block_on(owner.commit_local_document(
+                request,
+                &key,
+                std::time::SystemTime::now(),
+            ))?;
             // What search holds of the record is read again from what it now
             // holds.
             if let (Some(changes), CommitOperation::Document { app, record, .. }) =
