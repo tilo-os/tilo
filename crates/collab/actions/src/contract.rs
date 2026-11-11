@@ -212,6 +212,15 @@ fn edit_parts(
 /// knowing the app.
 pub const DOCUMENT_READ_TAG: &str = "read:document";
 
+/// [`ActionContract::tags`] entry of a read-only action that reads what its
+/// record holds (a version of it, a review of one) and moves nothing, though
+/// it takes arguments and so is no [`DOCUMENT_READ_TAG`] a caller reads a
+/// document's first page through. Like a document read, it is anyone's to
+/// run who may read the record, and it discloses the record it sits on to
+/// them: History's `review-restore`, a step for agents, is how an agent is
+/// shown a record that has no document read (Terminal's session).
+pub const RECORD_READ_TAG: &str = "read:record";
+
 /// [`ActionContract::tags`] entry of the action that opens the file its
 /// `path` parameter names in this app instance, reading it inside the app's
 /// sandbox. A caller that launched the app with a file opens it through
@@ -836,6 +845,35 @@ impl ActionContract {
     /// [`DOCUMENT_READ_TAG`].
     pub fn reads_document(&self) -> bool {
         self.tags.iter().any(|tag| tag == DOCUMENT_READ_TAG)
+    }
+
+    /// Whether the action reads what its record holds and moves nothing: a
+    /// document read ([`DOCUMENT_READ_TAG`]) or another read of the record's
+    /// state ([`RECORD_READ_TAG`]).
+    pub fn reads_record(&self) -> bool {
+        self.reads_document() || self.tags.iter().any(|tag| tag == RECORD_READ_TAG)
+    }
+
+    /// Whether a view under this contract shows its resource to callers other
+    /// than its publisher: a read of the record ([`Self::reads_record`]) or
+    /// the caller's own participant view. Any other view changes only what
+    /// its caller sees, and keeps the resource it alone discloses private
+    /// (the action directory's disclosure, `agent_disclosure`).
+    pub fn discloses_resource(&self) -> bool {
+        self.reads_record() || self.is_participant_view()
+    }
+
+    /// Which of a resource's views the action directory discloses it
+    /// through, lowest first and the first of equals: a document read, then
+    /// another read of the record, then any other view.
+    pub fn disclosure_rank(&self) -> u8 {
+        if self.reads_document() {
+            0
+        } else if self.reads_record() {
+            1
+        } else {
+            2
+        }
     }
 
     /// Whether the action opens the file its `path` names. See

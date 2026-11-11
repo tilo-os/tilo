@@ -47,6 +47,52 @@ fn directory_disclosure_prefers_document_reads_to_private_views() {
     );
 }
 
+/// A record with no document read, whose own window views (Show history,
+/// render) come before History's `review-restore`, a read of the record, is
+/// disclosed through that read: whoever may read the record sees it, an agent
+/// included, so its listing reaches the record's actions (Terminal's session
+/// and its `run`). A document read still comes first.
+#[test]
+fn directory_disclosure_prefers_a_read_of_the_record_to_private_views() {
+    let view = |id: &str| {
+        ActionSpec::operation(
+            id,
+            id,
+            OperationKind::View,
+            COUNTER_TYPE,
+            &CounterAction::Bump,
+        )
+        .unwrap()
+    };
+    let review = view("review").reads_record();
+    let session = ResourceSpec::new("session", "test.session", "Session")
+        .with_action(view("render"))
+        .with_action(view("history"))
+        .with_action(review.clone());
+    let readable = ResourceSpec::new("readable", "test.document", "Document")
+        .with_action(view("render"))
+        .with_action(review)
+        .with_action(view("read").reads_document());
+    let (app, _) = declared_directory(0);
+    for (resource, disclosed) in [(&session, "review"), (&readable, "read")] {
+        let row = app.directory_resource_row(resource, "", true).unwrap();
+        assert_eq!(row.visibility.as_ref().unwrap().action, disclosed);
+    }
+    let resources = vec![session, readable];
+    let descriptors = tilo_actions::door::survey(&resources);
+    let snapshot = crate::app::action_directory_snapshot::ActionDirectorySnapshot::build(
+        &resources,
+        &descriptors,
+        |_| None,
+    );
+    let disclosed: Vec<&str> = snapshot
+        .roots
+        .iter()
+        .map(|row| row.visibility.as_ref().unwrap().action.as_str())
+        .collect();
+    assert_eq!(disclosed, ["review", "read"]);
+}
+
 // No bounded page or exact-resource override: this is the ordinary app declaration API.
 struct DeclaredDirectory {
     calls: std::rc::Rc<Cell<usize>>,
