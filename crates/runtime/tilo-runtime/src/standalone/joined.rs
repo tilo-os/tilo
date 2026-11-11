@@ -370,7 +370,7 @@ impl Joined {
         now: u64,
     ) -> Option<std::collections::BTreeSet<collab_types::Ed25519PublicKey>> {
         let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(std::time::Duration::from_secs(now))
+            .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         let readers = self
             .owner
@@ -397,7 +397,7 @@ impl Joined {
         now: u64,
     ) -> Option<collab_types::ChannelId> {
         let at = std::time::SystemTime::UNIX_EPOCH
-            .checked_add(std::time::Duration::from_secs(now))
+            .checked_add(tilo_action_broker::channel_encryption::policy_instant(now))
             .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
         self.owner
             .with_current(workspace, |view| view.unit_scope(at, route))

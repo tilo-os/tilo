@@ -584,7 +584,7 @@ impl ChannelDirectory for OwnerDirectory {
         route: Option<&ChannelRoute>,
         now: u64,
     ) -> Option<BTreeSet<Ed25519PublicKey>> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
         let reader = self.reader;
         let readers = self
             .owner
@@ -619,7 +619,7 @@ impl ChannelDirectory for OwnerDirectory {
         route: &ChannelRoute,
         now: u64,
     ) -> Option<ChannelId> {
-        let at = UNIX_EPOCH.checked_add(Duration::from_secs(now))?;
+        let at = UNIX_EPOCH.checked_add(tilo_channels::policy_instant(now))?;
         self.owner
             .with_current(workspace, |view| view.unit_scope(at, route))
             .ok()
