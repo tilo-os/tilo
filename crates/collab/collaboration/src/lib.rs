@@ -1192,7 +1192,7 @@ impl CollaborationManager {
             cluster_id: pending.cluster_id,
             record,
             record_kind: Some(checkout.kind.as_str().to_owned()),
-            handle: presence_handle(),
+            handle: crate::local_identity::own_name(),
         }) {
             return Err("native route queue unavailable".into());
         }
@@ -1836,14 +1836,6 @@ impl CollaborationManager {
         }
         events
     }
-}
-
-/// The name announced on `Hello`: the person's profile name from their
-/// public identity record. Without one the broker names them by their id.
-pub fn presence_handle() -> Option<String> {
-    crate::local_identity::bound()
-        .map(|identity| identity.display_name.trim().to_owned())
-        .filter(|name| !name.is_empty())
 }
 
 pub use runtime_collab::route::channel_key;

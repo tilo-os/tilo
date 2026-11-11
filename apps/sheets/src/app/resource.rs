@@ -153,10 +153,7 @@ impl SheetsApp {
                 .as_ref()
                 .is_some_and(|people| people.is_me(author));
         if me {
-            return ui::local_identity::bound()
-                .map(|identity| identity.display_name.trim().to_owned())
-                .filter(|name| !name.is_empty())
-                .unwrap_or_else(|| "You".to_owned());
+            return ui::local_identity::own_name().unwrap_or_else(|| "You".to_owned());
         }
         if opaque_participant_id(author) {
             "Someone".to_owned()

@@ -120,6 +120,14 @@ pub fn bound() -> Option<LocalIdentity> {
     }
 }
 
+/// What the person is called: their profile name, when they have one.
+#[must_use]
+pub fn own_name() -> Option<String> {
+    bound()
+        .map(|identity| identity.display_name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
 /// A source with no identity.
 pub struct NoLocalIdentity;
 
@@ -235,13 +243,13 @@ impl LocalIdentitySource for FixedIdentity {
 }
 
 #[cfg(test)]
-mod handle_tests {
+mod name_tests {
     use super::*;
 
     /// Peers learn what to call this person from the name the app announces
     /// on joining: the profile name, never an id standing in for one.
     #[test]
-    fn an_app_announces_its_person_by_their_profile_name() {
+    fn an_app_names_its_person_by_their_profile_name() {
         let _guard = tilo_test_env::lock();
         let person = |name: &str| {
             install_source(Some(Arc::new(FixedIdentity(LocalIdentity {
@@ -251,12 +259,9 @@ mod handle_tests {
             }))));
         };
         person("  Throwaway test identity ");
-        assert_eq!(
-            crate::presence_handle().as_deref(),
-            Some("Throwaway test identity")
-        );
+        assert_eq!(own_name().as_deref(), Some("Throwaway test identity"));
         person(" ");
-        assert_eq!(crate::presence_handle(), None);
+        assert_eq!(own_name(), None);
         install_source(None);
     }
 }

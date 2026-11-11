@@ -67,12 +67,9 @@ impl People {
         Self {
             roster: Rc::default(),
             revision: LocalState::new(0),
-            local: me.and_then(|_| {
-                ui_core::local_identity::bound()
-                    .map(|identity| identity.display_name.trim().to_owned())
-                    .filter(|name| !name.is_empty())
-                    .map(Rc::from)
-            }),
+            local: me
+                .and_then(|_| ui_core::local_identity::own_name())
+                .map(Rc::from),
             me: me.map(Rc::from),
         }
     }

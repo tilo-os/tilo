@@ -37,10 +37,7 @@ impl LocalIdentity {
     /// Participant `id` as this device shows its own person: the display
     /// name of the person's public identity record.
     pub fn for_participant(id: &str) -> Self {
-        let name = ui::local_identity::bound()
-            .map(|identity| identity.display_name.trim().to_string())
-            .filter(|name| !name.is_empty())
-            .unwrap_or_else(|| unnamed_label(id));
+        let name = ui::local_identity::own_name().unwrap_or_else(|| unnamed_label(id));
         Self {
             initials: initials_of(&name),
             color_idx: color_from_bytes(id.as_bytes()),
