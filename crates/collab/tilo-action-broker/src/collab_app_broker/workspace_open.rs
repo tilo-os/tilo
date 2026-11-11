@@ -162,12 +162,21 @@ impl AppBrokerState {
         }
     }
 
-    /// `surface` was published. Once it offers something, the `open` that
-    /// started its connection is done, opened at the route that published: an
-    /// app publishes while it starts too, before its view holds its document,
-    /// and that catalogue offers nothing a caller could read or run yet.
-    pub(super) fn launch_published(&self, surface: &super::PublishedSurface) {
-        if surface.actions.is_empty() {
+    /// `surface` was published on a record the app joined as `record_kind`.
+    /// Once it offers that record, the `open` that started its connection is
+    /// done, opened at the route that published: an app publishes while it
+    /// starts too, before its view holds its record, and what a caller reads
+    /// and runs next is the record's. An app naming no kind is done once it
+    /// offers anything.
+    pub(super) fn launch_published(
+        &self,
+        surface: &super::PublishedSurface,
+        record_kind: Option<&str>,
+    ) {
+        let offers = |action: &super::PublishedAction| {
+            record_kind.is_none_or(|kind| action.resource_kind == kind)
+        };
+        if !surface.actions.iter().any(offers) {
             return;
         }
         let peer = surface.peer_id;
@@ -496,7 +505,7 @@ mod tests {
             match step {
                 0 => {
                     state.launch_connected(80, &connected(1, &workspace_id));
-                    state.launch_published(&offering(80));
+                    state.launch_published(&offering(80), None);
                 }
                 1 => {
                     state.launch_connected(81, &connected(2, &workspace_id));
@@ -576,7 +585,7 @@ mod tests {
             })
         );
         state.launch_connected(77, &connected(1, &workspace));
-        state.launch_published(&offering(77));
+        state.launch_published(&offering(77), None);
         let terminal = state.invocation_status(job).unwrap();
         assert_eq!(terminal.invocation(), request.invocation);
         assert_eq!(answered(&state, job), Some(naming(77)));
@@ -603,7 +612,7 @@ mod tests {
         assert!(state.completed_invocations.lock().unwrap().is_empty());
         let job = open(&state, &workspace);
         state.launch_connected(78, &connected(1, &workspace));
-        state.launch_published(&offering(78));
+        state.launch_published(&offering(78), None);
         assert_eq!(answered(&state, job), Some(naming(78)));
     }
 
@@ -624,7 +633,7 @@ mod tests {
         *state.journal.lock().unwrap() = Ok(None);
         let job = open(&state, &workspace);
         state.launch_connected(79, &connected(1, &workspace));
-        state.launch_published(&offering(79));
+        state.launch_published(&offering(79), None);
         assert_eq!(answered(&state, job), Some(naming(79)));
     }
 
@@ -638,9 +647,9 @@ mod tests {
         // The second launch's instance comes up first, as peer 5; another
         // app of the workspace, not started by either, publishes too.
         state.launch_connected(5, &connected(2, &workspace));
-        state.launch_published(&offering(4));
+        state.launch_published(&offering(4), None);
         assert!(accepted(&state, first) && accepted(&state, second));
-        state.launch_published(&offering(5));
+        state.launch_published(&offering(5), None);
         assert_eq!(answered(&state, second), Some(naming(5)));
         assert!(accepted(&state, first), "peer 5 is not the first's");
 
@@ -654,10 +663,10 @@ mod tests {
             },
         );
         state.launch_connected(6, &connected(1, "another-workspace"));
-        state.launch_published(&offering(6));
+        state.launch_published(&offering(6), None);
         assert!(accepted(&state, first));
         state.launch_connected(7, &connected(1, &workspace));
-        state.launch_published(&offering(7));
+        state.launch_published(&offering(7), None);
         assert_eq!(answered(&state, first), Some(naming(7)));
     }
 
@@ -681,7 +690,7 @@ mod tests {
                 && error.message.contains("exited before it published its actions")
         ));
         // Peer 10 of the same app connects with no ticket: not the open's.
-        state.launch_published(&offering(10));
+        state.launch_published(&offering(10), None);
 
         let now = Instant::now();
         state.expire_workspace_opens(now);
@@ -697,10 +706,12 @@ mod tests {
         assert!(accepted(&state, quiet));
         assert!(state.workspace_opens.next_deadline().is_none());
         let mut starting = offering(8);
+        state.launch_published(&starting, Some("files.folder"));
+        assert!(accepted(&state, quiet), "its record is not offered yet");
         starting.actions.clear();
-        state.launch_published(&starting);
+        state.launch_published(&starting, None);
         assert!(accepted(&state, quiet), "nothing offered yet");
-        state.launch_published(&offering(8));
+        state.launch_published(&offering(8), Some("files.entry"));
         assert_eq!(answered(&state, quiet), Some(naming(8)));
     }
 }

@@ -1558,9 +1558,10 @@ impl JoinedChannel {
             .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
-        // A catalogue offering something is what an `open` of it waits for: a
-        // directory alone is offered before the app is ready.
-        self.state.launch_published(&surface);
+        // A catalogue offering its record is what an `open` of it waits for:
+        // a directory alone is offered before the app is ready.
+        self.state
+            .launch_published(&surface, self.record_kind.as_deref());
         Ok(())
     }
 
