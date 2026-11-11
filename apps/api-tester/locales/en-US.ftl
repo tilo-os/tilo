@@ -88,3 +88,4 @@ api-tester-request-url = Request URL
 api-tester-method = Method
 api-tester-response-headers = Response headers
 api-tester-requests = Requests
+api-tester-add-row = Add { $field }

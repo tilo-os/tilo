@@ -1029,7 +1029,7 @@ impl Core {
             .enumerate()
             .map(|(index, location)| {
                 let reading = self.model.snapshot_for(location.id).map_or_else(
-                    || "Current conditions are loading".to_string(),
+                    || crate::i18n::t("weather-loading"),
                     |snapshot| {
                         let temp = snapshot
                             .temp_in(snapshot.current.temperature, self.units)

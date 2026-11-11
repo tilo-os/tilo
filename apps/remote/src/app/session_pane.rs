@@ -419,9 +419,9 @@ impl Widget for SessionPane {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let core = self.session.borrow();
         let name = if Self::terminal_grid(&core).is_some() {
-            "Remote terminal"
+            crate::resource::CATALOG.t("remote-a11y-terminal")
         } else {
-            "Remote desktop"
+            crate::resource::CATALOG.t("remote-a11y-desktop")
         };
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::Group)

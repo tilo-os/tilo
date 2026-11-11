@@ -80,8 +80,9 @@ pub(crate) fn classify_pty_read(
 }
 
 /// What the session banner says once the shell has exited.
-const SESSION_ENDED_MESSAGE: &str =
-    "Session ended. The shell has exited, so typing no longer reaches it.";
+fn session_ended_message() -> String {
+    crate::i18n::t("terminal-session-ended")
+}
 
 /// One UI turn may parse at most this much queued PTY output. Anything beyond
 /// it stays in the bounded queue for the following frame, preserving ordering
@@ -784,7 +785,7 @@ impl TerminalWidget {
             session_disconnected: Arc::new(AtomicBool::new(false)),
             #[cfg(windows)]
             child_killer: None,
-            session_status_message: Arc::new(Mutex::new(SESSION_ENDED_MESSAGE.to_owned())),
+            session_status_message: Arc::new(Mutex::new(session_ended_message())),
             grid: vec![" ".repeat(width); height],
             grid_attrs: vec![vec![Attr::default(); width]; height],
             cursor_x: 0,
@@ -959,10 +960,9 @@ impl TerminalWidget {
     }
 
     fn disconnected_message(&self) -> String {
-        self.session_status_message.lock().map_or_else(
-            |_| SESSION_ENDED_MESSAGE.to_owned(),
-            |message| message.clone(),
-        )
+        self.session_status_message
+            .lock()
+            .map_or_else(|_| session_ended_message(), |message| message.clone())
     }
 
     fn status_banner_message(&self) -> Option<String> {
@@ -1755,7 +1755,7 @@ impl TerminalWidget {
     /// End the process's input, as a failed write does. Test accessor.
     #[cfg(test)]
     pub(crate) fn mark_disconnected_for_test(&self) {
-        self.mark_disconnected("Session ended — input unavailable");
+        self.mark_disconnected(&crate::i18n::t("terminal-session-input-unavailable"));
     }
 
     pub fn context_menu_is_open(&self) -> bool {
@@ -3053,7 +3053,7 @@ impl TerminalWidget {
             self.feed(&crate::scenarios::output(name));
         }
         if name == "ended" {
-            self.mark_disconnected("Session ended — input unavailable");
+            self.mark_disconnected(&crate::i18n::t("terminal-session-input-unavailable"));
         }
         self.stage_view(name);
     }
@@ -3636,16 +3636,14 @@ impl Widget for TerminalWidget {
             .iter()
             .filter(|placement| placement.alternate_screen == self.alt_active)
             .count();
-        let mut description = if graphics == 0 {
-            "Terminal output shared with collaborators. Typing is sent to the live process. Control Shift C copies, Control Shift V pastes, and Shift Page Up or Shift Page Down reviews output history".to_string()
-        } else {
-            format!(
-                "Terminal output shared with collaborators. Typing is sent to the live process. \
-                 Control Shift C copies, Control Shift V pastes, and Shift Page Up or Shift Page \
-                 Down reviews output history. {graphics} graphical placement(s) are visible when \
-                 their image blobs are available"
-            )
-        };
+        let mut description = crate::i18n::t("terminal-a11y-description");
+        if graphics > 0 {
+            description.push(' ');
+            description.push_str(&crate::i18n::t_args(
+                "terminal-a11y-graphics",
+                &[("count", graphics.to_string().into())],
+            ));
+        }
         if self.is_disconnected() {
             description.push_str(". ");
             description.push_str(&self.disconnected_message());
@@ -6785,11 +6783,11 @@ impl TerminalWidget {
             .name("tilo-terminal-child-wait".into())
             .spawn(move || {
                 let message = if child.wait().is_ok() {
-                    SESSION_ENDED_MESSAGE
+                    session_ended_message()
                 } else {
-                    "Session ended. The shell's exit status could not be read."
+                    crate::i18n::t("terminal-session-exit-unknown")
                 };
-                set_terminal_disconnected(&disconnected, &status, message);
+                set_terminal_disconnected(&disconnected, &status, &message);
                 child_exit.ended(SessionEnd::Exited);
                 request_terminal_wake(&waker);
             })
@@ -6826,8 +6824,9 @@ impl TerminalWidget {
         self.output_rx = output_rx;
         self.deferred_output.set(None);
         self.session_disconnected = Arc::new(AtomicBool::new(false));
-        self.session_status_message =
-            Arc::new(Mutex::new("Session ended — input unavailable".into()));
+        self.session_status_message = Arc::new(Mutex::new(crate::i18n::t(
+            "terminal-session-input-unavailable",
+        )));
         self.begin_local_session();
         self.runs.marks = backend.runs.map(crate::runs::Marks::new);
         let widget = self;
@@ -6855,7 +6854,7 @@ impl TerminalWidget {
                         set_terminal_disconnected(
                             &session_disconnected,
                             &session_status_message,
-                            "Session ended. The terminal can no longer read from the shell.",
+                            &crate::i18n::t("terminal-session-read-failed"),
                         );
                         request_terminal_wake(&waker);
                         break;
@@ -6871,7 +6870,7 @@ impl TerminalWidget {
                             set_terminal_disconnected(
                                 &session_disconnected,
                                 &session_status_message,
-                                SESSION_ENDED_MESSAGE,
+                                &session_ended_message(),
                             );
                             // The shell exited (its window closes), or the
                             // connection to a remote one was lost (the tab

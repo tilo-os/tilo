@@ -55,3 +55,12 @@ terminal-remember = Remembered { $command }
 terminal-used = Remembered the environment this device opened last
 terminal-recent-environments-devices = Remembered the environment each device opened last
 terminal-link-in-output = Link in visible terminal output
+terminal-a11y-description = Shared terminal. Typing goes to the shell running on this device.
+terminal-a11y-graphics = { $count ->
+    [one] One picture shows in the terminal.
+   *[other] { $count } pictures show in the terminal.
+}
+terminal-session-ended = Session ended. The shell has exited, so typing no longer reaches it.
+terminal-session-exit-unknown = Session ended. The shell's exit status could not be read.
+terminal-session-input-unavailable = Session ended. Input is unavailable.
+terminal-session-read-failed = Session ended. The terminal can no longer read from the shell.

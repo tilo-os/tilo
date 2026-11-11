@@ -55,3 +55,12 @@ terminal-remember = { $command } gemerkt
 terminal-used = Die zuletzt von diesem Gerät geöffnete Umgebung gemerkt
 terminal-recent-environments-devices = Die zuletzt von jedem Gerät geöffnete Umgebung gemerkt
 terminal-link-in-output = Link in der sichtbaren Terminalausgabe
+terminal-a11y-description = Gemeinsames Terminal. Tippen geht an die Shell auf diesem Gerät.
+terminal-a11y-graphics = { $count ->
+    [one] Ein Bild wird im Terminal gezeigt.
+   *[other] { $count } Bilder werden im Terminal gezeigt.
+}
+terminal-session-ended = Sitzung beendet. Die Shell wurde beendet, Tippen erreicht sie nicht mehr.
+terminal-session-exit-unknown = Sitzung beendet. Der Exit-Status der Shell war nicht lesbar.
+terminal-session-input-unavailable = Sitzung beendet. Eingabe ist nicht möglich.
+terminal-session-read-failed = Sitzung beendet. Das Terminal kann nichts mehr von der Shell lesen.

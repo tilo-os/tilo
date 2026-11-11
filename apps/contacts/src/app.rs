@@ -1493,8 +1493,8 @@ impl ContactsApp {
         }
         if let Some(work) = key.1 {
             let label = match work {
-                FileWork::Import => "Importing contacts",
-                FileWork::Export => "Exporting contacts",
+                FileWork::Import => crate::account_editor::CATALOG.t("contacts-importing"),
+                FileWork::Export => crate::account_editor::CATALOG.t("contacts-exporting"),
             };
             controls = controls.push(Box::new(
                 ui::widget::ProgressBar::indeterminate().with_label(label),
