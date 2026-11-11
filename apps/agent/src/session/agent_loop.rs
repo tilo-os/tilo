@@ -866,21 +866,37 @@ impl Session {
         if self.awaiting_companions.is_empty() {
             return;
         }
-        let deadline = ui::time::now() + COMPANION_WAIT;
-        let mut kept = Vec::new();
-        loop {
-            self.absorb_catalogue_updates();
+        let published = self.await_catalogue(COMPANION_WAIT, |session| {
+            missing_companions(&session.awaiting_companions, &session.broker_surfaces).is_empty()
+        });
+        if !published {
             let missing = missing_companions(&self.awaiting_companions, &self.broker_surfaces);
-            if missing.is_empty() {
-                break;
+            tracing::warn!(
+                ?missing,
+                "companions did not publish in time; planning without them"
+            );
+        }
+        self.awaiting_companions.clear();
+    }
+
+    /// Wait, at most `most`, until the catalogue the broker republishes holds what `published`
+    /// asks of it: on its republications, never on a timer. Events other than catalogue
+    /// republications are kept for the session loop. Whether it came.
+    pub(super) fn await_catalogue(
+        &mut self,
+        most: Duration,
+        mut published: impl FnMut(&mut Self) -> bool,
+    ) -> bool {
+        let deadline = ui::time::now() + most;
+        let mut kept = Vec::new();
+        let came = loop {
+            self.absorb_catalogue_updates();
+            if published(self) {
+                break true;
             }
             let now = ui::time::now();
             if now >= deadline {
-                tracing::warn!(
-                    ?missing,
-                    "companions did not publish in time; planning without them"
-                );
-                break;
+                break false;
             }
             match self.link.recv(deadline - now) {
                 Ok(Some(CollabEvent::ActionCatalogue { surfaces })) => {
@@ -889,9 +905,9 @@ impl Session {
                 Ok(Some(other)) => kept.push(other),
                 Ok(None) | Err(_) => {}
             }
-        }
+        };
         self.link.defer(kept);
-        self.awaiting_companions.clear();
+        came
     }
 
     /// Apply catalogue republications already queued on the link, without
