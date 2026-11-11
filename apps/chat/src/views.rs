@@ -957,7 +957,7 @@ fn message_said(c: &Channel, message: &Message, cx: &ViewCx) -> Node {
     {
         // A turn that ended without an answer the person can read says what happened where it
         // happened, with a Retry that asks the agent again on the same message.
-        body.push(failed_row(message, work, cx));
+        body.push(failed_row(c, message, work, cx));
     }
     ui::stack(&cx.key(format!("said-{}", message.id)), Gap::Tight, body)
 }
@@ -1001,7 +1001,7 @@ fn writing_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
 /// what to do next. The run's working record (the transport's error, the partial answer, the
 /// provider's exposed reasoning) is for whoever debugs the failure later, so it sits behind a
 /// disclosure: a person who just wants to read the conversation never meets it.
-fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
+fn failed_row(c: &Channel, message: &Message, work: &Work, cx: &ViewCx) -> Node {
     let mut banner =
         ui::BannerBuilder::new(&cx.key(format!("failed-{}", message.id)), work.happened())
             .kind(ui::BannerKind::Error)
@@ -1015,11 +1015,18 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
     }
     let banner: Node = banner.into();
     let banner = if let Some(summons) = message.retry_summons.clone() {
+        // The channel's `retry` takes the channel first, then the reply it asks again and the
+        // message that reply answered, exactly as the same channel's `post` takes the channel
+        // before the text: the resource is the subject, never the first argument.
         let fired = cx.action_with(
             &banner,
             "act",
             "retry",
-            vec![Arg::text(message.id.clone()), Arg::text(summons)],
+            vec![
+                Arg::text(c.id.clone()),
+                Arg::text(message.id.clone()),
+                Arg::text(summons),
+            ],
         );
         node::on(banner, "act", fired)
     } else {
@@ -2590,9 +2597,12 @@ mod tests {
                 cx.effect(&rows[0].key, "act"),
                 Some(tilo_view::Effect::Action {
                     action: "retry".to_owned(),
-                    // The reply, and the message it answers: the verb asks the agent again on
-                    // that message, and posts nothing.
+                    // The channel, the reply, and the message it answers: the verb asks the agent
+                    // again on that message, and posts nothing. The channel comes first, exactly
+                    // as the same channel's `post` takes it: the resource is the subject of the
+                    // invocation, never left to the first parameter.
                     args: vec![
+                        Arg::text("c_crit"),
                         Arg::text(
                             crate::record::reply_id(&Id::from_raw("m_asked"), "agent:tide")
                                 .to_string(),
@@ -2600,7 +2610,7 @@ mod tests {
                         Arg::text("m_asked"),
                     ],
                 }),
-                "Retry is the conversation's own verb, with the reply it retries ({state})"
+                "Retry is the conversation's own verb, naming the channel it asks in ({state})"
             );
             assert!(
                 !has_kind(&tree, "ui.Spinner"),

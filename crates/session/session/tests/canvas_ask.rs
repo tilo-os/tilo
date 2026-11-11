@@ -1035,3 +1035,109 @@ fn a_served_resources_open_stands_it_beside_the_conversation_that_asked() {
     assert_eq!(who, agent, "attributed to the agent that asked");
     assert_eq!(verb, "place", "opening is one arranging step");
 }
+/// A failed turn's Retry, pressed where the page draws it, asks the agent again on the same
+/// message.
+///
+/// The row's Retry runs the channel's own `retry` through the view's event, which hands it the
+/// channel first, then the reply and the message it answered — the same order the composer's
+/// `post` names its channel in, because the channel's verb is published with its subject first.
+/// A Retry that left the channel out reached `ChatViewService::invoke` with its arguments shifted
+/// and found no open workspace holding the message, so pressing it started nothing while the
+/// same verb through the door answered: the row and the door disagreed about the verb's shape.
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one scenario end to end: the failure row, the press on its Retry, and the new attempt"
+)]
+fn pressing_the_rows_retry_asks_the_agent_again_on_the_same_message() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let mut session = session(root.path());
+    let summons = asked(&mut session, "what is on my task list?");
+    let workspace = workspace(&session);
+    let runs = session.conversation_runs();
+    let failed_turn = wait_for(&mut session, "the agent's turn", |_session| {
+        let turns = runs.runs(&workspace).ok()?;
+        turns.into_iter().find(|turn| {
+            turn.issue
+                .ends_with(&format!("/messages/{}", summons.message))
+        })
+    });
+    // The run ends without an answer, as Chat's own `record-work` writes it.
+    let mut failed = serde_json::Map::new();
+    failed.insert(
+        "work".into(),
+        serde_json::json!({"state": "provider_failed", "why": "The model connection closed"}),
+    );
+    failed.insert(
+        "say".into(),
+        serde_json::json!("The model connection closed"),
+    );
+    session
+        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &failed)
+        .unwrap_or_else(|error| panic!("Chat records the failed turn: {error}"));
+    let reply_row = reply_in_page(&session, &summons.channel, &summons.reply);
+    assert_eq!(
+        reply_row["retry"].as_bool(),
+        Some(true),
+        "the failed reply is the one a Retry asks again: {reply_row}"
+    );
+    // The row stands on the page where the ask placed it, and names its Retry: the press is on
+    // that button, as the person's pointer makes it.
+    until(&mut session, "the row's Retry", |session| {
+        on_screen(session, "Retry").is_some()
+    });
+    let before = session.person_messages_in(&summons.channel);
+    common::press(&mut session, "Retry");
+    // Nothing is posted: the person's words stay the one message they wrote.
+    assert_eq!(
+        session.person_messages_in(&summons.channel),
+        before,
+        "a retry asks again on the same message, never posting the question twice"
+    );
+    // The same message is a turn again, with a run of its own.
+    let again = wait_for(&mut session, "the turn again", |_session| {
+        let turns = runs.runs(&workspace).ok()?;
+        turns.into_iter().find(|turn| {
+            turn.issue
+                .ends_with(&format!("/messages/{}", summons.message))
+                && turn.epoch > failed_turn.epoch
+        })
+    });
+    assert_eq!(
+        again.instruction, "what is on my task list?",
+        "the person's own question, asked again"
+    );
+    assert_eq!(
+        again.epoch, 2,
+        "the retried turn is the second attempt's run, not the failed run again"
+    );
+    // The agent's answer lands in the attempt's own reply, written through Chat's own verb.
+    let answered = chat::record::reply_id_at(
+        &tilo_resource::Id::from_raw(summons.message.as_str()),
+        &summons.agent,
+        u32::try_from(again.epoch - 1).expect("an attempt"),
+    );
+    let mut took = serde_json::Map::new();
+    took.insert(
+        "work".into(),
+        serde_json::json!({"state": "provider_complete", "route": "model"}),
+    );
+    took.insert("say".into(), serde_json::json!("Your list is here."));
+    session
+        .invoke_service_step_as(&summons.agent, &summons.item, "record-work", &took)
+        .unwrap_or_else(|error| panic!("Chat records the new attempt: {error}"));
+    let answered_row = reply_in_page(&session, &summons.channel, answered.as_str());
+    assert_eq!(
+        answered_row["text"].as_str(),
+        Some("Your list is here."),
+        "the agent's words land in the attempt's own reply: {answered_row}"
+    );
+    // The failed try stands as history, offering no Retry.
+    let failed_row = reply_in_page(&session, &summons.channel, &summons.reply);
+    assert_eq!(
+        failed_row["retry"].as_bool(),
+        Some(false),
+        "a reply already asked again offers no Retry: {failed_row}"
+    );
+}
