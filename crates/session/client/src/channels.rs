@@ -82,7 +82,8 @@ impl Channels {
     /// Open this device's channel service over the workspaces `engine` holds:
     /// its sealed channel state under the platform secret store, and its
     /// groups settling through `link`, the workspace transport of this
-    /// session's collaboration plane.
+    /// session's collaboration plane. `settled` runs after every pass that
+    /// settles them: keys a record waited for may be here since.
     ///
     /// Without a secret store the service still runs, for the workspaces this
     /// device's own room host takes part in: their keys come from that host,
@@ -94,6 +95,7 @@ impl Channels {
         engine: &Arc<Engine>,
         link: Arc<ChannelLink>,
         broker: Arc<Mutex<BrokerChannels>>,
+        mut settled: impl FnMut() + Send + 'static,
     ) -> std::io::Result<Self> {
         let directory = Box::new(OwnerDirectory::participant(engine.owner().clone()));
         let gates: Arc<dyn ChannelGates> = Arc::new(BrokerGates(broker));
@@ -132,14 +134,17 @@ impl Channels {
         });
         let settled_access = access.clone();
         let mut rosters = Rosters::default();
-        let settled = Arc::clone(engine);
+        let engine_settled = Arc::clone(engine);
         let transport = Arc::clone(&link);
         let pump = GovernancePump::spawn(
             "tilo-channels",
             park,
             access,
             Arc::clone(&link) as Arc<dyn GovernanceTransport + Send + Sync>,
-            move || rosters.sweep(&transport, &settled),
+            move || {
+                rosters.sweep(&transport, &engine_settled);
+                settled();
+            },
         )?;
         // Every workspace this device already holds reads its roster: the plane carries a
         // workspace's window streams between the devices it admits from the moment it runs, not
