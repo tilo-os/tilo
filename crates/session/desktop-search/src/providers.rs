@@ -1150,6 +1150,13 @@ impl Default for WebSearch {
 }
 
 impl WebSearch {
+    /// Whether `hit` is the web search offered for every query, which says
+    /// nothing about whether the query matched anything.
+    #[must_use]
+    pub fn is_every_query_row(hit: &Hit) -> bool {
+        hit.provider == "web" && hit.id.starts_with("search:")
+    }
+
     fn web_search_row(&self, query: &str) -> Hit {
         use crate::answers::web::{fallback_search_url, web_search_uri};
         Hit {
@@ -1159,6 +1166,7 @@ impl WebSearch {
             outcome: None,
             kind: web_kind(),
             provider: self.id().into(),
+            // [`Self::is_every_query_row`] knows it by these.
             id: format!("search:{query}"),
             title: crate::i18n::t_args("search-web-for", &[("query", query.into())]),
             subtitle: Some(crate::i18n::t("search-web-subtitle")),

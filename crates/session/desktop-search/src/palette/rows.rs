@@ -80,7 +80,9 @@ pub(super) fn entries_for(
             entries.push(entry.group(label.clone()).group_total(group.total));
             rows.push(hit.clone());
         }
-        if capped {
+        // The apps the empty card lists end in the one way to every app:
+        // "All apps", never a second "Show all" beside it.
+        if capped && !applications {
             entries.push(ui::search::system::show_all_entry(
                 format!("{MORE_PREFIX}{}", more.len()),
                 &label,
@@ -100,6 +102,16 @@ pub(super) fn entries_for(
         }
     }
     entries
+}
+
+/// Whether `groups` hold nothing but the web search every query is offered
+/// ("Search the web for …"): what was typed matched nothing. A service a
+/// query names ("youtube cats") is a match, and stays.
+pub(super) fn nothing_matched(groups: &[KindGroup<Hit>]) -> bool {
+    groups
+        .iter()
+        .flat_map(|group| group.results.iter())
+        .all(crate::providers::WebSearch::is_every_query_row)
 }
 
 /// The row that lists every result the groups above had no room for.
