@@ -230,13 +230,13 @@ impl Session {
             &self.shared.pages,
             Instant::now(),
         );
-        // A window open on another device says which: the desk is told what the devices heard
-        // in its workspaces are called, the names a shared window's host goes by.
+        // A window open on another device says which: the desk is told what the devices this
+        // session heard in its workspaces call themselves, heard now or earlier.
         if let Some(sync) = sync.as_deref() {
             let names = self
                 .shared
                 .window_shares
-                .borrow()
+                .borrow_mut()
                 .device_names(&self.shared.handle, sync);
             self.shared
                 .desktop

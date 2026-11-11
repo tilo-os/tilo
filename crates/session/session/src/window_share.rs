@@ -243,6 +243,89 @@ pub(crate) struct WindowShares {
     /// Whether this session exists to be seen: a hosted browser environment shares its windows with
     /// the workspace's members the moment they open, since nobody runs it for itself.
     share_by_default: bool,
+    /// What the workspaces' other devices called themselves while this session ran: what a window
+    /// open on one of them names it by, whether the device is heard now or not.
+    devices: HeardDevices,
+}
+
+/// What this session heard the workspaces' other devices call themselves: a cache of what was
+/// heard, kept while the session runs and written nowhere. A device heard once keeps its name
+/// for as long as the desk lists a window of its, heard now or not, so a window open on a device
+/// that went to sleep still says which device to wake.
+#[derive(Default)]
+struct HeardDevices {
+    /// The device each salt was heard from, and whether a second one was heard under it: a salt
+    /// two devices' keys fold to names neither from then on. One entry a salt at most, so never
+    /// more than there are salts.
+    owners: BTreeMap<u16, Owner>,
+    /// What each device the desk lists a window of last called itself, by its salt: never more
+    /// entries than the desk has windows of other devices.
+    names: BTreeMap<u16, String>,
+}
+
+/// Whose a salt is, as far as this session heard.
+enum Owner {
+    /// The one device heard minting under it.
+    One(EndpointId),
+    /// Two devices at least: their keys fold to the one salt, so a window under it is either's.
+    Several,
+}
+
+impl HeardDevices {
+    /// Take in `devices`, the ones heard now with what each calls itself, and answer what the
+    /// desk calls each device it lists a window of, by the salt the device mints its ids under
+    /// ([`tilo_desktop_policy::DesktopPolicy::name_devices`]). `salt` is this device's own, and
+    /// `listed` the salts of the other devices' windows on the desk.
+    ///
+    /// A device keeps the name it last gave while the desk lists a window of its, and gives it
+    /// up with the last of them: a workspace the person left, or one that lists the device's
+    /// windows no longer, leaves nothing to say of it. A salt names one device or none: this
+    /// device's names nothing, a device that never gave a name has none, and a salt two devices
+    /// were ever heard under is neither's, so the desk never names the wrong device.
+    fn named(
+        &mut self,
+        salt: u16,
+        devices: &[(EndpointId, String)],
+        listed: &BTreeSet<u16>,
+    ) -> BTreeMap<u16, String> {
+        let Self { owners, names } = self;
+        for (device, _) in devices {
+            owners
+                .entry(tilo_desktop_model::ids::device_salt_of_key(
+                    device.as_bytes(),
+                ))
+                .and_modify(|owner| {
+                    if !matches!(owner, Owner::One(known) if known == device) {
+                        *owner = Owner::Several;
+                    }
+                })
+                .or_insert(Owner::One(*device));
+        }
+        let its_own = |minted: &u16| {
+            *minted != salt
+                && listed.contains(minted)
+                && matches!(owners.get(minted), Some(Owner::One(_)))
+        };
+        // The same device may be heard in several of the workspaces: the first name it gives in
+        // a pass stands, and a workspace it gives none in leaves the name to the next.
+        let mut said = BTreeSet::new();
+        for (device, name) in devices {
+            let minted = tilo_desktop_model::ids::device_salt_of_key(device.as_bytes());
+            let name = name.trim();
+            if name.is_empty() || !its_own(&minted) || !said.insert(minted) {
+                continue;
+            }
+            match names.get_mut(&minted) {
+                Some(known) if known == name => {}
+                Some(known) => name.clone_into(known),
+                None => {
+                    names.insert(minted, name.to_owned());
+                }
+            }
+        }
+        names.retain(|minted, _| its_own(minted));
+        names.clone()
+    }
 }
 
 /// A window another member shares, as this session shows it on the desk.
@@ -488,21 +571,33 @@ impl WindowShares {
         self.send_outgoing(desk, sync);
     }
 
-    /// What the other devices heard in the desk's workspaces are called, by the salt each mints
-    /// its ids under: what the desk names the device of a window open elsewhere by, the same
-    /// names a shared window's host goes by.
+    /// What the desk calls the other devices it lists a window of, by the salt each mints its ids
+    /// under: what each called itself when this session heard it in the desk's workspaces, now or
+    /// earlier ([`HeardDevices`]).
     pub(crate) fn device_names(
-        &self,
+        &mut self,
         desk: &DesktopHandle,
         sync: &Client,
     ) -> BTreeMap<u16, String> {
-        let heard: Vec<(EndpointId, String)> = desk.read(|tree| {
-            tree.workspaces
+        let own = self.salt;
+        let (heard, listed) = desk.read(|tree| {
+            let heard: Vec<(EndpointId, String)> = tree
+                .workspaces
                 .iter()
-                .flat_map(|held| sync.workspace_devices(&held.policy.workspace))
-                .collect()
+                .flat_map(|held| sync.workspace_device_names(&held.policy.workspace))
+                .collect();
+            let listed: BTreeSet<u16> = tree
+                .workspaces
+                .iter()
+                .flat_map(|held| &held.strips)
+                .flat_map(|strip| &strip.window_groups)
+                .flat_map(|group| &group.tabs)
+                .map(|tab| peer_salt_of(tab.id))
+                .filter(|minted| *minted != own)
+                .collect();
+            (heard, listed)
         });
-        device_names_of(self.salt, &heard)
+        self.devices.named(own, &heard, &listed)
     }
 
     /// When the shares next need a pass of their own: a viewer's ask for a window said again before
@@ -2000,40 +2095,6 @@ fn owners_of(
         );
     }
     owners
-}
-
-/// What each other device heard in the workspaces is called, by the salt it mints its ids under:
-/// what the desk says of a window open on that device
-/// ([`tilo_desktop_policy::DesktopPolicy::name_devices`]). `devices` are the ones heard, each
-/// with its name, and `salt` is this device's own. A salt names one device or none: this
-/// device's names nothing, a device heard with no name has none, and a salt the keys of two
-/// devices fold to is neither's, so the desk never names the wrong device.
-fn device_names_of(salt: u16, devices: &[(EndpointId, String)]) -> BTreeMap<u16, String> {
-    let mut heard: BTreeMap<u16, (EndpointId, &str)> = BTreeMap::new();
-    let mut shared = BTreeSet::from([salt]);
-    for (device, name) in devices {
-        let minted = tilo_desktop_model::ids::device_salt_of_key(device.as_bytes());
-        match heard.get_mut(&minted) {
-            Some((known, _)) if known != device => {
-                shared.insert(minted);
-            }
-            // The same device, heard in another of the workspaces: the first name it gave
-            // stands, and a workspace it gave none in leaves the name to the next.
-            Some((_, called)) => {
-                if called.trim().is_empty() {
-                    *called = name.as_str();
-                }
-            }
-            None => {
-                heard.insert(minted, (*device, name.as_str()));
-            }
-        }
-    }
-    heard
-        .into_iter()
-        .filter(|(minted, (_, name))| !shared.contains(minted) && !name.trim().is_empty())
-        .map(|(minted, (_, name))| (minted, name.to_owned()))
-        .collect()
 }
 
 /// The desk without the tab `tab` , and without the strip `strip` when that was made for it and
