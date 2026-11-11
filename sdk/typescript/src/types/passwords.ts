@@ -23,6 +23,7 @@ export interface Vault extends tilo.Resource {
     proposal: string;
   }): Promise<void>;
   add(): Promise<void>;
+  listLogins(): Promise<void>;
   cancel(): Promise<void>;
   copy(args: {
     item: string;

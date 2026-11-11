@@ -31,6 +31,10 @@ class Vault(Resource):
         """Runs the app's action."""
         return self.action("add")
 
+    def list_logins(self) -> None:
+        """Runs the app's action."""
+        return self.action("list-logins")
+
     def cancel(self) -> None:
         """Runs the app's action."""
         return self.action("cancel")
