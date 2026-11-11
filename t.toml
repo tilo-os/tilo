@@ -2790,14 +2790,29 @@ requires = ["arch=x86_64"]
 outputs = ["/target/publish/hosted-guest/agent/tilo-legacy-agent"]
 default = false
 
+# The guest's Tilo session (docs/hosted-browser.md): this repository's own
+# components, placed by os/components.toml. Browser and the engine come from the
+# compiled tree and the engine build, and are packed and installed by the app
+# release's own scripts.
+[[check]]
+name = "hosted-guest-session"
+run = "bash tools/ci/publish/hosted-guest.sh session /target/publish/hosted-guest/session"
+needs = ["font-seed"]
+env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
+requires = ["arch=x86_64"]
+outputs = ["/target/publish/hosted-guest/session/**"]
+timeout_secs = 5400
+default = false
+
 [[check]]
 name = "image-hosted-guest"
-run = "bash tools/ci/publish/hosted-guest.sh build /target/publish/hosted-guest/agent /target/publish/hosted-guest/kernel /target/publish/hosted-guest/image"
-needs = ["hosted-guest-agent", "hosted-guest-kernel", "os-assets"]
+run = "bash tools/ci/publish/hosted-guest.sh build /target/publish/hosted-guest/session /target/os/x86_64/compiled /target/os/x86_64/chromium /target/publish/hosted-guest/kernel /target/publish/hosted-guest/agent /target/font-seed /target/publish/hosted-guest/image"
+needs = ["hosted-guest-session", "os-compile-x86_64", "os-chromium-x86_64", "hosted-guest-kernel", "hosted-guest-agent", "font-seed", "os-assets"]
 requires = ["arch=x86_64", "disk-100g"]
 isolation = "vm"
+git = true
 outputs = ["/target/publish/hosted-guest/image/image.oci.tar", "/target/publish/hosted-guest/image/digest"]
-timeout_secs = 5400
+timeout_secs = 14400
 default = false
 
 # Signed with the release key, which signs only a release run: stable's, or a tag's. Until
@@ -2824,55 +2839,6 @@ outputs = ["/target/publish/hosted-guest/image/receipt.json", "/target/publish/h
 on = ["stable", "dispatch"]
 id_token = ["registry.tilo.so"]
 pointers = { hosted-guest = "/target/publish/hosted-guest/image/pins.env" }
-
-# The browser guest (docs/hosted-browser.md): the workspace guest's kernel and
-# init, with the headless session, Browser and the Chromium engine runtime
-# Browser requires, and none of the workspace guest's compilers or language
-# runtimes. Its session is this repository's own components, placed by
-# os/components.toml; Browser and the engine come from the compiled tree and the
-# engine build, and are packed and installed by the app release's own scripts.
-[[check]]
-name = "hosted-browser-guest-session"
-run = "bash tools/ci/publish/hosted-guest.sh session /target/publish/hosted-browser-guest/session"
-needs = ["font-seed"]
-env = { TILO_FONT_ASSET_CACHE = "/target/font-seed", TILO_FONT_ASSETS_OFFLINE = "1" }
-requires = ["arch=x86_64"]
-outputs = ["/target/publish/hosted-browser-guest/session/**"]
-timeout_secs = 5400
-default = false
-
-[[check]]
-name = "image-hosted-browser-guest"
-run = "bash tools/ci/publish/hosted-guest.sh browser-build /target/publish/hosted-browser-guest/session /target/os/x86_64/compiled /target/os/x86_64/chromium /target/publish/hosted-guest/kernel /target/publish/hosted-guest/agent /target/font-seed /target/publish/hosted-browser-guest/image"
-needs = ["hosted-browser-guest-session", "os-compile-x86_64", "os-chromium-x86_64", "hosted-guest-kernel", "hosted-guest-agent", "font-seed"]
-requires = ["arch=x86_64", "disk-100g"]
-isolation = "vm"
-git = true
-outputs = ["/target/publish/hosted-browser-guest/image/image.oci.tar", "/target/publish/hosted-browser-guest/image/digest"]
-timeout_secs = 14400
-default = false
-
-# Signed with the release key, which signs only a release run: stable's, or a
-# dispatch of publish-hosted-browser-guest on a tag (vhosted-browser-guest-<date>).
-[[check]]
-name = "sign-hosted-browser-guest"
-run = "bash tools/ci/publish/oci-sign.sh registry.tilo.so/tilo/hosted-browser-guest /target/publish/hosted-browser-guest/image"
-needs = ["image-hosted-browser-guest", "signing-tools"]
-image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/tilo-release-signing", AWS_SIGNING_ROLE_ARN = "arn:aws:iam::125650147312:role/TiloTReleaseSigner", TILO_SIGNING_AUDIENCE = "sts.amazonaws.com", TILO_SIGN_TLOG = "1" }
-outputs = ["/target/publish/hosted-browser-guest/image/payload.json", "/target/publish/hosted-browser-guest/image/signature", "/target/publish/hosted-browser-guest/image/dry-run.pub", "/target/publish/hosted-browser-guest/image/bundle.json", "/target/publish/hosted-browser-guest/image/certified/**"]
-on = ["stable", "dispatch"]
-id_token = ["sts.amazonaws.com"]
-
-[[check]]
-name = "publish-hosted-browser-guest"
-run = "bash tools/ci/publish/oci-publish.sh release registry.tilo.so/tilo/hosted-browser-guest /target/publish/hosted-browser-guest/image 'x86_64-{commit}'\nbash tools/ci/publish/hosted-guest.sh browser-pins /target/publish/hosted-browser-guest/image\n"
-needs = ["image-hosted-browser-guest", "sign-hosted-browser-guest", "signing-tools"]
-image = "registry.tilo.so/tilo/skopeo@sha256:7e735527d9d64c7456fc82d7f954c380b4a5dd1a8173115ce2ed7b3442ef36e0"
-outputs = ["/target/publish/hosted-browser-guest/image/receipt.json", "/target/publish/hosted-browser-guest/image/pins.env"]
-on = ["stable", "dispatch"]
-id_token = ["registry.tilo.so"]
-pointers = { hosted-browser-guest = "/target/publish/hosted-browser-guest/image/pins.env" }
 
 [[check]]
 name = "image-env-runtime-tree-{arch}"
@@ -3156,14 +3122,6 @@ needs = ["signing-tools"]
 on = ["main"]
 reads_pointers = ["stable:legacy-guest"]
 pushes = ["os/legacy-guest-snapshot.env"]
-
-[[check]]
-name = "pin-hosted-browser-guest"
-run = "bash tools/ci/publish/hosted-guest.sh browser-pin"
-needs = ["signing-tools"]
-on = ["main"]
-reads_pointers = ["stable:hosted-browser-guest"]
-pushes = ["os/hosted-guest-snapshot.env"]
 
 [[check]]
 name = "pin-hosted-guest"

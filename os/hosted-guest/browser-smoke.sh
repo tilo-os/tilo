@@ -4,8 +4,8 @@
 # headless session comes up on Mesa's software driver and serves its display.
 # The build fails here rather than on a host's first environment.
 #
-# It runs as the tenant (uid 1000): Chromium refuses root, and the agent starts
-# every program of the environment as that user, so root would prove nothing.
+# It runs as the session's own user (tilo-browser): Chromium refuses root, and
+# the session never runs as anything else, so root would prove nothing.
 set -eu
 
 version=${CHROMIUM_RUNTIME_VERSION:?the engine runtime's version is not set}
@@ -32,11 +32,11 @@ trace() {
 }
 trap trace EXIT
 
-# The tenant's own files are its own: the engine writes its profile, and the
-# session its runtime directory.
-chown 1000:1000 "$work"
-as_tilo() {
-    setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/tilo "$@"
+# The session user's own files are its own: the engine writes its profile, and
+# the session its runtime directory.
+chown tilo-browser:tilo-browser "$work"
+as_browser_user() {
+    setpriv --reuid=tilo-browser --regid=tilo-browser --init-groups env HOME=/home/tilo-browser "$@"
 }
 
 # Wait for FILE to hold TEXT, or stop waiting: never longer than the bound.
@@ -50,7 +50,7 @@ wait_for_text() {
         tries=$((tries - 1))
         sleep 0.2
     done
-    echo "the browser guest smoke: $what never came" >&2
+    echo "the browser smoke: $what never came" >&2
     return 1
 }
 
@@ -59,8 +59,8 @@ wait_for_text() {
 # events to its standard output; it stops when its input ends. The input stays
 # open until the ready event has been read.
 mkfifo "$work/commands"
-chown 1000:1000 "$work/commands"
-as_tilo setsid "$engine" --profile="$work/profile" \
+chown tilo-browser:tilo-browser "$work/commands"
+as_browser_user setsid "$engine" --profile="$work/profile" \
     < "$work/commands" > "$work/engine.out" 2> "$work/engine.log" &
 engine_pid=$!
 exec 3> "$work/commands"
@@ -73,18 +73,18 @@ wait "$engine_pid" 2>/dev/null || true
 # ---- The session --------------------------------------------------------------
 # Through the script the guest agent runs, so the smoke proves that path too: a
 # device mints its own identity on first start, and this one has to, because
-# joining the workspace is what the browser guest exists for.
+# joining the workspace is what the session exists for.
 printf 'TILO_SESSION_ARGS=\n' > "$work/session.env"
-chown 1000:1000 "$work/session.env"
-as_tilo setsid /usr/libexec/tilo/browser-session "$work/session.env" \
+chown tilo-browser:tilo-browser "$work/session.env"
+as_browser_user setsid /usr/libexec/tilo/browser-session "$work/session.env" \
     > "$work/session.log" 2>&1 &
 session_pid=$!
-runtime_dir=/home/tilo/.local/share/tilo/runtime
+runtime_dir=/home/tilo-browser/.local/share/tilo/runtime
 tries=600
 display=
 while [ "$tries" -gt 0 ] && [ -z "$display" ]; do
     if ! kill -0 "$session_pid" 2>/dev/null; then
-        echo 'the browser guest smoke: the session stopped before it served a display' >&2
+        echo 'the browser smoke: the session stopped before it served a display' >&2
         exit 1
     fi
     display=$(find "$runtime_dir" -maxdepth 1 -name 'wayland-*' -print -quit 2>/dev/null)
@@ -92,7 +92,7 @@ while [ "$tries" -gt 0 ] && [ -z "$display" ]; do
     [ -n "$display" ] || sleep 0.2
 done
 if [ -z "$display" ]; then
-    echo 'the browser guest smoke: the session never served a display' >&2
+    echo 'the browser smoke: the session never served a display' >&2
     exit 1
 fi
 printf 'session: the headless session serves %s\n' "$display"
@@ -101,6 +101,6 @@ wait "$session_pid" 2>/dev/null || true
 
 # The device the session made of this guest verifies the way a release gate
 # checks an installed machine.
-as_tilo /usr/bin/tilo-session --verify-collaboration-identity > "$work/identity.log" 2>&1
+as_browser_user /usr/bin/tilo-session --verify-collaboration-identity > "$work/identity.log" 2>&1
 grep -q 'identity verified' "$work/identity.log"
 echo 'identity: this guest is a device of its own'

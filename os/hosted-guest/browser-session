@@ -1,14 +1,14 @@
 #!/bin/sh
-# The hosted Browser guest's session: one headless Tilo desktop, drawn on the
-# CPU, that joins a workspace as a device of it (docs/hosted-browser.md).
+# A workspace VM's Browser session: one headless Tilo desktop, drawn on the
+# CPU, that joins its workspace as a device of it (docs/hosted-browser.md).
 #
-# The guest agent runs this when the environment's session starts
-# (`crates/runtime/legacy-vm/src/hosted/browser.rs`, "The session in the
-# guest"): it runs the session headless, on its own bus, drawing with the
-# image's software Vulkan driver, and the session knows it serves an
-# environment from `TILO_HOSTED_BROWSER`. What workspace it joins arrives on
-# its standard input, as one line of material, and what it reports goes to its
-# standard output.
+# The guest agent runs this, as the tenant, at the workspace's first browser
+# action (`crates/runtime/legacy-vm/src/hosted/browser.rs`, "The session in the
+# guest"): it becomes the image's own unprivileged browser user, then runs the
+# session headless, on its own bus, drawing with the image's software Vulkan
+# driver, and the session knows it holds a hosted Browser from
+# `TILO_HOSTED_BROWSER`. What workspace it joins arrives on its standard input,
+# as one line of material, and what it reports goes to its standard output.
 #
 # Every setting here has a default the image needs; an operator or the build's
 # smoke test may name a shell-compatible KEY=VALUE file to override them, and
@@ -20,6 +20,14 @@
 # The process it starts is the sandbox's own: nothing here runs as root, and
 # SIGTERM to this script ends the session and the bus beside it.
 set -eu
+
+# Never the tenant: the tenant has sudo in their VM, and a page that got out of
+# Chromium's sandbox must not. The sudoers rule the image ships allows this one
+# hop and keeps the input, the output and the marks.
+user=tilo-browser
+if [ "$(id -un)" != "$user" ]; then
+    exec sudo -n -u "$user" -- "$0" "$@"
+fi
 
 config=${1:-${TILO_BROWSER_SESSION_CONFIG:-}}
 if [ -n "$config" ] && [ -r "$config" ]; then
@@ -54,8 +62,8 @@ export WGPU_ADAPTER_NAME=llvmpipe TILO_DMABUF_DEVICE=
 
 # The device's identity is the session's own, under $XDG_CONFIG_HOME, and its
 # secrets go to the sealed file store a machine without a Secret Service uses.
-# The VM keeps nothing after it stops, so the identity a start mints is fresh
-# every time, which is what the relay certifies for each environment.
+# The identity is the one the material hands it at every start, which is what
+# the relay certifies for each session; the image holds none.
 mkdir -p -m 700 "$home/.config/tilo/identity" "$home/.local/share/tilo/secrets"
 export TILO_SECRETS_DIR=${TILO_SECRETS_DIR:-$home/.local/share/tilo/secrets}
 
