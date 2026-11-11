@@ -1983,7 +1983,7 @@ async fn last_published(
         .record
         .outgoing
         .iter()
-        .map(|publication| publication.bytes.clone())
+        .map(|publication| publication.bytes.to_vec())
         .collect();
     published
         .iter()

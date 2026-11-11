@@ -9,14 +9,24 @@
 //! so a version 2 record holds either layout, and the invitation's own
 //! version — which is in the bytes the ledger keeps — is what says which.
 //!
-//! Version 3 is the record this build writes, its grants in this build's
-//! layout. [`v2_to_v3`] reads a version 2 record field by field and writes it
-//! again as version 3, each grant read in the layout its invitation names.
-//! Nothing else changed: the peer parts, the publications, the completions
-//! and the rest of the ledger read as they are. `Format::bring_up` keeps the
-//! file as it was beside it as `<record>.v2`, and the peer's large parts,
-//! which the record names by digest, are untouched.
+//! Version 3 holds the grants in this build's layout. [`v2_to_v3`] reads a
+//! version 2 record field by field and writes it again as version 3, each
+//! grant read in the layout its invitation names. Nothing else changed: the
+//! peer parts, the publications, the completions and the rest of the ledger
+//! read as they are. `Format::bring_up` keeps the file as it was beside it as
+//! `<record>.v2`, and the peer's large parts, which the record names by
+//! digest, are untouched.
+//!
+//! Version 4 is the record this build writes ([`StoredRecord`]). A version 3
+//! record held every publication since the workspace's base, the base its
+//! whole governance, and every join receipt the workspace ever made, and was
+//! written whole with every change, so each admission cost a write of the
+//! whole workspace. Version 4 holds only the publications and receipts not in
+//! the files beside it yet ([`super::appended`]), and how many each file
+//! holds. [`v3_to_v4`] keeps every one in the record and none in the files;
+//! the first write moves them out.
 
+use serde::{Deserialize, Serialize};
 use tilo_files::native::migration::Format;
 use tilo_peer_state::join::invitations::IssuedInvitation;
 use tilo_peer_state::join::previous;
@@ -30,13 +40,100 @@ use tilo_peer_state::join_ledger::{
 
 use super::{Publication, RECORD_VERSION, WorkspaceRecord};
 
-/// A record's versions: 2 (either grant layout) and 3 (this build's).
+/// A record's versions: 2 (either grant layout), 3 (this build's grants, every
+/// publication and receipt inline) and 4 (this build's).
 pub(super) const FORMAT: Format = Format {
     name: "governed workspace record",
     version: RECORD_VERSION,
     oldest: 2,
-    steps: &[v2_to_v3],
+    steps: &[v2_to_v3, v3_to_v4],
 };
+
+/// The version 3 layout: [`WorkspaceRecord`] as it is held.
+const V3: u32 = 3;
+
+/// A workspace record as this build writes it (version 4): the record held
+/// ([`WorkspaceRecord`], the version 3 layout) with only the publications and
+/// join receipts not in the files beside it yet, and how many those hold.
+#[derive(Debug, Serialize, Deserialize)]
+pub(super) struct StoredRecord {
+    pub(super) version: u32,
+    pub(super) workspace: String,
+    pub(super) workspace_id: u64,
+    pub(super) name: String,
+    pub(super) authority: DeviceCert,
+    pub(super) peer: Vec<super::peer_parts::PeerPart>,
+    pub(super) generation: u64,
+    /// The publications after the ones the publications file holds.
+    pub(super) outgoing: Vec<Publication>,
+    pub(super) published: usize,
+    /// The ledger, its join receipts those after the receipts file's.
+    pub(super) collaboration: JoinLedger,
+    /// How many publications the publications file holds, the first of the
+    /// workspace's.
+    pub(super) filed_publications: u64,
+    /// How many join receipts the receipts file holds, the first of the
+    /// ledger's.
+    pub(super) filed_receipts: u64,
+}
+
+/// [`StoredRecord`] borrowed from the record held, as it is written.
+#[derive(Serialize)]
+pub(super) struct StoredRecordRef<'a> {
+    pub(super) version: u32,
+    pub(super) workspace: &'a str,
+    pub(super) workspace_id: u64,
+    pub(super) name: &'a str,
+    pub(super) authority: &'a DeviceCert,
+    pub(super) peer: &'a [super::peer_parts::PeerPart],
+    pub(super) generation: u64,
+    pub(super) outgoing: &'a [Publication],
+    pub(super) published: usize,
+    pub(super) collaboration: LedgerRef<'a>,
+    pub(super) filed_publications: u64,
+    pub(super) filed_receipts: u64,
+}
+
+/// The join ledger as a written record holds it, borrowed: its receipts
+/// those the receipts file does not hold. The ledger's own layout.
+#[derive(Serialize)]
+pub(super) struct LedgerRef<'a> {
+    pub(super) invitations: &'a [InvitationRecord],
+    pub(super) join_challenges: &'a [JoinChallengeRecord],
+    pub(super) join_completions: &'a [JoinCompletionRecord],
+    pub(super) membership_challenges: &'a [MembershipChallengeRecord],
+    pub(super) administration: &'a [AdministrationRecord],
+}
+
+/// Bring a version 3 record up to version 4: every publication and receipt
+/// in the record, none in the files beside it.
+///
+/// # Errors
+///
+/// The bytes are not a version 3 record.
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "a migration step takes its bytes by value"
+)]
+fn v3_to_v4(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    let record: WorkspaceRecord =
+        postcard::from_bytes(&bytes).map_err(|error| format!("version 3 record: {error}"))?;
+    postcard::to_stdvec(&StoredRecord {
+        version: RECORD_VERSION,
+        workspace: record.workspace,
+        workspace_id: record.workspace_id,
+        name: record.name,
+        authority: record.authority,
+        peer: record.peer,
+        generation: record.generation,
+        outgoing: record.outgoing,
+        published: record.published,
+        collaboration: record.collaboration,
+        filed_publications: 0,
+        filed_receipts: 0,
+    })
+    .map_err(|error| error.to_string())
+}
 
 /// Bring a version 2 record up to version 3, its grants in this build's
 /// layout.
@@ -165,7 +262,7 @@ fn v2_to_v3(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     };
 
     postcard::to_stdvec(&WorkspaceRecord {
-        version: RECORD_VERSION,
+        version: V3,
         workspace,
         workspace_id,
         name,
@@ -329,6 +426,11 @@ mod tests {
         assert_eq!(tail, b"after");
     }
 
+    /// A governed workspace record as version 4 writes it, hex: the kept
+    /// version 3 record brought up, its publication and ledger in the record
+    /// and nothing in the files beside it.
+    const KEPT_V4: &str = "042433303264353965302d663538362d343265312d613539652d336161363133663066383636d4c5c5d4dc84898a67064c6f756e67658a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c0674657374203100000101010040d457bd4c013a0b2ed06ec03e15c09b0d857c8ce6fe04c9e0ebeddde7610ed1b83921aea55f5912c14ac15794a8e3d20522d3a159c9f89004139f65647efddb04010002856f01010301020301000109090909090909090909090909090909090909090909090909090909090909090808080808080808080808080808080808080808080808080808080808080808d39cd19405d7a20469cc26de0e5bf849101780a79edefb936648c5d6066a972db40203072433303264353965302d663538362d343265312d613539652d3361613631336630663836368a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c0674657374203100000101010040d457bd4c013a0b2ed06ec03e15c09b0d857c8ce6fe04c9e0ebeddde7610ed1b83921aea55f5912c14ac15794a8e3d20522d3a159c9f89004139f65647efddb04020404040404040404040404040404040401050505050505050505050505050505050505050505050505050505050505050500ffffffffffffffffff0100404039d46ce13e59087832db34e2e3bc347cc8125f421cdc2d33f106ad80076547764ba067929fba9aa1b3da9e8d0b765a753ff85d6008b4e0e89eef786c8ffa00072433303264353965302d663538362d343265312d613539652d3361613631336630663836368a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c8a88e3dd7409f195fd52db2d3cba5d72ca6709bf1d94121bf3748801b40f6f5c0674657374203100000101010040d457bd4c013a0b2ed06ec03e15c09b0d857c8ce6fe04c9e0ebeddde7610ed1b83921aea55f5912c14ac15794a8e3d20522d3a159c9f89004139f65647efddb04020404040404040404040404040404040401050505050505050505050505050505050505050505050505050505050505050500ffffffffffffffffff010000000000000000";
+
     /// The workspace the kept records are of.
     const KEPT_WORKSPACE: &str = "302d59e0-f586-42e1-a59e-3aa613f0f866";
 
@@ -361,14 +463,14 @@ mod tests {
         }
     }
 
-    /// The record this build writes for the kept workspace: one invitation in
+    /// The record version 3 wrote for the kept workspace: one invitation in
     /// its ledger, one publication out, its peer state inline.
     fn kept_version_three() -> WorkspaceRecord {
         let (key, authority) = cert(1);
         let grant = kept_grant();
         let signed = tilo_peer_state::join::issue_invitation(grant.clone(), &key).unwrap();
         WorkspaceRecord {
-            version: RECORD_VERSION,
+            version: V3,
             workspace: KEPT_WORKSPACE.into(),
             workspace_id: crate::room_workspace_id(KEPT_WORKSPACE).unwrap(),
             name: "Lounge".into(),
@@ -376,7 +478,7 @@ mod tests {
             peer: vec![super::super::peer_parts::PeerPart::Inline(vec![0x85, 0x6f])],
             generation: 1,
             outgoing: vec![Publication {
-                bytes: vec![1, 2, 3],
+                bytes: vec![1, 2, 3].into(),
                 checkpoint: true,
             }],
             published: 0,
@@ -415,27 +517,51 @@ mod tests {
         version_two(&grant, &invitation)
     }
 
-    /// The record a build of version 2 wrote comes up as version 3 with that
-    /// invitation's grant read in the layout its own version names, and the
-    /// bytes kept here are that build's.
+    /// The record a build of version 2 wrote comes up with that invitation's
+    /// grant read in the layout its own version names, and the bytes kept
+    /// here are that build's.
     #[test]
     fn the_version_two_record_kept_here_comes_up_with_its_invitations_grant() {
         assert_golden_bytes(
             "a governed workspace record, version 2",
             &kept(KEPT_V2),
             |bytes| {
-                tilo_files::native::migration::assert_step_reads_previous(
-                    &FORMAT,
-                    bytes,
-                    |migrated| {
-                        let record: WorkspaceRecord = postcard::from_bytes(migrated).unwrap();
-                        assert_eq!(record.version, RECORD_VERSION);
-                        assert_eq!(record.collaboration.invitations.len(), 1);
-                        assert_eq!(record.collaboration.invitations[0].grant, kept_grant());
-                    },
-                );
+                let migrated = FORMAT.migrate(bytes.to_vec(), 2).unwrap();
+                let record: StoredRecord = postcard::from_bytes(&migrated).unwrap();
+                assert_eq!(record.version, RECORD_VERSION);
+                assert_eq!(record.collaboration.invitations.len(), 1);
+                assert_eq!(record.collaboration.invitations[0].grant, kept_grant());
             },
             kept_version_two,
+        );
+    }
+
+    /// The version 3 layout, which the step to version 4 reads, reads back
+    /// the way the bytes kept beside it do.
+    #[test]
+    fn the_version_three_record_kept_here_reads_and_writes_as_it_is() {
+        assert_golden_bytes(
+            "a governed workspace record, version 3",
+            &kept(KEPT_V3),
+            |bytes| {
+                let record: WorkspaceRecord = postcard::from_bytes(bytes).unwrap();
+                assert_eq!(record.version, V3);
+                assert_eq!(record.workspace, KEPT_WORKSPACE);
+                assert_eq!(record.name, "Lounge");
+                assert_eq!(record.collaboration.invitations[0].grant, kept_grant());
+            },
+            || postcard::to_stdvec(&kept_version_three()).unwrap(),
+        );
+    }
+
+    /// A version 3 record comes up as version 4 with its publications and
+    /// receipts in the record, the files beside it holding none.
+    #[test]
+    fn the_version_three_record_kept_here_comes_up_as_version_four() {
+        tilo_files::native::migration::assert_step_reads_previous(
+            &FORMAT,
+            &kept(KEPT_V3),
+            |migrated| assert_eq!(migrated, kept(KEPT_V4)),
         );
     }
 
@@ -444,18 +570,43 @@ mod tests {
     /// its ledger or the peer state they hold changes these bytes, and a
     /// workspace a device already holds would no longer open.
     #[test]
-    fn the_version_three_record_kept_here_reads_and_writes_as_it_is() {
+    fn the_version_four_record_kept_here_reads_and_writes_as_it_is() {
         assert_golden_bytes(
-            "a governed workspace record, version 3",
-            &kept(KEPT_V3),
+            "a governed workspace record, version 4",
+            &kept(KEPT_V4),
             |bytes| {
-                let record: WorkspaceRecord = postcard::from_bytes(bytes).unwrap();
+                let record: StoredRecord = postcard::from_bytes(bytes).unwrap();
                 assert_eq!(record.version, RECORD_VERSION);
                 assert_eq!(record.workspace, KEPT_WORKSPACE);
-                assert_eq!(record.name, "Lounge");
                 assert_eq!(record.collaboration.invitations[0].grant, kept_grant());
+                assert_eq!((record.filed_publications, record.filed_receipts), (0, 0));
+                assert_eq!(&*record.outgoing[0].bytes, &[1, 2, 3]);
             },
-            || postcard::to_stdvec(&kept_version_three()).unwrap(),
+            || {
+                let kept = kept_version_three();
+                let ledger = &kept.collaboration;
+                postcard::to_stdvec(&StoredRecordRef {
+                    version: RECORD_VERSION,
+                    workspace: &kept.workspace,
+                    workspace_id: kept.workspace_id,
+                    name: &kept.name,
+                    authority: &kept.authority,
+                    peer: &kept.peer,
+                    generation: kept.generation,
+                    outgoing: &kept.outgoing,
+                    published: kept.published,
+                    collaboration: LedgerRef {
+                        invitations: &ledger.invitations,
+                        join_challenges: &ledger.join_challenges,
+                        join_completions: &ledger.join_completions,
+                        membership_challenges: &ledger.membership_challenges,
+                        administration: &ledger.administration,
+                    },
+                    filed_publications: 0,
+                    filed_receipts: 0,
+                })
+                .unwrap()
+            },
         );
     }
 

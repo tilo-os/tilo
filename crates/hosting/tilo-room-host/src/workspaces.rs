@@ -25,6 +25,7 @@ mod agent_door;
 #[cfg(feature = "agents")]
 mod agent_members;
 pub mod app_files;
+mod appended;
 #[cfg(feature = "agents")]
 mod applications;
 mod authority;
@@ -128,9 +129,10 @@ use crate::peer::WorkspaceRegistry;
 use tilo_lock::RwLockRecover as _;
 
 /// The record's version this build writes. Version 3 reads a version 2
-/// record's grants in the invitation layout they were written in (see
-/// [`record_format`]).
-const RECORD_VERSION: u32 = 3;
+/// record's grants in the invitation layout they were written in; version 4
+/// keeps the publications and the join receipts in files beside the record
+/// (see [`record_format`]).
+const RECORD_VERSION: u32 = 4;
 /// How long members' writes the governor took in may wait to be written
 /// through to the workspace file. A hard stop loses at most these; replaying
 /// what the relay retains brings them back.
@@ -139,15 +141,36 @@ const KEEP_FOLLOWED: Duration = Duration::from_secs(1);
 const RECORD_NOTICES: usize = 256;
 
 /// One governance message this workspace has published, in publication order.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// Its bytes are shared by every copy of the record, so the workspace file's
+/// writer knows a publication it wrote before by its allocation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 struct Publication {
-    bytes: Vec<u8>,
+    #[serde(with = "shared_bytes")]
+    bytes: Arc<[u8]>,
     checkpoint: bool,
+}
+
+/// Shared bytes, encoded as the bytes they are.
+mod shared_bytes {
+    use std::sync::Arc;
+
+    use serde::{Deserialize as _, Deserializer, Serialize as _, Serializer};
+
+    pub(super) fn serialize<S: Serializer>(bytes: &Arc<[u8]>, out: S) -> Result<S::Ok, S::Error> {
+        bytes.as_ref().serialize(out)
+    }
+
+    pub(super) fn deserialize<'de, D: Deserializer<'de>>(input: D) -> Result<Arc<[u8]>, D::Error> {
+        Vec::<u8>::deserialize(input).map(Arc::from)
+    }
 }
 
 /// Everything a governed workspace keeps across restarts. Written atomically
 /// after each decision, before it is published or answered; the large parts
-/// of `peer` are files of their own ([`peer_parts`]), written before it.
+/// of `peer` are files of their own ([`peer_parts`]), and the publications
+/// and join receipts are in files appended to beside it ([`appended`]), all
+/// written before it ([`record_format::StoredRecord`]). Its own encoding is the
+/// version 3 layout, which [`record_format`] brings up.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct WorkspaceRecord {
     version: u32,
@@ -167,6 +190,42 @@ struct WorkspaceRecord {
     collaboration: collaboration::CollaborationState,
 }
 
+/// The extension of the file beside a workspace record holding its
+/// publications ([`appended`]).
+const PUBLICATIONS: &str = "published";
+/// The extension of the file beside a workspace record holding its join
+/// receipts ([`appended`]).
+const RECEIPTS: &str = "joins";
+
+impl WorkspaceRecord {
+    /// The record `stored` names: `published`, the publications file's, before
+    /// the publications it holds, and `receipted`, the receipts file's, before
+    /// the receipts its ledger holds.
+    fn read(
+        stored: record_format::StoredRecord,
+        mut published: Vec<Publication>,
+        mut receipted: Vec<tilo_peer_state::join_ledger::JoinCompletionRecord>,
+    ) -> Self {
+        let mut outgoing = stored.outgoing;
+        published.append(&mut outgoing);
+        let mut collaboration = stored.collaboration;
+        receipted.append(&mut collaboration.join_completions);
+        collaboration.join_completions = receipted;
+        Self {
+            version: RECORD_VERSION,
+            workspace: stored.workspace,
+            workspace_id: stored.workspace_id,
+            name: stored.name,
+            authority: stored.authority,
+            peer: stored.peer,
+            generation: stored.generation,
+            outgoing: published,
+            published: stored.published,
+            collaboration,
+        }
+    }
+}
+
 /// A workspace this relay governs.
 struct GovernedWorkspace {
     record: WorkspaceRecord,
@@ -174,6 +233,10 @@ struct GovernedWorkspace {
     path: PathBuf,
     /// The files of `record.peer`'s large parts.
     parts: peer_parts::PeerParts,
+    /// `record.outgoing`, in its own file.
+    publications: appended::Appended<Publication>,
+    /// The join receipts of `record.collaboration`, in their own file.
+    receipts: appended::Appended<tilo_peer_state::join_ledger::JoinCompletionRecord>,
     /// The channel keys of the device this host runs on, asked for the
     /// records of this workspace: `None` when that device keeps no channel
     /// keys, and the workspace's records are then held in the clear.
@@ -325,11 +388,15 @@ impl GovernedWorkspace {
             published: 0,
             collaboration: collaboration::CollaborationState::default(),
         };
+        let (publications, _) = appended::Appended::open(&path, PUBLICATIONS, 0)?;
+        let (receipts, _) = appended::Appended::open(&path, RECEIPTS, 0)?;
         let mut this = Self {
             admissions: admissions::Admissions::open(&path)?,
             wait_list: wait_list::WaitList::open(&path)?,
             door: door::Door::open(&path)?,
             parts,
+            publications,
+            receipts,
             path,
             device: device.cloned(),
             record,
@@ -370,13 +437,20 @@ impl GovernedWorkspace {
         let bytes = record_format::FORMAT
             .bring_up(&path, bytes, version)
             .map_err(|error| error.to_string())?;
-        let record: WorkspaceRecord = postcard::from_bytes(&bytes).map_err(|error| {
-            format!(
-                "{}: {} version {version}: {error}",
-                path.display(),
-                record_format::FORMAT.name
-            )
-        })?;
+        let stored: record_format::StoredRecord =
+            postcard::from_bytes(&bytes).map_err(|error| {
+                format!(
+                    "{}: {} version {version}: {error}",
+                    path.display(),
+                    record_format::FORMAT.name
+                )
+            })?;
+        let mut parts = peer_parts::PeerParts::open(&path)?;
+        let (publications, published) =
+            appended::Appended::open(&path, PUBLICATIONS, stored.filed_publications)?;
+        let (receipts, receipted) =
+            appended::Appended::open(&path, RECEIPTS, stored.filed_receipts)?;
+        let record = WorkspaceRecord::read(stored, published, receipted);
         // The record must have been governed by this host's device. What
         // makes a device that device is its key and what the certificate
         // lets it do; a certificate's `device_label` is a human-readable
@@ -398,7 +472,6 @@ impl GovernedWorkspace {
         {
             return Err("workspace record is inconsistent".into());
         }
-        let mut parts = peer_parts::PeerParts::open(&path)?;
         let mut peer = StatePeer::restore(
             &parts.load(&record.peer)?,
             &record.workspace,
@@ -420,6 +493,8 @@ impl GovernedWorkspace {
             record,
             peer: Replica::new(peer),
             parts,
+            publications,
+            receipts,
             path,
             device: device.cloned(),
             publisher: Arc::default(),
@@ -437,19 +512,57 @@ impl GovernedWorkspace {
         })
     }
 
+    /// Write the record as it stands ([`record_format::StoredRecord`]): the
+    /// publications and join receipts added since the last write appended to
+    /// their files, then the workspace file naming how many those hold. A
+    /// write costs what the change added, not the workspace's size.
     fn persist(&mut self) -> Result<(), String> {
+        let writing = crate::timing::start();
         // What the publisher could not admit is not published yet, whatever
         // `published` says until the next settle takes the failure back.
-        let bytes = match self.publisher.unretained_from() {
-            Some(first) if first < self.record.published => {
-                let mut record = self.record.clone();
-                record.published = first;
-                postcard::to_stdvec(&record)
-            }
-            _ => postcard::to_stdvec(&self.record),
+        let published = match self.publisher.unretained_from() {
+            Some(first) if first < self.record.published => first,
+            _ => self.record.published,
+        };
+        let ledger = &self.record.collaboration;
+        let filed_publications = self.publications.file(&self.record.outgoing)?;
+        let filed_receipts = self.receipts.file(&ledger.join_completions)?;
+        let beyond = |filed: u64| usize::try_from(filed).map_err(|error| error.to_string());
+        let record = record_format::StoredRecordRef {
+            version: RECORD_VERSION,
+            workspace: &self.record.workspace,
+            workspace_id: self.record.workspace_id,
+            name: &self.record.name,
+            authority: &self.record.authority,
+            peer: &self.record.peer,
+            generation: self.record.generation,
+            outgoing: self
+                .record
+                .outgoing
+                .get(beyond(filed_publications)?..)
+                .unwrap_or_default(),
+            published,
+            collaboration: record_format::LedgerRef {
+                invitations: &ledger.invitations,
+                join_challenges: &ledger.join_challenges,
+                join_completions: ledger
+                    .join_completions
+                    .get(beyond(filed_receipts)?..)
+                    .unwrap_or_default(),
+                membership_challenges: &ledger.membership_challenges,
+                administration: &ledger.administration,
+            },
+            filed_publications,
+            filed_receipts,
+        };
+        let bytes = postcard::to_stdvec(&record).map_err(|error| error.to_string())?;
+        if let Err(error) = tilo_files::native::atomic::write(&self.path, &bytes) {
+            // The files may hold entries the record on disk does not name.
+            self.publications.unsure();
+            self.receipts.unsure();
+            return Err(error.to_string());
         }
-        .map_err(|error| error.to_string())?;
-        tilo_files::native::atomic::write(&self.path, &bytes).map_err(|error| error.to_string())?;
+        crate::timing::event("room.record.write", writing, bytes.len() as u64);
         self.parts.collect(&self.record.peer);
         Ok(())
     }
@@ -712,7 +825,9 @@ fn publication(
     let (_, kind) = neighbour_wire::retention(message, checkpoint)
         .ok_or("workspace governance message has no retention channel")?;
     Ok(Publication {
-        bytes: postcard::to_stdvec(message).map_err(|error| error.to_string())?,
+        bytes: postcard::to_stdvec(message)
+            .map_err(|error| error.to_string())?
+            .into(),
         checkpoint: kind == Retention::Checkpoint,
     })
 }

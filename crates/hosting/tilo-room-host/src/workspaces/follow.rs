@@ -67,7 +67,7 @@ impl GovernedWorkspace {
                 self.record.workspace_id,
                 Some(self.record.published),
                 crate::workspace_records::HostCommit {
-                    body: entry.bytes.clone(),
+                    body: entry.bytes.to_vec(),
                     channel,
                     checkpoint: entry.checkpoint,
                 },

@@ -804,7 +804,7 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     workspace.record.published = workspace.record.outgoing.len();
     for index in 0..=MAX_PUBLICATION_TAIL {
         workspace.record.outgoing.push(Publication {
-            bytes: vec![u8::try_from(index % 200).unwrap()],
+            bytes: vec![u8::try_from(index % 200).unwrap()].into(),
             checkpoint: false,
         });
     }
@@ -832,11 +832,11 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
 #[test]
 fn a_heavy_tail_compacts_and_a_light_one_does_not() {
     let base = Publication {
-        bytes: vec![0; 4 * MIN_PUBLICATION_TAIL_BYTES],
+        bytes: vec![0; 4 * MIN_PUBLICATION_TAIL_BYTES].into(),
         checkpoint: true,
     };
     let change = |len: usize| Publication {
-        bytes: vec![1; len],
+        bytes: vec![1; len].into(),
         checkpoint: false,
     };
     let light: Vec<Publication> = std::iter::once(base.clone())
@@ -851,7 +851,7 @@ fn a_heavy_tail_compacts_and_a_light_one_does_not() {
     assert!(starts_over(&heavy), "two changes as heavy as half the base");
     let small = vec![
         Publication {
-            bytes: vec![0; 1024],
+            bytes: vec![0; 1024].into(),
             checkpoint: true,
         },
         change(2048),
@@ -1722,7 +1722,7 @@ async fn decisions_settle_while_their_workspace_owner_is_stalled() {
             .outgoing
             .iter()
             .filter(|publication| !publication.checkpoint)
-            .map(|publication| publication.bytes.clone())
+            .map(|publication| publication.bytes.to_vec())
             .collect()
     };
     assert!(
