@@ -35,6 +35,15 @@ fn shows(app: &mut TestApp<App>, target: &str) -> bool {
     app.harness().targets().contains_key(target)
 }
 
+/// Press the way back the window's bar carries, as a person does.
+fn back(app: &mut TestApp<App>) {
+    app.harness()
+        .press_window_slot(ui::window_toolbar::ToolbarEvent::Action {
+            id: ui::widget::WINDOW_BACK.to_owned(),
+        });
+    app.frame();
+}
+
 #[test]
 fn every_scenario_shows_its_place_built_from_components() {
     english();
@@ -51,7 +60,6 @@ fn every_scenario_shows_its_place_built_from_components() {
         (
             "run",
             &[
-                "nav-shell-back",
                 "console-run-stop",
                 "console-run-take-over",
                 "console-run-undo",
@@ -145,10 +153,7 @@ fn the_runs_back_shows_every_run_again() {
     english();
     let mut app = TestApp::<App>::capture(Some("run")).expect("capture");
     assert!(shows(&mut app, "console-run-undo"), "the run's own page");
-    app.harness()
-        .perform_named("nav-shell-back", &ui::a11y::Action::Activate)
-        .unwrap();
-    app.frame();
+    back(&mut app);
     assert!(shows(&mut app, "console-run-run:fix-signup"), "the runs");
     assert!(!shows(&mut app, "console-run-undo"));
 }

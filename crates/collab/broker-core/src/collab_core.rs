@@ -95,6 +95,9 @@ pub struct BrokerChannels {
     /// The route (app, workspace, record) each artifact's ops were validated on
     /// this session. A history page is only ever answered to that workspace.
     pub routes: HashMap<ArtifactId, crate::route::CrdtRoute>,
+    /// The records a sealed write of entered here: from it on, a write to
+    /// one in the clear is a downgrade ([`Self::document_order_allowed`]).
+    pub sealed: std::collections::HashSet<ArtifactId>,
 }
 
 /// How long a peer history request stays open for answers.
@@ -117,12 +120,10 @@ impl BrokerChannels {
     }
 
     /// A route with no gate has not been opened encrypted on this device
-    /// yet. Once its gate closes plaintext, no live plaintext envelope can
-    /// pass either ingress path, including after a restart. Content sealed
-    /// under any of the channel's epochs passes: a member's write reaches
-    /// this device after the channel's next membership change. History a
-    /// host replayed of the record from before the gate closed passes too,
-    /// as [`Self::document_history_allowed`] decides.
+    /// yet. Once its gate closes plaintext, this device writes none to it,
+    /// including after a restart. Content sealed under any of the channel's
+    /// epochs passes: a member's write reaches this device after the
+    /// channel's next membership change.
     pub fn document_encryption_allowed(
         &self,
         workspace: &str,
@@ -132,24 +133,25 @@ impl BrokerChannels {
         self.gates.allows_document(workspace, channel, encryption)
     }
 
-    /// Whether a host's replay of `channel`'s retained history may enter.
-    ///
-    /// A record seals from some write on, and its cleartext writes stay the
-    /// base its sealed writes are changes over until a sealed checkpoint
-    /// covers them. A device that was away while the record sealed, or that
-    /// joins it later, reads the record only by taking that base in first;
-    /// the gate refusing plaintext outright would leave such a device
-    /// holding a record it cannot read a word of. So plaintext history
-    /// passes, and live plaintext of every shape is still refused: history
-    /// was signed when its author was allowed to write it in the clear,
-    /// while a live plaintext write is an attempt to write around the gate.
-    pub fn document_history_allowed(
+    /// Whether another device's write of `artifact`'s record may enter, by
+    /// its place in the record's order. A record seals from some write on,
+    /// and its cleartext writes before that are the base its sealed writes
+    /// are changes over: a device that was away while the record sealed, or
+    /// joins it later, reads the record only by taking that base in first,
+    /// however it arrives. So a write in the clear enters until a sealed
+    /// write of the record has, and never after; a sealed one enters when
+    /// the channel's gate takes its epoch.
+    pub fn document_order_allowed(
         &self,
         workspace: &str,
         channel: ChannelId,
+        artifact: ArtifactId,
         encryption: Option<&EncryptionMetadata>,
     ) -> bool {
-        self.gates.allows_history(workspace, channel, encryption)
+        match encryption {
+            None => !self.sealed.contains(&artifact),
+            Some(_) => self.gates.allows_document(workspace, channel, encryption),
+        }
     }
 
     /// The verdict on an op for `channel` from the gate governing it

@@ -106,8 +106,12 @@ fn an_empty_workspace_keeps_the_empty_state_it_had() {
     assert!(listed.is_empty(), "a workspace with no papers lists none");
     let said = app.texts();
     assert!(
-        said.iter().any(|name| name == "Open a PDF"),
-        "and the empty state offers the one action it had: {said:?}"
+        said.iter().any(|name| name == "No document open"),
+        "and the empty state says what it is: {said:?}"
+    );
+    assert!(
+        said.iter().any(|name| name == "Open PDF"),
+        "and offers the one action it had: {said:?}"
     );
 }
 

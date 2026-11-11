@@ -31,6 +31,7 @@ pub(crate) mod resume;
 #[doc(hidden)]
 pub mod retained;
 mod revocation_log;
+mod sealed;
 #[cfg(test)]
 pub(crate) use tilo_relay_store::test_barrier;
 #[cfg(any(test, feature = "test-support"))]

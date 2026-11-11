@@ -189,12 +189,12 @@ pub enum SidebarTab {
 }
 
 impl SidebarTab {
-    /// The catalogue message naming the tab for assistive technology.
+    /// The catalogue message naming the tab, painted on it and spoken for it.
     fn name_key(self) -> &'static str {
         match self {
-            Self::Comments => "pdf-a11y-tab-comments",
-            Self::Outline => "pdf-a11y-tab-contents",
-            Self::Signatures => "pdf-a11y-tab-signatures",
+            Self::Comments => "pdf-tab-comments",
+            Self::Outline => "pdf-tab-contents",
+            Self::Signatures => "pdf-tab-signatures",
         }
     }
 
@@ -971,6 +971,12 @@ impl PdfApp {
                 );
             }
             _ => {}
+        }
+        // A capture of a document shows its review panel, floating over the
+        // pages when the window is too narrow to dock it: staging runs after
+        // the first frames, past the width class's own panel state.
+        if self.has_document {
+            self.show_sidebar = true;
         }
         self.dirty = true;
     }
@@ -4168,35 +4174,6 @@ impl PdfApp {
         self.queue_worker_open_contents(&name, bytes);
     }
 
-    /// What the empty state says while the record's document is not on this
-    /// device: its title, its message, and whether that is a failure.
-    pub(super) fn source_wait_text(&self) -> Option<(&'static str, String, bool)> {
-        let (state, _) = self.source_wait?;
-        let name = self
-            .record_source
-            .as_ref()
-            .map(|source| source.name.as_str())
-            .filter(|name| !name.is_empty())
-            .unwrap_or("The document");
-        Some(match state {
-            ContentState::Waiting => (
-                "Waiting for the document",
-                format!("{name} opens when a device that has it connects."),
-                false,
-            ),
-            ContentState::Unavailable => (
-                "This document isn't here",
-                format!("No device connected now has {name}. It opens when one that has it does."),
-                true,
-            ),
-            ContentState::Pending | ContentState::Resolved => (
-                "Getting the document…",
-                format!("{name} is coming from a device in this workspace that has it."),
-                false,
-            ),
-        })
-    }
-
     /// Submit a replacement to the PDF owner: filesystem reads and `PDFium`
     /// parsing never run in `sync()` or an input handler. On success the
     /// view resets to page one at fit-page and the reader switches to that
@@ -5028,60 +5005,12 @@ impl Widget for PdfApp {
                 .with_bounds(bounds)
                 .with_state(focusable())
         };
-        let opening = self.opening();
         if !self.has_document {
-            let mut children = Vec::new();
-            if opening {
-                // Nothing to head yet: the wait itself is the state.
-                children.push(
-                    AccessNode::new(Role::StaticText)
-                        .with_name(crate::t("pdf-a11y-opening"))
-                        .with_hashed_key("pdf.empty.loading")
-                        .with_live(Politeness::Polite),
-                );
-            } else {
-                children.push(
-                    AccessNode::new(Role::Heading { level: 1 })
-                        .with_name(crate::t("pdf-a11y-empty-heading"))
-                        .with_hashed_key("pdf.empty.heading"),
-                );
-                // Where the button is drawn, once it is; the canvas until then.
-                let drawn = self.empty_open_button_rect();
-                let bounds = if drawn.area() > 0.0 {
-                    drawn
-                } else {
-                    self.canvas_rect
-                };
-                for (index, document) in self.workspace_documents.iter().enumerate() {
-                    let bounds = self
-                        .workspace_document_rows()
-                        .get(index)
-                        .copied()
-                        .unwrap_or(self.canvas_rect);
-                    children.push(
-                        button(
-                            &document.name,
-                            &format!("pdf.empty.document:{}", document.target),
-                            bounds,
-                        )
-                        .with_description(document.caption.clone()),
-                    );
-                }
-                children.push(button("Open PDF", "pdf.open", bounds));
-            }
-            if let Some(error) = &self.load_error {
-                children.push(
-                    AccessNode::new(Role::StaticText)
-                        .with_name(error)
-                        .with_hashed_key("pdf.empty.error")
-                        .with_live(Politeness::Assertive),
-                );
-            }
             return Some(
                 AccessNode::new(Role::Window)
                     .with_name(ui::i18n::I18nManager::lookup_plain("pdf-title"))
                     .with_bounds(self.rect)
-                    .with_children(children),
+                    .with_children(self.empty_state_nodes()),
             );
         }
 
@@ -5989,6 +5918,7 @@ fn open_error(path: &std::path::Path, reason: &str) -> String {
 }
 
 mod content_import;
+mod empty_state;
 mod form_read;
 mod insert_pages;
 mod note_action;
@@ -6063,6 +5993,8 @@ impl ui::widget::Findable for PdfApp {
     }
 }
 
+#[cfg(test)]
+mod empty_state_tests;
 #[cfg(test)]
 mod records_tests;
 
@@ -6283,7 +6215,7 @@ pub(crate) mod tests {
 
         app.reopen_pinned_source();
         assert_eq!(app.load_error, None, "nothing failed yet");
-        assert_eq!(title(&app), Some("Getting the document…"));
+        assert_eq!(title(&app), Some(crate::t("pdf-empty-arriving-title")));
         assert_eq!(
             lane.take_requests().wants,
             vec![hash.clone()],
@@ -6292,10 +6224,11 @@ pub(crate) mod tests {
 
         lane.stands(hash.clone(), ContentState::Waiting);
         app.reopen_pinned_source();
-        assert_eq!(title(&app), Some("Waiting for the document"));
+        assert_eq!(title(&app), Some(crate::t("pdf-empty-waiting-title")));
         lane.stands(hash.clone(), ContentState::Unavailable);
         app.reopen_pinned_source();
-        let (_, message, error) = app.source_wait_text().unwrap();
+        let (waited, message, error) = app.source_wait_text().unwrap();
+        assert_eq!(waited, crate::t("pdf-empty-elsewhere-title"));
         assert!(error && message.contains("shared.pdf"), "{message}");
 
         lane.arrive(hash, bytes);
@@ -6497,7 +6430,13 @@ pub(crate) mod tests {
                     error.contains("Could not open") && error.contains(&path.display().to_string())
                 }));
                 let tree = app.accessibility().expect("failed-open accessibility");
-                assert!(any_access_node(&tree, &|node| node.name == app.load_error));
+                let detail = app
+                    .open_failure_text()
+                    .expect("the empty state says why the open failed");
+                assert!(
+                    any_access_node(&tree, &|node| node.name.as_deref() == Some(detail.as_str())),
+                    "the words on screen are the words read out: {detail:?}"
+                );
             }
         }
 
@@ -6632,13 +6571,13 @@ pub(crate) mod tests {
     }
 
     /// The empty reader staged as screenshot `scenario` shows it.
-    fn staged_empty(scenario: &str) -> PdfApp {
+    pub(super) fn staged_empty(scenario: &str) -> PdfApp {
         let mut app = PdfApp::empty();
         app.stage(Some(scenario));
         app
     }
 
-    fn app_with_state() -> (PdfApp, ui::State) {
+    pub(super) fn app_with_state() -> (PdfApp, ui::State) {
         let mut app = crate::scenarios::sample_reader();
         let mut st = crate::scenarios::sample_state();
         sync_fixture(&mut app, &mut st);
@@ -6676,7 +6615,7 @@ pub(crate) mod tests {
         );
     }
 
-    fn any_access_node(
+    pub(super) fn any_access_node(
         node: &ui::a11y::AccessNode,
         predicate: &impl Fn(&ui::a11y::AccessNode) -> bool,
     ) -> bool {
@@ -7566,7 +7505,13 @@ pub(crate) mod tests {
 
     /// Mount `app` over `st` in the production frame host at `w`×`h` and
     /// run its first frame (see [`full_frame`]).
-    fn framed(app: PdfApp, st: ui::State, w: f64, h: f64, out: Option<&str>) -> Framed<PdfApp> {
+    pub(super) fn framed(
+        app: PdfApp,
+        st: ui::State,
+        w: f64,
+        h: f64,
+        out: Option<&str>,
+    ) -> Framed<PdfApp> {
         framed_with_theme(app, st, w, h, out, Theme::dark())
     }
 
@@ -7723,7 +7668,7 @@ pub(crate) mod tests {
     /// and is slow/contended under the parallel suite) — the behavioural
     /// assertions still run every time. Regenerate the shots deliberately with
     /// `PDF_SHOTS=1 … cargo test drive_review -- --test-threads=1`.
-    fn full_frame(app: &mut Framed<PdfApp>, w: f64, h: f64, out: Option<&str>) {
+    pub(super) fn full_frame(app: &mut Framed<PdfApp>, w: f64, h: f64, out: Option<&str>) {
         Framed::harness_mut(app)
             .relayout_at(viewport((w, h)))
             .expect("pdf frame lays out");

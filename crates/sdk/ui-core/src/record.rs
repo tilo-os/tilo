@@ -3621,9 +3621,11 @@ impl RecordStore {
         .map_err(|error| error.to_string())?
     }
 
-    /// Merge broker-admitted bytes atomically into the canonical owner. Validate
-    /// on a private copy before ending local typing or changing the undo baseline.
-    pub(crate) fn merge_remote_document(
+    /// Merge a replica's mutation into the open record, validated on a private
+    /// copy first: whether it changed, and the change hashes it carried.
+    /// # Errors
+    /// The bytes are not a valid mutation of this record, or it is not open.
+    pub fn merge_replica(
         &self,
         checkout: &RecordCheckout,
         mutation: collab_types::DocumentMutation,
@@ -3735,8 +3737,7 @@ impl RecordStore {
         })
         .map_err(|error| error.to_string())?;
         if let Ok((true, _)) = &merged {
-            self.arrived(&checkout.id);
-            self.wake_readers();
+            self.peer_change_merged(&checkout.id);
         }
         merged
     }
@@ -3753,7 +3754,7 @@ impl RecordStore {
         checkout: &RecordCheckout,
         document: Vec<u8>,
     ) -> Result<bool, String> {
-        self.merge_remote_document(checkout, collab_types::DocumentMutation::Snapshot(document))
+        self.merge_replica(checkout, collab_types::DocumentMutation::Snapshot(document))
             .map(|(changed, _)| changed)
     }
 
@@ -3769,7 +3770,7 @@ impl RecordStore {
         checkout: &RecordCheckout,
         changes: Vec<u8>,
     ) -> Result<bool, String> {
-        self.merge_remote_document(
+        self.merge_replica(
             checkout,
             collab_types::DocumentMutation::Incremental(changes),
         )
@@ -4041,21 +4042,6 @@ impl RecordStore {
             actions.notices.sent(&heads);
             (doc.save(), heads)
         })
-    }
-
-    /// Merge a replica's mutation into the open record, validating the
-    /// record's identity on a private copy first; local undo stays local.
-    /// Returns whether the document changed and the change hashes the
-    /// mutation carried, for the replicating frontier's `observe`.
-    ///
-    /// # Errors
-    /// The bytes are not a valid mutation of this record, or it is not open.
-    pub fn merge_replica(
-        &self,
-        checkout: &RecordCheckout,
-        mutation: collab_types::DocumentMutation,
-    ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
-        self.merge_remote_document(checkout, mutation)
     }
 
     /// Do something with a record's document. `None` if the record is not open here.

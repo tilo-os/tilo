@@ -6,6 +6,33 @@ use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, DeviceIdentity, RevocationList, UserIdentity, sign_device_cert,
 };
 
+/// What a test's session with this host runs in: `workspaces`, served by
+/// `own`, a device of `user`, with fresh trust and revocations and every
+/// other door closed.
+fn peer_context(workspaces: WorkspaceRegistry, user: [u8; 32], own: &DeviceCert) -> PeerContext {
+    PeerContext {
+        workspaces,
+        autobind: None,
+        revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+        trust_policy: Arc::new(std::sync::RwLock::new(
+            crate::policy::TrustPolicy::AllowMatchingUser,
+        )),
+        own_user_public_key: user,
+        own_device_cert: own.clone(),
+        own_device_public_key: own.device_public_key,
+        app_serving: None,
+        metrics: Arc::new(crate::metrics::Metrics::default()),
+        carried_calls: None,
+        admin: None,
+        fetch: None,
+        agents: crate::peer::AgentRegistry::default(),
+        environments: crate::environment::EnvironmentRegistry::default(),
+        positions: None,
+        compactor: None,
+        member_limits: None,
+    }
+}
+
 pub(super) fn certified_device(
     root: &ed25519_dalek::SigningKey,
     user: [u8; 32],
@@ -197,34 +224,12 @@ async fn paused_state_roundtrip(plain_lag: Option<LagBoundary>, full_backlog: bo
     let store = runtime.store.clone();
     let workspace = Arc::new(AsyncMutex::new(runtime));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
     let mut wires = Vec::new();
     let mut tasks = Vec::new();
     for peer in [&a, &b] {
         let (client, server) = tokio::io::duplex(65536);
         let (read, write) = tokio::io::split(server);
-        let ctx = PeerContext {
-            workspaces: registry.clone(),
-            autobind: None,
-            revocations: revocations.clone(),
-            trust_policy: trust.clone(),
-            own_user_public_key: user.public_key,
-            own_device_cert: own.cert.clone(),
-            own_device_public_key: own.cert.device_public_key,
-            app_serving: None,
-            metrics: Arc::new(crate::metrics::Metrics::default()),
-            carried_calls: None,
-            admin: None,
-            fetch: None,
-            agents: crate::peer::AgentRegistry::default(),
-            environments: crate::environment::EnvironmentRegistry::default(),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-        };
+        let ctx = peer_context(registry.clone(), user.public_key, &own.cert);
         tasks.push(tokio::spawn(run_peer_stream(
             peer.clone(),
             read,
@@ -1074,27 +1079,7 @@ async fn heartbeat_is_answered_while_the_writer_waits_on_the_room() {
         b.clone(),
         read,
         write,
-        PeerContext {
-            workspaces: registry,
-            autobind: None,
-            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
-            trust_policy: Arc::new(std::sync::RwLock::new(
-                crate::policy::TrustPolicy::AllowMatchingUser,
-            )),
-            own_user_public_key: user.public_key,
-            own_device_cert: b.cert.clone(),
-            own_device_public_key: b.cert.device_public_key,
-            app_serving: None,
-            metrics: Arc::new(crate::metrics::Metrics::default()),
-            carried_calls: None,
-            admin: None,
-            fetch: None,
-            agents: crate::peer::AgentRegistry::default(),
-            environments: crate::environment::EnvironmentRegistry::default(),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-        },
+        peer_context(registry, user.public_key, &b.cert),
         std::future::pending::<()>(),
     ));
     let (read, mut write) = tokio::io::split(client);
@@ -1175,10 +1160,6 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
     let store = runtime.store.clone();
     let workspace = Arc::new(AsyncMutex::new(runtime));
     let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
-    let revocations = Arc::new(std::sync::RwLock::new(RevocationList::new()));
     let mut tasks = Vec::new();
     let mut wires = Vec::new();
     for peer in [&a, &b] {
@@ -1188,25 +1169,7 @@ async fn heartbeat_keeps_progress_during_unrelated_workspace_admission() {
             peer.clone(),
             read,
             write,
-            PeerContext {
-                workspaces: registry.clone(),
-                autobind: None,
-                revocations: revocations.clone(),
-                trust_policy: trust.clone(),
-                own_user_public_key: user.public_key,
-                own_device_cert: own.cert.clone(),
-                own_device_public_key: own.cert.device_public_key,
-                app_serving: None,
-                metrics: Arc::new(crate::metrics::Metrics::default()),
-                carried_calls: None,
-                admin: None,
-                fetch: None,
-                agents: crate::peer::AgentRegistry::default(),
-                environments: crate::environment::EnvironmentRegistry::default(),
-                positions: None,
-                compactor: None,
-                member_limits: None,
-            },
+            peer_context(registry.clone(), user.public_key, &own.cert),
             std::future::pending::<()>(),
         )));
         let (read, mut write) = tokio::io::split(client);
@@ -1281,34 +1244,13 @@ async fn a_retired_private_action_frame_ends_the_session() {
     let (root, user) = UserIdentity::generate("old build", 1);
     let (source, _) = certified_device(&root, user.public_key, "source");
     let registry = Arc::new(AsyncMutex::new(HashMap::new()));
-    let trust = Arc::new(std::sync::RwLock::new(
-        crate::policy::TrustPolicy::AllowMatchingUser,
-    ));
     let (client, server) = tokio::io::duplex(1 << 16);
     let (server_read, server_write) = tokio::io::split(server);
     let session = tokio::spawn(run_peer_stream(
         source.clone(),
         server_read,
         server_write,
-        PeerContext {
-            workspaces: registry,
-            autobind: None,
-            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
-            trust_policy: trust,
-            own_user_public_key: user.public_key,
-            own_device_cert: source.cert.clone(),
-            own_device_public_key: source.device_public_key,
-            app_serving: None,
-            metrics: Arc::new(crate::metrics::Metrics::default()),
-            carried_calls: None,
-            admin: None,
-            fetch: None,
-            agents: crate::peer::AgentRegistry::default(),
-            environments: crate::environment::EnvironmentRegistry::default(),
-            positions: None,
-            compactor: None,
-            member_limits: None,
-        },
+        peer_context(registry, user.public_key, &source.cert),
         std::future::pending::<()>(),
     ));
     // Every retired frame keeps its discriminant, so an old build's frame
@@ -1332,4 +1274,140 @@ async fn a_retired_private_action_frame_ends_the_session() {
         ),
         other => panic!("a retired private action frame ended the session as {other:?}"),
     }
+}
+
+/// A device opening a record is sent the record's retained frames and its
+/// `RecordOpened` with no live frame between them, however busy the
+/// workspace is: a live change landing among them would reach the device
+/// ahead of the history it builds on.
+#[tokio::test]
+async fn an_opened_records_answer_is_written_whole_before_live_frames() {
+    let (root, user) = UserIdentity::generate("owner", 1);
+    let (b, _) = certified_device(&root, user.public_key, "b");
+    let id = 74_u64;
+    let tmp = tempfile::tempdir().unwrap();
+    let mut runtime = crate::workspace::WorkspaceRuntime::open(
+        tmp.path(),
+        id,
+        true,
+        crate::workspace::Membership::default(),
+    )
+    .unwrap();
+    runtime.admit_device(b.device_public_key).unwrap();
+    let store = runtime.store.clone();
+    let workspace = Arc::new(AsyncMutex::new(runtime));
+    let registry = Arc::new(AsyncMutex::new(HashMap::from([(id, workspace.clone())])));
+    // Small enough that the writer stalls on it while nothing reads.
+    let (client, server) = tokio::io::duplex(4096);
+    let (read, write) = tokio::io::split(server);
+    let session = tokio::spawn(run_peer_stream(
+        b.clone(),
+        read,
+        write,
+        peer_context(registry, user.public_key, &b.cert),
+        std::future::pending::<()>(),
+    ));
+    let (read, mut write) = tokio::io::split(client);
+    let mut reader = SessionReader::new(read);
+    let send =
+        |envelope: &Envelope| tilo_delivery_protocol::transport_v2::encode_state(envelope).unwrap();
+    write
+        .write_all(&send(&Envelope::Subscribe { workspace_id: id }))
+        .await
+        .unwrap();
+    assert!(matches!(
+        reader.read_next().await.unwrap(),
+        Some(EnvelopeV2::State(Envelope::Ready { .. }))
+    ));
+    let (record, live, marker) = ([5; 32], [6; 32], [7; 32]);
+    let delta = |channel: [u8; 32], seq: u64| Envelope::Delta {
+        workspace_id: id,
+        author_device_public_key: b.device_public_key,
+        authored_at_ns: seq,
+        delta: crate::coedit::CoeditPayload::RetainedDelta {
+            channel,
+            body: vec![u8::try_from(seq % 251).unwrap(); 256],
+        }
+        .encode()
+        .unwrap(),
+        signature: [0; 64],
+    };
+    // What the store keeps of the record, which only an open sends.
+    for seq in 1..=20 {
+        store
+            .retain_delta(
+                &record,
+                seq,
+                &crate::transport::encode(&delta(record, seq)).unwrap(),
+            )
+            .unwrap();
+    }
+    // Live frames of the workspace, queued until the writer stalls.
+    let state = {
+        let runtime = workspace.lock().await;
+        let session = &runtime.state_sessions[&b.device_public_key];
+        (session.tx.clone(), session.live.clone())
+    };
+    for seq in 100..1000 {
+        let delivery = StateDelivery {
+            envelope: Arc::new(delta(live, seq)),
+            cleanup: None,
+            source: None,
+            _budget: None,
+            live: state.1.clone(),
+            fanned: None,
+        };
+        if state.0.try_send(delivery).is_err() {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    write
+        .write_all(&send(&Envelope::OpenRecord {
+            workspace_id: id,
+            channel: record,
+        }))
+        .await
+        .unwrap();
+    // The device's own write after the open: kept once the open is handled.
+    let marked = crate::transport::encode(&delta(marker, 2000)).unwrap();
+    write.write_all(&send(&delta(marker, 2000))).await.unwrap();
+    tilo_test_env::within("the open to be handled", async {
+        while !store.load_retained().unwrap().contains(&marked) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let channel_of = |frame: &Envelope| match frame {
+        Envelope::Delta { delta, .. } => crate::peer::admission::channel_of(delta),
+        _ => None,
+    };
+    let mut answer = None::<Vec<Envelope>>;
+    let opened = tilo_test_env::within("the record's answer", async {
+        loop {
+            let Some(EnvelopeV2::State(frame)) = reader.read_next().await.unwrap() else {
+                continue;
+            };
+            if let Envelope::RecordOpened { frames, .. } = frame {
+                return (frames, answer.unwrap_or_default());
+            }
+            if channel_of(&frame) == Some(record) {
+                answer.get_or_insert_with(Vec::new);
+            }
+            if let Some(answer) = answer.as_mut() {
+                answer.push(frame);
+            }
+        }
+    })
+    .await;
+    assert_eq!(opened.0, 20);
+    let between = opened
+        .1
+        .iter()
+        .filter(|frame| channel_of(frame) != Some(record))
+        .count();
+    assert_eq!(between, 0, "no live frame between the answer's frames");
+    assert_eq!(opened.1.len(), 20);
+    session.abort();
+    let _ = session.await;
 }

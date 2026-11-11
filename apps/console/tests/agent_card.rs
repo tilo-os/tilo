@@ -208,3 +208,22 @@ fn revoking_an_agent_takes_back_its_grant() {
             .contains_key("console-agent-access-row")
     );
 }
+
+/// The window someone reads at the top of the console: what its bar names.
+fn window_name(app: &mut TestApp<App>) -> Option<String> {
+    app.frame();
+    ui::window_toolbar::declared()
+        .and_then(|bar| bar.location)
+        .map(|location| location.label)
+}
+
+/// The card's window is named by what it shows: the agent's own name, where every place names its
+/// place, and never the app's twice.
+#[test]
+fn the_cards_window_is_named_by_the_agent() {
+    let mut app = opened();
+    assert_eq!(window_name(&mut app).as_deref(), Some("Agents"));
+    app.call_on(AGENT, "view-agent", json!({}))
+        .expect("open the card");
+    assert_eq!(window_name(&mut app).as_deref(), Some("Claude Code"));
+}

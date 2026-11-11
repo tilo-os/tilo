@@ -6,9 +6,9 @@
 use crate::peer::{
     AccessAudit, Arc, Envelope, EnvelopeV2, PeerError, RETENTION_PREFIX_BYTE_CAP,
     RETENTION_PREFIX_FRAME_CAP, ReplayWrite, SessionCtx, SessionReader, StateDelivery, Subscribed,
-    Subscription, audit_subscriber_access, buffered_retention_prefix, commit_run_key,
-    eligible_checkpoint_prefix, handle_commit_run, handle_delta_prefix, handle_envelope, mpsc,
-    resume_record, subscribe, trace_native_publication, unserved_private,
+    Subscription, answered_as_replay, audit_subscriber_access, buffered_retention_prefix,
+    commit_run_key, eligible_checkpoint_prefix, handle_commit_run, handle_delta_prefix,
+    handle_envelope, mpsc, resume_record, subscribe, trace_native_publication, unserved_private,
 };
 use std::collections::VecDeque;
 
@@ -388,10 +388,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
         }
         let (mut prefix, prefix_budgets) = self.inbound.checkpoint_prefix(env, inbound_budget)?;
         let env = prefix.remove(0);
-        let replaying = matches!(
-            env,
-            Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
-        );
+        let replaying = answered_as_replay(&env);
         if let Envelope::Unsubscribe { .. } = &env {
             // A replay handed to the writer still checks its subscription
             // until its Ready; unsubscribing under it would end the whole
@@ -406,12 +403,14 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         }
         let mut ticket = None;
+        let mut answer = Vec::new();
         let reply = {
             let subscribed = &mut *self.subscribed;
             let ticket = &mut ticket;
+            let answer = &mut answer;
             let operation = Box::pin(async move {
                 if prefix.is_empty() {
-                    handle_envelope(cx.peer, env, cx.session, subscribed, ticket).await
+                    handle_envelope(cx.peer, env, cx.session, subscribed, ticket, answer).await
                 } else {
                     let mut envelopes = Vec::with_capacity(prefix.len().saturating_add(1));
                     envelopes.push(env);
@@ -429,6 +428,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     self.replies,
                     ReplayWrite {
                         ticket,
+                        answer,
                         reply,
                         replaying,
                     },
@@ -520,6 +520,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                 };
                 let batch = ReplayWrite {
                     ticket,
+                    answer: Vec::new(),
                     reply,
                     replaying: true,
                 };
@@ -580,6 +581,7 @@ impl<'s, R: tokio::io::AsyncRead + Unpin> SessionReaderLoop<'s, R> {
                     self.replies,
                     ReplayWrite {
                         ticket: None,
+                        answer: Vec::new(),
                         reply: Some(reply),
                         replaying: false,
                     },

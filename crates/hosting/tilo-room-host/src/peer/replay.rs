@@ -64,9 +64,23 @@ pub(super) fn resume_record<'f>(
 
 pub(super) struct ReplayWrite {
     pub(super) ticket: Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
+    /// What an opened record's answer sends ahead of its reply: the record's
+    /// retained frames, written with no live frame between them.
+    pub(super) answer: Vec<Envelope>,
     pub(super) reply: Option<Envelope>,
     pub(super) replaying: bool,
 }
+/// Whether the answer to `env` goes to the writer as a replay does: no live
+/// frame is written until it is. A subscription's replay ends in its
+/// `Ready`, an opened record's answer in its `RecordOpened`; a live frame
+/// between their frames would reach the device ahead of what it builds on.
+pub(super) const fn answered_as_replay(env: &Envelope) -> bool {
+    matches!(
+        env,
+        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. } | Envelope::OpenRecord { .. }
+    )
+}
+
 pub(super) async fn authorize_state_frame(
     frame: &Envelope,
     peer: &AuthenticatedPeer,
@@ -361,6 +375,13 @@ pub(super) async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
             ticket,
         ));
         // Dropping this ticket schedules specific bounded spool reclamation.
+    }
+    for frame in batch.answer {
+        authorize_state_frame(&frame, peer, session).await?;
+        write
+            .write_all(&encode_charged(&frame, session, false)?)
+            .await?;
+        trace_native_publication("written", &frame, Some(&peer.device_public_key));
     }
     if let Some(reply) = reply {
         let readying = crate::timing::start();

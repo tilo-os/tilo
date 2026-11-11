@@ -1226,17 +1226,17 @@ fn commit_failed(message: String, retryable: bool) -> Outcome {
     })
 }
 
-/// Everything `app` changed since the last take, each with its route: the
-/// held record's own (`None`: the holder's route) first, then each record
-/// held beside it on the route of the same app and workspace its id names.
+/// Everything `app` changed since the last take, each with the route it
+/// belongs to: the held record's own is `holder`'s, then each record held
+/// beside it on the route of the same app and workspace its id names.
 fn take_all(
     app: &ConfinedReplica,
     holder: &DocumentRoute,
-) -> Result<Vec<(Option<DocumentRoute>, DocumentMutation)>, crate::apps::AppError> {
-    let mut taken: Vec<(Option<DocumentRoute>, DocumentMutation)> = app
+) -> Result<Vec<(DocumentRoute, DocumentMutation)>, crate::apps::AppError> {
+    let mut taken: Vec<(DocumentRoute, DocumentMutation)> = app
         .take_mutation()?
         .into_iter()
-        .map(|mutation| (None, mutation))
+        .map(|mutation| (holder.clone(), mutation))
         .collect();
     taken.extend(
         app.take_record_mutations()?
@@ -1247,7 +1247,7 @@ fn take_all(
                     cluster_id: holder.cluster_id.clone(),
                     record: record.route().to_owned(),
                 };
-                (Some(route), mutation)
+                (route, mutation)
             }),
     );
     Ok(taken)
@@ -2280,10 +2280,7 @@ impl Worker {
         // that source, which reads the record and opens a worker for it: an
         // action the record publishes never pays for that.
         let holder = self.holder_of(&route);
-        let published_here = self
-            .mounted
-            .get(&holder)
-            .is_some_and(|mounted| mounted.app.descriptor(&target.address).is_some());
+        let published_here = self.publishes(&holder, &target.address);
         if !published_here
             && let Some(output) = self
                 .try_registered_read(workspace_id, caller, request)
@@ -2342,11 +2339,8 @@ impl Worker {
             .map_err(|error| door_outcome(&error))?;
         // Where the action left its actor, for the door that shows it
         // working: the text it wrote, the item it acted on.
-        let left_at = mounted.app.presence().map(|(anchor, head)| ActorPlace {
-            anchor: hex::encode(anchor.cursor),
-            head: hex::encode(head.cursor),
-        });
-        let taken = take_all(&mounted.app, &route)
+        let left_at = mounted.app.presence().map(bounded::placed);
+        let taken = take_all(&mounted.app, &holder)
             .map_err(|error| commit_failed(error.to_string(), false))?;
         self.commit_taken(workspace_id, &route, taken)
             .map_err(|reason| commit_failed(reason, true))?;
@@ -2509,11 +2503,10 @@ impl Worker {
         &mut self,
         workspace_id: u64,
         route: &DocumentRoute,
-        taken: Vec<(Option<DocumentRoute>, DocumentMutation)>,
+        taken: Vec<(DocumentRoute, DocumentMutation)>,
     ) -> Result<(), String> {
         let holder = self.holder_of(route);
         for (changed, mutation) in taken {
-            let changed = changed.unwrap_or_else(|| holder.clone());
             if changed != holder {
                 self.beside.insert(changed.clone(), holder.clone());
             }

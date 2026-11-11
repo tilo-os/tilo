@@ -18,6 +18,7 @@ use tilo_user_identity::{RevocationList, UserIdentity};
 mod channel_replay;
 mod crowd_replay;
 mod replay_boundary;
+mod sealed;
 mod supersede;
 
 struct Fixture {

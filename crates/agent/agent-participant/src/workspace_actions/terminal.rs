@@ -590,7 +590,14 @@ impl Worker {
         // records it on their behalf.
         let invoker = tilo_actions::ActionInvoker::admitted(&ended.caller.actor())
             .named(ended.caller.agent_name().map(str::to_owned));
-        let mounted = self.mount(&ended.route, &state).map_err(failed)?;
+        let holder = {
+            self.mount(&ended.route, &state).map_err(failed)?;
+            self.holder_of(&ended.route)
+        };
+        let mounted = self
+            .mounted
+            .get_mut(&holder)
+            .ok_or_else(|| failed("the record did not mount".into()))?;
         mounted
             .app
             .invoke_with(
@@ -601,7 +608,7 @@ impl Worker {
                 true,
             )
             .map_err(|error| failed(format!("the run was not recorded: {error}")))?;
-        let taken = take_all(&mounted.app, &ended.route)
+        let taken = take_all(&mounted.app, &holder)
             .map_err(|error| failed(format!("the run was not recorded: {error}")))?;
         self.commit_taken(ended.workspace_id, &ended.route, taken)
             .map_err(|reason| failed(format!("the run was not recorded: {reason}")))?;

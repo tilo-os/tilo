@@ -767,11 +767,14 @@ impl BrowserShell {
         nodes: &[NodeId],
     ) -> bool {
         let key = matches!(event, WindowEvent::KeyboardInput { .. });
-        let on_bar = self
-            .cursor
-            .is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
+        let cursor = self.cursor;
+        let on_bar =
+            cursor.is_some_and(|point| point.y < f64::from(tilo_desktop::topbar::TOPBAR_HEIGHT_PX));
         for (layer, &node) in self.layers.iter_mut().zip(nodes) {
-            if (on_bar && !key) || (key && !layer.wants_keyboard()) {
+            // The bar's band is the bar's, but for what a layer draws there to be pressed (the
+            // follow banner's face and Stop): those presses are the layer's, as on a native desk.
+            let bar_point = on_bar && cursor.is_some_and(|point| layer.takes_bar_point(point));
+            if (on_bar && !key && !bar_point) || (key && !layer.wants_keyboard()) {
                 continue;
             }
             layer.handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -1509,7 +1512,10 @@ impl BrowserShell {
                 );
                 return;
             }
-            ProfileChoice::Availability(_)
+            // Everyone here is a card of someone else's: this one never stands where the
+            // roster is, so it offers no way to it.
+            ProfileChoice::EveryoneHere
+            | ProfileChoice::Availability(_)
             | ProfileChoice::Colour(_)
             | ProfileChoice::Visibility(_) => return,
         };

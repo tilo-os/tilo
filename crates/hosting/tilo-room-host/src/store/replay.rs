@@ -60,6 +60,8 @@ pub(crate) struct CaptureLeases {
     /// How each retained channel's record syncs
     /// ([`super::record_sync`]).
     pub(super) records: super::record_sync::RecordClasses,
+    /// Which retained channels' records are sealed ([`super::sealed`]).
+    pub(super) sealed: super::sealed::SealedChannels,
 }
 impl CaptureLeases {
     /// The leases of the store at `root`, shared by every handle on it.
@@ -158,8 +160,9 @@ impl WorkspaceStore {
     }
 
     /// Forget what captures listed of every lineage on `channel`, of any
-    /// author.
+    /// author, and whether its record is sealed: its history is rewritten.
     pub(crate) fn forget_channel_listing(&self, channel: &[u8; 32]) {
+        self.capture_leases.sealed.forget(channel);
         let suffix = format!("-{}", hex::encode(channel));
         let mut listed = self.listed_lineages();
         let mut gone = 0usize;

@@ -19,7 +19,7 @@
 
 mod common;
 
-use common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press};
+use common::{LAUNCHER_SEARCH, OVERVIEW_SEARCH, WORKSPACE_NAME, press, type_text};
 use std::collections::HashMap;
 use std::io::BufRead as _;
 use std::rc::Rc;
@@ -1856,28 +1856,6 @@ fn show(session: &mut Session, surface: &str) {
         )
         .unwrap();
     until(session, |session| here(session) == surface);
-}
-
-/// Type `text` (lower-case letters) on the keyboard, a key at a time.
-fn type_text(session: &mut Session, text: &str) {
-    const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
-    for letter in text.chars() {
-        let keycode = ROWS
-            .iter()
-            .find_map(|(row, first)| {
-                row.chars()
-                    .position(|c| c == letter)
-                    .map(|at| first + u32::try_from(at).unwrap())
-            })
-            .unwrap_or_else(|| panic!("no key types {letter:?}"));
-        for pressed in [true, false] {
-            session
-                .compositor()
-                .input(InputEvent::Key { keycode, pressed })
-                .unwrap();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
-    }
 }
 
 /// Where the tab `tab` stands: its workspace's id and its strip's name, while it is open.

@@ -315,57 +315,17 @@ pub fn press_where(
     }
 }
 
-/// Type `text` (lower-case letters, spaces and a question mark) on the keyboard, a key at a time,
-/// as the person does. A question mark is Shift and the slash key.
+/// Type `text` on the keyboard, a key at a time, as the person does: each character's key on the
+/// seat's layout, with the modifiers it needs, pressed and let go before the next frame. A key held
+/// across a frame would repeat whenever that frame outlasts the repeat delay, as one on a loaded
+/// machine does.
 pub fn type_text(session: &mut Session, text: &str) {
-    const ROWS: [(&str, u32); 3] = [("qwertyuiop", 16), ("asdfghjkl", 30), ("zxcvbnm", 44)];
-    const SPACE: u32 = 57;
-    /// Shift, held for the keys whose upper-case character is the one meant.
-    const SHIFT: u32 = 42;
-    const SLASH: u32 = 53;
     for letter in text.chars() {
-        let (keycode, shifted) = if letter == ' ' {
-            (SPACE, false)
-        } else if letter == '?' {
-            (SLASH, true)
-        } else {
-            (
-                ROWS.iter()
-                    .find_map(|(row, first)| {
-                        let at = u32::try_from(row.chars().position(|c| c == letter)?).ok()?;
-                        first.checked_add(at)
-                    })
-                    .unwrap_or_else(|| panic!("no key types {letter:?}")),
-                false,
-            )
-        };
-        if shifted {
-            session
-                .compositor()
-                .input(InputEvent::Key {
-                    keycode: SHIFT,
-                    pressed: true,
-                })
-                .unwrap();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
-        for pressed in [true, false] {
-            session
-                .compositor()
-                .input(InputEvent::Key { keycode, pressed })
-                .unwrap();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
-        if shifted {
-            session
-                .compositor()
-                .input(InputEvent::Key {
-                    keycode: SHIFT,
-                    pressed: false,
-                })
-                .unwrap();
-            session.step(Duration::from_millis(1)).unwrap();
-        }
+        assert!(
+            session.compositor().type_char(letter).unwrap(),
+            "no key types {letter:?}"
+        );
+        session.step(Duration::from_millis(1)).unwrap();
     }
 }
 

@@ -104,12 +104,7 @@ fn deliver_at(
                 collab_types::RoutedDocumentPayload::Encrypted { channel, .. } => *channel,
             };
             let encryption = document.envelope.encryption.as_ref();
-            let admits_plaintext = if replayed {
-                ch.document_history_allowed(&document.cluster_id, channel, encryption)
-            } else {
-                ch.document_encryption_allowed(&document.cluster_id, channel, encryption)
-            };
-            if admits_plaintext {
+            if ch.document_order_allowed(&document.cluster_id, channel, artifact, encryption) {
                 let state = ch.state_for(artifact);
                 state.room.clone_from(&document.cluster_id);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
@@ -213,6 +208,9 @@ fn accept(
     let unsynced = channels.lock().ok().map(|mut ch| {
         first_of_the_record = !ch.routes.contains_key(&artifact);
         let unsynced = ch.record_history(route, &envelope);
+        if envelope.encryption.is_some() {
+            ch.sealed.insert(artifact);
+        }
         let state = ch.state_for(artifact);
         state.record_validated_op(envelope.clone());
         if envelope.kind == OpKind::Compaction
@@ -536,6 +534,71 @@ mod tests {
         note.get(automerge::ROOT, field)
             .unwrap()
             .and_then(|(value, _)| value.into_string().ok())
+    }
+
+    /// A record's writes in the clear before its seal are its base, live or
+    /// replayed, though the channel's gate has closed: a device away while
+    /// the record sealed reads it only by taking them in. Once a sealed
+    /// write of the record entered, one in the clear is refused however it
+    /// came.
+    #[test]
+    fn a_write_in_the_clear_enters_until_its_record_sealed() {
+        let [sealed, _] = two_sealed_writes(&ed25519_dalek::SigningKey::from_bytes(&[6; 32]));
+        let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
+        let clear = |seq: u64, title: &str| {
+            let (mutation, _) = collab_types::field_edit_mutation("note", "title", title).unwrap();
+            let mut op = SignedOp::new_unsigned(
+                mutation.encode().unwrap(),
+                document_artifact_id("notes", "workspace", "record"),
+                collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+                document_attestation_id("notes", "workspace", "record"),
+                OpKind::Change,
+                SystemTime::now(),
+                seq,
+            );
+            collab_types::sign_op(&mut op, &key).unwrap();
+            op
+        };
+        let channels = Arc::new(Mutex::new(BrokerChannels::default()));
+        channels.lock().unwrap().register_channel_gate(
+            collab_types::document_channel_id("notes", "workspace", "record"),
+            channel_crypto::ChannelGate {
+                encryption_required: true,
+            },
+        );
+        let fanout = FanoutState::new();
+        let delivered = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let app = Arc::clone(&delivered);
+        let _app = fanout.subscribe_workspaces(
+            vec!["workspace".into()],
+            Box::new(move |event, _| {
+                if matches!(event, CollabEvent::Document { .. }) {
+                    app.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+            }),
+        );
+        let shows = |envelope: SignedOp, replayed: bool| {
+            let before = delivered.load(std::sync::atomic::Ordering::SeqCst);
+            deliver(
+                &channels,
+                &fanout,
+                RemoteDocument {
+                    app_id: "notes".into(),
+                    cluster_id: "workspace".into(),
+                    record_id: "record".into(),
+                    author: editor(),
+                    replayed,
+                    envelope,
+                },
+                |_| "writer".into(),
+            );
+            delivered.load(std::sync::atomic::Ordering::SeqCst) > before
+        };
+        assert!(shows(clear(1, "live base"), false), "a live base write");
+        assert!(shows(clear(2, "kept base"), true), "a kept base write");
+        assert!(shows(sealed, false), "the seal");
+        assert!(!shows(clear(3, "after, live"), false), "a live downgrade");
+        assert!(!shows(clear(4, "after, kept"), true), "a kept downgrade");
     }
 
     /// A write sealed under the channel's earlier epoch is taken live: its

@@ -76,6 +76,11 @@ pub struct Heard {
     /// It runs before the host holds the tree the role placed, so it may ask that layer to draw
     /// again.
     pub pressed_elsewhere: Rc<dyn Fn()>,
+    /// Whether the role draws something the person presses at this point of the bar (the
+    /// banner that names whose view this follows). A host whose bar takes the presses over its
+    /// own band hands the ones at such a point to the layer instead, as a compositor hands a
+    /// press to the surface under it.
+    pub takes_bar_point: Rc<dyn Fn(ui::kurbo::Point) -> bool>,
 }
 
 /// A layer the host placed, as the role that placed it holds it.

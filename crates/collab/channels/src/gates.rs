@@ -70,20 +70,6 @@ impl Gates {
             .is_none_or(|gate| gate.accepts(encryption, channel))
     }
 
-    /// Whether a host's replay of `channel`'s retained history may enter: plaintext history passes
-    /// (a record seals from some write on, and its cleartext writes stay the base its sealed writes
-    /// are changes over until a sealed checkpoint covers them), live plaintext of every shape is
-    /// still refused.
-    #[must_use]
-    pub fn allows_history(
-        &self,
-        workspace: &str,
-        channel: ChannelId,
-        encryption: Option<&EncryptionMetadata>,
-    ) -> bool {
-        encryption.is_none() || self.allows_document(workspace, channel, encryption)
-    }
-
     /// The verdict on an op for `channel` from the gate governing it
     /// ([`channel_crypto::admission`]). A broker holding every channel's governance state knows a
     /// channel with no gate is one that is not encrypted.

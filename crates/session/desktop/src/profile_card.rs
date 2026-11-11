@@ -289,6 +289,8 @@ pub enum ProfileChoice {
         client: String,
         ask: AgentAsk,
     },
+    /// Go from this person to everyone here: the roster in the card's place.
+    EveryoneHere,
 }
 
 impl ProfileChoice {
@@ -302,6 +304,7 @@ impl ProfileChoice {
                 | Self::Follow(_)
                 | Self::Message(_)
                 | Self::Agent { .. }
+                | Self::EveryoneHere
         )
         // The rest are settings the card goes on showing.
     }
@@ -551,7 +554,23 @@ impl ProfileCard {
         if let Some(agent) = &other.agent {
             body = body.push(Box::new(self.agent_commands(agent)));
         }
+        // One person's card is a step inside who is here: the way back out to everyone, for a bar
+        // that shows a face where its people button would stand.
+        body = body
+            .push(Box::new(Divider::horizontal()))
+            .push(Box::new(self.everyone_here()));
         body
+    }
+
+    /// The card's way out to the people here: the roster in its place.
+    fn everyone_here(&self) -> Button {
+        let chosen = Rc::clone(&self.chosen);
+        Button::new("profile-everyone-here", &t("topbar-show-collaborators"))
+            .with_icon(Icon::Users)
+            .role(ButtonRole::Plain)
+            .on_effect(move || {
+                *chosen.borrow_mut() = Some(ProfileChoice::EveryoneHere);
+            })
     }
 
     /// Someone else's face, name and how and where they are here, side by side.

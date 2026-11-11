@@ -3367,7 +3367,7 @@ impl crate::collaboration::native_initial::ComponentBinding for CallbackBinding 
     }
     fn merge_committed(&self, mutation: collab_types::DocumentMutation) -> Result<(), String> {
         self.records
-            .merge_remote_document(&self.checkout, mutation)
+            .merge_replica(&self.checkout, mutation)
             .map(|_| ())
     }
 }
@@ -5154,7 +5154,7 @@ pub(crate) fn merge_remote_owned_document(
     let identity = store
         .replica_identity_stamp(checkout)
         .map_err(RemoteApplyError::Unavailable)?;
-    store
+    let merged = store
         .with_action_state(&checkout.id, |doc, history, state| {
             if doc.pending_ops() != 0
                 || state.pending.as_ref().is_some_and(|pending| {
@@ -5210,7 +5210,11 @@ pub(crate) fn merge_remote_owned_document(
                 observed,
             })
         })
-        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))?
+        .map_err(|error| RemoteApplyError::Unavailable(error.to_string()))??;
+    if merged.changed == Some(true) {
+        store.peer_change_merged(&checkout.id);
+    }
+    Ok(merged)
 }
 
 /// Deliver a semantic (accessibility) action to one admitted node, refused
