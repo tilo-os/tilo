@@ -307,9 +307,14 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
         elsewhere.rows.is_empty(),
         "another app's rows cannot be this record's views"
     );
-    assert!(
-        elsewhere.locator.is_none(),
-        "an answer that found nothing names no page to browse"
+    // Where the record opens is the caller's to know once they may read it, views or not.
+    assert_eq!(
+        elsewhere
+            .locator
+            .as_ref()
+            .map(|locator| locator.provider.as_str()),
+        Some(provider.as_str()),
+        "an answer with no views still names where the record opens"
     );
     let unscoped = browser.catalogue(query.clone()).await.unwrap();
     assert_eq!(
@@ -345,7 +350,11 @@ async fn an_existing_native_chat_reference_discovers_local_views_over_the_govern
             .await
             .unwrap();
         assert!(empty.rows.is_empty());
-        assert!(empty.locator.is_none());
+        assert_eq!(
+            empty.locator.map(|locator| locator.provider),
+            Some(provider.clone()),
+            "the record opens whether or not it holds the views asked for"
+        );
     }
     assert!(
         browser

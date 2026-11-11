@@ -359,6 +359,51 @@ pub fn open_frame(
     }))
 }
 
+/// A record as its writer reads it: `base`, the record's saved bytes as the replica holds them
+/// (`None` when it holds none of it, or cannot open it yet), with `frames`, writes of `author` the
+/// replica has not taken in yet (they wait for the record's keys or for room in custody), merged
+/// over it. Only the writer reads these: nobody else holds them until they land.
+///
+/// # Errors
+/// A frame or the base does not decode as the record's document.
+pub fn with_own_writes(
+    base: Option<&[u8]>,
+    author: [u8; 32],
+    frames: &[Vec<u8>],
+) -> Result<OwnRead, String> {
+    let mut document = match base {
+        Some(bytes) => automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?,
+        None => automerge::AutoCommit::new(),
+    };
+    let mut transfers = Transfers::default();
+    for frame in frames {
+        if let Some(mutation) = transfers.take(author, frame)? {
+            let (DocumentMutation::Snapshot(bytes) | DocumentMutation::Incremental(bytes)) =
+                mutation;
+            tilo_automerge::ApplyIncoming::load_incoming(&mut document, &bytes)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+    let mut heads = document.get_heads();
+    heads.sort();
+    let revision = crate::committed_document_revision(&heads);
+    Ok(OwnRead {
+        bytes: document.save(),
+        heads: heads.into_iter().map(|head| head.0).collect(),
+        revision,
+    })
+}
+
+/// A record as its writer reads it ([`with_own_writes`]).
+pub struct OwnRead {
+    /// The document, saved.
+    pub bytes: Vec<u8>,
+    /// Its heads, sorted.
+    pub heads: Vec<[u8; 32]>,
+    /// The revision those heads name.
+    pub revision: [u8; 32],
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,5 +652,23 @@ mod tests {
         }
         assert!(outcome.is_err());
         assert!(transfers.is_empty());
+    }
+
+    #[test]
+    fn a_writer_reads_its_held_writes_over_what_the_replica_holds() {
+        let mut doc = AutoCommit::new();
+        doc.put(automerge::ROOT, "kept", "landed").unwrap();
+        let base = doc.save();
+        doc.put(automerge::ROOT, "held", "waiting for keys")
+            .unwrap();
+        let frames = DocumentMutation::Incremental(doc.save_incremental())
+            .encode_frames()
+            .unwrap();
+        let read = with_own_writes(Some(&base), [1; 32], &frames).unwrap();
+        let read_back = AutoCommit::load(&read.bytes).unwrap();
+        assert!(read_back.get(automerge::ROOT, "kept").unwrap().is_some());
+        assert!(read_back.get(automerge::ROOT, "held").unwrap().is_some());
+        let alone = with_own_writes(None, [1; 32], &frames).unwrap();
+        assert_ne!(alone.revision, read.revision);
     }
 }

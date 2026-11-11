@@ -209,7 +209,8 @@ impl Task {
         // A record opened before the governance admitted it waits with its
         // channel unopened: opening it here asks the participants for the keys
         // the writes it holds wait on.
-        let unopened: Vec<DocumentRoute> = self.held_outbound.keys().cloned().collect();
+        let unopened: Vec<DocumentRoute> =
+            self.engine.held_writes().lock().keys().cloned().collect();
         for route in unopened {
             self.open_channel(&route);
         }

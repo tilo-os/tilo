@@ -28,6 +28,7 @@ use tilo_channels::{ChannelAccess, ChannelKeyProvider};
 use tilo_desktop_model::{WorkspaceId, WorkspaceSlot};
 use tilo_identity_host::custody::HostIdentity;
 use tilo_lock::MutexRecover as _;
+use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::join::MemberRole;
 #[cfg(target_os = "linux")]
 use tilo_peer_state::join::invitations::{
@@ -188,6 +189,8 @@ pub struct Engine {
     /// What lands here from the workspaces' other devices: what a read waiting for a record it
     /// holds none of wakes on.
     arrivals: Arc<crate::arrivals::Arrivals>,
+    /// This device's own writes its replica has not taken in yet ([`HeldWrites`]).
+    held: HeldWrites,
     /// Keys of records whose channel this device takes no part in, handed to it by the records'
     /// host ([`Self::hand_keys`]): a sealed record they open reads with them.
     handed: std::sync::Mutex<
@@ -208,6 +211,20 @@ const FRAMES_KEPT: tilo_peer_state::store::Appetite = tilo_peer_state::store::Ap
 /// A record's bytes, with the heads they were last saved at: what [`Engine::record_since`] answers
 /// when the record changed since the caller last read it.
 type SavedRecord = Option<(Vec<u8>, [u8; 32])>;
+
+/// The writes this device made that its replica has not taken in yet, by record, as document
+/// frames in the clear: they wait for their record's keys (nothing goes out unsealed) or for room
+/// in custody. The session that writes them keeps them here, and its readers read them over the
+/// replica ([`Engine::read_record`]); nobody else sees them until they land.
+#[derive(Clone, Default)]
+pub struct HeldWrites(Arc<std::sync::Mutex<BTreeMap<DocumentRoute, Vec<Vec<u8>>>>>);
+
+impl HeldWrites {
+    /// The held writes, to read or change.
+    pub fn lock(&self) -> std::sync::MutexGuard<'_, BTreeMap<DocumentRoute, Vec<Vec<u8>>>> {
+        self.0.lock_recover()
+    }
+}
 
 /// What a read of one of a workspace's records found ([`Engine::read_record`]).
 pub enum RecordReading {
@@ -256,6 +273,7 @@ impl Engine {
             directed: None,
             arrivals: Arc::new(crate::arrivals::Arrivals::default()),
             handed: std::sync::Mutex::default(),
+            held: HeldWrites::default(),
         }
     }
 
@@ -371,6 +389,45 @@ impl Engine {
     /// The workspace is not held here, this device may not read the record, the record is sealed
     /// and this device holds no keys of it, or the document cannot be read.
     pub fn read_record(
+        &self,
+        workspace: &str,
+        app: &str,
+        record: &str,
+        known: Option<[u8; 32]>,
+        maximum: usize,
+    ) -> Result<RecordReading, String> {
+        let route = DocumentRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_owned(),
+            record: record.to_owned(),
+        };
+        let held = self.held.lock().get(&route).cloned();
+        let Some(held) = held.filter(|frames| !frames.is_empty()) else {
+            return self.read_replica(workspace, app, record, known, maximum);
+        };
+        // This device's own writes the replica has not taken in yet read over what it holds.
+        let base = match self.read_replica(workspace, app, record, None, maximum) {
+            Ok(RecordReading::Captured { bytes, .. }) => Some(bytes),
+            _ => None,
+        };
+        let author = self.identity.device_cert.device_public_key;
+        let tilo_peer_state::document_frame::OwnRead {
+            bytes,
+            heads,
+            revision,
+        } = tilo_peer_state::document_frame::with_own_writes(base.as_deref(), author, &held)?;
+        if known == Some(revision) {
+            return Ok(RecordReading::Unchanged(revision));
+        }
+        Ok(RecordReading::Captured {
+            revision,
+            heads,
+            bytes,
+        })
+    }
+
+    /// What this device's replica holds of the record, its own held writes left out.
+    fn read_replica(
         &self,
         workspace: &str,
         app: &str,
@@ -593,9 +650,18 @@ impl Engine {
     /// # Errors
     /// The workspace is not held here, or its documents cannot be listed now.
     pub fn records(&self, workspace: &str) -> Result<Vec<(String, String)>, String> {
-        let workspace = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
-        self.owner
-            .with_current(workspace, |view| Ok(view.peer().records()))
+        let id = WorkspaceId::parse(workspace).ok_or("that is not a workspace")?;
+        let mut records = self
+            .owner
+            .with_current(id, |view| Ok(view.peer().records()))?;
+        // A record this device wrote that its replica holds nothing of yet is one of them too.
+        for route in self.held.lock().keys() {
+            let named = (route.app_id.clone(), route.record.clone());
+            if route.cluster_id == workspace && !records.contains(&named) {
+                records.push(named);
+            }
+        }
+        Ok(records)
     }
 
     /// Whether this device's person reads everything `workspace` holds here, so that it may be
@@ -1219,6 +1285,11 @@ impl Engine {
 
     /// Where this session's channel service installs this device's keys: the broker, the room host
     /// and every sealed read meet here.
+    /// This device's own writes its replica has not taken in yet.
+    pub fn held_writes(&self) -> &HeldWrites {
+        &self.held
+    }
+
     /// Read `workspace`'s record of `route` with `keys` from now on: the record's host handed them
     /// to this device, which takes no part in the record's channel.
     pub fn hand_keys(

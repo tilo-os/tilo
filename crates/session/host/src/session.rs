@@ -741,6 +741,7 @@ impl PeerHandle {
             Arc::new(crate::custody::SessionCustody),
         ));
         engine.keys().set(Some(channels.clone()));
+        engine.held_writes().lock().extend(channel_state.held());
         #[cfg(feature = "toolkit")]
         crate::surfaces::decide_with_kept_surfaces();
         let task = Task {
@@ -762,7 +763,6 @@ impl PeerHandle {
             ciphers: Ciphers::new(),
             channels,
             governance: HostGovernance::default(),
-            held_outbound: channel_state.held().into_iter().collect(),
             outbound_due: false,
             answered: Vec::new(),
             arrived: Vec::new(),
@@ -1309,9 +1309,6 @@ struct Task {
     surface_wants: neighbour_wire::content::ContentWants<()>,
     /// Live frames waiting for their record's keys.
     held_live: crate::held_live::HeldLive,
-    /// Frames published and not committed yet: before this device held the route's keys, or
-    /// while custody had no room; they are sealed and committed once they may.
-    held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
     /// Writes were published, or the host answered writes in custody, since held writes were
     /// last committed: what waits may commit ([`Self::commit_held`]).
     outbound_due: bool,
@@ -2317,10 +2314,11 @@ impl Task {
                 true
             }
             Command::Barrier(done) => {
-                if self.held_outbound.is_empty() {
+                let held: BTreeSet<DocumentRoute> =
+                    self.engine.held_writes().lock().keys().cloned().collect();
+                if held.is_empty() {
                     self.await_custody(done);
                 } else {
-                    let held = self.held_outbound.keys().cloned().collect();
                     self.held_barriers.push((held, done));
                 }
                 true
@@ -2813,7 +2811,9 @@ impl Task {
     fn persist_channels(&self, held_changed: bool) {
         if held_changed {
             self.channel_state.hold(
-                self.held_outbound
+                self.engine
+                    .held_writes()
+                    .lock()
                     .iter()
                     .map(|(route, frames)| (route.clone(), frames.clone()))
                     .collect(),
@@ -2851,7 +2851,7 @@ impl Task {
                 self.release_live(&route);
                 // What the replica holds sealed for these keys opens now.
                 self.landed(&route, None);
-                self.outbound_due |= self.held_outbound.contains_key(&route);
+                self.outbound_due |= self.engine.held_writes().lock().contains_key(&route);
             }
             self.commit_held().await;
             if self.new_keys.is_empty() {

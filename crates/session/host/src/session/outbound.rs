@@ -26,7 +26,12 @@ impl Task {
         }
         self.open_channel(&route);
         let ready = self.ciphers.contains_key(&route);
-        self.held_outbound.entry(route).or_default().extend(frames);
+        self.engine
+            .held_writes()
+            .lock()
+            .entry(route)
+            .or_default()
+            .extend(frames);
         if ready {
             self.outbound_due = true;
         } else {
@@ -41,13 +46,16 @@ impl Task {
             return;
         }
         let ready: Vec<DocumentRoute> = self
-            .held_outbound
+            .engine
+            .held_writes()
+            .lock()
             .keys()
             .filter(|route| self.ciphers.contains_key(*route))
             .cloned()
             .collect();
         for route in ready {
-            if let Some(frames) = self.held_outbound.remove(&route) {
+            let frames = self.engine.held_writes().lock().remove(&route);
+            if let Some(frames) = frames {
                 self.commit_frames(&route, frames, false).await;
             }
         }
@@ -140,10 +148,12 @@ impl Task {
             let mut rest = taken.split_off(committed.min(taken.len()));
             rest.extend(frames);
             if !rest.is_empty() {
-                let held = self.held_outbound.entry(route.clone()).or_default();
+                let mut writes = self.engine.held_writes().lock();
+                let held = writes.entry(route.clone()).or_default();
                 let later = std::mem::take(held);
                 held.extend(rest);
                 held.extend(later);
+                drop(writes);
                 self.persist_channels(true);
             }
         }
@@ -252,13 +262,10 @@ impl Task {
     /// Move each held barrier whose routes hold nothing any more on to the
     /// outbox, which now carries what those routes held.
     pub(super) fn release_barriers(&mut self) {
+        let held = self.engine.held_writes().lock().clone();
         let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
             .into_iter()
-            .partition(|(routes, _)| {
-                routes
-                    .iter()
-                    .any(|route| self.held_outbound.contains_key(route))
-            });
+            .partition(|(routes, _)| routes.iter().any(|route| held.contains_key(route)));
         self.held_barriers = waiting;
         for (_, done) in released {
             self.await_custody(done);
