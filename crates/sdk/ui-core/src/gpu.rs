@@ -227,21 +227,16 @@ impl BackendChoice {
     }
 }
 
-/// The render node (major, minor) the process's devices open on, where one
-/// asked ([`prefer_render_node`]).
-#[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
-static PREFERRED_NODE: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+/// The adapter a process opens its devices on, where it named one
+/// ([`prefer_adapter`]).
+static PREFERRED_ADAPTER: std::sync::OnceLock<fn(&Adapter) -> bool> = std::sync::OnceLock::new();
 
-/// Open the process's devices on the GPU whose render node is `node`
-/// (`/dev/dri/renderD128`), unless `WGPU_ADAPTER_NAME` names another: a
-/// compositor's process draws on the GPU it composites on, so what it draws
-/// is handed over in that GPU's memory. Only devices opened afterwards
-/// follow it.
-#[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
-pub fn prefer_render_node(node: &std::path::Path) {
-    if let Some(numbers) = crate::dmabuf_import::node_numbers(node) {
-        let _ = PREFERRED_NODE.set(numbers);
-    }
+/// Open the process's devices on the first adapter `accepts`, unless
+/// `WGPU_ADAPTER_NAME` names another. A process whose frames another process
+/// shows names that one's GPU here, so what it draws is allocated in that
+/// GPU's memory. Only devices opened afterwards follow it.
+pub fn prefer_adapter(accepts: fn(&Adapter) -> bool) {
+    let _ = PREFERRED_ADAPTER.set(accepts);
 }
 
 /// The backends a context starts with when `WGPU_BACKEND` names none.
@@ -397,16 +392,13 @@ impl RenderContext {
             self.settle_backends().await;
             return loss::software_adapter(&self.instance).await;
         }
-        #[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
-        if let Some(node) = PREFERRED_NODE.get().filter(|_| !adapter_named_by_env()) {
+        if let Some(accepts) = PREFERRED_ADAPTER.get().filter(|_| !adapter_named_by_env()) {
             for adapter in self
                 .instance
                 .enumerate_adapters(wgpu::Backends::VULKAN)
                 .await
             {
-                if crate::dmabuf_import::vulkan_drm_adapter_identity(&adapter)
-                    .is_some_and(|identity| identity.render == Some(*node))
-                {
+                if accepts(&adapter) {
                     return Some(adapter);
                 }
             }

@@ -22,6 +22,8 @@ tracing.workspace = true
 # A tilolang shell's parts: its views run in an instance, drawn through the UI host's half
 # of a window, over a record of the shell's own (`shell_part`).
 tilolang-tilo = { path = "../../platform/tilolang-tilo" }
+# The render node a GPU is named by, as the compositor names it.
+tilo-presentation = { path = "../../platform/tilo-presentation" }
 tilo-ui-host = { path = "../../platform/tilo-ui-host" }
 tilo-render-protocol = { path = "../../platform/tilo-render-protocol" }
 # Frames drawn on the GPU are delivered in the dma-bufs apps' frames are.

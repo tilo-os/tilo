@@ -101,19 +101,9 @@ pub fn vulkan_drm_adapter_identity(adapter: &wgpu::Adapter) -> Option<VulkanDrmD
     )
 }
 
-/// The (major, minor) of the device node at `path` (`/dev/dri/renderD128`).
-pub fn node_numbers(path: &std::path::Path) -> Option<(u32, u32)> {
-    use std::os::unix::fs::MetadataExt as _;
-    let device = std::fs::metadata(path).ok()?.rdev();
-    Some((libc::major(device), libc::minor(device)))
-}
-
-/// Whether `device` draws on the GPU whose render node is at `path`: memory
-/// allocated there is its own.
-pub fn is_on_render_node(device: &wgpu::Device, path: &std::path::Path) -> bool {
-    let Some(node) = node_numbers(path) else {
-        return false;
-    };
+/// Whether `device` draws on the GPU whose render node is `node`
+/// ([`tilo_presentation::device_numbers`]): memory allocated there is its own.
+pub fn is_on_render_node(device: &wgpu::Device, node: (u32, u32)) -> bool {
     vulkan_drm_device_identity(device).is_some_and(|identity| identity.render == Some(node))
 }
 

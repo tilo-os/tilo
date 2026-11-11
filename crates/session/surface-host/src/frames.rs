@@ -160,7 +160,7 @@ impl Target {
         let node = tilo_compositor::gpu_frames_node().filter(|node| {
             // The renderer draws on the GPU the compositor composites on:
             // memory one GPU allocated is not another's to draw into.
-            ui::gpu::prefer_render_node(node);
+            prefer_render_node(node);
             draws_on_gpu()
         });
         if let Some(gpu) = node.and_then(|node| Gpu::new(size, node)) {
@@ -206,6 +206,29 @@ impl Target {
             ui::gpu::Recovery::Software => Self::cpu(size),
         }
     }
+}
+
+/// The DRM render node the compositor composites on: every device this
+/// process opens is that GPU's, so what it draws is handed over in that GPU's
+/// memory.
+static COMPOSITORS_GPU: std::sync::OnceLock<(u32, u32)> = std::sync::OnceLock::new();
+
+/// Open this process's devices on the compositor's GPU: `node` is the render
+/// node it composites from (`/dev/dri/renderD128`).
+fn prefer_render_node(node: &std::path::Path) {
+    let Some(numbers) = tilo_presentation::device_numbers(node) else {
+        return;
+    };
+    let _ = COMPOSITORS_GPU.set(numbers);
+    ui::gpu::prefer_adapter(on_compositors_gpu);
+}
+
+/// Whether `adapter` is the GPU behind the compositor's render node.
+fn on_compositors_gpu(adapter: &wgpu::Adapter) -> bool {
+    COMPOSITORS_GPU.get().is_some_and(|node| {
+        ui::dmabuf_import::vulkan_drm_adapter_identity(adapter)
+            .is_some_and(|identity| identity.render == Some(*node))
+    })
 }
 
 /// The renderer, the buffers its frames are delivered in and what the last
@@ -254,7 +277,11 @@ impl Gpu {
             .adapter_info()
             .filter(|info| !ui::gpu::rasterizes_on_cpu(info))?;
         let (device, _, _) = renderer.target();
-        if !ui::dmabuf_import::is_on_render_node(&device, node) {
+        let Some(numbers) = tilo_presentation::device_numbers(node) else {
+            tracing::warn!(?node, "hosted frames: no device node to draw on");
+            return None;
+        };
+        if !ui::dmabuf_import::is_on_render_node(&device, numbers) {
             tracing::warn!(adapter = %adapter.name, ?node, "hosted frames: the renderer is not on the compositor's GPU");
             return None;
         }
