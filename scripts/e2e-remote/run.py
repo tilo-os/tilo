@@ -1083,10 +1083,12 @@ ip -o addr show dev "$dev"
             return None, None
 
         def row_of(box: Box, action: str, within: str) -> dict | None:
-            for row in self.rows(box, ""):
-                rid = str(row.get("id", ""))
-                if rid.split("\x1f")[-1] == action and within in rid + str(row.get("provider", "")):
-                    return row
+            # As a person's menu lists it, else as the desktop lists it for scripts.
+            for listed in (self.rows(box, ""), box.vm.actions("", programmatic=True)):
+                for row in listed:
+                    rid = str(row.get("id", ""))
+                    if rid.split("\x1f")[-1] == action and within in rid + str(row.get("provider", "")):
+                        return row
             return None
 
         self.person_opens_browser(b, res)
@@ -1098,22 +1100,25 @@ ip -o addr show dev "$dev"
         if not group or not tab or not room:
             raise Failed(f"B's desk does not hold the Browser's window in a workspace it shares: "
                          f"group {group}, tab {tab}, workspace {room}")
-        share = self.find_row(b, "share-window", "share") or self.find_row(b, "share-window")
+        share = self.find_row(b, "share-window", "share") or row_of(b, "share-window", "")
         if share is None:
+            res.facts["share_rows"] = [str(row.get("id")) for row in b.vm.actions("", programmatic=True)
+                                       if "share" in str(row.get("id"))][:40]
             raise Failed("B's desk lists no share-window action")
         res.facts["shared"] = b.vm.invoke(share["provider"], share["id"],
                                           {"group": str(group), "on": True})
         try:
             watch = row_of(a, "watch", "window-share")
             if watch is None:
-                res.facts["watch_rows"] = [str(row.get("id")) for row in self.rows(a, "")
+                res.facts["watch_rows"] = [str(row.get("id"))
+                                           for row in a.vm.actions("", programmatic=True)
                                            if "share" in str(row.get("id"))][:40]
                 raise Failed("A's session lists no action to watch a shared window")
             res.facts["watched"] = a.vm.invoke(watch["provider"], watch["id"],
                                                {"tab": str(tab), "room": room})
 
             def held_on_a() -> list:
-                return [row for row in self.rows(a, "")
+                return [row for row in a.vm.actions("", programmatic=True)
                         if "desktop.peer-surface" in str(row.get("id")) + str(row.get("provider"))]
 
             rows = wait_until(held_on_a, 120, 2.0)
