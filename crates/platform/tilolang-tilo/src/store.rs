@@ -297,6 +297,10 @@ pub struct StoreStats {
     pub builds: u64,
     /// Indexes brought up to date from the heads they were stamped with.
     pub catch_ups: u64,
+    /// Indexes written: one commit of the rows a change derived, per package the change reached.
+    /// A change one package made writes that package's index alone, whatever else a workspace
+    /// holds.
+    pub index_writes: u64,
 }
 
 /// How much the store read, counted since it was made: work that does not depend on the
@@ -328,6 +332,7 @@ use clock::ClockSource;
 mod burst;
 
 mod index_build;
+pub(crate) use index_build::reached_app;
 mod loading;
 use loading::{planned_unheld, unloaded};
 mod reading;
@@ -1578,14 +1583,6 @@ fn scan_of(chunks: &Chunks) -> BTreeMap<DocId, (AppId, TypeId)> {
     out
 }
 
-/// Whether the stamps `from` reflect every chunk the store holds: what a change's versions and
-/// placements take in, so an index stamped with them has nothing else to read.
-fn reflects_held(chunks: &Chunks, from: &Stamps) -> bool {
-    chunks
-        .docs()
-        .all(|(chunk, doc)| from.get(&chunk) == Some(&doc.committed_document().get_heads()))
-}
-
 /// The stamps `from` brought up to what the store holds now: the heads of each chunk it holds,
 /// and the stamps of the chunks it was not sent, which its index still reflects.
 fn stamps_after(chunks: &Chunks, from: &Stamps) -> Stamps {
@@ -1719,12 +1716,22 @@ impl Inner {
         if !self.chunks.has_record() {
             return (moved, wholes, notified);
         }
-        let apps: Vec<AppId> = self
-            .apps
-            .iter()
-            .filter(|(_, held)| held.ready())
-            .map(|(app, _)| app.clone())
-            .collect();
+        // A change one app made writes that app's index alone: an app it reached nothing of has
+        // nothing to take in, and a write for it is a commit of nothing. What such an index has
+        // taken in moves with the chunks here, as its rows are the ones they were: its own
+        // stamps are written with its next derivation, and one that opens before then catches up
+        // from them.
+        let mut apps: Vec<AppId> = Vec::new();
+        for (app, held) in &mut self.apps {
+            if !held.ready() {
+                continue;
+            }
+            if reached_app(&self.index, app, reached) {
+                apps.push(app.clone());
+            } else {
+                held.heads = stamps_after(&self.chunks, &held.heads);
+            }
+        }
         for app in apps {
             let Some(held) = self.apps.get(&app) else {
                 continue;
@@ -1735,9 +1742,16 @@ impl Inner {
             let docs = &self.index;
             let own_placed;
             let (ends, placed) = match since {
-                // The index reflects every chunk the store held before the change: what the
-                // change made is all it has to take in.
-                Some((from, ends, placed)) if reflects_held(&self.chunks, from) => (ends, placed),
+                // The index had taken in everything the store held before the change: what the
+                // change made is all it has to take in, read once for every app rather than a
+                // chunk's changes again for each.
+                Some((from, ends, placed))
+                    if from
+                        .iter()
+                        .all(|(chunk, heads)| held.heads.get(chunk) == Some(heads)) =>
+                {
+                    (ends, placed)
+                }
                 _ => {
                     // The versions of what changed since the index's heads, and where it put
                     // the items it placed: the chunks it does not reflect yet, and only those.
@@ -1754,6 +1768,7 @@ impl Inner {
                 }
             };
             let nested = &self.nested;
+            self.stats.index_writes = self.stats.index_writes.saturating_add(1);
             let written = index.write(|writer| {
                 let mut derive = Derive::new(&self.chunks, docs, nested, self.clock.read());
                 derive.removed_before(writer, &app, ends, placed)?;

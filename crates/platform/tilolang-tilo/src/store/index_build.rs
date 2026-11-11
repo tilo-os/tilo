@@ -949,6 +949,13 @@ fn derive(
         }
     };
     let now = stamps_after(chunks, from, part);
+    // The index of an app the changes reached nothing of is not written: a change one app made
+    // writes that app's index alone, whatever else the store holds. What the stamps say the
+    // index has taken in is kept here; the index's own are written with its next derivation,
+    // and one that opens before then catches up from them.
+    if !reached_app(docs, app, &reached) {
+        return Ok((now, DocReads::default()));
+    }
     // The chunks the step derives from their first change: a step of a build, or a chunk read
     // since the index was. Their items are read once, and each change the step takes in reads
     // the one it names from them. A chunk the index reflects up to a few changes ago is not:
@@ -974,6 +981,25 @@ fn derive(
         Ok(derive.reads)
     })?;
     Ok((now, written))
+}
+
+/// Whether what the changes reached names anything of `app`: whether its index has anything to
+/// take in. A document no index names — one just removed — may be any app's, so every app is
+/// derived for it.
+pub(crate) fn reached_app(
+    docs: &BTreeMap<DocId, (AppId, TypeId)>,
+    app: &str,
+    reached: &Reached,
+) -> bool {
+    let mut unknown = false;
+    for doc in reached.docs.keys().chain(reached.placed.keys()) {
+        match docs.get(doc) {
+            Some((held, _)) if held == app => return true,
+            Some(_) => {}
+            None => unknown = true,
+        }
+    }
+    unknown
 }
 
 /// The stamps `from` brought up to what the chunks `part` hold now, and the stamps of the chunks
