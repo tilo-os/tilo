@@ -98,16 +98,6 @@ fn the_published_rows_offer_what_can_be_done() {
     assert_eq!(asking.actions.len(), 2, "approve or decline");
 }
 
-/// The kind of a device is read from what it is called, and a device that
-/// may host is a server.
-#[test]
-fn a_device_kind_is_read_from_its_name() {
-    en();
-    let devices = sample().devices;
-    let kinds: Vec<String> = devices.iter().map(kind_of).collect();
-    assert_eq!(kinds, ["Computer", "Phone", "Browser", "Phone"]);
-}
-
 /// A host that answers the identity and pairing actions as a desktop's
 /// session does, and records what it was asked.
 #[derive(Default)]

@@ -183,6 +183,30 @@ impl DevicesAccessArea {
     }
 }
 
+/// A device of the person's, as the type its rows are items of.
+pub(crate) struct Device;
+
+impl tilo_resource::words::RowType for Device {
+    const KIND: &'static str = "settings.device";
+    const LABEL: &'static str = "Device";
+}
+
+/// An agent's grant the door let in, as the type its rows are items of.
+pub(crate) struct AgentGrant;
+
+impl tilo_resource::words::RowType for AgentGrant {
+    const KIND: &'static str = "settings.agent-grant";
+    const LABEL: &'static str = "Agent";
+}
+
+/// A device asking to be the person, as the type its rows are items of.
+pub(crate) struct AskingDevice;
+
+impl tilo_resource::words::RowType for AskingDevice {
+    const KIND: &'static str = "settings.device-asking";
+    const LABEL: &'static str = "Device asking to join";
+}
+
 /// A device asking to be the person, as [`device_pairing::ASKING`] answers.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Deserialize)]
 pub struct Asking {
@@ -573,27 +597,9 @@ fn day(ms: i64) -> String {
     ui::format::date_of(&ui::format::UnixSecs(ms / 1000))
 }
 
-/// What kind of device the key's name says it is.
-fn kind_of(device: &DeviceView) -> String {
-    let label = device.label.to_lowercase();
-    t(if label.contains("web") || label.contains("browser") {
-        "settings-access-kind-browser"
-    } else if label.contains("phone") || label.contains("pixel") || label.contains("iphone") {
-        "settings-access-kind-phone"
-    } else if device.can_host {
-        "settings-access-kind-server"
-    } else {
-        "settings-access-kind-computer"
-    })
-}
-
 fn device_row(device: &DeviceView) -> LiveRow {
     let key = hex::encode(device.key);
-    let mut row = LiveRow::new(
-        format!("settings.device:{key}"),
-        "settings.device",
-        device.label.clone(),
-    );
+    let mut row = LiveRow::typed::<Device>(format!("settings.device:{key}"), device.label.clone());
     for reason in REVOKE_REASONS {
         row = row.operation(
             SettingsEffect::from(DevicesAccessEffect::RevokeDevice {
@@ -608,7 +614,12 @@ fn device_row(device: &DeviceView) -> LiveRow {
 
 fn device_item(cx: &ViewCx<Settings>, device: &DeviceView) -> Item {
     let key = hex::encode(device.key);
-    let mut details = vec![kind_of(device)];
+    let mut details = Vec::new();
+    // A key says it may host the person's workspaces; nothing says what
+    // else a device is, so its name speaks for it.
+    if device.can_host {
+        details.push(t("settings-access-kind-server"));
+    }
     if device.current {
         details.push(t("settings-access-this-device"));
     } else if device.revoked {
@@ -657,17 +668,14 @@ fn device_item(cx: &ViewCx<Settings>, device: &DeviceView) -> Item {
 }
 
 fn grant_row(grant: &Grant) -> LiveRow {
-    let mut row = LiveRow::new(
-        format!("settings.agent-grant:{}", grant.id),
-        "settings.agent-grant",
-        app_of(grant),
-    )
-    .operation(
-        SettingsEffect::from(DevicesAccessEffect::RevokeAgent {
-            grant: grant.id.clone(),
-        })
-        .bound(),
-    );
+    let mut row =
+        LiveRow::typed::<AgentGrant>(format!("settings.agent-grant:{}", grant.id), app_of(grant))
+            .operation(
+                SettingsEffect::from(DevicesAccessEffect::RevokeAgent {
+                    grant: grant.id.clone(),
+                })
+                .bound(),
+            );
     for run in &grant.runs {
         row = row.operation(
             SettingsEffect::from(DevicesAccessEffect::StopRun {
@@ -788,9 +796,8 @@ fn grant_item(cx: &ViewCx<Settings>, grant: &Grant) -> Item {
 }
 
 fn asking_row(asking: &Asking) -> LiveRow {
-    let mut row = LiveRow::new(
+    let mut row = LiveRow::typed::<AskingDevice>(
         format!("settings.device-asking:{}", asking.ask),
-        "settings.device-asking",
         asking.label.clone(),
     );
     for approve in [true, false] {
