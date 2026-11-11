@@ -121,6 +121,16 @@ pub trait ShellPayloads: Send + Sync + 'static {
     /// `None` for everyone.
     fn audience(&self, body: &[u8]) -> Option<BTreeSet<[u8; 32]>>;
 
+    /// Whether `body` is a device's request to be admitted to a channel's
+    /// group: what only a device that admits others acts on. A device that
+    /// only follows its groups ([`crate::transport::Envelope::ChannelReader`])
+    /// is sent none. Read off the body's first bytes, without decoding it.
+    /// The default, for an adapter that knows no channel governance, is
+    /// `false`: every device is sent the body.
+    fn asks_admission(&self, _body: &[u8]) -> bool {
+        false
+    }
+
     /// An upper bound on the memory one decoded body holds beyond its bytes,
     /// for the store's bounded-work accounting.
     fn decoded_overhead(&self) -> usize;

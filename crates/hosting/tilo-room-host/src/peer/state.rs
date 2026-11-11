@@ -21,6 +21,10 @@ pub(crate) struct StateSession {
     pub(crate) live: Arc<std::sync::atomic::AtomicBool>,
     pub(super) replay: Option<Arc<ReplayCatchup>>,
     pub(super) lag: Option<Arc<Lag>>,
+    /// The device only follows its channel groups
+    /// ([`Envelope::ChannelReader`]): no device's request to be admitted to
+    /// one reaches it.
+    pub(super) channel_reader: bool,
 }
 impl StateSession {
     /// A live session of `peer` whose deliveries go nowhere.
@@ -32,6 +36,7 @@ impl StateSession {
             live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
             replay: None,
             lag: None,
+            channel_reader: false,
         }
     }
     /// A live delivery to workspace `workspace_id` did not fit this session's

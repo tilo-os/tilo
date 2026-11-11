@@ -43,7 +43,7 @@ use serde::{Deserialize, Serialize};
 /// [`NeighbourMsg::IdentityHello`] carries it first, at a variant index that
 /// never changes ([`IDENTITY_HELLO_INDEX`]), so every version reads another
 /// device's number before anything else it says.
-pub const PEER_PROTOCOL_VERSION: u32 = 37;
+pub const PEER_PROTOCOL_VERSION: u32 = 38;
 
 /// [`NeighbourMsg::IdentityHello`]'s postcard variant index, frozen: the one
 /// message every version decodes far enough to learn the sender's
@@ -812,6 +812,33 @@ impl NeighbourMsg {
         bytes.first() == Some(&Self::APP_DOCUMENT_TAG)
     }
 
+    /// Postcard variant index of [`NeighbourMsg::MlsGovernance`], pinned to
+    /// a real encoding by a unit test as [`Self::APP_DOCUMENT_TAG`] is.
+    pub const MLS_GOVERNANCE_TAG: u8 = 20;
+    /// Postcard variant index of [`NeighbourMsg::MlsAccessRequest`].
+    pub const MLS_ACCESS_REQUEST_TAG: u8 = 21;
+    /// Postcard variant index of [`NeighbourMsg::MlsRoutedAccessRequest`].
+    pub const MLS_ROUTED_ACCESS_REQUEST_TAG: u8 = 25;
+
+    /// Whether `bytes` encode a frame of channel governance
+    /// ([`NeighbourMsg::MlsGovernance`]), reading only the variant tag as
+    /// [`Self::is_app_document`] does.
+    pub fn is_channel_governance(bytes: &[u8]) -> bool {
+        const _: () = assert!(NeighbourMsg::MLS_GOVERNANCE_TAG < 0x80);
+        bytes.first() == Some(&Self::MLS_GOVERNANCE_TAG)
+    }
+
+    /// Whether `bytes` encode a device's request to be admitted to a
+    /// channel's group, plain or routed, reading only the variant tag as
+    /// [`Self::is_app_document`] does.
+    pub fn is_access_request(bytes: &[u8]) -> bool {
+        const _: () = assert!(NeighbourMsg::MLS_ROUTED_ACCESS_REQUEST_TAG < 0x80);
+        matches!(
+            bytes.first(),
+            Some(&(Self::MLS_ACCESS_REQUEST_TAG | Self::MLS_ROUTED_ACCESS_REQUEST_TAG))
+        )
+    }
+
     /// Whether this is a retired wire generation that no current build
     /// produces. Receivers refuse such a message once, where it enters,
     /// before any handler or authorization sees it; the variant itself stays
@@ -1462,6 +1489,39 @@ mod tests {
         assert!(!NeighbourMsg::is_app_document(&[]));
     }
 
+    /// The channel-governance tag peeks agree with a full decode on a real
+    /// encoding of every variant.
+    #[test]
+    fn channel_governance_tags_match_encoding() {
+        let (mut governance, mut requests) = (0, 0);
+        for (case, message) in fixtures() {
+            let bytes = postcard::to_allocvec(&message).unwrap();
+            let is_governance = matches!(message, NeighbourMsg::MlsGovernance { .. });
+            let is_request = matches!(
+                message,
+                NeighbourMsg::MlsAccessRequest { .. } | NeighbourMsg::MlsRoutedAccessRequest { .. }
+            );
+            assert_eq!(
+                NeighbourMsg::is_channel_governance(&bytes),
+                is_governance,
+                "{case}"
+            );
+            assert_eq!(
+                NeighbourMsg::is_access_request(&bytes),
+                is_request,
+                "{case}"
+            );
+            governance += usize::from(is_governance);
+            requests += usize::from(is_request);
+        }
+        assert!(
+            governance > 0 && requests > 1,
+            "no channel governance fixture"
+        );
+        assert!(!NeighbourMsg::is_channel_governance(&[]));
+        assert!(!NeighbourMsg::is_access_request(&[]));
+    }
+
     /// Only generations no build produces any more are retired: the two
     /// identity predecessors and the presence messages that live-plane frames
     /// replaced. Every other variant, including both identity successors,
@@ -1553,7 +1613,7 @@ mod tests {
             "identity hello",
             concat!(
                 // The variant index and the sender's peer protocol version.
-                "0b23",
+                "0b26",
                 "01010101010101010101010101010101010101010101010101010101010101",
                 "0102020202020202020202020202020202020202020202020202020202020202",
                 "02064c6170746f70010000000a00400303030303030303030303030303030303",

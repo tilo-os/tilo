@@ -266,6 +266,10 @@ struct SessionCtx<'a> {
     /// person, as the session's caller. Said once, it stays: a session
     /// handed to an agent is never handed back.
     agent: &'a std::sync::OnceLock<String>,
+    /// The connection's device only follows its channel groups
+    /// ([`Envelope::ChannelReader`]): its replays carry no device's request
+    /// to be admitted to one. Said once, it stays.
+    channel_reader: &'a std::sync::atomic::AtomicBool,
     /// The execution the host minted for this connection: an agent's or a
     /// key's requests on it are one run, whatever the client says
     /// ([`tilo_actions::remote::Caller::agent_run`]). Closed when the

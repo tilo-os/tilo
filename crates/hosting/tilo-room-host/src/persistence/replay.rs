@@ -109,6 +109,11 @@ impl Authority {
     pub(crate) fn bound_active(&self) -> bool {
         self.active() && self.session_guard().is_some()
     }
+    /// Whether the replay carries all of the workspace: its subscriber is a
+    /// peer relay, which keeps every frame it is sent.
+    pub(crate) const fn every_record(&self) -> bool {
+        self.every_record
+    }
 }
 /// How long a subscription waits for one of the host's replay slots before
 /// its session gives up. A join burst queues behind the replays in flight

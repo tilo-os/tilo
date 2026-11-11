@@ -2357,7 +2357,10 @@ impl Task {
 
     /// Restore this session's workspaces, pending commits and call participations.
     fn resume_session(&mut self, client: &RelayClient) -> bool {
-        let mut sent_ok = true;
+        // A page only follows its channel groups: said first, so no replay
+        // this session asks for carries every member's request to be
+        // admitted to one, which only a device that admits others reads.
+        let mut sent_ok = client.send(Envelope::ChannelReader).is_ok();
         // A plane's grant is its session's token: the planes of the last
         // session ended with it, and every workspace's is joined again with
         // this one ([`Self::settle_planes`]).

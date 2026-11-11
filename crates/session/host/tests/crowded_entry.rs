@@ -649,13 +649,16 @@ const MAX_ROUND_TRIPS: f64 = 6.5;
 /// The door, the workspace's challenge and the admission ride the session.
 const MAX_REQUESTS: usize = 1;
 
-/// What a fresh guest may receive before its desktop shows: its keys first,
-/// with the Welcome its entry asked for, the workspace's governance (a compressed base with the changes since, about 0.5 MB for 300
-/// members) and its shared desktop. The Lounge is public, so the members'
+/// What a fresh guest may receive before its desktop shows, about 0.46 MB
+/// for 300 members: its Welcome first, once, then the workspace's bootstrap
+/// (its member roster), its governance (a compressed base with the changes
+/// since) and its shared desktop. The Lounge is public, so the members'
 /// records (3.5 MB here) and its chat (0.3 MB in its newest part) come only
-/// when the guest opens them; governance sent twice or uncompressed, or any
-/// of those records or the chat sent with the desktop, crosses this.
-const MAX_BYTES: u64 = 620_000;
+/// when the guest opens them, and a page, which admits no one to a channel's
+/// group, is sent no member's request to be admitted to one. Governance sent
+/// twice or uncompressed, any of those records or the chat sent with the
+/// desktop, or the Welcome sent again crosses this.
+const MAX_BYTES: u64 = 500_000;
 
 /// One guest's entry, as it went.
 struct Entry {

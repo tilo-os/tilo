@@ -15,6 +15,7 @@ use super::*;
 use crate::workspace::{Membership, WorkspaceRuntime};
 use tilo_user_identity::{RevocationList, UserIdentity};
 
+mod channel_replay;
 mod replay_boundary;
 mod supersede;
 
@@ -82,6 +83,7 @@ impl Fixture {
             member_limits,
             resumes: Box::leak(Box::default()),
             agent: Box::leak(Box::default()),
+            channel_reader: Box::leak(Box::default()),
             execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
             lag: Box::leak(Box::default()),
         }
@@ -168,6 +170,7 @@ impl Fixture {
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
                 lag: None,
+                channel_reader: false,
             },
         );
         let source = StateSource {
@@ -1209,6 +1212,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 member_limits: None,
                 resumes: Box::leak(Box::default()),
                 agent: Box::leak(Box::default()),
+                channel_reader: Box::leak(Box::default()),
                 execution: Box::leak(Box::new(tilo_actions::remote::ExecutionLease::mint())),
                 lag: Box::leak(Box::default()),
             };

@@ -191,8 +191,60 @@ async fn write_addressed<W: tokio::io::AsyncWrite + Unpin>(
         write
             .write_all(&encode_charged(&frame, session, false)?)
             .await?;
+        catchup.addressed_written(frame);
     }
     Ok(())
+}
+
+/// What a replay leaves out for its subscriber, beside what its capture
+/// already did: frames only other devices can use. A peer relay keeps all of
+/// the workspace and is left nothing out.
+struct ReplayFilter {
+    device: [u8; 32],
+    payloads: Arc<dyn crate::payloads::ShellPayloads>,
+    every_frame: bool,
+    channel_reader: bool,
+}
+
+impl ReplayFilter {
+    async fn new(run: ReplayRun<'_>, peer: &AuthenticatedPeer, session: &SessionCtx<'_>) -> Self {
+        Self {
+            device: peer.device_public_key,
+            payloads: run.workspace.lock().await.store.payloads().clone(),
+            every_frame: run.authority.every_record(),
+            channel_reader: session
+                .channel_reader
+                .load(std::sync::atomic::Ordering::Relaxed),
+        }
+    }
+
+    /// Whether `frame` stays out of this replay:
+    /// - a channel commit's copy that carries what other devices join from
+    ///   (their Welcome), which reaches them alone live too;
+    /// - the copy addressed to this device that its replay already wrote
+    ///   ahead of its batches ([`ReplayCatchup::address`]);
+    /// - a device's request to be admitted to a channel's group, for a
+    ///   device that admits no one ([`Envelope::ChannelReader`]): every
+    ///   member's is retained, so it would be one per member.
+    fn leaves_out(&self, frame: &Envelope, catchup: &ReplayCatchup) -> bool {
+        if self.every_frame {
+            return false;
+        }
+        let Envelope::Delta { delta, .. } = frame else {
+            return false;
+        };
+        let Some((_, _, body)) = crate::coedit::retention_view(delta) else {
+            return false;
+        };
+        if self.channel_reader && self.payloads.asks_admission(body) {
+            return true;
+        }
+        match self.payloads.audience(body) {
+            Some(audience) if !audience.contains(&self.device) => true,
+            Some(_) => catchup.was_addressed(frame),
+            None => false,
+        }
+    }
 }
 
 /// One subscription's replay as [`finish_replay_write`] drives it: the workspace,
@@ -397,7 +449,14 @@ async fn write_replay_batch<W: tokio::io::AsyncWrite + Unpin>(
         run.authority,
     )
     .await?;
+    let filter = ReplayFilter::new(run, peer, session).await;
     while let Some(frame) = frames.front() {
+        if filter.leaves_out(frame, run.catchup) {
+            // Counted as delivered: a resume has nothing of it to send again.
+            let _ = resume_record(session, run.workspace_id, [frame]);
+            frames.pop_written();
+            continue;
+        }
         write
             .write_all(&encode_charged(frame, session, false)?)
             .await?;
@@ -714,9 +773,11 @@ pub(super) struct ReplayCatchup {
     /// replay's batches rather than after its last one. Nothing the replay
     /// carries is what such a frame builds on, and the keys it brings open
     /// what the replay is still sending, so a page shows a record while the
-    /// rest of the workspace arrives. The final cut carries them again, which
-    /// the device ignores as a frame it already applied.
+    /// rest of the workspace arrives. Neither the replay's batches nor its
+    /// final cut carry them again ([`Self::was_addressed`]).
     addressed: std::sync::Mutex<Vec<Arc<Envelope>>>,
+    /// The addressed frames written so far.
+    written: std::sync::Mutex<Vec<Arc<Envelope>>>,
 }
 impl ReplayCatchup {
     pub(super) const ACTIVE: u8 = 0;
@@ -731,6 +792,7 @@ impl ReplayCatchup {
             dirty: std::sync::atomic::AtomicBool::new(false),
             held: work.join(crate::store::replay::held_work_name(rand::random())),
             addressed: std::sync::Mutex::new(Vec::new()),
+            written: std::sync::Mutex::new(Vec::new()),
         }
     }
 
@@ -747,6 +809,23 @@ impl ReplayCatchup {
     /// The frames addressed to this device since the last call, oldest first.
     fn take_addressed(&self) -> Vec<Arc<Envelope>> {
         std::mem::take(&mut *self.addressed.lock_recover())
+    }
+
+    /// `frame`, addressed to this device, is written.
+    fn addressed_written(&self, frame: Arc<Envelope>) {
+        let mut written = self.written.lock_recover();
+        if written.len() < MAX_ADDRESSED {
+            written.push(frame);
+        }
+    }
+
+    /// Whether `frame` was written to this device ahead of the replay's
+    /// batches.
+    fn was_addressed(&self, frame: &Envelope) -> bool {
+        self.written
+            .lock_recover()
+            .iter()
+            .any(|written| **written == *frame)
     }
 
     /// Hold `bytes`, the commit at host order `sequence`, for the final cut.

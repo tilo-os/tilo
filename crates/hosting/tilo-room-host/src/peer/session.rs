@@ -156,6 +156,7 @@ where
     } = ctx;
     let resumes = std::sync::Mutex::new(HashMap::new());
     let agent = std::sync::OnceLock::new();
+    let channel_reader = std::sync::atomic::AtomicBool::new(false);
     let lag = Arc::new(Lag::default());
     // Everything this session is sent passes here, so its egress and the
     // relay's are what the stream accepted, not an estimate.
@@ -205,6 +206,7 @@ where
         member_limits: member_limits.as_deref(),
         resumes: &resumes,
         agent: &agent,
+        channel_reader: &channel_reader,
         execution: &execution,
         lag: &lag,
         presence: Some(&presence),

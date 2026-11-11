@@ -154,6 +154,12 @@ pub(super) async fn handle_envelope(
         Envelope::AgentRun { request_id, label } => {
             Ok(Some(handle_agent_run(peer, session, request_id, &label)))
         }
+        Envelope::ChannelReader => {
+            session
+                .channel_reader
+                .store(true, std::sync::atomic::Ordering::Relaxed);
+            Ok(None)
+        }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
         Envelope::CompactRequest { .. }

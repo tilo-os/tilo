@@ -33,6 +33,9 @@ pub(super) struct LiveFrame<'a> {
     fanned: Option<FanoutStamp>,
     checkpoint_channel: Option<[u8; 32]>,
     audience: Option<std::collections::BTreeSet<[u8; 32]>>,
+    /// A device's request to be admitted to a channel's group, which a device
+    /// that only follows its groups is not sent.
+    asks_admission: bool,
     /// Who holds the frame's record ([`crate::store::record_sync`]).
     reach: crate::store::record_sync::Reach,
 }
@@ -54,6 +57,11 @@ impl<'a> LiveFrame<'a> {
             .then(|| gated_checkpoint_channel(payloads, envelope, source))
             .flatten();
         let audience = live_audience(runtime, envelope);
+        let asks_admission = match &**envelope {
+            Envelope::Delta { delta, .. } => crate::coedit::retention_view(delta)
+                .is_some_and(|(_, _, body)| payloads.asks_admission(body)),
+            _ => false,
+        };
         let reach = record_reach(runtime, envelope);
         Self {
             envelope,
@@ -61,6 +69,7 @@ impl<'a> LiveFrame<'a> {
             fanned,
             checkpoint_channel,
             audience,
+            asks_admission,
             reach,
         }
     }
@@ -147,6 +156,9 @@ impl LiveFanout<'_> {
             .as_ref()
             .is_some_and(|audience| !audience.contains(&target.peer.device_public_key))
         {
+            return None;
+        }
+        if self.frame.asks_admission && target.channel_reader && !runtime.attached(recipient) {
             return None;
         }
         // An on-demand record's changes go to who opened it, a chain's head

@@ -219,6 +219,9 @@ pub(super) async fn subscribe(
         state_tx,
         catchup: catchup.clone(),
         lag: session.lag.clone(),
+        channel_reader: session
+            .channel_reader
+            .load(std::sync::atomic::Ordering::Relaxed),
     };
 
     let rx = owner
@@ -377,6 +380,7 @@ struct SubscriberRegistration {
     state_tx: mpsc::Sender<StateDelivery>,
     catchup: Arc<ReplayCatchup>,
     lag: Arc<Lag>,
+    channel_reader: bool,
 }
 
 /// The completion half of [`handle_subscribe`], run under the workspace's lock
@@ -397,6 +401,7 @@ async fn register_subscriber(
         state_tx,
         catchup: session_catchup,
         lag: session_lag,
+        channel_reader,
     } = registration;
     let mut wr = crate::workspace_io::fresh_membership(&completion_workspace).await?;
     wr.subscription_completed(&source.peer.device_public_key, &source.tx);
@@ -466,6 +471,7 @@ async fn register_subscriber(
             tx: state_tx,
             replay: Some(session_catchup),
             lag: Some(session_lag),
+            channel_reader,
         },
     );
     drop(wr);

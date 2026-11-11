@@ -99,9 +99,17 @@ impl ShellPayloads for NeighbourPayloads {
     }
 
     fn audience(&self, body: &[u8]) -> Option<BTreeSet<[u8; 32]>> {
+        // Only a channel's commit has an audience: nothing else is decoded.
+        if !NeighbourMsg::is_channel_governance(body) {
+            return None;
+        }
         let msg = postcard::from_bytes::<NeighbourMsg>(body).ok()?;
         let devices = audience(&msg)?;
         Some(devices.iter().map(|device| *device.as_bytes()).collect())
+    }
+
+    fn asks_admission(&self, body: &[u8]) -> bool {
+        NeighbourMsg::is_access_request(body)
     }
 
     fn decoded_overhead(&self) -> usize {
