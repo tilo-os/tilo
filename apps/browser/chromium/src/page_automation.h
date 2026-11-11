@@ -54,7 +54,9 @@ inline int page_documents=0;
 // instead of showing a panel, and the click's reply says so; `fill_files`
 // then answers that same callback with the files the app checked, so the page
 // receives the chooser's own trusted input and change events. A person's own
-// click still opens the platform panel.
+// click is never held here: it is the embedder's picker where it answers them
+// (host.cc, `file_choosers`), else the platform panel, and no action reaches
+// either.
 class PageAutomation final : public CefDevToolsMessageObserver {
  public:
   using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
@@ -75,7 +77,7 @@ class PageAutomation final : public CefDevToolsMessageObserver {
   }
   void Detach() { registration_=nullptr;browser_=nullptr;pending_.reset();asked_=nullptr;waiting_.clear();CancelFileDialog(); }
   // A page asked for files. A click this automation is driving holds the
-  // chooser for `fill_files`; anything else keeps the platform panel.
+  // chooser for `fill_files`; anything else is not this automation's.
   bool HoldFileDialog(CefRefPtr<CefFileDialogCallback> callback) {
     if(!pending_ || Action()!="click") return false;
     // One page, one chooser: a newer request supersedes an unanswered one.

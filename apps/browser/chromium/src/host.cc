@@ -72,6 +72,9 @@ constexpr size_t kMaxAudioPackets = 16;
 // The widest picture the page op paints, matching the app's own bound: a
 // wider request is a malformed command, never a larger answer.
 constexpr int CAPTURE_MAX_WIDTH = 1600;
+// The most files one answer to a page's file chooser names: what a person
+// picks at once, with room to spare, and far inside one command.
+constexpr size_t MAX_CHOOSER_PATHS = 4096;
 // The longest accessible name and role words a find matches, matching the
 // app's own bounds: a longer one is a malformed command, never a wider match.
 constexpr size_t MAX_FIND_NAME = 512;
@@ -464,12 +467,91 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // so nothing else would settle it.
     if(unload && !accept && navigation_dispatched_ && !navigation_started_) RefuseNavigation("The page asked to stay");
   }
-  bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>&,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
+  // A file chooser a person opened is the embedder's to show where it asked
+  // for them (`file_choosers`): it is told of each as a `file_chooser` with
+  // a positive id, shows the desktop's own picker, and answers with
+  // `file_chooser_reply`, the paths the person picked or none. The page then
+  // runs what any picker's answer runs. One is open at a time, and none
+  // outlives its document, its tab, an embedder that stopped answering, or
+  // the wait below; `file_chooser_closed` says each time the page no longer
+  // waits. Nothing but that reply answers it: no page action reaches it.
+  bool AsksFileChoosers() const { return file_choosers_ && !transfer_owner_ && !native_closing_ && !closing; }
+  // Whether the click or key the page heard last was a person's own, sent by
+  // the embedder, and not a page action's. A page opens its chooser on the
+  // activation its last input gave it, and often only once the action that
+  // clicked has answered, so whose input came last is what says whose
+  // chooser this is: one an action's click opened is never a person's,
+  // however late it comes.
+  bool PersonActedLast() const { return activated_ && (!action_input_ || *activated_>*action_input_); }
+  void ActionInput() { action_input_=std::chrono::steady_clock::now(); }
+  // What the page's input accepts, as the page wrote it and as Chromium
+  // resolved it: MIME types ("image/*") and file extensions (".png"), each
+  // once, bounded in number and in length.
+  static CefRefPtr<CefListValue> AcceptedTypes(const std::vector<CefString>& filters,const std::vector<CefString>& extensions) {
+    auto accept=CefListValue::Create();std::set<std::string> seen;
+    const auto add=[&](std::string type) {
+      const auto first=type.find_first_not_of(" \t"),last=type.find_last_not_of(" \t");
+      if(first==std::string::npos) return;
+      type=type.substr(first,last-first+1);
+      const bool extension=type.size()>1 && type.front()=='.' && type.find('/')==std::string::npos;
+      const bool mime=type.front()!='.' && type.find('/')!=std::string::npos;
+      const bool plain=std::all_of(type.begin(),type.end(),[](unsigned char c){return c>0x20 && c<0x7f;});
+      if((!extension && !mime) || !plain || type.size()>kMaxAcceptedType || seen.size()>=kMaxAcceptedTypes || !seen.insert(type).second) return;
+      accept->SetString(accept->GetSize(),type);
+    };
+    for(const auto& filter:filters) add(filter.ToString());
+    for(const auto& group:extensions) {
+      const auto all=group.ToString();
+      for(size_t from=0;from<=all.size();) {
+        const auto to=std::min(all.find(';',from),all.size());
+        add(all.substr(from,to-from));from=to+1;
+      }
+    }
+    return accept;
+  }
+  void AskFileChooser(FileDialogMode mode,const CefString& title,const std::vector<CefString>& filters,const std::vector<CefString>& extensions,CefRefPtr<CefFileDialogCallback> callback) {
+    // One page, one chooser: a newer one supersedes an unanswered one.
+    CancelFileChooser();
+    chooser_id_=chooser_id_%2147483647+1;chooser_callback_=callback;chooser_multiple_=mode==FILE_DIALOG_OPEN_MULTIPLE;
+    auto d=CefDictionaryValue::Create();d->SetInt("id",chooser_id_);
+    d->SetString("mode",mode==FILE_DIALOG_OPEN_MULTIPLE?"open_multiple":mode==FILE_DIALOG_OPEN_FOLDER?"open_folder":"open");
+    d->SetString("title",tilo::BoundedText(title.ToString(),kMaxChooserTitle));
+    d->SetList("accept",AcceptedTypes(filters,extensions));
+    Event("file_chooser",d);
+    // A picker nobody answers must not hold the page's file work open for
+    // good, so the hold ends on its own as well.
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Client> self,int id){ if(self->chooser_callback_ && self->chooser_id_==id) self->CancelFileChooser(); },CefRefPtr<Client>(this),chooser_id_),kFileChooserWaitMs);
+  }
+  void CloseFileChooser() {
+    if(!chooser_callback_) return;
+    chooser_callback_=nullptr;auto d=CefDictionaryValue::Create();d->SetInt("id",chooser_id_);Event("file_chooser_closed",d);
+  }
+  void CancelFileChooser() {
+    if(!chooser_callback_) return;
+    auto callback=chooser_callback_;CloseFileChooser();callback->Cancel();
+  }
+  // The embedder's answer: exactly these paths, never more than one where the
+  // page asked for one file or one folder, and none to cancel.
+  void AnswerFileChooser(int id,CefRefPtr<CefListValue> paths) {
+    if(!chooser_callback_ || id!=chooser_id_) return;
+    auto callback=chooser_callback_;const bool multiple=chooser_multiple_;CloseFileChooser();
+    std::vector<CefString> files;
+    for(size_t i=0;paths && i<paths->GetSize();++i) files.push_back(paths->GetString(i));
+    if(files.empty() || (!multiple && files.size()>1)) callback->Cancel();
+    else callback->Continue(files);
+  }
+  bool OnFileDialog(CefRefPtr<CefBrowser>,FileDialogMode mode,const CefString& title,const CefString&,const std::vector<CefString>& filters,const std::vector<CefString>& extensions,const std::vector<CefString>&,CefRefPtr<CefFileDialogCallback> callback) override {
     Event("file_dialog");
     // An agent's page action cannot drive a native panel, so while it is
-    // driving the chooser is held for fill-page-files instead. A person's
-    // own click keeps the platform panel where the host has one.
+    // driving the chooser is held for fill-page-files instead.
     if(page_automation_ && page_automation_->HoldFileDialog(callback)) return true;
+    // A person's own click is held for the embedder that answers them. A
+    // chooser that comes while a page action runs, or on a page action's
+    // click or key, is not a person's, so no action of an agent's puts a
+    // picker in front of the person; and a chooser to save into is not a
+    // page's upload.
+    if(AsksFileChoosers() && mode!=FILE_DIALOG_SAVE && PersonActedLast() && !(page_automation_ && page_automation_->Busy())) { AskFileChooser(mode,title,filters,extensions,callback);return true; }
+    // Otherwise the platform panel, where the host has one.
 #if defined(OS_MAC)
     return ShowHostFileDialog(mode,title,extensions,callback);
 #else
@@ -628,6 +710,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   }
   void OnRenderProcessTerminated(CefRefPtr<CefBrowser>,TerminationStatus,int,const CefString&) override {
     InvalidateCredentials();
+    // The page that asked for files is gone.
+    CancelFileChooser();
     fullscreen_.ResetForRendererTermination();
     // Publish the lifecycle invalidation before terminal outcomes: a consumer
     // may admit recovery immediately after observing its owned completion.
@@ -799,7 +883,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     paint_snapshot_->Attach();
     document_size_=new tilo::DocumentSize(browser,[this](const std::string& name,CefRefPtr<CefDictionaryValue> fields){Event(name,fields);});
     document_size_->Attach();
-    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("selection_text",true);d->SetBool("page_events",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
+    auto d=CefDictionaryValue::Create();d->SetBool("native_edit_history",true);d->SetBool("guarded_edit_history",true);d->SetBool("native_caret_text_input",true);d->SetBool("ime_composition",true);d->SetBool("document_size",true);d->SetBool("popups",true);d->SetBool("js_dialogs",true);d->SetBool("file_choosers",true);d->SetBool("selection_text",true);d->SetBool("page_events",true);d->SetBool("page_clipboard",page_clipboard && !sealed_documents);d->SetBool("sealed_documents",sealed_documents);d->SetInt("frame_rate",kOffscreenFrameRate);d->SetString("cef_version",CEF_VERSION);d->SetString("chromium_version",std::to_string(CHROME_VERSION_MAJOR)+"."+std::to_string(CHROME_VERSION_MINOR)+"."+std::to_string(CHROME_VERSION_BUILD)+"."+std::to_string(CHROME_VERSION_PATCH));Event(id_==1?"ready":"tab_ready",d);
     if(extension_tabs)extension_tabs->Introduce(id_);
     TraceGeometry("ready",id_);
     browser_->GetHost()->WasHidden(!visible_);
@@ -821,6 +905,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     navigation_history_=nullptr;
     if(geolocation_)geolocation_->Detach();
     geolocation_=nullptr;
+    CancelFileChooser();
     if(page_automation_)page_automation_->Detach();
     page_automation_=nullptr;
     if(agent_log_)agent_log_->Detach();
@@ -866,7 +951,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(frame->IsMain() && user_gesture && !redirect) OpenTab(request->GetURL(),false);
       return true;
     }
-    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
+    if(frame->IsMain()) { if(navigation_dispatched_ && (navigation_target_.empty() || navigation_started_ || request->GetURL()==navigation_target_)) { navigation_started_=true; navigation_urls_.insert(request->GetURL().ToString()); } else if(!redirect) { navigation_busy_=true; } TraceGeometry("before-browse",id_);if(page_automation_)page_automation_->NavigationStarted();CancelFileChooser();if(agent_log_ && !redirect)agent_log_->MainNavigation(request->GetURL().ToString(),user_gesture);InvalidateCredentials();request_filter->Begin(browser->GetIdentifier(),request->GetURL());capabilities_->Close(); }return false;
   }
   bool OnBeforePopup(CefRefPtr<CefBrowser> browser,CefRefPtr<CefFrame> frame,int,const CefString& url,const CefString&,cef_window_open_disposition_t disposition,bool user_gesture,const CefPopupFeatures& features,CefWindowInfo& window,CefRefPtr<CefClient>& client,CefBrowserSettings& settings,CefRefPtr<CefDictionaryValue>&,bool*) override {
     if(sealed_documents && !user_gesture) return true;
@@ -1258,6 +1343,12 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       if(!js_dialogs_ && dialog_callback_) AnswerDialog(dialog_id_,dialog_unload_,CefString());
     }
     else if(op=="js_dialog_reply") AnswerDialog(d->GetInt("id"),d->GetBool("accept"),d->HasKey("text")?d->GetString("text"):CefString());
+    else if(op=="file_choosers") {
+      file_choosers_=d->GetBool("enabled");
+      // An embedder that stops answering lets the open chooser go.
+      if(!file_choosers_) CancelFileChooser();
+    }
+    else if(op=="file_chooser_reply") AnswerFileChooser(d->GetInt("id"),d->GetList("paths"));
     // A window opened for an agent holds what its page sends: the app is
     // told once, and answers each held request by its id. A hold nobody
     // answers ends after `wait_ms`, when the app names a time of its own.
@@ -1637,6 +1728,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // Page actions deliver input exactly as a person's pointer and keyboard do.
   // Coordinates arrive in CSS pixels; CEF's view space is zoomed DIPs.
   void PageClick(double x,double y) {
+    ActionInput();
     if(!browser_)return;auto host=browser_->GetHost();const double zoom=std::pow(1.2,host->GetZoomLevel());
     CefMouseEvent event;event.x=static_cast<int>(std::lround(x*zoom));event.y=static_cast<int>(std::lround(y*zoom));event.modifiers=key_modifiers_;
     // The move and the click reach the page on separate turns: a point inside a
@@ -1681,6 +1773,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     // The page may have begun a drag on this very move: carry it to where the
     // hand went, so the element under the pointer hears the drag over it.
     if(dragging_) {host->DragTargetDragOver(event,kPageDragOps);return;}
+    if(press) ActionInput();
     if(press) host->SendMouseClickEvent(event,right?MBT_RIGHT:MBT_LEFT,!down,1);
     if(kind=="up")mouse_modifiers_&=~button;
   }
@@ -1736,6 +1829,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   void PageKey(CefRefPtr<CefDictionaryValue> key) {
     // A key of a fill's own typing arrives marked: it names its character, not
     // a key to press.
+    ActionInput();
     if(key->HasKey("typed")) { TypedKey(key);return; }
     if(!browser_)return;const int held=key_modifiers_;
     // Keys reach only a focused view; the page's own focused element is kept.
@@ -1806,6 +1900,8 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!download_owners.Detach(id_)){Event("close_blocked");return;}
     InvalidateCredentials();
     CancelMenu();
+    // Said while the tab still speaks: its embedder stops waiting on a picker.
+    CancelFileChooser();
     transfer_owner_=true;visible_=false;auto host=browser_->GetHost();host->WasHidden(true);host->SetFocus(false);
     capabilities_->Close();frame_.reset();popup_.clear();whole_next_=true;Event("tab_detached");PublishDownloadRuntime();
   }
@@ -2091,6 +2187,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The extension whose side panel this tab shows, if it shows one.
   std::string side_panel_;
   std::optional<std::chrono::steady_clock::time_point> activated_;
+  // When a page action last clicked or pressed a key: the page's activation
+  // since then is the action's, until a person's own input.
+  std::optional<std::chrono::steady_clock::time_point> action_input_;
   // The paste a key is waiting on the system clipboard for, and the keys
   // pressed since (KeyCommand).
   int paste_prime_=0;std::deque<CefRefPtr<CefDictionaryValue>> held_keys_;bool shares_clipboard_=false;
@@ -2149,6 +2248,13 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The page's open question, if any, and whether the embedder answers them.
   static constexpr size_t kMaxDialogText=16*1024;
   CefRefPtr<CefJSDialogCallback> dialog_callback_;int dialog_id_=0;bool dialog_unload_=false,js_dialogs_=false;
+  // The file chooser a person opened, if any, and whether the embedder
+  // answers them. A person looks for a file for as long as it takes, so the
+  // wait is theirs, not an action's: long enough that nobody choosing meets
+  // it, and an end all the same for a picker that never answers.
+  static constexpr size_t kMaxChooserTitle=256,kMaxAcceptedTypes=256,kMaxAcceptedType=128;
+  static constexpr int64_t kFileChooserWaitMs=10*60*1000;
+  CefRefPtr<CefFileDialogCallback> chooser_callback_;int chooser_id_=0;bool chooser_multiple_=false,file_choosers_=false;
   // A window opened for an agent holds what its page sends (departures.h):
   // changed by the app on the UI thread, and read where Chromium asks about a
   // request, on its IO thread.
@@ -2546,6 +2652,20 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="permission_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
   if(op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
   if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
+  if(op=="file_choosers") return type("enabled",VTYPE_BOOL);
+  if(op=="file_chooser_reply") {
+    if(!type("id",VTYPE_INT) || d->GetInt("id")<=0 || !type("paths",VTYPE_LIST))return false;
+    auto paths=d->GetList("paths");
+    if(paths->GetSize()>MAX_CHOOSER_PATHS)return false;
+    for(size_t i=0;i<paths->GetSize();++i) {
+      if(paths->GetType(i)!=VTYPE_STRING)return false;
+      const auto path=paths->GetString(i).ToString();
+      // The app answers with what its picker gave it; the engine insists
+      // each is absolute, so none is resolved against its own working folder.
+      if(path.empty() || path.size()>4096 || path.front()!='/')return false;
+    }
+    return true;
+  }
   // How long a hold may wait for its answer, when the app says.
   if(op=="hold_departures") {
     CefDictionaryValue::KeyList keys;d->GetKeys(keys);

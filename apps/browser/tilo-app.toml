@@ -30,7 +30,7 @@ aarch64 = "aarch64"
 [capabilities]
 required = ["network.http", "webview"]
 # Reviewed account-session imports need secret custody; ordinary browsing does not.
-optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings", "secrets", "gpu", "notifications"]
+optional = ["clipboard", "files.open", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes", "settings", "secrets", "gpu", "notifications"]
 
 [resources]
 kinds = ["browser.address-book", "browser.application", "browser.browsing-history", "browser.page-record", "browser.personal-bookmarks"]

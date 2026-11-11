@@ -213,6 +213,13 @@ browser-page-dialog-unsaved = Vorgenommene Änderungen werden eventuell nicht ge
 browser-page-dialog-leave = Verlassen
 browser-page-dialog-reload = Neu laden
 
+## A page's file chooser, shown by the system's own picker
+browser-file-chooser-file = Datei auswählen
+browser-file-chooser-files = Dateien auswählen
+browser-file-chooser-folder = Ordner auswählen
+browser-file-chooser-choose = Auswählen
+browser-file-chooser-accepted = Akzeptierte Dateien
+
 ## An address or page that did not open
 browser-address-failed = Diese Adresse konnte nicht geöffnet werden
 browser-address-empty = Geben Sie eine Webadresse oder Suchbegriffe ein

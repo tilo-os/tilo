@@ -63,6 +63,15 @@ impl BrowsingMode {
     pub const fn holds_departures(self) -> bool {
         matches!(self, Self::Visitor)
     }
+
+    /// Whether a file chooser the page opens asks the person's own picker.
+    /// In a window an agent operates a click on a file input is the
+    /// agent's, and nothing an agent does puts a picker in front of the
+    /// person: the page is told nothing was chosen, and files reach it
+    /// through `fill-page-files`, which names and checks them.
+    pub const fn offers_file_picker(self) -> bool {
+        !matches!(self, Self::Visitor)
+    }
 }
 
 #[cfg(test)]
@@ -94,8 +103,10 @@ mod tests {
     #[test]
     fn only_the_window_an_agent_operates_holds_what_the_page_sends() {
         assert!(BrowsingMode::Visitor.holds_departures());
+        assert!(!BrowsingMode::Visitor.offers_file_picker());
         for mode in [BrowsingMode::Normal, BrowsingMode::Private] {
             assert!(!mode.holds_departures(), "{mode:?}");
+            assert!(mode.offers_file_picker(), "{mode:?}");
         }
     }
 }

@@ -213,6 +213,13 @@ browser-page-dialog-unsaved = Changes you made may not be saved.
 browser-page-dialog-leave = Leave
 browser-page-dialog-reload = Reload
 
+## A page's file chooser, shown by the system's own picker
+browser-file-chooser-file = Choose a file
+browser-file-chooser-files = Choose files
+browser-file-chooser-folder = Choose a folder
+browser-file-chooser-choose = Choose
+browser-file-chooser-accepted = Accepted files
+
 ## An address or page that did not open
 browser-address-failed = Couldn’t open this address
 browser-address-empty = Enter a web address or search words

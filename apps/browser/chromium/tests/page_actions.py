@@ -7,6 +7,7 @@ import json
 import math
 import os
 import re
+import sys
 import tempfile
 import threading
 import time
@@ -51,6 +52,29 @@ document.querySelector('select').addEventListener('change', e => document.getEle
 for (const field of document.querySelectorAll('input[type=file]'))
   field.addEventListener('change', e => document.getElementById('status').textContent =
     'files ' + [...e.target.files].map(f => f.name + ':' + f.size).join(','));
+</script>'''
+
+
+# File inputs at known places, for a person's own click. Each says what it
+# heard, and whether the event was the browser's own.
+CHOOSER = b'''<!doctype html><title>Upload</title>
+<body style="margin:0">
+<label style="position:absolute;left:20px;top:100px">Passport <input id="one" type="file" accept=".pdf,image/*" style="width:300px;height:40px"></label>
+<label style="position:absolute;left:20px;top:200px">Receipts <input id="many" type="file" multiple style="width:300px;height:40px"></label>
+<label style="position:absolute;left:20px;top:300px">Album <input id="folder" type="file" webkitdirectory style="width:300px;height:40px"></label>
+<p id="status" style="position:absolute;left:20px;top:400px"></p>
+<p id="blank" style="position:absolute;left:20px;top:460px;width:300px;height:40px"></p>
+<script>
+window.downs = 0;
+window.heard = [];
+addEventListener('mousedown', () => window.downs += 1, true);
+for (const field of document.querySelectorAll('input'))
+  for (const name of ['input', 'change', 'cancel'])
+    field.addEventListener(name, e => {
+      window.heard.push([field.id, name, e.isTrusted]);
+      document.getElementById('status').textContent = field.id + ' ' + name + ' ' +
+        [...field.files].map(f => f.name + ':' + f.size).join(',');
+    });
 </script>'''
 
 
@@ -728,6 +752,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             else RICH if path == '/rich' \
             else SCROLL if path == '/scroll' \
             else NATIVE if path == '/native' else LONG if path == '/long' \
+            else CHOOSER if path == '/chooser' \
             else FINDS if path == '/finds' else EMBED if path == '/embed' \
             else EMBEDDED if path == '/embedded-form' \
             else b'{"ok":true}' if path == '/data.json' \
@@ -822,6 +847,51 @@ class PageActions(unittest.TestCase):
         for char in text:
             for down in (True, False):
                 self.h.send(op='key', key=char, down=down, ctrl=False, shift=False, alt=False, meta=False)
+
+    def person_clicks(self, field):
+        # A person's own click on the element `field`: the pointer straight
+        # to the page, and no page action. A click before the page first
+        # paints lands nowhere, so it is made again until the page heard one;
+        # a click the page heard is never made twice, as each opens a chooser.
+        box = json.loads(self.main_world(
+            'JSON.stringify(document.getElementById("%s").getBoundingClientRect())' % field))
+        x, y = box['x'] + 40, box['y'] + box['height'] / 2
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            before = self.main_world('window.downs')
+            for down in (True, False):
+                self.h.send(op='mouse_button', button='left', down=down, x=x, y=y)
+            heard = time.monotonic() + 3
+            while time.monotonic() < heard:
+                self.h.settle(0.2)
+                if self.main_world('window.downs') > before:
+                    return
+            self.assertLess(time.monotonic(), deadline, 'the page never heard a click')
+
+    def chooser(self, field):
+        # The chooser a person's click on `field` opens, as the embedder is
+        # told of it.
+        after = len(self.h.seen)
+        self.person_clicks(field)
+        asked = self.told('file_chooser', after)
+        self.assertGreater(asked['id'], 0, asked)
+        return asked
+
+    def answered(self, asked, paths):
+        # Answer the chooser `asked` and see the page stop waiting on it.
+        after = len(self.h.seen)
+        self.h.send(op='file_chooser_reply', id=asked['id'], paths=paths)
+        self.told('file_chooser_closed', after, lambda event: event['id'] == asked['id'])
+
+    def status(self, wanted):
+        # What the page last heard of its file inputs, once it is `wanted`.
+        deadline = time.monotonic() + HANG_BOUND
+        while True:
+            said = self.main_world('document.getElementById("status").textContent')
+            if said == wanted:
+                return
+            self.assertLess(time.monotonic(), deadline, f'the page says {said!r}, not {wanted!r}')
+            time.sleep(0.1)
 
     def told(self, name, after, when=lambda event: True):
         # What the engine said of its own accord, `name`, since the place
@@ -2308,6 +2378,154 @@ class PageActions(unittest.TestCase):
             self.assertEqual(chosen['data']['files'], ['second.pdf'], chosen)
             self.assertEqual(self.main_world('document.querySelector("[name=proof]").files[0].name'),
                              'second.pdf')
+
+    def test_a_persons_click_holds_the_chooser_and_the_embedders_answer_reaches_the_page(self):
+        # A person's own click on a file input is held for the embedder that
+        # asked for them: it is told what the input takes, and the paths it
+        # answers with reach the page as a platform panel's would, with the
+        # browser's own input and change events.
+        ready = next(event for event in self.h.seen if event['event'] == 'ready')
+        self.assertIs(ready.get('file_choosers'), True, ready)
+        self.h.send(op='file_choosers', enabled=True)
+        self.h.navigate(self.url + '/chooser')
+        with tempfile.TemporaryDirectory() as folder:
+            first = os.path.join(folder, 'passport.pdf')
+            second = os.path.join(folder, 'one.png')
+            third = os.path.join(folder, 'two.png')
+            for path, body in ((first, b'%PDF-1.4'), (second, b'\x89PNG one'), (third, b'\x89PNG two')):
+                with open(path, 'wb') as file:
+                    file.write(body)
+            asked = self.chooser('one')
+            self.assertEqual(asked['mode'], 'open', asked)
+            self.assertLessEqual(len(asked['title']), 256, asked)
+            self.assertIn('.pdf', asked['accept'], asked)
+            self.assertIn('image/*', asked['accept'], asked)
+            # An answer to another chooser is no answer to this one.
+            self.h.send(op='file_chooser_reply', id=asked['id'] + 1000, paths=[second])
+            self.answered(asked, [first])
+            self.status('one change passport.pdf:8')
+            self.assertEqual(json.loads(self.main_world('JSON.stringify(window.heard)')),
+                             [['one', 'input', True], ['one', 'change', True]])
+            # Answered once: the same answer again reaches nothing.
+            self.h.send(op='file_chooser_reply', id=asked['id'], paths=[second])
+
+            several = self.chooser('many')
+            self.assertNotEqual(several['id'], asked['id'])
+            self.assertEqual((several['mode'], several['accept']), ('open_multiple', []), several)
+            self.answered(several, [second, third])
+            self.status('many change one.png:8,two.png:8')
+            self.assertEqual(self.main_world('document.getElementById("one").files[0].name'),
+                             'passport.pdf', 'the first input keeps its own file')
+
+            # An input for one file is never handed two: the page hears a
+            # cancel and keeps what it had.
+            again = self.chooser('one')
+            self.answered(again, [second, third])
+            self.status('one cancel passport.pdf:8')
+
+            album = self.chooser('folder')
+            self.assertEqual(album['mode'], 'open_folder', album)
+            self.answered(album, [])
+            self.status('folder cancel ')
+
+    def test_a_cancelled_or_abandoned_chooser_leaves_the_input_empty(self):
+        self.h.send(op='file_choosers', enabled=True)
+        self.h.navigate(self.url + '/chooser')
+        with tempfile.TemporaryDirectory() as folder:
+            late = os.path.join(folder, 'late.pdf')
+            with open(late, 'wb') as file:
+                file.write(b'%PDF-1.4')
+            asked = self.chooser('one')
+            self.answered(asked, [])
+            self.status('one cancel ')
+            self.assertEqual(self.main_world('document.getElementById("one").files.length'), 0)
+            self.assertEqual(json.loads(self.main_world('JSON.stringify(window.heard)')),
+                             [['one', 'cancel', True]])
+            # The page going elsewhere lets an open chooser go, and an answer
+            # that comes after reaches no page.
+            waiting = self.chooser('many')
+            after = len(self.h.seen)
+            self.h.send(op='navigate', url=self.url + '/chooser')
+            self.told('file_chooser_closed', after, lambda event: event['id'] == waiting['id'])
+            self.h.until(lambda e: e['event'] == 'loaded' and e['url'] == self.url + '/chooser')
+            self.h.settle()
+            self.h.send(op='file_chooser_reply', id=waiting['id'], paths=[late])
+            self.assertEqual(self.main_world('document.getElementById("many").files.length'), 0)
+            self.assertEqual(self.main_world('window.heard.length'), 0)
+            # An embedder that stops answering lets the open chooser go too.
+            waiting = self.chooser('one')
+            after = len(self.h.seen)
+            self.h.send(op='file_choosers', enabled=False)
+            self.told('file_chooser_closed', after, lambda event: event['id'] == waiting['id'])
+            self.status('one cancel ')
+
+    def test_no_page_action_answers_a_persons_chooser(self):
+        # The embedder's picker is a person's alone: files an action chooses
+        # while a person's chooser is open go to the input the action names,
+        # never into that chooser, which goes on waiting for the person.
+        self.h.send(op='file_choosers', enabled=True)
+        self.h.navigate(self.url + '/chooser')
+        with tempfile.TemporaryDirectory() as folder:
+            first = os.path.join(folder, 'passport.pdf')
+            second = os.path.join(folder, 'one.png')
+            for path, body in ((first, b'%PDF-1.4'), (second, b'\x89PNG one')):
+                with open(path, 'wb') as file:
+                    file.write(body)
+            one = self.ref(self.outline(), 'file "Passport"')
+            waiting = self.chooser('many')
+            after = len(self.h.seen)
+            self.ok('fill_files', element=one, paths=[second])
+            self.status('one change one.png:8')
+            self.h.settle()
+            self.assertFalse([event for event in self.h.seen[after:] if event['event'] == 'file_chooser_closed'],
+                             'an action answered a person\'s chooser')
+            self.assertEqual(self.main_world('document.getElementById("many").files.length'), 0)
+            self.answered(waiting, [first])
+            self.status('many change passport.pdf:8')
+
+    @unittest.skipIf(sys.platform == 'darwin',
+                     'a chooser that comes after its action answered gets the macOS host\'s own panel')
+    def test_an_actions_click_never_opens_the_embedders_picker(self):
+        # A page often opens its chooser only once the click that asked for
+        # it has answered. Held for fill_files or come too late for that, a
+        # chooser an action's click opened is never told to the embedder, so
+        # nothing an agent does puts a picker in front of the person; the
+        # person's own click after it still does.
+        self.h.send(op='file_choosers', enabled=True)
+        self.h.navigate(self.url + '/chooser')
+        with tempfile.TemporaryDirectory() as folder:
+            first = os.path.join(folder, 'passport.pdf')
+            with open(first, 'wb') as file:
+                file.write(b'%PDF-1.4')
+            one = self.ref(self.outline(), 'file "Passport"')
+            # The page hears clicks, and the last it heard was a person's:
+            # the action's own click after it is still the action's.
+            self.person_clicks('blank')
+            for turn in ('on a page a person only clicked', 'after a person\'s own chooser'):
+                after = len(self.h.seen)
+                clicked = self.ok('click', element=one)
+                if 'file chooser' in clicked['message']:
+                    self.ok('fill_files', element=one, paths=[first])
+                    self.status('one change passport.pdf:8')
+                else:
+                    self.status('one cancel ' + ('' if turn.startswith('on') else 'passport.pdf:8'))
+                self.h.settle(1)
+                self.assertFalse([event for event in self.h.seen[after:] if event['event'] == 'file_chooser'],
+                                 f'an action\'s chooser reached the embedder {turn}')
+                if turn.startswith('on'):
+                    waiting = self.chooser('one')
+                    self.answered(waiting, [first])
+                    self.status('one change passport.pdf:8')
+
+    @unittest.skipIf(sys.platform == 'darwin', 'a tab that never asked gets the macOS host\'s own panel')
+    def test_a_tab_that_never_asked_has_a_persons_chooser_cancelled_at_once(self):
+        # Every page is offscreen here and the host has no panel: without an
+        # embedder to answer, the page hears a cancel rather than waiting.
+        self.h.navigate(self.url + '/chooser')
+        after = len(self.h.seen)
+        self.person_clicks('one')
+        self.status('one cancel ')
+        self.assertFalse([event for event in self.h.seen[after:] if event['event'] == 'file_chooser'])
 
     def test_an_agent_buys_one_item_in_a_shop_to_the_order_s_confirmation(self):
         # A purchase from the search to the confirmation, through page actions

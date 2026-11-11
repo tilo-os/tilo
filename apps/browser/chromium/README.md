@@ -216,6 +216,30 @@ asked to stay". A tab that never asked for questions has each declined at once
 (a confirm is false, a prompt null) and its page left when it asks to stay, as
 closing a tab always leaves it; no page waits on a question nobody sees.
 
+A file chooser a person opens (a click of their own on a file input) is the
+embedder's to show as well. `ready` / `tab_ready` advertise
+`file_choosers: true`; a tab that then receives `file_choosers` with a boolean
+`enabled` gets each as a `file_chooser` event: a positive `id`, `mode` (`open`
+for one file, `open_multiple` for several, `open_folder` for a folder), the
+chooser's `title` (at most 256 bytes, empty for the default) and `accept`, what
+the input takes as MIME types (`image/*`) and extensions (`.png`), each at most
+128 bytes and at most 256 of them. The page waits until `file_chooser_reply`
+with that `id` and `paths` answers it: absolute paths, exactly what the person
+picked (at most 4096, and one where one was asked for), or an empty list to
+cancel. The page then runs what a platform panel's answer runs: its own trusted
+`input` and `change` events, or `cancel`. `file_chooser_closed` with the `id`
+says the page no longer waits, answered or not: its document left, its tab
+closed or moved, a newer chooser took its place, or ten minutes passed with no
+answer. Only that reply answers it; no `page` action does. A chooser is a
+person's when the click or key the page heard last was the embedder's own
+(`mouse_button`, `key`): one that comes while a `page` action runs, or on an
+action's click or key however long after the action answered, is never the
+embedder's (an action's click is held for `fill_files`, see "Page actions").
+A tab that never asked keeps what the
+platform does: the host's own panel on macOS, and a chooser cancelled at once
+everywhere else, where every page is offscreen and no panel exists. A chooser
+to save into is never the embedder's.
+
 CEF callbacks enqueue output without pipe writes. Events have a bounded queue;
 only each tab's newest pending frame is kept, and tabs take turns, so a page
 painting every frame never drops another tab's last frame. A paint's pixels are
@@ -395,7 +419,8 @@ upper-case one carries Shift for its own events on Linux, where the engine
 reads a key from its key code and Shift alone.
 
 A click that opens a file chooser holds it for `fill_files` on every system;
-the platform's own panel is never opened for an action.
+the platform's own panel is never opened for an action, and neither is the
+embedder's picker (`file_choosers`), which is a person's alone.
 
 ```sh
 python3 apps/browser/chromium/tests/page_actions.py target/chromium/tilo-chromium-host

@@ -91,6 +91,8 @@ mod page_actions;
 mod page_answer;
 mod page_clipboard;
 mod page_events;
+#[cfg(test)]
+mod page_files_tests;
 mod page_find;
 mod page_record;
 mod page_review_view;
@@ -491,6 +493,9 @@ pub struct BrowserWidget {
     /// "leave this page?"), shown over the window, and its dialog's node.
     page_dialogs: crate::page_dialogs::PageDialogs,
     page_dialog_node: Option<NodeId>,
+    /// The page's file chooser a person opened, while the host's picker is
+    /// open for it.
+    page_files: crate::page_files::PageFiles,
     /// What answering the page's question did, written when it is answered
     /// so the action's answer says what happened next.
     page_dialog_answer: Option<String>,
@@ -1502,6 +1507,7 @@ impl BrowserWidget {
             site: crate::site_controls::SiteControls::default(),
             page_popups: crate::page_popups::PagePopups::default(),
             page_dialogs: crate::page_dialogs::PageDialogs::default(),
+            page_files: crate::page_files::PageFiles::default(),
             page_dialog_node: None,
             page_dialog_answer: None,
             permission_answer: None,
@@ -3401,6 +3407,10 @@ impl BrowserWidget {
                         self.settle_page_operation_on_question();
                     }
                 }
+                event @ (WebViewEvent::FileChooser(_) | WebViewEvent::FileChooserClosed { .. }) => {
+                    self.page_files
+                        .apply(&event, &self.engine, self.browsing_mode);
+                }
                 WebViewEvent::HeldRequest(request) => self.hold_asked(&request),
                 WebViewEvent::HeldRequestClosed { id } => self.held_closed(id),
                 event @ (WebViewEvent::DownloadRequested { .. }
@@ -3409,6 +3419,8 @@ impl BrowserWidget {
                 | WebViewEvent::DownloadFailed { .. }) => self.apply_download_event(event),
             }
         }
+        // After what the engine said: a chooser it let go is not answered.
+        self.page_files.poll(&self.engine);
     }
 
     fn apply_download_event(&mut self, event: WebViewEvent) {
@@ -6020,6 +6032,7 @@ impl BrowserWidget {
         self.structure_dirty |= self.extensions.sync(&self.engine, &self.current_uri);
         self.structure_dirty |= self.page_popups.sync(&self.engine);
         self.structure_dirty |= self.page_dialogs.sync(&self.engine);
+        self.page_files.sync(&self.engine, self.browsing_mode);
         // Whichever engine shows the page now copies to the system clipboard.
         self.engine.share_clipboard();
         self.structure_dirty |= self.page_dialogs.poll(&self.engine);

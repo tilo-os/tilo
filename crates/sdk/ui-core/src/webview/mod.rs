@@ -27,10 +27,12 @@ pub use credentials::{
     CredentialRequest,
 };
 pub use service_sessions::{ServiceSessionReply, ServiceSessionRequest};
+pub mod file_chooser;
 pub mod hold;
 pub mod page;
 pub mod paint;
 pub mod text_input;
+pub use file_chooser::{FileChooser, FileChooserMode};
 pub use hold::{
     AnsweredBy, HeldKind, HeldRequest, MAX_HELD_CAPTURE, MAX_HELD_METHOD, MAX_HELD_ORIGIN,
 };
@@ -601,6 +603,14 @@ pub enum WebViewCommand {
         accept: bool,
         text: Option<String>,
     },
+    /// Answer the page's file chooser `id` ([`WebViewEvent::FileChooser`])
+    /// with exactly the paths the person picked in the desktop's picker, or
+    /// with none to cancel it. Answered once: a second answer, or one for a
+    /// chooser the page no longer waits on, does nothing.
+    AnswerFileChooser {
+        id: u32,
+        paths: Vec<String>,
+    },
     /// Answer the request `id` an agent's window held
     /// ([`WebViewEvent::HeldRequest`]): let it leave exactly once, or keep
     /// the page as it is and drop it. Answered once: a second answer for the
@@ -1061,6 +1071,15 @@ pub enum WebViewEvent {
     PageDialogClosed {
         id: u32,
     },
+    /// A person opened the page's file chooser, and the page waits for the
+    /// files ([`WebViewCommand::AnswerFileChooser`]).
+    FileChooser(FileChooser),
+    /// The page no longer waits on its file chooser `id`: it was answered,
+    /// its document left or its tab closed, another chooser took its place,
+    /// or nobody answered in the engine's time.
+    FileChooserClosed {
+        id: u32,
+    },
     /// A page an agent operates was about to send something, and holds it
     /// for the person's answer ([`WebViewCommand::AnswerHeldRequest`]): the
     /// page stays as it was filled and nothing leaves until then.
@@ -1337,6 +1356,19 @@ pub trait WebViewEngine: Send + Sync {
     fn accept_page_dialogs(&self) {
         if let Some(engine) = self.wrapped() {
             engine.accept_page_dialogs();
+        }
+    }
+
+    /// Have a file chooser a person opens in the page sent as
+    /// [`WebViewEvent::FileChooser`], for the embedder to ask the desktop's
+    /// picker and answer. Until then, and in an engine that cannot, the
+    /// engine does what its platform does: its own panel where it has one,
+    /// and otherwise a chooser cancelled at once. An engine whose platform
+    /// panel is the proven way keeps it and sends none (see
+    /// [`file_chooser`]).
+    fn accept_file_choosers(&self) {
+        if let Some(engine) = self.wrapped() {
+            engine.accept_file_choosers();
         }
     }
 

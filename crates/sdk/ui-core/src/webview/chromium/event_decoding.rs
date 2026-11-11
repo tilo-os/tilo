@@ -329,7 +329,10 @@ pub(super) fn validate_event(value: &Value) -> Result<(), &'static str> {
                     .as_str()
                     .is_some_and(|body| body.len() <= 1024 * 1024)
         }
-        "context_closed" | "permission_closed" | "js_dialog_closed" => valid_id(value),
+        "context_closed" | "permission_closed" | "js_dialog_closed" | "file_chooser_closed" => {
+            valid_id(value)
+        }
+        "file_chooser" => super::file_chooser::decode(value).is_some(),
         "js_dialog" => decode_page_dialog(value).is_some(),
         "context_menu" => valid_context_menu(value),
         "find_result" => {
