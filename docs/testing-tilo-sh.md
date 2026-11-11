@@ -213,8 +213,9 @@ runs in that workspace's VM, on the guest image this checkout built.
     by the person, whose form stays filled and unsent; submits a second form
     instance with the person's one answer, naming the submission, and reads
     the page's receipt and reference; has a click on the submit button held
-    and asked once; a key minted with the scope unticked is asked about its
-    first page actions; a reviewer who joined by invitation reads the run in
+    and asked once; a key minted with the scope unticked is asked about the
+    page actions that act on the page (navigating and filling), which the
+    scope answers for; a reviewer who joined by invitation reads the run in
     History; and page actions past the plans file's free ones
     (`TILO_SH_BROWSER_FREE_ACTIONS`, 200 here: what the fills, the
     submissions and the refusals take) are refused until the account is added

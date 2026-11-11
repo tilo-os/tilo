@@ -20,8 +20,8 @@ agent take there, with the person's answering device held by the check
      shows its receipt and reference (`read-page`);
   f. a click on the submit button is held the same way and asked once;
   g. a reviewer who joined by invitation reads the agent's run in History;
-  h. a key minted with the scope unticked is asked about its first page
-     actions, which is what the scope is for;
+  h. a key minted with the scope unticked is asked about the page actions
+     that act on the page, which is what the scope answers for;
   i. past the plans file's free page actions the next one is refused with
      `no_payment_method` and a step to add a card; adding the account to the
      plans file lets the next one through.
@@ -459,14 +459,15 @@ async def fill_phase(report: dict[str, object]) -> int:
             check(len(questions) == 1, f"the key without the scope is asked about {action} ({questions})")
             return answer
 
+        # Taking the window somewhere asks; reading the page it is on does
+        # not (the agent's window holds none of the person's sign-ins).
         await asked_once("navigate", other.do("navigate", url=FORM_URL))
-        found = await asked_once(
-            "find-page-element", other.do("find-page-element", role="textbox", name="Given names")
-        )
+        await outcome(other.do("wait-page-settled", quiet_ms=300, timeout_ms=60000))
+        found = await outcome(other.do("find-page-element", role="textbox", name="Given names"))
         element = found.get("element") if isinstance(found, dict) else None
-        check(isinstance(element, str) and element, f"the asked page action finds the field ({found})")
+        check(isinstance(element, str) and element, f"the page names the field it found ({found})")
         await asked_once("fill-page", other.do("fill-page", element=element, text=FILLED["Given names"]))
-    report["unscoped_questions"] = 3
+    report["unscoped_questions"] = 2
     await unscoped.aclose()
 
     say("i. metering: the plans file's free page actions, then a card")

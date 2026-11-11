@@ -35,8 +35,9 @@
 #      person asked nothing (their key operates web pages), captures it,
 #      submits it once the person allows that one submission, is refused when
 #      they deny another, and has a click on the submit button held and asked
-#      once; a key minted with the scope unticked is asked about its first
-#      page actions; a reviewer who joined by invitation reads the run in
+#      once; a key minted with the scope unticked is asked about the page
+#      actions that act on the page; a reviewer who joined by invitation reads
+#      the run in
 #      History, and page actions past the plans file's free ones are refused
 #      until the provider adds the account there.
 #
