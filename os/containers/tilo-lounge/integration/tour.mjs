@@ -312,6 +312,8 @@ const tour = async ({name, width, height, mobile = false, scheme = 'light'}) => 
     // The other appearances look at the desk, the search, one app and Settings.
     await step('search', async () => { await search('notes'); await shoot('search-notes'); await opened(); await quiet(); await shoot('notes'); });
     await step('settings', async () => { await search('settings', 1); await quiet(); await shoot('settings'); });
+  // The person's devices and the agents acting for them, found by name.
+  await step('devices-access', async () => { await search('devices and access'); await shoot('search-devices-access'); await opened(); await quiet(); await shoot('devices-access'); });
     await step('chat', async () => { await search('chat', 1); await quiet(); await shoot('chat'); });
     await tab.close().catch(() => {});
     return;

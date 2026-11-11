@@ -282,8 +282,8 @@ async function openKept(storage, record, persist) {
      * entry it signed, which is kept here beside the person and reaches
      * every session of theirs, the open ones at once and later ones as they
      * start. */
-    async revokeDevice(keyHex) {
-      const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex));
+    async revokeDevice(keyHex, reason = 'retired') {
+      const entry = JSON.parse(await runtime.revokeDevice(identity, keyHex, reason));
       const kept = (await storage.get(BROWSER_RECORD)) ?? record;
       record = {...kept, revocations: [...(kept.revocations ?? []), entry]};
       await storage.put(BROWSER_RECORD, record);

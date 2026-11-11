@@ -468,10 +468,10 @@ export function createIdentityActions({
           shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link)}));
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
-        } else if (id === REVOKE_DEVICE && typeof value === 'string') {
-          // An agent's grant taken back at the person's door: the root
-          // revokes the device it runs on, as it revokes any of theirs.
-          await identity.revokeDevice(value);
+        } else if (id === REVOKE_DEVICE && typeof value?.key === 'string') {
+          // A device of the person's, or an agent's grant, taken back: the
+          // root revokes the key, for the reason the person chose.
+          await identity.revokeDevice(value.key, value.reason);
         } else if (id === SIGN_IN.id) {
           const origins = [...new Set(lookups())];
           await signIn({rpId, fetchEnvelope: root => find(root, origins)});

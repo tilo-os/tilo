@@ -35,6 +35,8 @@ tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-app = { version = "0.1.0", path = "../../sdk/tilo-app", default-features = false }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
+# The person's record on their host: the devices Settings lists.
+tilo-relay-session = { version = "0.1.0", path = "../../hosting/tilo-relay-session" }
 # The content windows' records reference (pictures, attachments), kept in
 # the profile's app files — which outlive the page, so an upload a draft names
 # is still here when the draft is sent — and asked of the workspace when
