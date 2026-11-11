@@ -454,9 +454,13 @@ impl DesktopChrome {
             .stands(Slot::TiloMenu, self.tilo_menu.menu_rect());
         let centre = self.notices.as_ref().and_then(NotificationLayer::panel);
         self.overlays.stands(Slot::Centre, centre);
+        self.overlays
+            .stands(Slot::WorkspaceName, self.bar.workspace_name_rect());
         for (slot, open) in [
             (Slot::Emoji, self.emoji.is_open()),
             (Slot::WorkspaceMenu, self.workspace_menu.is_open()),
+            // The name typed in the bar holds the keyboard until Enter or Escape ends it.
+            (Slot::WorkspaceName, self.bar.renaming_workspace()),
             (Slot::TiloMenu, self.tilo_menu.is_open()),
             (Slot::Overview, self.overview.is_open()),
             (Slot::Strips, self.navigator.takes_keys()),
@@ -500,6 +504,10 @@ impl DesktopChrome {
         if self.workspace_menu.is_open() && !self.overlays.is_open(Slot::WorkspaceMenu) {
             self.workspace_menu.close();
             self.overlays.close(Slot::WorkspaceMenu);
+        }
+        if self.bar.renaming_workspace() && !self.overlays.is_open(Slot::WorkspaceName) {
+            self.bar.cancel_workspace_rename();
+            self.overlays.close(Slot::WorkspaceName);
         }
         if self.tilo_menu.is_menu_open() && !self.overlays.is_open(Slot::TiloMenu) {
             self.tilo_menu.toggle(Rect::ZERO, self.rect);
@@ -1084,6 +1092,7 @@ impl DesktopChrome {
             OverviewPick::RenameStrip { strip: id, name } => Some(ChromeEffect::Rename {
                 strip: Some(id.0.to_string()),
                 name: name.clone(),
+                tab: None,
                 group: None,
                 workspace: None,
             }),

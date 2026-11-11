@@ -1424,6 +1424,7 @@ desktop-display-name = Bildschirm { $number }
 # What a person can do to one window, from its own menu.
 window-menu-reveal = Zu diesem Fenster gehen
 window-menu-rename = Dieses Fenster benennen…
+window-tab-name = Fenstername
 window-menu-full-screen = Vollbild
 window-menu-exit-full-screen = Vollbild beenden
 window-menu-maximize = Den Streifen füllen

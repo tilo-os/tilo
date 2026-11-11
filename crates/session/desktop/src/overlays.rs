@@ -38,6 +38,8 @@ pub enum Slot {
     WindowMenu,
     /// The menu of the workspace in front, opened from its name on the bar.
     WorkspaceMenu,
+    /// The workspace's name on the bar, being typed: its menu's Rename turns the name into a field.
+    WorkspaceName,
     /// The menu behind the bar's Tilo mark.
     TiloMenu,
     /// The notification centre, under the bar's trailing end.
@@ -53,11 +55,12 @@ pub enum Slot {
 
 impl Slot {
     /// Every slot, topmost first.
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::Search,
         Self::Emoji,
         Self::WindowMenu,
         Self::WorkspaceMenu,
+        Self::WorkspaceName,
         Self::TiloMenu,
         Self::Centre,
         Self::Overview,
@@ -73,6 +76,7 @@ impl Slot {
             Self::Emoji => "emoji",
             Self::WindowMenu => "window-menu",
             Self::WorkspaceMenu => "workspace-menu",
+            Self::WorkspaceName => "workspace-name",
             Self::TiloMenu => "tilo-menu",
             Self::Centre => "centre",
             Self::Overview => "overview",
@@ -95,6 +99,7 @@ impl Slot {
             Self::Emoji | Self::Overview | Self::Strips => Role::Overlay,
             Self::WindowMenu
             | Self::WorkspaceMenu
+            | Self::WorkspaceName
             | Self::TiloMenu
             | Self::Centre
             | Self::QuickSettings => Role::Popup,
@@ -130,7 +135,7 @@ impl Slot {
             Self::Overview | Self::Strips => Anchor::Fill,
             Self::Search | Self::Emoji => Anchor::Center,
             Self::WindowMenu => Anchor::At(Point::ZERO),
-            Self::WorkspaceMenu | Self::TiloMenu => Anchor::TopLeading(0.0),
+            Self::WorkspaceMenu | Self::WorkspaceName | Self::TiloMenu => Anchor::TopLeading(0.0),
             Self::Centre | Self::QuickSettings => Anchor::TopTrailing(POPOVER_MARGIN),
         }
     }

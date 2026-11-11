@@ -2373,55 +2373,6 @@ impl GroupRow {
         changed
     }
 
-    /// Carry peer-local viewport presentation through a retained hierarchy
-    /// rebuild. The next layout still validates/clamps against its new geometry.
-    pub fn inherit_viewport(&mut self, previous: &Self) {
-        self.rect = previous.rect;
-        self.pan = previous.pan.clone();
-        if self.lanes.is_empty() {
-            self.lanes.clone_from(&previous.lanes);
-            self.group_lanes.clone_from(&previous.group_lanes);
-            self.focus_lane = previous.focus_lane;
-        } else {
-            for lane in &mut self.lanes {
-                if let Some(old) = previous
-                    .lanes
-                    .iter()
-                    .find(|old| old.spec.output == lane.spec.output)
-                {
-                    lane.pan = old.pan.clone();
-                }
-            }
-        }
-        self.output_spans.clone_from(&previous.output_spans);
-    }
-
-    /// Resolve an admitted keyboard owner through its actual layout ancestry.
-    /// Stored layout identities prevent stale child indices after a splice.
-    pub fn group_for_focus_target(&self, mut target: NodeId, tree: &TaffyTree<()>) -> Option<u64> {
-        loop {
-            if let Some(index) = self.node_ids.iter().position(|node| *node == target) {
-                let id = *self.laid_group_ids.get(index)?;
-                return self
-                    .groups
-                    .iter()
-                    .any(|group| group.id == id && !group.is_closing())
-                    .then_some(id);
-            }
-            target = tree.parent(target)?;
-        }
-    }
-
-    /// Whether the stored geometry still belongs to the current group order.
-    /// A splice/reorder must complete layout before a host frames its selection.
-    pub fn group_layout_is_current(&self) -> bool {
-        self.laid_group_ids
-            .iter()
-            .copied()
-            .eq(self.groups.iter().map(|group| group.id))
-            && self.width_basis_is_current()
-    }
-
     fn width_basis_is_current(&self) -> bool {
         self.groups
             .iter()
@@ -6175,7 +6126,10 @@ impl GroupRow {
                     .enumerate()
                     .position(|(i, group)| !self.layout_hides_group(i) && test(group))
             };
-            let owner = first_shown(|group| super::context_menu_area::focus_within(group))
+            // A field in a window's bar (a tab being named, its location edited) has what is
+            // typed before any window's app.
+            let owner = first_shown(WindowGroup::takes_typing)
+                .or_else(|| first_shown(|group| super::context_menu_area::focus_within(group)))
                 .or_else(|| first_shown(WindowGroup::focused));
             if let Some(i) = owner
                 && let Some(&node_id) = self.node_ids.get(i)

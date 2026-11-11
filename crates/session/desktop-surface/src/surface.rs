@@ -1612,6 +1612,36 @@ impl DesktopSurface {
         }
     }
 
+    /// Name the tabs a person named in their bars, by the same rename an agent asks for, and open
+    /// the name field for the tabs a double click asked to name, as their menu's Rename does where
+    /// the tab is one a person may name.
+    fn name_tabs(&mut self) {
+        let mut names = Vec::new();
+        let mut name_asks = Vec::new();
+        for group in self.rows.values_mut().flat_map(|row| row.groups.iter_mut()) {
+            names.extend(group.take_tab_rename());
+            name_asks.extend(group.take_tab_rename_ask());
+        }
+        let handle = DesktopHandle {
+            shared: Rc::clone(&self.shared),
+        };
+        for (tab, name) in names {
+            if let Err(reason) = handle.dispatch(ChromeEffect::Rename {
+                tab: Some(tab.to_string()),
+                group: None,
+                strip: None,
+                workspace: None,
+                name,
+            }) {
+                handle.acknowledge(reason);
+            }
+        }
+        for tab in name_asks {
+            // A tab whose title is its app's own to give has no name field.
+            let _ = handle.choose_window_menu(tab, window_menu::RENAME, None);
+        }
+    }
+
     /// Record what the shown strip and focused window present beside the tree, for the navigation
     /// snapshot.
     fn refresh_presentation(&self) {
@@ -1872,6 +1902,7 @@ impl Widget for DesktopSurface {
         let panned = self.take_app_sideways(ui::time::now());
         self.reconcile();
         self.harvest();
+        self.name_tabs();
         // A window the pass just moved or renamed is a tree the rows follow now: what it was
         // running goes to the window it moved to in this pass, rather than being built there again.
         self.reconcile();
@@ -2160,6 +2191,9 @@ impl Widget for DesktopSurface {
             });
         }
         self.route_pointer(event, ctx, &children);
+        // A tab's name field opened or closed under the event: the desk holds the keyboard for it,
+        // or gives it back to the window.
+        self.publish_bar_typing();
         if let WindowEvent::MouseInput {
             state: ElementState::Released,
             button: MouseButton::Left,

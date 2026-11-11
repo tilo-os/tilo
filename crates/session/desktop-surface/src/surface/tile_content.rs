@@ -33,6 +33,7 @@ pub(super) fn build_tile(
 pub(super) fn descriptor(tab: &Tab) -> TabDescriptor {
     TabDescriptor {
         app_kind: Some(tile_app_kind(&tab.tile)),
+        named: tab.is_named(),
         ..TabDescriptor::new(tab.id, tab.title.clone())
     }
 }

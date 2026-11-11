@@ -597,7 +597,8 @@ pub fn command(tree: &DesktopTree, route: &RouteIds, id: &str, name: Option<&str
     let verb = match id {
         REVEAL => Verb::Desk(DeskEffect::Focus { tab: tab_id }),
         RENAME => Verb::Chrome(ChromeEffect::Rename {
-            group: Some(group_id),
+            tab: Some(tab_id),
+            group: None,
             strip: None,
             workspace: None,
             name: name?.to_owned(),
@@ -1130,6 +1131,12 @@ impl crate::surface::DesktopHandle {
             return Err(offered
                 .reason
                 .unwrap_or_else(|| "That is not something this window offers".into()));
+        }
+        // A person types the name: the row opens the tab's name field in its window's bar, and
+        // what they commit there is renamed by the same action an agent names it with.
+        if id == RENAME && name.is_none() {
+            self.rename_in_bar(tab);
+            return Ok(());
         }
         match command {
             Some(verb) => self.dispatch(verb),

@@ -51,8 +51,6 @@ pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
 /// two of the app's controls keep, so History reads as one more of the
 /// app's actions rather than the first of the window's.
 pub const HISTORY_GAP: f64 = CONTROL_GAP;
-/// A row wider than any window: the pill is measured in one, so nothing it holds is cut.
-const WIDE_ENOUGH: f64 = 10_000.0;
 /// The box the maximize/restore glyph is drawn in: a small icon.
 const ACTION_GLYPH_PX: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
 /// The box the close glyph is drawn in. Lucide's × spans the middle 12 of
@@ -270,20 +268,6 @@ impl WindowControls {
             x1.max(x0 + height),
             bar.center().y + height / 2.0,
         )
-    }
-
-    /// The room the controls take at the trailing end of a row of this kind: the window's own
-    /// trailing inset and the pill around them, as [`Self::lay_out`] places them in a row wide
-    /// enough for every control to stand whole. A host that keeps a header row reserves it there
-    /// for the window ([`crate::widget::merged_row_width`]).
-    #[must_use]
-    pub fn trailing_room() -> f64 {
-        let row = Rect::new(0.0, 0.0, WIDE_ENOUGH, 2.0 * (CONTROL_PX + PILL_PAD));
-        let placed = Self::lay_out(row);
-        if placed.pill.area() <= 0.0 {
-            return 0.0;
-        }
-        row.x1 - placed.pill.x0
     }
 
     /// Where the controls begin, less the gap anything before them keeps;

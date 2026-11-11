@@ -378,11 +378,14 @@ pub enum ChromeEffect {
     },
 
     /// Rename something
-    /// A window, a strip or a workspace, by the one id given; a blank name gives a window its own
-    /// title back.
+    /// A tab, a window, a strip or a workspace, by the one id given; a blank name gives a tab its
+    /// own title back.
     #[effect(own_device, idempotent)]
     Rename {
-        /// The window group to name.
+        /// The tab to name.
+        #[param(decimal, "The tab to rename")]
+        tab: Option<String>,
+        /// The window group to name: its tab in front.
         #[param(decimal, "The window group to rename")]
         group: Option<String>,
         /// The strip to name.
@@ -1144,9 +1147,12 @@ fn admit_chrome(
         ChromeEffect::Float { group, on } => {
             group_route(tree, group).map(|ids| Admitted::Float(ids, *on))
         }
-        ChromeEffect::Rename { group, name, .. } => match group {
-            Some(group) => named(group_route(tree, group)?, name, tree),
-            None => Err("Name a window, a strip or a workspace to rename".into()),
+        ChromeEffect::Rename {
+            tab, group, name, ..
+        } => match (tab, group) {
+            (Some(tab), _) => named(tab_route(tree, tab)?, name, tree),
+            (None, Some(group)) => named(group_route(tree, group)?, name, tree),
+            (None, None) => Err("Name a tab, a window, a strip or a workspace to rename".into()),
         },
         ChromeEffect::ReopenClosed => admit_reopen(tree),
         ChromeEffect::ShareWindow { group, on } => {

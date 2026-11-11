@@ -335,9 +335,6 @@ pub struct WindowGroup {
     /// Its existing hosts fade within the group transition. `GroupRow` prunes the group
     /// once `close_complete()` is true.
     closing_at: Option<Instant>,
-    /// A close was asked of the owning client and not yet honoured: if the
-    /// group vanishes from the canonical tree, that exit is its one retirement.
-    close_requested: bool,
     close_duration: Duration,
     /// The close was a shortcut's or an action's: it lands, so the group is
     /// gone on the next frame instead of fading out.
@@ -498,7 +495,6 @@ impl WindowGroup {
             rest_layout_owed: false,
             closing_hosts: HashMap::new(),
             closing_at: None,
-            close_requested: false,
             width_stepped: false,
             close_rebuild_taken: false,
             close_duration: window_close_time(),
@@ -780,12 +776,6 @@ impl WindowGroup {
         self.close_lands = self.motion_source.lands_at_once();
         self.close_rebuild_taken = false;
         self.retarget_width(from, 0.0);
-    }
-
-    /// Whether a close was requested of the client and abandoned visually
-    /// because the client has not exited.
-    pub fn close_was_requested(&self) -> bool {
-        self.close_requested
     }
 
     /// A frame was presented by a host that never marks this group drawn
@@ -1613,34 +1603,6 @@ impl WindowGroup {
         true
     }
 
-    /// Paint a complete semantic app canvas with the same shared window card
-    /// and tab decoration as the live group, without changing live layout.
-    pub fn draw_complete_capture(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) -> Option<Rect> {
-        if self.maximized {
-            return None;
-        }
-        let active_id = self.bar.active_id();
-        let host = self
-            .hosts
-            .iter_mut()
-            .find(|(id, _)| *id == active_id)
-            .map(|(_, host)| host)?;
-        let capture_rect = host.complete_content_rect()?;
-        self.bar
-            .set_group_focused(self.focused || self.search_active);
-        self.bar.draw(scene, transform, tr, theme, presence);
-        host.set_focused(self.focused || self.search_active);
-        host.draw_complete_content_capture(scene, transform, tr, theme, presence)?;
-        Some(self.rect.union(capture_rect))
-    }
-
     /// Cancel the tab bar's gesture while preserving every live tab host.
     pub fn cancel_tab_drag(&mut self) -> bool {
         self.bar.cancel_drag()
@@ -2017,7 +1979,10 @@ impl WindowGroup {
         else {
             return false;
         };
-        if tab.title == descriptor.title && tab.app_kind == descriptor.app_kind {
+        if tab.title == descriptor.title
+            && tab.app_kind == descriptor.app_kind
+            && tab.named == descriptor.named
+        {
             return false;
         }
         *tab = descriptor;
@@ -2164,54 +2129,29 @@ impl WindowGroup {
     pub fn begin_tab_rename(&mut self, id: u64, name: &str) -> bool {
         let started = self.navigation_bar_visible() && self.bar.begin_rename(id, name);
         if started {
+            // A window's one tab drawn as its icon opens to its title while it is named.
+            self.style_dirty = true;
             self.grip_dirty = true;
         }
         started
+    }
+
+    /// Whether a field in the window's bar takes what is typed: a tab's name or the location
+    /// being edited. The keyboard is the bar's then, not the app's under it.
+    #[must_use]
+    pub fn takes_typing(&self) -> bool {
+        self.renaming_tab().is_some() || self.editing_location()
+    }
+
+    /// The tab a person double-clicked since the last call, asking to name it.
+    pub fn take_tab_rename_ask(&mut self) -> Option<u64> {
+        self.bar.take_rename_ask()
     }
 
     /// The tab being named in place, if any.
     #[must_use]
     pub fn renaming_tab(&self) -> Option<u64> {
         self.bar.renaming()
-    }
-
-    /// Whether `p` is on the name field of a tab being named.
-    #[must_use]
-    pub fn tab_rename_hit(&self, p: Point) -> bool {
-        self.bar.rename_hit(p)
-    }
-
-    /// Hand a keyboard or text event to the name field while a tab is being
-    /// named; the shell routes the keyboard here while
-    /// [`Self::renaming_tab`]. Returns whether the field took it.
-    pub fn tab_rename_event(
-        &mut self,
-        event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
-    ) -> bool {
-        let took = self.bar.rename_event(event, ctx);
-        self.grip_dirty = true;
-        took
-    }
-
-    /// Commit the name being edited, as Enter does. Returns whether a tab
-    /// was being named.
-    pub fn commit_tab_rename(&mut self) -> bool {
-        let committed = self.bar.commit_rename();
-        if committed {
-            self.grip_dirty = true;
-        }
-        committed
-    }
-
-    /// Put the title back, as Escape does. Returns whether a tab was being
-    /// named.
-    pub fn cancel_tab_rename(&mut self) -> bool {
-        let cancelled = self.bar.cancel_rename();
-        if cancelled {
-            self.grip_dirty = true;
-        }
-        cancelled
     }
 
     /// A name committed in place since the last call: the tab, and the name
@@ -2360,7 +2300,6 @@ impl WindowGroup {
             // rebuilds it and the real destroy animates a second time.
             self.closing_at = None;
             self.close_lands = false;
-            self.close_requested = true;
             self.width_spring = None;
             self.style_dirty = true;
         }
@@ -3651,8 +3590,13 @@ impl Widget for WindowGroup {
             return;
         }
         if let Some(bar_child) = bar_child {
+            let renaming = self.bar.renaming();
             self.bar
                 .handle_event(event, &mut ctx.reborrow(ctx.path, bar_child));
+            if self.bar.renaming() != renaming {
+                // The named tab's pill is laid out for its name, or back to its icon.
+                self.style_dirty = true;
+            }
         }
 
         self.sweep_expired_closing_hosts();

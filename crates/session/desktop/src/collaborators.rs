@@ -180,17 +180,6 @@ pub enum LineSource {
     Observed,
 }
 
-impl LineSource {
-    #[must_use]
-    pub fn generated_if(generated: bool) -> Self {
-        if generated {
-            Self::Generated
-        } else {
-            Self::Observed
-        }
-    }
-}
-
 /// What the roster shows this frame, decided by the host.
 pub struct CollaboratorsModel<'a> {
     pub host: Rect,
@@ -1705,14 +1694,6 @@ impl CollaboratorsOverlay {
         self.panel.area() > 0.0 && self.panel.contains(point)
     }
 
-    /// The stable person behind a painted Follow button: the host revalidates that person by it, never by the row's place.
-    pub fn follow_target(&self, index: usize) -> Option<&str> {
-        self.shown_rows
-            .get(index)
-            .filter(|row| row.followable)
-            .map(|row| row.id.as_str())
-    }
-
     /// The stable person behind a painted Wave button.
     pub fn wave_target(&self, index: usize) -> Option<&str> {
         self.shown_rows
@@ -1747,14 +1728,6 @@ impl CollaboratorsOverlay {
         let row = self.shown_rows.get(index)?;
         let change = row.recent.get(change)?;
         Some((row.label.as_str(), change.entry))
-    }
-
-    /// The name History knows the person at this row index by, for "See their changes".
-    pub fn changes_author(&self, index: usize) -> Option<&str> {
-        self.shown_rows
-            .get(index)
-            .filter(|row| !row.recent.is_empty())
-            .map(|row| row.label.as_str())
     }
 
     /// What a press at `point` (on screen) means.

@@ -802,7 +802,13 @@ fn only_a_window_the_sharing_app_lists_offers_the_share_row() {
 #[test]
 fn only_a_host_windows_tab_offers_a_name() {
     let (surface, handle) = apps_desk(1);
-    let mut frame = present(surface);
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1280, 800),
+        ui::Theme::dark(),
+    );
+    frame.relayout();
     let route = first_route(&handle);
     let mut tree = handle.read(Clone::clone);
     tree.workspaces[0].strips[0].window_groups[0].tabs[0].tile = TileContent::Foreign {
@@ -843,6 +849,62 @@ fn only_a_host_windows_tab_offers_a_name() {
         .map(|entry| entry.label)
         .unwrap();
     assert_eq!(named, "Shell");
+
+    // A person types the name where the tab's title stands: the menu's Rename or a double click
+    // opens the field in the window's bar, the desk holds the keyboard while it is open (so the
+    // keys never reach the app), Enter names the tab and Escape leaves it as it was.
+    let shown = |frame: &ui::headless::FrameHarness| {
+        let surface = frame.root::<DesktopSurface>();
+        let tab = surface
+            .rows
+            .values()
+            .flat_map(|row| row.groups.iter())
+            .flat_map(|group| group.tabs().iter())
+            .find(|tab| tab.id == route.tab)
+            .cloned()
+            .unwrap();
+        (tab.title, tab.named)
+    };
+
+    handle.choose_window_menu(route.tab, RENAME, None).unwrap();
+    settle(&mut frame);
+    assert!(handle.wants_keyboard(), "the name field holds the keyboard");
+    frame.type_text("Shell 2");
+    frame.key("Enter");
+    settle(&mut frame);
+    assert!(!handle.wants_keyboard(), "Enter gives the keyboard back");
+    assert_eq!(shown(&frame), ("Shell 2".to_owned(), true));
+    assert!(handle.read(|tree| tree.tab(route.tab).unwrap().is_named()));
+
+    handle.choose_window_menu(route.tab, RENAME, None).unwrap();
+    settle(&mut frame);
+    frame.type_text("Nope");
+    frame.key("Escape");
+    settle(&mut frame);
+    assert!(!handle.wants_keyboard(), "Escape gives the keyboard back");
+    assert_eq!(
+        shown(&frame),
+        ("Shell 2".to_owned(), true),
+        "and names nothing"
+    );
+
+    // A double click on the tab opens the same field.
+    let bar = frame
+        .root::<DesktopSurface>()
+        .rows
+        .values()
+        .flat_map(|row| row.groups.iter())
+        .next()
+        .unwrap()
+        .presentation_bounds()
+        .tab_bar;
+    frame.double_click_at(bar.x0 + 40.0, bar.center().y);
+    settle(&mut frame);
+    assert!(handle.wants_keyboard(), "the double click opens the field");
+    frame.type_text("Build");
+    frame.key("Enter");
+    settle(&mut frame);
+    assert_eq!(shown(&frame), ("Build".to_owned(), true));
 }
 
 /// Split right takes the tab out into a window of its own, right after the one it was in.

@@ -27,6 +27,11 @@ pub(super) struct Bars {
     offered: Vec<(u64, u64, WindowOffer)>,
     /// Tabs whose app asked for its location to be edited.
     edits: Vec<u64>,
+    /// Tabs a person asked to name in their window's bar.
+    renames: Vec<u64>,
+    /// A field in a window's bar takes what is typed (a tab being named, a location edited): the
+    /// desk holds the keyboard until it closes, so the keys do not reach the app under it.
+    typing: bool,
     /// Tabs whose app asked for its search, and how it opens.
     searches: Vec<(u64, SearchOpening)>,
     /// Connections that closed: what they declared goes with them.
@@ -87,6 +92,17 @@ impl DesktopHandle {
     /// `tab` 's app asked for its location in the bar to be edited, as its own Ctrl+L does.
     pub fn edit_bar_location(&self, tab: u64) {
         self.queue_bar_ask(|bars| bars.edits.push(tab));
+    }
+
+    /// Open `tab`'s name field in its window's bar, as its menu's Rename and a double click on the
+    /// tab do: the field holds the keyboard, Enter names the tab and Escape leaves it as it was.
+    pub fn rename_in_bar(&self, tab: u64) {
+        self.queue_bar_ask(|bars| bars.renames.push(tab));
+    }
+
+    /// Whether a field in a window's bar takes what is typed now.
+    pub(super) fn bar_takes_typing(&self) -> bool {
+        self.shared.borrow().bars.typing
     }
 
     /// `tab` 's app asked for its window's search in the bar to open, as its own Ctrl+F (or Ctrl+H,
@@ -253,12 +269,24 @@ impl DesktopSurface {
         changed |= sync.changed;
         changed |= self.publish_window_names();
         changed |= self.ask_bar_changes();
+        self.publish_bar_typing();
         let events = self.window_slots.take_outbox();
         if !events.is_empty() {
             self.shared.borrow_mut().bars.events.extend(events);
             changed = true;
         }
         changed
+    }
+
+    /// Say whether a field in a window's bar takes what is typed, for the desk to hold the
+    /// keyboard while it does ([`DesktopHandle::wants_keyboard`]).
+    pub(super) fn publish_bar_typing(&self) {
+        let typing = self
+            .rows
+            .values()
+            .flat_map(|row| row.groups.iter())
+            .any(WindowGroup::takes_typing);
+        self.shared.borrow_mut().bars.typing = typing;
     }
 
     /// Name each window by what it shows: the bar's location label, a note's title or a folder's
@@ -377,17 +405,28 @@ impl DesktopSurface {
     /// Run what the apps in processes of their own asked of their bars' own controls: edit the
     /// location, open the search. Only the tab its window shows edits or searches.
     fn ask_bar_changes(&mut self) -> bool {
-        let (edits, searches) = {
+        let (edits, searches, renames) = {
             let mut shared = self.shared.borrow_mut();
             (
                 std::mem::take(&mut shared.bars.edits),
                 std::mem::take(&mut shared.bars.searches),
+                std::mem::take(&mut shared.bars.renames),
             )
         };
         let mut changed = false;
         for tab in edits {
             if let Some(group) = active_group(&mut self.rows, tab) {
                 changed |= group.edit_location();
+            }
+        }
+        for tab in renames {
+            if let Some(group) = self
+                .rows
+                .values_mut()
+                .flat_map(|row| row.groups.iter_mut())
+                .find(|group| group.tabs().iter().any(|shown| shown.id == tab))
+            {
+                changed |= group.begin_tab_rename(tab, &crate::i18n::t("window-tab-name"));
             }
         }
         for (tab, opening) in searches {

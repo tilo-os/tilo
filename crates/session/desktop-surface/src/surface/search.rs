@@ -472,16 +472,18 @@ impl DesktopHandle {
     }
 
     /// Whether the desk itself takes the keys the person types: its notification centre is open,
-    /// and what they type goes into it rather than to the window behind. Its search does not: the
-    /// palette stands over the windows, drawn by the host above them, which takes the keys while it
-    /// is up.
+    /// or a field in a window's bar (a tab being named), and what they type goes into it rather
+    /// than to the window behind. Its search does not: the palette stands over the windows, drawn
+    /// by the host above them, which takes the keys while it is up.
     pub fn wants_keyboard(&self) -> bool {
-        self.shared
-            .borrow()
-            .presentation
-            .notifications
-            .as_ref()
-            .is_some_and(|notifications| notifications.center_open)
+        self.bar_takes_typing()
+            || self
+                .shared
+                .borrow()
+                .presentation
+                .notifications
+                .as_ref()
+                .is_some_and(|notifications| notifications.center_open)
     }
 
     /// Search from now on also over what `host` adds, and hand it what is chosen that it carries

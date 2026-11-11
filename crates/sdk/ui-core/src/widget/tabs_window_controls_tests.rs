@@ -348,6 +348,34 @@ fn a_secondary_press_on_the_location_opens_the_windows_menu() {
     assert_eq!(b.take_context_menu(), None, "the app's control keeps it");
 }
 
+/// A window's one tab drawn as its icon shows its title while a person names it, and keeps
+/// showing the name they gave it; the app's own title goes back to the icon.
+#[test]
+fn a_windows_only_tab_shows_the_name_a_person_gave_it() {
+    let mut b = solo_bar_with_slots();
+    b.tab_rects = vec![Rect::new(0.0, 6.0, 40.0, 34.0)];
+    assert!(b.icon_only(1));
+    assert!(
+        b.begin_rename(1, "Window name"),
+        "the icon opens to a field"
+    );
+    assert!(!b.icon_only(1), "the field stands where the title would");
+    assert!(b.cancel_rename());
+    assert!(b.icon_only(1), "Escape leaves the icon");
+    let mut named = TabDescriptor::new(1, "Plan");
+    named.named = true;
+    b.tabs[0] = named;
+    assert!(
+        !b.icon_only(1),
+        "a named tab shows its name beside the location"
+    );
+    b.pin(1);
+    assert!(
+        !b.begin_rename(1, "Window name"),
+        "a pinned tab has no title to edit"
+    );
+}
+
 /// One place says what a window is: its only tab is drawn as its icon alone when the bar's
 /// slots carry the app's location, so the title is not painted over the location beside it.
 #[test]

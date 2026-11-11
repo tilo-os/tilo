@@ -1911,6 +1911,7 @@ fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
     ) {
         handle
             .dispatch(ChromeEffect::Rename {
+                tab: None,
                 group: Some(route.group.clone()),
                 strip: None,
                 workspace: None,
@@ -1963,6 +1964,7 @@ fn a_window_takes_the_name_the_person_gives_it_and_gives_it_back() {
     // A name longer than a tab could ever show is refused, and nothing moves.
     let refusal = handle
         .dispatch(ChromeEffect::Rename {
+            tab: None,
             group: Some(route.group),
             strip: None,
             workspace: None,

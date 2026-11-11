@@ -95,6 +95,63 @@ fn chrome_over(notifications: Option<DesktopNotifications>) -> (FrameHarness, Ov
     (frame, overlays)
 }
 
+/// The workspace's name typed in the bar, from its menu's Rename, holds the keyboard while it is
+/// open, so what is typed reaches the field and never the window in front; Enter and Escape each
+/// end it and give the keyboard back to the window.
+#[test]
+fn the_workspace_name_typed_in_the_bar_holds_the_keyboard() {
+    use tilo_desktop::overlays::Target;
+    let (mut frame, overlays) = chrome();
+    let typed = |frame: &FrameHarness, text: &str| {
+        frame
+            .a11y_nodes()
+            .iter()
+            .any(|(_, node)| node.value() == Some(text))
+    };
+    assert_eq!(overlays.target(), Target::Window);
+    with_chrome(&mut frame, |chrome| {
+        chrome.apply_intent(tilo_desktop::chrome::ChromeIntent::ToggleWorkspaceMenu { at: None });
+    });
+    frame.relayout();
+    with_chrome(&mut frame, |chrome| {
+        chrome.bar_mut().begin_workspace_rename();
+    });
+    frame.relayout();
+    assert_eq!(
+        overlays.target(),
+        Target::Surface(Slot::WorkspaceName),
+        "the field holds the keyboard"
+    );
+    assert!(
+        !overlays.is_open(Slot::WorkspaceMenu),
+        "the menu gave way to it"
+    );
+    frame.type_text("Projekt");
+    frame.relayout();
+    assert!(typed(&frame, "Projekt"), "what is typed is the field's");
+    frame.key("Enter");
+    frame.relayout();
+    assert_eq!(
+        overlays.target(),
+        Target::Window,
+        "Enter gives the keyboard back"
+    );
+
+    with_chrome(&mut frame, |chrome| {
+        chrome.bar_mut().begin_workspace_rename();
+    });
+    frame.relayout();
+    frame.type_text("Nope");
+    frame.key("Escape");
+    frame.relayout();
+    assert!(!typed(&frame, "Nope"));
+    assert_eq!(
+        overlays.target(),
+        Target::Window,
+        "Escape gives the keyboard back"
+    );
+}
+
 fn with_chrome<R>(frame: &mut FrameHarness, visit: impl FnOnce(&mut DesktopChrome) -> R) -> R {
     let mut chrome = frame.root_mut::<DesktopChrome>();
     visit(&mut chrome)

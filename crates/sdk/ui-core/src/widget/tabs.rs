@@ -248,6 +248,9 @@ pub struct TabDescriptor {
     /// The window is waiting for the person: a refusal, a background open, a dialog they are not
     /// looking at. One dot at the pill's trailing edge, cleared when the tab takes focus.
     pub attention: bool,
+    /// A person named the tab: the title is theirs, so the bar shows it even where its app's slots
+    /// would leave a window's one tab as its icon alone.
+    pub named: bool,
 }
 
 impl TabDescriptor {
@@ -258,6 +261,7 @@ impl TabDescriptor {
             app_kind: None,
             icon: None,
             attention: false,
+            named: false,
         }
     }
 }
@@ -516,6 +520,10 @@ pub struct TabBar {
     rename: Option<rename::TabRename>,
     /// A name committed in place, drained by [`TabBar::take_rename`].
     pending_rename: Option<(u64, String)>,
+    /// The tab a person pressed last and when: a second press on it soon after asks to name it.
+    last_tab_press: Option<(u64, Instant)>,
+    /// A tab a double click asked to name, drained by [`TabBar::take_rename_ask`].
+    rename_ask: Option<u64>,
     /// The words the bar painted in its last drawing, each at the place its ink stands
     /// ([`TabBar::painted_labels`]).
     painted_labels: std::cell::RefCell<Vec<crate::window_toolbar::BarLabel>>,
@@ -689,6 +697,8 @@ impl TabBar {
             motion: EffectiveMotion::default(),
             rename: None,
             pending_rename: None,
+            last_tab_press: None,
+            rename_ask: None,
             painted_labels: std::cell::RefCell::new(Vec::new()),
         }
     }
@@ -961,10 +971,15 @@ impl TabBar {
     }
 
     /// A pill shown as its icon alone: a pinned tab, or the one tab of a
-    /// window whose app put its slots in the title's row.
+    /// window whose app put its slots in the title's row — unless a person
+    /// named it or is naming it, when its name stands beside the icon.
     fn icon_only(&self, id: u64) -> bool {
         self.pinned_ids.contains(&id)
-            || (self.solo() && id == self.active_id && self.active_slots().is_some())
+            || (self.solo()
+                && id == self.active_id
+                && self.active_slots().is_some()
+                && self.renaming() != Some(id)
+                && !self.tabs.iter().any(|tab| tab.id == id && tab.named))
     }
 
     /// Whether the bar stands two rows tall: the tabs, then the active tab's slots. A window going
@@ -1113,13 +1128,6 @@ impl TabBar {
     #[must_use]
     pub fn window_controls(&self) -> &super::window_controls::WindowControls {
         &self.controls
-    }
-
-    /// Whether `p` is on the window's controls pill, padding included: the
-    /// window's own chrome, which no app underneath it receives.
-    #[must_use]
-    pub fn control_pill_hit(&self, p: Point) -> bool {
-        self.controls.on_pill(p)
     }
 
     /// Where the window's History toggle stands this frame: the app's
@@ -6074,6 +6082,7 @@ mod tests {
                     app_kind: Some(AppKind::Terminal),
                     icon: None,
                     attention: false,
+                    named: false,
                 }],
                 1,
             );
@@ -6126,6 +6135,7 @@ mod tests {
                     app_kind: Some(AppKind::Editor),
                     icon: None,
                     attention: false,
+                    named: false,
                 }],
                 1,
             );
