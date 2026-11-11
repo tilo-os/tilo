@@ -500,6 +500,12 @@ impl State {
         }
     }
 
+    /// When the wait for the focused field's caret gives up, while one runs.
+    pub(crate) fn caret_deadline(&self) -> Option<Instant> {
+        let wait = self.text_input.caret_wait?;
+        wait.since.checked_add(CARET_WAIT)
+    }
+
     /// Whether the focused field's caret is committed for the keys it received: a surface a key
     /// opens at the caret waits for it, so it stands under where the person's caret is now, not
     /// where it was before their last redraw.

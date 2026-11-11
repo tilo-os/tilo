@@ -123,7 +123,7 @@ fn the_wait_for_the_blank_serves_what_arrived_before_the_frame() {
     });
     let mut served = 0;
     compositor
-        .await_frame_arrivals(|| served += 1)
+        .await_frame_arrivals(|_| served += 1)
         .expect("the wait");
     assert!(served >= 1, "the wait served what arrived while it waited");
     assert_eq!(

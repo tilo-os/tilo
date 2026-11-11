@@ -1400,7 +1400,7 @@ impl Session {
             intents,
             quick_settings: crate::quick_settings::installed(&options.surfaces),
             panel_asks: Rc::clone(&panel_asks),
-            pending_paste: Cell::new(None),
+            pending_paste: Cell::new(false),
             panel_back: Cell::new(None),
             overlays,
             surfaces: one_surface,
@@ -1849,16 +1849,13 @@ impl Session {
     }
 
     /// Put the clipboard panel up beside the caret once the field it was asked in has committed
-    /// where its last key left the caret, or once the wait for that commit runs out: the panel
-    /// stands under the line the person sees, not one their app drew before.
+    /// where its last key left the caret, or once the compositor stops waiting for that commit:
+    /// the panel stands under the line the person sees, not one their app drew before.
     pub(crate) fn follow_pending_paste(&mut self) {
-        let Some(deadline) = self.shared.pending_paste.get() else {
-            return;
-        };
-        if !self.compositor.caret_settled() && Instant::now() < deadline {
+        if !self.shared.pending_paste.get() || !self.compositor.caret_settled() {
             return;
         }
-        self.shared.pending_paste.set(None);
+        self.shared.pending_paste.set(false);
         // This pass's reading of the caret, which the overlays follow next pass: the panel is
         // placed beside where it stands now, not a pass behind.
         self.shared

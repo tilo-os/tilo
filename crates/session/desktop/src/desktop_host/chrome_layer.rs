@@ -447,9 +447,10 @@ impl DesktopChrome {
     }
 
     /// Say what the chrome's own surfaces are to the stack: which are up and which are gone.
-    /// Reached from everywhere they open, close or take a key, so the stack's answer — which of
-    /// them holds the keyboard, what a press outside one closes — is what the chrome shows.
-    fn publish_overlays(&mut self) {
+    /// Reached from everywhere they open, close or take a key, and by the host once the actions a
+    /// pass ran are carried out, so the stack's answer — which of them holds the keyboard, what a
+    /// press outside one closes — is what the chrome shows in the frame that pass draws.
+    pub fn publish_overlays(&mut self) {
         // Where the chrome's own menus paint themselves, for the stack to judge a press that misses
         // them: a press on the desk reaches the desk, not the chrome over it.
         self.overlays

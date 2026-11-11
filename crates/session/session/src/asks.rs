@@ -26,10 +26,6 @@ use crate::{
 /// How far a popover stands clear of the caret it was opened from, logical pixels.
 const CARET_GAP: f64 = 6.0;
 
-/// How long the clipboard panel waits for the field it was pressed in to commit the caret its
-/// last key moved: a frame or two, and a little more for an app that was busy.
-const CARET_SETTLE_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
-
 /// The tag the ask about the device `digest` names is taken back under.
 fn pairing_tag(digest: [u8; 32]) -> String {
     format!("pairing:{}", hex::encode(digest))
@@ -666,8 +662,7 @@ impl Shared {
         if !self.quick_settings {
             return;
         }
-        self.pending_paste
-            .set(std::time::Instant::now().checked_add(CARET_SETTLE_WAIT));
+        self.pending_paste.set(true);
     }
 
     /// Put the clipboard panel up beside the caret the desk has now, on its paste page.

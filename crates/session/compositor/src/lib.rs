@@ -502,30 +502,25 @@ impl Compositor {
         self.data.backend.next_deadline(&self.data.state)
     }
 
-    /// Answer the clients until it is time to build the frame a display owes:
-    /// what arrives while it waits joins that frame instead of each arrival
-    /// taking a turn of its own.
+    /// Answer the clients until it is time to build the frame a display owes: what arrives while
+    /// it waits joins that frame instead of each arrival taking a turn of its own. `arrived` runs
+    /// after each wait, for what a host serves at once rather than after the frame: input a tool
+    /// hands the desk, which joins the frame as a device's own input does, or an app someone is
+    /// waiting on, whose start then runs beside that frame.
     ///
     /// # Errors
     /// The compositor's clients failed.
-    pub fn await_frame(&mut self) -> Result<(), Error> {
-        self.await_frame_arrivals(|| {})
-    }
-
-    /// [`Self::await_frame`] that also runs `arrived` after each wait: what a host serves at once
-    /// rather than after the frame — an app someone is waiting on starts while the frame the desk
-    /// owes is still ahead, so its own start runs beside that frame.
-    ///
-    /// # Errors
-    /// The compositor's clients failed.
-    pub fn await_frame_arrivals(&mut self, mut arrived: impl FnMut()) -> Result<(), Error> {
+    pub fn await_frame_arrivals(
+        &mut self,
+        mut arrived: impl FnMut(&mut Self),
+    ) -> Result<(), Error> {
         while let Some(due) = self.frame_deadline() {
             let wait = due.saturating_duration_since(std::time::Instant::now());
             if wait.is_zero() {
                 break;
             }
             self.dispatch(wait)?;
-            arrived();
+            arrived(self);
         }
         Ok(())
     }
@@ -536,7 +531,7 @@ impl Compositor {
     /// # Errors
     /// The compositor's clients or its backend failed.
     pub fn draw_frame(&mut self) -> Result<(), Error> {
-        self.await_frame()?;
+        self.await_frame_arrivals(|_| {})?;
         self.render()
     }
 
@@ -1026,6 +1021,13 @@ impl Compositor {
     /// field's last redraw.
     pub fn caret_settled(&mut self) -> bool {
         self.data.state.caret_settled()
+    }
+
+    /// When the wait for the focused field's caret gives up, while one runs: what a surface
+    /// waiting on [`Self::caret_settled`] is woken for.
+    #[must_use]
+    pub fn caret_deadline(&self) -> Option<std::time::Instant> {
+        self.data.state.caret_deadline()
     }
 
     /// Insert `text` into the field the person is typing into, whatever that field asks of its
