@@ -383,6 +383,11 @@ export TILO_APPS_DATA_DIR=$state/apps
 system_store=$state/system
 export TILO_APPS_SYSTEM_DIR=$system_store
 export TILO_RUNTIME_BUNDLE_DIR=$runtimes
+# Verified once here, as installing a runtime does on a device, leaving the
+# record a launch reads: the first app started in this state does not hash the
+# whole runtime on its way to its first frame.
+"$bin/tilo-runtime-bundle" verify --record --require-signature "$runtimes/$runtime_version" >/dev/null \
+    || die "the runtime bundle $runtime_version does not verify"
 export TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE=$trust
 export TILO_LAUNCHER_BIN=$bin/tilo-launcher
 # A development session: a running app whose payload is its module (a
