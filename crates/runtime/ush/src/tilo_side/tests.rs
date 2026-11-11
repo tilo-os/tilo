@@ -1042,10 +1042,10 @@ fn a_run_reaches_the_shell_byte_exact_on_a_busy_machine() {
     for (n, line) in sent.iter().enumerate() {
         p.wait_prompt(n + 1);
         // Terminal's mark when the shell reads them, its typing when not.
-        let typed = if n % 4 != 3 {
-            format!("\x1b]133;R;k={KEY};cmd={};agent=1\x07", b64(line))
-        } else {
+        let typed = if n % 4 == 3 {
             format!("\x15{line}\r")
+        } else {
+            format!("\x1b]133;R;k={KEY};cmd={};agent=1\x07", b64(line))
         };
         p.type_keys(&typed);
     }
