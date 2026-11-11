@@ -133,6 +133,15 @@ that comes while an action runs takes its
 place after that action's own, as typing does. Neither entry carries what
 was about to leave: no request's body, no field's value and no secret.
 
+**A page's file chooser is the person's.** A file input a person clicks opens
+the system's own picker, and the page is answered with exactly what they
+picked there, or told that nothing was chosen. The chooser is no action of
+the window: nothing an agent does answers it or reads what was picked, and a
+window an agent operates opens no picker at all. An agent gives a page files
+by naming them through `fill-page-files`, which checks each. Whose chooser it
+is goes by whose click or key the page heard last: the person's own, or an
+action's.
+
 ## Reading
 
 Acting on a page starts with reading it, and reading is where an agent's time
@@ -151,6 +160,15 @@ and tokens go. Three rules keep it honest and cheap.
 A search reads what the outline reads. What the outline hides, such as the
 value of a secret, a search does not find.
 
+A read follows the tree a person sees. A component is read as what it shows:
+its own tree where it has one, what the page handed it where the component
+shows that, and an element with no box of its own is read through to what it
+holds. Only what is not laid out stays out. Finding, searching and the review
+read the same tree, and an element inside a component is acted on like any
+other. A component that keeps its tree closed cannot be read; it is listed in
+a line that says so, never left out silently. Code is read as code, with its
+lines kept.
+
 A frame is its own document, of the page's site or of another. The page's
 read shows what the frames it shows hold, under the line that lists each,
 and a frame is read whole by its number. A frame keeps its number while
@@ -160,7 +178,8 @@ is read and answered like any other. The frame's document is read in the
 frame's own process; nothing reaches into it from the page around it.
 
 The reader view reads an article by the text its blocks hold, so an essay
-set in a table or run on in one block is an article too.
+set in a table or run on in one block is an article too. It copies what a
+component shows, so a code example in a documentation page reads as its code.
 
 ## Review
 
