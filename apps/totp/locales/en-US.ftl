@@ -13,7 +13,7 @@ totp-add-scan-title = Scan a QR image
 totp-add-scan-description = Read the code from a screenshot or photo
 totp-scan-unreadable = Couldn’t read a code from that image
 totp-add-link-title = Paste a setup link
-totp-add-link-description = Fill everything from an otpauth link
+totp-add-link-description = Fills in the service, account and key
 totp-add-link-label = Setup link
 
 ## Manual fields

@@ -38,10 +38,7 @@ impl Code {
 
 fn code_view(payload: &str) -> Element {
     if payload.is_empty() {
-        return Box::new(
-            EmptyState::new(crate::locales::CATALOG.t("qr-empty-title"))
-                .with_message(crate::locales::CATALOG.t("qr-empty-message")),
-        );
+        return Box::new(EmptyState::new(crate::locales::CATALOG.t("qr-empty-title")));
     }
     let alt = crate::locales::CATALOG.t_args("qr-output-alt", &[("payload", payload.into())]);
     Box::new(

@@ -1,7 +1,7 @@
 video-formats-title = Play more video and audio formats
 video-missing-decoder-title = Can’t play this video yet
 video-missing-decoder-message = It uses { $codec }.
-video-formats-unavailable = This video has not reported a missing decoder.
+video-formats-unavailable = No video is missing a format.
 
 ## History: what each change to the shared library did
 

@@ -332,7 +332,7 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
     let uri = uri.trim();
     let rest = uri
         .strip_prefix("otpauth://")
-        .ok_or_else(|| "not an otpauth:// URI".to_string())?;
+        .ok_or_else(|| "This is not a setup link".to_string())?;
 
     // type / label-and-query
     let (otp_type, after_type) = match rest.split_once('/') {
@@ -340,10 +340,13 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
         None => (rest.to_ascii_lowercase(), ""),
     };
     if otp_type == "hotp" {
-        return Err("counter-based hotp:// is not supported — TOTP only".to_string());
+        return Err(
+            "Tilo only makes time-based codes, and this link is for a counter-based one"
+                .to_string(),
+        );
     }
     if otp_type != "totp" {
-        return Err(format!("unsupported otpauth type '{otp_type}'"));
+        return Err("This link is for a kind of code Tilo does not make".to_string());
     }
 
     let (label_raw, query_raw) = match after_type.split_once('?') {
@@ -380,7 +383,7 @@ pub fn parse_otpauth_uri(uri: &str, new_id: AccountId) -> Result<Account, String
     }
 
     if secret.is_empty() {
-        return Err("otpauth URI is missing the required 'secret' param".to_string());
+        return Err("This setup link has no key in it".to_string());
     }
 
     // Split "Issuer:account" label. The issuer query param wins when set.

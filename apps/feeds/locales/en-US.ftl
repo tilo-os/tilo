@@ -1,4 +1,4 @@
-feeds-open-link-invalid = This article link cannot be opened. Only web, Gemini and email links are supported.
+feeds-open-link-invalid = Tilo can’t open this link. It opens web, Gemini and email links.
 feeds-open-link-started = Opening link in the default app…
 feeds-open-link-failed = Could not open the link
 
