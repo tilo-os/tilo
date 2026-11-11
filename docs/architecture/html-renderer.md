@@ -108,6 +108,21 @@ transparent, as the input surface. Nothing changes for a mount without
    gradient filling a box becomes the CSS gradient that paints the same
    pixels, laid out against the box. A gradient on a path, a stroke or text
    still shows its first stop.
+8. **Text as flows.** The runs a widget draws one after another, each
+   further along its line or on a line below, are one element: a block per
+   line, as tall as the step to the next, holding its runs side by side.
+   Each run stands where the toolkit set it: a line's first run is indented
+   to its x, and a run followed on its line is exactly as wide as the step
+   to the next run, so the browser's own advances never move what follows.
+   Line breaks stay the toolkit's. A selection or find-in-page then reads a
+   paragraph as one text, with a line break between its lines.
+9. **Native selection holds.** A frame moves the fewest elements it can
+   (the longest run already in order stays), and never the one holding the
+   page's selection; moving a node takes the selection out of what it
+   holds. Root widgets are numbered per scene and per type, so a widget
+   drawn at the root of another scene (a measuring pass) no longer
+   renumbers the frame's own: on a press that blurred the editor, every
+   root key changed and the note's panel was rebuilt under the selection.
 
 Everything that only an HTML mount runs is reached through `DOM_CODE`
 (`ui::lazy_code!`): drawing the frame, the toolkit's keying code (the
@@ -199,6 +214,19 @@ Against the targets:
   Pixel parity is unchanged (1.2 % at 1280 px, 4.5 % at 390 px). A tap
   opens the note as on the canvas: an earlier difference at 390 px was a
   passing "Saved" notice caught in one screenshot and not the other.
+- **With paragraphs as flows** (one run with the canvas and plain DOM, one
+  of HTML alone, today's builder): a drag over the note after typing
+  selects from where it was pressed to where it was let go, across lines
+  and paragraphs ("Paragraph 25: … keep every thought close at hand, and
+  the page keeps scrolling. / Paragraph 26: the quick brown fox …"); before,
+  it came back empty. Typing p50 / p90 17.0 – 30.3 / 24.6 – 51.3 ms at 1280
+  px and 14.9 / 25.6 ms at 390 px; wheel p50 21.0 – 22.0 ms (plain DOM 16.4
+  in the same run). 524 semantic elements live inside their widget's
+  painted element, 6 in the mirror's layer. Pixel parity is unchanged at
+  1280 px (1.2 %); at 390 px 5.8 %, from the passing "Saved" notice caught
+  in the HTML screenshot and not the canvas one. The median keystroke
+  still writes 2 properties and creates nothing; the largest frame of the
+  run wrote 1,510 and created 287.
 - **Size with `dom` off:** keying every widget leaves the desktop bundle's
   start module (as the `sdk-web-size` check builds it,
   `tools/web/html-renderer/size.sh`) at 20,295,058 bytes against 20,281,659
@@ -221,13 +249,11 @@ Against the targets:
   `draw_child_at`) shifts the keys of the children after it, which is
   correct but rewrites more; and calls inside a macro's expansion are not
   always linted, so the decorator's forwarding draw is allowed by name.
-- **Native selection after typing.** The host and the semantic mirror no
-  longer take the focus back while the person selects (it used to empty
-  the selection 30 ms into the drag), but a drag over the painted text in
-  `selectText` mode still leaves the selection collapsed at the press: the
-  selection does not follow the pointer across the absolutely placed
-  spans. Paragraph grouping (below) gives the browser one text flow per
-  block to select in, and is the next thing to try.
+- **Native selection after typing: done.** Two things emptied it. The
+  reconciler moved an element whose place among its siblings changed, and
+  a move takes the selection out of what it holds; and every root key
+  changed on the press that blurred the editor, so the note's panel was
+  rebuilt under the selection. Both are fixed (above, 9).
 - **Canvas islands.** Images and box gradients are done (above). A
   widget that declares itself a picture, or a subtree with too many ops,
   should still become one `<canvas>` rasterized by `tilo-cpu-raster` (or
@@ -238,9 +264,10 @@ Against the targets:
   can become the visible field at the widget's rect. It needs an autofill
   purpose on text-input semantics and the field's text left out of the
   scene.
-- **Paragraph grouping.** Lines are still one element each. The keys now
-  give each block one element, so its lines can become one text element
-  with forced breaks.
+- **Paragraph grouping: done** (above, 8). Runs are grouped by how they
+  follow one another inside one widget, not by what the toolkit knows of
+  paragraphs: two labels a widget draws one under the other are one flow.
+  Nothing marks a paragraph in the scene yet.
 - **Other apps.** Notes is the only app measured. Each app gets keys where
   it draws its children through `draw_child_at`; the parity harness in
   `tools/web/html-renderer` should run over every app's scenarios.
@@ -254,8 +281,8 @@ tools/web/html-renderer/size.sh
 ```
 
 The bundle lands in `$CARGO_TARGET_DIR/htmlrenderer/bundle`; open
-`notes.html?render=dom` or `?render=gpu` (`&theme=light|dark` sets the
-person's setting). Results, screenshots and the HTML-against-WebGPU diff
+`app.html?render=dom` or `?render=gpu` (`&app=` names another app of the
+bundle, `&theme=light|dark` sets the person's setting). Results, screenshots and the HTML-against-WebGPU diff
 images land in `$CARGO_TARGET_DIR/htmlrenderer/measure`; they are not in
 the repository, which takes no binary files.
 

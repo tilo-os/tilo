@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Notes as HTML</title>
+<title>An app as HTML</title>
 <style>
   html,body{margin:0;height:100%;background:#fff}
   @media (prefers-color-scheme:dark){html,body{background:#111}}
@@ -13,14 +13,14 @@
 <body>
 <main id="app"></main>
 <script type="module">
-// The Notes app mounted alone, shown as HTML (`?render=dom`, the default) or
-// on the WebGPU canvas (`?render=gpu`), for comparing the two.
+// One app of the bundle (`?app=`) mounted alone, shown as HTML (`?render=dom`,
+// the default) or on the WebGPU canvas (`?render=gpu`), for comparing the two.
 const params = new URLSearchParams(location.search);
 const dom = params.get('render') !== 'gpu';
 const marks = window.renderMarks = {navigationStart: 0, presented: []};
 const {mountDesktop} = await import('./host.mjs');
 window.mount = await mountDesktop(document.getElementById('app'), {
-  app: 'so.tilo.notes',
+  app: params.get('app') ?? 'so.tilo.notes',
   profile: params.get('profile') ?? 'html-renderer',
   device: 'browser',
   dom,

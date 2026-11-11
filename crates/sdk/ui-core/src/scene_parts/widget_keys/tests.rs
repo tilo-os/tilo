@@ -143,3 +143,47 @@ fn a_container_that_draws_its_children_itself_keys_each_of_them() {
         "the grid, three cards and their buttons: {drawn:?}"
     );
 }
+
+/// A frame's root widgets keep their keys when something else is drawn at
+/// the root of another scene first in the same frame (a measuring pass, a
+/// drag's picture): an element replaced by key would take the page's
+/// selection of its text with it.
+#[test]
+fn a_root_drawn_into_another_scene_renumbers_no_root_of_the_frame() {
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::widget::{Button, DrawChild as _, Element};
+
+    let theme = Theme::default();
+    let mut text = TextRenderer::new();
+    let mut panel: Element = Box::new(Button::new("panel", "Panel"));
+    let mut aside: Element = Box::new(Button::new("aside", "Aside"));
+    let mut scratch = Scene::new();
+    let mut draw = |extra: bool| {
+        begin_frame();
+        if extra {
+            aside.draw_child(
+                &mut scratch,
+                Affine::IDENTITY,
+                &mut text,
+                &theme,
+                &PresenceCtx::default(),
+            );
+        }
+        let mut scene = Scene::new();
+        panel.draw_child(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme,
+            &PresenceCtx::default(),
+        );
+        begins(&scene)
+    };
+    key_widgets(Some(keyer()));
+    let alone = draw(false);
+    let after_another = draw(true);
+    key_widgets(None);
+    assert_eq!(alone, after_another);
+}
