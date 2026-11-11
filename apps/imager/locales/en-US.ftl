@@ -111,7 +111,6 @@ imager-setup-error-download-release-unavailable = The verified download is not a
 imager-setup-resource-root = Guided Tilo setup
 imager-setup-badge-review = Review
 
-
 # Folder import semantic resource and action labels.
 imager-import-resource-root = Folder imports
 imager-import-resource-operation = Folder import
@@ -340,7 +339,6 @@ imager-journey-navigation-pending = Asking the session to open your choice…
 imager-journey-navigation-opened = Your choice opened.
 imager-journey-navigation-lost = The session did not return an opening result. Try again.
 
-
 ## History: what changed in the imager's document
 imager-select-source = Chose the image to write
 imager-clear-source = Cleared the image to write
@@ -425,7 +423,6 @@ installer-preview-target-architecture-unsupported-processor-size = Tilo needs a 
 installer-preview-target-architecture-unsupported-byte-order = Tilo stores and shares its documents in a little-endian format, so it cannot run on this big-endian computer. Choose a little-endian computer.
 
 installer-preview-target-architecture-unsupported-graphics = No graphics driver for Vulkan compute exists for this computer’s processor, so it cannot draw the desktop. Choose a computer with a graphics card that supports Vulkan compute.
-
 
 installer-preview-target-busy = Finish choosing a report before choosing another.
 
@@ -545,11 +542,9 @@ installer-hardware-component-input = Keyboard and pointing devices
 
 installer-hardware-reason-driver-bound-one = { $device } uses { $driver } in the running system.
 
-
 installer-hardware-reason-driver-bound-many = { $count } devices use a driver in the running system.
 
 installer-hardware-reason-hybrid-graphics = { $device } uses { $driver }; more than one graphics adapter is present.
-
 
 installer-hardware-reason-driver-missing = { $count } devices have no driver bound in the running system.
 
@@ -695,7 +690,6 @@ installer-preview-profile-intro = People you collaborate with will see this name
 
 installer-preview-name-label = Your name
 
-
 installer-preview-password-heading = Protect your setup
 
 installer-preview-password-intro = Protects your identity and saved sign-ins during installation. This is separate from your computer’s login password.
@@ -733,8 +727,6 @@ installer-preview-device-default = My computer
 
 installer-preview-existing-avatar = Your existing Tilo identity
 
-
-
 installer-preview-belongings-heading = Your data
 
 installer-preview-belongings-intro = Choose what comes over. Your originals stay unchanged.
@@ -747,8 +739,6 @@ installer-your-data-selected-count = { $selected } of { $total } selected
 
 installer-your-data-files = Files and storage
 
-
-
 installer-your-data-apps = Apps
 
 installer-your-data-no-apps = No installed apps were found
@@ -759,7 +749,6 @@ installer-your-data-app-with-home = Comes with your home folder
 
 installer-your-data-app-here = Already in Tilo
 
-
 installer-your-data-browser-note = Saved bookmarks and history from every browser profile. Website sign-ins are listed under each profile. Saved passwords stay in the old browser, so you sign in again in Tilo.
 
 installer-your-data-browser-profiles = { $count } browser profiles
@@ -767,9 +756,6 @@ installer-your-data-browser-profiles = { $count } browser profiles
 installer-your-data-bookmarks = Bookmarks
 
 installer-your-data-history = History
-
-
-
 
 installer-your-data-browser-saved-signins = Saved sign-ins
 
@@ -788,7 +774,6 @@ installer-your-data-signin-saved = Saved sign-in
 installer-your-data-signin-origin = Saved Discord sign-in
 
 installer-your-data-signin-needs-access = Needs signing in again
-
 
 installer-your-data-accounts-note = Your saved accounts and the services they turn on. You may need to sign in again in Tilo.
 
@@ -815,25 +800,13 @@ installer-your-data-service-contacts = Contacts
 
 installer-your-data-account-sign-in = Sign in again in Tilo after setup.
 
-
-
 installer-your-data-account-tilo = Saved in Tilo
 
 installer-your-data-provider-tilo = Saved in Tilo
 
-
-
-
 installer-your-data-provider-nextcloud = Nextcloud
 
-
-
-
-
-
-
 installer-your-data-mail = Thunderbird
-
 
 installer-your-data-steam = Steam
 
@@ -971,7 +944,6 @@ installer-preview-storage-intro = Keep your current system and install Tilo alon
 
 installer-preview-storage-another = Choose a USB drive next. Its contents will be erased when you confirm the write.
 
-
 installer-preview-review-heading = Review your setup
 
 installer-preview-review-intro = Select an item to change it.
@@ -1012,7 +984,6 @@ installer-preview-password-invalid = Choose a different password.
 
 installer-preview-password-mismatch = The passwords don't match.
 
-
 installer-preview-deferred-handoff = Your identity, sign-ins and files finish on the destination after its first-boot login password is set.
 installer-source-handoff-waiting = Keep this computer on. It will send your data to the other computer after you approve that computer here.
 installer-source-handoff-requested = { $name } asks for your data. Compare the code { $code } shown on that computer, then approve it.
@@ -1028,8 +999,6 @@ installer-source-handoff-unavailable = This transfer is no longer available. Pre
 installer-preview-deferred-handoff-unavailable = The other computer cannot be reached to keep this transfer available. Check the network and prepare the drive again.
 installer-preview-tpm-handoff-unavailable = The signed target boot policy could not be checked, so identity and sign-ins must be finished on the destination after its first login.
 installer-source-handoff-approve = Approve this computer
-
-
 
 installer-preview-identity-busy = Wait for preparation to finish.
 
@@ -1125,10 +1094,6 @@ installer-preview-storage-unavailable = Direct installation is not available. Us
 
 installer-preview-storage-range-error = Choose a size within the available range.
 
-
-
-
-
 installer-preview-prepare-usb = Make a USB installer
 
 installer-preview-save = Save changes
@@ -1136,7 +1101,6 @@ installer-preview-save = Save changes
 installer-preview-cancel = Cancel
 
 installer-preview-folders-checking = Looking for your folders…
-
 
 installer-preview-import-unavailable = Not available in this build.
 
@@ -1157,7 +1121,6 @@ installer-preview-account-importable = Saved connection can be brought over.
 installer-preview-account-tilo = Saved Tilo connection
 
 installer-preview-account-reconnect = Sign in again to connect this service in Tilo.
-
 
 installer-preview-belongings-check-failed = Could not finish checking your data. Try again.
 
@@ -1185,7 +1148,6 @@ installer-accounts-source-identity = { $account } ({ $identity })
 
 installer-accounts-intro = Connect the services you want in Tilo. This is optional; you can connect them after setup in Settings, under External accounts.
 
-
 installer-accounts-google-drive = Google Drive
 
 installer-accounts-onedrive = OneDrive
@@ -1201,7 +1163,6 @@ installer-accounts-saved = Saved connection
 installer-accounts-left-out = Left out
 
 installer-accounts-sign-in = Sign in to connect
-
 
 installer-accounts-import-heading = Bring this connection with you
 
@@ -1222,7 +1183,6 @@ installer-accounts-import = Bring connection
 installer-accounts-connect = Connect
 
 installer-accounts-importing-heading = Bringing your connection over
-
 
 installer-accounts-waiting-heading = Finish signing in
 
@@ -1269,7 +1229,6 @@ installer-accounts-invalid-action = Choose an account to continue.
 installer-accounts-profile-only = This app's profile comes with your other data. Connect it after starting Tilo.
 
 installer-accounts-busy = Finish or cancel this sign-in first.
-
 
 installer-accounts-continue = Continue
 
@@ -1351,7 +1310,6 @@ installer-existing-password-required = Enter the passphrase for this backup.
 
 installer-existing-file-required = Choose your identity backup first.
 
-
 installer-existing-busy = Your identity is being restored.
 
 installer-existing-restoring = Restoring your identity…
@@ -1359,7 +1317,6 @@ installer-existing-restoring = Restoring your identity…
 installer-existing-connected = Your Tilo identity is ready for this computer.
 
 installer-existing-failed = We couldn’t restore this backup. Check its passphrase or choose another backup.
-
 
 installer-media-prepare-failed = Your setup couldn’t be prepared for the USB installer. Your identity and connected accounts are still saved here. Try again.
 
@@ -1466,7 +1423,6 @@ installer-mounted-home-location-unavailable = This location cannot be transferre
 
 installer-portable-applications-review-failed = Your selected apps and their data could not be checked. Check your data again before continuing.
 
-
 installer-preview-belongings-shared-intro = Choose what to use in Tilo. Your files stay where they are.
 
 installer-preview-files-shared-title = Your files
@@ -1481,7 +1437,6 @@ installer-preview-account-profile-only = App or browser profile found. This inst
 
 imager-setup-internal-error-prepared-setup = Your prepared identity and accounts could not be read. Return to setup and try again.
 
-
 installer-preview-storage-app-estimate = Estimated space for your apps and their data: { $size }. Includes room for installation and updates.
 
 installer-preview-prepare-direct = Review installation
@@ -1489,7 +1444,6 @@ installer-preview-prepare-direct = Review installation
 installer-preview-install-profile-invalid = Your installation preferences need to be corrected before continuing.
 
 installer-preview-direct-review-unavailable = Installation could not be prepared for this computer. Your setup has been kept; you can try again or make a USB installer.
-
 
 installer-preview-device-invalid = Choose a shorter device name using a single line.
 
@@ -1503,7 +1457,6 @@ installer-accounts-code-submit = Connect Dropbox
 
 installer-accounts-code-invalid = Paste the code from Dropbox before continuing.
 
-
 installer-accounts-tilo-import-intro = Bring this saved Tilo connection into your new setup. If it cannot be unlocked here, you can connect the service again.
 
 installer-accounts-tilo-reconnect = This saved connection could not be unlocked. Choose a service to connect again; your original connection stays unchanged.
@@ -1515,7 +1468,6 @@ installer-accounts-already-included = This connection is already included in you
 installer-pairing-body = Open Tilo on your other device to approve this computer.
 
 installer-pairing-start = Connect to my Tilo device
-
 
 installer-pairing-cancel = Cancel pairing
 
@@ -1578,7 +1530,6 @@ installer-accounts-checkpoint-unlock-failed = Couldn’t unlock your saved conne
 
 installer-accounts-provider-heading = Which account would you like to connect?
 
-
 installer-accounts-spotify-done-heading = Your Spotify library is connected
 
 installer-accounts-spotify-done-intro = Your saved music is ready for Tilo.
@@ -1595,8 +1546,6 @@ installer-preview-profiles-body = Profile files stay with your other files. Conn
 
 installer-preview-storage-show-details = Disk details
 
-
-
 installer-accounts-spotify-library = Spotify library
 
 installer-accounts-spotify-playback = Spotify playback
@@ -1611,7 +1560,6 @@ installer-accounts-spotify-playback-done-intro = You can play Spotify music afte
 
 installer-accounts-spotify-purpose-heading = What would you like to connect?
 
-
 installer-accounts-spotify-library-choice = Your saved music
 
 installer-accounts-spotify-library-choice-intro = Find your Spotify library in Tilo.
@@ -1619,8 +1567,6 @@ installer-accounts-spotify-library-choice-intro = Find your Spotify library in T
 installer-accounts-spotify-playback-choice = Listen to music
 
 installer-accounts-spotify-playback-choice-intro = Play Spotify music in Tilo. Requires Spotify Premium.
-
-
 
 installer-browser-title = Your browsing
 
@@ -1641,7 +1587,6 @@ installer-desktop-password-intro = Choose a password to protect your prepared Ti
 installer-desktop-keep-existing = Your files, applications and Linux account stay unchanged. Your current desktop remains the default session.
 installer-desktop-unavailable = Tilo Desktop setup is unavailable on this computer.
 
-
 installer-desktop-delivering = Preparing your first Tilo session…
 
 installer-desktop-delivery-failed = Your Tilo session could not be prepared. Try again before signing in to Tilo.
@@ -1651,8 +1596,6 @@ installer-desktop-ready = Tilo Desktop is ready. Sign out when you’re ready, t
 installer-desktop-retry = Try again
 
 installer-desktop-resource = Tilo Desktop installation
-
-
 
 installer-accounts-nextcloud-source-reconnect = Your saved Nextcloud sign-in could not be accessed. Connect this account again to bring it into Tilo.
 
@@ -1845,7 +1788,6 @@ installer-service-sessions-accounts-excluded = Website data is not included beca
 
 installer-review-setup = Your setup
 
-
 installer-review-person-body = Your Tilo identity
 
 installer-review-device-body = This device in Tilo
@@ -1854,14 +1796,11 @@ installer-review-device-enrolled = Approved on your existing Tilo device
 
 installer-review-belongings-heading = Your data
 
-
-
 installer-original-grant-required = Review the files you want to bring from this computer first.
 
 installer-original-permission-progress = Preparing access to your original files
 
 installer-original-prepare-failed = Your files could not be prepared. Nothing was written to the installation drive. Review your choices and try again.
-
 
 installer-original-preparing = Preparing…
 
@@ -1937,7 +1876,6 @@ installer-mounted-home-picker-title = Allow access to the file or folder shown i
 
 installer-mounted-home-grant = Allow access
 
-
 installer-mounted-home-needs-grant = Needs permission
 
 installer-mounted-home-grants-required = Allow access to every listed item before continuing.
@@ -1958,11 +1896,9 @@ installer-flatpak-apps-heading = Your apps
 
 installer-flatpak-app-with-home = Included with your home folder
 
-
 installer-flatpak-apps-existing-heading = Your installed apps
 
 installer-flatpak-app-existing = Already on this computer
-
 
 installer-guided-host-unavailable = Prepare Tilo from a Linux computer. Installation setup isn’t available on this computer yet.
 
@@ -2033,7 +1969,6 @@ installer-hardware-evidence-architecture = architecture { $architecture }
 installer-hardware-evidence-virtualization = virtualization { $names }
 installer-hardware-evidence-board = board { $board }
 installer-hardware-evidence-devicetree = device tree { $devicetree }
-
 
 ## The destination side: the installer on the live medium.
 installer-welcome-title = Welcome to Tilo
@@ -2115,7 +2050,6 @@ installer-online-adopted = Sign-ins completed here are passed securely to your i
 installer-online-loading = Connected means access is allowed. Files and calendars still load when you open them.
 installer-online-suggestions-note = Review a suggestion to prefill editable details below. Choose services and sign in here to connect them; no Windows sign-in tokens are imported.
 installer-online-skip-note = You can finish setup offline. Continuing cancels any unfinished sign-in and keeps accounts already connected here. Without connecting a service, its online files, mail and calendars will not be available through Tilo. You can connect it after installation.
-
 
 # The compatibility report on Review: the probe's own words, one message per
 # component class, reason, evidence and next step. Tilo Imager shows the same
