@@ -45,9 +45,7 @@ pub(crate) struct SeededWords;
 #[cfg(target_os = "linux")]
 fn share(catalogues: &[(String, String)]) {
     ensure();
-    for (locale, text) in catalogues {
-        ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
-    }
+    tilo_ui_host::i18n::add_shared_catalogues(catalogues);
 }
 
 #[cfg(target_os = "linux")]
@@ -62,12 +60,7 @@ impl tilolang_tilo::runtime::Words for SeededWords {
 
     fn word(&self, key: &str, args: &[(String, String)], source: &str) -> String {
         ensure();
-        let args: Vec<(&str, ui::i18n::ArgValue)> = args
-            .iter()
-            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
-            .collect();
-        let said = ui::i18n::I18nManager::format(key, &args);
-        if said == key { source.to_owned() } else { said }
+        tilo_ui_host::i18n::word(key, args, source)
     }
 
     fn revision(&self) -> u64 {

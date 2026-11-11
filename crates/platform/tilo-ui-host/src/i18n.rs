@@ -45,12 +45,7 @@ pub fn ensure() {
 /// speaks ([`ui::i18n::speak_window_language`] chooses among them, once). A package the window
 /// uses takes [`add_shared_catalogues`].
 pub fn add_catalogues(catalogues: &[(String, String)]) {
-    // Before the host has read a word of its own there is no manager to take them, and they
-    // would be dropped: a package's words are read before the first widget draws.
-    ensure();
-    for (locale, text) in catalogues {
-        ui::i18n::I18nManager::add_resource(locale, text.clone());
-    }
+    add(catalogues, ui::i18n::I18nManager::add_resource);
 }
 
 /// The catalogues of a package the window uses (a view of another app it calls): its words are
@@ -58,9 +53,17 @@ pub fn add_catalogues(catalogues: &[(String, String)]) {
 /// English app's window German. A word of it the window's language lacks reads in the package's
 /// source language, never in another of its translations.
 pub fn add_shared_catalogues(catalogues: &[(String, String)]) {
+    add(catalogues, ui::i18n::I18nManager::add_shared_resource);
+}
+
+/// `catalogues` added as the words of one window ([`add_catalogues`]) or of packages it uses
+/// ([`add_shared_catalogues`]).
+fn add(catalogues: &[(String, String)], as_role: fn(&str, String)) {
+    // Before the host has read a word of its own there is no manager to take them, and they
+    // would be dropped: a package's words are read before the first widget draws.
     ensure();
     for (locale, text) in catalogues {
-        ui::i18n::I18nManager::add_shared_resource(locale, text.clone());
+        as_role(locale, text.clone());
     }
 }
 

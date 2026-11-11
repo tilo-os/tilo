@@ -220,15 +220,13 @@ impl CatalogText {
     }
 }
 
-/// What a catalogue's words say about the window that holds them.
+/// What a catalogue's words say about the window that holds them
+/// ([`I18nManager::speaking_locale`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Role {
-    /// The window's own words: they are written in a language, and a language
-    /// they are written in is one the window speaks ([`I18nManager::speaking_locale`]).
+    /// The window's own words: a language they are written in is one the window speaks.
     Window,
-    /// Words shared with every window (the toolkit's widget labels, the
-    /// Settings index): they ride along in the language the window selected
-    /// and never make it one the window speaks.
+    /// Words every window shows: they ride along in its language and never choose it.
     Shared,
 }
 
@@ -621,11 +619,8 @@ impl Resolution<'_, '_> {
 }
 
 /// The toolkit's own widget labels, in every language it ships, part of
-/// every manager from its start ([`I18nManager::replace`]).
-///
-/// Every window shows them, so they ride along in its language instead of
-/// deciding it: a toolkit word in German inside an English window would be
-/// the toolkit speaking, not the window.
+/// every manager from its start ([`I18nManager::replace`]). Every window shows
+/// them, so they ride along in its language instead of deciding it.
 static WIDGET_CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",
     &[
@@ -670,7 +665,7 @@ impl I18nManager {
     /// Register shared widget labels in every bundled language without
     /// replacing an application's catalogs or its selected language. A host
     /// (the shell, an app) calls this once per thread so every toolkit widget
-    /// it draws follows the desktop's language; calling it again is free.
+    /// it draws follows the window's language; calling it again is free.
     pub fn register_widget_messages() {
         WIDGET_CATALOG.ensure();
     }
@@ -720,7 +715,14 @@ impl I18nManager {
         // the nouns search names it by.
         tilo_resource::label::install(resource_label);
         tilo_resource::label::install_noun(resource_noun);
-        tilo_resource::label::install_noun(resource_noun);
+    }
+
+    /// Whether the thread holds words of a window — a package's, or chrome a host draws around
+    /// it — rather than only the toolkit's own labels, which say nothing about its language.
+    fn has_window_words(&self) -> bool {
+        self.catalogs
+            .iter()
+            .any(|(_, texts)| texts.iter().any(|text| !text.is_widget_label()))
     }
 
     /// Whether this window speaks `locale`'s language: a catalogue of its own
@@ -1111,11 +1113,16 @@ impl I18nManager {
     /// an English app's window German. Without this rule a German machine
     /// reads every toolkit word in German inside an otherwise English window,
     /// whenever the window's own German is not installed (an app that ships
-    /// English only, a device whose language pack is missing). A window that
-    /// has no catalogue of its own — a sheet of frames, a system menu — speaks
-    /// the language selected for it: nothing it says is another language.
+    /// English only, a device whose language pack is missing).
+    ///
+    /// A process with no package to speak for it — a sheet of frames, a system
+    /// menu — reads the toolkit's labels in the language selected for it,
+    /// which is the person's; once it holds words a window is written in, they
+    /// read in their source language ([`Self::has_window_words`]).
     fn speaking_locale(&self) -> &LanguageIdentifier {
-        if self.spoken.is_empty() {
+        // No package speaks for this window: the toolkit's labels, written in every language it
+        // ships, read in the language selected for the process.
+        if self.spoken.is_empty() && !self.has_window_words() {
             return &self.current_locale;
         }
         if self.speaks(&self.current_locale) {
@@ -1436,11 +1443,9 @@ impl EmbeddedCatalog {
         }
     }
 
-    /// The words ride along in the window's language instead of deciding it:
-    /// a catalogue every window shows (the toolkit's widget labels, the
-    /// Settings index) is written in languages the window itself may not
-    /// speak, and must not make it speak them. See
-    /// [`I18nManager::speaking_locale`].
+    /// The words ride along in the window's language instead of deciding it: a catalogue every
+    /// window shows (the toolkit's widget labels, the Settings index) is written in languages
+    /// the window itself may not speak ([`I18nManager::speaking_locale`]).
     #[must_use]
     pub const fn as_shared(mut self) -> Self {
         self.shared = true;
@@ -1510,13 +1515,6 @@ impl EmbeddedCatalog {
             .iter()
             .find(|(locale, _)| *locale == self.source_locale)
             .map(|(_, source)| *source)
-    }
-
-    /// The embedded Fluent sources, by tag; [`Self::every_source`] adds the
-    /// languages of the installed language packs.
-    #[must_use]
-    pub const fn sources(&self) -> &'static [(&'static str, &'static str)] {
-        self.catalogs
     }
 
     /// A thread with no manager gets one selecting the interface language
@@ -1831,7 +1829,8 @@ mod tests {
 
     /// A window with no catalogue of its own — a system menu, a sheet of frames — has no
     /// language of its own to hold: the toolkit's labels read in the language selected for it,
-    /// which is the person's.
+    /// which is the person's. Once the thread holds words a window is written in (a host's
+    /// chrome), they read in their source language, whatever the desktop speaks.
     #[test]
     fn a_window_with_no_catalogue_speaks_its_selected_language() {
         let _restore = RestoreLookupState::capture();
@@ -1846,6 +1845,8 @@ mod tests {
             I18nManager::lookup_plain("date-field-add"),
             "Datum hinzufügen"
         );
+        I18nManager::add_shared_resource("de-DE", "host-sort = Sortieren".to_owned());
+        assert_eq!(I18nManager::lookup_plain("date-field-add"), "Add date");
     }
 
     /// A word a window shows from a catalogue in another language is recorded, so a check can

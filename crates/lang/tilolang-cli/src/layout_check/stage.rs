@@ -62,16 +62,10 @@ impl Platform for Packages {
     }
 
     fn phrase(&self, id: &str, args: &[(String, String)]) -> String {
+        // A number stays a number, so a plural rule selects by it.
         let args: Vec<(&str, ui::i18n::ArgValue)> = args
             .iter()
-            .map(|(name, value)| {
-                // A number stays a number, so a plural rule selects by it.
-                let value: ui::i18n::ArgValue = match value.parse::<f64>() {
-                    Ok(number) => number.into(),
-                    Err(_) => value.as_str().into(),
-                };
-                (name.as_str(), value)
-            })
+            .map(|(name, value)| (name.as_str(), tilo_ui_host::i18n::value_of(value)))
             .collect();
         tilo_ui_host::i18n::t_args(id, &args)
     }
