@@ -353,7 +353,7 @@ entryJson = JSON.stringify({
 // The page, as a test drives it: its semantics (what a person can see and
 // press), typed keys, and shots of the whole viewport.
 
-const WALK = `(() => {
+const WALK_FN = `() => {
   const out = [];
   const rect = b => (Array.isArray(b) ? {x0: b[0], y0: b[1], x1: b[2], y1: b[3]}
     : b ? {x0: b.x0 ?? b.x ?? 0, y0: b.y0 ?? b.y ?? 0, x1: b.x1 ?? (b.x ?? 0) + (b.width ?? 0), y1: b.y1 ?? (b.y ?? 0) + (b.height ?? 0)} : null);
@@ -362,7 +362,8 @@ const WALK = `(() => {
   const root = globalThis.tiloMount?.state()?.semantics?.root;
   if (root) walk(root);
   return out;
-})()`;
+}`;
+const WALK = `(${WALK_FN})()`;
 
 async function semantics(tab) {
   await tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
@@ -386,6 +387,31 @@ const agentCursor = nodes => nodes.find(node => node.role === 'Image'
   // The mark the text draws at the caret stands where it is drawn; a node with no bounds is
   // the agent at work with nothing drawn in text, which is not the cursor on what it writes.
   && node.rect && node.rect.x1 - node.rect.x0 > 0 && node.rect.y1 - node.rect.y0 > 0);
+/** Watch, from inside the page, for the agent's cursor in any frame the page draws: the mark
+ * stands for the second and a half a write stays lit, and a page on a loaded machine draws a frame
+ * every few seconds, so a read over the protocol (each one a request and a wait for the next
+ * frame's semantics) can fall between the frames that drew it. The page keeps the first frame's
+ * semantics that held the cursor until the run reads them. */
+const watchAgentCursor = tab => tab.evaluate(`(() => {
+  clearInterval(globalThis.__agentCursorWatch);
+  globalThis.__agentCursorSeen = null;
+  const walk = ${WALK_FN};
+  const cursorOf = ${agentCursor.toString()};
+  globalThis.__agentCursorWatch = setInterval(() => {
+    try {
+      globalThis.tiloMount?.requestSemantics?.();
+      const nodes = walk();
+      if (cursorOf(nodes)) {
+        globalThis.__agentCursorSeen = nodes;
+        clearInterval(globalThis.__agentCursorWatch);
+      }
+    } catch { /* A frame mid-rebuild answers on the next tick. */ }
+  }, 60);
+  return true;
+})()`);
+/** The semantics of the first frame that drew the agent's cursor since `watchAgentCursor`. */
+const seenAgentCursor = tab => tab.evaluate('globalThis.__agentCursorSeen').catch(() => null);
+const stopWatchingAgentCursor = tab => tab.evaluate('clearInterval(globalThis.__agentCursorWatch)').catch(() => {});
 /** Where a control the page publishes for assistive technology stands, read
  * from the page's semantic mirror: the elements it lays over what it draws,
  * which carry the bounds of the node they speak for. A role's own rows and
@@ -938,7 +964,9 @@ async function palette(tab, words) {
   await typeText(tab, words);
   // The result, not the same word elsewhere on the desk the palette covers.
   const result = /listitem|menuitem|treeitem|option|button/i;
-  const hit = await until(async () => matching(await semantics(tab), new RegExp(`^${words}$`, 'i'), result), 8000);
+  // A loaded machine draws the page a frame every few seconds: the results come a few frames
+  // after the words are typed.
+  const hit = await until(async () => matching(await semantics(tab), new RegExp(`^${words}$`, 'i'), result), 20000);
   if (!hit) return `the palette found no ${words}: ${names(await semantics(tab))}`;
   await key(tab, 'Enter', 'Enter', 13);
   await sleep(2500);
@@ -1047,6 +1075,9 @@ const RECORDING_TAB = `(() => {
     image.onerror = () => resolve(false);
     image.src = frame;
   });
+  // The frame on the canvas once more: a held frame is the same picture at the video's own rate,
+  // so a page that drew twice in ten seconds is still ten seconds of video.
+  globalThis.again = () => { track.requestFrame(); return true; };
   globalThis.begin = bits => {
     recorder = new MediaRecorder(stream, {mimeType: 'video/webm;codecs=vp8', videoBitsPerSecond: bits});
     globalThis.chunks = [];
@@ -1100,6 +1131,10 @@ async function encodeInBrowser(browser, frames, file, name) {
       const jpeg = readFileSync(frame.file).toString('base64');
       await recorder.evaluate(`feed("data:image/jpeg;base64,${jpeg}")`);
       due += frame.hold * 1000;
+      while (started + due - Date.now() > 1000 / RECORD_FPS) {
+        await sleep(1000 / RECORD_FPS);
+        await recorder.evaluate('again()');
+      }
       const wait = started + due - Date.now();
       if (wait > 0) await sleep(wait);
     }
@@ -1500,6 +1535,7 @@ try {
         const pacing = async (from, to) => {
           for (const [index, step] of steps.entries()) {
             if (index < from || index >= to) continue;
+            if (index === steps.shootAt) await watchAgentCursor(tab);
             const sending = agent.call(step.tool, step.args);
             if (index === steps.shootAt) {
               // The edit is in flight. Following brings the note's window forward, and the frame
@@ -1511,10 +1547,8 @@ try {
               // semantics, never after a fixed wait. Whether the note is the window drawn last is
               // said in the log: the frame's order of windows moves as they are redrawn, and a
               // shot of the note behind the console is still a shot of the note.
-              const showing = await until(async () => {
-                const nodes = await semantics(tab);
-                return agentCursor(nodes) ? nodes : undefined;
-              }, 12000, 120);
+              const showing = await until(async () => (await seenAgentCursor(tab)) ?? undefined, 15000, 150);
+              await stopWatchingAgentCursor(tab);
               log(`${combo}: mid-edit, the note is ${noteInFront(showing ?? []) ? '' : 'not '}the window drawn last`);
               const cursor = showing ? agentCursor(showing) : undefined;
               check(`${combo}: the agent's cursor stands on what it writes`, Boolean(cursor),
@@ -1621,14 +1655,20 @@ try {
         // What the page says of the agent: its face in the bar, or the banner of following it. A
         // phone's bar has room for one face, and it is whoever did something last, so an agent
         // that comes back is on the desk where the person looks, at every width.
-        const present = async () => (await semantics(tab)).some(node =>
+        const presentAs = async () => (await semantics(tab)).find(node =>
           /^claude code, agent$/i.test(node.name)
           || /^following claude code/i.test(node.name));
+        const present = async () => Boolean(await presentAs());
+        // What still says the agent is here, where it should have gone: its face, or the banner.
+        const stillSays = async () => {
+          const node = await presentAs();
+          return node ? `"${node.name}" (${node.role}) at ${JSON.stringify(node.rect)}` : 'nothing';
+        };
         const gone = await until(async () => (await present()) ? undefined : true, 30000, 250);
         const leftAfter = (Date.now() - closedAt) / 1000;
         log(`${combo}: the agent left who is here ${leftAfter.toFixed(1)} s after its tilo mcp ended`);
         check(`${combo}: the agent leaves who is here once its tilo mcp ends`, Boolean(gone) && leftAfter < 10,
-          gone ? `${leftAfter.toFixed(1)} s after tilo mcp ended` : `still listed 30 s after: ${names(await semantics(tab))}`);
+          gone ? `${leftAfter.toFixed(1)} s after tilo mcp ended` : `still listed 30 s after, by ${await stillSays()}: ${names(await semantics(tab))}`);
         // 7b. The agent comes back: `tilo login` tells it to restart, and its client restarts its
         //     MCP server often. Each new tilo mcp on this computer is on the page that stayed
         //     open, with what it is doing: once after the last one ended, and once straight
@@ -1651,7 +1691,7 @@ try {
             await agent.close();
             const left = await until(async () => (await present()) ? undefined : true, 30000, 250);
             check(`${combo}: tilo mcp run ${round + 1} leaves who is here once it ends`, Boolean(left),
-              left ? 'gone' : `still listed 30 s after: ${names(await semantics(tab))}`);
+              left ? 'gone' : `still listed 30 s after, by ${await stillSays()}: ${names(await semantics(tab))}`);
           }
         }
         // The killed run's successor: on the page though its predecessor never said it left.
@@ -1674,7 +1714,7 @@ try {
         await agent.close();
         const finalLeft = await until(async () => (await present()) ? undefined : true, 30000, 250);
         check(`${combo}: the last tilo mcp leaves who is here once it ends`, Boolean(finalLeft),
-          finalLeft ? 'gone' : `still listed 30 s after: ${names(await semantics(tab))}`);
+          finalLeft ? 'gone' : `still listed 30 s after, by ${await stillSays()}: ${names(await semantics(tab))}`);
         const finishedNotice = node => /claude code finished/i.test(`${node.name} ${node.description ?? ''}`);
         const finished = await until(async () => (await semantics(tab))
           .find(node => /claude code finished: \d+ changes?/i.test(`${node.name} ${node.description ?? ''}`)), 150000, 1000);
