@@ -1199,12 +1199,21 @@ impl Worker {
                     .map_err(|_| mpsc::RecvTimeoutError::Disconnected),
             };
             match next {
-                Ok((queued, job)) => self.admit(queued, job),
+                Ok((queued, job)) => {
+                    self.admit(queued, job);
+                    // Requests that keep coming never hold back a run's word:
+                    // the page forgets a member it has not heard from.
+                    if self
+                        .voices
+                        .next_due()
+                        .is_some_and(|due| due <= Instant::now())
+                    {
+                        self.tick_voices();
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     self.give_up_joining();
-                    let workspaces = &self.workspaces;
-                    self.voices
-                        .tick(|workspace_id| workspaces.get(&workspace_id).map(|held| &held.peer));
+                    self.tick_voices();
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
@@ -1372,6 +1381,14 @@ impl Worker {
             .filter_map(VecDeque::front)
             .map(|waiting| waiting.deadline)
             .min()
+    }
+
+    /// Say again what the runs this host speaks for owe by now
+    /// ([`run_voice::RunVoices::tick`]), each on its workspace's session.
+    fn tick_voices(&mut self) {
+        let workspaces = &self.workspaces;
+        self.voices
+            .tick(|workspace_id| workspaces.get(&workspace_id).map(|held| &held.peer));
     }
 
     /// Run the requests that waited in vain for their workspace or its keys:
