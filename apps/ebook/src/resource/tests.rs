@@ -112,6 +112,22 @@ fn find(library: &Replica<Ebook>, test: impl Fn(&Annotation) -> bool) -> Annotat
         .expect("the annotation is there")
 }
 
+/// The library is named by the books on its shelf, and reads right: one is
+/// "1 book", never "1 books".
+#[test]
+fn the_library_is_named_by_its_shelf() {
+    let mut library = Replica::<Ebook>::new();
+    let name = |library: &Replica<Ebook>| {
+        <EbookShell as ui::framework::ResourceApp>::label(&state(library))
+    };
+    assert_eq!(name(&library), "Books");
+    apply(&mut library, shelve(&row(BOOK, "Novel"))).unwrap();
+    assert_eq!(name(&library), "1 book");
+    let other = "book:fedcba9876543210fedcba9876543210";
+    apply(&mut library, shelve(&row(other, "B"))).unwrap();
+    assert_eq!(name(&library), "2 books");
+}
+
 /// The shelf: a book joins once under its content id, refreshing its row
 /// keeps when it was added, and leaving the shelf keeps what was read and
 /// marked in it.

@@ -824,7 +824,7 @@ pub(crate) fn build_root<A: ResourceApp>(
 
 /// [`ResourceApp::label`] of `state`, the name the app gives the resource as
 /// it stands: what a root publishes whenever it publishes a state, so the
-/// name follows the resource (a library of one book is "1 books" as soon as
+/// name follows the resource (a library of one book is "1 book" as soon as
 /// the book is shelved) rather than the state the window opened on.
 fn live_label<A: ResourceApp>(state: &dyn std::any::Any) -> String {
     state
