@@ -380,10 +380,7 @@ async fn a_browser_joins_a_native_channel_and_edits_its_sealed_record() {
         .access_request_now(1, false, &laptop.vault)
         .unwrap()
         .unwrap();
-    laptop
-        .peer
-        .learn_request(phone_request)
-        .unwrap();
+    laptop.peer.learn_request(phone_request).unwrap();
     let allowed = BTreeSet::from([
         Ed25519PublicKey::from_bytes(laptop.key()),
         Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes()),
