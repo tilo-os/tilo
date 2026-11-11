@@ -717,11 +717,8 @@ fn tier(policy: &WorkspacePolicy, person: &str) -> u8 {
     if policy.role_of(person) == Some(Role::Owner) {
         return 0;
     }
-    if policy
-        .grants
-        .iter()
-        .any(|grant| grant.id == roles::administrator_grant_id(person))
-    {
+    let administrator = roles::administrator_grant_id(person);
+    if policy.grants.iter().any(|grant| grant.id == administrator) {
         return 1;
     }
     2
