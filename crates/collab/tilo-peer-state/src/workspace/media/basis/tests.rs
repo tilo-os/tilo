@@ -72,7 +72,7 @@ fn media_basis_preserves_verified_earliest_revocation_and_canonical_tie_order() 
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();
@@ -123,12 +123,8 @@ fn media_basis_matches_original_malformed_container_conflict_and_certificate_rej
                 let bytes = super::super::strict_bytes(&doc, &ids, &device).unwrap();
                 let mut row = crate::state::GovernedIdentity::decode(&bytes).unwrap();
                 row.device_cert.signature[0] ^= 1;
-                doc.put(
-                    &ids,
-                    &device,
-                    ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
-                )
-                .unwrap();
+                doc.put(&ids, &device, ScalarValue::Bytes(row.encode().unwrap()))
+                    .unwrap();
             }
         }
         doc.commit();
@@ -150,7 +146,6 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
         device_public_key: row.device_cert.device_public_key,
         request_id: [2; 32],
         role: crate::join::MemberRole::Editor,
-        invitation: None,
     };
     row.admission = Some(proof.clone());
     row.admissions = vec![proof.clone(), proof];
@@ -163,7 +158,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();
@@ -174,7 +169,7 @@ fn media_basis_accounts_escaped_labels_duplicate_proofs_and_revocation_map_growt
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();
@@ -343,7 +338,7 @@ fn media_basis_hashes_the_delegation_an_older_row_carries() {
     doc.put(
         &identities,
         &device,
-        ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+        ScalarValue::Bytes(row.encode().unwrap()),
     )
     .unwrap();
     doc.commit();

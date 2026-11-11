@@ -769,7 +769,7 @@ impl PeerGovernanceMut<'_> {
         doc.put(
             &identities,
             hex::encode(device.device_public_key),
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&identity).map_err(err)?),
+            automerge::ScalarValue::Bytes(identity.encode().map_err(err)?),
         )
         .map_err(err)?;
         doc.commit();

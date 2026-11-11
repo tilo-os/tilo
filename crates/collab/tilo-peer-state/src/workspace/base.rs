@@ -25,12 +25,23 @@ pub fn generation(doc: &AutoCommit) -> u64 {
 /// A document holding `doc`'s state as it stands, in one change by `actor`
 /// with no dependencies, at the next base generation.
 pub fn rebase(doc: &AutoCommit, actor: ActorId) -> Result<AutoCommit, automerge::AutomergeError> {
+    rebase_with(doc, actor, |_| ())
+}
+
+/// [`rebase`], with `change` made to the state before it is written: what a
+/// stored layout's conversion step rewrites ([`super::layout`]).
+pub(crate) fn rebase_with(
+    doc: &AutoCommit,
+    actor: ActorId,
+    change: impl FnOnce(&mut automerge::hydrate::Map),
+) -> Result<AutoCommit, automerge::AutomergeError> {
     let next = generation(doc).saturating_add(1);
-    let automerge::hydrate::Value::Map(state) = doc.hydrate(ROOT, None)? else {
+    let automerge::hydrate::Value::Map(mut state) = doc.hydrate(ROOT, None)? else {
         return Err(automerge::AutomergeError::InvalidOp(
             automerge::ObjType::Map,
         ));
     };
+    change(&mut state);
     let mut base = AutoCommit::new().with_actor(actor);
     base.init_root_from_hydrate(&state)?;
     base.put(ROOT, BASE_KEY, ScalarValue::Uint(next))?;

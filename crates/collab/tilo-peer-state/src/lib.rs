@@ -65,10 +65,11 @@ pub use state::{
     PeerDocumentCapture, PeerDocumentReadError, PeerGovernance, PeerGovernanceMut,
     PeerMediaGovernance, PeerMediaGovernanceMut, PeerOutbox, PeerOutboxMut, PeerPersonal,
     PeerPublication, PeerPublicationMut, PeerWorkspace, PeerWorkspaceMut, PersonalStore,
-    PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal, SealCheckpoint,
-    SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, UnmergedReason, UnmergedWrite,
-    WORKSPACE_HOSTS_KEY, committed_document_revision, decide_with_surfaces, default_surfaces,
-    peer_handle, seed_workspace, workspace_host_actor, workspace_hosts_of, workspace_seed,
+    PlaintextChanges, ReceiveOutcome, RecordReaders, RequestedBot, Reseal, RowError,
+    SealCheckpoint, SealDelta, SeedDocument, SeedState, StatePeer, TransportOrigin, UnmergedReason,
+    UnmergedWrite, WORKSPACE_HOSTS_KEY, committed_document_revision, decide_with_surfaces,
+    default_surfaces, peer_handle, seed_workspace, workspace_host_actor, workspace_hosts_of,
+    workspace_seed,
 };
 pub mod coverage;
 mod governed_routes;

@@ -11,7 +11,8 @@ use tilo_user_identity::{DeviceCertError, RevocationError};
 #[derive(Debug)]
 pub(in crate::state) enum ImportError {
     Capacity,
-    LegacyJson(serde_json::Error),
+    Row(crate::state::RowError),
+    Receipt(postcard::Error),
     Certificate(DeviceCertError),
     Revocation(RevocationError),
     LedgerShape,
@@ -27,7 +28,8 @@ pub(in crate::state) enum ImportError {
 impl std::fmt::Display for ImportError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::LegacyJson(error) => error.fmt(f),
+            Self::Row(error) => error.fmt(f),
+            Self::Receipt(error) => write!(f, "governed invitation receipt: {error}"),
             Self::Certificate(error) => error.fmt(f),
             Self::Revocation(error) => error.fmt(f),
             Self::LedgerShape => f.write_str("governed invitation receipt ledger is not a map"),
@@ -66,7 +68,7 @@ fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, Im
                 // Exact historical winner/ignore traversal. Decode every
                 // identity before checking any receipt, key, certificate or
                 // revocation.
-                let value = GovernedIdentity::decode(bytes).map_err(ImportError::LegacyJson)?;
+                let value = GovernedIdentity::decode(bytes).map_err(ImportError::Row)?;
                 let key = work.text(key)?;
                 work.tree::<String, GovernedIdentity>()?;
                 identities.insert(key, value);
@@ -197,8 +199,9 @@ fn receipt_checked(key: &str, bytes: &[u8]) -> Result<(), ImportError> {
     {
         return Ok(());
     }
-    let receipt: RedemptionReceipt =
-        serde_json::from_slice(bytes).map_err(ImportError::LegacyJson)?;
+    let receipt: RedemptionReceipt = crate::state::LedgerReceipt::decode(bytes)
+        .map_err(ImportError::Receipt)?
+        .receipt;
     if !is_key(key, &receipt.invite_id) {
         return Err(ImportError::ReceiptKey);
     }
@@ -332,7 +335,7 @@ pub(in crate::state) fn cached(
                 .ok_or(ImportError::Read)?;
             return Err(GovernedIdentity::decode(bytes)
                 .err()
-                .map_or(ImportError::Read, ImportError::LegacyJson));
+                .map_or(ImportError::Read, ImportError::Row));
         };
         identities.push((key.as_str(), identity));
     }

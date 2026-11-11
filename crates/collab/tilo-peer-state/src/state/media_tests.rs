@@ -598,7 +598,7 @@ fn workspace_media_ended_call_allows_delete_but_cannot_restart_missing_object() 
     assert!(install_policy(&mut peer, &key, now, &value).is_err());
 }
 #[test]
-fn workspace_media_security_basis_excludes_labels_and_normalizes_identity_json() {
+fn workspace_media_security_basis_excludes_labels_and_reads_identity_rows_by_value() {
     let (peer, _, _) = fixture();
     let mut workspace = peer.admitted_workspace().unwrap().clone();
     let initial = media::security_basis(&workspace, &[]).unwrap();
@@ -623,7 +623,7 @@ fn workspace_media_security_basis_excludes_labels_and_normalizes_identity_json()
         .put(
             &ids,
             id,
-            automerge::ScalarValue::Bytes(serde_json::to_vec_pretty(&row).unwrap()),
+            automerge::ScalarValue::Bytes(row.encode().unwrap()),
         )
         .unwrap();
     assert_eq!(initial, media::security_basis(&workspace, &[]).unwrap());
@@ -738,7 +738,7 @@ fn workspace_media_verified_independent_revocation_denies_before_promotion() {
         .put(
             &ids,
             id,
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+            automerge::ScalarValue::Bytes(row.encode().unwrap()),
         )
         .unwrap();
     media::refresh_authorization(&old, &mut workspace).unwrap();
@@ -828,7 +828,7 @@ fn workspace_media_restore_rejects_governed_certificate_replacement() {
         .put(
             &ids,
             id,
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+            automerge::ScalarValue::Bytes(row.encode().unwrap()),
         )
         .unwrap();
     media::refresh_authorization(peer.admitted_workspace().unwrap(), &mut workspace).unwrap();
@@ -1011,7 +1011,7 @@ fn workspace_media_governed_revocation_fence_cannot_be_removed_by_higher_revisio
             .put(
                 &ids,
                 id,
-                automerge::ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                automerge::ScalarValue::Bytes(row.encode().unwrap()),
             )
             .unwrap();
     }

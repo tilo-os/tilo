@@ -25,7 +25,9 @@ fn original_import(
         .collect::<Result<Vec<_>, _>>()?;
     for (key, values) in workspace::invitation_receipts(doc)? {
         for bytes in values {
-            let receipt: RedemptionReceipt = serde_json::from_slice(&bytes).map_err(err)?;
+            let receipt: RedemptionReceipt = crate::state::LedgerReceipt::decode(&bytes)
+                .map_err(err)?
+                .receipt;
             if key != hex::encode(receipt.invite_id) {
                 return Err("governed invitation receipt key mismatch".into());
             }
@@ -118,9 +120,7 @@ fn set_identity(workspace: &mut AutoCommit, id: &str, row: &GovernedIdentity) {
         .get(automerge::ROOT, "peer_identities_v1")
         .unwrap()
         .unwrap();
-    workspace
-        .put(object, id, serde_json::to_vec(row).unwrap())
-        .unwrap();
+    workspace.put(object, id, row.encode().unwrap()).unwrap();
     workspace.commit();
 }
 fn row(cert: DeviceCert) -> GovernedIdentity {
@@ -160,7 +160,6 @@ fn governed_import_preserves_real_signed_identity_admission_and_certificate_fail
         device_public_key: foreign.device_public_key,
         request_id: [8; 32],
         role: crate::join::MemberRole::Viewer,
-        invitation: None,
     });
     set_identity(
         &mut workspace,
@@ -234,7 +233,6 @@ fn governed_import_keeps_a_minted_grants_issuer() {
         device_public_key: minted.device_public_key,
         request_id: [8; 32],
         role: crate::join::MemberRole::Editor,
-        invitation: None,
     });
     let mut workspace = peer.admitted_workspace().unwrap().clone();
     set_identity(
@@ -286,7 +284,7 @@ fn governed_import_preserves_all_receipt_shapes_and_error_order() {
     workspace.commit();
     assert!(matches!(
         compare_case(&peer, &workspace, now),
-        Err(ImportError::LegacyJson(_))
+        Err(ImportError::Row(_))
     ));
     for kind in [automerge::ObjType::List, automerge::ObjType::Text] {
         let mut workspace = peer.admitted_workspace().unwrap().clone();

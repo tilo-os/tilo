@@ -36,7 +36,8 @@ mod durable_before_owner;
 #[cfg(test)]
 use durable_before_owner::Durable;
 pub(crate) use durable_before_owner::{
-    DURABLE_BASE_VERSION, DurableV4, DurableV5, DurableV6, durable_base_is_before_owner,
+    DURABLE_BASE_VERSION, DurableV4, DurableV5, DurableV6, GOVERNANCE_LAYOUT_BEFORE,
+    durable_base_version,
 };
 mod member_records;
 use member_records::{empty_genesis, empty_genesis_op};
@@ -376,6 +377,10 @@ pub struct StatePeer {
     /// Whether this is a workspace host's copy of the workspace
     /// ([`Self::write_as_workspace_host`]). Set by the host, never persisted.
     workspace_host: bool,
+    /// Whether [`Self::restore`] brought the governance up from an earlier
+    /// stored layout ([`workspace::layout`]): a device that governs the
+    /// workspace then publishes it anew ([`Self::governance_brought_up`]).
+    brought_up: bool,
 }
 
 /// The Automerge actor a workspace host's own changes to a workspace are made under,
@@ -596,6 +601,7 @@ impl StatePeer {
             app_surfaces: process_default().1,
             missed: held::Missed::default(),
             workspace_host: false,
+            brought_up: false,
         })
     }
     /// Add a root-certified viewer to existing governed history, as a member
@@ -661,7 +667,7 @@ impl StatePeer {
         now: SystemTime,
     ) -> Result<bool, String> {
         let id = hex::encode(identity.device_cert.device_public_key);
-        let encoded = serde_json::to_vec(identity).map_err(err)?;
+        let encoded = identity.encode().map_err(err)?;
         let identities = doc
             .get(ROOT, "peer_identities_v1")
             .map_err(err)?
@@ -1105,24 +1111,6 @@ impl StatePeer {
     /// Committed, admitted workspace only. Callers cannot mutate the admission owner.
     pub fn admitted_workspace(&self) -> Option<&AutoCommit> {
         self.core.workspace_doc.as_deref()
-    }
-
-    /// Start the workspace's document over from a base ([`workspace::base`]), as its
-    /// authority does when the workspace admits someone new. Returns whether it
-    /// did: a document holding nothing past its base stays as it is.
-    pub fn rebase_workspace(&mut self) -> Result<bool, String> {
-        let Some(held) = self.core.workspace_doc.as_deref() else {
-            return Ok(false);
-        };
-        let mut doc = held.clone();
-        let heads = doc.get_heads();
-        if heads.is_empty() || workspace::base::root(&mut doc).is_some_and(|root| heads == [root]) {
-            return Ok(false);
-        }
-        let actor = self.workspace_actor_for(&self.core.owner);
-        let base = workspace::base::rebase(&doc, actor).map_err(err)?;
-        self.core.workspace_doc = Some(base.into());
-        Ok(true)
     }
 
     /// Read permission for an exact canonical record using the same governed
@@ -3398,7 +3386,11 @@ impl StatePeer {
         let exact_admissions;
         // Which base layout: the three integers both begin with, read before
         // anything that differs. Never decode one and retry another.
-        let base_before_owner = durable_base_is_before_owner(bytes)?;
+        let base = durable_base_version(bytes)?;
+        let base_before_owner = base == durable_before_owner::BASE_BEFORE_OWNER;
+        if base != DURABLE_BASE_VERSION && base != GOVERNANCE_LAYOUT_BEFORE && !base_before_owner {
+            return Err(format!("unsupported durable base version {base}"));
+        }
         let (durable, pending, pending_bytes, exact, sealed) = if base_before_owner {
             match version {
                 4 => durable_before_owner::v4(bytes)?,
@@ -3454,7 +3446,7 @@ impl StatePeer {
             }
         };
         exact_admissions = exact;
-        if durable.version != DURABLE_BASE_VERSION
+        if (durable.version != DURABLE_BASE_VERSION && durable.version != GOVERNANCE_LAYOUT_BEFORE)
             || durable.workspace != workspace
             || durable.owner != owner_device.user_public_key
         {
@@ -3488,6 +3480,7 @@ impl StatePeer {
             app_surfaces: process_default().1,
             missed: held::Missed::default(),
             workspace_host: false,
+            brought_up: false,
         };
         backend::validate_pending(&peer.core.pending, peer.core.pending_bytes).map_err(err)?;
         peer.core.revocations = backend::restore_revocation_union(
@@ -3507,6 +3500,16 @@ impl StatePeer {
                     .map_err(err)
             })
             .transpose()?;
+        // A governance a build before this layout wrote is brought up once,
+        // here, and is never read in the layout it was written in.
+        if base != DURABLE_BASE_VERSION
+            && let Some(held) = peer.core.workspace_doc.as_deref()
+        {
+            let actor = peer.workspace_actor_for(&peer.core.owner);
+            let brought = workspace::layout::bring_up(held, actor)?;
+            peer.core.workspace_doc = Some(CachedDocument::from(brought));
+            peer.brought_up = true;
+        }
         for document in durable.documents {
             check_governed_snapshot(
                 peer.core.workspace_doc.as_deref(),
@@ -3836,9 +3839,12 @@ pub(crate) fn supersedes(held: &DeviceCert, incoming: &DeviceCert) -> bool {
         && incoming.issued_at_ns >= held.issued_at_ns
 }
 
-pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
+pub use governed_rows::RowError;
+pub(crate) use governed_rows::WorkspaceDelegation;
 #[cfg(test)]
-pub(crate) use governed_rows::{WorkspaceDelegation, WorkspaceDelegationPermissions};
+pub(crate) use governed_rows::WorkspaceDelegationPermissions;
+pub(crate) use governed_rows::{GovernedIdentity, RedemptionReceipt};
+pub(crate) use invitation_ledger::LedgerReceipt;
 
 fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
     match role {
@@ -3941,9 +3947,14 @@ mod governed_rows;
 #[cfg(test)]
 #[path = "state/held_queue_tests.rs"]
 mod held_queue_tests;
+pub(crate) mod invitation_ledger;
 #[cfg(test)]
 #[path = "state/joined_tests.rs"]
 mod joined_tests;
+#[cfg(test)]
+#[path = "state/layout_restore_tests.rs"]
+mod layout_restore_tests;
+mod rebase;
 #[cfg(test)]
 #[path = "state/roster_beside_governance_tests.rs"]
 mod roster_beside_governance_tests;

@@ -173,12 +173,13 @@ fn remembered(doc: &AutoCommit, workspace: &str) -> (WorkspacePolicy, bool) {
 /// The document keys a replay reads, besides its operations': the rows the
 /// membership starts from, the invitations that admitted people, and the
 /// map the operations were kept in before each had a key of its own.
-const REPLAY_KEYS: [&str; 6] = [
+const REPLAY_KEYS: [&str; 7] = [
     tilo_desktop_model::projection::WORKSPACE_OWNER_KEY,
     tilo_desktop_model::projection::WORKSPACE_MEMBERS_KEY,
     tilo_desktop_model::projection::WORKSPACE_MEMBERS_JOINED_KEY,
     tilo_desktop_model::projection::WORKSPACE_GRANTS_KEY,
     "invitation_receipts_v1",
+    "invitation_parts_v1",
     MEMBERS_KEY,
 ];
 
@@ -221,6 +222,14 @@ pub(crate) fn carry(
             match (key.as_str(), wrote) {
                 ("invitation_receipts_v1", Wrote::Entries(entries)) => {
                     receipts.extend(entries.iter().map(String::as_str));
+                }
+                // A part admits no one by itself: the receipts written with
+                // it are read with it, and a receipt the state turned away
+                // that it could complete makes the state replay whole.
+                ("invitation_parts_v1", Wrote::Entries(_)) => {
+                    if replayed.turned_away {
+                        return;
+                    }
                 }
                 (WORKSPACE_MEMBERS_KEY | WORKSPACE_MEMBERS_JOINED_KEY, Wrote::Entries(entries)) => {
                     people.extend(entries.iter().map(String::as_str));
@@ -325,15 +334,19 @@ fn admitted(
         return false;
     }
     let rows = crate::workspace::policy_of(after, workspace);
+    let Ok(parts) = crate::state::invitation_ledger::parts(after) else {
+        return false;
+    };
     for invite in receipts {
         let Ok(values) = crate::workspace::invitation_receipts_of(after, invite) else {
             return false;
         };
         let for_new = values.iter().all(|value| {
-            serde_json::from_slice::<crate::state::RedemptionReceipt>(value)
-                .is_ok_and(|receipt| people.contains(hex::encode(receipt.user_public_key).as_str()))
+            crate::state::LedgerReceipt::decode(value).is_ok_and(|ledgered| {
+                people.contains(hex::encode(ledgered.receipt.user_public_key).as_str())
+            })
         });
-        if !for_new || !redeem_values(&rows, workspace, &mut replayed.policy, values) {
+        if !for_new || !redeem_values(&rows, workspace, &mut replayed.policy, values, &parts) {
             return false;
         }
     }
@@ -615,10 +628,12 @@ fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) -> bo
     let Ok(receipts) = crate::workspace::invitation_receipts(doc) else {
         return true;
     };
+    // ignored-failure: parts this device cannot read complete no receipt
+    let parts = crate::state::invitation_ledger::parts(doc).unwrap_or_default();
     let rows = crate::workspace::policy_of(doc, workspace);
     let mut turned_away = false;
     for (_invite, values) in receipts {
-        turned_away |= !redeem_values(&rows, workspace, policy, values);
+        turned_away |= !redeem_values(&rows, workspace, policy, values, &parts);
     }
     turned_away
 }
@@ -627,37 +642,33 @@ fn redeem(doc: &AutoCommit, workspace: &str, policy: &mut WorkspacePolicy) -> bo
 /// its key) into `policy`, judged by `rows` ([`redeem`]). False when one of
 /// them admitted no one: it did not decode, does not name its invitation,
 /// names a joiner the workspace records no time for, or an invitation the
-/// rows do not honour.
+/// rows do not honour. `parts` are the ledger's invitation parts.
 fn redeem_values(
     rows: &WorkspacePolicy,
     workspace: &str,
     policy: &mut WorkspacePolicy,
     mut values: Vec<Vec<u8>>,
+    parts: &BTreeMap<String, Vec<Vec<u8>>>,
 ) -> bool {
-    use base64::Engine as _;
     let mut all = true;
     // The order the ledger holds an invitation's receipts in is the order
     // they were written in, which is not the same on every device.
     values.sort();
     for value in values {
         // ignored-failure: a receipt that does not decode admits no one
-        let Ok(receipt) = serde_json::from_slice::<crate::state::RedemptionReceipt>(&value) else {
+        let Ok(ledgered) = crate::state::LedgerReceipt::decode(&value) else {
             all = false;
             continue;
         };
-        let Some(text) = receipt.invitation.as_deref() else {
+        // The invitation as its parts put it back together, when that is
+        // the invitation the receipt names.
+        let Some(signed) =
+            ledgered.invitation(|digest| crate::state::invitation_ledger::part_in(parts, digest))
+        else {
             all = false;
             continue;
         };
-        // ignored-failure: an invitation that does not decode admits no one
-        let Ok(signed) = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(text) else {
-            all = false;
-            continue;
-        };
-        if *blake3::hash(&signed).as_bytes() != receipt.invite_id {
-            all = false;
-            continue;
-        }
+        let receipt = ledgered.receipt;
         let person = hex::encode(receipt.user_public_key);
         let Some(joined_ms) = policy
             .joined

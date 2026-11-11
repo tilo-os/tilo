@@ -41,7 +41,7 @@ use tilo_action_policy::{
 
 use super::{GovernanceRow, WorkspaceGovernance, governance_of};
 use crate::members::{MembershipOpCommand, SignedMembershipOp};
-use crate::state::{GovernedIdentity, RedemptionReceipt};
+use crate::state::GovernedIdentity;
 
 /// How far ahead of a receiver's clock an admission may say it was made:
 /// devices' clocks differ, and a receiver judges an invitation's expiry at
@@ -445,8 +445,10 @@ pub fn invitation_admits(
 /// the batch adds to the workspace's ledger must be one: the invitation it
 /// carries admits its joiner at the time the workspace records them joining
 /// ([`invitation_admits`]), the joiner's device row holds the receipt, and
-/// the workspace gives them its role. That an invitation is redeemed once is
-/// every writer's rule, checked for the whole candidate
+/// the workspace gives them its role. Every invitation part the batch adds
+/// is kept under its own digest and completes a receipt it adds. That an
+/// invitation is redeemed once, and a part once kept stays, is every
+/// writer's rule, checked for the whole candidate
 /// ([`super::redemptions_kept`]).
 fn redemptions(
     workspace: &str,
@@ -456,33 +458,42 @@ fn redemptions(
     written: &WorkspaceGovernance,
     now_ns: u64,
 ) -> Result<BTreeMap<String, (Role, String)>, MembershipRefusal> {
+    use crate::state::invitation_ledger::{part_in, part_key};
     let malformed = |error: String| MembershipRefusal::Malformed(error);
     let mut invited = BTreeMap::new();
+    // The parts the batch adds, until a receipt it adds names them.
+    let mut new_parts = std::collections::BTreeSet::new();
+    for (key, values) in &written.invitation_parts {
+        let held = before.invitation_parts.get(key);
+        for value in values {
+            if held.is_some_and(|held| held.contains(value)) {
+                continue;
+            }
+            if *key != part_key(blake3::hash(value).as_bytes()) {
+                return Err(malformed("an invitation part under another key".into()));
+            }
+            new_parts.insert(key.clone());
+        }
+    }
     for (invite, values) in &written.invitation_receipts {
         let held_values = before.invitation_receipts.get(invite);
         for value in values {
             if held_values.is_some_and(|held| held.contains(value)) {
                 continue;
             }
-            let receipt: RedemptionReceipt =
-                serde_json::from_slice(value).map_err(|error| malformed(error.to_string()))?;
+            let ledgered = crate::state::LedgerReceipt::decode(value)
+                .map_err(|error| malformed(error.to_string()))?;
+            let receipt = &ledgered.receipt;
             if *invite != hex::encode(receipt.invite_id) {
                 return Err(malformed("an invitation receipt under another key".into()));
             }
-            let signed = receipt
-                .invitation
-                .as_deref()
-                .ok_or_else(|| malformed("an invitation receipt without its invitation".into()))
-                .and_then(|text| {
-                    use base64::Engine as _;
-                    base64::engine::general_purpose::URL_SAFE_NO_PAD
-                        .decode(text)
-                        .map_err(|error| malformed(error.to_string()))
+            let signed = ledgered
+                .invitation(|digest| part_in(&written.invitation_parts, digest))
+                .ok_or_else(|| {
+                    malformed("an invitation receipt names no invitation it holds".into())
                 })?;
-            if *blake3::hash(&signed).as_bytes() != receipt.invite_id {
-                return Err(malformed(
-                    "an invitation receipt names another invitation".into(),
-                ));
+            for digest in ledgered.shared() {
+                new_parts.remove(&part_key(digest));
             }
             let person = hex::encode(receipt.user_public_key);
             let joined_ms = wanted.joined_at(&person).ok_or_else(|| {
@@ -514,14 +525,13 @@ fn redemptions(
                 .map(|bytes| GovernedIdentity::decode(bytes))
                 .transpose()
                 .map_err(|error| malformed(error.to_string()))?;
-            let on_row = receipt.on_row();
             if !row.is_some_and(|row| {
                 row.device_cert.user_public_key == receipt.user_public_key
                     && row
                         .admission
                         .iter()
                         .chain(&row.admissions)
-                        .any(|kept| *kept == on_row)
+                        .any(|kept| kept == receipt)
             }) {
                 return Err(MembershipRefusal::Refused(format!(
                     "device {device} does not hold its redemption"
@@ -529,6 +539,11 @@ fn redemptions(
             }
             invited.insert(person, (role, device));
         }
+    }
+    if !new_parts.is_empty() {
+        return Err(malformed(
+            "an invitation part no receipt of the batch names".into(),
+        ));
     }
     Ok(invited)
 }

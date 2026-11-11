@@ -870,7 +870,7 @@ mod workspace_media_tests {
             .put(
                 &identities,
                 &device,
-                ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                ScalarValue::Bytes(row.encode().unwrap()),
             )
             .unwrap();
         before.commit();
@@ -892,7 +892,7 @@ mod workspace_media_tests {
                 .put(
                     &identities,
                     &device,
-                    ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
+                    ScalarValue::Bytes(row.encode().unwrap()),
                 )
                 .unwrap();
             let value = enable_media(&mut after);

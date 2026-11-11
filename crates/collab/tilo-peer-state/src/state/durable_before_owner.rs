@@ -183,7 +183,12 @@ mod tests {
     /// The state this build writes for the kept workspace, hex, kept so the
     /// layout cannot change under the version devices already hold. It is
     /// [`kept_state`] as `postcard` wrote it.
-    const KEPT: &str = "04042433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
+    const KEPT: &str = "04052433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
+
+    /// [`KEPT`] as a build before the compact governance layout wrote it:
+    /// base version 4, read as this build's base with its governance
+    /// brought up ([`crate::workspace::layout`]).
+    const KEPT_LAYOUT_BEFORE: &str = "04042433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c";
 
     /// The same state as a build before the owner root wrote it, hex: the
     /// governing device's certificate where this build names the owner's key,
@@ -198,7 +203,7 @@ mod tests {
     /// The durable state this build writes with an exact index and a sealed
     /// history, hex, kept so the layout cannot change under the version
     /// devices already hold. It is [`kept_v6`] as `postcard` wrote it.
-    const KEPT_SEALED: &str = "0604042433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c7d00012433303264353965302d663538362d343265312d613539652d3361613631336630663836360c736f2e74696c6f2e63686174066c6f756e6765030303030303030303030303030303030303030303030303030303030303030304050505050505050505050505050505050505050505050505050505050505050500010c736f2e74696c6f2e63686174066c6f756e676501067365616c6564100000000000000000000000000000000703030303030303030303030303030303030303030303030303030303030303031000000000000000000000000000000008000000040000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
+    const KEPT_SEALED: &str = "0604052433303264353965302d663538362d343265312d613539652d33616136313366306638363601010101010101010101010101010101010101010101010101010101010101010104856f4a83000000000107070707070707070707070707070707070707070707070707070707070707070a0105010c7d00012433303264353965302d663538362d343265312d613539652d3361613631336630663836360c736f2e74696c6f2e63686174066c6f756e6765030303030303030303030303030303030303030303030303030303030303030304050505050505050505050505050505050505050505050505050505050505050500010c736f2e74696c6f2e63686174066c6f756e676501067365616c6564100000000000000000000000000000000703030303030303030303030303030303030303030303030303030303030303031000000000000000000000000000000008000000040000004000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000";
 
     /// One admission the peer settled exactly.
     fn kept_exact() -> Vec<u8> {
@@ -328,7 +333,7 @@ mod tests {
             "the durable admission state",
             &kept(KEPT),
             |bytes| {
-                assert!(!durable_base_is_before_owner(bytes).unwrap());
+                assert_ne!(durable_base_version(bytes).unwrap(), BASE_BEFORE_OWNER);
                 let (value, tail): (DurableV4, _) = postcard::take_from_bytes(bytes).unwrap();
                 assert!(tail.is_empty());
                 assert_eq!(value.base.version, DURABLE_BASE_VERSION);
@@ -340,6 +345,23 @@ mod tests {
         );
     }
 
+    /// A state a build before the compact governance layout wrote names that
+    /// base, and reads in this build's base fields: the restore path brings
+    /// its governance up.
+    #[test]
+    fn the_state_kept_before_the_compact_governance_reads_as_this_base() {
+        let bytes = kept(KEPT_LAYOUT_BEFORE);
+        assert_eq!(
+            durable_base_version(&bytes).unwrap(),
+            GOVERNANCE_LAYOUT_BEFORE
+        );
+        let (value, tail): (DurableV4, _) = postcard::take_from_bytes(&bytes).unwrap();
+        assert!(tail.is_empty());
+        assert_eq!(value.base.version, GOVERNANCE_LAYOUT_BEFORE);
+        assert_eq!(value.base.workspace, KEPT_WORKSPACE);
+        assert_eq!(value.pending_bytes, 12);
+    }
+
     /// The state a build before the owner root wrote reads as this build's,
     /// through the reader the restore path uses, with the certificate's root
     /// as the owner.
@@ -349,7 +371,7 @@ mod tests {
             "the durable admission state before the owner root",
             &kept(KEPT_BEFORE_OWNER),
             |bytes| {
-                assert!(durable_base_is_before_owner(bytes).unwrap());
+                assert_eq!(durable_base_version(bytes).unwrap(), BASE_BEFORE_OWNER);
                 let (durable, pending, pending_bytes, _exact, sealed) = v4(bytes).unwrap();
                 assert_eq!(durable.version, DURABLE_BASE_VERSION);
                 assert_eq!(
@@ -425,8 +447,14 @@ mod tests {
             },
             exact: &[],
         };
-        assert!(!durable_base_is_before_owner(&postcard::to_stdvec(&v4).unwrap()).unwrap());
-        assert!(!durable_base_is_before_owner(&postcard::to_stdvec(&v5).unwrap()).unwrap());
+        assert_ne!(
+            durable_base_version(&postcard::to_stdvec(&v4).unwrap()).unwrap(),
+            BASE_BEFORE_OWNER
+        );
+        assert_ne!(
+            durable_base_version(&postcard::to_stdvec(&v5).unwrap()).unwrap(),
+            BASE_BEFORE_OWNER
+        );
     }
 
     /// A state a build before the owner root wrote is read as that layout,
@@ -438,41 +466,53 @@ mod tests {
             base: kept_before_owner(),
             exact: &[],
         };
-        assert!(
-            durable_base_is_before_owner(&postcard::to_stdvec(&kept_before_owner()).unwrap())
-                .unwrap()
+        assert_eq!(
+            durable_base_version(&postcard::to_stdvec(&kept_before_owner()).unwrap()).unwrap(),
+            BASE_BEFORE_OWNER
         );
-        assert!(durable_base_is_before_owner(&postcard::to_stdvec(&v5).unwrap()).unwrap());
+        assert_eq!(
+            durable_base_version(&postcard::to_stdvec(&v5).unwrap()).unwrap(),
+            BASE_BEFORE_OWNER
+        );
     }
 }
 
-/// Whether a durable state's base predates [`DURABLE_BASE_VERSION`], read
-/// from the versions that lead the bytes, never by decoding a layout and
-/// retrying another.
+/// The version of a durable state's base, read from the versions that lead
+/// the bytes, never by decoding a layout and retrying another.
 ///
 /// How many versions lead the base's depends on the envelope: version 4
 /// names its base's version second, and versions 5 and 6 wrap a version 4
 /// envelope, which names it after its own.
-pub fn durable_base_is_before_owner(bytes: &[u8]) -> Result<bool, String> {
+pub fn durable_base_version(bytes: &[u8]) -> Result<u32, String> {
     let (envelope, rest) = version(bytes)?;
     let rest = match envelope {
         4 => rest,
         5 | 6 => version(rest)?.1,
         _ => return Err("unsupported durable admission version".into()),
     };
-    let (base, _) = version(rest)?;
-    Ok(base != DURABLE_BASE_VERSION)
+    Ok(version(rest)?.0)
 }
 
-/// The version a durable state names at `bytes`, and the bytes after it.
+/// The version of a durable state's base, read from the versions that lead
+/// it.
 fn version(bytes: &[u8]) -> Result<(u32, &[u8]), String> {
     postcard::take_from_bytes::<u32>(bytes).map_err(|error| error.to_string())
 }
 
-/// The durable base layout. Version 4 names the workspace's owner by their root
-/// key; version 3, which a build before it wrote, named the governing device
-/// itself ([`durable_before_owner`]).
-pub const DURABLE_BASE_VERSION: u32 = 4;
+/// The base a build before the owner-root layout wrote ([`DurableV3`]).
+pub(crate) const BASE_BEFORE_OWNER: u32 = 3;
+
+/// The base whose governance holds device rows as JSON and each receipt
+/// with its whole invitation: the same fields as [`DURABLE_BASE_VERSION`],
+/// its governance brought up as it is read ([`crate::workspace::layout`]).
+pub const GOVERNANCE_LAYOUT_BEFORE: u32 = 4;
+
+/// The durable base layout. Version 5 keeps the governance's device rows
+/// and receipts compact ([`crate::workspace::layout`]); version 4 is the same
+/// base around the earlier governance layout, and version 3, which a build
+/// before both wrote, named the governing device itself rather than the
+/// owner's root key ([`durable_before_owner`]).
+pub const DURABLE_BASE_VERSION: u32 = 5;
 
 #[derive(Serialize, Deserialize)]
 pub struct Durable {

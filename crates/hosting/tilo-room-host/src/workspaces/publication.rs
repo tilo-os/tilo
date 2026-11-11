@@ -21,6 +21,11 @@ pub(super) enum Change {
     /// Anything else: it takes something back when it overwrites or deletes
     /// a value ([`withdraws`]).
     Other,
+    /// Nothing but the workspace's document starting over, published anew:
+    /// its governance was brought up from an earlier stored layout, and what
+    /// was published before is in that layout
+    /// ([`tilo_peer_state::StatePeer::governance_brought_up`]).
+    StartOver,
 }
 
 /// What the workspace published since its document last started over did to

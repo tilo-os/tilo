@@ -68,7 +68,7 @@ pub(crate) type IdentityCertificates =
 /// [`PolicyData::identities`]; an undecodable row keeps its decode error.
 pub(crate) type IdentityViews = std::collections::BTreeMap<
     String,
-    Result<crate::state::GovernedIdentity, std::sync::Arc<serde_json::Error>>,
+    Result<crate::state::GovernedIdentity, std::sync::Arc<crate::state::RowError>>,
 >;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PolicyData {
@@ -240,7 +240,8 @@ impl CachedDocument {
         &self,
         key: &str,
         bytes: &[u8],
-    ) -> Option<&Result<crate::state::GovernedIdentity, std::sync::Arc<serde_json::Error>>> {
+    ) -> Option<&Result<crate::state::GovernedIdentity, std::sync::Arc<crate::state::RowError>>>
+    {
         let earlier = self.earlier.as_deref()?;
         (earlier.policy.get()?.identities.get(key)? == bytes)
             .then(|| earlier.identities.get()?.get(key))

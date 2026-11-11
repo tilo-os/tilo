@@ -535,6 +535,18 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         online.min(members),
         seeded.elapsed()
     );
+    // What the workspace's governance weighs as a newcomer is sent it: its
+    // base and the changes since.
+    if let Some(peer) = workspaces.state(&lounge.workspace).await
+        && let neighbour_wire::NeighbourMsg::SyncResp { changes, .. } = peer.workspace_message()
+    {
+        let sent: usize = changes.iter().map(Vec::len).sum();
+        eprintln!(
+            "GOVERNANCE {members} members: {sent} B in {} changes, {} B a member",
+            changes.len(),
+            sent / members.max(1)
+        );
+    }
 
     // What the site hands its page about the host, which its deployment asked
     // once, as `tilo-relay page-host` does: no guest asks it again.
@@ -838,7 +850,7 @@ impl Way {
 ///   entry's binding as it answers, so the hello waits for nothing more;
 /// - the hello, which carries the entry with its proof and the guest's first
 ///   requests, and the host's answer with the Welcome first: 1;
-/// - the replay of governance and the desktop, about 0.75 MB for a crowd of
+/// - the replay of governance and the desktop, about 0.55 MB for a crowd of
 ///   300 that all hold the keys (see [`MAX_BYTES`]), from a 256 KiB initial
 ///   window, paced over the round trip: 1.5 to 2.
 ///
@@ -857,14 +869,14 @@ const WEB_ROUND_TRIPS: f64 = 3.25;
 /// in its Welcome, the commits after it, the governance and the 300 members'
 /// parts of the desktop. Every member's page holds the keys, as in the Lounge,
 /// so each of those channel frames works through a group of 300. The quick
-/// entry shows in 0.9 to 1.05 s on the builder.
+/// entry shows in 0.85 to 1.05 s on the builder.
 ///
 /// Nothing here waits on a clock: a guest whose certificate was issued a
 /// moment before its entry is in the workspace's channel group at once, so
 /// the quick entry is held to this allowance alone. The allowance is kept
 /// wider than the quick entry needs because the slow entry is held to it too,
 /// with its round trips beside it.
-const COMPUTE: Duration = Duration::from_millis(1_500);
+const COMPUTE: Duration = Duration::from_millis(1_300);
 
 /// How many round trips a fresh guest may wait over iroh through the packet
 /// relay, one after another, beside [`COMPUTE`]: the slow entry's desktop
@@ -896,12 +908,15 @@ const COMPUTE: Duration = Duration::from_millis(1_500);
 /// about three and a half; at 400 ms the desktop shows in about 2.7 s.
 const RELAYED_ROUND_TRIPS: f64 = 3.5;
 
-/// What a fresh guest may receive before its desktop shows, 0.6 to 0.72 MB
+/// What a fresh guest may receive before its desktop shows, 0.54 to 0.56 MB
 /// for 300 members who all hold the keys: its Welcome first, once (about
 /// 65 KB, the group's ratchet tree of 300), then the workspace's bootstrap
 /// (under 1 KB: its roster names only the guest and the host, as the
-/// governance carries every member's certificate), its governance (a
-/// compressed base of about 275 KB with the changes since, which a host starts
+/// governance carries every member's certificate), its governance (about
+/// 0.19 MB, some 625 B a member: each device's row with its keys and
+/// signatures as bytes, and each receipt with the issuer's certificate and
+/// transport details its door invitation shares named once; a compressed
+/// base with the changes since, which a host starts
 /// over once they weigh half the base, so between one and one and a half times
 /// the base: how many changes a guest meets depends on how the crowd's
 /// admissions fell into changes, which is what moves the total from run to
@@ -914,7 +929,7 @@ const RELAYED_ROUND_TRIPS: f64 = 3.5;
 /// Governance sent twice or uncompressed, the members' certificates or hellos
 /// sent again beside it, any of those records or the chat sent with the
 /// desktop, or the Welcome sent again crosses this.
-const MAX_BYTES: u64 = 800_000;
+const MAX_BYTES: u64 = 650_000;
 
 /// One guest's entry, as it went.
 struct Entry {

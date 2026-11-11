@@ -653,7 +653,8 @@ impl GovernedWorkspace {
         crate::timing::window("room.commit.record", copying);
         // A member admitted from now on is given the workspace as it stands,
         // not what was withdrawn before they joined.
-        let started_over = starts_over(&record.outgoing)
+        let started_over = change == Change::StartOver
+            || starts_over(&record.outgoing)
             || (self.since_base == SinceBase::Withdrew
                 && !member_roots(&candidate, now).is_subset(&member_roots(replica, now)));
         let mut since_base = self.since_base;
@@ -674,7 +675,11 @@ impl GovernedWorkspace {
                     .collect::<std::collections::BTreeSet<_>>();
             // The workspace's document starts over from a base holding its
             // state as it stands, with none of the history that led there.
-            rebased = candidate.rebase_workspace()?;
+            rebased = if change == Change::StartOver {
+                candidate.start_governance_over()?
+            } else {
+                candidate.rebase_workspace()?
+            };
             since_base = SinceBase::Added;
             record.outgoing = candidate
                 .publication_mut()
@@ -725,6 +730,28 @@ impl GovernedWorkspace {
             self.record.outgoing.len() as u64,
         );
         Ok(generation)
+    }
+
+    /// Publish the workspace anew when its governance was brought up from an
+    /// earlier stored layout as it opened: its document starts over from a
+    /// base newer than any a member's device brought up for itself, and what
+    /// the relay retains of the earlier layout is archived as it settles.
+    fn publish_brought_up(&mut self, key: &SigningKey, now: SystemTime) -> Result<(), String> {
+        if !self.peer().governance_brought_up() {
+            return Ok(());
+        }
+        let shared = self.peer.shared();
+        let mut replica = shared.lock();
+        let candidate = replica.clone();
+        let committed = self.commit_held(
+            &mut replica,
+            candidate,
+            (key, now),
+            Change::StartOver,
+            |record, _| Ok(record.collaboration.clone()),
+        );
+        drop(replica);
+        committed.map(drop)
     }
 
     /// The people the workspace's governance admits, without the person whose
@@ -1190,6 +1217,9 @@ impl Workspaces {
             .collect::<Vec<_>>();
         for workspace in workspaces {
             let mut workspace = workspace.lock().await;
+            workspace
+                .publish_brought_up(&this.inner.host.key, SystemTime::now())
+                .map_err(|e| format!("{}: brought up: {e}", workspace.workspace()))?;
             this.bind(&workspace)
                 .await
                 .map_err(|e| format!("bind: {e}"))?;

@@ -90,7 +90,7 @@ impl PeerGovernanceMut<'_> {
                 continue;
             }
             identity.device_cert = renewed.clone();
-            let encoded = serde_json::to_vec(&identity).map_err(err)?;
+            let encoded = identity.encode().map_err(err)?;
             doc.put(&identities, id, automerge::ScalarValue::Bytes(encoded))
                 .map_err(err)?;
             changed = true;

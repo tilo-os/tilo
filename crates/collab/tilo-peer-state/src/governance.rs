@@ -84,9 +84,6 @@ pub(crate) fn admit_invited_member(
         device_public_key: cert.device_public_key,
         request_id: redemption.request_id(),
         role: grant.role,
-        invitation: Some(crate::join::encode_invitation_text(
-            redemption.join().signed_invitation(),
-        )),
     };
     // The receipts of this invitation: the ledger's under its key, and the
     // ones device rows keep ([`crate::cached_document::CachedDocument::redemptions`]).
@@ -95,7 +92,8 @@ pub(crate) fn admit_invited_member(
         crate::workspace::invitation_receipts_of(document, &hex::encode(receipt.invite_id))?
             .into_iter()
             .map(|bytes| {
-                serde_json::from_slice::<RedemptionReceipt>(&bytes)
+                crate::state::LedgerReceipt::decode(&bytes)
+                    .map(|ledgered| ledgered.receipt)
                     .map_err(|error| error.to_string())
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -105,7 +103,7 @@ pub(crate) fn admit_invited_member(
         .chain(on_rows.get(&receipt.invite_id).into_iter().flatten())
     {
         if existing.invite_id == receipt.invite_id {
-            if existing.on_row() != receipt.on_row() {
+            if *existing != receipt {
                 return Err("invitation was already redeemed by another request or device".into());
             }
             exact_redemption = true;
@@ -148,21 +146,34 @@ pub(crate) fn admit_invited_member(
         .ok_or("governed members missing")?
         .1;
     let ledger = match candidate
-        .get(ROOT, "invitation_receipts_v1")
+        .get(ROOT, crate::state::invitation_ledger::RECEIPTS_KEY)
         .map_err(|error| error.to_string())?
     {
         Some((_, object)) => object,
         None => candidate
-            .put_object(ROOT, "invitation_receipts_v1", automerge::ObjType::Map)
+            .put_object(
+                ROOT,
+                crate::state::invitation_ledger::RECEIPTS_KEY,
+                automerge::ObjType::Map,
+            )
             .map_err(|error| error.to_string())?,
     };
+    // The invitation goes into the ledger with its issuer's certificate and
+    // transport details named by digest, kept once for every receipt of an
+    // invitation they signed alike ([`crate::state::invitation_ledger`]).
+    let signed = redemption.join().signed_invitation();
+    let shared = crate::join::invitation_shared_runs(signed);
+    let (ledgered, parts) = crate::state::LedgerReceipt::new(
+        receipt.clone(),
+        signed,
+        &shared.iter().map(Vec::as_slice).collect::<Vec<_>>(),
+    );
+    crate::state::invitation_ledger::put_parts(&mut candidate, &parts)?;
     candidate
         .put(
             &ledger,
             hex::encode(receipt.invite_id),
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&receipt).map_err(|error| error.to_string())?,
-            ),
+            automerge::ScalarValue::Bytes(ledgered.encode().map_err(|error| error.to_string())?),
         )
         .map_err(|error| error.to_string())?;
     // An agent identity stays bound to its delegation whatever else it
@@ -179,9 +190,9 @@ pub(crate) fn admit_invited_member(
         },
     );
     if admission.is_none() {
-        admission = Some(receipt.on_row());
+        admission = Some(receipt);
     } else {
-        admissions.push(receipt.on_row());
+        admissions.push(receipt);
         retain_latest_admissions(&mut admissions);
     }
     let identity = GovernedIdentity {
@@ -196,9 +207,7 @@ pub(crate) fn admit_invited_member(
         .put(
             &identities,
             &id,
-            automerge::ScalarValue::Bytes(
-                serde_json::to_vec(&identity).map_err(|error| error.to_string())?,
-            ),
+            automerge::ScalarValue::Bytes(identity.encode().map_err(|error| error.to_string())?),
         )
         .map_err(|error| error.to_string())?;
     candidate

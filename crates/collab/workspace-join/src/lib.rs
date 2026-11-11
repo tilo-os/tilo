@@ -603,6 +603,36 @@ pub fn verify_transport_hint_at(
     verify_transport_hint(hint)
 }
 
+/// The runs of `signed_invitation`'s bytes that invitations from one issuer
+/// over one host share: the issuer's certificate and the signed transport
+/// details, each as it is encoded there. Read, not verified: a keeper of
+/// many invitations names these runs once, and checks each invitation whole
+/// when it puts it back together. An invitation of an earlier layout, or
+/// one that does not decode, shares nothing.
+#[must_use]
+pub fn invitation_shared_runs(signed_invitation: &[u8]) -> Vec<Vec<u8>> {
+    let grant = match postcard::take_from_bytes::<u32>(signed_invitation) {
+        Ok((INVITATION_VERSION, _)) => {
+            postcard::from_bytes::<SignedInvitation>(signed_invitation).map(|signed| signed.grant)
+        }
+        Ok((INVITATION_WITH_INVITER_VERSION, _)) => {
+            postcard::from_bytes::<SignedInvitationWithInviter>(signed_invitation)
+                .map(|signed| signed.grant)
+        }
+        _ => return Vec::new(),
+    };
+    let Ok(grant) = grant else {
+        return Vec::new();
+    };
+    [
+        postcard::to_stdvec(&grant.issuer),
+        postcard::to_stdvec(&grant.transport),
+    ]
+    .into_iter()
+    .filter_map(Result::ok)
+    .collect()
+}
+
 /// The text an invitation is handed over in: its signed bytes as base64.
 pub fn encode_invitation_text(signed_invitation: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(signed_invitation)

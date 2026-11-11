@@ -104,7 +104,7 @@ pub fn seed_workspace(
         doc.put(
             &identities,
             &id,
-            automerge::ScalarValue::Bytes(serde_json::to_vec(&identity).map_err(err)?),
+            automerge::ScalarValue::Bytes(identity.encode().map_err(err)?),
         )
         .map_err(err)?;
     }

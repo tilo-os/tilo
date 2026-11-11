@@ -230,7 +230,7 @@ fn row(peer: &StatePeer, source: &[u8; 32]) -> GovernedIdentity {
         .unwrap()
         .unwrap()
         .0;
-    serde_json::from_slice(raw.as_bytes().unwrap()).unwrap()
+    GovernedIdentity::decode(raw.as_bytes().unwrap()).unwrap()
 }
 fn replace_row(peer: &mut StatePeer, source: &[u8; 32], bytes: Vec<u8>) {
     let workspace = peer.core.workspace_doc.as_mut().unwrap();
@@ -267,11 +267,7 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
     let mut mismatch = base.clone();
     let mut identity = row(&mismatch, &source);
     identity.device_cert.device_label.push_str("changed");
-    replace_row(
-        &mut mismatch,
-        &source,
-        serde_json::to_vec(&identity).unwrap(),
-    );
+    replace_row(&mut mismatch, &source, identity.encode().unwrap());
     cases.push(mismatch);
     let root = SigningKey::from_bytes(&[1; 32]);
     let mut revoked = tilo_user_identity::RevocationEntry {
@@ -297,11 +293,7 @@ fn shared_current_member_retains_original_certificate_json_and_revocation_error_
             bad.signature[0] ^= 1;
             identity.revocations.push(bad);
         }
-        replace_row(
-            &mut candidate,
-            &source,
-            serde_json::to_vec(&identity).unwrap(),
-        );
+        replace_row(&mut candidate, &source, identity.encode().unwrap());
         cases.push(candidate);
     }
     let mut missing = base;
@@ -348,11 +340,7 @@ fn current_member_preserves_restriction_role_semantics_and_current_certificate_e
         source,
         VerifiedCertificate::historical_typed(identity.device_cert.clone()).unwrap(),
     );
-    replace_row(
-        &mut expiring,
-        &source,
-        serde_json::to_vec(&identity).unwrap(),
-    );
+    replace_row(&mut expiring, &source, identity.encode().unwrap());
     compare_native(&expiring, source, now);
     compare_native(&expiring, source, now + Duration::from_nanos(1));
 }
@@ -368,7 +356,7 @@ fn make_foreign(peer: &mut StatePeer, source: &[u8; 32]) {
         *source,
         VerifiedCertificate::historical_typed(identity.device_cert.clone()).unwrap(),
     );
-    replace_row(peer, source, serde_json::to_vec(&identity).unwrap());
+    replace_row(peer, source, identity.encode().unwrap());
 }
 fn assert_foreign(peer: &StatePeer, source: [u8; 32], now: SystemTime, role: Role) {
     let legacy = peer.permissions(source, now).unwrap();

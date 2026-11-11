@@ -30,8 +30,9 @@ const CHECKPOINT_KEYS: [&str; 4] = [
 pub enum GovernanceRow {
     /// The structural owner: never a change anyone writes.
     Owner,
-    /// Members, roles, grants, admission times, sandbox capabilities and
-    /// invitation receipts: what the membership log projects.
+    /// Members, roles, grants, admission times, sandbox capabilities,
+    /// invitation receipts and the invitation parts they share: what the
+    /// membership log projects.
     Membership,
     /// Device rows and the display names beside them.
     Identities,
@@ -104,6 +105,7 @@ impl GovernanceRow {
                 "grants",
                 "sandbox",
                 "invitation_receipts_v1",
+                "invitation_parts_v1",
             ],
             Self::Identities => &["peers", "peer_identities_v1"],
             Self::Settings => &["name", "presets_v1"],
