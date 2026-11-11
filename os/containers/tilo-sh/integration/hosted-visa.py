@@ -364,6 +364,12 @@ async def fill_phase(report: dict[str, object]) -> int:
 async def main() -> int:
     os.makedirs(OUT, exist_ok=True)
     report: dict[str, object] = {"form": FORM_URL}
+    # The open's own facts stay in the report the fill phase writes: one
+    # report of the whole flow, whichever phase ran.
+    previous = os.path.join(OUT, "report.json")
+    if os.path.isfile(previous):
+        with open(previous) as saved:
+            report.update(json.load(saved))
     phase = sys.argv[5] if len(sys.argv) > 5 else "--all"
     if phase == "--open":
         status = await open_phase(report)

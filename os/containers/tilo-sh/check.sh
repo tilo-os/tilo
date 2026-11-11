@@ -136,10 +136,14 @@ if [[ $hosted == 1 ]]; then
   guest_says=$(sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
       --init-groups --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
       --workspace ws-browser-guest --account "$vm_run_account" -- /bin/sh -c \
-      'test -x /usr/libexec/tilo/browser-session && getent passwd tilo-browser >/dev/null && echo browser-in-vm' 2>&1) \
-    || fail "the workspace guest ran no browser check: $guest_says"
-  grep -qx 'browser-in-vm' <<<"$guest_says" || fail "the workspace guest this stack boots carries no hosted Browser: /usr/libexec/tilo/browser-session runs a headless session as the image's tilo-browser user, and this guest has no such thing (os/Containerfile.hosted-guest). The Browser of a hosted workspace runs in the workspace's own VM, so the check can go no further until the guest that carries it is in this tree."
-  echo "ok: the guest carries the headless Browser session"
+      'if [ -x /usr/libexec/tilo/browser-session ]; then echo has-session; else echo no-session; fi
+       if getent passwd tilo-browser >/dev/null; then echo has-user; else echo no-user; fi' 2>&1) \
+    || fail "the workspace VM did not run the guest's own check: $guest_says"
+  echo "$guest_says"
+  if ! grep -qx 'has-session' <<<"$guest_says" || ! grep -qx 'has-user' <<<"$guest_says"; then
+    fail "the workspace guest this stack boots carries no hosted Browser: a VM needs /usr/libexec/tilo/browser-session (the headless session a first browser action starts) and the image's unprivileged tilo-browser user, and this guest has $(grep -qx 'has-session' <<<"$guest_says" || echo no) session and $(grep -qx 'has-user' <<<"$guest_says" || echo no) user. The Browser of a hosted workspace runs in the workspace's own VM, so this check can go no further until the guest that carries it is in this tree (os/Containerfile.hosted-guest)."
+  fi
+  echo "ok: the guest carries the headless Browser session and its user"
 
   step '10. a key opens Browser in a hosted workspace, in its VM'
   hosted_run() { # PHASE
