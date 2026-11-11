@@ -21,12 +21,6 @@ pub fn item_id(field: &str, id: &str) -> String {
     ui::tilo_resource::items::item_resource_id::<Chat>(field, &Id::from_raw(id))
 }
 
-/// Whether `doc` holds a started chat: a record with a channel or a person.
-#[must_use]
-pub fn is_started(doc: &AutoCommit) -> bool {
-    Chat::read(doc).is_ok_and(|chat| !chat.channels.is_empty() || !chat.people.is_empty())
-}
-
 /// The chat record in `doc`; an empty one when `doc` holds none.
 #[must_use]
 pub fn read(doc: &AutoCommit) -> Chat {
@@ -84,19 +78,11 @@ impl Chat {
     /// other people — the same one on every device, because its id names
     /// the participants ([`Chat::direct_id`]) — with the conversations the
     /// record keeps for an agent among them.
+    ///
+    /// A conversation with an agent is named by what the workspace calls its agents (`agents`),
+    /// whether or not the agent is working here this moment.
     #[must_use]
     pub fn conversation_rows(
-        &self,
-        me: &str,
-        messages: &crate::messages::Messages,
-    ) -> Vec<Channel> {
-        self.conversation_rows_named(me, messages, &AgentNames::new())
-    }
-
-    /// [`Self::conversation_rows`], with what the workspace calls its agents: a conversation with
-    /// an agent is named for it whether or not the agent is working here this moment.
-    #[must_use]
-    pub fn conversation_rows_named(
         &self,
         me: &str,
         messages: &crate::messages::Messages,
@@ -105,7 +91,7 @@ impl Chat {
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
         let mut push = |id: &Id, participants: Vec<String>, recorded: Option<&Conversation>| {
-            let name = self.display_names_named(id, Some(me), agents);
+            let name = self.display_names(id, Some(me), agents);
             direct.push((
                 name.clone(),
                 Channel {
@@ -186,16 +172,11 @@ impl Chat {
     ///
     /// The one place a conversation is named, for the window and for whatever
     /// else names it (an agent's run on a turn in it).
+    ///
+    /// An agent is named by what the workspace's own record calls it (`agents`), the identity
+    /// record every app of the workspace reads, not by whether its device happens to be here.
     #[must_use]
-    pub fn display_names(&self, id: &Id, me: Option<&str>) -> String {
-        self.display_names_named(id, me, &AgentNames::new())
-    }
-
-    /// [`Self::display_names`], with what the workspace's own record calls its agents: an agent is
-    /// named by the identity record every app of the workspace reads, not by whether its device
-    /// happens to be here.
-    #[must_use]
-    pub fn display_names_named(&self, id: &Id, me: Option<&str>, agents: &AgentNames) -> String {
+    pub fn display_names(&self, id: &Id, me: Option<&str>, agents: &AgentNames) -> String {
         if let Some(conversation) = self.channels.get(id)
             && !conversation.participants.is_empty()
             && !conversation.name.trim().is_empty()

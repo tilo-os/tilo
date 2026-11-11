@@ -361,8 +361,6 @@ pub struct ChatApp {
     /// What the workspace calls this window's person, numbered like anyone else.
     pub(crate) own_label: Option<String>,
     pub(crate) workspace_colors: HashMap<Id, (u8, u8, u8)>,
-    /// Exact bare Agent ids from the authenticated workspace roster.
-    pub(crate) workspace_agents: Vec<Id>,
     /// What the workspace's record of its agents calls each of them, by bare id: the agent identity
     /// record every app of the workspace reads, followed as it changes. It names an author
     /// (`agent:<id>`) whether or not the agent is working here this moment.
@@ -772,7 +770,6 @@ impl ChatApp {
             workspace_labels: ui::presence::ParticipantLabels::default(),
             own_label: None,
             workspace_colors: HashMap::new(),
-            workspace_agents: Vec::new(),
             workspace_agent_names: HashMap::new(),
             workspace_agent_colours: HashMap::new(),
             agents_record: None,

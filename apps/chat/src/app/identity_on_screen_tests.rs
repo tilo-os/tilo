@@ -401,12 +401,51 @@ fn an_agents_answer_reads_by_the_workspaces_agent_record() {
     // The conversation reads by its name, as the bar and the card's header name it.
     let read = crate::projection::read(&doc);
     assert_eq!(
-        read.display_names_named(
+        read.display_names(
             &conversation,
             Some(crate::model::ME),
             &app.workspace_agent_names
         ),
         "Notes"
+    );
+
+    // An agent wears the colour its own record gives it, whatever presence announced.
+    app.workspace_agent_colours.insert("notes".to_owned(), 3);
+    app.workspace_colors
+        .insert("agent:notes".to_owned(), (255, 0, 0));
+    assert_eq!(
+        app.participant_hue("agent:notes"),
+        ui::tokens::PresenceHue::from_slot(3)
+    );
+
+    // The sidebar lists the conversation once, by the agent's name and wearing its own face in
+    // the colour it wears everywhere in the workspace.
+    app.show_sidebar();
+    let (sections, _) = app.places.shown().expect("the sidebar is shown");
+    let rows: Vec<_> = sections
+        .last()
+        .expect("the direct messages")
+        .items
+        .iter()
+        .filter(|item| item.label == "Notes")
+        .collect();
+    assert_eq!(rows.len(), 1, "one row for the one conversation");
+    let face = rows[0]
+        .person
+        .as_ref()
+        .expect("the row wears the agent's face");
+    assert!(face.agent, "an agent's face, never a person's");
+    assert_eq!(face.identity, "agent:notes");
+    assert_eq!(face.colour, Some(app.identity_colour("agent:notes")));
+
+    // Open, the conversation's bar leads with the same face.
+    app.active_channel = conversation.to_string();
+    let (_, bar) = app.location_lead();
+    let bar = bar.expect("the bar wears the agent's face");
+    assert!(bar.agent);
+    assert_eq!(
+        (bar.name.as_str(), bar.identity.as_str()),
+        ("Notes", "agent:notes")
     );
 
     // An agent the record names not is never shown a part of its routing id either.

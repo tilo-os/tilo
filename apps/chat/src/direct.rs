@@ -204,26 +204,13 @@ impl ChatApp {
         Ok(Chat::direct_id(participants))
     }
 
-    /// The person the direct conversation `channel` is with, when it is one
-    /// of this window's person with exactly one other person: what the app's
-    /// direct operations are asked on. A conversation with an agent, or one
-    /// of more than two people, is not one of them.
+    /// The person the direct conversation `channel` is with, when it is one of this window's
+    /// person with exactly one other person: what the app's direct operations are asked on. A
+    /// conversation with an agent, or one of more than two people, is not one of them.
     fn direct_peer(&self, channel: &crate::model::Channel) -> Option<String> {
-        if !channel.direct || channel.participants.len() != 2 {
-            return None;
-        }
-        let participants: Vec<Participant> = channel
-            .participants
-            .iter()
-            .filter_map(|key| Participant::parse(key))
-            .collect();
-        if participants.len() != 2 || participants.iter().any(Participant::is_agent) {
-            return None;
-        }
-        participants
-            .into_iter()
-            .find(|participant| participant.id() != self.me.id)
-            .map(|participant| participant.id().to_owned())
+        self.conversation_peer(&channel.participants)
+            .filter(|peer| channel.direct && !peer.is_agent())
+            .map(|peer| peer.id().to_owned())
     }
 
     /// The direct conversations the sidebar lists: those holding messages,

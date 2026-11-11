@@ -393,15 +393,9 @@ impl Conversations {
     /// The workspace's agents by their id, as the workspace keeps their names: what a
     /// conversation with an agent is named for.
     fn agent_names(opened: &Opened) -> chat::projection::AgentNames {
-        let Some(record) = Self::workspace_agents(opened) else {
-            return chat::projection::AgentNames::default();
-        };
-        let state = record.get();
-        state
-            .active()
-            .filter(|agent| !agent.name.trim().is_empty())
-            .map(|agent| (agent.id.0.clone(), agent.name.trim().to_owned()))
-            .collect()
+        Self::workspace_agents(opened)
+            .map(|record| record.get().active_names())
+            .unwrap_or_default()
     }
 
     /// The workspace's agents record `opened` holds, opened here where it is not. `None` where the
@@ -983,7 +977,7 @@ fn turns(
             turns.push(Entry {
                 run: TrackerRun {
                     issue: format!("{address}/messages/{message_id}"),
-                    title: chat.display_names_named(id, Some(person), agent_names),
+                    title: chat.display_names(id, Some(person), agent_names),
                     instruction,
                     agent: agent.clone(),
                     epoch: 1,

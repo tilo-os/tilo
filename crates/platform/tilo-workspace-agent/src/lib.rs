@@ -632,6 +632,16 @@ impl WorkspaceAgents {
             .unwrap_or_else(|| format!("{stem}-{}", MAX_AGENTS + 2))
     }
 
+    /// What each agent working here is called, by its bare id (its actor is `agent:<id>`): the
+    /// one answer every app names an agent by.
+    #[must_use]
+    pub fn active_names(&self) -> std::collections::HashMap<String, String> {
+        self.active()
+            .filter(|agent| !agent.name.trim().is_empty())
+            .map(|agent| (agent.id.0.clone(), agent.name.trim().to_owned()))
+            .collect()
+    }
+
     /// Every agent's name, as search names them.
     #[must_use]
     pub fn names(&self) -> Vec<&str> {

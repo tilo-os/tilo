@@ -17,6 +17,7 @@ use ui::window_toolbar::{
 
 use crate::app::{ChatApp, Hit};
 use crate::model::{ChannelKind, Presence};
+use crate::record::Participant;
 
 /// The bar's entries, each carrying the window's own hit.
 pub(crate) type BarEntries = BarCommands<Hit>;
@@ -172,33 +173,43 @@ impl ChatApp {
 
     /// What leads the conversation's name in the bar: the face of the one person or agent a
     /// direct conversation is with, else the channel's icon.
-    fn location_lead(&self) -> (Option<String>, Option<LocationAvatar>) {
-        let id = ui::tilo_resource::Id::from_raw(self.active_channel.clone());
-        if let Some(participants) = crate::record::Chat::direct_participants(&id) {
-            let mut others = participants
-                .iter()
-                .filter(|participant| !self.is_me(participant.id()));
-            if let (Some(other), None) = (others.next(), others.next()) {
-                let presence = self
-                    .user(other.id())
-                    .map(|user| match self.live_status(user) {
-                        Presence::Online => LocationPresence::Online,
-                        Presence::Idle => LocationPresence::Away,
-                        Presence::Dnd => LocationPresence::Busy,
-                        Presence::Offline => LocationPresence::Offline,
-                    });
-                let avatar = LocationAvatar {
-                    name: self.user_name(other.id()),
-                    identity: other.id().to_owned(),
-                    agent: other.is_agent(),
-                    presence,
-                };
-                return (None, Some(avatar));
-            }
-            return (Some("users".to_owned()), None);
+    pub(crate) fn location_lead(&self) -> (Option<String>, Option<LocationAvatar>) {
+        let channel = self.channel(&self.active_channel);
+        // A direct conversation not listed yet (no message in it) is named by its id.
+        let participants = match channel {
+            Some(channel) => channel.direct.then(|| channel.participants.clone()),
+            None => crate::record::Chat::direct_participants(&ui::tilo_resource::Id::from_raw(
+                self.active_channel.clone(),
+            ))
+            .map(|participants| participants.iter().map(Participant::key).collect()),
+        };
+        if let Some(participants) = participants {
+            let Some(other) = self.conversation_peer(&participants) else {
+                return (Some("users".to_owned()), None);
+            };
+            // An agent is named and coloured by its actor, as its byline and its row are.
+            let identity = if other.is_agent() {
+                other.key()
+            } else {
+                other.id().to_owned()
+            };
+            let presence = self
+                .user(other.id())
+                .map(|user| match self.live_status(user) {
+                    Presence::Online => LocationPresence::Online,
+                    Presence::Idle => LocationPresence::Away,
+                    Presence::Dnd => LocationPresence::Busy,
+                    Presence::Offline => LocationPresence::Offline,
+                });
+            let avatar = LocationAvatar {
+                name: self.display_name(&identity),
+                identity,
+                agent: other.is_agent(),
+                presence,
+            };
+            return (None, Some(avatar));
         }
-        let icon = match self.channel(&self.active_channel) {
-            Some(channel) if channel.direct => "user",
+        let icon = match channel {
             Some(channel) if channel.kind == ChannelKind::Voice => "volume-2",
             Some(_) => "hash",
             None => return (None, None),

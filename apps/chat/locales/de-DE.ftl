@@ -150,12 +150,16 @@ chat-header-call-open = Anruf öffnen
 
 chat-identity-available = Verfügbar
 chat-identity-in-voice = Im Sprachraum
+chat-member-in-channel = In { $channel }
 
 chat-resource-copy-link = Link kopieren
 chat-resource-not-opened = Konnte nicht geöffnet werden
 chat-agent-kind = Agent
 chat-channel-empty-message = Sag Hallo. Alle in #{ $channel } sehen es.
 chat-send = Senden
+chat-voice-channel = Sprachkanal
+chat-quote-caption = Antwort auf
+chat-quote-earlier = Eine Nachricht weiter oben
 chat-conversation-read-only = Du kannst diese Unterhaltung lesen, aber nicht darin schreiben.
 chat-direct-unavailable = Diese Unterhaltung geht noch nicht auf: Dieses Gerät hat den Chat des Arbeitsbereichs nicht geladen.
 chat-person-unknown = In diesem Arbeitsbereich gibt es niemanden zum Anschreiben.

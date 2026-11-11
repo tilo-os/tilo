@@ -1484,7 +1484,11 @@ fn the_migration_opens_the_users_chat_with_everything_in_it() {
             "the agent the conversation was with is now its participant"
         );
         let row = chat
-            .conversation_rows(ADA, &crate::messages::Messages::default())
+            .conversation_rows(
+                ADA,
+                &crate::messages::Messages::default(),
+                &crate::projection::AgentNames::new(),
+            )
             .into_iter()
             .find(|row| row.id == OLD_AGENT_CHANNEL)
             .expect("the agent's conversation is listed");
@@ -1671,14 +1675,22 @@ fn a_person_the_workspace_has_no_name_for_goes_by_their_tag() {
     let chat = ada.state().unwrap();
     let with_bo = Chat::direct_id([Participant::person(ADA), Participant::person(BO)]);
     let row = chat
-        .conversation_rows(ADA, &crate::messages::Messages::default())
+        .conversation_rows(
+            ADA,
+            &crate::messages::Messages::default(),
+            &crate::projection::AgentNames::new(),
+        )
         .into_iter()
         .find(|row| row.id == with_bo.to_string())
         .expect("Ada lists her conversation with Bo");
     assert!(row.direct, "it is a conversation, not a channel");
     assert_eq!(row.name, crate::identity::unnamed_label(BO));
     let row = chat
-        .conversation_rows(BO, &crate::messages::Messages::default())
+        .conversation_rows(
+            BO,
+            &crate::messages::Messages::default(),
+            &crate::projection::AgentNames::new(),
+        )
         .into_iter()
         .find(|row| row.id == with_bo.to_string())
         .expect("Bo lists it too");

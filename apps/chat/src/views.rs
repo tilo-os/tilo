@@ -87,7 +87,7 @@ pub struct Names {
     pub me: String,
     /// Each agent of the workspace, by its id (the part after `agent:`), as the workspace
     /// keeps its name.
-    pub agents: std::collections::BTreeMap<String, String>,
+    pub agents: crate::projection::AgentNames,
 }
 
 /// One message of a channel, as its page shows it.
@@ -182,13 +182,13 @@ impl Work {
 
     /// What happened, in one line, when the work failed.
     #[must_use]
-    pub fn happened(&self) -> &'static str {
-        match self.state.as_str() {
-            "provider_cancelled" => "Stopped",
-            "provider_truncated" => "The answer was interrupted",
-            "refused" | "provider_refused" => "Could not do this",
-            _ => "Could not finish",
-        }
+    pub fn happened(&self) -> String {
+        crate::i18n::t(match self.state.as_str() {
+            "provider_cancelled" => "chat-agent-cancelled",
+            "provider_truncated" => "chat-agent-truncated",
+            "refused" | "provider_refused" => "chat-agent-refused",
+            _ => "chat-agent-failed",
+        })
     }
 }
 
@@ -360,7 +360,7 @@ impl Channel {
                 Some(channel) if channel.is_channel() && !channel.name.trim().is_empty() => {
                     channel.name.trim().to_owned()
                 }
-                _ => chat.display_names(&channel_id, Some(me)),
+                _ => chat.display_names(&channel_id, Some(me), &names.agents),
             },
             topic: channel
                 .as_ref()
@@ -626,9 +626,9 @@ fn header_facts(c: &Channel, cx: &ViewCx) -> Vec<Node> {
             .into(),
     ];
     let caption = if c.voice {
-        "Voice channel"
+        crate::i18n::t("chat-voice-channel")
     } else {
-        c.topic.trim()
+        c.topic.trim().to_owned()
     };
     if !caption.is_empty() {
         facts.push(
@@ -956,7 +956,7 @@ fn failed_row(message: &Message, work: &Work, cx: &ViewCx) -> Node {
         banner = banner.message(reason);
     }
     if message.retry {
-        banner = banner.action("Retry");
+        banner = banner.action(crate::i18n::t("chat-retry"));
     }
     let banner: Node = banner.into();
     if let Some(summons) = message.retry_summons.clone() {
@@ -1001,12 +1001,12 @@ fn reply_quote(c: &Channel, quote: &Quote, key: &str, _cx: &ViewCx) -> Node {
     let excerpt = if quote.excerpt.trim().is_empty() {
         // A message the page does not hold (one from an earlier part of the chat) still says
         // it quotes one, so the reply does not read as answering nothing.
-        "A message above".to_owned()
+        crate::i18n::t("chat-quote-earlier")
     } else {
         quote.excerpt.trim().to_owned()
     };
     ui::QuoteBuilder::new(key, &excerpt)
-        .caption("In reply to")
+        .caption(crate::i18n::t("chat-quote-caption"))
         .author(principal(author, &quote.author))
         .into()
 }
@@ -1095,7 +1095,7 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let input = ui::fill(input);
     // The attach button: raises the system's own file chooser for the conversation (Chat's
     // `attach-file` effect with no path), whose files become the message's attachments.
-    let attach: Node = ui::ButtonBuilder::new(&cx.key("attach"), "Attach")
+    let attach: Node = ui::ButtonBuilder::new(&cx.key("attach"), crate::i18n::t("chat-attach"))
         .icon("paperclip")
         .icon_only(true)
         .role(ui::ButtonRole::Plain)
@@ -1103,7 +1103,7 @@ fn composer(c: &Channel, cx: &ViewCx) -> Node {
     let fired = cx.action(&attach, "press", "attach-file");
     let attach = node::on(attach, "press", fired);
     // The button carries no text of its own: it sends the draft the field is bound to.
-    let send: Node = ui::ButtonBuilder::new(&cx.key("send"), "Send")
+    let send: Node = ui::ButtonBuilder::new(&cx.key("send"), crate::i18n::t("chat-send"))
         .icon("send")
         .icon_only(true)
         .into();
@@ -1627,11 +1627,15 @@ mod tests {
             })
             .collect();
         assert!(
-            labels.iter().any(|label| label == "Attach"),
+            labels
+                .iter()
+                .any(|label| *label == crate::i18n::t("chat-attach")),
             "the composer offers attach: {labels:?}"
         );
         assert!(
-            labels.iter().any(|label| label == "Send"),
+            labels
+                .iter()
+                .any(|label| *label == crate::i18n::t("chat-send")),
             "the composer offers send: {labels:?}"
         );
         // The field is full width: a `fill` argument asks for the room the buttons leave.
@@ -1669,7 +1673,7 @@ mod tests {
             .into_iter()
             .find(|node| {
                 node.kind == "ui.Button"
-                    && node.props.get("label") == Some(&Value::Text("Send".to_owned()))
+                    && node.props.get("label") == Some(&Value::Text(crate::i18n::t("chat-send")))
             })
             .expect("the composer's send button");
         assert_eq!(
@@ -2064,9 +2068,9 @@ mod tests {
         // A turn that ended without an answer the person can read leaves a row saying what
         // happened, and a Retry that asks the agent again on the very same message.
         for (state, happened) in [
-            ("provider_failed", "Could not finish"),
-            ("provider_cancelled", "Stopped"),
-            ("refused", "Could not do this"),
+            ("provider_failed", "chat-agent-failed"),
+            ("provider_cancelled", "chat-agent-cancelled"),
+            ("refused", "chat-agent-refused"),
         ] {
             let mut channel = writing_channel(state, "Half an answer");
             if let Some(reply) = channel.messages.last_mut() {
@@ -2085,7 +2089,7 @@ mod tests {
             let props = &rows[0].props;
             assert_eq!(
                 props.get("title"),
-                Some(&Value::Text(happened.to_owned())),
+                Some(&Value::Text(crate::i18n::t(happened))),
                 "the row says what happened ({state})"
             );
             assert_eq!(
@@ -2100,7 +2104,7 @@ mod tests {
             );
             assert_eq!(
                 props.get("action"),
-                Some(&Value::Text("Retry".to_owned())),
+                Some(&Value::Text(crate::i18n::t("chat-retry"))),
                 "the row offers a Retry ({state})"
             );
             assert_eq!(

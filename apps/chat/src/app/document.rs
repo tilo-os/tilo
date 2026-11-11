@@ -65,8 +65,7 @@ impl ChatApp {
             }
         }
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
-        self.channels =
-            chat.conversation_rows_named(&self.me.id, &held, &self.workspace_agent_names);
+        self.channels = chat.conversation_rows(&self.me.id, &held, &self.workspace_agent_names);
         self.recorded_channels = chat.channels.iter().map(|(id, _)| id.to_string()).collect();
         self.categories = chat.category_rows();
         for category in &mut self.categories {

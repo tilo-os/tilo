@@ -98,13 +98,12 @@ impl ChatApp {
             }
             return crate::identity::unnamed_label(id);
         }
-        if let Some(agent) = id.strip_prefix("agent:")
-            && let Some(name) = self.known_agent_name(agent)
-        {
+        let agent = id
+            .strip_prefix("agent:")
+            .and_then(|agent| self.known_agent_name(agent))
+            .or_else(|| self.agent_authors.get(id).cloned());
+        if let Some(name) = agent {
             return crate::i18n::t_args("chat-agent-author", &[("name", name.into())]);
-        }
-        if let Some(agent) = self.agent_authors.get(id) {
-            return format!("{agent} (agent)");
         }
         let named = self.display_name(id);
         // A name that happens to equal the id is still a name when the
@@ -146,28 +145,34 @@ impl ChatApp {
         }
     }
 
-    /// The presence hue `id` wears: the one the workspace announced for them, else the one an
-    /// agent's own record gives it, else the one their identity derives — so a face, a chip and a
-    /// byline are one colour, here as in every app of the workspace.
+    /// The presence hue `id` wears: an agent's is the one its own record gives it (its keeper's
+    /// choice, else its identity's), a person's the one the workspace announced for them, else
+    /// the one their identity derives — so a face, a chip and a byline are one colour, here as
+    /// in every app of the workspace.
     pub(crate) fn participant_hue(&self, id: &str) -> ui::tokens::PresenceHue {
-        self.workspace_colors
-            .get(id)
-            .and_then(|(red, green, blue)| {
-                ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
-            })
+        id.strip_prefix("agent:")
+            .and_then(|agent| self.workspace_agent_colours.get(agent))
+            .map(|slot| ui::tokens::PresenceHue::from_slot(usize::from(*slot)))
             .or_else(|| {
-                id.strip_prefix("agent:")
-                    .and_then(|agent| self.workspace_agent_colours.get(agent))
-                    .map(|slot| ui::tokens::PresenceHue::from_slot(usize::from(*slot)))
+                self.workspace_colors
+                    .get(id)
+                    .and_then(|(red, green, blue)| {
+                        ui::tokens::PresenceHue::nearest_to_srgb(*red, *green, *blue)
+                    })
             })
             .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(id))
     }
 
     /// The participant's own colour, in the shared presence vocabulary: the workspace's assignment
-    /// when it made one, otherwise [`Self::participant_hue`] as the colour that hue wears.
+    /// when it made one for a person, otherwise [`Self::participant_hue`] as the colour that hue
+    /// wears.
     pub fn participant_color(&self, id: &str) -> (u8, u8, u8) {
+        let agent = id
+            .strip_prefix("agent:")
+            .is_some_and(|agent| self.workspace_agent_colours.contains_key(agent));
         self.workspace_colors
             .get(id)
+            .filter(|_| !agent)
             .copied()
             .unwrap_or_else(|| ui::presence::identity_rgb(self.participant_hue(id)))
     }

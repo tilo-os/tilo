@@ -287,7 +287,16 @@ impl ChatApp {
         for agent in &agents {
             agent.hash(&mut people);
         }
-        self.workspace_agents.hash(&mut people);
+        let mut named: Vec<_> = self.workspace_agent_names.iter().collect();
+        named.sort_unstable();
+        for agent in &named {
+            agent.hash(&mut people);
+        }
+        let mut worn: Vec<_> = self.workspace_agent_colours.iter().collect();
+        worn.sort_unstable();
+        for agent in &worn {
+            agent.hash(&mut people);
+        }
         let look = PaintLook {
             theme: theme.clone(),
             transform: tf,

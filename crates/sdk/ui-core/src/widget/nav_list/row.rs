@@ -270,6 +270,9 @@ fn plain_face<'a>(spec: &'a NavItemSpec, row: Rect, label: &'a str) -> NavRowFac
         let mut avatar = crate::widget::AvatarFace::new(name, &person.identity)
             .image(person.image.as_ref())
             .presence_ring();
+        if person.agent {
+            avatar = avatar.agent();
+        }
         if let Some(colour) = person.colour {
             avatar = avatar.presence(colour);
         }

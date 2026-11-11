@@ -152,12 +152,16 @@ chat-header-call-open = Open call
 
 chat-identity-available = Available
 chat-identity-in-voice = In voice
+chat-member-in-channel = In { $channel }
 
 chat-resource-copy-link = Copy link
 chat-resource-not-opened = Could not open
 chat-agent-kind = Agent
 chat-channel-empty-message = Say hello. Everyone in #{ $channel } sees it.
 chat-send = Send
+chat-voice-channel = Voice channel
+chat-quote-caption = In reply to
+chat-quote-earlier = A message above
 chat-conversation-read-only = You can read this conversation but not write in it.
 chat-direct-unavailable = You can't open that conversation yet: this device hasn't loaded the workspace's chat.
 chat-person-unknown = There's nobody in this workspace to message there.

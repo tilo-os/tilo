@@ -47,11 +47,7 @@ impl ChatApp {
             return false;
         };
         let state = record.get();
-        let names: HashMap<Id, String> = state
-            .active()
-            .filter(|agent| !agent.name.trim().is_empty())
-            .map(|agent| (agent.id.0.clone(), agent.name.trim().to_owned()))
-            .collect();
+        let names = state.active_names();
         let colours: HashMap<Id, u8> = state
             .active()
             .map(|agent| (agent.id.0.clone(), agent.slot()))
@@ -153,18 +149,6 @@ impl ChatApp {
                 (!people.is_empty()).then(|| (channel.id.clone(), people))
             })
             .collect();
-        self.workspace_agents = presence
-            .names
-            .keys()
-            .filter(|id| presence.participant_kind(id) == ui::presence::ParticipantKind::Agent)
-            .map(|id| {
-                id.0.strip_prefix("agent:")
-                    .unwrap_or(id.0.as_str())
-                    .to_owned()
-            })
-            .collect();
-        self.workspace_agents.sort();
-        self.workspace_agents.dedup();
         self.workspace_persons.clear();
         self.workspace_names.retain(|id, _| {
             presence

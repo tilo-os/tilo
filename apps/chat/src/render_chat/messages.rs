@@ -1338,9 +1338,13 @@ impl ChatApp {
         let cy = bar.center().y;
         let mut ctx = PaintCtx::new(scene, tf, tr, theme);
         for pid in parts.iter().take(3) {
-            let name = self.user_name(pid);
-            AvatarFace::new(&name, pid)
-                .presence(self.identity_colour(pid))
+            // An agent who answered wears its own face, as its byline does.
+            let name = self.display_name(pid);
+            let mut face = AvatarFace::new(&name, pid);
+            if self.is_agent_author(pid) {
+                face = face.agent();
+            }
+            face.presence(self.identity_colour(pid))
                 .ringed_on(if open || self.hovered(bar) {
                     ground
                 } else {

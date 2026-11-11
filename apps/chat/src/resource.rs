@@ -49,20 +49,22 @@ impl Chat {
                     .of_kind(IndexKind::Conversation)
                     .with_icon(CONVERSATION_ICON)
             });
-        // A conversation the record holds as an item: a group of people, or a
-        // person and an agent. What it is called is what its participants are
-        // called, until they name it; the row shows those participants beside
-        // it.
+        // A conversation the record holds as an item: a group of people, or a person and an
+        // agent. What it is called is its own name, which a kept one is made with, else what its
+        // participants are called; the row shows those participants beside it.
         let conversations = self
             .channels
             .iter()
             .filter(|(_, conversation)| !conversation.is_channel())
             .map(|(id, _)| {
-                SearchEntry::new(self.display_names(id, None), "")
-                    .anchored(anchor("channels", id))
-                    .of_kind(IndexKind::Conversation)
-                    .with_icon(CONVERSATION_ICON)
-                    .showing(self.participant_rows(id))
+                SearchEntry::new(
+                    self.display_names(id, None, &crate::projection::AgentNames::new()),
+                    "",
+                )
+                .anchored(anchor("channels", id))
+                .of_kind(IndexKind::Conversation)
+                .with_icon(CONVERSATION_ICON)
+                .showing(self.participant_rows(id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
             SearchEntry::new(&category.name, "Category").anchored(anchor("categories", id))

@@ -2974,7 +2974,7 @@ fn the_bar_leads_the_conversation_with_who_it_is_with() {
         .expect("the conversation is the window's location");
     let avatar = location.avatar.expect("the agent's face leads it");
     assert!(avatar.agent);
-    assert_eq!(avatar.identity, "assistant");
+    assert_eq!(avatar.identity, "agent:assistant");
     assert_eq!(location.icon, None);
 
     let channel = app
