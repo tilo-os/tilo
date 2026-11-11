@@ -487,12 +487,7 @@ pub fn portable_cover_value(value: &str) -> bool {
         .is_ok_and(|bytes| {
             bytes.len() <= MAX_PORTABLE_COVER_BYTES
                 && bytes.starts_with(b"\x89PNG\r\n\x1a\n")
-                && image::ImageReader::with_format(
-                    std::io::Cursor::new(&bytes),
-                    image::ImageFormat::Png,
-                )
-                .into_dimensions()
-                .is_ok_and(|(width, height)| {
+                && ui::image_codec::dimensions(&bytes).is_some_and(|(width, height)| {
                     width > 0
                         && height > 0
                         && width <= MAX_PORTABLE_COVER_EDGE
@@ -501,7 +496,11 @@ pub fn portable_cover_value(value: &str) -> bool {
                 // Header dimensions cap the decode allocation. Fully decode
                 // afterwards so a PNG signature with malformed/truncated data
                 // never becomes a durable cover peers cannot render.
-                && image::load_from_memory(&bytes).is_ok()
+                && ui::png::decode_rgba8_within(
+                    &bytes,
+                    u64::from(MAX_PORTABLE_COVER_EDGE).saturating_mul(u64::from(MAX_PORTABLE_COVER_EDGE)),
+                )
+                .is_ok()
         })
 }
 

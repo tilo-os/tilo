@@ -86,16 +86,9 @@ pub fn sample_cover(album_id: &str) -> String {
             ]);
         }
     }
-    let Some(cover) = image::RgbaImage::from_raw(EDGE, EDGE, pixels) else {
+    let Ok(png) = ui::png::encode_rgba8(EDGE, EDGE, &pixels) else {
         return String::new();
     };
-    let mut png = Vec::new();
-    if image::DynamicImage::ImageRgba8(cover)
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .is_err()
-    {
-        return String::new();
-    }
     format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(png)
