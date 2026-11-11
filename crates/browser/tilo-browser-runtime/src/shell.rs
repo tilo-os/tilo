@@ -1242,22 +1242,7 @@ impl BrowserShell {
                 DesktopAsk::Intent(intent) => {
                     let _ = self.page_intent(intent);
                 }
-                // The workspace menu's "Join a workspace…", which the page
-                // offers with the session's host actions: the directory the
-                // session's shell opens, over the page's own site.
-                DesktopAsk::HostAction(id) if id == tilo_desktop::desktop_host::JOIN_WORKSPACE => {
-                    self.directory.open();
-                }
-                DesktopAsk::HostAction(id) => {
-                    // The empty desk's welcome verbs are the desktop's own,
-                    // carried out here; every other host action goes to the
-                    // page that published it.
-                    if let Some(card) = LaunchpadAction::from_host_id(&id) {
-                        self.launchpad(card);
-                    } else {
-                        self.requests.borrow_mut().push(HostRequest::Action(id));
-                    }
-                }
+                DesktopAsk::HostAction(id) => self.host_action(id),
                 DesktopAsk::ReportProblem => self.report_problem(),
                 // The person's account, billing beside who they are, is Settings' Billing page.
                 DesktopAsk::AccountSettings => {
@@ -1630,6 +1615,23 @@ impl BrowserShell {
         offered
     }
 
+    /// Carry out the host action `id`, however it was chosen: a card on the
+    /// empty desk, the workspace menu, or its row in search.
+    fn host_action(&self, id: String) {
+        // The workspace menu's "Join a workspace…": the directory the
+        // session's shell opens, over the page's own site.
+        if id == tilo_desktop::desktop_host::JOIN_WORKSPACE {
+            self.directory.open();
+        } else if let Some(card) = LaunchpadAction::from_host_id(&id) {
+            // The empty desk's welcome verbs are the desktop's own, carried
+            // out here.
+            self.launchpad(card);
+        } else {
+            // Every other host action goes to the page that published it.
+            self.requests.borrow_mut().push(HostRequest::Action(id));
+        }
+    }
+
     /// A verb of the empty desk's launchpad, as its card, its host action
     /// and its resource action all ask for it: the app action the verb
     /// declares, what only the page can do, and else the app itself.
@@ -1746,9 +1748,9 @@ impl Widget for BrowserShell {
         // performs them when it reads this frame's status.
         let choices = self.handle.take_host_choices();
         changed |= !choices.is_empty();
-        self.requests
-            .borrow_mut()
-            .extend(choices.into_iter().map(HostRequest::Action));
+        for id in choices {
+            self.host_action(id);
+        }
         changed
     }
 
