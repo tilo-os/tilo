@@ -2297,6 +2297,90 @@ mod write_stage_tests {
         endpoint.close().await;
     }
 
+    /// What a program writes to a document's file reads back as written, though Markdown would
+    /// join the paragraph's two lines; an edit of the document itself changes the file, as its
+    /// projection.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_document_reads_back_the_bytes_written_until_the_document_is_edited() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("documents").unwrap()));
+        let doc = namespace
+            .lock()
+            .unwrap()
+            .create_document(ROOT_INO, "question.md", "md", 1)
+            .unwrap();
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        let fs = tokio::task::spawn_blocking(move || {
+            let write = |bytes: &[u8]| {
+                assert_eq!(
+                    fs.write_buffer(doc, 0, bytes),
+                    Ok(u32::try_from(bytes.len()).unwrap())
+                );
+                assert_eq!(fs.flush_inode(doc), Ok(()));
+                fs.settle_last_close(doc, true);
+            };
+            let question = b"Question X\nfirst line of thought\n";
+            write(question);
+            assert_eq!(
+                &*fs.document_export(doc).unwrap(),
+                question,
+                "the file is the bytes written"
+            );
+            assert_eq!(
+                fs.presented_attr(doc).unwrap().0.size,
+                question.len() as u64
+            );
+            fs
+        })
+        .await
+        .unwrap();
+        // Edited as a document, it reads as the document's projection from then on.
+        {
+            let mut ns = namespace.lock().unwrap();
+            let block = ns.document_insert_block(doc, None, "paragraph").unwrap();
+            ns.document_splice(doc, &block, 0, 0, "added in a rich view");
+        }
+        let edited = tokio::task::spawn_blocking(move || fs.document_export(doc).unwrap())
+            .await
+            .unwrap();
+        assert!(String::from_utf8_lossy(&edited).contains("added in a rich view"));
+        assert_ne!(&*edited, b"Question X\nfirst line of thought\n");
+        endpoint.close().await;
+    }
+
+    /// `chmod` and a create's mode are the record's on the FUSE plane: a checkout's script is
+    /// executable, setuid never sticks, a directory keeps setgid.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_mode_given_to_a_file_or_directory_is_kept_without_setuid() {
+        let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+        let hydrator = Arc::new(Hydrator::new(
+            endpoint.clone(),
+            Arc::new(ContentStore::memory()),
+        ));
+        let namespace = Arc::new(Mutex::new(Namespace::new("modes").unwrap()));
+        let heuristics = Arc::new(Heuristics::new(Arc::clone(&hydrator)));
+        let fs = QuickFS::new(Arc::clone(&namespace), hydrator, heuristics);
+        tokio::task::spawn_blocking(move || {
+            let tool = fs.create_empty_file(ROOT_INO, "tool").unwrap();
+            assert_eq!(fs.ns().getattr(tool).unwrap().perm, 0o644);
+            assert_eq!(fs.set_mode(tool, 0o100_755), Ok(()));
+            assert_eq!(fs.ns().getattr(tool).unwrap().perm, 0o755);
+            assert_eq!(fs.set_mode(tool, 0o104_755), Ok(()));
+            assert_eq!(fs.ns().getattr(tool).unwrap().perm, 0o755, "never setuid");
+            let shared = fs.create_empty_dir(ROOT_INO, "shared").unwrap();
+            assert_eq!(fs.set_mode(shared, 0o42_775), Ok(()));
+            assert_eq!(fs.ns().getattr(shared).unwrap().perm, 0o2775);
+        })
+        .await
+        .unwrap();
+        endpoint.close().await;
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn document_read_does_not_clone_per_chunk() {
         const CHUNK: u32 = 128 * 1024;

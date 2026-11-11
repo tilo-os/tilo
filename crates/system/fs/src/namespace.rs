@@ -25,7 +25,7 @@ use tilo_automerge::read::{map_at, str_at};
 use uuid::Uuid;
 
 /// A document node's field naming, by content id, the bytes last written to its file
-/// ([`Namespace::export_document`]).
+/// ([`Namespace::document_written`]).
 const VERBATIM: &str = "verbatim";
 /// The content id of the document's projection when [`VERBATIM`] was written: the file is those
 /// bytes while the projection still is this.
@@ -2851,32 +2851,50 @@ impl Namespace {
         map_at(&self.doc, &self.node(id)?, "doc")
     }
 
-    /// The document's file: the bytes last written to it, exactly, while the document still reads
-    /// as they did (nobody edited it since); otherwise its projection into its file format,
-    /// embedding the binary content (images, binary package parts) it references from `content`.
-    ///
-    /// A codec's export normalizes (Markdown joins a paragraph's lines), so the projection of a
-    /// file nobody but its writer touched would differ from what was written: a program that writes
-    /// a README.md reads back the README.md it wrote, and an edit in a rich view of the document is
-    /// what changes its bytes.
+    /// Project a document into its file format, embedding the binary content (images, binary
+    /// package parts) it references from `content`. A codec normalizes (Markdown joins a
+    /// paragraph's lines): what the file reads is [`Self::document_written`] while the document
+    /// still projects as it did when they were written.
     pub fn export_document(
         &self,
         ino: u64,
         content: &dyn tilo_content::ContentSource,
     ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
-        let projected = self.project_document(&id, content)?;
-        let node = self.node(&id)?;
-        let written = str_at(&self.doc, &node, VERBATIM)
-            .zip(str_at(&self.doc, &node, VERBATIM_READS))
-            .filter(|(_, reads)| *reads == tilo_content::hash_bytes(&projected))
-            .and_then(|(hash, _)| {
-                content
-                    .content(&hash)
-                    .filter(|bytes| tilo_content::verify(&hash, bytes))
-                    .map(std::borrow::Cow::into_owned)
-            });
-        Some(written.unwrap_or(projected))
+        self.project_document(&id, content)
+    }
+
+    /// The bytes last written to document `ino`'s file, by the content id the file's version keeps
+    /// them under, and the content id ([`tilo_content::hash_bytes`]) of the document's projection
+    /// then: the file is those bytes while the projection still is that.
+    pub fn document_written(&self, ino: u64) -> Option<(Hash, String)> {
+        let node = self.node(self.ino_to_id.get(&ino)?)?;
+        let written = str_at(&self.doc, &node, VERBATIM)?.parse::<Hash>().ok()?;
+        Some((written, str_at(&self.doc, &node, VERBATIM_READS)?))
+    }
+
+    /// Record that `written` (a content id the file's version keeps) is what was last written to
+    /// document `ino`, whose projection is now `projected`; bytes that are the projection already
+    /// need no record.
+    pub fn set_document_written(
+        &mut self,
+        ino: u64,
+        written: &Hash,
+        bytes: &[u8],
+        projected: &[u8],
+    ) {
+        let Some(id) = self.ino_to_id.get(&ino).cloned() else {
+            return;
+        };
+        if bytes == projected {
+            if let Some(node) = self.node(&id) {
+                let _ = self.doc.delete(&node, VERBATIM);
+                let _ = self.doc.delete(&node, VERBATIM_READS);
+            }
+            return;
+        }
+        self.set_field(&id, VERBATIM, written.to_string());
+        self.set_field(&id, VERBATIM_READS, tilo_content::hash_bytes(projected));
     }
 
     /// The document `id` projected into its file format.
@@ -2955,24 +2973,6 @@ impl Namespace {
         {
             self.doc.rollback();
             return false;
-        }
-        // The written bytes are the file while the document reads as they made it: kept by their
-        // content id, beside what the document's projection was then.
-        match self.project_document(&id, content) {
-            Some(projected) if projected != bytes => {
-                let Ok(hash) = content.put(bytes) else {
-                    self.doc.rollback();
-                    return false;
-                };
-                self.set_field(&id, VERBATIM, hash);
-                self.set_field(&id, VERBATIM_READS, tilo_content::hash_bytes(&projected));
-            }
-            _ => {
-                if let Some(node) = self.node(&id) {
-                    let _ = self.doc.delete(&node, VERBATIM);
-                    let _ = self.doc.delete(&node, VERBATIM_READS);
-                }
-            }
         }
         self.set_field(&id, "mtime", mtime);
         true
