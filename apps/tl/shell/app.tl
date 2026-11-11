@@ -59,13 +59,13 @@ type Desk (origin: session.desk) {
     /// The running applications' tray items, in the order they registered.
     tray: Collection<TrayItem>
     /// The desk styles every installed package offers, as the session publishes them: each
-    /// a view of the arrangement (`shell.md` §6), listed by its own words. The person's choice
-    /// names one of them in `Viewing.style`.
+    /// a view of the arrangement, listed by its own words. The person's choice names one of
+    /// them in `Viewing.style`.
     styles: Collection<DeskStyle>
 }
 
 /// A desk style: a view of the arrangement an installed package declares, as the session
-/// finds it (`shell.md` §6). Its `style` is the view reference the person's choice keeps
+/// finds it. Its `style` is the view reference the person's choice keeps
 /// (`so.tilo.shell:strips`, `me.styles:timeline`).
 type DeskStyle (origin: session.desk_style) {
     /// The style, by the view reference it names: what the session keeps it by.
@@ -80,7 +80,7 @@ type DeskStyle (origin: session.desk_style) {
     line: Text merge register
     /// Whether the style loads: false for one whose package does not compile against the shell
     /// and the session, or whose view failed when it ran, so the switch can say so and the desk
-    /// shows the built-in strips until it is fixed (`shell.md` §6).
+    /// shows the built-in strips until it is fixed.
     loads: Bool
     /// Why the style does not load, in the runtime's words, when it does not; empty when it
     /// does.

@@ -1585,7 +1585,7 @@ action a_note_place(a: Arrangement, strip: Text, index: Int) -> Text {
 }
 
 /// A place of a kind this build has no record for: it stands as it is, which is what a place
-/// another shell made looks like (§2).
+/// another shell made looks like.
 action a_foreign_place(a: Arrangement, strip: Text, index: Int, title: Text) -> Text {
     let p = a.places.insert(
         ArrangementPlace(

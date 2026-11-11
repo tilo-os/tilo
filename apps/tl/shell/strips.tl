@@ -122,7 +122,6 @@ view strips_view(a: Arrangement, v: Viewing, lists: Bool) {
             stack(gap: .group, fill) {
                 ui.EmptyState(
                     "No window here yet",
-                    message: "Open something into this strip.",
                     inline: true,
                 )
             }
@@ -168,7 +167,6 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
             } else {
                 ui.EmptyState(
                     "No window here yet",
-                    message: "Open something into this strip.",
                     inline: true,
                 )
             }
@@ -181,7 +179,6 @@ view rows_of_the_desk(a: Arrangement, v: Viewing, held: ArrangementRow, lists: B
                     if strips.is_empty() {
                         ui.EmptyState(
                             "No window here yet",
-                            message: "Open something into this strip.",
                             inline: true,
                         )
                     }
@@ -235,7 +232,6 @@ view strip_window(a: Arrangement, v: Viewing, s: ArrangementStrip, lists: Bool) 
             } else {
                 ui.EmptyState(
                     "Nothing here",
-                    message: "Open something into this strip.",
                     inline: true,
                 )
             }

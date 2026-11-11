@@ -89,7 +89,7 @@ d-pdaqdidq = Tray
     .doc = The running applications' tray items, in the order they registered.
 
 d-n2fzxj5u = Styles
-    .doc = The desk styles every installed package offers, as the session publishes them: each a view of the arrangement (`shell.md` §6), listed by its own words.
+    .doc = The desk styles every installed package offers, as the session publishes them: each a view of the arrangement, listed by its own words.
 
 d-4jk2lkpt-filter-switcher_revealed = Switcher revealed
 
@@ -110,7 +110,7 @@ d-4jk2lkpt-filter-dock_reached = Dock reached
 d-4jk2lkpt-filter-dock_covered = Dock covered
 
 d-zxwtaxaw = Desk style
-    .doc = A desk style: a view of the arrangement an installed package declares, as the session finds it (`shell.md` §6).
+    .doc = A desk style: a view of the arrangement an installed package declares, as the session finds it.
     .noun = { $count ->
         [one] desk style
        *[other] desk styles
@@ -132,7 +132,7 @@ d-rhx3oobw = Line
     .doc = The view's doc line, in its author's words: what the switch lists it by.
 
 d-ifgxec27 = Loads
-    .doc = Whether the style loads: false for one whose package does not compile against the shell and the session, or whose view failed when it ran, so the switch can say so and the desk shows the built-in strips until it is fixed (`shell.md` §6).
+    .doc = Whether the style loads: false for one whose package does not compile against the shell and the session, or whose view failed when it ran, so the switch can say so and the desk shows the built-in strips until it is fixed.
 
 d-eihyiyeb = Reason
     .doc = Why the style does not load, in the runtime's words, when it does not; empty when it does.
@@ -336,7 +336,7 @@ d-mfyylqsl = Key
 d-6ehy2qwa = Label
 
 d-qhf2pyze = Arrangement
-    .doc = The person's arrangement: what is open where (docs/designs/app-language/shell.md §2, workspace-model.md §9).
+    .doc = The person's arrangement: what is open where.
     .noun = { $count ->
         [one] arrangement
        *[other] arrangements
@@ -459,7 +459,7 @@ d-joj2ey7d = Name
     .doc = What this place is called, on every surface: its window's title and its app's own name (`Groceries` in `Notes`, the one the person picked), or the app's name alone when the window has no title.
 
 d-aonjenrr = Pinned
-    .doc = Whether the person pinned it: an agent's arrangement leaves it alone (§5).
+    .doc = Whether the person pinned it: an agent's arrangement leaves it alone.
 
 d-rqrtd6vq = Shell
     .doc = The shell that made it; empty reads as this shell's.
@@ -632,7 +632,7 @@ d-bnfk7mx5-filter-badge = Badge
 d-bnfk7mx5-filter-attention = Attention
 
 d-clhqzrkb = Width
-    .doc = How wide a strip stands within its row, as the record keeps it in per-mille (§2's strip widths: the presets and free widths).
+    .doc = How wide a strip stands within its row, in per-mille of the row's width.
 
 d-hrjwxtwf = Three tenths of the row: a list, a set of options
     .doc = Three tenths of the row: a list, a set of options.
@@ -644,7 +644,7 @@ d-nfufnx7j = The row's whole usable width
     .doc = The row's whole usable width.
 
 d-vvznzcd4 = Preset
-    .doc = A way of laying out the same resources and actions a person picked before styles were views (`shell.md` §6): `Viewing.showing` kept one.
+    .doc = A way of laying out the same resources and actions a person picked before the desk had styles: `Viewing.showing` kept one.
 
 d-25lm42aq = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically
     .doc = Columns of places, scrolled horizontally, with strips stacked and scrolled vertically.
@@ -779,7 +779,7 @@ d-p4bqyuzt = Name the style
     .doc = A desk style picked before styles were views: the preset's name turned into this package's view of it (`strips` into `so.tilo.shell:strips`), so the person's choice is kept.
 
 d-7j7tzynq = Show as
-    .doc = Shows the desk through the style `shown` (§6): a view reference, a package and a view (`so.tilo.shell:strips`).
+    .doc = Shows the desk through the style `shown`: a package and a view (`so.tilo.shell:strips`).
 
 d-dkylvhw4 = In front
     .doc = Makes the strip `strip` the one in front: what a press on a column's header does.
@@ -882,7 +882,7 @@ d-chvuqgur = A note place
     .doc = Adds a place showing the note at `index` of the notebook to `strip`, and returns its key.
 
 d-tnecawb6 = A foreign place
-    .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like (§2).
+    .doc = A place of a kind this build has no record for: it stands as it is, which is what a place another shell made looks like.
 
 d-b3rfswle = Show place
     .doc = Shows the place `place` and brings its strip forward with it: what choosing a tab does, and the same arranging action a script or an agent runs.
@@ -916,7 +916,7 @@ d-moh3hzne = Bell
 
 d-fniigjed = Viewing settings
     .w-desk = Desk
-    .w-the-same-places-shown-as-the = The same places, shown as the style you pick. Switching keeps every window where it is.
+    .w-switching-a-style-keeps-every-window = Switching a style keeps every window where it is.
 
 d-gapwwnqc = Show style~present
 
@@ -987,11 +987,8 @@ d-tst43bqy = Window row
 d-hlv2uw7o = Desk doors
     .w-the-desk = The desk
     .w-overview = Overview
-    .w-every-strip-and-window-to-search = Every strip and window, to search and move
     .w-workspaces = Workspaces
-    .w-who-is-in-each-and-what = Who is in each, and what it holds
     .w-notifications = Notifications
-    .w-what-apps-and-agents-told-you = What apps and agents told you
 
 d-outvdzmi = Layouts
     .w-layout = Layout
@@ -1030,7 +1027,6 @@ d-clgbrhsn = Notices
     .w-notifications = Notifications
     .w-clear-all = Clear all
     .w-nothing-to-catch-up-on = Nothing to catch up on
-    .w-apps-and-agents-leave-a-notice = Apps and agents leave a notice when something needs you
     .w-search-notifications = Search notifications
     .w-nothing-matches-that = Nothing matches that
     .w-clear-the-search-to-see-every = Clear the search to see every notice
@@ -1051,7 +1047,7 @@ d-rcjzvfxp = Overview
     .w-overview = Overview
     .w-new-workspace = New workspace
     .w-join-a-workspace = Join a workspace
-    .w-search-windows-across-your-workspaces = Search windows across your workspaces
+    .w-search-windows = Search windows
     .w-no-windows = No windows
     .w-open-something-to-see-its-window = Open something to see its window
 
@@ -1069,7 +1065,6 @@ d-6l3wldtm = Window menu
 
 d-6nn35yb7 = Found
     .w-nothing-matches = Nothing matches
-    .w-finds-windows-in-every-workspace-what = Finds windows in every workspace. What is inside an app is in Search
     .w-windows = Windows
 
 d-kxdzjhoo = Window line
@@ -1149,19 +1144,16 @@ d-kssxjs7v = Style menu
 
 d-qrahog47 = Strips view
     .w-no-window-here-yet = No window here yet
-    .w-open-something-into-this-strip = Open something into this strip.
 
 d-4qeo26jr = Workspace rows
 
 d-7qrrtifg = Rows of the desk
     .w-no-window-here-yet = No window here yet
-    .w-open-something-into-this-strip = Open something into this strip.
 
 d-7sxqbtn2 = Row window
 
 d-2fofsa7f = Strip window
     .w-nothing-here = Nothing here
-    .w-open-something-into-this-strip = Open something into this strip.
 
 d-p5wzoqr5 = Window controls
     .w-narrow = Narrow
