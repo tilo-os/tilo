@@ -128,6 +128,7 @@ fn device(person: &ed25519_dalek::SigningKey, seed: u8, label: &str) -> Client {
             continuity: Continuity::default(),
             wake: Arc::new(|| {}),
             fabric: None,
+            relays: tilo_endpoint_reachability::relays(),
         },
         None,
         None,

@@ -100,6 +100,7 @@ fn kept_device(
             continuity: permitted(),
             wake: Arc::new(|| {}),
             fabric: kept.map(std::path::Path::to_path_buf),
+            relays: tilo_endpoint_reachability::relays(),
         },
         None,
         None,

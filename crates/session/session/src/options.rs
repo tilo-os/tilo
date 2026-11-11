@@ -301,6 +301,7 @@ pub(crate) fn start_collaboration(
             continuity,
             wake: options.wake.handle(),
             fabric: tilo_paths::state_dir().map(|root| root.join("tilo/fabric")),
+            relays: tilo_endpoint_reachability::relays(),
         },
         engine,
         options.questions.clone(),
