@@ -71,7 +71,11 @@ fn an_existing_record_opened_before_the_host_answered_is_never_founded_anew() {
         store.try_open_record(&want),
         Err(RecordOpenError::Arriving)
     ));
-    assert_eq!(store.wanted_records(), [want.id.clone()], "asked for");
+    assert_eq!(
+        store.wanted_records(),
+        std::slice::from_ref(&want.id),
+        "asked for"
+    );
     // The "open it, or create it where nothing holds it" every stored
     // record goes through waits too.
     assert!(matches!(
@@ -117,7 +121,7 @@ fn a_record_is_new_only_once_the_host_said_it_holds_none_of_it() {
         store.try_open_record(&other),
         Err(RecordOpenError::Arriving)
     ));
-    assert_eq!(store.wanted_records(), [other.id.clone()]);
+    assert_eq!(store.wanted_records(), std::slice::from_ref(&other.id));
     super::person::open_in(&store, &new, &|doc| {
         put_text(doc, "body", "mine");
         Ok(())

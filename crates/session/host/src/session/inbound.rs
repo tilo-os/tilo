@@ -104,6 +104,21 @@ impl Task {
         });
     }
 
+    /// The host admitted this session to `workspace_id` and sent its replay;
+    /// it sends records `when_opened` in a public workspace.
+    fn ready(&mut self, workspace_id: u64, when_opened: bool) {
+        self.update(|status| {
+            status.workspaces.insert(workspace_id, true);
+        });
+        // The replay's documents reach the page before its `Ready`, as they
+        // arrived.
+        self.decide_held(workspace_id);
+        self.emit(&PeerEvent::Ready {
+            workspace_id,
+            records_when_opened: when_opened,
+        });
+    }
+
     pub(super) fn inbound(&mut self, envelope: Envelope) {
         let now = tilo_clock::unix_now_ms();
         self.update(|status| status.last_contact_at_ms = Some(now));
@@ -115,18 +130,7 @@ impl Task {
                 workspace_id,
                 records_when_opened,
                 ..
-            } => {
-                self.update(|status| {
-                    status.workspaces.insert(workspace_id, true);
-                });
-                // The replay's documents reach the page before its `Ready`,
-                // as they arrived.
-                self.decide_held(workspace_id);
-                self.emit(&PeerEvent::Ready {
-                    workspace_id,
-                    records_when_opened,
-                });
-            }
+            } => self.ready(workspace_id, records_when_opened),
             Envelope::NotAuthorised {
                 workspace_id,
                 reason,

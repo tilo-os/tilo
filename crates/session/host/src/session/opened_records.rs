@@ -4,7 +4,7 @@
 //! every record when opened (a public one), each route this session opens
 //! is asked for that way ([`Task::records_when_opened`]).
 
-use super::*;
+use super::{DocumentRoute, Envelope, PeerEvent, RelayClient, Task};
 
 impl Task {
     /// Open the on-demand record `route` of `workspace_id`, and ask for its

@@ -66,3 +66,47 @@ impl Workspaces {
         Ok(())
     }
 }
+
+impl Workspaces {
+    /// Hand `workspace`'s channel service every queued notice: the workspace's
+    /// own governance is retained before the channel governance a service
+    /// built on it decides them with.
+    pub(super) async fn take_channel_notices(&self, workspace: &str) -> Result<(), String> {
+        let sink = self
+            .inner
+            .host
+            .channels
+            .as_ref()
+            .and_then(|channels| channels.sink.clone());
+        let Some(sink) = sink else {
+            self.inner
+                .channel_notices
+                .lock()
+                .map_err(|_| "channel notices poisoned")?
+                .remove(workspace);
+            return Ok(());
+        };
+        let governed = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| error.to_string())?;
+        let publisher = {
+            let governed = governed.lock().await;
+            Arc::clone(&governed.publisher)
+        };
+        // Whatever settle handed over is retained before the channel
+        // governance a service derives from it.
+        publisher.flushed().await;
+        // Taken under the service: notices that queue while it works start the
+        // next hand-over, which takes all of them at once.
+        let waiting = self
+            .inner
+            .channel_notices
+            .lock()
+            .map_err(|_| "channel notices poisoned")?
+            .remove(workspace)
+            .unwrap_or_default();
+        sink.take(waiting);
+        Ok(())
+    }
+}

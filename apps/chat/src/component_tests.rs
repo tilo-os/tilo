@@ -1768,6 +1768,7 @@ fn a_newcomer_opening_chat_waits_for_the_workspaces_chat_and_never_founds_one() 
     ));
     let opened = page
         .read(&primary.id, |doc| {
+            let mut doc = doc.clone();
             heads
                 .iter()
                 .all(|head| doc.get_change_by_hash(head).is_some())
