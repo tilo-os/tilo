@@ -141,7 +141,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             | Kind::CrowdedHeading
             | Kind::DetailRowNotChosen
             // No window in this fixture declares a sidebar header over a sidebar that draws none.
-            | Kind::SidebarHeaderOnReveal => "(no view)",
+            | Kind::SidebarHeaderOnReveal
+            // No agent or peer is drawn in this fixture, so no presence tag stands anywhere.
+            | Kind::PresenceTag => "(no view)",
         };
         assert_eq!(
             finding.view,

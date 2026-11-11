@@ -16,7 +16,10 @@ mod layer;
 mod mark;
 mod placed;
 pub(crate) mod render;
-pub use caret_tag::{CaretTag, LabeledCaret, hide_names_beside_caret_tags, tag_gap, tags_crowd};
+pub use caret_tag::{
+    CaretTag, LabeledCaret, TAG_WIDGET, hide_names_beside_caret_tags, tag_faults, tag_gap,
+    tags_crowd,
+};
 pub use chat::{
     CURSOR_CHAT_LINGER, CURSOR_CHAT_MAX_CHARS, ChatBubble, CursorChats, POINTER_NAME_LINGER,
     ReactionFloat, single_emoji,
@@ -24,7 +27,7 @@ pub use chat::{
 pub use faces::{Face, FaceStack};
 pub use geom::{EdgeMist, MistEdge, edge_mist_for};
 pub use interaction::{
-    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement,
+    ACTIVE_INTERACTION_EXPIRY, AgentActionMarker, InteractionCardPlacement, MarkerPlace,
     TERMINAL_INTERACTION_DWELL,
 };
 pub use key::{DIGEST_KEY_FIELD, PathSegment, PointerSpace, PresenceKey, SelectionRange};

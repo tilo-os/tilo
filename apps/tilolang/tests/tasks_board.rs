@@ -889,6 +889,8 @@ fn show_acting(
     );
     app.harness().poll_frame().expect("a frame is drawn");
     app.harness().relayout();
+    let faults = ui::presence::tag_faults(&app.harness().inspection().root);
+    assert!(faults.is_empty(), "the agent's tag: {faults:?}");
 }
 
 /// The id a task's title is kept under: what an edit of it and a caret in it name.
@@ -1029,8 +1031,8 @@ fn an_agent_editing_a_title_is_seen_writing_in_it() {
         .and_then(|access| access.name.clone())
         .unwrap_or_default();
     assert!(
-        named.starts_with("Helper"),
-        "a reader is told who writes there: {named}"
+        named.starts_with("Helper: editing Title"),
+        "a reader is told who writes there and what: {named}"
     );
     let [cx, cy, _, ch] = caret.rect;
     assert!(

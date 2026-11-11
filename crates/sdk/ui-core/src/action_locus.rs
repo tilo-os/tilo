@@ -47,25 +47,30 @@ pub(crate) fn draw_action_presence(
             continue;
         }
         let user = crate::permissions::UserId(interaction.actor.id.clone());
-        let label = presence.interaction_status_label(&interaction);
         let control = control_bounds(tree, bindings, &interaction, bounds).unwrap_or(bounds);
-        presence.draw_action_outline_labeled_within(
-            paint,
+        presence.draw_peer_outline(
+            paint.scene,
+            paint.theme,
+            paint.transform,
             &user,
-            &label,
             bounds,
             f64::from(paint.theme.tokens.radii.detail),
-            viewport,
         );
-        if let Some(marker) = presence.draw_agent_action_marker(
-            paint,
-            &interaction,
-            bounds,
+        // An agent's marker wears the one tag that says who it is and what it
+        // is doing; anyone else's outline is labelled beside it.
+        let place = crate::presence::MarkerPlace {
+            locus: bounds,
             control,
-            viewport,
-            surface,
-            now,
-        ) && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
+            ink: ink_around(tree, bounds, viewport),
+        };
+        let marker =
+            presence.draw_agent_action_marker(paint, &interaction, &place, viewport, surface, now);
+        if marker.is_none() {
+            let label = presence.interaction_status_label(&interaction);
+            presence.draw_action_label_within(paint, &user, &label, bounds, viewport);
+        }
+        if let Some(marker) = marker
+            && presence.participant_kind(&user) == crate::presence::ParticipantKind::Agent
         {
             painted.push(PaintedActionMarker {
                 interaction: interaction.clone(),
@@ -89,6 +94,34 @@ pub(crate) fn draw_action_presence(
         &resolved,
     );
     painted
+}
+
+/// The text a marker's tag must leave readable: each worded line-sized node
+/// the frame shows within `viewport`, the control the marker rests on among
+/// them — its words stay readable too.
+fn ink_around(
+    tree: &crate::a11y_tree::SemanticTree,
+    locus: vello::kurbo::Rect,
+    viewport: vello::kurbo::Rect,
+) -> Vec<vello::kurbo::Rect> {
+    let line = locus.height().max(24.0);
+    tree.iter()
+        .filter(|node| {
+            node.name
+                .as_deref()
+                .is_some_and(|name| !name.trim().is_empty())
+                || node
+                    .value
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty())
+        })
+        .filter_map(|node| node.bounds)
+        .map(|bounds| bounds.intersect(viewport))
+        .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
+        // A worded box no taller than a row is a line of words: a list or a
+        // window that names itself is no line its tag must leave.
+        .filter(|bounds| bounds.height() <= line * 2.0)
+        .collect()
 }
 
 /// One visible expression of a domain action in the retained UI. The action

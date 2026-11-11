@@ -77,7 +77,19 @@ impl TextInput {
             return;
         };
         presence.note_shown(acting.invocation);
-        let words = presence.interaction_status_label(&acting);
+        // What it is doing here is editing this field, whatever its action
+        // is called: the field's own name says which.
+        let words = if self.accessible_name.trim().is_empty() {
+            presence.interaction_status_label(&acting)
+        } else {
+            presence.interaction_status_label_doing(
+                &acting,
+                &crate::i18n::widget_format(
+                    "interaction-editing-field",
+                    &[("field", self.accessible_name.clone().into())],
+                ),
+            )
+        };
         presence.draw_action_caret_labeled_in(
             scene,
             theme,

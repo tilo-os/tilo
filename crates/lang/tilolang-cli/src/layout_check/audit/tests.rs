@@ -2278,3 +2278,42 @@ fn a_group_heading_takes_one_band_and_stands_on_the_row_it_heads() {
         "a finger's target is the one room a band grows by"
     );
 }
+
+/// A presence name tag covers no word of the window, and one actor wears one tag.
+#[test]
+fn a_presence_tag_covers_no_word_and_one_actor_wears_one() {
+    let title = || {
+        let mut title = node(
+            "Text",
+            "title",
+            [40.0, 10.0, 120.0, 20.0],
+            Some(Role::StaticText),
+        );
+        title.semantics = title
+            .semantics
+            .map(|access| access.with_name("Buy oat milk"));
+        title
+    };
+    let tag = |at: [f64; 4], index: usize| {
+        let mut tag = node_of(ui::presence::TAG_WIDGET, "presence-tag-agent:helper", at);
+        tag.path = format!("presence-tag-agent:helper-{index}");
+        tag
+    };
+    let mut window = node_of("Window", "window", [0.0, 0.0, 400.0, 200.0]);
+    window.children = vec![title(), tag([40.0, 40.0, 80.0, 18.0], 0)];
+    let kinds = |root: &InspectionNode| {
+        inspect(root, (400, 200), None, 1.0)
+            .into_iter()
+            .filter(|problem| problem.kind == Kind::PresenceTag)
+            .count()
+    };
+    assert_eq!(kinds(&window), 0, "a tag clear of the words is fine");
+    window.children = vec![title(), tag([60.0, 14.0, 80.0, 18.0], 0)];
+    assert_eq!(kinds(&window), 1, "a tag over the title is a fault");
+    window.children = vec![
+        title(),
+        tag([40.0, 40.0, 80.0, 18.0], 0),
+        tag([40.0, 80.0, 80.0, 18.0], 1),
+    ];
+    assert_eq!(kinds(&window), 1, "a second tag of one actor is a fault");
+}

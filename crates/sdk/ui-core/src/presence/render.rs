@@ -250,6 +250,7 @@ impl PresenceCtx {
             is_agent,
         );
         self.note_caret_tag(CaretTag {
+            user: user.clone(),
             label: name.to_owned(),
             rect: transform.transform_rect_bbox(chip_rect),
         });
@@ -383,16 +384,14 @@ impl PresenceCtx {
     /// Semantic actions label the actual control beside it, not in the row
     /// above it: that row often contains a notice explaining whether the action
     /// is available. Ordinary peer selections retain their existing name chips.
-    pub(crate) fn draw_action_outline_labeled_within(
+    pub(crate) fn draw_action_label_within(
         &self,
         ctx: &mut PaintCtx<'_>,
         user: &UserId,
         label: &str,
         rect: Rect,
-        radius: f64,
         bounds: Rect,
     ) {
-        self.draw_peer_outline(ctx.scene, ctx.theme, ctx.transform, user, rect, radius);
         let gap = f64::from(ctx.theme.tokens.spacing.s1);
         let right = (bounds.x1 - rect.x1 - gap).max(0.0);
         let left = (rect.x0 - bounds.x0 - gap).max(0.0);
@@ -416,12 +415,13 @@ impl PresenceCtx {
         }
         let x = x.min(bounds.x1 - w).max(bounds.x0);
         let y = y.min(bounds.y1 - h).max(bounds.y0);
-        draw_name_chip_in(
-            ctx,
-            color_for(self, user, ctx.theme),
-            &label,
-            Rect::new(x, y, x + w, y + h),
-        );
+        let chip = Rect::new(x, y, x + w, y + h);
+        draw_name_chip_in(ctx, color_for(self, user, ctx.theme), &label, chip);
+        self.note_caret_tag(CaretTag {
+            user: user.clone(),
+            label,
+            rect: ctx.transform.transform_rect_bbox(chip),
+        });
     }
 
     /// Draw a peer's fading "just typed" highlighter behind the glyph runs
@@ -885,7 +885,8 @@ pub fn draw_peer_cursors(
 /// `label`, kept inside `viewport`. What an agent's action marker paints, so
 /// an agent at work wears the same nametag as an agent pointing. `locus` is
 /// the line the agent is acting on — the box its caret is in — whose text the
-/// tag must leave readable. Returns the bounds painted, in the scene's
+/// tag must leave readable, and `ink` the words around it, which it never
+/// covers. Returns the bounds painted and the tag's own, in the scene's
 /// coordinates before `transform`.
 pub(super) fn draw_agent_nametag(
     scene: &mut Scene,
@@ -893,15 +894,32 @@ pub(super) fn draw_agent_nametag(
     text_renderer: &mut TextRenderer,
     theme: &Theme,
     (tip, viewport): (Point, Rect),
-    locus: Rect,
+    (locus, ink): (Rect, &[Rect]),
     label: &str,
     color: Color,
-) -> Rect {
+) -> (Rect, Rect) {
     let at = (tip.x, tip.y);
     draw_peer_pointer(scene, transform, theme, at, color, true);
     let size = peer_pill_size_for(text_renderer, theme, label, true);
     let mut bounds = pointer_bounds(at);
-    let place = agent_nametag_rect(viewport, at, locus, size);
+    let place = if ink.is_empty() {
+        agent_nametag_rect(viewport, at, locus, size)
+    } else {
+        // Where the text around it is known, the tag takes the rule a caret's
+        // chip does: beside the pointer where no glyph is, else above the
+        // line, else below it — never over a word.
+        let vp = normalised(viewport);
+        let chip = super::LabeledCaret {
+            rect: bounds,
+            top: vp.y0,
+            ink: ink.to_vec(),
+            right: vp.x1,
+        }
+        .chip_rect(size.0, size.1);
+        let x = chip.x0.clamp(vp.x0, (vp.x1 - size.0).max(vp.x0));
+        let y = chip.y0.clamp(vp.y0, (vp.y1 - size.1).max(vp.y0));
+        Rect::new(x, y, x + size.0, y + size.1)
+    };
     draw_peer_pill_kind(
         scene,
         transform,
@@ -913,7 +931,7 @@ pub(super) fn draw_agent_nametag(
         true,
     );
     bounds = bounds.union(place.inflate(FADE_EDGE, FADE_EDGE));
-    bounds.intersect(viewport)
+    (bounds.intersect(viewport), place)
 }
 
 /// Where an agent's name tag goes for a pointer at `tip` acting on `locus`,
@@ -1915,12 +1933,11 @@ mod tests {
             ] {
                 let mut scene = Scene::new();
                 let mut text = TextRenderer::new();
-                presence.draw_action_outline_labeled_within(
+                presence.draw_action_label_within(
                     &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
                     &user,
                     "Rename (Applying) - Quill",
                     control,
-                    f64::from(theme.tokens.radii.detail),
                     viewport,
                 );
                 let rgba = OffscreenRenderer::new(500, 200).render(&scene, Color::BLACK);

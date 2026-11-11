@@ -81,6 +81,16 @@ pub(super) struct AgentMarkerContinuity {
     painted_at: Instant,
 }
 
+/// Where an agent's action marker rests: the `locus` it acts on, the
+/// `control` it would press there, and the `ink` around them — the text its
+/// tag must never cover.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MarkerPlace {
+    pub locus: Rect,
+    pub control: Rect,
+    pub ink: Vec<Rect>,
+}
+
 /// Geometry and phase of one paint-only agent action marker.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AgentActionMarker {
@@ -396,12 +406,12 @@ impl PresenceCtx {
         &mut self,
         paint: &mut PaintCtx<'_>,
         interaction: &SemanticInteraction,
-        locus: Rect,
-        control: Rect,
+        place: &MarkerPlace,
         viewport: Rect,
         surface: &str,
         now: Instant,
     ) -> Option<AgentActionMarker> {
+        let (locus, control) = (place.locus, place.control);
         if !interaction.actor.kind.acts_for_someone()
             || !valid_marker_rect(locus)
             || !valid_marker_rect(viewport)
@@ -487,26 +497,25 @@ impl PresenceCtx {
                 &Circle::new(target, radius),
             );
         }
-        // The agent wears the nametag it wears wherever it points: its mark
-        // and its name, in its colour.
-        let name = self
-            .names
-            .get(&user)
-            .and_then(|name| crate::history_source::human_label(name, &user.0))
-            .map_or_else(
-                || crate::i18n::widget_format("interaction-agent", &[]),
-                str::to_owned,
-            );
-        let bounds = super::render::draw_agent_nametag(
+        // The agent wears the nametag it wears wherever it points, in its
+        // colour, saying what it is doing here: one tag for the agent and its
+        // action, clear of the text around it.
+        let words = self.interaction_status_label(interaction);
+        let (bounds, tag) = super::render::draw_agent_nametag(
             paint.scene,
             paint.transform,
             paint.text,
             paint.theme,
             (tip, viewport),
-            visible_locus,
-            &name,
+            (visible_locus, &place.ink),
+            &words,
             actor_color,
         );
+        self.note_caret_tag(super::CaretTag {
+            user: user.clone(),
+            label: words,
+            rect: paint.transform.transform_rect_bbox(tag),
+        });
         let marker = AgentActionMarker {
             invocation: interaction.invocation,
             tip,
@@ -556,6 +565,17 @@ impl PresenceCtx {
     /// An exact-locus label keeps the lifecycle visible when the generic rail
     /// is suppressed. Failure must not look like a successful pointer action.
     pub fn interaction_status_label(&self, interaction: &SemanticInteraction) -> String {
+        self.interaction_status_label_doing(interaction, &doing_phrase(&interaction.action.label))
+    }
+
+    /// [`Self::interaction_status_label`] where the place says what the action
+    /// is `doing` there better than its own label does: a field names what is
+    /// edited in it.
+    pub fn interaction_status_label_doing(
+        &self,
+        interaction: &SemanticInteraction,
+        doing: &str,
+    ) -> String {
         let user = UserId(interaction.actor.id.clone());
         // The adjacent shared identity mark already distinguishes an Agent.
         // Do not append another role to names such as "Release Notes Agent".
@@ -579,7 +599,7 @@ impl PresenceCtx {
         // The phase shows through the mark's fade; only a phase that needs a
         // person — waiting, failed, cancelled — says so in words, because a
         // failure must not read as an ordinary mark.
-        let doing = doing_phrase(&interaction.action.label);
+        let doing = doing.to_owned();
         match &interaction.phase {
             InteractionPhase::Waiting { .. }
             | InteractionPhase::Failed { .. }
@@ -1130,8 +1150,11 @@ mod tests {
         presence.draw_agent_action_marker(
             &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, theme),
             interaction,
-            locus,
-            locus,
+            &MarkerPlace {
+                locus,
+                control: locus,
+                ink: Vec::new(),
+            },
             viewport,
             surface,
             now,

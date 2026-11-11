@@ -160,10 +160,13 @@ pub enum Kind {
     /// with its rows, so what names it and adds to it is off the window until the person reaches
     /// for the bar. The sidebar's header is the app's own navigation and stands at every time.
     SidebarHeaderOnReveal,
+    /// A name tag presence draws — who is there, what an agent is doing — over a word of the
+    /// window, or a second tag for one actor: the word is lost, and one actor reads as two.
+    PresenceTag,
 }
 
 impl Kind {
-    pub const ALL: [Self; 48] = [
+    pub const ALL: [Self; 49] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -212,6 +215,7 @@ impl Kind {
         Self::CrowdedHeading,
         Self::DetailRowNotChosen,
         Self::SidebarHeaderOnReveal,
+        Self::PresenceTag,
     ];
 
     pub fn name(self) -> &'static str {
@@ -264,6 +268,7 @@ impl Kind {
             Self::CrowdedHeading => "crowded-heading",
             Self::DetailRowNotChosen => "detail-row-not-chosen",
             Self::SidebarHeaderOnReveal => "sidebar-header-on-reveal",
+            Self::PresenceTag => "presence-tag",
         }
     }
 }

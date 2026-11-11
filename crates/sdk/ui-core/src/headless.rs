@@ -5337,6 +5337,21 @@ impl FrameHarness {
             let name = self.presence.interaction_status_label(&marker.interaction);
             peers.push(Self::presence_node(&path, None, name));
         }
+        // Every name tag drawn, where it stands and whose it is: what the
+        // layout check holds to covering no word, one tag per actor.
+        for (index, tag) in self.presence.caret_tags().into_iter().enumerate() {
+            let rect = to_surface.transform_rect_bbox(tag.rect);
+            let mut node = Self::presence_node(
+                &format!("presence-tag-{}-{index}", tag.user.0),
+                None,
+                tag.label,
+            );
+            node.widget = crate::presence::TAG_WIDGET.into();
+            node.test_id = Some(format!("presence-tag-{}", tag.user.0));
+            node.rect = [rect.x0, rect.y0, rect.width(), rect.height()];
+            node.semantics = None;
+            peers.push(node);
+        }
         peers
     }
 
