@@ -750,6 +750,7 @@ readers = [
   "apps/tilolang/tests/history_undo.rs",
   "apps/tilolang/tests/opening.rs",
   "apps/tilolang/tests/support.rs",
+  "apps/tilolang/tests/tasks_board.rs",
 ]
 
 [[cargo]]
@@ -833,6 +834,7 @@ readers = [
   "crates/platform/tilolang-tilo/tests/done_days.rs",
   "crates/platform/tilolang-tilo/tests/fixtures.rs",
   "crates/platform/tilolang-tilo/tests/history_views.rs",
+  "crates/platform/tilolang-tilo/tests/headings.rs",
   "crates/platform/tilolang-tilo/tests/legacy.rs",
   "crates/platform/tilolang-tilo/tests/legibility.rs",
   "crates/platform/tilolang-tilo/tests/link_editor.rs",
@@ -1631,6 +1633,10 @@ check = "page-boot"
 [[covered]]
 suite = "os/containers/tilo-lounge/test-setup-resume.sh"
 check = "setup-resume"
+
+[[unrequired]]
+suite = "os/containers/tilo-sh/test-vm-host.sh"
+reason = "needs root, KVM, loop devices and the built VM host and hosted guest images; the tilo-sh-vm-host check runs it in a VM of its own on dispatch"
 
 [[unrequired]]
 suite = "os/containers/tilo-lounge/test-agent-setup.sh"
