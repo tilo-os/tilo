@@ -168,8 +168,8 @@ async fn work_per_arrival(
 
 /// Letting one more person in costs the host the same in a workspace of 40
 /// as in one of 10: it decodes no member's row, checks no member's
-/// signature, and neither reads the governance whole nor replays the
-/// membership history for the people already there. Counted rather than timed, so a slow machine neither hides nor
+/// signature or invitation receipt, and neither reads the governance whole
+/// nor replays the membership history for the people already there. Counted rather than timed, so a slow machine neither hides nor
 /// fakes a cost that grows with the workspace. Of a few arrivals the middle
 /// one counts: now and then an arrival starts the workspace's publication
 /// over, which is paid once per many arrivals, not by each.
@@ -182,6 +182,7 @@ async fn letting_one_more_person_in_costs_the_same_however_many_are_in() {
                 work.signatures_verified,
                 work.governance_reads,
                 work.replays,
+                work.receipts_read,
             )
         });
         work[work.len() / 2]

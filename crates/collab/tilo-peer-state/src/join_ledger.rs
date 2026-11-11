@@ -878,21 +878,13 @@ impl JoinLedger {
                 self.redeemable(redemption.join().invite_id())
                     .and_then(|()| {
                         let mut next = candidate.clone();
-                        next.governance_mut().admit_invited_member(
+                        next.governance_mut().admit_named_member(
                             redemption,
+                            join.name
+                                .filter(|_| names_its_person(redemption.certificate())),
                             key,
                             system_time(now),
                         )?;
-                        if let Some(name) = join.name
-                            && names_its_person(redemption.certificate())
-                        {
-                            next.governance_mut().name_person(
-                                redemption.certificate().user_public_key,
-                                name,
-                                key,
-                                system_time(now),
-                            )?;
-                        }
                         *candidate = next;
                         Ok(())
                     })

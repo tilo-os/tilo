@@ -22,6 +22,8 @@ pub struct GovernanceWork {
     pub governance_reads: u64,
     /// Replays of the workspace's membership log.
     pub replays: u64,
+    /// Invitation receipts read back from the governance and checked.
+    pub receipts_read: u64,
 }
 
 thread_local! {
@@ -30,6 +32,7 @@ thread_local! {
         signatures_verified: 0,
         governance_reads: 0,
         replays: 0,
+        receipts_read: 0,
     }) };
 }
 
@@ -66,6 +69,10 @@ pub(crate) fn identity_decoded() {
 
 pub(crate) fn governance_read() {
     add(|work| work.governance_reads = work.governance_reads.saturating_add(1));
+}
+
+pub(crate) fn receipt_read() {
+    add(|work| work.receipts_read = work.receipts_read.saturating_add(1));
 }
 
 pub(crate) fn replayed() {

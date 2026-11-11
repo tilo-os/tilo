@@ -52,6 +52,7 @@ pub(crate) fn admit_invited_member(
     document: &mut AutoCommit,
     held: &crate::cached_document::CachedDocument,
     redemption: &crate::join::VerifiedRedemption,
+    name: Option<&str>,
     now: SystemTime,
 ) -> Result<AdmissionOutcome, String> {
     let now_ns: u64 = now
@@ -201,8 +202,32 @@ pub(crate) fn admit_invited_member(
         )
         .map_err(|error| error.to_string())?;
     candidate
-        .put(&names, &id, member_display_name(&grant, cert))
+        .put(
+            &names,
+            &id,
+            name.unwrap_or_else(|| member_display_name(&grant, cert)),
+        )
         .map_err(|error| error.to_string())?;
+    // The name the person gave as they joined is theirs on each of their
+    // admitted devices' rows, written in the admission's own change: a
+    // change of its own cost a second whole governance write per arrival.
+    if let Some(name) = name {
+        let held_names = &held.policy().names;
+        for (other, identity) in held.identities() {
+            let Ok(identity) = identity else {
+                continue;
+            };
+            if *other != id
+                && identity.device_cert.user_public_key == cert.user_public_key
+                && identity.has_admission()
+                && held_names.get(other).map(String::as_str) != Some(name)
+            {
+                candidate
+                    .put(&names, other, name)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+    }
     // The workspace's owner is not one of its members: they hold it from its
     // beginning, whatever role an invitation names, and their device's
     // certificate is what admits it. A member row for them would be a

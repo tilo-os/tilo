@@ -16,6 +16,15 @@ pub(crate) struct CachedDocument {
     policy: Arc<OnceLock<Arc<PolicyData>>>,
     identities: Arc<OnceLock<IdentityViews>>,
     certificates: Arc<OnceLock<IdentityCertificates>>,
+    /// The heads of a state of this document whose every invitation receipt
+    /// was checked ([`Self::receipts_checked`]): this one, or one it was
+    /// changed from in place.
+    receipts: Arc<OnceLock<Vec<automerge::ChangeHash>>>,
+    /// The changes this state holds beyond the one it was changed from, when
+    /// every invitation receipt that one held was checked: the receipts
+    /// these changes did not write need no checking again
+    /// ([`Self::written_since_receipts_checked`]).
+    since_checked: Option<Arc<Vec<automerge::Change>>>,
     /// [`Self::redemptions`], once read.
     redemptions: Arc<OnceLock<Result<Redemptions, String>>>,
     /// [`PolicyData::workspace_policy`] of the workspace the document governs.
@@ -105,6 +114,8 @@ impl From<AutoCommit> for CachedDocument {
             policy: Arc::default(),
             identities: Arc::default(),
             certificates: Arc::default(),
+            receipts: Arc::default(),
+            since_checked: None,
             workspace_policy: Arc::default(),
             redemptions: Arc::default(),
             earlier: None,
@@ -132,6 +143,10 @@ impl DerefMut for CachedDocument {
         self.policy = Arc::default();
         self.identities = Arc::default();
         self.certificates = Arc::default();
+        // What the heads `receipts` names held stays checked: the changes
+        // made from here are told apart from them when this state is
+        // followed.
+        self.since_checked = None;
         self.workspace_policy = Arc::default();
         self.redemptions = Arc::default();
         #[cfg(test)]
@@ -187,13 +202,36 @@ impl CachedDocument {
             })
         })
     }
+    /// The changes this state holds beyond the one it was changed from, when
+    /// every invitation receipt that one held was checked; `None` otherwise.
+    pub(crate) fn written_since_receipts_checked(&self) -> Option<&[automerge::Change]> {
+        self.since_checked.as_deref().map(Vec::as_slice)
+    }
+    /// Note that every invitation receipt this state holds was checked.
+    pub(crate) fn receipts_checked(&self) {
+        use automerge::transaction::Transactable as _;
+        let _ = self.receipts.set(self.doc.base_heads());
+    }
     /// `doc`, a later state of this document (a received change applied to
     /// a copy of it), keeping what reading this state's rows took for the
     /// rows `doc` holds unchanged.
-    pub(crate) fn followed_by(&self, doc: AutoCommit) -> Self {
+    pub(crate) fn followed_by(&self, mut doc: AutoCommit) -> Self {
+        use automerge::ReadDoc as _;
+        // Only from a state whose every change `doc` holds: one whose change
+        // `doc` pruned may have held receipts `doc` no longer does.
+        let since_checked = self
+            .receipts
+            .get()
+            .filter(|heads| {
+                heads
+                    .iter()
+                    .all(|head| doc.get_change_by_hash(head).is_some())
+            })
+            .map(|heads| Arc::new(doc.get_changes(heads)));
         Self {
             earlier: self.views().or_else(|| self.earlier.clone()),
             base: self.stored_base(),
+            since_checked,
             ..Self::from(doc)
         }
     }

@@ -654,6 +654,30 @@ impl PeerGovernanceMut<'_> {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.admit_named_member(redemption, None, key, now)
+    }
+    /// [`Self::admit_invited_member`], naming the person `name` in the same
+    /// change, as [`Self::name_person`] would after it: the name every member
+    /// shows for them on each of their admitted devices' rows. `None` keeps
+    /// the name their invitation and certificate give.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::admit_invited_member`], and when `name` is not a display
+    /// name ([`tilo_user_identity::display_name`]).
+    pub fn admit_named_member(
+        self,
+        redemption: &crate::join::VerifiedRedemption,
+        name: Option<&str>,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        let name = name
+            .map(|name| {
+                tilo_user_identity::display_name(name)
+                    .map_err(tilo_user_identity::DisplayNameError::reason)
+            })
+            .transpose()?;
         if redemption.join().grant().room != self.peer.core.workspace {
             return Err("invitation is not for this workspace".into());
         }
@@ -677,7 +701,8 @@ impl PeerGovernanceMut<'_> {
         let mut document = (**cached).clone();
         document.set_actor(self.peer.workspace_actor_of(key));
         let before = document.get_heads();
-        match crate::governance::admit_invited_member(&mut document, cached, redemption, now)? {
+        match crate::governance::admit_invited_member(&mut document, cached, redemption, name, now)?
+        {
             crate::governance::AdmissionOutcome::AlreadyApplied => Ok(false),
             crate::governance::AdmissionOutcome::Applied { .. } => {
                 self.peer

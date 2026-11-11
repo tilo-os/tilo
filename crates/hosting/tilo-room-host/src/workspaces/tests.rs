@@ -136,6 +136,18 @@ async fn a_crowd_of_pre_admitted_guests_joins_in_one_change_and_a_bad_token_is_r
         assert!(members.contains(person));
     }
     assert!(!members.contains(&people[5]));
+    // Each is named as they named themself coming in, in that same change.
+    for (index, person) in people.iter().take(5).enumerate() {
+        let member = summary
+            .members
+            .iter()
+            .find(|member| member.user_public_key == *person)
+            .unwrap();
+        assert_eq!(
+            member.display_name.as_deref(),
+            Some(format!("Guest {index}").as_str())
+        );
+    }
     relay.shutdown().await;
 }
 

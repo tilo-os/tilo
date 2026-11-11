@@ -81,15 +81,23 @@ fn inputs<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<Inputs, Im
         Ok(())
     })
     .map_err(read_error)?;
-    receipts_checked(workspace, work)?;
+    receipts_checked(workspace, None, work)?;
     Ok(Inputs {
         identities,
         members,
     })
 }
+/// Where a workspace keeps its invitation receipts, by invitation.
+const RECEIPTS: &str = "invitation_receipts_v1";
 /// Every invitation receipt the workspace holds reads back as a receipt of
 /// the invitation it is kept under.
-fn receipts_checked<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<(), ImportError> {
+/// With `only`, the receipts kept under those invitations alone: the rest
+/// were checked in a state of the workspace this one only added to.
+fn receipts_checked<R: WorkspaceRead>(
+    workspace: &R,
+    only: Option<&std::collections::BTreeSet<String>>,
+    work: &mut Work,
+) -> Result<(), ImportError> {
     // The old invitation_receipts helper checks ALL root container shapes
     // before examining rows, then all row shapes before decoding any JSON.
     workspace
@@ -127,6 +135,10 @@ fn receipts_checked<R: WorkspaceRead>(workspace: &R, work: &mut Work) -> Result<
                 };
                 workspace
                     .visit_keys(&object, |key| {
+                        if only.is_some_and(|only| !only.contains(key)) {
+                            return Ok(());
+                        }
+                        crate::governance_work::receipt_read();
                         // Keep all raw values in the same sorted-key/ledger order as the
                         // original collector.
                         let mut values = Vec::new();
@@ -324,7 +336,23 @@ pub(in crate::state) fn cached(
         };
         identities.push((key.as_str(), identity));
     }
-    receipts_checked(&LegacyRead(&**workspace), &mut work)?;
+    // The receipts a change wrote are checked; those of the state it was
+    // made on were already: reading every receipt, each carrying its whole
+    // invitation, cost each admission to a workspace of hundreds more than
+    // the rest of taking it in.
+    let written = workspace
+        .written_since_receipts_checked()
+        .and_then(|written| crate::workspace::rows::touched(workspace, written));
+    match written.as_ref().map(|written| written.get(RECEIPTS)) {
+        Some(None) => {}
+        Some(Some(crate::workspace::rows::Wrote::Entries(keys))) => {
+            receipts_checked(&LegacyRead(&**workspace), Some(keys), &mut work)?;
+        }
+        Some(Some(crate::workspace::rows::Wrote::Whole)) | None => {
+            receipts_checked(&LegacyRead(&**workspace), None, &mut work)?;
+        }
+    }
+    workspace.receipts_checked();
     let policy = workspace.policy();
     let mut certificates = original.clone();
     let mut revocations = revocations.clone();
