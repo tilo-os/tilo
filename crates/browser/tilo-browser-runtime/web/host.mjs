@@ -69,7 +69,17 @@ const mark=name=>{try{performance.mark(`tilo:${name}`);}catch{}};
 mark('module');
 const fontLoader=createFontLoader({baseURL:import.meta.url});
 const fonts=retryableMemo(()=>fontLoader.startup());
-const ready=retryableMemo(()=>init());
+// The entry page started compiling the start module as it parsed its head
+// (compile.inline.js), while it downloaded and the page's modules loaded:
+// init takes that, once. A page without it, or whose compile failed, has
+// init fetch and compile the module itself, as a retry after a failure does.
+let startModule=globalThis.__tiloStartModule;
+const ready=retryableMemo(async()=>{
+  const early=startModule;startModule=undefined;
+  const module=early&&await early.catch(()=>null);
+  mark('compiled');
+  return init(module?{module_or_path:module}:undefined);
+});
 // Streaming compile starts on import, while the page connects; a failure retries on mount.
 void ready().catch(()=>{});
 // So do the fonts a mount waits for: fetched beside the module, not after the page joined.
@@ -83,14 +93,20 @@ const data=createDataLoader({baseURL:import.meta.url,runtime});
 /** The certified peer's code — its crypto, transport and the workspaces'
  * replication — is a module of its own in the desktop bundle (`lazy_exports!`
  * in tilo-web-desktop), which nothing before a workspace's door needs. It is
- * fetched as soon as the start module is in, and every door waits for it.
+ * fetched and compiled as soon as this module runs, beside the start
+ * module's compile, and every door waits for it.
  * The bindgen glue of a split bundle imports `__wasm_split.js` itself, so it
  * is here once the start module is; a bundle without one has the peer in
  * its start module. */
 const peerCode=retryableMemo(async()=>{
-  await ready();
   const split=await import('./pkg/__wasm_split.js').catch(()=>null);
+  // Downloading and compiling it needs nothing of the start module: it runs
+  // while the start module compiles, and only its instantiation waits.
+  void split?.prefetch('peer');
+  await ready();
+  mark('runtime');
   await split?.load('peer');
+  mark('peer');
 });
 void peerCode().catch(()=>{});
 /** The wasm runtime module, once loaded with the peer's code (its codec and
