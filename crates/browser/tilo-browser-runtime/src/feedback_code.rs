@@ -240,7 +240,7 @@ pub(crate) fn register_feedback_startup(peer: u32, startup: Startup) -> Result<(
         .reporter()
         .device_public_key()
         .ok_or("feedback reporter has no certified device")?;
-    if crate::replication::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
+    if crate::replicated::device_of(peer).as_deref() != Some(hex::encode(device).as_str()) {
         return Err("feedback reporter does not own this certified peer".into());
     }
     STARTUPS.with_borrow_mut(|startups| -> Result<(), String> {

@@ -851,7 +851,7 @@ impl Mount {
             _ => false,
         };
         if committing && let Some(peer) = self.peer {
-            crate::replication::publish(peer);
+            crate::replicated::publish(peer);
         }
     }
 
@@ -880,7 +880,7 @@ impl Mount {
             self.pending = true;
             self.save_desktop();
             if let Some(peer) = self.peer {
-                crate::replication::publish(peer);
+                crate::replicated::publish(peer);
             }
         }
         match result {
@@ -1146,7 +1146,7 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
         let Some(lease) = lease.as_mut() else { return Ok(js_sys::Array::new().into()); };
         let mut mount = lease.take_mount().map_err(|_| error("closed mount"))?;
     if let Some(peer) = mount.peer {
-        crate::replication::detach(peer, id);
+        crate::replicated::detach(peer, id);
     }
     mount.semantic_targets.clear();
     mount.presentation.set(false);
@@ -1422,7 +1422,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     // records where the peer keeps what the workspace delivers: in the page.
     let store = config
         .peer
-        .and_then(crate::replication::page_store)
+        .and_then(crate::replicated::page_store)
         .unwrap_or(profile);
     let dyn_store: Rc<dyn durable_store::DurableStore> = store.clone();
     // In a workspace, the page's apps may only read until the workspace says what
@@ -1559,10 +1559,10 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
     let replica_changed = Rc::new(std::cell::Cell::new(false));
     if let Some(peer) = config.peer {
         let wake = proxy()?;
-        let attached = crate::replication::attach(
+        let attached = crate::replicated::attach(
             peer,
             id,
-            crate::replication::Attachment {
+            crate::replicated::Attachment {
                 stores: Rc::clone(&stores),
                 desktop: desktop
                     .as_ref()
@@ -2166,7 +2166,7 @@ impl Mount {
                 .load(std::sync::atomic::Ordering::Acquire)
         });
         if let Some(peer) = self.peer {
-            crate::replication::follow_answers(peer);
+            crate::replicated::follow_answers(peer);
         }
         self.pending |= desktop_woken
             || self.replica_changed.get()
@@ -2427,7 +2427,7 @@ impl Mount {
         self.metric_end("save_desktop", stage);
         if let Some(peer) = self.peer {
             let stage = self.metric_start();
-            crate::replication::publish(peer);
+            crate::replicated::publish(peer);
             self.metric_end("replicate", stage);
         }
         // A frame input or an idle pass ran and skipped reports here.

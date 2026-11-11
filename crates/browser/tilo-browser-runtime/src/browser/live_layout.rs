@@ -51,7 +51,7 @@ impl Mount {
         let (app, record) = focus.unwrap_or_else(|| {
             (
                 crate::desktop::DESKTOP_PACKAGE.to_owned(),
-                crate::replication::DESKTOP_RECORD.to_owned(),
+                crate::replicated::DESKTOP_RECORD.to_owned(),
             )
         });
         Some(serde_json::json!({

@@ -278,7 +278,7 @@ impl Mount {
         }
         self.save_desktop();
         if let Some(peer) = self.peer {
-            crate::replication::publish(peer);
+            crate::replicated::publish(peer);
         }
         if let Some(error) = unsettled {
             if let Some(line) = self.frame.skip_frame(&error) {
@@ -302,7 +302,7 @@ impl Mount {
         let theme_changed = self.theme_seen != crate::page_theme::generation();
         let replica = self.replica_changed.replace(false);
         if let Some(peer) = self.peer {
-            crate::replication::follow_answers(peer);
+            crate::replicated::follow_answers(peer);
         }
         let asked = self.pending;
         let mut reasons = Vec::new();

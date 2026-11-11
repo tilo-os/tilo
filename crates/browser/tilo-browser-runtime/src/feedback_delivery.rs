@@ -82,7 +82,7 @@ pub(crate) fn configure(
     // admission reads the channel from what the workspace keeps. A workspace
     // that sends its records when they are opened sends this page no chat
     // until someone opens Chat, so the page's own copy proves nothing.
-    if crate::replication::device_of(id).as_deref()
+    if crate::replicated::device_of(id).as_deref()
         != Some(hex::encode(reporter.device_public_key).as_str())
     {
         return Err("feedback requires an already joined peer".into());
@@ -472,7 +472,7 @@ fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
     tilo_desktop::feedback::recorder::WindowRecorder {
         documents: Box::new(move |workspace, app, record| {
             let desktop = crate::feedback_route::desktop_of(id);
-            crate::replication::committed_record(desktop, workspace, app, record)
+            crate::replicated::committed_record(desktop, workspace, app, record)
         }),
         protected: Box::new(crate::capture_declarations::declared),
         keep: Box::new(move |bytes| {
@@ -487,7 +487,7 @@ fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
 }
 
 fn content_of(id: u32) -> Result<tilo_content::ContentStore, Error> {
-    crate::replication::content(crate::feedback_route::desktop_of(id))
+    crate::replicated::content(crate::feedback_route::desktop_of(id))
         .ok_or(Error::Invalid("the page has no workspace for the picture"))
 }
 

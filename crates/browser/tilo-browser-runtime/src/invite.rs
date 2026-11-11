@@ -204,7 +204,7 @@ impl PageWorkspace {
     /// later pass, or why it was not asked.
     fn ask(
         &self,
-        request: impl FnOnce(&str) -> WorkspacesRequest,
+        request: impl FnOnce(&str) -> WorkspacesRequest + 'static,
         then: impl FnOnce(Reply) + 'static,
     ) {
         let Some(peer) = self.peer else {
@@ -212,9 +212,9 @@ impl PageWorkspace {
         };
         let id = self.asks.replace(self.asks.get().wrapping_add(1));
         let (replies, woken) = (Arc::clone(&self.replies), Arc::clone(&self.shared.woken));
-        let asked = crate::replication::host_then(
+        let asked = crate::replicated::host_then(
             peer,
-            request,
+            Box::new(request),
             Box::new(move |reply| {
                 replies
                     .lock()

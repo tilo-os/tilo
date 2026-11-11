@@ -30,7 +30,7 @@ pub(crate) fn mount(
             preferences: SearchPreferences::default(),
             records: Some(tilo_session::records::Records::over(
                 store,
-                crate::replication::changes(),
+                crate::replicated::changes(),
             )),
             ..SearchOptions::default()
         },
