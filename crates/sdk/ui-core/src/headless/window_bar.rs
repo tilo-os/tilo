@@ -36,7 +36,28 @@ impl FrameHarness {
     /// bar instead, as a window's frame hosts it: the row fills the window and the window's
     /// controls stand at its trailing end ([`Self::row_holds_bar`]).
     pub fn present_in_window_bar(&mut self) {
+        self.present_window_bar(true);
+    }
+
+    /// Show the app as a window stands at rest: the bar hidden over the window's top edge, as a
+    /// maximized window's is until the person reaches for it, and the app's frame filling the
+    /// window. The bar still hosts the app's slots — a capture of this window draws no bar above
+    /// the frame — so what the app offers in it is what the person finds on reaching for the top
+    /// edge.
+    pub fn present_window_bar_at_rest(&mut self) {
+        self.present_window_bar(false);
+    }
+
+    /// Whether the window's bar stands out at rest, over the app's frame. Always, save for a
+    /// harness that shows the window at rest ([`Self::present_window_bar_at_rest`]).
+    #[must_use]
+    pub fn window_bar_revealed(&self) -> bool {
+        self.bar_revealed
+    }
+
+    fn present_window_bar(&mut self, revealed: bool) {
         self.invalidate_local();
+        self.bar_revealed = revealed;
         if !self.window_bar {
             self.window_bar = true;
             self.host_bar_window();
@@ -133,7 +154,7 @@ impl FrameHarness {
     fn window_bar_offer(&self) -> WindowBar {
         WindowBar {
             controls_width: crate::widget::merged_row_width_in(f64::from(self.viewport.0)),
-            revealed: true,
+            revealed: self.bar_revealed,
             top_inset: 0.0,
             lists_actions: false,
         }
@@ -179,6 +200,36 @@ impl FrameHarness {
     #[must_use]
     pub fn presents_window_bar(&self) -> bool {
         self.window_bar
+    }
+
+    /// Where the sidebar's column stands and the header row it draws at its top, with the window
+    /// laid out as it stands at rest: the bar hidden over the window's top edge, as a maximized
+    /// window's is until the person reaches for it. `None` while the window shows no sidebar.
+    /// The window is laid out again as the caller left it.
+    ///
+    /// # Errors
+    /// As [`Self::relayout_themed`].
+    pub fn sidebar_at_rest(
+        &mut self,
+        viewport: (u32, u32),
+        theme: crate::theme::Theme,
+    ) -> Result<Option<crate::widget::SidebarFrame>, crate::widget::WidgetLayoutError> {
+        let revealed = self.bar_revealed;
+        if revealed {
+            self.present_window_bar(false);
+        }
+        let laid_out = self.relayout_themed(self.content_viewport(viewport), theme.clone());
+        let at_rest = if laid_out.is_ok() {
+            crate::widget::window_header::root_header_row(self.root.as_ref())
+                .and_then(crate::widget::WindowHeader::sidebar_frame)
+        } else {
+            None
+        };
+        if revealed {
+            self.present_window_bar(true);
+            self.relayout_themed(self.content_viewport(viewport), theme)?;
+        }
+        laid_out.map(|()| at_rest)
     }
 
     /// Lay the whole window out at `viewport`, its bar included, under
@@ -562,7 +613,7 @@ impl FrameHarness {
     /// wide: its row, and a compact window's notice strip under it. None while the app's frame
     /// holds the bar in a header row of its own: the row is the bar.
     pub(super) fn window_bar_height_px(&self, width: u32) -> u32 {
-        if self.row_holds {
+        if self.row_holds || !self.bar_revealed {
             return 0;
         }
         let height = self.window_bar(f64::from(width)).bar_height().ceil();
@@ -597,7 +648,7 @@ impl FrameHarness {
     /// controls, and the room it leaves empty. A capture, an inspector and a layout check read
     /// the bar through it.
     pub fn window_bar_layout(&mut self, width: f64) -> crate::window_toolbar::BarLayout {
-        if !self.window_bar {
+        if !self.window_bar || !self.bar_revealed {
             return crate::window_toolbar::BarLayout {
                 spare: 0.0,
                 controls: Vec::new(),
@@ -805,6 +856,11 @@ impl FrameHarness {
 
     /// Paint the window's bar across the top of a `width`-wide window.
     pub(super) fn paint_window_bar(&mut self, scene: &mut Scene, transform: Affine, width: f64) {
+        if !self.bar_revealed {
+            // At rest the bar stands out of the way, over the window's top edge: the frame
+            // fills the window, and the bar comes when the person reaches for it.
+            return;
+        }
         // A capture shows the bar at rest, as a person sees it after it
         // arrived: its slots' cross-fade has ended.
         let _settled = crate::motion::testing::settled();

@@ -2919,7 +2919,13 @@ impl NavShell {
     /// it brings its own ground, rule and a soft shadow on the content.
     fn paint_bar_ground(&self, f: &mut Frame<'_>, column: Column, local: &Theme) {
         let header = self.geometry.header(column);
-        if !self.inputs.borrow().header_in_window_bar()
+        let inputs = self.inputs.borrow();
+        // The sidebar's header stands at rest, and the window's bar comes over it while the
+        // person reaches for the bar: the bar's own ground is the bar's, so it is drawn over the
+        // sidebar only while the bar is out.
+        let over_sidebar = column == Column::Sidebar && !inputs.bar_revealed;
+        if !inputs.header_in_window_bar()
+            || over_sidebar
             || header.width() <= 0.0
             || header.height() <= 0.0
             || self.geometry.floating(column)

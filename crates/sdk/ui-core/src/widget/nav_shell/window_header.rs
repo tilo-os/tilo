@@ -85,6 +85,17 @@ impl WindowHeader for NavShell {
         self.geometry.header_height
     }
 
+    fn sidebar_frame(&self) -> Option<crate::widget::window_header::SidebarFrame> {
+        let g = &self.geometry;
+        let column = g.sidebar_column;
+        (column.width() > 0.0 && column.height() > 0.0).then(|| {
+            crate::widget::window_header::SidebarFrame {
+                column,
+                header: g.sidebar_header(),
+            }
+        })
+    }
+
     fn window_bar_slot(&self) -> Option<crate::widget::WindowBarSlot> {
         let g = &self.geometry;
         (g.window_controls.width() > 0.0).then(|| crate::widget::WindowBarSlot {

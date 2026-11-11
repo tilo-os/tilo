@@ -191,6 +191,23 @@ pub trait WindowHeader {
     fn header_row_height(&self) -> f64 {
         0.0
     }
+
+    /// Where the sidebar's column stands and the header row it draws at that column's top, after
+    /// layout: `None` while the window shows no sidebar. The sidebar's header is the app's own
+    /// navigation — the words that name its places and the buttons that add to them — so it
+    /// stands at every time, with the window's bar over it while the person reaches for the bar.
+    fn sidebar_frame(&self) -> Option<SidebarFrame> {
+        None
+    }
+}
+
+/// Where a window's sidebar stands, and the header row it draws at that column's top.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SidebarFrame {
+    /// The sidebar's column: a docked column, a floating drawer's panel, or a pushed screen.
+    pub column: Rect,
+    /// The header row at the column's top: zero where the sidebar draws none.
+    pub header: Rect,
 }
 
 /// The window's bar, as the host offers it to a header row.

@@ -155,10 +155,15 @@ pub enum Kind {
     /// A list standing beside the page it opens that highlights another row than the one the page
     /// shows: the tree says where the person is, and the page says it somewhere else.
     DetailRowNotChosen,
+    /// A sidebar whose header row — the words that name its places and the buttons that add to
+    /// them — stands only while the window's bar is out: at rest the sidebar starts straight
+    /// with its rows, so what names it and adds to it is off the window until the person reaches
+    /// for the bar. The sidebar's header is the app's own navigation and stands at every time.
+    SidebarHeaderOnReveal,
 }
 
 impl Kind {
-    pub const ALL: [Self; 47] = [
+    pub const ALL: [Self; 48] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -206,6 +211,7 @@ impl Kind {
         Self::OrphanedRow,
         Self::CrowdedHeading,
         Self::DetailRowNotChosen,
+        Self::SidebarHeaderOnReveal,
     ];
 
     pub fn name(self) -> &'static str {
@@ -257,6 +263,7 @@ impl Kind {
             Self::OrphanedRow => "orphaned-row",
             Self::CrowdedHeading => "crowded-heading",
             Self::DetailRowNotChosen => "detail-row-not-chosen",
+            Self::SidebarHeaderOnReveal => "sidebar-header-on-reveal",
         }
     }
 }

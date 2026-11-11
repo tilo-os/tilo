@@ -196,6 +196,9 @@ pub struct Options {
     /// Write the window at the `dump` size, at display and text scale 1, as each stage leaves
     /// it, in the light and the dark theme, to PNGs in this directory.
     pub shots: Option<PathBuf>,
+    /// Take the shots as a maximized window stands at rest: its bar hidden over the window's
+    /// top edge until the person reaches for it, the app's frame filling the window.
+    pub bar_at_rest: bool,
     /// The themes `shots` are taken in: a shipped theme by name (`glass`, `block`), in its
     /// light and dark variant, or a theme bundle's directory (`ui::theme_bundle`); none takes
     /// the stock light and dark.
@@ -235,6 +238,7 @@ impl Default for Options {
             allow: None,
             dump: None,
             shots: None,
+            bar_at_rest: false,
             themes: Vec::new(),
             root: None,
             states: Vec::new(),
@@ -544,6 +548,24 @@ fn stage_person_locale(locale: &str) -> Result<(), String> {
     environment.locale = Some(language.to_string());
     tilo_process::environment::install_environment(environment);
     Ok(())
+}
+
+/// Whether the window's view declares a sidebar header: the words that name its places, or the
+/// buttons that add to them. The sidebar's header stands in the sidebar at rest, never in the
+/// window's bar alone.
+fn declares_sidebar_header(shell: &tilo_ui_host::UiNode) -> bool {
+    let named = match shell.props.get("sidebar_title") {
+        Some(tilo_render_protocol::patch::Value::Text(title)) => !title.trim().is_empty(),
+        Some(_) => true,
+        None => false,
+    };
+    named
+        || shell.children.iter().any(|child| {
+            child.kind == "slot"
+                && child.props.get("name")
+                    == Some(&tilo_render_protocol::patch::Value::text("sidebar_actions"))
+                && !child.children.is_empty()
+        })
 }
 
 /// The words the window showed from a catalogue in a language other than the one it speaks,
@@ -1079,6 +1101,7 @@ impl Worker<'_> {
             sources: &app.sources,
             dump: self.options.dump,
             shots: self.options.shots.as_deref(),
+            bar_at_rest: self.options.bar_at_rest,
             themes: &self.options.themes,
             states: &self.options.states,
             keys: &self.options.keys,
@@ -1471,6 +1494,8 @@ struct AppCheck<'a> {
     sources: &'a source::SourceMap,
     dump: Option<(u32, u32)>,
     shots: Option<&'a Path>,
+    /// Take the shots with the window's bar at rest ([`Options::bar_at_rest`]).
+    bar_at_rest: bool,
     themes: &'a [String],
     states: &'a [String],
     keys: &'a [String],
@@ -1998,7 +2023,7 @@ impl AppCheck<'_> {
         if self.dump == Some(viewport) {
             self.dump_frame(staged, layout, label, &bar, &inspection)?;
         }
-        let problems = self.problems(staged, layout, &inspection, &bar);
+        let problems = self.problems(staged, layout, &inspection, &bar)?;
         self.gather_all(problems, layout, label);
         self.work.add(staged.take_work());
         Ok(())
@@ -2032,7 +2057,7 @@ impl AppCheck<'_> {
         layout: Layout,
         inspection: &ui::headless::InspectionSnapshot,
         bar: &ui::window_toolbar::BarLayout,
-    ) -> Vec<audit::Problem> {
+    ) -> Result<Vec<audit::Problem>, String> {
         let viewport = (layout.size.width, layout.size.height);
         self.note_shown(&inspection.root);
         // A view that ran but drew nothing has no widget; what the app sent still names it. What
@@ -2108,6 +2133,26 @@ impl AppCheck<'_> {
                 bar,
             ));
         }
+        // The sidebar's header row stands at rest, as the app's own navigation: what names its
+        // places and offers what adds to them is on the window at every time, never only once
+        // the window's bar is out. Read at one text and display scale per size: the row stands
+        // or does not by the width the sidebar has.
+        let declares = staged
+            .composed()
+            .is_some_and(|composed| declares_sidebar_header(&composed));
+        let canonical = layout.display_scale == 1.0 && (layout.text_scale - 1.0).abs() < 1e-6;
+        if one_window && canonical {
+            let stands = staged
+                .harness_mut()
+                .sidebar_at_rest(viewport, layout.theme())
+                .map_err(|error| {
+                    format!(
+                        "{}: the window at rest did not lay out: {error}",
+                        self.dir.display(),
+                    )
+                })?;
+            problems.extend(audit::sidebar_header_at_rest(declares, stands));
+        }
         for problem in &mut problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row
             // view's node, the deepest the row's tree holds.
@@ -2120,7 +2165,7 @@ impl AppCheck<'_> {
                 problem.id = None;
             }
         }
-        problems
+        Ok(problems)
     }
 
     /// Gather each problem as `label` staged it.
@@ -2164,6 +2209,9 @@ impl AppCheck<'_> {
             };
             for (name, theme) in pair {
                 staged.lay_out(viewport, theme, layout.input(), 1.0)?;
+                if self.bar_at_rest {
+                    staged.harness_mut().present_window_bar_at_rest();
+                }
                 let file = if family.is_empty() {
                     dir.join(format!("{}-{slug}-{name}.png", self.short))
                 } else {

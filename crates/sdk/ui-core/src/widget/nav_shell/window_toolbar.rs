@@ -155,9 +155,10 @@ impl NavShell {
     /// it. Its own buttons (the sidebar toggle, Back, the inspector toggle)
     /// are slots too: the app starts its declaration from
     /// [`Self::window_toolbar`] and hands what the person did in the bar to
-    /// [`Self::window_toolbar_event`] first. Column titles and header
-    /// actions given to the shell are not shown: the app declares its
-    /// location and actions as slots.
+    /// [`Self::window_toolbar_event`] first. The columns' titles and header
+    /// actions given to the shell are not shown in a row: the app declares its
+    /// location and actions as slots. The sidebar keeps its own header row all
+    /// the same, at the top of the sidebar, at every time.
     #[must_use]
     pub fn with_window_toolbar(self) -> Self {
         {
@@ -184,10 +185,11 @@ impl NavShell {
     }
 
     /// Put the header row in the window's bar: while the window is
-    /// maximized, the row hides with the window's controls and appears
-    /// with them over the top of the content when the person reaches for
-    /// the bar (`widget::top_edge_reveal`), as one bar. In a tiled window
-    /// the row stands above the content as usual.
+    /// maximized, the columns' headers hide with the window's controls and
+    /// appear with them over the top of the content when the person reaches
+    /// for the bar (`widget::top_edge_reveal`), as one bar. In a tiled window
+    /// the row stands above the content as usual. The sidebar's own header row
+    /// is the app's navigation and stands at every time, with the bar over it.
     #[must_use]
     pub fn with_header_in_window_bar(self) -> Self {
         self.inputs.borrow_mut().header_in_bar = true;
@@ -302,11 +304,13 @@ impl NavShell {
 }
 
 /// The window bar's slots as the shell declares them for an app that
-/// declares none: while the desktop's bar hosts the window, the headers'
-/// titles and buttons are the bar's location and actions, and the shell
-/// draws no header row. A header holding anything but buttons keeps the
-/// row, as does a window where another part declares the slots. One
-/// shell of a window declares them: the first that does, until it is gone.
+/// declares none: while the desktop's bar hosts the window, the content
+/// columns' titles and buttons are the bar's location and actions, and the
+/// shell draws no header row for them. The sidebar's header is the app's own
+/// navigation and stays in the sidebar, where the person reads it at rest. A
+/// header holding anything but buttons keeps the row, as does a window where
+/// another part declares the slots. One shell of a window declares them: the
+/// first that does, until it is gone.
 pub(super) struct ShellBar {
     id: u64,
     /// The desktop's bar hosts the window ([`crate::window_toolbar::is_hosted`]).
@@ -468,6 +472,11 @@ impl NavShell {
     fn header_slots(&self) -> Option<Vec<(ToolbarAction, Column, Vec<usize>)>> {
         let mut slots = Vec::new();
         for column in Column::ALL {
+            // The sidebar's header is the app's own navigation and stands at the top of the
+            // sidebar at rest: the bar never takes its title or its buttons.
+            if column == Column::Sidebar {
+                continue;
+            }
             // As in the shell's own header row, a column the shell does not
             // have offers nothing: its buttons are not the window's.
             if !self.has_column(column) {
@@ -511,7 +520,8 @@ impl NavShell {
         let exposed = self.exposed_parts();
         Column::ALL
             .into_iter()
-            .filter(|column| self.has_column(*column))
+            // The sidebar keeps its header's buttons in its own row at the window's top.
+            .filter(|column| *column != Column::Sidebar && self.has_column(*column))
             .flat_map(|column| {
                 (0..at(&self.headers, column).actions.len()).map(move |i| Part::Action(column, i))
             })
@@ -536,9 +546,10 @@ impl NavShell {
     }
 
     /// What the window shows, for the bar's location: the title of the
-    /// column in front. Every column in front names the window, the sidebar
-    /// included: pushed, the sidebar is the window, not a fold of the
-    /// content, so the bar names the navigation it shows.
+    /// column in front. The sidebar names its place in its own header row at
+    /// the window's top, so the bar names what the window shows beyond the
+    /// navigation: reaching a pushed screen, the bar says nothing of the
+    /// sidebar's own words twice.
     fn shell_location(&self) -> Option<ToolbarLocation> {
         let title = |column: Column| at(&self.headers, column).title.title.clone();
         let front = if self.geometry.stack.len() > 1 {
@@ -547,7 +558,7 @@ impl NavShell {
             NavPane::Content
         };
         let label = match front {
-            NavPane::Sidebar => title(Column::Sidebar),
+            NavPane::Sidebar => None,
             NavPane::Overview => title(Column::Overview),
             NavPane::Content => title(Column::Content).or_else(|| title(Column::Overview)),
         }?;

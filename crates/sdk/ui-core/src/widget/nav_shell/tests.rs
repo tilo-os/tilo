@@ -132,6 +132,18 @@ fn geometry(h: &FrameHarness) -> NavGeometry {
     h.root::<NavShell>().geometry().clone()
 }
 
+/// Where the widget with test id `id` stands in the frame, at any depth under the shell.
+fn rect_named(h: &FrameHarness, id: &str) -> Option<Rect> {
+    fn find(node: &crate::headless::InspectionNode, id: &str) -> Option<Rect> {
+        if node.test_id.as_deref() == Some(id) && node.rect[2] > 0.0 && node.rect[3] > 0.0 {
+            let [x, y, w, height] = node.rect;
+            return Some(Rect::new(x, y, x + w, y + height));
+        }
+        node.children.iter().find_map(|child| find(child, id))
+    }
+    find(&h.inspection().root, id)
+}
+
 fn child_rect(h: &FrameHarness, id: &str) -> Option<Rect> {
     h.root::<NavShell>()
         .children()
@@ -2456,80 +2468,6 @@ fn a_toolbar_in_the_window_bar_leaves_no_header_row_and_its_buttons_are_slots() 
     );
 }
 
-/// An app that declares no slots of its own gets them from its shell: while the
-/// desktop's bar hosts the window, the column in front names the window's
-/// location, the headers' buttons are the bar's actions and run from it, and
-/// the shell draws no header row.
-#[test]
-fn a_hosted_shell_hands_its_header_to_the_window_bar() {
-    use crate::window_toolbar::{ToolbarEvent, declared};
-    let pressed = SharedRc::new(Cell::new(0));
-    let count = SharedRc::clone(&pressed);
-    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
-        .on_effect(move || count.set(count.get() + 1));
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .overview(Probe::boxed("overview").0)
-        .content(Probe::boxed("content").0)
-        .sidebar_header("Mailboxes", vec![Box::new(add)])
-        .overview_header("Inbox", Vec::new())
-        .content_header(
-            "Design review",
-            vec![Box::new(crate::widget::Row::new().push(Box::new(
-                Button::icon_only("mail.reply", Icon::Reply, "Reply"),
-            )))],
-        );
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    assert!(
-        geometry(&h).header_height > 0.0,
-        "with no desktop bar, the header row stands"
-    );
-    assert_eq!(declared(), None, "and the shell declares nothing");
-
-    h.present_in_window_bar();
-    settle(&mut h, 1280, 800);
-    assert_eq!(
-        geometry(&h).header_height,
-        0.0,
-        "no header row under the bar"
-    );
-    let toolbar = declared().expect("the shell declares the window's slots");
-    assert_eq!(
-        toolbar
-            .location
-            .as_ref()
-            .map(|location| location.label.as_str()),
-        Some("Design review"),
-        "the content in front names the window"
-    );
-    assert_eq!(
-        toolbar.sidebar,
-        Some(true),
-        "the sidebar's toggle is a slot"
-    );
-    let action = toolbar
-        .actions
-        .iter()
-        .find(|action| action.name == "New mailbox")
-        .expect("the header's button is the bar's action");
-    assert_eq!(action.icon, "plus");
-    assert!(!action.menu, "a button with an icon stands in the row");
-    assert!(
-        toolbar
-            .actions
-            .iter()
-            .any(|action| action.id == "mail.reply"),
-        "a row of buttons gives its buttons"
-    );
-    // The bar's press is a press on the app: the frame that takes it runs
-    // what it published, as the window's bar hands it over.
-    h.press_window_slot(ToolbarEvent::Action {
-        id: action.id.clone(),
-    });
-    assert_eq!(pressed.get(), 1, "the bar's press runs the button");
-}
-
 /// A header the bar cannot show (a fill of the app's own beside the title)
 /// keeps its row under the bar, and the shell declares nothing; a window
 /// where another part declares the slots keeps its row too.
@@ -2563,52 +2501,6 @@ fn a_header_the_bar_cannot_show_keeps_its_row() {
         Some(app.bounded()),
         "and leaves them as declared"
     );
-}
-
-/// A header button bound to an action, as framework apps build theirs, runs
-/// when pressed in the window's bar, though the shell lays no header row out
-/// under it. A column the shell does not have offers none of its buttons, as
-/// its header row would show none.
-#[test]
-fn a_header_action_runs_from_the_window_bar() {
-    use crate::window_toolbar::{ToolbarEvent, declared};
-    let pressed = SharedRc::new(Cell::new(0));
-    let count = SharedRc::clone(&pressed);
-    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
-        .on_own_device_effect(move || count.set(count.get() + 1));
-    let compose = Button::icon_only("mail.compose", Icon::Plus, "Compose");
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Probe::boxed("content").0)
-        .sidebar_header("Mailboxes", vec![Box::new(add)])
-        .overview_header("Inbox", vec![Box::new(compose)])
-        .content_header("Design review", Vec::new());
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    h.set_permission_ctx(crate::permissions::PermissionContext::member(
-        "ada",
-        crate::permissions::Role::Editor,
-    ));
-    h.present_in_window_bar();
-    settle(&mut h, 1280, 800);
-    let toolbar = declared().expect("the shell declares the window's slots");
-    let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
-    assert!(ids.contains(&"mail.new-mailbox"), "{ids:?}");
-    assert!(
-        !ids.contains(&"mail.compose"),
-        "a column the shell does not have offers no buttons: {ids:?}"
-    );
-
-    h.press_window_slot(ToolbarEvent::Action {
-        id: "mail.new-mailbox".into(),
-    });
-    h.idle();
-    assert!(
-        h.control_failures().is_empty(),
-        "{:?}",
-        h.control_failures()
-    );
-    assert_eq!(h.refusal_said(), None);
-    assert_eq!(pressed.get(), 1, "the bar's press runs the button's action");
 }
 
 /// A host that runs several apps on one thread (the browser desktop) shows

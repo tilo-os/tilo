@@ -499,10 +499,28 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
             || Column::ALL
                 .iter()
                 .any(|c| in_row(*c) && inputs.header_wanted(*c)));
-    let rows = |column: Column| shell_row || inputs.header_wanted(column);
     // A header in the window's bar stands over the content and only while
     // the person reaches for the bar; the columns' bodies start at the top.
     let in_bar = inputs.header_in_window_bar();
+    // The sidebar's header is the app's own navigation — the words that name its places and the
+    // buttons that add to them — never the window's: it stands at the window's top at rest, and
+    // the bar comes over it while the person reaches for the bar, whichever column's rows the
+    // bar carries. A rail of icons says what it holds by its icons, so it has none.
+    let sidebar_reads_as_rail = match g.sidebar {
+        SidebarPlacement::Docked => inputs.sidebar_reads_as_rail(sw),
+        SidebarPlacement::Screen => inputs.sidebar_reads_as_rail(w),
+        SidebarPlacement::Drawer => inputs.sidebar_reads_as_rail(m.drawer.min(w)),
+        SidebarPlacement::None => false,
+    };
+    let sidebar_row = inputs.has_sidebar
+        && !sidebar_reads_as_rail
+        && (inputs.header_wanted(Column::Sidebar) || (shell_row && !inputs.slots_in_bar()));
+    let sidebar_hh = if sidebar_row { m.header.min(h) } else { 0.0 };
+    let rows = |column: Column| match column {
+        // The shell's own buttons stand in the sidebar's row, which the bar never takes.
+        Column::Sidebar => sidebar_row,
+        _ => shell_row || inputs.header_wanted(column),
+    };
     // A drawer's own header, as tall as the row and hidden with it.
     let drawer_hh = if in_bar && !inputs.bar_revealed {
         0.0
@@ -517,7 +535,15 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     };
     let hh = g.header_height;
     let bt = if in_bar { 0.0 } else { hh };
-    let bt_of = |column: Column| if rows(column) { bt } else { 0.0 };
+    let bt_of = |column: Column| {
+        if !rows(column) {
+            0.0
+        } else if column == Column::Sidebar {
+            sidebar_hh
+        } else {
+            bt
+        }
+    };
     // A header in the window's bar stands below whatever overlays the
     // window's top edge (the desktop's top bar while it shows).
     let top = if in_bar {
@@ -525,10 +551,16 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         0.0
     };
-    // A column's header and the top its body starts at.
+    // A column's header and the top its body starts at. The sidebar's stands at the window's own
+    // top, where its body then starts.
     let header_of = |col: Rect, column: Column| {
-        if hh > 0.0 && col.width() > 0.0 && rows(column) {
-            Rect::new(col.x0, col.y0 + top, col.x1, col.y0 + top + hh)
+        let (row, y) = if column == Column::Sidebar {
+            (sidebar_hh, 0.0)
+        } else {
+            (hh, top)
+        };
+        if row > 0.0 && col.width() > 0.0 && rows(column) {
+            Rect::new(col.x0, col.y0 + y, col.x1, col.y0 + y + row)
         } else {
             Rect::ZERO
         }
@@ -583,7 +615,7 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
                 g.sidebar_column = Rect::new(x0, drawer_top, x0 + dw, drawer_bottom);
                 (sidebar_header, sidebar_body) = drawer_split(
                     g.sidebar_column,
-                    drawer_hh,
+                    sidebar_hh,
                     inputs.header_wanted(Column::Sidebar),
                 );
             }
@@ -892,7 +924,12 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
         && g.sidebar_column.width() > 0.0
     {
         let x = g.sidebar_column.x1;
-        g.resize_handle = Rect::new(x - m.resize_grip, bt, x + m.resize_grip, h);
+        g.resize_handle = Rect::new(
+            x - m.resize_grip,
+            bt_of(Column::Sidebar),
+            x + m.resize_grip,
+            h,
+        );
     }
     g
 }

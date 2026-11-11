@@ -557,15 +557,16 @@ fn another_parts_slots_stand_while_it_holds_them() {
 }
 
 /// The bar's Back is the window's, so it reaches the first screen too: from
-/// a place it goes back to the app's navigation, and the bar names that
-/// again.
+/// a place it goes back to the app's navigation, whose screen names itself
+/// in its own header row, so the bar says nothing of it twice.
 #[test]
-fn the_window_bars_back_names_the_app_again() {
+fn the_window_bars_back_returns_to_the_navigation_that_names_itself() {
     let label = || {
         declared()
             .and_then(|toolbar| toolbar.location)
             .map(|location| location.label)
     };
+    let sidebar_header = |h: &FrameHarness| geometry(h).sidebar_header();
     let shell = NavShell::new()
         .mode(NavMode::Push)
         .sidebar(Probe::boxed("sidebar").0)
@@ -580,11 +581,11 @@ fn the_window_bars_back_names_the_app_again() {
         NavPane::Sidebar,
         "a pushed window opens on its navigation"
     );
-    assert_eq!(
-        label().as_deref(),
-        Some("Places"),
-        "the bar names the navigation the sidebar screen shows"
+    assert!(
+        sidebar_header(&h).height() > 0.0,
+        "the navigation screen carries its own header row"
     );
+    assert_eq!(label(), None, "the bar does not name the navigation again");
 
     h.root_mut::<NavShell>().show(NavPane::Content);
     settle(&mut h, 360, 800);
@@ -597,9 +598,198 @@ fn the_window_bars_back_names_the_app_again() {
         NavPane::Sidebar,
         "the bar's Back reaches the navigation screen"
     );
-    assert_eq!(
-        label().as_deref(),
-        Some("Places"),
-        "and the bar names it again"
+    assert!(
+        sidebar_header(&h).height() > 0.0,
+        "the navigation names itself again"
     );
+    assert_eq!(label(), None, "the bar says nothing of it twice");
+}
+
+/// A sidebar's header row — the words that name its places and the buttons that add to them —
+/// stands at the top of the sidebar at rest, with the window's bar hidden over the window's top
+/// edge, as it does while the bar is out: it is the app's own navigation, never the bar's, so
+/// nothing the sidebar offers waits on reaching for the bar.
+#[test]
+fn a_sidebars_header_stands_with_the_window_bar_hidden() {
+    let shell = NavShell::new()
+        .with_id("sidebar-header")
+        .content_kind(ContentKind::Page)
+        .sidebar_header(
+            "Places",
+            vec![Box::new(Button::icon_only(
+                "places.add",
+                Icon::Plus,
+                "Add a place",
+            ))],
+        )
+        .sidebar(Box::new(NavList::new(places()).with_id("places")))
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, W, H, Theme::dark());
+    h.present_in_window_bar();
+    settle(&mut h, W, H);
+    let bar_carries =
+        declared().is_some_and(|toolbar| toolbar.location.is_some() || !toolbar.actions.is_empty());
+    assert!(
+        !bar_carries,
+        "the bar carries neither the sidebar's title nor its buttons: {:?}",
+        declared()
+    );
+
+    let shown = geometry(&h).sidebar_header();
+    assert!(
+        shown.height() > 0.0 && shown.width() > 0.0,
+        "the sidebar's header row stands while the bar is out: {shown:?}"
+    );
+    h.present_window_bar_at_rest();
+    settle(&mut h, W, H);
+    let at_rest = geometry(&h).sidebar_header();
+    assert_eq!(
+        at_rest, shown,
+        "the sidebar's header row stands where it was with the bar hidden"
+    );
+    let list = child_rect(&h, "places").expect("the places stand in the sidebar");
+    assert!(
+        list.y0 + 1e-9 >= at_rest.height(),
+        "the places start under their header row: {list:?} beside {at_rest:?}"
+    );
+}
+
+/// An app that declares no slots of its own gets them from its shell: while the
+/// desktop's bar hosts the window, the column in front names the window's
+/// location, the columns' headers' buttons are the bar's actions and run from
+/// it, and the shell draws no header row under the bar. The sidebar's own
+/// header is the app's navigation: it keeps its row, and its button, at the
+/// top of the sidebar.
+#[test]
+fn a_hosted_shell_hands_its_columns_to_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_effect(move || count.set(count.get() + 1));
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .overview(Probe::boxed("overview").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(add)])
+        .overview_header("Inbox", Vec::new())
+        .content_header(
+            "Design review",
+            vec![Box::new(crate::widget::Row::new().push(Box::new(
+                Button::icon_only("mail.reply", Icon::Reply, "Reply"),
+            )))],
+        );
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    settle(&mut h, 1280, 800);
+    assert!(
+        geometry(&h).header_height > 0.0,
+        "with no desktop bar, the header row stands"
+    );
+    assert_eq!(declared(), None, "and the shell declares nothing");
+
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    assert_eq!(
+        geometry(&h).header_height,
+        0.0,
+        "no header row under the bar"
+    );
+    let toolbar = declared().expect("the shell declares the window's slots");
+    assert_eq!(
+        toolbar
+            .location
+            .as_ref()
+            .map(|location| location.label.as_str()),
+        Some("Design review"),
+        "the content in front names the window"
+    );
+    assert_eq!(
+        toolbar.sidebar,
+        Some(true),
+        "the sidebar's toggle is a slot"
+    );
+    assert!(
+        geometry(&h).sidebar_header().height() > 0.0,
+        "the sidebar keeps its own header row"
+    );
+    assert!(
+        !toolbar
+            .actions
+            .iter()
+            .any(|action| action.id == "mail.new-mailbox"),
+        "the sidebar's button stays in its row, never in the bar"
+    );
+    let reply = toolbar
+        .actions
+        .iter()
+        .find(|action| action.id == "mail.reply")
+        .expect("the content's button is the bar's action");
+    assert_eq!(reply.icon, "reply");
+    assert!(!reply.menu, "a button with an icon stands in the row");
+    // The bar's press is a press on the app: the frame that takes it runs
+    // what it published, as the window's bar hands it over.
+    h.press_window_slot(ToolbarEvent::Action {
+        id: reply.id.clone(),
+    });
+    // The sidebar's own button stands in its row, where a person presses it,
+    // and runs what the app published.
+    let button = rect_named(&h, "mail.new-mailbox").expect("the sidebar's button shows in its row");
+    assert!(
+        button.y0 < geometry(&h).sidebar_header().y1,
+        "the button stands in the sidebar's header row: {button:?}"
+    );
+    h.click_at(button.center().x, button.center().y);
+    assert_eq!(pressed.get(), 1, "the sidebar's press runs the button");
+}
+
+/// A header button bound to an action, as framework apps build theirs, runs
+/// when pressed in the window's bar, though the shell lays no header row out
+/// under it. A column the shell does not have offers none of its buttons, as
+/// its header row would show none, and the sidebar's own buttons stay in the
+/// sidebar's row.
+#[test]
+fn a_header_action_runs_from_the_window_bar() {
+    use crate::window_toolbar::{ToolbarEvent, declared};
+    let pressed = SharedRc::new(Cell::new(0));
+    let count = SharedRc::clone(&pressed);
+    let add = Button::icon_only("mail.new-mailbox", Icon::Plus, "New mailbox")
+        .on_own_device_effect(move || count.set(count.get() + 1));
+    let compose = Button::icon_only("mail.compose", Icon::Plus, "Compose");
+    let keep = Button::icon_only("mail.keep", Icon::Archive, "Keep");
+    let shell = NavShell::new()
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0)
+        .sidebar_header("Mailboxes", vec![Box::new(keep)])
+        .overview_header("Inbox", vec![Box::new(compose)])
+        .content_header("Design review", vec![Box::new(add)]);
+    let mut h = harness(shell, 1280, 800, Theme::dark());
+    h.set_permission_ctx(crate::permissions::PermissionContext::member(
+        "ada",
+        crate::permissions::Role::Editor,
+    ));
+    h.present_in_window_bar();
+    settle(&mut h, 1280, 800);
+    let toolbar = declared().expect("the shell declares the window's slots");
+    let ids: Vec<&str> = toolbar.actions.iter().map(|a| a.id.as_str()).collect();
+    assert!(ids.contains(&"mail.new-mailbox"), "{ids:?}");
+    assert!(
+        !ids.contains(&"mail.compose"),
+        "a column the shell does not have offers no buttons: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"mail.keep"),
+        "the sidebar's own buttons stay in its row: {ids:?}"
+    );
+
+    h.press_window_slot(ToolbarEvent::Action {
+        id: "mail.new-mailbox".into(),
+    });
+    h.idle();
+    assert!(
+        h.control_failures().is_empty(),
+        "{:?}",
+        h.control_failures()
+    );
+    assert_eq!(h.refusal_said(), None);
+    assert_eq!(pressed.get(), 1, "the bar's press runs the button's action");
 }

@@ -9,6 +9,43 @@ use super::{EPSILON, Kind, Problem, SHELL};
 /// the app's.
 const BAR: &str = "WindowBar";
 
+/// What is wrong with the window's sidebar as it stands at rest: whether the row that names its
+/// places and offers what adds to them is there, or only stands once the window's bar is out.
+/// A sidebar's header is the app's own navigation — the app declares it, and the window's bar
+/// comes over it while the person reaches for the window's top edge — so it is on the window at
+/// every time. A window that declares a sidebar header and draws none at rest loses it until the
+/// bar comes, and the top of the sidebar starts straight with its rows.
+///
+/// A sidebar that stands narrow enough to read as a rail says what it holds by its icons, and a
+/// sidebar the person put away stands nowhere: neither draws a row, and neither is this.
+pub fn sidebar_header_at_rest(
+    declares: bool,
+    stands: Option<ui::widget::SidebarFrame>,
+) -> Vec<Problem> {
+    if !declares {
+        return Vec::new();
+    }
+    let Some(frame) = stands else {
+        return Vec::new();
+    };
+    if frame.header.height() > EPSILON {
+        return Vec::new();
+    }
+    vec![Problem {
+        kind: Kind::SidebarHeaderOnReveal,
+        keys: Vec::new(),
+        widget: SHELL.to_owned(),
+        id: None,
+        detail: format!(
+            "the sidebar's header row — the words that name its places and the buttons that add \
+             to them — stands only while the window's bar is out: at rest the sidebar's {:.0}px \
+             wide column starts straight with its rows, so nothing there says what it holds \
+             until the person reaches for the window's top edge",
+            frame.column.width(),
+        ),
+    }]
+}
+
 /// What is wrong with one window's bar as it lays itself out across the window: a control it
 /// shows twice, and an action that asks for its words standing as its icon alone while the bar
 /// has room for those words. Both read the app's actions: the window's own furniture wears a glyph

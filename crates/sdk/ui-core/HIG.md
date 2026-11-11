@@ -43,7 +43,10 @@ sits in it — `.sidebar_header(title, actions)`, `.overview_header(..)`,
 unified toolbar: a `Heading` title in sentence case after the shell's
 leading button, the column's actions at its trailing end, and one hairline
 under the content columns. An app never draws a band of its own above a
-column. The title starts at the content gutter (`rhythm.group`) or after
+column, save its sidebar's: the sidebar's header is the app's own
+navigation — the words that name its places and the buttons that add to
+them — and stands at the top of the sidebar at every time, with the window's
+bar over it while the person reaches for the bar. The title starts at the content gutter (`rhythm.group`) or after
 the shell's leading button; an optional count follows it as a quiet
 `Caption.numeric` pill; the actions start after the title's measured
 width. Where they do not fit, labelled buttons show their icons alone,
@@ -491,9 +494,12 @@ completeness does not exempt a screen from these requirements.
   (`widget::top_edge_reveal`). A Tilo app's header row takes the bar in as
   **one bar**: the window's controls stand at the row's trailing end in room
   the row keeps for them (`WindowHeader::set_window_bar`), never stacked
-  above or painted over the app's controls. An app may put its header *in*
-  the bar (`NavShell::with_header_in_window_bar`): maximized, the header
-  then hides with the bar and comes back over the content with it.
+  above or painted over the app's controls. An app may put its content
+  columns' header *in* the bar (`NavShell::with_header_in_window_bar`):
+  maximized, those headers hide with the bar and come back over the content
+  with it, over the sidebar's own row, which stays where it is. Where the
+  bar takes the headers as its slots, it takes the content columns' alone:
+  the sidebar's title and buttons never wait on reaching for the bar.
 - **The window's controls are a group of their own.** History, Full screen
   and Close stand at the bar's trailing edge, `rhythm.group` apart from the
   app's controls and the window's search before them; space parts the two

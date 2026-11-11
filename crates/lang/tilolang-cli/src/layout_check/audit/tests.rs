@@ -1490,6 +1490,40 @@ fn a_header_row_under_the_bar_is_a_second_row() {
     );
 }
 
+/// A sidebar says what its places are, and offers what adds to them, in a row of its own at the
+/// window's top at every time: a window that declares that row and draws none at rest loses it
+/// until the person reaches for the window's bar.
+#[test]
+fn a_sidebar_declares_its_header_and_draws_it_at_rest() {
+    let frame = |header: Rect| {
+        Some(ui::widget::SidebarFrame {
+            column: Rect::new(0.0, 0.0, 220.0, 800.0),
+            header,
+        })
+    };
+    let row = Rect::new(0.0, 0.0, 220.0, 44.0);
+    assert!(
+        super::sidebar_header_at_rest(false, frame(Rect::ZERO)).is_empty(),
+        "a sidebar the app gives no header is the app's own, drawn or not"
+    );
+    assert!(
+        super::sidebar_header_at_rest(true, None).is_empty(),
+        "a sidebar the person put away stands nowhere, so it draws no row"
+    );
+    assert!(
+        super::sidebar_header_at_rest(true, frame(row)).is_empty(),
+        "the row that names the sidebar stands at rest"
+    );
+    let found = super::sidebar_header_at_rest(true, frame(Rect::ZERO));
+    assert_eq!(found.len(), 1, "a declared header that only the bar shows");
+    assert_eq!(found[0].kind, Kind::SidebarHeaderOnReveal);
+    assert!(
+        found[0].detail.contains("220px"),
+        "the finding says how wide the sidebar stands: {}",
+        found[0].detail
+    );
+}
+
 /// One bar shows each control once: the same action under two ids, or two controls one glyph
 /// apart, is one control too many.
 #[test]

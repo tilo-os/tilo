@@ -139,7 +139,9 @@ fn every_kind_of_broken_layout_is_caught_at_the_view_that_breaks_it() {
             // The fixture's pages lay no section under a block of their own, and no list stands
             // beside the page it opens.
             | Kind::CrowdedHeading
-            | Kind::DetailRowNotChosen => "(no view)",
+            | Kind::DetailRowNotChosen
+            // No window in this fixture declares a sidebar header over a sidebar that draws none.
+            | Kind::SidebarHeaderOnReveal => "(no view)",
         };
         assert_eq!(
             finding.view,
