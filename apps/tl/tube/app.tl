@@ -361,7 +361,7 @@ action refresh_channel(c: Channel) (icon: .refresh, label: "Refresh") {
 }
 
 /// Asks the service for the videos it lists as trending.
-action load_trending(yt: YouTube) (icon: .flame, label: "Trending") {
+action load_trending(yt: YouTube) (icon: .flame, label: "Refresh trending") {
     if yt.title == "" {
         yt.title = "YouTube"
     }
@@ -430,36 +430,26 @@ view feed(yt: YouTube) {
                     } else if here == "history" {
                         history_list(yt, in_column: false)
                     } else if here == "later" {
-                        video_grid(later, "Nothing kept for later", "The videos you keep are here")
+                        video_grid(later, "Nothing kept for later")
                     } else if here == "liked" {
-                        video_grid(liked, "Nothing liked yet", "The videos you like are here")
+                        video_grid(liked, "Nothing liked yet")
                     } else if here == "trending" {
                         if trending.is_empty() {
                             ui.EmptyState(
                                 "Nothing trending yet",
-                                message: "Ask YouTube what is trending",
                                 icon: .flame,
-                                action: "Trending",
+                                action: "Refresh trending",
                             ) {
                                 on act: load_trending(yt)
                             }
                         } else {
-                            video_grid(trending, "", "")
+                            video_grid(trending, "")
                         }
                     } else if subs.is_empty() {
                         if yt.subscriptions.is_empty() {
-                            ui.EmptyState(
-                                "No subscriptions yet",
-                                message: "A channel's page subscribes to it, and its newest videos arrive here",
-                                icon: .rss,
-                            )
+                            ui.EmptyState("No subscriptions yet", icon: .rss)
                         } else {
-                            ui.EmptyState(
-                                "Nothing new yet",
-                                message: "Ask YouTube for the newest videos of the channels you follow",
-                                icon: .rss,
-                                action: "Refresh",
-                            ) {
+                            ui.EmptyState("Nothing new yet", icon: .rss, action: "Refresh") {
                                 on act: refresh_feed(yt)
                             }
                         }
@@ -475,7 +465,7 @@ view feed(yt: YouTube) {
                                 yt.trouble,
                                 retry: refresh_feed(yt),
                             )
-                            video_grid(subs, "", "")
+                            video_grid(subs, "")
                         }
                     }
                 }
@@ -485,9 +475,9 @@ view feed(yt: YouTube) {
 }
 
 /// The videos as cards in a grid, or what the place says while it holds none.
-view video_grid(videos: List<Video>, empty: Text, message: Text) {
+view video_grid(videos: List<Video>, empty: Text) {
     if videos.is_empty() {
-        ui.EmptyState(empty, message: message)
+        ui.EmptyState(empty)
     } else {
         ui.MediaGrid(size: .regular) {
             for v in videos {
@@ -574,7 +564,7 @@ view search_found(yt: YouTube) {
                 }
                 if not videos.is_empty() {
                     ui.Section("Videos") {
-                        video_grid(videos, "", "")
+                        video_grid(videos, "")
                     }
                 }
             }
@@ -610,7 +600,7 @@ view watched_page(h: WatchEntry) {
 view history_list(yt: YouTube, in_column: Bool) {
     let entries = yt.history.sort_by(.watched, desc)
     if entries.is_empty() {
-        ui.EmptyState("Nothing watched yet", message: "The videos you watch are listed here")
+        ui.EmptyState("Nothing watched yet")
     } else {
         std.list(entries, in_column: in_column) { (entry, at) ->
             ui.ListItem(item: entry, presence: at) {
@@ -674,7 +664,7 @@ view channel_page(c: Channel) {
             }
         }
         ui.Section("Videos") {
-            video_grid(videos, "No videos here yet", "Ask YouTube for this channel's videos")
+            video_grid(videos, "No videos here yet")
         }
     }
 }
@@ -799,7 +789,7 @@ view playlist_page(p: Playlist) {
                 text("{p.video_count} videos", role: .caption)
             }
         }
-        video_grid(videos, "Nothing here yet", "The playlist's videos arrive when it is opened")
+        video_grid(videos, "Nothing here yet")
     }
 }
 

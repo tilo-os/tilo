@@ -223,7 +223,7 @@ d-hpjdxg6k = Refresh
 d-wx26izlg = Refresh
     .doc = Asks the service for the channel's videos.
 
-d-khblapap = Trending
+d-khblapap = Refresh trending
     .doc = Asks the service for the videos it lists as trending.
 
 d-yc4rjoeg = Play again
@@ -250,15 +250,11 @@ d-mufcicuu = Feed
     .w-liked-videos = Liked videos
     .w-history = History
     .w-nothing-kept-for-later = Nothing kept for later
-    .w-the-videos-you-keep-are-here = The videos you keep are here
     .w-nothing-liked-yet = Nothing liked yet
-    .w-the-videos-you-like-are-here = The videos you like are here
     .w-nothing-trending-yet = Nothing trending yet
-    .w-ask-youtube-what-is-trending = Ask YouTube what is trending
+    .w-refresh-trending = Refresh trending
     .w-no-subscriptions-yet = No subscriptions yet
-    .w-a-channel-s-page-subscribes-to = A channel's page subscribes to it, and its newest videos arrive here
     .w-nothing-new-yet = Nothing new yet
-    .w-ask-youtube-for-the-newest-videos = Ask YouTube for the newest videos of the channels you follow
     .w-refresh = Refresh
     .w-can-t-save-what-fetched = Can't save what { $name } fetched
     .w-can-t-reach = Can't reach { $name }
@@ -286,7 +282,6 @@ d-yf5l4ysw = Watched page
 
 d-lhrpz5jd = History list
     .w-nothing-watched-yet = Nothing watched yet
-    .w-the-videos-you-watch-are-listed = The videos you watch are listed here
 
 d-yh23kjna = Channel page
     .w-unsubscribe = Unsubscribe
@@ -297,7 +292,6 @@ d-yh23kjna = Channel page
     .w-about = About
     .w-videos-2 = Videos
     .w-no-videos-here-yet = No videos here yet
-    .w-ask-youtube-for-this-channel-s = Ask YouTube for this channel's videos
 
 d-w7mpbzm4 = Video page
     .w-play = Play
@@ -313,7 +307,6 @@ d-w7mpbzm4 = Video page
 d-eijjevst = Playlist page
     .w-videos = { $video_count } videos
     .w-nothing-here-yet = Nothing here yet
-    .w-the-playlist-s-videos-arrive-when = The playlist's videos arrive when it is opened
 
 d-z642pnnw = Video row
 
