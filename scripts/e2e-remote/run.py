@@ -28,10 +28,13 @@ What a person does, on real booted boxes (tools/ci/e2e-remote.sh makes the host)
 7. Three machines work in that one tab: A is branched once more into D, a third device of the
    person, and the agents on A and on D, both through B's door, and the agent on B each answer
    a part of the form in the same moment. B's person reads three names in the tab's record and
-   which of them set each field.
+   which of them set each field. The agent on D names B by its device id, which a door takes
+   as well as a name: D does not list B (step 9).
 8. In B's tab, each agent that came from another machine is named with its device, as the note
    of step 5 is.
-9. C, another person's device, is refused at B's door.
+9. The person's third device lists the second among their devices (`tilo_devices`), as the
+   first does, so that `--device <name>` can name it there.
+10. C, another person's device, is refused at B's door.
 
 Every step is a result in report.json / report.md under --out; any failure fails the run.
 """
@@ -169,6 +172,8 @@ class Run:
         self.results: list[Result] = []
         # The agents from other machines as B's tab named them, with their devices.
         self.tab_actors: list[dict] = []
+        # Whether the third device D was made, for the step that asks what it lists.
+        self.third_made = False
         self.log = self.out / "tilo-vm.log"
         taps = args.taps.split(",")
         self.running: set[str] = set()
@@ -487,13 +492,18 @@ ip -o addr show dev "$dev"
                       lambda res: self.three_machines(a, b, d, res, facts), "E10")
             self.step("E12", "B's tab names the device of each agent that came from another machine",
                       self.devices_named, "E10")
+            self.step("E13", "The person's third device lists the second among their devices "
+                             "(tilo_devices)",
+                      lambda res: self.third_lists_second(d, b, res), "E10")
             self.step("E09", "A device of another person is refused at B's door",
                       lambda res: self.stranger(b, c, res), "E03")
         finally:
             ok = self.report()
             if not ok:
+                # A stopped box has nothing to say: its logs were kept when it was stopped.
                 for box in (a, b, c, d):
-                    self.keep_logs(box)
+                    if box.letter in self.running:
+                        self.keep_logs(box)
             if self.args.hold:
                 print(f"holding the boxes for {self.args.hold}s: t vm ssh, then as {Path.home().name}: "
                       f"tilo-vm vm list", flush=True)
@@ -637,7 +647,8 @@ ip -o addr show dev "$dev"
         res.facts["open_here"] = text_of(t.get("open_here")) or t.get("open_here")
         line = next((l for l in text.splitlines() if key in l), None)
         if line is None or not line.rstrip().endswith("  reachable"):
-            raise Failed(f"A's tilo_devices does not list B ({key}) as reachable after {FIND_S}s: {text!r}")
+            raise Failed(f"{a.letter.upper()}'s tilo_devices does not list {b.letter.upper()} ({key}) "
+                         f"as reachable after {FIND_S}s: {text!r}")
 
     def answer_when_asked(self, box: Box, res: Result, thread, within: float = 90) -> None:
         deadline = time.monotonic() + within
@@ -1022,22 +1033,37 @@ ip -o addr show dev "$dev"
 
     def three_machines(self, a: Box, b: Box, d: Box, res: Result, facts: dict) -> None:
         self.third_device(a, d, res)
-        # Each of the person's two other devices finds B again on their network.
-        for box in (a, d):
-            self.reachable(box, b, res)
+        self.third_made = True
+        # The first device finds B again on their network. The third does not list B, which a
+        # step of its own asks: its agent comes through B's door by B's device id, which a door
+        # takes as well as a name.
+        self.reachable(a, b, res)
+        by_id = list(facts["command"])
+        by_id[by_id.index("--device") + 1] = (b.identity.get("this_device") or {}).get("device", "")
+        res.facts["command_d"] = by_id
         # The agent on A sends the tab B has open to the form anew; the agents on D and on B
         # join it.
         self.in_one_tab(b, [
             Party(a, facts["command"], THREE_A, "Joao Pedro", ("Given names", "Family name"),
                   leads=True),
-            Party(d, facts["command"], THREE_D, "Brazil", ("Nationality", "Which country?")),
+            Party(d, by_id, THREE_D, "Brazil", ("Nationality", "Which country?")),
             Party(b, self.door(b), THREE_B, "FX4410972", ("Passport number", "Arrival"),
                   remote=False),
         ], THREE_URL, res)
 
+    def third_lists_second(self, d: Box, b: Box, res: Result) -> None:
+        """Whether D, enrolled after B, knows B as one of the person's devices: what
+        `tilo_devices` lists there, and so whether `--device <name>` could name B on D."""
+        if not self.third_made:
+            raise Failed("no third device was made")
+        self.reachable(d, b, res)
+
     def stranger(self, b: Box, c: Box, res: Result) -> None:
         # C runs beside B in the place of the person's other devices.
         for letter in ("a", "d"):
+            # What these two said is kept now: once stopped they have nothing to say.
+            if letter in self.running:
+                self.keep_logs(self.boxes[letter])
             self.running.discard(letter)
             self.boxes[letter].vm.vm_cmd("stop", self.boxes[letter].name, timeout=300, check=False)
         c.vm.vm_cmd("create", c.name, "--image", str(self.args.work / "box-c.qcow2"), "--heads", "1",
