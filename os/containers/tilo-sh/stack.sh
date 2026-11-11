@@ -675,6 +675,8 @@ private_env() {
     "XDG_DATA_HOME=$home/data" "XDG_STATE_HOME=$home/state" "XDG_CACHE_HOME=$home/cache" \
     "TMPDIR=$home/tmp" "PATH=$2:/usr/bin:/bin" LANG=C.UTF-8
   [[ -z ${RUST_LOG:-} ]] || printf 'RUST_LOG=%s\n' "$RUST_LOG"
+  # The relay reads its own log filter, not RUST_LOG.
+  [[ -z ${TILO_RELAY_LOG:-} ]] || printf 'TILO_RELAY_LOG=%s\n' "$TILO_RELAY_LOG"
   [[ -z ${RUST_BACKTRACE:-} ]] || printf 'RUST_BACKTRACE=%s\n' "$RUST_BACKTRACE"
 }
 
