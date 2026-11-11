@@ -384,11 +384,15 @@ vm_host_blocker() {
 vm_host() {
   local sudo=()
   [[ $EUID == 0 ]] || sudo=(sudo -n)
+  # The enrolment program the caller named, else the one `up` settled on, which
+  # it leaves in the state: a later `vm_host env` reads the relay's device with
+  # it, in a shell that has nothing else of `up`.
+  local enrol=${enroll:-${TILO_SH_TILO_ENROLL:-$(cat "$state/vm-host-enroll" 2>/dev/null || true)}}
   "${sudo[@]}" env \
     TILO_SH_STATE="$vm_state" \
     "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$state/images/$commit/image-vm-host/image.oci.tar}" \
     "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
-    "TILO_SH_TILO_ENROLL=${enroll:-}" \
+    "TILO_SH_TILO_ENROLL=$enrol" \
     "TILO_SH_RELAY_SECRETS=$state/secrets" \
     "TILO_SH_RELAY_ROOT=$state/secrets/room-root-lounge" \
     "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
@@ -939,6 +943,7 @@ up_images() {
     [[ -n ${TILO_SH_IMAGE_VM_HOST:-} ]] || image VM_HOST image-vm-host image.oci.tar >/dev/null
     [[ -n ${TILO_SH_HOSTED_GUEST:-} ]] || image HOSTED_GUEST image-hosted-guest image.oci.tar >/dev/null
     enroll=$(find_enroll)  # read by relay_env, so the stack's own is used
+    printf '%s\n' "$enroll" > "$state/vm-host-enroll"
     say 'starting the VM host (Firecracker, as root)'
     vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
   fi
