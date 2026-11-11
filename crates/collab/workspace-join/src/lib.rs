@@ -658,8 +658,6 @@ pub fn decode_and_verify_invitation(
         _ => return Err("unsupported invitation version".into()),
     };
     validate_decoded(&grant, recipient_user_public_key, revocations, now_ns)?;
-    let key = ed25519_dalek::VerifyingKey::from_bytes(&grant.issuer.device_public_key)
-        .map_err(|_| "invalid invitation issuer device key".to_string())?;
     let digest = match &inviter {
         None => tagged_digest(
             INVITATION_DOMAIN,
@@ -677,8 +675,22 @@ pub fn decode_and_verify_invitation(
             },
         )?,
     };
-    key.verify(&digest, &ed25519_dalek::Signature::from_bytes(&signature))
-        .map_err(|_| "invitation signature did not verify".to_string())?;
+    // A workspace re-reads every invitation its members redeemed whenever its
+    // governance changes: one that verified before is remembered.
+    tilo_user_identity::verify_remembered(
+        &grant.issuer.device_public_key,
+        &digest,
+        &signature,
+        false,
+    )
+    .map_err(|refused| match refused {
+        tilo_user_identity::RememberedRefusal::Key => {
+            "invalid invitation issuer device key".to_string()
+        }
+        tilo_user_identity::RememberedRefusal::Signature => {
+            "invitation signature did not verify".to_string()
+        }
+    })?;
     Ok(VerifiedJoin {
         invite_id: *blake3::hash(signed_invitation).as_bytes(),
         grant,

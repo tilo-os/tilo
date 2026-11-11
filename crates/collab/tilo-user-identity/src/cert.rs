@@ -1417,38 +1417,94 @@ fn verify_signed(cert: &DeviceCert) -> Result<(), DeviceCertError> {
     let signer = cert.signer_public_key();
     let digest = device_cert_signing_digest(cert)?;
     // Hosts re-check the same certificates on every request and pump turn.
-    // A signature check is a pure function of (key, signed digest, signature):
-    // an exact triple that verified before verifies again. Only successes are
-    // remembered; every other input takes the full path below.
-    let mut triple = [0u8; 128];
-    triple[..32].copy_from_slice(&signer);
-    triple[32..64].copy_from_slice(&digest);
-    triple[64..].copy_from_slice(&cert.signature);
+    verify_remembered(&signer, &digest, &cert.signature, false).map_err(|error| match error {
+        RememberedRefusal::Key => DeviceCertError::InvalidUserPublicKey,
+        RememberedRefusal::Signature => DeviceCertError::BadSignature,
+    })
+}
+
+/// Why [`verify_remembered`] refused a signature.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RememberedRefusal {
+    /// The signer's key is not an Ed25519 public key.
+    Key,
+    /// The signature is not the key's over the message.
+    Signature,
+}
+
+/// Check that `signature` is `key`'s Ed25519 signature over `message`
+/// (strictly, as [`ed25519_dalek::VerifyingKey::verify_strict`], when
+/// `strict`).
+///
+/// A signature check is a pure function of the key, what was signed and the
+/// signature: an exact one that verified before verifies again. A workspace's
+/// governance is read again with every change to it, and holds a signature
+/// for every member (their certificate, their invitation, the membership
+/// operations their admission wrote), so checking each anew made one more
+/// admission cost a signature check per member. Only successes are
+/// remembered, by the message itself when it is a digest and by its BLAKE3
+/// hash otherwise; every other input takes the full check.
+///
+/// # Errors
+///
+/// [`RememberedRefusal`] says why the signature does not verify.
+pub fn verify_remembered(
+    key: &[u8; 32],
+    message: &[u8],
+    signature: &[u8; 64],
+    strict: bool,
+) -> Result<(), RememberedRefusal> {
+    let mut seen_as = [0u8; 129];
+    seen_as[..32].copy_from_slice(key);
+    match <&[u8; 32]>::try_from(message) {
+        Ok(digest) => seen_as[32..64].copy_from_slice(digest),
+        Err(_) => seen_as[32..64].copy_from_slice(blake3::hash(message).as_bytes()),
+    }
+    seen_as[64..128].copy_from_slice(signature);
+    seen_as[128] = u8::from(strict);
     if verified_signatures()
         .lock()
-        .is_ok_and(|seen| seen.contains(&triple))
+        .is_ok_and(|seen| seen.contains(&seen_as))
     {
         return Ok(());
     }
-    let vk = ed25519_dalek::VerifyingKey::from_bytes(&signer)
-        .map_err(|_| DeviceCertError::InvalidUserPublicKey)?;
-    let sig = ed25519_dalek::Signature::from_bytes(&cert.signature);
-    vk.verify(&digest, &sig)
-        .map_err(|_| DeviceCertError::BadSignature)?;
+    let vk = ed25519_dalek::VerifyingKey::from_bytes(key).map_err(|_| RememberedRefusal::Key)?;
+    let sig = ed25519_dalek::Signature::from_bytes(signature);
+    SIGNATURE_CHECKS.with(|checks| checks.set(checks.get().saturating_add(1)));
+    let verified = if strict {
+        vk.verify_strict(message, &sig)
+    } else {
+        vk.verify(message, &sig)
+    };
+    verified.map_err(|_| RememberedRefusal::Signature)?;
     if let Ok(mut seen) = verified_signatures().lock() {
         if seen.len() >= VERIFIED_SIGNATURE_LIMIT {
             seen.clear();
         }
-        seen.insert(triple);
+        seen.insert(seen_as);
     }
     Ok(())
 }
 
-const VERIFIED_SIGNATURE_LIMIT: usize = 4096;
+thread_local! {
+    static SIGNATURE_CHECKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// The signatures [`verify_remembered`] checked in full on this thread since
+/// the last call: what a test that a cost does not grow with a workspace
+/// counts.
+#[must_use]
+pub fn take_signature_checks() -> u64 {
+    SIGNATURE_CHECKS.with(|checks| checks.replace(0))
+}
+
+/// Room for every signature a workspace of thousands of members holds, so
+/// re-reading its governance finds each one remembered.
+const VERIFIED_SIGNATURE_LIMIT: usize = 65_536;
 
 pub(crate) fn verified_signatures()
--> &'static std::sync::Mutex<std::collections::HashSet<[u8; 128]>> {
-    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 128]>>> =
+-> &'static std::sync::Mutex<std::collections::HashSet<[u8; 129]>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<[u8; 129]>>> =
         std::sync::OnceLock::new();
     SEEN.get_or_init(Default::default)
 }

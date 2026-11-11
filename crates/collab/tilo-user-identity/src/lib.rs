@@ -108,10 +108,11 @@ pub use canonical::CanonicalError;
 pub use cert::{
     AgentScope, DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DEVCERT_V4_PREIMAGE_TAG,
     DEVCERT_V5_PREIMAGE_TAG, DEVCERT_V6_PREIMAGE_TAG, DeviceCapabilities, DeviceCert,
-    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, STAND_IN_LIFETIME_NS, UNNAMED_PRIMARY_DEVICE,
-    UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name, prepare_minted_grant,
-    prepare_stand_in_cert, sign_device_cert, verify_device_cert, verify_device_cert_at,
-    verify_stand_in_cert, verify_stand_in_cert_at,
+    DeviceCertError, MAX_AGENT_GRANT_LIFETIME_NS, RememberedRefusal, STAND_IN_LIFETIME_NS,
+    UNNAMED_PRIMARY_DEVICE, UNNAMED_SHARED_DEVICE, device_cert_signing_digest, device_name,
+    prepare_minted_grant, prepare_stand_in_cert, sign_device_cert, take_signature_checks,
+    verify_device_cert, verify_device_cert_at, verify_remembered, verify_stand_in_cert,
+    verify_stand_in_cert_at,
 };
 pub use certification::{
     CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
