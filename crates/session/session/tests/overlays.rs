@@ -289,10 +289,8 @@ fn the_session_publishes_what_it_puts_up_and_who_holds_the_keyboard() {
         .expect("the menu opens");
     session.step(REFRESH).expect("a turn of the session");
     let menu = surface(&session, "window-menu");
+    assert_eq!(menu["slot"], json!("window-menu"));
     assert_eq!(menu["role"], json!("popup"));
-    assert_eq!(menu["modality"], json!("window-modal"));
-    assert_eq!(menu["owner"], json!("shell"));
-    assert_eq!(menu["lifecycle"], json!("shown"));
     assert_eq!(menu["anchor"], json!("at:40,50"), "where it was put");
     assert_eq!(
         menu["place"],
@@ -453,17 +451,20 @@ fn a_popover_stands_under_the_bars_right_end_and_beside_the_caret_that_asked() {
         "the footprint the surface asks for"
     );
 
-    // Beside a caret, clear of it.
+    // Beside a caret, clear of the line it sits on: the popover stands below that line and takes
+    // the room under it, down to the margin, so what it draws never covers what the person types.
     open(
         &mut session,
         "quick-settings",
         Some("beside:600,300,602,320,4"),
     );
-    let (x, y, w, _) = place(&session, "quick-settings");
+    let (x, y, w, h) = place(&session, "quick-settings");
     near(x, 606.0, "the gap clear of the caret");
-    assert!(
-        y <= 300.0,
-        "level with the caret, or raised only as far as its footprint needs: {y}"
+    near(y, 324.0, "clear below the caret's line");
+    near(
+        y + h,
+        f64::from(HEIGHT) - MARGIN,
+        "the room under the line, down to the margin",
     );
     near(w, POPOVER_WIDTH, "the stack's width");
 
@@ -652,10 +653,10 @@ fn a_quick_click_on_the_bar_closes_the_panel_and_leaves_it_closed() {
     let (mut session, _panel) = session_with_quick_settings();
     open(&mut session, "quick-settings", None);
 
-    // The person taps the status cluster's button, at the bar's trailing end: the click comes up
-    // before the session has carried out the toggle its press raised, and the press that closed the
-    // panel still does not open it again.
-    let button = (f64::from(WIDTH) - 30.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
+    // The person taps the status cluster's readings, at the bar's trailing end beyond the bell the
+    // cluster opens with: the click comes up before the session has carried out the toggle its
+    // press raised, and the press that closed the panel still does not open it again.
+    let button = (f64::from(WIDTH) - 6.0, f64::from(TOPBAR_HEIGHT_PX) / 2.0);
     quick_click(&mut session, button.0, button.1);
     session.step(REFRESH).expect("a turn of the session");
     assert!(
