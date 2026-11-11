@@ -129,13 +129,13 @@ async fn post(
 // app measuring every row of a timeline it did not change. Ignored until a
 // post is the same at both sizes.
 
-// A post still costs more the longer the chat has run: 257 ms into a chat
-// holding nothing, 798 ms into one holding two thousand messages. What is
+// A post still costs more the longer the chat has run: 274 ms into a chat
+// holding nothing, 698 ms into one holding two thousand messages. What is
 // left is the host reading a record it merges from the workspace as the whole
 // document, and the app measuring every row of a timeline it did not change.
 // Ignored until a post is the same at both sizes.
 
-#[ignore = "a post costs three times as much into a chat of 2,000 messages: 257 ms and 798 ms"]
+#[ignore = "a post costs 2.5 times as much into a chat of 2,000 messages: 274 ms and 698 ms"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_post_costs_the_same_however_long_the_chat_has_run() {
     let (owner, _) = tilo_user_identity::UserIdentity::generate("Pace host", 1);
