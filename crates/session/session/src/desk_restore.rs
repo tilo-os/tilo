@@ -263,7 +263,7 @@ impl Restore {
                     error = %said,
                     "a window this device left open did not start"
                 );
-                let note = would_not_start(&saved.name, said);
+                let note = would_not_start(&saved.name);
                 desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
                 false
             }
@@ -320,11 +320,8 @@ fn not_installed(name: &str) -> String {
 }
 
 /// What a tab says when its app started nothing.
-fn would_not_start(name: &str, why: &str) -> String {
-    t_args(
-        "desk-window-would-not-start",
-        &[("app", name.into()), ("why", why.into())],
-    )
+fn would_not_start(name: &str) -> String {
+    t_args("desk-window-would-not-start", &[("app", name.into())])
 }
 
 /// What a tab says while its app waits for `host` to take this device into its workspace.

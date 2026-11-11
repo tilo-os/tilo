@@ -269,7 +269,7 @@ impl Shared {
                     String::new(),
                     2,
                     crate::i18n::t("profile-name-not-saved"),
-                    error,
+                    String::new(),
                 ));
             }
         }
