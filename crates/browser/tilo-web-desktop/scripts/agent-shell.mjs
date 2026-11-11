@@ -482,7 +482,7 @@ async function press(tab, pattern, {what = null} = {}) {
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseMoved', x, y});
   await tab.send('Input.dispatchMouseEvent', {type: 'mousePressed', x, y, button: 'left', clickCount: 1});
   await tab.send('Input.dispatchMouseEvent', {type: 'mouseReleased', x, y, button: 'left', clickCount: 1});
-  if (what) log(`pressed ${what}: ${node.name || node.description}`);
+  if (what) log(`pressed ${what}: ${node.name || node.description} (${node.role}) at ${Math.round(x)},${Math.round(y)}`);
   return node;
 }
 /** The pointer moves by a pixel and back over the middle of the page: an input
@@ -853,8 +853,9 @@ async function planActions(agent, apps) {
  * button shares with it. */
 const rosterOf = nodes => nodes.find(node => /people here now/i.test(node.name));
 
-/** A person's card, open where the roster stands: what a face in the bar opens. */
-const personCardOf = nodes => matching(nodes, /^open card$/i) ?? matching(nodes, /^message$/i);
+/** A person's card, open where the roster stands: what a face in the bar opens. It is announced
+ * as theirs ("Claude Code’s profile"), whatever controls it offers that person. */
+const personCardOf = nodes => matching(nodes, /^.+[’']s profile$/i);
 
 /** The roster, open, from the bar as a person opens it. The bar announces who is here as
  * "Everyone here": its people button, or, where the faces fit, the faces themselves, which stand
@@ -878,9 +879,16 @@ async function openPeople(tab) {
       log(`the roster opened ${took} ms after the press`);
       return null;
     }
-    log(opened === 'card'
-      ? `the face opened its person's card ${took} ms after the press; pressed again, it opens everyone here`
-      : `pressing the people button opened nothing after ${took} ms: ${names(await semantics(tab))}`);
+    if (opened === 'card') {
+      log(`the face opened its person's card ${took} ms after the press; pressed again, it opens everyone here`);
+    } else {
+      // What the press was on and what stands about people now: a press that opened nothing
+      // says what it landed on.
+      const nodes = await semantics(tab);
+      const about = nodes.filter(node => /profile|people|follow|everyone|claude code|card/i.test(`${node.name} ${node.description ?? ''}`))
+        .map(node => `${node.role} "${node.name}"${node.description ? ` (${node.description.slice(0, 60)})` : ''} at ${JSON.stringify(node.rect)}`);
+      log(`pressing the people button opened nothing after ${took} ms; about people the page shows: ${about.join('; ')}`);
+    }
   }
   return `the people button opened no roster: ${names(await semantics(tab))}`;
 }
