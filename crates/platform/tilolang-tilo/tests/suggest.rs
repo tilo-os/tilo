@@ -305,6 +305,15 @@ fn the_task_shows_what_waits_on_it_and_who_proposed_it() {
     );
 }
 
+/// The project the task stands under, as its card's view takes it: the row a board draws leaves
+/// out the project the board is of.
+fn project_of(ada: &Replica, task: &Value) -> Value {
+    match read(ada, task, "project") {
+        Value::Opt(Some(held)) => *held,
+        other => panic!("a filed task stands under a project: {other:?}"),
+    }
+}
+
 /// The task's card view, which draws its row.
 fn card_view(ada: &Replica, task: &Value) -> tilolang_runtime::ViewInstance {
     ada.host
@@ -320,7 +329,7 @@ fn card_view(ada: &Replica, task: &Value) -> tilolang_runtime::ViewInstance {
                 .find(|v| v.name == "task_card")
                 .unwrap()
                 .id,
-            vec![task.clone(), Value::List(Vec::new())],
+            vec![task.clone(), project_of(ada, task), Value::List(Vec::new())],
         )
         .unwrap()
 }
