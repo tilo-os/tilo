@@ -127,7 +127,13 @@
 	# otherwise; with no home workspace the page still opens, and an
 	# invitation left there is not one it can take.
 	handle /i/* {
-		@shelf not header Accept *text/html*
+		# Only the link's own path, /i/<16-character handle>, is the shelf's:
+		# the page it opens loads its modules relative to it (/i/v/…), and
+		# those fetches ask for no page either.
+		@shelf {
+			path_regexp ^/i/[A-Za-z0-9_-]{16}$
+			not header Accept *text/html*
+		}
 		handle @shelf {
 			reverse_proxy {$TILO_WEB_SHELF:127.0.0.1:9}
 		}

@@ -345,6 +345,10 @@ grep -q '^content-type: text/html' <(head_of "/i/$handle" -H "Accept: $browser_a
   || fail "a sealed link must be served as a page"
 grep -q '^cache-control: no-cache' <(head_of "/i/$handle" -H "Accept: $browser_accept") \
   || fail "a sealed link's page must revalidate"
+# The page under the link loads its files relative to it (/i/v/…, as a
+# module fetch asks: no page): they are the site's files, not the shelf's.
+cmp -s <(get /i/apple-touch-icon.png -H 'Accept: */*') <(get /apple-touch-icon.png) \
+  || fail "a file the link's page loads relative to /i/ must be the site's own"
 # Both ways round went to the shelf the entrypoint derived, at the path the
 # relay serves it under: an invitation left, and invitations fetched.
 grep -q '^POST /i/' "$shelf_store/asked" && grep -q '^GET /i/' "$shelf_store/asked" \
