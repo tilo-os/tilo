@@ -9,7 +9,7 @@ homepage.workspace = true
 description = "The one image codec seam: format sniffing, decode, encode and pixel operations, with the browser's own codecs on the web."
 
 [dependencies]
-image = { workspace = true, features = ["jpeg", "png", "webp"] }
+image = { workspace = true, features = ["gif", "jpeg", "png", "webp"] }
 # Format and size from an image's header alone, on every target.
 imagesize = { version = "0.14", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 

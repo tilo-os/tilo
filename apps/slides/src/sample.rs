@@ -47,23 +47,24 @@ pub fn picture_deck(title: &str, src: &str) -> Deck {
 /// A small, unmistakably photographic raster: warm rings over a cool field,
 /// clearly a picture rather than a flat UI gradient.
 pub fn photo_png() -> Vec<u8> {
-    use image::{Rgb, RgbImage};
     let (w, h) = (640u32, 400u32);
-    let mut img = RgbImage::new(w, h);
     let cx = w as f32 / 2.0;
     let cy = h as f32 / 2.0;
-    for (x, y, px) in img.enumerate_pixels_mut() {
-        let dx = x as f32 - cx;
-        let dy = y as f32 - cy;
-        let r = (dx * dx + dy * dy).sqrt();
-        let ring = (r * 0.06).sin() * 0.5 + 0.5;
-        let red = (40.0 + 200.0 * ring) as u8;
-        let green = (70.0 + 90.0 * ring) as u8;
-        let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
-        *px = Rgb([red, green, blue]);
+    let mut rgba = Vec::with_capacity((w * h * 4) as usize);
+    for y in 0..h {
+        for x in 0..w {
+            let dx = x as f32 - cx;
+            let dy = y as f32 - cy;
+            let r = (dx * dx + dy * dy).sqrt();
+            let ring = (r * 0.06).sin() * 0.5 + 0.5;
+            let red = (40.0 + 200.0 * ring) as u8;
+            let green = (70.0 + 90.0 * ring) as u8;
+            let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
+            rgba.extend_from_slice(&[red, green, blue, 255]);
+        }
     }
-    // Encoding an in-memory RGB image as PNG cannot fail.
-    ui::png::encode_image(&image::DynamicImage::ImageRgb8(img)).unwrap_or_default()
+    // Encoding in-memory RGBA of its own size as PNG cannot fail.
+    ui::png::encode_rgba8(w, h, &rgba).unwrap_or_default()
 }
 
 /// The content id [`photo_png`] is stored under, in any store.
