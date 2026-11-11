@@ -861,14 +861,14 @@ impl WindowShares {
                 self.retract(desk, start.tab);
                 continue;
             }
+            let Some(ws) = sync.workspace_topic(&start.workspace) else {
+                t("session-window-share-workspace-left").clone_into(&mut start.waiting_for);
+                self.starting.push(start);
+                continue;
+            };
             // A window whose app draws its page hands that page over: no picture of it is captured
             // or encoded here, and the members showing it read the workspace's live plane.
             if pages.borrow().streamed(start.tab, &start.workspace) {
-                let Some(ws) = sync.workspace_topic(&start.workspace) else {
-                    t("session-window-share-workspace-left").clone_into(&mut start.waiting_for);
-                    self.starting.push(start);
-                    continue;
-                };
                 let (width, height) = compositor
                     .shareable_window_rect(&start.window)
                     .map_or((0, 0), |(_, _, width, height)| {
@@ -890,11 +890,6 @@ impl WindowShares {
                 self.changed();
                 continue;
             }
-            let Some(ws) = sync.workspace_topic(&start.workspace) else {
-                t("session-window-share-workspace-left").clone_into(&mut start.waiting_for);
-                self.starting.push(start);
-                continue;
-            };
             let target = Target::window(start.window.clone());
             let picture = match compositor.read_back(&target) {
                 Ok(picture) => picture,

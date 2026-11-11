@@ -128,6 +128,7 @@ pub(crate) struct Shared {
     /// The windows whose apps hand over their page as a paint stream: what
     /// this session publishes on the workspace's live plane while someone
     /// shows them.
+    #[cfg(target_os = "linux")]
     pub(crate) pages: Rc<RefCell<crate::page_track::PageTracks>>,
     /// The turns this session's agents answer: a person's message in a
     /// conversation the agent takes part in, read every pass from Chat's
