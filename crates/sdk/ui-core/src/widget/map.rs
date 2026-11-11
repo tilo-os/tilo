@@ -39,6 +39,30 @@ use winit::keyboard::{Key, NamedKey};
 pub const MAP_ZOOM_MIN: f64 = 0.2;
 pub const MAP_ZOOM_MAX: f64 = 2.5;
 
+thread_local! {
+    /// The cameras the maps of this thread last looked with, by the key their views gave them:
+    /// the lens is the person's and it outlives the widget. A map is built again when the places
+    /// it holds change — a place opened, closed or moved — and a rebuilt map that started from
+    /// the default lens would throw away where the person was looking, and with it the view of
+    /// what they were in. Nothing reaches a workspace or another device: the lens stays here.
+    static CAMERAS: std::cell::RefCell<HashMap<String, MapCamera>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// The camera the map `key` last looked with on this thread, when it has one.
+fn recalled(key: &str) -> Option<MapCamera> {
+    CAMERAS.with(|cameras| cameras.borrow().get(key).copied())
+}
+
+/// Keep `camera` as the map `key`'s lens on this thread.
+fn remember(key: &str, camera: MapCamera) {
+    if key.is_empty() {
+        return;
+    }
+    CAMERAS.with(|cameras| {
+        cameras.borrow_mut().insert(key.to_owned(), camera);
+    });
+}
+
 /// How much one wheel notch zooms, when a gesture zooms over the map.
 const ZOOM_PER_DETENT: f64 = 1.1;
 
@@ -294,6 +318,7 @@ impl Map {
         self.dirty = true;
         if !self.camera.same(camera) {
             self.camera = camera;
+            remember(self.drop_key(), camera);
             if let Some(cell) = &self.camera_cell {
                 cell.set(camera);
             }
@@ -356,15 +381,22 @@ impl Map {
         self.set_camera(camera);
     }
 
-    /// [`Self::reveal`] holding `anchor` (canvas pixels) as well: what a canvas does when a place
-    /// arrives beside another, so the place it came from stays where the person was looking
+    /// [`Self::reveal`] holding `keep` (canvas pixels) as well: what a canvas does when a place
+    /// arrives beside another, so what the person was looking at stays where they were looking
     /// rather than being pushed out of the viewport by the pan to what arrived (`shell.md` §3,
-    /// "a place next to where it came from"). `anchor` is the pin the person was looking at: both
-    /// it and what arrived end up wholly in view — panning the least that does, and zooming out
-    /// only as far as both need, since neither may be lost. When both already stand in the
-    /// viewport the camera does not move at all, and with no anchor this is [`Self::reveal`].
-    pub fn reveal_with(&mut self, area: Rect, margin: f64, anchor: Option<Rect>) {
-        let Some(anchor) = anchor else {
+    /// "a place next to where it came from"). `keep` is every place standing wholly in the
+    /// viewport: they and what arrived all end up in view — panning the least that does, and
+    /// zooming out only as far as they need, since none of them may be lost. With nothing to keep
+    /// this is [`Self::reveal`].
+    pub fn reveal_with(&mut self, area: Rect, margin: f64, keep: &[Rect]) {
+        let Some(together) = keep
+            .iter()
+            .fold(None, |held: Option<Rect>, rect| {
+                let rect = rect.inflate(margin, margin);
+                Some(held.map_or(rect, |held| held.union(rect)))
+            })
+            .map(|kept| kept.union(area.inflate(margin, margin)))
+        else {
             self.reveal(area, margin);
             return;
         };
@@ -372,19 +404,16 @@ impl Map {
         if width <= 0.0 || height <= 0.0 {
             return;
         }
-        let area = area.inflate(margin, margin);
-        let anchor = anchor.inflate(margin, margin);
-        let together = area.union(anchor);
         let origin = self.camera.origin;
         let zoom = self.camera.zoom;
-        // Both already stand in sight: the person's view stays their own.
-        let shows = |zoom: f64| {
+        // All of them already stand in sight: the person's view stays their own.
+        let fits = |zoom: f64| {
             let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
             span.x >= together.width() && span.y >= together.height()
         };
-        // Zoom out only when the two cannot stand in the viewport at the person's zoom, and no
+        // Zoom out only when they cannot all stand in the viewport at the person's zoom, and no
         // further than they need: the canvas keeps the zoom it can.
-        let zoom = if shows(zoom) {
+        let zoom = if fits(zoom) {
             zoom
         } else {
             (width / together.width().max(1.0))
@@ -392,8 +421,8 @@ impl Map {
                 .clamp(MAP_ZOOM_MIN, MAP_ZOOM_MAX)
         };
         let span = Vec2::new(width, height) / zoom.max(f64::EPSILON);
-        // The least pan that holds both: where they were looking stays where it was as far as
-        // that allows, and what arrived joins it, both wholly in view.
+        // The least pan that holds them all: where they were looking stays where it was as far
+        // as that allows, and what arrived joins it, all of them in view.
         let along = |origin: f64, (low_edge, high_edge): (f64, f64), extent: f64| {
             let (low, high) = (high_edge - extent, low_edge);
             if low <= high {
@@ -532,6 +561,11 @@ impl Described for Map {
         } = props;
         let mut map = Self::new();
         map.key = format!("map\u{1f}{key}");
+        // The lens the person left this map looking through on this device: a map built again
+        // around a place opened, closed or moved looks where they were looking, so the place they
+        // were in stays in sight (`set_camera` remembers it, and its own `build_layout` recalls it
+        // where a map is built raw).
+        map.camera = recalled(&map.key).unwrap_or_default();
         map.ground = ground;
         map.drop = drop;
         for pin in pins {
@@ -920,6 +954,11 @@ impl Widget for Map {
     ) -> NodeId {
         self.slop = f64::from(theme.tokens.metrics.click_slop);
         self.key_pan = f64::from(theme.tokens.metrics.wheel_line);
+        // A map the view built raw (`Map::new`, not through its props) picks up this thread's lens
+        // for its key here, where the key is known.
+        if let Some(camera) = recalled(&self.key) {
+            self.camera = camera;
+        }
         self.rebuild_region(theme);
         let node = self.parts.build(
             Style {
@@ -945,14 +984,48 @@ impl Widget for Map {
         // built around it is laid out (`shell.md` §3, "a place next to where it came from"; the
         // session's `open` brings the canvas to what it stood). Only the last pin — the place
         // just put on the canvas — and only when it stands wholly outside the viewport, so a
-        // place already in sight moves nothing. The place it arrived beside, the pin before it,
-        // stays in view too: a place opened beside a conversation never pushes the conversation
-        // out of the viewport (`reveal_with`).
+        // place already in sight moves nothing. Every place that stood in the viewport stays
+        // there: a place opened beside a conversation never pushes the conversation out of the
+        // viewport, however many were opened before it (`reveal_with`).
         let arriving = self
             .pins
             .last()
             .map(|(key, place, _)| (key.clone(), *place));
-        let beside = self.pins.iter().rev().nth(1).map(|(_, place, _)| *place);
+        // What the person was looking at: every pin that stood wholly in the viewport before the
+        // place arrived, as canvas rectangles.
+        let prior = self.rect;
+        let kept: Vec<Rect> = self
+            .pins
+            .iter()
+            .rev()
+            .skip(1)
+            .filter(|(_, place, _)| {
+                let area = Rect::from_origin_size(
+                    Point::new(place.x, place.y),
+                    (place.width.max(1.0), place.height.unwrap_or(0.0)),
+                );
+                prior.width() > 0.0
+                    && prior.height() > 0.0
+                    && self.camera.to_screen(prior.origin(), area.origin()).x >= prior.x0
+                    && self
+                        .camera
+                        .to_screen(prior.origin(), Point::new(area.x1, area.y0))
+                        .x
+                        <= prior.x1
+                    && self.camera.to_screen(prior.origin(), area.origin()).y >= prior.y0
+                    && self
+                        .camera
+                        .to_screen(prior.origin(), Point::new(area.x0, area.y1))
+                        .y
+                        <= prior.y1
+            })
+            .map(|(_, place, _)| {
+                Rect::from_origin_size(
+                    Point::new(place.x, place.y),
+                    (place.width.max(1.0), place.height.unwrap_or(0.0)),
+                )
+            })
+            .collect();
         if let Some((key, place)) = arriving
             && !self.arrived.contains(&key)
             && self.rect.width() > 0.0
@@ -963,16 +1036,10 @@ impl Widget for Map {
                 Point::new(place.x, place.y),
                 (place.width.max(1.0), place.height.unwrap_or(0.0)),
             );
-            let beside = beside.map(|beside| {
-                Rect::from_origin_size(
-                    Point::new(beside.x, beside.y),
-                    (beside.width.max(1.0), beside.height.unwrap_or(0.0)),
-                )
-            });
             self.reveal_with(
                 area,
                 f64::from(crate::tokens::RhythmScale::BASE.get(crate::tokens::Rhythm::Group)),
-                beside,
+                &kept,
             );
         }
     }

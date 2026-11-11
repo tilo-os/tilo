@@ -375,51 +375,53 @@ fn ctrl_and_a_wheel_notch_zooms_the_pins() {
 }
 
 #[test]
-fn a_place_opened_beside_a_conversation_keeps_the_conversation_in_view() {
+fn places_opened_beside_a_conversation_keep_the_conversation_in_view() {
     // The live run's failure: an agent opened Mail beside its conversation and the pan to the new
     // place took the conversation out of the viewport, composer and all. A place that arrives
-    // beside another comes into view, and the place it came from stays in it: here the second
-    // answer arrives one row below the first, the row the free space puts it in.
+    // beside another comes into view, and every place that stood in the viewport stays in it —
+    // however many were opened before it. Here three answers arrive one row at a time, down the
+    // canvas, as `free_place_next_to` puts them.
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut map = map_of(&[("conversation", 0.0)], viewport);
     let camera = map.camera();
-    // The conversation stands wholly in the viewport, as it did when the person was looking at it.
-    let conversation = Rect::from_origin_size(
-        camera.to_screen(viewport.origin(), Point::new(0.0, 0.0)),
-        (200.0 * camera.zoom, 120.0 * camera.zoom),
-    );
+    let on_screen = |camera: MapCamera, (x, y): (f64, f64)| {
+        Rect::from_origin_size(
+            camera.to_screen(viewport.origin(), Point::new(x, y)),
+            (200.0 * camera.zoom, 120.0 * camera.zoom),
+        )
+    };
+    let conversation = on_screen(camera, (0.0, 0.0));
     assert!(
         conversation.y0 >= viewport.y0 && conversation.y1 <= viewport.y1,
         "the conversation starts in view: {conversation:?} in {viewport:?}"
     );
-    map.pins.push((
-        "answer".to_owned(),
-        PinPlace {
-            x: 0.0,
-            y: 544.0,
-            width: 200.0,
-            height: Some(120.0),
-        },
-        Box::new(crate::widget::Spacer::new()),
-    ));
-    lay_out_again(&mut map, viewport);
-    let camera = map.camera();
-    // When the camera must move, it moves so both the conversation and the new place are visible:
-    // the conversation's composer (its foot) is in the viewport, and so is what arrived.
-    let conversation = Rect::from_origin_size(
-        camera.to_screen(viewport.origin(), Point::new(0.0, 0.0)),
-        (200.0 * camera.zoom, 120.0 * camera.zoom),
-    );
-    assert!(
-        conversation.y0 >= viewport.y0 && conversation.y1 <= viewport.y1,
-        "the conversation stays in view: {conversation:?} in {viewport:?}"
-    );
-    let answer = Rect::from_origin_size(
-        camera.to_screen(viewport.origin(), Point::new(0.0, 544.0)),
-        (200.0 * camera.zoom, 120.0 * camera.zoom),
-    );
-    assert!(
-        answer.y0 >= viewport.y0 && answer.y1 <= viewport.y1,
-        "the place that arrived is in view too: {answer:?} in {viewport:?}"
-    );
+    // Three answers, each one row below the last of the two columns `free_place_next_to` walks.
+    for round in 1..=3 {
+        let y = 544.0 * f64::from(round);
+        map.pins.push((
+            format!("answer-{round}"),
+            PinPlace {
+                x: 0.0,
+                y,
+                width: 200.0,
+                height: Some(120.0),
+            },
+            Box::new(crate::widget::Spacer::new()),
+        ));
+        lay_out_again(&mut map, viewport);
+        let camera = map.camera();
+        // The conversation stays wholly in view, and so does everything that arrived beside it.
+        let conversation = on_screen(camera, (0.0, 0.0));
+        assert!(
+            conversation.y0 >= viewport.y0 && conversation.y1 <= viewport.y1,
+            "round {round}: the conversation stays in view: {conversation:?} in {viewport:?}"
+        );
+        for answer in 1..=round {
+            let arrived = on_screen(camera, (0.0, 544.0 * f64::from(answer)));
+            assert!(
+                arrived.y0 >= viewport.y0 && arrived.y1 <= viewport.y1,
+                "round {round}: answer {answer} is in view too: {arrived:?} in {viewport:?}"
+            );
+        }
+    }
 }
