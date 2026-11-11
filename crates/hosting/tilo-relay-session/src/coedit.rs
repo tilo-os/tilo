@@ -71,12 +71,6 @@ pub struct RelayCoeditSession {
     /// other record once the device opens it (its `Ready`): what a device
     /// reads as `records_when_opened`.
     when_opened: std::sync::atomic::AtomicBool,
-    /// The records whose replay the host owes this session: asked for, and
-    /// not yet answered with what the host retains of them
-    /// ([`Inbound::RecordOpened`]). Every frame of the record until that
-    /// answer is history the host kept, not a write made now — a device
-    /// that restarts opens its records and reads them from their start.
-    awaiting: std::sync::Mutex<std::collections::BTreeSet<[u8; 32]>>,
 }
 
 impl RelayCoeditSession {
@@ -104,7 +98,6 @@ impl RelayCoeditSession {
             last_heard_ns: std::sync::atomic::AtomicU64::new(tilo_clock::unix_now_ns()),
             opened: std::sync::Mutex::default(),
             when_opened: std::sync::atomic::AtomicBool::new(false),
-            awaiting: std::sync::Mutex::default(),
         })
     }
 
@@ -132,10 +125,6 @@ impl RelayCoeditSession {
         {
             return Ok(());
         }
-        self.awaiting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(channel);
         self.client
             .send(Envelope::OpenRecord {
                 workspace_id: self.workspace_id,
@@ -154,14 +143,13 @@ impl RelayCoeditSession {
         self.when_opened.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Whether the host still owes this session `channel`'s replay: the
-    /// record was asked for ([`Self::open_record`]) and the host has not
-    /// said it sent what it retains ([`Inbound::RecordOpened`]). Every
-    /// frame of the record until then is its history, not a write made
-    /// now.
+    /// Whether this session opened `channel`'s record
+    /// ([`Self::open_record`]): the host sends it in the record's own order,
+    /// what it retains first, and every write of it is decided by its place
+    /// there, never by when it arrived.
     #[must_use]
-    pub fn awaiting_replay(&self, channel: &[u8; 32]) -> bool {
-        self.awaiting
+    pub fn opened_record(&self, channel: &[u8; 32]) -> bool {
+        self.opened
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .contains(channel)
@@ -185,10 +173,6 @@ impl RelayCoeditSession {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone();
-        self.awaiting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .extend(opened.iter().copied());
         for channel in opened {
             self.client
                 .send(Envelope::OpenRecord {
@@ -617,10 +601,6 @@ impl RelayCoeditSession {
                 channel,
                 frames,
             } if workspace_id == self.workspace_id => {
-                self.awaiting
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .remove(&channel);
                 Some(Inbound::RecordOpened { channel, frames })
             }
             Envelope::VoiceCallResult {
