@@ -656,6 +656,65 @@ pub(crate) fn collect_widget_resources(
     visit(widget, doc, None, true, resources);
 }
 
+/// The resource `id` in `widget`'s subtree, resolved by the widget that
+/// publishes it rather than by building every resource the subtree holds:
+/// [`collect_widget_resources`] for one address.
+#[must_use]
+pub fn find_resource(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    id: &str,
+) -> Option<tilo_actions::ResourceSpec> {
+    fn visit(
+        widget: &dyn Widget,
+        doc: &AutoCommit,
+        inherited: Option<crate::bound_dispatch::CallbackBinding>,
+        root: bool,
+        id: &str,
+    ) -> Option<tilo_actions::ResourceSpec> {
+        if widget.has_separate_document_owner() && widget.callback_binding().is_none() {
+            return None;
+        }
+        let boundary = widget.callback_binding();
+        let binding = boundary.clone().or(inherited);
+        let Ok(_entry) = binding
+            .as_ref()
+            .map(crate::bound_dispatch::CallbackBinding::enter)
+            .transpose()
+        else {
+            return None;
+        };
+        if boundary.is_none() {
+            let found = if let Some(binding) = &binding {
+                binding
+                    .read_document(doc, |doc, _| crate::resources::resource(widget, doc, id))
+                    .ok()
+                    .flatten()
+            } else {
+                crate::resources::resource(widget, doc, id)
+            };
+            // Outside every component nothing speaks for a resource, as the
+            // walk over the whole tree reads it.
+            if let Some(found) = found {
+                return Some(if root || binding.is_none() {
+                    found
+                } else {
+                    crate::resources::outside_document(found)
+                });
+            }
+        }
+        let below = boundary.is_some();
+        let mut found = None;
+        widget.for_each_child(&mut |child| {
+            if found.is_none() {
+                found = visit(child, doc, binding.clone(), below, id);
+            }
+        });
+        found
+    }
+    visit(widget, doc, None, true, id)
+}
+
 /// Every resource `widget`'s subtree publishes, as the host's action
 /// catalogue collects them. A host that embeds components under its own
 /// root (a desktop surface) reads what its search offers through this.

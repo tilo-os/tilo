@@ -221,6 +221,12 @@ impl Worker {
         };
         match request {
             Request::Survey => descriptors(&replica.survey()),
+            Request::Resolve { address } => match decode(&address) {
+                Ok(address) => {
+                    descriptors(&replica.descriptor(&address).into_iter().collect::<Vec<_>>())
+                }
+                Err(reason) => Reply::Failed(reason),
+            },
             Request::Invoke {
                 address,
                 arguments,

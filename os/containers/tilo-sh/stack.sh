@@ -450,9 +450,11 @@ sdk_python() {
 # The Lounge at production's membership, by the paths people take:
 # TILO_SH_SEED_MEMBERS (300) people join through its door (the seed-lounge
 # example), and one of them posts TILO_SH_SEED_MESSAGES (200) chat messages
-# through the front door with a key of their own. Once per state. Each post
-# takes longer as the chat grows (about 5 s at a few hundred), which is why
-# the history stops short of production's 3.5 MB of records.
+# through the front door with a key of their own. Once per state, and as many
+# as the chat should hold: what a post costs must not grow with what the chat
+# already holds, and `seed-history.py` prints how long each one took as it
+# goes, so a dearer last post than first is a regression to chase rather than
+# a reason to seed less.
 seed() {
   local room=$1 out=$state/seed
   if [[ -f $out/done ]]; then say "the Lounge is already seeded ($(cat "$out/done"))"; return; fi

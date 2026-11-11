@@ -1134,6 +1134,10 @@ struct Worker {
     bounded: BTreeMap<bounded::BoundedKey, bounded::BoundedReplica>,
     /// The route of the mounted record each part is held beside.
     beside: HashMap<DocumentRoute, DocumentRoute>,
+    /// The routes whose channel this worker opened for the session, so a
+    /// record the host starts is sealed from its first change
+    /// ([`publish::Worker::commit`](publish)).
+    channels_opened: HashSet<DocumentRoute>,
     /// Requests waiting for their workspace to be ready for them, oldest
     /// first, by workspace: the thread answers others meanwhile.
     joining: HashMap<u64, VecDeque<Waiting>>,
@@ -1255,6 +1259,7 @@ impl Worker {
             mounted: BTreeMap::new(),
             bounded: BTreeMap::new(),
             beside: HashMap::new(),
+            channels_opened: HashSet::new(),
             voices: run_voice::RunVoices::default(),
             titles: crate::worker::ConfinedTitles::default(),
             joining: HashMap::new(),
@@ -1594,6 +1599,7 @@ impl Worker {
         self.mounted.retain(|route, _| !of(route));
         self.bounded.retain(|(route, _, _), _| !of(route));
         self.beside.retain(|route, held| !of(route) && !of(held));
+        self.channels_opened.retain(|route| !of(route));
         for Waiting { queued, job, .. } in self.joining.remove(&workspace_id).unwrap_or_default() {
             self.timed(queued, job);
         }
@@ -2231,8 +2237,10 @@ impl Worker {
         let target = &self.with_record_resource(target, &route.app_id);
         let arguments = invoke_arguments(&request.argument);
         let mounted = self.mount(&route, &state).map_err(|_| unknown_action())?;
-        let live = live_actions(&mounted.app);
         if target.address.action == ui::tilo_resource::share::SHARE_LINK {
+            // Sharing asks the record for everything it lists, which is what
+            // the link is chosen from.
+            let live = live_actions(&mounted.app);
             let at = (&route, &state, live.as_slice());
             return self
                 .share_link(workspace_id, caller, at, target, arguments)
@@ -2248,12 +2256,14 @@ impl Worker {
                 caller,
                 &who,
                 (request, &route, &state),
-                (target, arguments, &live),
+                (target, arguments),
             );
         }
-        let descriptor = live
-            .iter()
-            .find(|descriptor| descriptor.address == target.address)
+        // The one action asked for, not the whole listing: a record of ten
+        // thousand items costs this what a record of ten does.
+        let descriptor = mounted
+            .app
+            .descriptor(&target.address)
             .ok_or_else(unknown_action)?;
         let arguments = descriptor.bind_prompt_text(arguments);
         let binding = bounded::WitnessBinding::of(workspace_id, caller, request);

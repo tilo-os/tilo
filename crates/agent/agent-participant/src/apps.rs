@@ -513,23 +513,57 @@ impl Replica {
         let in_chains = chain_resources(&resources);
         tilo_actions::door::survey(&resources)
             .into_iter()
-            // An action for people only (copying a link to the clipboard)
-            // means nothing to an agent; the host acting for a person
-            // offers it (a reviewed feedback report a person files).
-            .filter(|descriptor| !self.automated() || descriptor.contract.reaches_agents())
-            .filter(|descriptor| {
-                self.offers(descriptor, &in_chains)
-                    || (self.runs_effects
-                        && self.automated
-                        && offered_when_host_renders(descriptor))
-            })
-            .map(|mut descriptor| {
-                if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
-                    descriptor.params.retain(|param| param.name != PATH_PARAM);
-                }
-                descriptor
-            })
+            .filter_map(|descriptor| self.offered(descriptor, &in_chains))
             .collect()
+    }
+
+    /// [`Self::survey`] for the one action `address` names: what a host that
+    /// already knows what it runs asks for, without listing every resource
+    /// the record holds. An action the record publishes for a chain's parts
+    /// is answered as the whole listing answers it; one the listing leaves
+    /// out is found in the listing, as before.
+    #[must_use]
+    pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
+        let in_chains: std::collections::HashSet<String> =
+            ui::record::chain_of_resource_id(address.resource.as_str())
+                .map(|_| address.resource.as_str().to_owned())
+                .into_iter()
+                .collect();
+        if let Some(descriptor) = self
+            .view
+            .descriptor(address)
+            .and_then(|descriptor| self.offered(descriptor, &in_chains))
+        {
+            return Some(descriptor);
+        }
+        self.survey()
+            .into_iter()
+            .find(|descriptor| descriptor.address == *address)
+    }
+
+    /// `descriptor` as [`Self::survey`] offers it, of a tree whose chains
+    /// publish the resources `in_chains`: `None` for one this participant is
+    /// not offered.
+    fn offered(
+        &self,
+        mut descriptor: ActionDescriptor,
+        in_chains: &std::collections::HashSet<String>,
+    ) -> Option<ActionDescriptor> {
+        // An action for people only (copying a link to the clipboard) means
+        // nothing to an agent; the host acting for a person offers it (a
+        // reviewed feedback report a person files).
+        if self.automated() && !descriptor.contract.reaches_agents() {
+            return None;
+        }
+        if !(self.offers(&descriptor, in_chains)
+            || (self.runs_effects && self.automated && offered_when_host_renders(&descriptor)))
+        {
+            return None;
+        }
+        if self.runs_effects && descriptor.kind != tilo_actions::OperationKind::Document {
+            descriptor.params.retain(|param| param.name != PATH_PARAM);
+        }
+        Some(descriptor)
     }
 
     /// Whether [`Self::survey`] lists `descriptor`, of a tree whose chains

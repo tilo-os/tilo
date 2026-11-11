@@ -89,6 +89,12 @@ pub(crate) enum Request {
     },
     /// Every operation the held record publishes now.
     Survey,
+    /// The one operation `address` names, or none: an answer to a host that
+    /// already knows what it runs, without listing the record's resources.
+    Resolve {
+        /// JSON `ActionAddress`.
+        address: String,
+    },
     /// Perform one published operation.
     Invoke {
         /// JSON `ActionAddress`.

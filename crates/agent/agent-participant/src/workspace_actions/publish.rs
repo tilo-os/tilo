@@ -53,6 +53,27 @@ impl Worker {
         route: &DocumentRoute,
         mutation: &DocumentMutation,
     ) -> Result<(), String> {
+        if !self.workspaces.contains_key(&workspace_id) {
+            return Err("the workspace was not joined".into());
+        }
+        // A record the host starts — a chain's first part, a report — has a
+        // channel of its own. The host device opens it and hands the session
+        // its keys, as it does for a record it opens, so the first change
+        // goes out sealed instead of waiting for keys nobody offers.
+        if self.channels_opened.insert(route.clone())
+            && let Some(keys) = self
+                .shared
+                .link
+                .get()
+                .and_then(|link| link.host_keys(route, false))
+        {
+            let keys = keys?;
+            self.workspaces
+                .get_mut(&workspace_id)
+                .ok_or("the workspace was not joined")?
+                .peer
+                .install_channel_keys(route.clone(), keys)?;
+        }
         let workspace = self
             .workspaces
             .get_mut(&workspace_id)

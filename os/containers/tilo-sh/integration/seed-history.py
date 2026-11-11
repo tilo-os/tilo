@@ -6,8 +6,9 @@ MESSAGES chat messages through the front door as any member's agent does.
 RECORDS_DIR is the relay's state of the workspace (stack.sh's
 relay/lounge/relay), whose size is reported before and after: the host
 compacts it, so its size on disk is reported, not aimed at. Posts one at a
-time, and prints each fiftieth post's time, which grows with the chat.
-Prints `{"messages": N, "bytes_before": B, "bytes_after": A, "seconds": S,
+time, and prints the first post's time and every fiftieth's, which say
+whether a post costs more as the chat grows. Prints `{"messages": N,
+"bytes_before": B, "bytes_after": A, "seconds": S, "first_post_seconds": F,
 "last_post_seconds": L}`.
 """
 
@@ -53,18 +54,22 @@ async def main() -> int:
         raise RuntimeError(f"message {index} was refused five times, last: {refusal!r}")
 
     took = 0.0
+    first = 0.0
     while posted < MESSAGES:
-        # One at a time: ten at once outran the door's five seconds for an
-        # action once the chat held a hundred-odd messages.
+        # One at a time: the door answers one action per request, and a post
+        # changes the part the next one is posted to.
         sent = time.monotonic()
         await post(posted)
         took = time.monotonic() - sent
         posted += 1
-        if posted % 50 == 0:
-            print(f"seed-history: {posted} messages, the last took {took:.1f} s", file=sys.stderr)
+        if posted == 1:
+            first = took
+        if posted == 1 or posted % 50 == 0:
+            print(f"seed-history: {posted} messages, the last took {took:.2f} s", file=sys.stderr)
     await tilo.aclose()
     print(json.dumps({"messages": posted, "bytes_before": start, "bytes_after": size(RECORDS),
-                      "seconds": round(time.monotonic() - began, 1), "last_post_seconds": round(took, 2)}))
+                      "seconds": round(time.monotonic() - began, 1),
+                      "first_post_seconds": round(first, 2), "last_post_seconds": round(took, 2)}))
     return 0
 
 

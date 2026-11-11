@@ -6094,6 +6094,17 @@ impl FrameHarness {
         resources
     }
 
+    /// The resource `id` this frame publishes, without building every other
+    /// one: what a host acting on an address it already knows asks for, so a
+    /// record of ten thousand items costs what a record of ten does. A view
+    /// that leaves its resources out of the contextual snapshot still
+    /// answers for one of them here ([`PublishesResources::resource`]).
+    #[must_use]
+    pub fn resource(&self, id: &str) -> Option<tilo_actions::ResourceSpec> {
+        self.drain_component_wakes();
+        crate::widget::find_resource(self.root.as_ref(), &self.state.doc, id)
+    }
+
     /// Every action contract violation that would make the live host refuse
     /// to publish a mounted component's surface. The host withdraws a whole
     /// component when one of its actions breaks its contract, so a test

@@ -382,6 +382,23 @@ impl ConfinedReplica {
         }
     }
 
+    /// The one operation `address` names, as [`Self::survey`] lists it, or
+    /// `None`: what a host that already knows what it runs asks its record
+    /// for, rather than the whole listing.
+    #[must_use]
+    pub fn descriptor(&self, address: &ActionAddress) -> Option<ActionDescriptor> {
+        let address = serde_json::to_string(address).ok()?;
+        let answered = self.call(&mut self.lock(), &Request::Resolve { address });
+        match answered {
+            Ok(Reply::Descriptors(text)) => crate::render::offered(
+                serde_json::from_str::<Vec<ActionDescriptor>>(&text).unwrap_or_default(),
+            )
+            .into_iter()
+            .next(),
+            _ => None,
+        }
+    }
+
     /// Perform one published operation through the resource's own door:
     /// [`crate::Replica::invoke`].
     pub fn invoke(
