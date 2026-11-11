@@ -417,7 +417,7 @@ export async function mountDesktop(target,options={}) {
       if(document.activeElement===canvas&&!domInput?.holdsSelection())editor.focus({preventScroll:true});
     }else if(document.activeElement===editor){canvas.focus({preventScroll:true});}
     observeLocalActivation();
-    if(state.phase==='presented'){readyResolve();void persist().catch(()=>{});void loadAssets();}
+    if(state.phase==='presented'){readyResolve();persistAfterFrame();void loadAssets();}
   }
   const assets=createAssetRecovery({active,report,
     retry:()=>false,
@@ -468,7 +468,14 @@ export async function mountDesktop(target,options={}) {
   // something has anything to save. One persist runs at a time: a request
   // arriving while it runs marks `again`, and one more runs after it, so a
   // burst of frames costs one round trip instead of a task per frame.
-  let persisting=null,persistAgain=false;
+  let persisting=null,persistAgain=false,persistQueued=false;
+  // A frame's status asks in the task after it: storing what the frame
+  // wrote waits a moment for the frame, never the frame for the store.
+  function persistAfterFrame(){
+    if(persistQueued)return;
+    persistQueued=true;
+    setTimeout(()=>{persistQueued=false;void persist().catch(()=>{});},0);
+  }
   function persist(){
     if(!active()||!storage||persistenceFailed)return Promise.resolve();
     if(persisting){persistAgain=true;return persisting;}

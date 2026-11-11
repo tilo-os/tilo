@@ -57,6 +57,37 @@ fn agent_notices_wake(m: &mut Mount, now: ui::time::Instant) -> Option<ui::time:
     ))
 }
 
+/// Ask for mount `m`'s next frame when it is due, and answer when the loop
+/// must wake for one that is due later. A frame already owed reads the
+/// schedule when it draws, and the loop turns again after it: walking every
+/// widget for the schedule here, after each key, press and wheel before that
+/// frame, would only delay it.
+fn next_frame(m: &Mount, now: ui::time::Instant) -> Option<ui::time::Instant> {
+    if m.pending {
+        m.window.request_redraw();
+        return None;
+    }
+    let output = m.frame.frame_schedule();
+    let desktop_woken = m
+        .desktop
+        .as_ref()
+        .is_some_and(|d| d.shared.woken.load(std::sync::atomic::Ordering::Acquire));
+    if desktop_woken
+        || m.viewport.needs_present()
+        || output.queued_work
+        || output.needs_animation_frame
+        || pixels_waiting()
+    {
+        m.window.request_redraw();
+    }
+    let at = output.next_wake_deadline?;
+    if at <= now {
+        m.window.request_redraw();
+        return None;
+    }
+    Some(at)
+}
+
 /// Hand a timeout to the page's timer.
 pub(super) fn set_timeout(handler: &Function, ms: u32) -> JsValue {
     timer::set_timeout(handler, ms)
@@ -389,26 +420,8 @@ impl ApplicationHandler<u64> for Runner {
                 if let Some(at) = agent_notices_wake(m, now) {
                     wake(at);
                 }
-                let output = m.frame.frame_schedule();
-                let desktop_woken = m
-                    .desktop
-                    .as_ref()
-                    .is_some_and(|d| d.shared.woken.load(std::sync::atomic::Ordering::Acquire));
-                if m.pending
-                    || desktop_woken
-                    || m.viewport.needs_present()
-                    || output.queued_work
-                    || output.needs_animation_frame
-                    || pixels_waiting()
-                {
-                    m.window.request_redraw();
-                }
-                if let Some(at) = output.next_wake_deadline {
-                    if at <= now {
-                        m.window.request_redraw();
-                    } else {
-                        wake(at);
-                    }
+                if let Some(at) = next_frame(m, now) {
+                    wake(at);
                 }
                 Ok(())
             });
