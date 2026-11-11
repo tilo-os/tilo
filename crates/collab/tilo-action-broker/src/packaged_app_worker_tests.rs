@@ -34,7 +34,6 @@ impl crate::services::LauncherServices for LaunchedHere {
     ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
         Ok(self.attest_process(pid, app, workspace).then_some(
             crate::services::AuthenticatedApplicationLaunch {
-                creation: None,
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: false,

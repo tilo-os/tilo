@@ -1,11 +1,9 @@
-//! Retain the signed declarations of the exact package this host launches.
+//! The exact signed package this host launches: the launcher refuses any other.
 use super::Apps;
 use app_catalogue::apps::InstalledApp;
-use tilo_action_broker::services::ApplicationCreationEvidence;
 
 pub(super) struct OriginalLaunch {
     pub(super) package_hash: String,
-    pub(super) creation: Option<ApplicationCreationEvidence>,
 }
 
 impl Apps {
@@ -48,18 +46,8 @@ impl Apps {
         if manifest.package.id != app.package_id {
             return Err(refuse("package identity changed".to_owned()));
         }
-        let package_hash = installed.package_id_hex;
-        let creation =
-            (!manifest.resources.kinds.is_empty()).then(|| ApplicationCreationEvidence {
-                package_hash: package_hash.clone(),
-                declared_kinds: manifest.resources.kinds,
-            });
-        if creation.as_ref().is_some_and(|evidence| !evidence.valid()) {
-            return Err(refuse("invalid resource declarations".to_owned()));
-        }
         Ok(OriginalLaunch {
-            package_hash,
-            creation,
+            package_hash: installed.package_id_hex,
         })
     }
 }

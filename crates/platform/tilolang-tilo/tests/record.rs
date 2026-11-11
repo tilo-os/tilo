@@ -295,10 +295,25 @@ fn what_one_window_commits_through_the_collab_client_reaches_the_other() {
     );
 
     // The change reaches grace's record through her collab client, and her window's runtime
-    // reads ada's root.
+    // reads ada's root. The workspace held nothing of the record, so what went is the record
+    // whole: a workspace founds a record only from the whole of it, never from a change that
+    // builds on nothing it holds.
     assert!(
         !grace_inbox.borrow().is_empty(),
         "the workspace relayed the change"
+    );
+    assert!(
+        grace_inbox.borrow().iter().all(|event| matches!(
+            event,
+            CollabEvent::Document { envelope, .. }
+                if matches!(
+                    collab_types::DocumentFrame::decode(&envelope.payload),
+                    Ok(collab_types::DocumentFrame::Whole(
+                        collab_types::DocumentMutation::Snapshot(_)
+                    ))
+                )
+        )),
+        "the record's first write is the record whole"
     );
     assert!(grace.workspace.receive(&mut grace.instance));
     settle(&mut grace);

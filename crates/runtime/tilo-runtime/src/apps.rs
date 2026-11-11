@@ -37,11 +37,11 @@ use tilo_action_broker::{
 use tilo_lock::MutexRecover as _;
 
 #[cfg(target_os = "linux")]
-mod creation;
-#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
 mod macos;
+#[cfg(target_os = "linux")]
+mod original;
 
 /// The profile's installed applications and the launches it made.
 pub struct Apps {
@@ -266,14 +266,7 @@ impl Apps {
             let _ = (&app, &sockets);
             return Err("refusing to launch: no app sandbox on this platform".into());
         };
-        #[cfg(target_os = "linux")]
-        let creation = original.creation;
-        #[cfg(not(target_os = "linux"))]
-        let creation = None;
-        if !self
-            .launched
-            .record(launch.pid, &app.package_id, workspace, creation)
-        {
+        if !self.launched.record(launch.pid, &app.package_id, workspace) {
             launch.kill();
             return Err(format!(
                 "refusing to keep {app_id} running: its process could not be identified"
@@ -379,7 +372,6 @@ impl LauncherServices for Apps {
     ) -> Result<Option<AuthenticatedApplicationLaunch>, String> {
         if self.serves(pid, app, workspace) {
             return Ok(Some(AuthenticatedApplicationLaunch {
-                creation: None,
                 continuation_instance: None,
                 launch_ticket: None,
                 windowless: true,
@@ -389,19 +381,10 @@ impl LauncherServices for Apps {
             return Ok(None);
         }
         Ok(Some(AuthenticatedApplicationLaunch {
-            creation: self.launched.creation(pid, app, workspace),
             continuation_instance: None,
             launch_ticket: self.launched.ticket(pid),
             windowless: false,
         }))
-    }
-    fn application_creation_evidence(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-    ) -> Result<Option<tilo_action_broker::services::ApplicationCreationEvidence>, String> {
-        Ok(self.launched.creation(pid, app, workspace))
     }
     #[cfg(target_os = "linux")]
     fn attest_executing_process(
@@ -495,7 +478,6 @@ struct LaunchRecord {
     start_time: u64,
     app: String,
     workspace: String,
-    creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
     /// What the launch answered its `open` with ([`LaunchOutcome::Started`]),
     /// for the broker to tie the process's connection back to it.
     ticket: u64,
@@ -504,13 +486,7 @@ struct LaunchRecord {
 impl Launched {
     /// Record `pid` as `app` in `workspace`; `false` when its start time cannot
     /// be read.
-    fn record(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-        creation: Option<tilo_action_broker::services::ApplicationCreationEvidence>,
-    ) -> bool {
+    fn record(&self, pid: u32, app: &str, workspace: &str) -> bool {
         let Some(start_time) = process_start_time(pid) else {
             return false;
         };
@@ -521,7 +497,6 @@ impl Launched {
                 start_time,
                 app: app.to_owned(),
                 workspace: workspace.to_owned(),
-                creation,
                 ticket,
             },
         );
@@ -546,27 +521,6 @@ impl Launched {
         );
         drop(launches);
         same && process_start_time(pid) == Some(recorded)
-    }
-
-    /// Original declarations belong to this live launch, never to a later
-    /// package replacement or a process that reused the same pid.
-    fn creation(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-    ) -> Option<tilo_action_broker::services::ApplicationCreationEvidence> {
-        let start = process_start_time(pid)?;
-        let launches = self.0.lock_recover();
-        let record = launches.get(&pid)?;
-        let creation =
-            (record.start_time == start && record.app == app && record.workspace == workspace)
-                .then(|| record.creation.clone())
-                .flatten();
-        drop(launches);
-        (process_start_time(pid) == Some(start))
-            .then_some(creation)
-            .flatten()
     }
 
     /// Forget `pid`, once its process has been reaped.

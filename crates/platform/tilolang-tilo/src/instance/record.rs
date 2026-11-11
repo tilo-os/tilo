@@ -908,22 +908,24 @@ impl InstanceRecord {
     /// What this unit holds past what the workspace was handed, as its parts: one per chunk,
     /// each the part of an action its caller sends with every other unit of the action
     /// ([`Self::share_under`]). Empty when the workspace holds all of it.
+    ///
+    /// A chunk the workspace was handed nothing of goes whole (a snapshot): the workspace founds a
+    /// record it holds nothing of only from the whole of it, and a change alone builds on nothing
+    /// there.
     pub fn unsent_parts(&self) -> Vec<(ChunkNo, DocumentMutation)> {
         self.chunks
             .docs()
             .filter_map(|(chunk, doc)| {
                 let sent = self.sent.get(&chunk).map_or(&[][..], Vec::as_slice);
+                if sent.is_empty() {
+                    let document = doc.committed_document();
+                    return (!document.get_heads().is_empty())
+                        .then(|| (chunk, DocumentMutation::Snapshot(document.save())));
+                }
                 let change = doc.committed_document().save_after(sent);
                 (!change.is_empty()).then_some((chunk, DocumentMutation::Incremental(change)))
             })
             .collect()
-    }
-
-    /// What the record holds past what the workspace was handed, as one change: the record's
-    /// own. Empty when the workspace holds all of it.
-    pub fn unsent_change(&mut self) -> DocumentMutation {
-        let sent = self.sent.get(&FIRST).map_or(&[][..], Vec::as_slice);
-        DocumentMutation::Incremental(self.doc().committed_document().save_after(sent))
     }
 
     /// [`Self::share`] as this unit's part of `commit`, the one action across every unit it
@@ -953,19 +955,18 @@ impl InstanceRecord {
             None => self.commits_of(&parts),
         };
         for ((chunk, mutation), commit) in parts.into_iter().zip(commits) {
-            let DocumentMutation::Incremental(change) = mutation else {
-                continue;
-            };
-            if change.is_empty() {
-                // The workspace holds all of it already, by heads named apart.
-                self.note_sent(chunk);
-                continue;
-            }
-            let request = match commit {
-                Some(commit) => {
-                    CollabRequest::document_action(DocumentMutation::Incremental(change), commit)
+            let request = match (mutation, commit) {
+                // The chunk's first write founds it: the whole of it, which no commit names.
+                (DocumentMutation::Snapshot(whole), _) => CollabRequest::document_snapshot(whole),
+                (DocumentMutation::Incremental(change), _) if change.is_empty() => {
+                    // The workspace holds all of it already, by heads named apart.
+                    self.note_sent(chunk);
+                    continue;
                 }
-                None => CollabRequest::document_incremental(change),
+                (change, Some(commit)) => CollabRequest::document_action(change, commit),
+                (DocumentMutation::Incremental(change), None) => {
+                    CollabRequest::document_incremental(change)
+                }
             };
             let sent = match self.send_on(chunk, request) {
                 Ok(()) => true,

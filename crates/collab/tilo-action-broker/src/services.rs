@@ -320,7 +320,6 @@ pub trait LauncherServices: Send + Sync {
             return Ok(None);
         }
         Ok(Some(AuthenticatedApplicationLaunch {
-            creation: self.application_creation_evidence(pid, app, workspace)?,
             continuation_instance: None,
             launch_ticket: None,
             windowless: false,
@@ -339,17 +338,6 @@ pub trait LauncherServices: Send + Sync {
     ) -> bool {
         let _ = (launcher_pid, peer, app, workspace);
         false
-    }
-    /// Original declarations of this exact live launch, not the currently
-    /// installed replacement package. Unsupported hosts grant no creation.
-    fn application_creation_evidence(
-        &self,
-        pid: u32,
-        app: &str,
-        workspace: &str,
-    ) -> Result<Option<ApplicationCreationEvidence>, String> {
-        let _ = (pid, app, workspace);
-        Ok(None)
     }
     /// An action invocation reached `app` in `workspace`. A person, an agent or
     /// another device drives an app through its actions as much as through

@@ -10792,7 +10792,6 @@ pub mod tests {
         ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
             Ok(self.attest_process(pid, app, workspace).then_some(
                 crate::services::AuthenticatedApplicationLaunch {
-                    creation: None,
                     continuation_instance: None,
                     launch_ticket: Some(31),
                     windowless: false,
