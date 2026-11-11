@@ -8,12 +8,14 @@
 // allow continues it exactly once, and anything else drops it. A person's own
 // window never holds anything, so this is only ever used by a window opened
 // for an agent (docs/hosted-browser.md).
+#include "include/base/cef_callback.h"
 #include "include/cef_browser.h"
 #include "include/cef_callback.h"
 #include "include/cef_frame.h"
 #include "include/cef_request.h"
 #include "include/cef_resource_request_handler.h"
 #include "include/cef_values.h"
+#include "include/wrapper/cef_closure_task.h"
 #include "site_policy.h"
 #include <algorithm>
 #include <chrono>
@@ -30,10 +32,12 @@ namespace tilo {
 inline bool LeavesWithData(const std::string& method) {
   return method!="GET" && method!="HEAD" && method!="OPTIONS";
 }
-// Whether a navigation is a form submission: Chromium marks the page
-// transition of every form it sends, whether the form is a GET or a POST.
-inline bool FormSubmission(int transition) {
-  return (transition & TT_FORM_SUBMIT)!=0;
+// Whether a navigation is a form leaving: Chromium marks the page transition
+// of a form a person sent, and a form the page's own script sends carries the
+// data it sends. A navigation that does neither only asks for a page.
+inline bool Submission(const CefRefPtr<CefRequest>& request) {
+  return (request->GetTransitionType() & TT_SOURCE_MASK)==TT_FORM_SUBMIT ||
+         LeavesWithData(request->GetMethod().ToString());
 }
 // Whether `url` is a web address, the only kind held: an extension's page, a
 // data: URL or the engine's own pages reach nothing.
@@ -43,8 +47,7 @@ inline bool WebAddress(const std::string& url) {
 // One request held before it leaves.
 struct Departure {
   int tab=0;
-  // "submit" for a form, "navigate" for other navigation, "request" for a
-  // fetch or XHR.
+  // "submit" for a form leaving, "request" for a fetch or XHR.
   const char* kind="request";
   std::string method;
   std::string origin;
@@ -136,22 +139,25 @@ class Departures final {
   int next_=1;
 };
 
-// The resource handler a held window gives every request: it pauses the ones
-// that leave with data of their own where Chromium lets the page's load go,
-// and leaves every other request alone.
+// The resource handler a held window gives a request of the page's own that
+// leaves with data (a fetch or an XHR): it pauses it where Chromium lets the
+// page's load go, until the person answers it.
 class HoldResourceHandler final : public CefResourceRequestHandler {
  public:
   HoldResourceHandler(int tab,std::shared_ptr<Departures> departures):tab_(tab),departures_(std::move(departures)) {}
+  // Chromium calls this on its IO thread and the ledger is the UI thread's
+  // (see Departures), so the hold is recorded there: the load stays paused
+  // until that hold is answered.
   cef_return_value_t OnBeforeResourceLoad(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,
       CefRefPtr<CefRequest> request,CefRefPtr<CefCallback> callback) override {
     if(!departures_) return RV_CONTINUE;
-    const auto method=request->GetMethod().ToString();
-    const auto url=request->GetURL().ToString();
-    if(!LeavesWithData(method) || !WebAddress(url)) return RV_CONTINUE;
-    Departure departure;
-    departure.tab=tab_;departure.kind="request";departure.method=method;
-    departure.origin=Origin(url);departure.load=callback;
-    departures_->Hold(std::move(departure));
+    CefPostTask(TID_UI,base::BindOnce([](std::shared_ptr<Departures> departures,int tab,
+        std::string method,std::string url,CefRefPtr<CefCallback> load) {
+      Departure departure;
+      departure.tab=tab;departure.kind="request";departure.method=std::move(method);
+      departure.origin=Origin(url);departure.load=std::move(load);
+      departures->Hold(std::move(departure));
+    },departures_,tab_,request->GetMethod().ToString(),request->GetURL().ToString(),callback));
     return RV_CONTINUE_ASYNC;
   }
   IMPLEMENT_REFCOUNTING(HoldResourceHandler);

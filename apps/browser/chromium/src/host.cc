@@ -364,25 +364,29 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
   // Whether this window holds what its page sends (departures.h).
   bool HoldsPage() const { return holds_; }
-  // A window an agent operates (holds_): every request that leaves with data
-  // of its own is paused here, and answered by the app.
-  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,CefRefPtr<CefRequest>,bool,bool,const CefString&,bool&) override {
-    if(!holds_ || !departures || transfer_owner_ || closing) return nullptr;
+  // A window an agent operates (holds_): a request the page makes of its own
+  // that leaves with data is paused here, and answered by the app. A
+  // navigation is held where Chromium starts it (HoldsNavigation), and every
+  // other request goes as it always has, through the session's filter.
+  CefRefPtr<CefResourceRequestHandler> GetResourceRequestHandler(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,
+      CefRefPtr<CefRequest> request,bool navigation,bool,const CefString&,bool&) override {
+    if(!holds_ || navigation || !departures || transfer_owner_ || closing) return nullptr;
+    if(!tilo::LeavesWithData(request->GetMethod().ToString()) ||
+       !tilo::WebAddress(request->GetURL().ToString())) return nullptr;
     return new tilo::HoldResourceHandler(id_,departures);
   }
-  // The page asks to go somewhere: a form submission, or a navigation taking
-  // data with it, waits for the person. Anything else goes as it always has.
+  // The page asks to go somewhere: a form leaving waits for the person, as a
+  // request of the page's own does. Anything else goes as it always has.
   bool HoldsNavigation(CefRefPtr<CefFrame> frame,CefRefPtr<CefRequest> request) {
     if(!holds_ || !departures || transfer_owner_ || closing) return false;
-    const auto method=request->GetMethod().ToString();
-    const bool form=tilo::FormSubmission(request->GetTransitionType());
     const auto url=request->GetURL().ToString();
-    if(!tilo::WebAddress(url) || !(form || tilo::LeavesWithData(method))) return false;
+    if(!tilo::WebAddress(url) || !tilo::Submission(request)) return false;
+    const auto method=request->GetMethod().ToString();
     // One the person just allowed comes back through here: it leaves, and
     // the allowance is spent.
     if(departures->TakesAllowance(id_,method,url)) return false;
     tilo::Departure departure;
-    departure.tab=id_;departure.kind=form?"submit":"navigate";
+    departure.tab=id_;departure.kind="submit";
     departure.method=method;departure.origin=tilo::Origin(url);
     departure.frame=frame;departure.request=request;
     departures->Hold(std::move(departure));
@@ -2100,8 +2104,10 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // The page's open question, if any, and whether the embedder answers them.
   static constexpr size_t kMaxDialogText=16*1024;
   CefRefPtr<CefJSDialogCallback> dialog_callback_;int dialog_id_=0;bool dialog_unload_=false,js_dialogs_=false;
-  // A window opened for an agent holds what its page sends (departures.h).
-  bool holds_=false;
+  // A window opened for an agent holds what its page sends (departures.h):
+  // changed by the app on the UI thread, and read where Chromium asks about a
+  // request, on its IO thread.
+  std::atomic<bool> holds_{false};
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;

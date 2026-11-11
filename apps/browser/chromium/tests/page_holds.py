@@ -11,6 +11,7 @@ is clicked.
 import http.server
 import re
 import threading
+import time
 import unittest
 
 from native_regressions import Host
@@ -99,6 +100,19 @@ class PageHolds(unittest.TestCase):
         self.assertIsNotNone(found, f'{pattern!r} not in outline:\n{outline}')
         return found.group(1)
 
+    def shows(self, host, text, timeout=20):
+        """What the page shows, asked again until it says `text`: a page
+        changing its own text is nothing the host reports."""
+        deadline = time.monotonic() + timeout
+        while True:
+            host.send(op='page', request_id=3, action='outline')
+            outline = host.until(lambda e: e['event'] == 'page_result'
+                                 and e.get('request_id') == 3)['outline']
+            if text in outline or time.monotonic() >= deadline:
+                break
+        self.assertIn(text, outline, 'what the page shows')
+        return outline
+
     def click(self, host, pattern):
         host.send(op='page', request_id=2, action='click', element=self.ref(host, pattern))
 
@@ -128,7 +142,7 @@ class PageHolds(unittest.TestCase):
         self.answer(host, held, False)
         host.settle(1.0)
         self.assertEqual(host.latest_title(), 'Application')
-        self.assertIn('Ada Lovelace', self.ref(host, 'textbox "Name"') + str(host.seen))
+        self.shows(host, 'value="Ada Lovelace"')
 
     def test_enter_in_a_field_waits_for_the_person(self):
         host = self.open('/')
@@ -145,8 +159,7 @@ class PageHolds(unittest.TestCase):
         held = self.held(host)
         self.assertEqual((held['kind'], held['method']), ('request', 'POST'), held)
         self.answer(host, held, True)
-        host.settle(1.0)
-        self.assertIn('posted collected', str(host.seen))
+        self.shows(host, 'posted collected')
 
     def test_a_script_submission_waits_for_the_person(self):
         host = self.open('/script')
