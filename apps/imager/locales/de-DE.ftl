@@ -56,25 +56,7 @@ installer-windows-category-game-mod = Mods und Workshop-Daten
 installer-windows-category-game-installation = Spielinstallationen (können lokale Änderungen enthalten)
 installer-windows-category-potentially-unique = Andere möglicherweise einzigartige Daten
 imager-review-setup-hostname = Mit dem Hostnamen { $hostname } geschrieben, dann überprüft
-imager-setup-action-choose-experience = Einrichtungsart auswählen
-imager-setup-placeholder-experience = Desktop
-imager-setup-param-experience = Verfügbare Einrichtungsart
-imager-setup-action-set-common-mode = Gemeinsame Ordnerbehandlung festlegen
-imager-setup-action-set-folder-mode = Ordnerbehandlung festlegen
-imager-setup-placeholder-folder-mode = kopieren
-imager-setup-param-folder-mode = Ordnerverhalten
-imager-setup-param-common-folder-mode = Ordnerverhalten für Ordner ohne eigene Festlegung
-imager-setup-action-use-common-mode = Gemeinsame Ordnerbehandlung verwenden
-imager-setup-action-remove-folder = Ordner aus der Einrichtung entfernen
-imager-setup-action-select-suggestion = Vorgeschlagenen Ordner auswählen
-imager-setup-action-choose-folder = Einen anderen Ordner auswählen
-imager-setup-action-toggle-help = Ordnerhilfe ein- oder ausblenden
 imager-setup-action-next = Einrichtung fortsetzen
-imager-setup-action-back = In der Einrichtung zurückgehen
-imager-setup-action-open-imports = Ordnerimporte öffnen
-imager-setup-action-install-desktop = Tilo Desktop installieren
-imager-setup-action-cancel-desktop-download = Desktop-Download abbrechen
-imager-setup-action-retry-desktop = Prüfung des Rechners für Desktop wiederholen
 imager-setup-action-start-download = Tilo herunterladen
 imager-setup-action-pause-download = Download anhalten
 imager-setup-action-resume-download = Download fortsetzen
@@ -107,98 +89,7 @@ imager-setup-error-download-cancel-unavailable = Der Download läuft gerade nich
 imager-setup-error-download-discard-unavailable = Es gibt keine unvollständigen Downloaddaten zum Verwerfen
 imager-setup-error-download-release-unavailable = Es gibt keinen überprüften Download, der für später behalten werden kann
 imager-setup-resource-root = Geführte Tilo-Einrichtung
-imager-setup-resource-selection = Aktuelle Auswahl der Einrichtung
-imager-setup-resource-review = Stand der Prüfung
-imager-setup-resource-availability = Aktuelle Verfügbarkeit der Einrichtung
-imager-setup-resource-selected-folder = Ausgewählter Ordner { $number }
-imager-setup-resource-suggested-folder = Ordner { $folder }
-imager-setup-resource-desktop = Installation von Tilo Desktop
-imager-setup-resource-internal-download = Download von Full Tilo
-imager-setup-badge-selection = Auswahl
 imager-setup-badge-review = Prüfung
-imager-setup-badge-availability = Verfügbarkeit
-imager-setup-badge-folder = Ordner { $number }
-imager-setup-badge-suggestion = Vorgeschlagener Ordner
-imager-setup-badge-desktop = Desktop
-imager-setup-badge-download = Download
-imager-setup-badge-page-experience = Einrichtungsart
-imager-setup-badge-page-folders = Ordner
-imager-setup-badge-page-review = Prüfung
-imager-setup-badge-page-setup = Einrichtung
-imager-setup-suggestion-available = Auswählbar
-imager-setup-suggestion-unavailable = Auf diesem Computer nicht verfügbar
-imager-setup-detail-folder-common = { $mode }, die gemeinsame Wahl
-imager-setup-detail-folder-override = { $mode }, für diesen Ordner gewählt
-imager-setup-detail-desktop = { $status }
-imager-setup-detail-internal-download = { $status }
-imager-setup-detail-selection =
-    Einrichtungsart { $experience ->
-        [none] keine ausgewählt
-       *[other] { $experience }
-    }; gemeinsam { $common_mode }; { $folder_count } Ordner, davon { $active_folder_count } aktiv; Hilfe { $help ->
-        [true] geöffnet
-       *[false] geschlossen
-    }; Importe { $imports ->
-        [true] geöffnet
-       *[false] geschlossen
-    }
-imager-setup-detail-review =
-    bereit { $ready ->
-        [true] ja
-       *[false] nein
-    }; aktuelle Seite { $page }
-imager-setup-detail-availability =
-    Desktop { $desktop ->
-        [true] ja
-       *[false] nein
-    }; Full OS { $full_os ->
-        [true] ja
-       *[false] nein
-    }; verbunden { $connected ->
-        [true] ja
-       *[false] nein
-    }; weiter { $next ->
-        [true] ja
-       *[false] nein
-    }; zurück { $back ->
-        [true] ja
-       *[false] nein
-    }; Ordnerregeln { $folder_policies ->
-        [true] ja
-       *[false] nein
-    }; Ordneränderungen { $folder_edits ->
-        [true] ja
-       *[false] nein
-    }; Hilfe { $help ->
-        [true] ja
-       *[false] nein
-    }; Importe { $open_imports ->
-        [true] ja
-       *[false] nein
-    }
-imager-setup-detail-root =
-    { $page }, { $experience ->
-        [none] keine Einrichtungsart ausgewählt
-       *[other] { $experience }
-    }; { $common_mode }; { $folder_count } Ordner; Prüfung { $review ->
-        [true] ja
-       *[false] nein
-    }; Desktop { $desktop ->
-        [true] ja
-       *[false] nein
-    }; Full OS { $full_os ->
-        [true] ja
-       *[false] nein
-    }; verbunden { $connected ->
-        [true] ja
-       *[false] nein
-    }; weiter { $next ->
-        [true] ja
-       *[false] nein
-    }; zurück { $back ->
-        [true] ja
-       *[false] nein
-    }
 imager-import-resource-root = Ordnerimporte
 imager-import-resource-operation = Ordnerimport
 imager-import-resource-folder = Gespeicherter Ordner { $number }
@@ -223,8 +114,6 @@ imager-import-action-review-destination = Ziel prüfen
 imager-import-action-choose-folder-destination = Ein anderes Ziel auswählen
 imager-import-action-folder-mode = Festlegen, wie ein Ordner übernommen wird
 imager-import-param-folder-mode = Jetzt einmal kopieren oder später entscheiden
-imager-import-error-invalid-operation = Ungültiger Ordnerimport: { $error }
-imager-import-error-operation-kind = Ordnerimporte ändern nur die lokale Ansicht
 imager-import-error-picker-unavailable = Eine Ordnerauswahl ist bereits geöffnet oder nicht verfügbar
 imager-import-error-selection-empty = Es gibt keine Ordnerauswahl zum Löschen
 imager-import-error-review-unavailable = Wähle eine Quelle und ein Ziel, bevor du eine Prüfung vorbereitest
@@ -388,7 +277,6 @@ imager-setup-internal-restarting = Wird neu gestartet…
 imager-setup-internal-removed = Das Tilo-Installationsprogramm wurde entfernt und sein Platz zurückgegeben.
 imager-setup-internal-resume-title = Unvollständiges Tilo-Installationsprogramm
 imager-setup-internal-resume = Eine frühere Einrichtung des Tilo-Installationsprogramms auf diesem Computer ist unvollständig oder wurde nicht verwendet. „Fortsetzen“ schließt sie mit dem überprüften Download ab. „Erneut versuchen“ startet das Tilo-Installationsprogramm beim nächsten Neustart. „Entfernen“ löscht das Installationsprogramm und gibt seinen Platz zurück.
-imager-setup-internal-resume-continue = Fortsetzen
 imager-setup-internal-resume-retry = Erneut versuchen
 imager-setup-internal-resume-remove = Tilo-Installationsprogramm entfernen
 imager-setup-internal-failure-plan-stale = Das Laufwerk oder die Starteinstellungen dieses Computers haben sich geändert, nachdem du den Plan geprüft hast. Deshalb hat das Hilfsprogramm angehalten, bevor es etwas geändert hat. Prüfe den neuen Plan und installiere dann erneut.
@@ -415,11 +303,6 @@ imager-setup-desktop-install = Tilo Desktop installieren
 imager-setup-desktop-cancel = Download abbrechen
 imager-setup-desktop-recheck = Erneut prüfen
 imager-setup-desktop-command-unavailable = Dieser Vorgang ist im aktuellen Stand der Einrichtung nicht verfügbar.
-imager-setup-method-heading = Tilo OS installieren
-imager-setup-method-body = Installiere neben deinem aktuellen System oder erstelle ein USB-Installationsmedium. Du prüfst das Ziel, bevor geschrieben wird.
-imager-setup-usb-open = Ein USB-Installationsmedium erstellen
-imager-setup-usb-unavailable = Das Schreiben von USB-Abbildern ist auf diesem Rechner nicht verfügbar. Verwende einen unterstützten Rechner, um das Installationsmedium zu erstellen.
-imager-setup-alongside = Direkt daneben installieren
 imager-journey-heading = Mach Tilo zu deinem
 imager-journey-body = Bring deine Dateien jetzt mit oder entscheide später. Verbinde Konten ausdrücklich und wähle Apps im Store, nachdem die Identität eingerichtet ist.
 imager-journey-accounts = Konten verbinden
@@ -428,7 +311,6 @@ imager-journey-identity-required = Schließe zuerst die Einrichtung der Identit�
 imager-journey-navigation-pending = Die Sitzung wird gebeten, deine Auswahl zu öffnen…
 imager-journey-navigation-opened = Deine Auswahl wurde geöffnet.
 imager-journey-navigation-lost = Die Sitzung hat kein Ergebnis zum Öffnen zurückgegeben. Versuche es erneut.
-imager-setup-alongside-unavailable = Auf diesem Computer noch nicht verfügbar.
 imager-select-source = Das zu schreibende Abbild ausgewählt
 imager-clear-source = Das zu schreibende Abbild entfernt
 imager-install-profile-hostname = Den Hostnamen geändert
@@ -539,10 +421,8 @@ installer-hardware-component-boot = Start und Firmware
 installer-hardware-component-storage = Speicher
 installer-hardware-component-input = Tastatur und Zeigegeräte
 installer-hardware-reason-driver-bound-one = { $device } nutzt im laufenden System { $driver }.
-installer-hardware-reason-driver-bound-one-no-driver = { $device } ist im laufenden System vorhanden.
 installer-hardware-reason-driver-bound-many = { $count } Geräte nutzen im laufenden System einen Treiber.
 installer-hardware-reason-hybrid-graphics = { $device } nutzt { $driver }; es ist mehr als ein Grafikadapter vorhanden.
-installer-hardware-reason-hybrid-graphics-no-driver = { $device } ist einer von mehreren Grafikadaptern.
 installer-hardware-reason-driver-missing = Für { $count } Geräte ist im laufenden System kein Treiber gebunden.
 installer-hardware-reason-virtual-adapter = Es ist nur { $device } vorhanden; das ist ein virtueller Grafikadapter.
 installer-hardware-reason-open-nvidia = { $device } nutzt den quelloffenen Nvidia-Treiber.
@@ -636,29 +516,21 @@ installer-preview-devices-intro = Unter diesem Namen erkennen deine anderen Tilo
 installer-preview-device-name-label = Computername
 installer-preview-device-default = Mein Computer
 installer-preview-existing-avatar = Deine vorhandene Tilo-Identität
-installer-preview-new-recovery = Bei deiner ersten Anmeldung erstellst du eine verschlüsselte Sicherung deiner Identität.
-installer-preview-existing-recovery = Deine vorhandene Identität bleibt deine. Dieses Gerät tritt ihr bei; du erstellst keine zweite Identität.
 installer-preview-belongings-heading = Deine Daten
 installer-preview-belongings-intro = Wähle, was mitkommt. Deine Originale bleiben unverändert.
 installer-your-data-heading = Von diesem Computer
 installer-your-data-all = Alle deine Daten ({ $selected } von { $total } ausgewählt)
 installer-your-data-selected-count = { $selected } von { $total } ausgewählt
 installer-your-data-files = Dateien und Speicher
-installer-your-data-files-home = Persönlicher Ordner
-installer-your-data-size-unknown = Größe noch nicht geprüft
 installer-your-data-apps = Apps
 installer-your-data-no-apps = Es wurden keine installierten Apps gefunden
 installer-your-data-app-detail = Installierte App
 installer-your-data-app-with-home = Kommt mit deinem persönlichen Ordner
 installer-your-data-app-here = Bereits in Tilo
-installer-your-data-browser = Lesezeichen und Verlauf
 installer-your-data-browser-note = Gespeicherte Lesezeichen und der Verlauf aus jedem Browserprofil. Anmeldungen bei Websites stehen unter dem jeweiligen Profil. Gespeicherte Passwörter bleiben im alten Browser, du meldest dich in Tilo also erneut an.
 installer-your-data-browser-profiles = { $count } Browserprofile
 installer-your-data-bookmarks = Lesezeichen
 installer-your-data-history = Verlauf
-installer-your-data-bookmarks-history = Lesezeichen und Verlauf
-installer-your-data-no-browser-data = Keine gespeicherten Browserdaten
-installer-your-data-browser-no-signins = Für diesen Browser wurden keine gespeicherten Anmeldungen bei Websites gefunden.
 installer-your-data-browser-saved-signins = Gespeicherte Anmeldungen
 installer-your-data-browser-one-signin = 1 gespeicherte Anmeldung
 installer-your-data-browser-signins = { $count } gespeicherte Anmeldungen
@@ -668,7 +540,6 @@ installer-your-data-signin-discord = Anmeldung bei Discord
 installer-your-data-signin-saved = Gespeicherte Anmeldung
 installer-your-data-signin-origin = Gespeicherte Anmeldung bei Discord
 installer-your-data-signin-needs-access = Erneute Anmeldung nötig
-installer-your-data-accounts = Konten und Anmeldungen
 installer-your-data-accounts-note = Deine gespeicherten Konten und die Dienste, die sie einschalten. Vielleicht musst du dich in Tilo erneut anmelden.
 installer-your-data-no-accounts = Es wurden keine gespeicherten Verbindungen gefunden
 installer-your-data-account-count = { $count } Konten
@@ -682,20 +553,9 @@ installer-your-data-service-mail = E-Mail
 installer-your-data-service-calendar = Kalender
 installer-your-data-service-contacts = Kontakte
 installer-your-data-account-sign-in = Melde dich nach der Einrichtung in Tilo erneut an.
-installer-your-data-account-import = Gespeicherte Verbindung
-installer-your-data-account-reconnect = Erneute Anmeldung nötig
 installer-your-data-account-tilo = In Tilo gespeichert
 installer-your-data-provider-tilo = In Tilo gespeichert
-installer-your-data-provider-google = Google
-installer-your-data-provider-microsoft = Microsoft
-installer-your-data-provider-dropbox = Dropbox
 installer-your-data-provider-nextcloud = Nextcloud
-installer-your-data-provider-webdav = WebDAV
-installer-your-data-provider-spotify = Spotify
-installer-your-data-provider-slack = Slack
-installer-your-data-provider-discord = Discord
-installer-your-data-provider-firefox = Firefox
-installer-your-data-provider-chromium = Chromium
 installer-your-data-mail = Thunderbird
 installer-your-data-steam = Steam
 installer-your-data-steam-note = Spieldateien kommen mit deinen Apps. Es wurde kein Steam-Ordner gefunden, daher können Spielstände nicht aufgelistet werden.
@@ -765,7 +625,6 @@ installer-preview-bring-selected = Ausgewählte Daten mitnehmen
 installer-preview-storage-heading = Platz für Tilo wählen
 installer-preview-storage-intro = Behalte dein aktuelles System und installiere Tilo daneben.
 installer-preview-storage-another = Wähle als Nächstes ein USB-Laufwerk. Sein Inhalt wird gelöscht, wenn du das Schreiben bestätigst.
-installer-preview-storage-desktop = Dein vorhandenes Linux-System und deine Dateien bleiben, wo sie sind.
 installer-preview-review-heading = Deine Einrichtung prüfen
 installer-preview-review-intro = Wähle einen Eintrag aus, um ihn zu ändern.
 installer-preview-review-migrate = Die ausgewählten Daten von diesem Computer mitnehmen. Deine Originale bleiben unverändert.
@@ -786,7 +645,6 @@ installer-preview-password-numeric = Verwende mindestens 20 Ziffern oder füge B
 installer-preview-password-repetitive = Vermeide wiederholte Zeichen oder Muster.
 installer-preview-password-invalid = Wähle ein anderes Passwort.
 installer-preview-password-mismatch = Die Passwörter stimmen nicht überein.
-installer-preview-password-required = Gib das Einrichtungspasswort ein, um diese gespeicherte Vorbereitung zu entsperren.
 installer-preview-deferred-handoff = Deine Identität, Anmeldungen und Dateien werden auf dem Zielcomputer abgeschlossen, nachdem dort beim ersten Start das Anmeldepasswort festgelegt wurde.
 installer-source-handoff-waiting = Lass diesen Computer eingeschaltet. Er sendet deine Daten an den anderen Computer, nachdem du jenen Computer hier zugelassen hast.
 installer-source-handoff-requested = { $name } fragt nach deinen Daten. Vergleiche den Code { $code }, der auf jenem Computer angezeigt wird, und lass ihn dann zu.
@@ -802,9 +660,6 @@ installer-source-handoff-unavailable = Diese Übertragung ist nicht mehr verfüg
 installer-preview-deferred-handoff-unavailable = Der andere Computer ist nicht erreichbar, um diese Übertragung verfügbar zu halten. Prüfe das Netzwerk und bereite das Laufwerk erneut vor.
 installer-preview-tpm-handoff-unavailable = Die signierte Startrichtlinie des Zielcomputers konnte nicht geprüft werden, daher müssen Identität und Anmeldungen auf dem Zielcomputer nach seiner ersten Anmeldung abgeschlossen werden.
 installer-source-handoff-approve = Diesen Computer zulassen
-installer-source-handoff-cancel = Senden anhalten
-installer-preview-applications-deferred = Eine Übernahme nur von Apps wird auf dem Zielcomputer nach der Anmeldung beim ersten Start abgeschlossen. Nimm deine Dateien mit oder wähle einen Neubeginn.
-installer-preview-deferred-encrypted-selection = Ausgewählte Apps, Anmeldungen oder Browserdaten brauchen das Passwort der verschlüsselten Vorbereitung. Entferne diese Auswahl, um nur mit Dateien fortzufahren, oder entsperre eine frühere Vorbereitung.
 installer-preview-identity-busy = Warte, bis die Vorbereitung fertig ist.
 installer-preview-identity-preparing = Deine Identität wird vorbereitet…
 installer-preview-identity-prepare-failed = Deine Identität konnte nicht vorbereitet werden. Dein vorhandenes Konto ist unverändert.
@@ -867,15 +722,10 @@ installer-recovery-write-guard = Es lässt sich nicht nachweisen, dass die Wiede
 installer-preview-storage-release-blocked = Die direkte Installation ist in diesem Build nicht verfügbar. Du kannst stattdessen von USB installieren.
 installer-preview-storage-unavailable = Die direkte Installation ist nicht verfügbar. Verwende stattdessen ein USB-Installationsmedium.
 installer-preview-storage-range-error = Wähle eine Größe im verfügbaren Bereich.
-installer-preview-usb-heading = Ein USB-Installationsmedium vorbereiten
-installer-preview-usb-intro = Damit startest du Tilo auf deinem anderen Computer.
-installer-preview-desktop-heading = Tilo als Desktop hinzufügen
-installer-preview-desktop-intro = Behalte dein vorhandenes Linux-System.
 installer-preview-prepare-usb = Ein USB-Installationsmedium erstellen
 installer-preview-save = Änderungen speichern
 installer-preview-cancel = Abbrechen
 installer-preview-folders-checking = Deine Ordner werden gesucht…
-installer-preview-folders-none = Auf diesem Computer wurden keine Standardordner gefunden.
 installer-preview-import-unavailable = In diesem Build nicht verfügbar.
 installer-preview-flatpak-title = Flatpak-Apps
 installer-preview-flatpak-body = Deine installierten Apps mit ihren Daten und Einstellungen.
@@ -886,7 +736,6 @@ installer-preview-accounts-none = Es wurden keine unterstützten Konten gefunden
 installer-preview-account-importable = Die gespeicherte Verbindung kann übernommen werden.
 installer-preview-account-tilo = Gespeicherte Tilo-Verbindung
 installer-preview-account-reconnect = Melde dich erneut an, um diesen Dienst in Tilo zu verbinden.
-installer-preview-accounts-incomplete = Einige Kontoeinstellungen konnten nicht gelesen werden.
 installer-preview-belongings-check-failed = Die Prüfung deiner Daten konnte nicht abgeschlossen werden. Versuche es erneut.
 installer-preview-transfer-busy = Eine Übertragung wird bereits geprüft oder läuft.
 installer-preview-transfer-needs-review = Prüfe zuerst das Ziel der Übertragung.
@@ -900,7 +749,6 @@ installer-accounts-heading = Deine Konten verbinden
 installer-accounts-source-label = { $service }: { $account }
 installer-accounts-source-identity = { $account } ({ $identity })
 installer-accounts-intro = Verbinde die Dienste, die du in Tilo nutzen möchtest. Das ist optional; nach der Einrichtung kannst du sie in den Einstellungen unter „Externe Konten“ verbinden.
-installer-accounts-add-heading = Ein Konto hinzufügen
 installer-accounts-google-drive = Google Drive
 installer-accounts-onedrive = OneDrive
 installer-accounts-dropbox = Dropbox
@@ -909,7 +757,6 @@ installer-accounts-add = Ein Konto verbinden
 installer-accounts-saved = Gespeicherte Verbindung
 installer-accounts-left-out = Ausgelassen
 installer-accounts-sign-in = Zum Verbinden anmelden
-installer-accounts-connected = Bereit zur Übernahme
 installer-accounts-import-heading = Diese Verbindung mitnehmen
 installer-accounts-import-intro = Verwende die gespeicherte Verbindung in Tilo. Dein vorhandenes Konto bleibt unverändert.
 installer-accounts-connect-heading = { $service } verbinden
@@ -920,7 +767,6 @@ installer-accounts-spotify-permission = Erlaube Tilo, deine gespeicherte Musik z
 installer-accounts-import = Verbindung übernehmen
 installer-accounts-connect = Verbinden
 installer-accounts-importing-heading = Deine Verbindung wird übernommen
-installer-accounts-importing-intro = Das dauert meist nur einen Moment.
 installer-accounts-waiting-heading = Anmeldung abschließen
 installer-accounts-waiting-intro = Erlaube den Zugriff in deinem Browser. Diese Seite aktualisiert sich, wenn du fertig bist.
 installer-accounts-open-again = Anmeldung erneut öffnen
@@ -944,7 +790,6 @@ installer-accounts-sources-changed = Deine Kontoeinstellungen haben sich geände
 installer-accounts-invalid-action = Wähle ein Konto, um fortzufahren.
 installer-accounts-profile-only = Das Profil dieser App kommt mit deinen anderen Daten. Verbinde es, nachdem Tilo gestartet ist.
 installer-accounts-busy = Schließe diese Anmeldung zuerst ab oder brich sie ab.
-installer-accounts-already-prepared = Diese Verbindungen sind bereits Teil deiner Installation.
 installer-accounts-continue = Weiter
 installer-preview-account-handoff-unavailable = Deine ausgewählten Kontoverbindungen konnten nicht gelesen werden. Geh zurück zu den Konten und versuche es erneut.
 installer-accounts-nextcloud = Nextcloud
@@ -989,7 +834,6 @@ installer-existing-busy = Deine Identität wird wiederhergestellt.
 installer-existing-restoring = Deine Identität wird wiederhergestellt…
 installer-existing-connected = Deine Tilo-Identität ist für diesen Computer bereit.
 installer-existing-failed = Diese Sicherung konnte nicht wiederhergestellt werden. Prüfe ihre Passphrase oder wähle eine andere Sicherung.
-installer-existing-pairing-unavailable = Die Verbindung von einem anderen Tilo-Gerät ist in diesem Installationsprogramm noch nicht verfügbar. Du kannst stattdessen eine Identitätssicherung wiederherstellen.
 installer-media-prepare-failed = Deine Einrichtung konnte nicht für das USB-Installationsmedium vorbereitet werden. Deine Identität und verbundenen Konten sind hier weiterhin gespeichert. Versuche es erneut.
 installer-media-deliver-heading = Nimm deine Einrichtung mit
 installer-media-deliver-body = Das Abbild des Installationsprogramms ist überprüft. Deine verschlüsselte Einrichtung und die ausgewählten Daten müssen noch hinzugefügt werden.
@@ -1043,7 +887,6 @@ installer-portable-mounted-source-unsupported = Dein persönlicher Ordner enthä
 installer-mounted-home-locations = Eingebundene Orte in deinem persönlichen Ordner
 installer-mounted-home-location-unavailable = Dieser Ort kann noch nicht als Teil deines ganzen persönlichen Ordners übertragen werden.
 installer-portable-applications-review-failed = Deine ausgewählten Apps und ihre Daten konnten nicht geprüft werden. Prüfe deine Daten erneut, bevor du fortfährst.
-installer-portable-home-required = Nur System-Flatpak-Apps auf einen anderen Computer mitzunehmen, ist noch nicht verfügbar. Wähle deinen persönlichen Ordner, um deine eigenen Apps und ihre Daten mitzunehmen.
 installer-preview-belongings-shared-intro = Wähle, was du in Tilo verwenden möchtest. Deine Dateien bleiben, wo sie sind.
 installer-preview-files-shared-title = Deine Dateien
 installer-preview-files-shared-body = Verwende dieselben Dateien in beiden Systemen. Änderungen erscheinen in beiden.
@@ -1051,26 +894,22 @@ installer-preview-migrate-shared-body = Verwende dieselben Dateien in beiden Sys
 installer-preview-review-shared = Verwende deine vorhandenen Dateien in beiden Systemen. Änderungen erscheinen in beiden. Nimm die ausgewählten Apps und Konten mit.
 installer-preview-account-profile-only = App- oder Browserprofil gefunden. Dieses Installationsprogramm kann seine vorhandene Anmeldung nicht mit Tilo verbinden.
 imager-setup-internal-error-prepared-setup = Deine vorbereitete Identität und deine Konten konnten nicht gelesen werden. Geh zurück zur Einrichtung und versuche es erneut.
-imager-setup-internal-error-guided-navigation = Verwende „Zurück“ im Installationsprogramm, um deine Einrichtung zu ändern.
 installer-preview-storage-app-estimate = Geschätzter Platz für deine Apps und ihre Daten: { $size }. Enthält Raum für Installation und Updates.
 installer-preview-prepare-direct = Installation prüfen
 installer-preview-install-profile-invalid = Deine Installationseinstellungen müssen korrigiert werden, bevor du fortfährst.
 installer-preview-direct-review-unavailable = Die Installation konnte für diesen Computer nicht vorbereitet werden. Deine Einrichtung bleibt erhalten; du kannst es erneut versuchen oder ein USB-Installationsmedium erstellen.
-installer-preview-install-preparing = Deine Identität und Konten werden für diese Installation vorbereitet…
 installer-preview-device-invalid = Wähle einen kürzeren Gerätenamen in einer einzigen Zeile.
 installer-accounts-code-heading = Gib den Code von Dropbox ein
 installer-accounts-code-intro = Schließe die Anmeldung in deinem Browser ab und füge dann hier den Code ein, den Dropbox dir gibt.
 installer-accounts-code-label = Anmeldecode
 installer-accounts-code-submit = Dropbox verbinden
 installer-accounts-code-invalid = Füge den Code von Dropbox ein, bevor du fortfährst.
-installer-accounts-tilo-saved = Gespeicherte Tilo-Verbindung. Prüfe sie, bevor du sie übernimmst.
 installer-accounts-tilo-import-intro = Übernimm diese gespeicherte Tilo-Verbindung in deine neue Einrichtung. Lässt sie sich hier nicht entsperren, kannst du den Dienst erneut verbinden.
 installer-accounts-tilo-reconnect = Diese gespeicherte Verbindung konnte nicht entsperrt werden. Wähle einen Dienst, um ihn erneut zu verbinden; deine ursprüngliche Verbindung bleibt unverändert.
 installer-accounts-tilo-changed = Diese gespeicherte Verbindung hat sich geändert, seit du sie geprüft hast. Prüfe deine Sachen erneut, bevor du sie übernimmst.
 installer-accounts-already-included = Diese Verbindung ist bereits in deiner Einrichtung enthalten.
 installer-pairing-body = Öffne Tilo auf deinem anderen Gerät, um diesen Computer zuzulassen.
 installer-pairing-start = Mit meinem Tilo-Gerät verbinden
-installer-pairing-waiting = Prüfe, ob dein anderes Gerät denselben Code anzeigt, bevor du zulässt.
 installer-pairing-cancel = Kopplung abbrechen
 installer-pairing-cancelled = Die Kopplung wurde hier angehalten. Falls du dieses Gerät bereits zugelassen hast, erscheint es vielleicht noch auf deinem anderen Gerät.
 installer-pairing-failed = Dieses Gerät konnte nicht verbunden werden. Versuche es erneut oder verwende deine Identitätssicherung.
@@ -1102,7 +941,6 @@ installer-restart-changed-heading = Deine Einrichtung hat sich geändert
 installer-restart-review-latest = Neueste Einrichtung prüfen
 installer-accounts-checkpoint-unlock-failed = Deine gespeicherten Verbindungen konnten nicht entsperrt werden. Prüfe dein Passwort und versuche es erneut.
 installer-accounts-provider-heading = Welches Konto möchtest du verbinden?
-installer-accounts-provider-intro = Wähle einen Dienst zum Anmelden.
 installer-accounts-spotify-done-heading = Deine Spotify-Bibliothek ist verbunden
 installer-accounts-spotify-done-intro = Deine gespeicherte Musik ist bereit für Tilo.
 installer-preview-files-location = Dein persönlicher Ordner: { $path }
@@ -1111,8 +949,6 @@ installer-preview-storage-shared-files = Deine Dokumente bleiben auf der Partiti
 installer-preview-profiles-title = App- und Browserprofile
 installer-preview-profiles-body = Profildateien bleiben bei deinen anderen Dateien. Dienste in Tilo zu verbinden, ist eine eigene Entscheidung.
 installer-preview-storage-show-details = Details zum Laufwerk
-installer-preview-storage-usb-fallback-heading = Tilo von USB installieren
-installer-preview-storage-usb-fallback-intro = Die direkte Installation ist in diesem Build nicht verfügbar. Verwende ein USB-Laufwerk, um Tilo auf diesem Computer zu installieren.
 installer-accounts-spotify-library = Spotify-Bibliothek
 installer-accounts-spotify-playback = Spotify-Wiedergabe
 installer-accounts-spotify-playback-intro = Verbinde Spotify, um deine Musik in Tilo abzuspielen.
@@ -1120,13 +956,10 @@ installer-accounts-spotify-playback-permission = Erlaube Tilo, Musik mit deinem 
 installer-accounts-spotify-playback-done-heading = Die Spotify-Wiedergabe ist verbunden
 installer-accounts-spotify-playback-done-intro = Du kannst Spotify-Musik abspielen, sobald Tilo gestartet ist.
 installer-accounts-spotify-purpose-heading = Was möchtest du verbinden?
-installer-accounts-spotify-purpose-intro = Wähle, wie du Spotify in Tilo verwendest.
 installer-accounts-spotify-library-choice = Deine gespeicherte Musik
 installer-accounts-spotify-library-choice-intro = Finde deine Spotify-Bibliothek in Tilo.
 installer-accounts-spotify-playback-choice = Musik hören
 installer-accounts-spotify-playback-choice-intro = Spotify-Musik in Tilo abspielen. Erfordert Spotify Premium.
-installer-accounts-spotify-library-saved = Gespeicherte Tilo-Verbindung zur Bibliothek. Prüfe sie, bevor du sie übernimmst.
-installer-accounts-spotify-playback-saved = Gespeicherte Tilo-Verbindung zur Wiedergabe. Prüfe sie, bevor du sie übernimmst.
 installer-browser-title = Dein Surfen
 installer-browser-bookmarks = Lesezeichen
 installer-browser-history = Browserverlauf
@@ -1137,14 +970,11 @@ installer-desktop-prepare = Tilo Desktop einrichten
 installer-desktop-password-intro = Wähle ein Passwort, das deine vorbereitete Tilo-Identität und deine Verbindungen schützt. Das Anmeldepasswort deines Computers bleibt gleich.
 installer-desktop-keep-existing = Deine Dateien, Anwendungen und dein Linux-Konto bleiben unverändert. Dein aktueller Desktop bleibt die Standardsitzung.
 installer-desktop-unavailable = Die Einrichtung von Tilo Desktop ist auf diesem Computer nicht verfügbar.
-installer-desktop-enrolled-unavailable = Diese vorbereitete Geräteidentität ist für ein neues Tilo-Gerät. Um Tilo Desktop auf diesem Computer zu verwenden, nutze eine Identitätssicherung.
 installer-desktop-delivering = Deine erste Tilo-Sitzung wird vorbereitet…
 installer-desktop-delivery-failed = Deine Tilo-Sitzung konnte nicht vorbereitet werden. Versuche es erneut, bevor du dich bei Tilo anmeldest.
 installer-desktop-ready = Tilo Desktop ist bereit. Melde dich ab, wenn du so weit bist, und wähle bei der Anmeldung Tilo.
 installer-desktop-retry = Erneut versuchen
 installer-desktop-resource = Installation von Tilo Desktop
-installer-desktop-install = Tilo Desktop installieren
-installer-desktop-cancel = Download abbrechen
 installer-accounts-nextcloud-source-reconnect = Auf deine gespeicherte Nextcloud-Anmeldung konnte nicht zugegriffen werden. Verbinde dieses Konto erneut, um es in Tilo mitzunehmen.
 installer-accounts-reconnect = Erneut verbinden
 installer-accounts-import-saved = Meine gespeicherten Verbindungen mitnehmen
@@ -1246,17 +1076,13 @@ installer-service-sessions-none-selected = Keine Anmeldungen bei Websites ausgew
 installer-service-sessions-selected-needs-access = Für { $services } wird eine Berechtigung gebraucht, um die ausgewählten Browserdaten zu lesen.
 installer-service-sessions-accounts-excluded = Websitedaten sind nicht enthalten, weil „Konten“ ausgeschaltet ist. Schalte „Konten“ ein, um deine Auswahl wiederherzustellen.
 installer-review-setup = Deine Einrichtung
-installer-review-device = Gerät: { $device }
 installer-review-person-body = Deine Tilo-Identität
 installer-review-device-body = Dieses Gerät in Tilo
 installer-review-device-enrolled = Auf deinem vorhandenen Tilo-Gerät zugelassen
 installer-review-belongings-heading = Deine Daten
-installer-review-belongings = Du nimmst mit
-installer-review-start-fresh = Neubeginn
 installer-original-grant-required = Prüfe zuerst die Dateien, die du von diesem Computer mitnehmen möchtest.
 installer-original-permission-progress = Der Zugriff auf deine Originaldateien wird vorbereitet
 installer-original-prepare-failed = Deine Dateien konnten nicht vorbereitet werden. Auf das Installationslaufwerk wurde nichts geschrieben. Prüfe deine Auswahl und versuche es erneut.
-installer-original-output-unavailable = Dieses Installationslaufwerk kann deine vorbereiteten Dateien noch nicht aufnehmen. Es wurde nichts darauf geschrieben.
 installer-original-preparing = Wird vorbereitet…
 installer-original-retry = Erneut versuchen
 installer-original-preparing-heading = Deine Dateien werden bereitgemacht
@@ -1294,7 +1120,6 @@ installer-files-hide-location = Ort ausblenden
 installer-mounted-home-grant-intro = Einige Dateien und Ordner in deinem persönlichen Ordner brauchen eine eigene Berechtigung. Erlaube den Zugriff auf jedes hier gezeigte Element.
 installer-mounted-home-picker-title = Zugriff auf die in der Einrichtung gezeigte Datei oder den Ordner erlauben
 installer-mounted-home-grant = Zugriff erlauben
-installer-mounted-home-granted = Zugriff erlaubt
 installer-mounted-home-needs-grant = Braucht eine Berechtigung
 installer-mounted-home-grants-required = Erlaube den Zugriff auf jedes aufgeführte Element, bevor du fortfährst.
 installer-mounted-home-review = Weiter
@@ -1305,10 +1130,8 @@ installer-mounted-home-permission-heading = Zugriff erlauben
 installer-original-image-unavailable = Dieses Installationsabbild kann deine Daten nicht übernehmen. Wähle ein neueres Tilo-Installationsprogramm.
 installer-flatpak-apps-heading = Deine Apps
 installer-flatpak-app-with-home = Mit deinem persönlichen Ordner enthalten
-installer-flatpak-app-selected = Mit deinen ausgewählten Apps enthalten
 installer-flatpak-apps-existing-heading = Deine installierten Apps
 installer-flatpak-app-existing = Bereits auf diesem Computer
-installer-flatpak-app-excluded = Nicht enthalten
 installer-guided-host-unavailable = Bereite Tilo auf einem Linux-Computer vor. Die Einrichtung der Installation ist auf diesem Computer noch nicht verfügbar.
 installer-flatpak-app-needs-home = Nimm deinen persönlichen Ordner mit, um diese selbst installierte App und ihre Einstellungen mitzunehmen.
 installer-flatpak-app-transfer-unavailable = Diese selbst installierte App wird bei dieser Installation nicht übertragen. Deine ursprüngliche App und ihre Einstellungen bleiben, wo sie sind.
@@ -1425,7 +1248,6 @@ installer-online-adopted = Hier abgeschlossene Anmeldungen werden sicher an dein
 installer-online-loading = Verbunden bedeutet, dass der Zugriff erlaubt ist, nicht dass alle Inhalte bereitstehen. Dateien und Kalender müssen beim Öffnen möglicherweise noch geladen werden.
 installer-online-suggestions-note = Prüfe einen Vorschlag, um die bearbeitbaren Angaben unten vorauszufüllen. Wähle Dienste und melde dich hier an, um sie zu verbinden; Windows-Anmeldetokens werden nicht importiert.
 installer-online-skip-note = Du kannst die Einrichtung offline abschließen. Beim Fortfahren wird eine unvollständige Anmeldung abgebrochen; bereits hier verbundene Konten bleiben erhalten. Ohne Verbindung zu einem Dienst sind dessen Online-Dateien, E-Mails und Kalender nicht über Tilo verfügbar. Du kannst ihn nach der Installation verbinden.
-installer-hardware-evidence-firmware = Firmware { $firmware }
 installer-hardware-unavailable = Dieser Computer sagt zu wenig über sein Modell aus, um den Kompatibilitätsbericht zu erstellen; deshalb wurde nichts an ihm geprüft.
 installer-hardware-blocks-install = Eine Komponente, ohne die der Schreibtisch nicht startet, wird auf diesem Computer nicht unterstützt; deshalb endet die Installation an diesem Schritt. Es wurde nichts geändert.
 destination-windows-password = Passwort zur Vorbereitung dieses Mediums
