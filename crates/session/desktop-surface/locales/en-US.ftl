@@ -1047,8 +1047,7 @@ overview-presence-many = { $count } people are here
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Welcome to Tilo
 browser-welcome-subtitle = Your team's shared computer. Everything you make is saved as you go and end-to-end encrypted.
-browser-welcome-hint = Arrow keys move, Enter opens, Ctrl+K finds any app
-browser-welcome-hint-mac = Arrow keys move, Enter opens, ⌘K finds any app
+browser-welcome-hint = Arrow keys move, Enter opens
 
 # The workspace overview every desktop shows
 overview-title = Workspace overview

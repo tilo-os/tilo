@@ -1066,8 +1066,7 @@ overview-presence-many = { $count } Personen sind hier
 # The launchpad in the browser: a new member's first look at the desktop
 browser-welcome-title = Willkommen bei Tilo
 browser-welcome-subtitle = Der gemeinsame Computer deines Teams. Alles, was du machst, wird laufend gespeichert und Ende-zu-Ende-verschlüsselt.
-browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet, Strg+K findet jede App
-browser-welcome-hint-mac = Pfeiltasten bewegen, Eingabe öffnet, ⌘K findet jede App
+browser-welcome-hint = Pfeiltasten bewegen, Eingabe öffnet
 
 # The workspace overview every desktop shows
 overview-title = Arbeitsbereichsübersicht

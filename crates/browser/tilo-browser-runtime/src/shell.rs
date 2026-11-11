@@ -660,7 +660,7 @@ impl BrowserShell {
         if chrome.shared.feedback.borrow().is_some() {
             tilo_menu = tilo_menu.with_feedback();
         }
-        let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy(offers.mac));
+        let launchpad = CollaborationLaunchpad::new().with_copy(welcome_copy());
         // The page has one window and no compositor to give an app's card one
         // of its own: the desk hosts the cards itself, at the place its
         // floating column gives them.
@@ -1663,17 +1663,15 @@ impl BrowserShell {
 }
 
 /// The launchpad's words in the page: what Tilo is and that work is kept
-/// safe, and the page's own search chord.
-fn welcome_copy(mac: bool) -> LaunchpadCopy {
+/// safe, and how its cards are walked. The page's search chord is taught once,
+/// by the floating hint at the search ([`tilo_desktop::control_hints`]), not
+/// again in these words.
+fn welcome_copy() -> LaunchpadCopy {
     let t = tilo_desktop_surface::i18n::t;
     LaunchpadCopy {
         title: Some(t("browser-welcome-title")),
         subtitle: Some(t("browser-welcome-subtitle")),
-        keyboard_hint: Some(t(if mac {
-            "browser-welcome-hint-mac"
-        } else {
-            "browser-welcome-hint"
-        })),
+        keyboard_hint: Some(t("browser-welcome-hint")),
     }
 }
 
