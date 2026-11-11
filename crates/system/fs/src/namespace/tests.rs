@@ -785,6 +785,36 @@ fn concurrent_namespace_changes_merge_and_converge() {
     }
 }
 
+/// A file written to a document reads back as the bytes written, though its codec would
+/// normalize them (Markdown joins a paragraph's two lines): a program's README.md is the one it
+/// wrote. An edit of the document itself is what changes the file, then as its projection.
+#[test]
+fn a_document_reads_back_the_bytes_written_until_the_document_is_edited() {
+    let mut ns = Namespace::new("a").unwrap();
+    let ino = ns
+        .create_document(ROOT_INO, "question.md", "md", 1)
+        .unwrap();
+    let store = tilo_content::ContentStore::memory();
+    let written = b"Question X\nfirst line of thought\n";
+    assert!(ns.import_document(ino, written, 2, &store));
+    assert_eq!(
+        ns.export_document(ino, &store).as_deref(),
+        Some(&written[..]),
+        "the file is the bytes written"
+    );
+    // A second write is the file in its turn.
+    let again = b"# Notes\n\n* one\n* two\n\ntrailing  spaces  \n";
+    assert!(ns.import_document(ino, again, 3, &store));
+    assert_eq!(ns.export_document(ino, &store).as_deref(), Some(&again[..]));
+
+    // Edited as a document, it is the document's projection from then on.
+    let block = ns.document_insert_block(ino, None, "paragraph").unwrap();
+    ns.document_splice(ino, &block, 0, 0, "added in a rich view");
+    let edited = ns.export_document(ino, &store).unwrap();
+    assert_ne!(edited, again);
+    assert!(String::from_utf8_lossy(&edited).contains("added in a rich view"));
+}
+
 #[test]
 fn documents_import_export_and_merge_semantically() {
     {

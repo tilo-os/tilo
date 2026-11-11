@@ -24,6 +24,13 @@ use tilo_automerge::ApplyIncoming;
 use tilo_automerge::read::{map_at, str_at};
 use uuid::Uuid;
 
+/// A document node's field naming, by content id, the bytes last written to its file
+/// ([`Namespace::export_document`]).
+const VERBATIM: &str = "verbatim";
+/// The content id of the document's projection when [`VERBATIM`] was written: the file is those
+/// bytes while the projection still is this.
+const VERBATIM_READS: &str = "verbatim_reads";
+
 pub const ROOT_INO: u64 = 1;
 /// Sentinel parent for the tree root (not materialized as a node).
 pub use fs_protocol::tree::ROOT_ID;
@@ -2832,17 +2839,43 @@ impl Namespace {
         map_at(&self.doc, &self.node(id)?, "doc")
     }
 
-    /// Project a document into its file format, embedding the binary content (images, binary
-    /// package parts) it references from `content`.
+    /// The document's file: the bytes last written to it, exactly, while the document still reads
+    /// as they did (nobody edited it since); otherwise its projection into its file format,
+    /// embedding the binary content (images, binary package parts) it references from `content`.
+    ///
+    /// A codec's export normalizes (Markdown joins a paragraph's lines), so the projection of a
+    /// file nobody but its writer touched would differ from what was written: a program that writes
+    /// a README.md reads back the README.md it wrote, and an edit in a rich view of the document is
+    /// what changes its bytes.
     pub fn export_document(
         &self,
         ino: u64,
         content: &dyn tilo_content::ContentSource,
     ) -> Option<Vec<u8>> {
         let id = self.ino_to_id.get(&ino)?.clone();
-        let codec = str_at(&self.doc, &self.node(&id)?, "codec")?;
+        let projected = self.project_document(&id, content)?;
+        let node = self.node(&id)?;
+        let written = str_at(&self.doc, &node, VERBATIM)
+            .zip(str_at(&self.doc, &node, VERBATIM_READS))
+            .filter(|(_, reads)| *reads == tilo_content::hash_bytes(&projected))
+            .and_then(|(hash, _)| {
+                content
+                    .content(&hash)
+                    .filter(|bytes| tilo_content::verify(&hash, bytes))
+                    .map(std::borrow::Cow::into_owned)
+            });
+        Some(written.unwrap_or(projected))
+    }
+
+    /// The document `id` projected into its file format.
+    fn project_document(
+        &self,
+        id: &str,
+        content: &dyn tilo_content::ContentSource,
+    ) -> Option<Vec<u8>> {
+        let codec = str_at(&self.doc, &self.node(id)?, "codec")?;
         let provider = tilo_doc_codecs::provider_for_ext(&codec)?;
-        let root = self.document_root(&id)?;
+        let root = self.document_root(id)?;
         let containers = tilo_doc::model::open(&self.doc, &root).ok()?;
         provider
             .export(
@@ -2910,6 +2943,24 @@ impl Namespace {
         {
             self.doc.rollback();
             return false;
+        }
+        // The written bytes are the file while the document reads as they made it: kept by their
+        // content id, beside what the document's projection was then.
+        match self.project_document(&id, content) {
+            Some(projected) if projected != bytes => {
+                let Ok(hash) = content.put(bytes) else {
+                    self.doc.rollback();
+                    return false;
+                };
+                self.set_field(&id, VERBATIM, hash);
+                self.set_field(&id, VERBATIM_READS, tilo_content::hash_bytes(&projected));
+            }
+            _ => {
+                if let Some(node) = self.node(&id) {
+                    let _ = self.doc.delete(&node, VERBATIM);
+                    let _ = self.doc.delete(&node, VERBATIM_READS);
+                }
+            }
         }
         self.set_field(&id, "mtime", mtime);
         true
