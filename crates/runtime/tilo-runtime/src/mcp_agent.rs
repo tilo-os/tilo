@@ -1104,6 +1104,25 @@ struct InstalledApp {
     opens: bool,
 }
 
+impl InstalledApp {
+    /// The app as naming it answers: its newest window `window` while it
+    /// runs, else the app to open.
+    fn named(&self, window: Option<String>) -> AppRef {
+        let app_id = self.app_id.clone();
+        match window {
+            Some(provider) => AppRef::Running {
+                app_id,
+                provider,
+                pinned: false,
+            },
+            None => AppRef::Installed {
+                app_id,
+                opens: self.opens,
+            },
+        }
+    }
+}
+
 /// A directory read once per call.
 type Levels = HashMap<String, Level>;
 
@@ -1298,6 +1317,14 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // activity) answer for app ids no app installs: the app itself,
         // when it is installed, is what its name opens.
         let installed = self.installed().await;
+        // The name the listing shows an app by (`Files`) is that app.
+        if let Some(app) = installed
+            .as_ref()
+            .ok()
+            .and_then(|apps| listed_as(apps, name))
+        {
+            return Ok(app.named(newest(&app.app_id, true)));
+        }
         let services = ids_where(false);
         let service = page::app_named(name, &services).ok().filter(|app_id| {
             installed
@@ -1337,25 +1364,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
             // guessed (`host` for the Browser, `so.tilo.browser`) is the
             // likeliest cause, so the running apps are named as they are to
             // be addressed.
-            Err(_) => Err(format!(
-                "no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
-                running
-                    .iter()
-                    .find_map(|(_, app)| app["app_id"].as_str())
-                    .unwrap_or("<app_id>"),
-                list_or_none(&app_names(
-                    &running
-                        .iter()
-                        .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
-                        .collect::<Vec<_>>()
-                )),
-                list_or_none(&app_names(
-                    &installed
-                        .iter()
-                        .map(|app| app.app_id.clone())
-                        .collect::<Vec<_>>()
-                )),
-            )),
+            Err(_) => Err(no_app_named(name, &running, &installed)),
         }
     }
 
@@ -1848,47 +1857,32 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 }
 
-/// The ids of the apps `name` names among those `running` and `installed`:
-/// its whole id or the name `tilo_ls` lists it by, any case. An error naming
-/// the apps there are when it names none, so a search narrowed to an app
-/// that is not there does not answer that nothing matches. `unread` is why
-/// the installed apps could not be read, when they could not: an app that
-/// is not running may then be installed, and the error says why the agent
-/// cannot know rather than that there is no such app.
-fn searched_apps(
-    name: &str,
-    running: &[String],
-    installed: &[InstalledApp],
-    unread: Option<&str>,
-) -> Result<Vec<String>, String> {
-    let known = running
+/// Why `name` names no app: how a running app is addressed, and the apps
+/// running and installed.
+fn no_app_named(name: &str, running: &[(String, Value)], installed: &[InstalledApp]) -> String {
+    let running_ids = running
         .iter()
-        .chain(installed.iter().map(|app| &app.app_id));
-    let mut meant: Vec<String> = Vec::new();
-    let mut all: Vec<String> = Vec::new();
-    for app_id in known {
-        all.push(app_id.clone());
-        let short = app_names(std::slice::from_ref(app_id)).join("");
-        if (app_id.eq_ignore_ascii_case(name) || short.eq_ignore_ascii_case(name))
-            && !meant.contains(app_id)
-        {
-            meant.push(app_id.clone());
-        }
-    }
-    if !meant.is_empty() {
-        return Ok(meant);
-    }
-    if let Some(reason) = unread {
-        return Err(format!(
-            "no running app is named {name}, and the installed apps could not be read: {reason}"
-        ));
-    }
-    let listed = app_names(&all);
-    Err(if listed.is_empty() {
-        format!("no app {name}: no app is running or installed")
-    } else {
-        format!("no app {name}; the apps: {}", list_names(&listed))
-    })
+        .filter_map(|(_, app)| app["app_id"].as_str().map(str::to_owned))
+        .collect::<Vec<_>>();
+    let installed_ids = installed
+        .iter()
+        .map(|app| app.app_id.clone())
+        .collect::<Vec<_>>();
+    format!(
+        "no app {name}; name a running app by its id or last part, e.g. {}. Running {}; installed {}",
+        running_ids.first().map_or("<app_id>", String::as_str),
+        list_or_none(&app_names(&running_ids)),
+        list_or_none(&app_names(&installed_ids)),
+    )
+}
+
+/// The one installed app the listing shows by the name `name` (`Files` for
+/// `file-explorer`), any case.
+fn listed_as<'a>(installed: &'a [InstalledApp], name: &str) -> Option<&'a InstalledApp> {
+    let mut named = installed
+        .iter()
+        .filter(|app| app.label.eq_ignore_ascii_case(name));
+    named.next().filter(|_| named.next().is_none())
 }
 
 fn app_names(ids: &[String]) -> Vec<String> {

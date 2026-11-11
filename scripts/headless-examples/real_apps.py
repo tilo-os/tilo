@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import select
 import shlex
 import signal
 import socket
@@ -55,6 +56,8 @@ SESSION = REPO / "dist/dev/nested-session.sh"
 APPS = "notes file-explorer chat settings terminal"
 # Where the nested-session build lands (dist/dev/nested-session-build.sh).
 BUILD = Path(os.environ.get("TILO_NESTED_SESSION_BUILD") or REPO / "target/nested-session")
+# The MCP revision the agent door speaks.
+MCP_PROTOCOL = "2025-06-18"
 
 
 class Failed(Exception):
@@ -143,6 +146,91 @@ def prepare(state: Path, *, apps: str = APPS, built: bool = False, remote=None) 
     run([str(SESSION), "--no-build", "--prepare-only", "--headless", "--apps", apps,
          "--state", str(state)], cwd=REPO,
         env={**os.environ, "XDG_RUNTIME_DIR": str(host_runtime())})
+
+
+class Agent:
+    """One MCP client at a session's agent door, on its own connection: a
+    program of the login asking to act as an agent, served once the person
+    answers the sheet the door puts up."""
+
+    def __init__(self, path: Path, name: str) -> None:
+        self.name = name
+        self.sock = socket.socket(socket.AF_UNIX)
+        self.sock.settimeout(120)
+        self.sock.connect(str(path))
+        self.file = self.sock.makefile("rwb")
+        self.next_id = 1
+        self.served = None
+        self.send("initialize", {
+            "protocolVersion": MCP_PROTOCOL,
+            "capabilities": {},
+            "clientInfo": {"name": name, "version": "1"},
+        })
+
+    def send(self, method: str, params: dict) -> int:
+        request = {"jsonrpc": "2.0", "id": self.next_id, "method": method, "params": params}
+        self.next_id += 1
+        self.file.write(json.dumps(request).encode() + b"\n")
+        self.file.flush()
+        return request["id"]
+
+    def notify(self, method: str) -> None:
+        self.file.write(json.dumps({"jsonrpc": "2.0", "method": method}).encode() + b"\n")
+        self.file.flush()
+
+    def reply(self):
+        """The answer to the request in flight, or None at the connection's end."""
+        while True:
+            line = self.file.readline()
+            if not line:
+                return None
+            try:
+                message = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if "id" in message:
+                return message
+
+    def hears(self, timeout: float = 0.0) -> bool:
+        """Whether the door has sent anything back on this connection yet."""
+        ready, _, _ = select.select([self.sock], [], [], timeout)
+        return bool(ready)
+
+    def answered(self, timeout: float = 120.0) -> bool:
+        """Whether the door answered its `initialize`, waiting up to `timeout`."""
+        if self.served is not None:
+            return "error" not in self.served
+        self.sock.settimeout(timeout)
+        self.served = self.reply()
+        return self.served is not None and "error" not in self.served
+
+    def call(self, tool: str, arguments: dict):
+        """(text, failed) of one tool call, once the door answers it.
+
+        A connection the person stopped answers nothing: writing to it fails,
+        which is the same answer as no reply at all."""
+        try:
+            self.send("tools/call", {"name": tool, "arguments": arguments})
+            message = self.reply()
+        except OSError:
+            return "the connection is over", True
+        if message is None:
+            return "", True
+        try:
+            result = message["result"]
+        except KeyError:
+            return json.dumps(message), True
+        try:
+            text = result["content"][0]["text"]
+        except (KeyError, IndexError, TypeError):
+            text = ""
+        return text, bool(result.get("isError"))
+
+    def close(self) -> None:
+        try:
+            self.sock.close()
+        except OSError:
+            pass
 
 
 class Session:

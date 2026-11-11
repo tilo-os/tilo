@@ -1302,11 +1302,13 @@ impl AppBrokerState {
                         rows.push(app_named_row(&provider, app));
                     }
                 }
+                // A running app is offered to close where the host closes
+                // apps; where it does not, an agent of this machine is still
+                // told its name, which is how it addresses the app.
                 rows.extend(
                     applications
                         .iter()
                         .filter(|app| scope.wants_app(&app.package_id))
-                        .filter(|_| closes_applications)
                         .filter(|app| live_apps.contains(&app.package_id))
                         .filter(|app| {
                             policy.may_in(
@@ -1316,12 +1318,16 @@ impl AppBrokerState {
                                 now,
                             )
                         })
-                        .map(|app| {
-                            CatalogueRow::for_action(
-                                provider.clone(),
-                                &app.package_id,
-                                app_close_descriptor(&app.package_id, &app.display_name),
-                            )
+                        .filter_map(|app| {
+                            if closes_applications {
+                                Some(CatalogueRow::for_action(
+                                    provider.clone(),
+                                    &app.package_id,
+                                    app_close_descriptor(&app.package_id, &app.display_name),
+                                ))
+                            } else {
+                                names_unopened.then(|| app_named_row(&provider, app))
+                            }
                         }),
                 );
             }

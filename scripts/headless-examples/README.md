@@ -21,6 +21,14 @@ every claim back off that session rather than off the thing that asked for it.
 | `agent-seats-proof.py` | Two agents at the session's agent door, each admitted as itself through the workspace's governance, each served its own tools, the desk's Stop ending one of their connections alone. |
 | `session-lock-proof.py` | The desk's own lock action locks the session, the lock screen's own frame covers the desk, a password that is not the person's is refused, and the person's own password brings the desk back. |
 
+`agent-files-story.py` drives a desktop with the tree's own apps as an agent
+does, through the session's agent door and nothing else: it names Files as the
+listing does and starts it by one of its actions, finds the device and folder
+Files' changes run in from Files' own read, renames a file with
+`files.folder#rename` and reads the new name off the disk, sends the file into
+a Chat conversation with Chat's `send`, and turns do not disturb on until the
+bar's bell says so. The person only answers the sheets that ask about the agent.
+
 `notes-persist-proof.py` is the same kind of proof for a desktop with the
 tree's own apps: it opens Notes, types into a page, stops the session and starts
 it again, and reads the text back off the record on disk. It needs the session

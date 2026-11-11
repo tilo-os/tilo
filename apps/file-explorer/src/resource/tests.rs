@@ -1676,3 +1676,37 @@ fn history_entries_render_as_the_apps_sentences() {
         ]
     );
 }
+
+/// Files reads as the document its windows share: the pinned places and
+/// every change asked for, with the device that carries it out, so an agent
+/// finds Files and the device its verbs name in what Files publishes.
+#[test]
+fn a_read_answers_the_places_and_each_change_with_its_device() {
+    let root = tempfile::tempdir().unwrap();
+    let parent = root.path().display().to_string();
+    let mut laptop = TestApp::<FileExplorerShell>::on_device("laptop").unwrap();
+    act(
+        &mut laptop,
+        "new-folder",
+        &serde_json::json!({"device": "laptop", "parent": parent, "name": "Inbox"}),
+    );
+    let read = laptop
+        .harness()
+        .call_on(
+            <FileExplorer as ui::tilo_resource::Resource>::KIND,
+            "read",
+            serde_json::json!({}),
+        )
+        .unwrap()
+        .completed()
+        .and_then(|output| output.value)
+        .expect("a read answers at once");
+    assert_eq!(
+        read["places"].as_array().map(Vec::len),
+        Some(crate::places::DEFAULT_PLACES.len()),
+        "{read}"
+    );
+    let change = &read["changes"][0];
+    assert_eq!(change["device"], "laptop", "{read}");
+    assert_eq!(change["settled"]["state"], "done", "{read}");
+}

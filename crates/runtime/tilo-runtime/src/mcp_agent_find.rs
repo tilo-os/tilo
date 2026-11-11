@@ -567,3 +567,49 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         None
     }
 }
+
+/// The ids of the apps `name` names among those `running` and `installed`:
+/// its whole id or the name `tilo_ls` lists it by, any case. An error naming
+/// the apps there are when it names none, so a search narrowed to an app
+/// that is not there does not answer that nothing matches. `unread` is why
+/// the installed apps could not be read, when they could not: an app that
+/// is not running may then be installed, and the error says why the agent
+/// cannot know rather than that there is no such app.
+fn searched_apps(
+    name: &str,
+    running: &[String],
+    installed: &[InstalledApp],
+    unread: Option<&str>,
+) -> Result<Vec<String>, String> {
+    let known = running
+        .iter()
+        .chain(installed.iter().map(|app| &app.app_id));
+    let mut meant: Vec<String> = Vec::new();
+    let mut all: Vec<String> = Vec::new();
+    for app_id in known {
+        all.push(app_id.clone());
+        let short = app_names(std::slice::from_ref(app_id)).join("");
+        if (app_id.eq_ignore_ascii_case(name) || short.eq_ignore_ascii_case(name))
+            && !meant.contains(app_id)
+        {
+            meant.push(app_id.clone());
+        }
+    }
+    if meant.is_empty() {
+        meant.extend(listed_as(installed, name).map(|app| app.app_id.clone()));
+    }
+    if !meant.is_empty() {
+        return Ok(meant);
+    }
+    if let Some(reason) = unread {
+        return Err(format!(
+            "no running app is named {name}, and the installed apps could not be read: {reason}"
+        ));
+    }
+    let listed = app_names(&all);
+    Err(if listed.is_empty() {
+        format!("no app {name}: no app is running or installed")
+    } else {
+        format!("no app {name}; the apps: {}", list_names(&listed))
+    })
+}
