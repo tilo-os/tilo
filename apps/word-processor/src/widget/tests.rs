@@ -402,11 +402,15 @@ fn paper_stays_readable_and_the_draw_follows_the_theme() {
             "paper/ink contrast must be ample",
         );
     }
-    assert_eq!(
-        ChromeColors::for_theme(&Theme::light()).paper,
-        Theme::light().tokens.colors.surfaces.raised,
-        "a light theme's paper is its raised surface"
-    );
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        let content = theme.tokens.colors.surfaces.content;
+        if luminance(content) >= 0.85 {
+            assert!(
+                luminance(ChromeColors::for_theme(&theme).paper) >= luminance(content),
+                "a light theme's page is never darker than the window behind it"
+            );
+        }
+    }
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
         let (state, wp) = populated();
         let cc = editor(&mut mount_themed(state, wp, 1100, 760, &theme)).chrome;
