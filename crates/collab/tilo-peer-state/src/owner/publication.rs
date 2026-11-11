@@ -645,10 +645,14 @@ pub(crate) fn change_hashes(
 /// every one of them: the host admitted them. A workspace its governor started
 /// over from a newer base no longer holds them as they were made: that base
 /// is what the workspace is now, and they go too.
+///
+/// `governed` is the changes as each delta carried them, a delta whose changes
+/// do not all decode carrying none: they are decoded only when this member has
+/// changes of its own waiting.
 pub(crate) fn retire_member_changes(
     live: &StatePeer,
     view: &mut record::StoredWorkspace,
-    governed: &BTreeSet<automerge::ChangeHash>,
+    governed: &[Vec<Vec<u8>>],
 ) -> Result<(), String> {
     let Some(existing) = state_of(view)?.governance.first() else {
         return Ok(());
@@ -657,7 +661,12 @@ pub(crate) fn retire_member_changes(
         return Ok(());
     }
     let made = change_hashes(&member_changes(&existing.bytes)?)?;
-    if !made.is_subset(governed) && made.iter().all(|hash| live.workspace_holds_change(hash)) {
+    let governed: BTreeSet<automerge::ChangeHash> = governed
+        .iter()
+        .filter_map(|changes| change_hashes(changes).ok())
+        .flatten()
+        .collect();
+    if !made.is_subset(&governed) && made.iter().all(|hash| live.workspace_holds_change(hash)) {
         return Ok(());
     }
     let publication = view.publication.as_mut().ok_or("publication absent")?;
