@@ -254,7 +254,8 @@ impl Job {
             | Self::Ran(_)
             | Self::Content { .. }
             | Self::ContentGet { .. }
-            | Self::Joined(_) => Keys::Joined,
+            | Self::Joined(_)
+            | Self::Forget(_) => Keys::Joined,
         }
     }
 }
@@ -1491,7 +1492,7 @@ impl Worker {
         self.mounted.retain(|route, _| !of(route));
         self.bounded.retain(|(route, _, _), _| !of(route));
         self.beside.retain(|route, held| !of(route) && !of(held));
-        for (queued, job) in self.joining.remove(&workspace_id).unwrap_or_default() {
+        for Waiting { queued, job, .. } in self.joining.remove(&workspace_id).unwrap_or_default() {
             self.timed(queued, job);
         }
     }
