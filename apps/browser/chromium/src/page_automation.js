@@ -715,14 +715,27 @@ globalThis.__tiloPage ||= (() => {
   // it, an ancestor when the rule hovers one, else the parent whose hovered
   // trigger opened a child that starts hidden. Words inside a trigger are the
   // trigger's own, so a hover over them opens what the trigger opens.
+  // The boxes that hold a hover's targets, each with the targets it holds:
+  // an element's ancestors are asked what they hold, where every child of
+  // each of them used to be looked at. On a page of three thousand
+  // paragraphs that was nine million looks for one read, and half a second.
+  let hoverHolders = null, hoverHeldFor = null;
   function hoverReveals(element) {
     if (!hoverTargets) markHoverTargets();
+    if (!hoverTargets.size) return false;
+    if (hoverHeldFor !== hoverTargets) {
+      hoverHolders = new Map();
+      for (const target of hoverTargets) {
+        const holder = target.parentElement, held = hoverHolders.get(holder);
+        if (held) held.push(target); else if (holder) hoverHolders.set(holder, [target]);
+      }
+      hoverHeldFor = hoverTargets;
+    }
     let depth = 0;
     for (let node = element; node && depth++ < 16; node = node.parentElement) {
       if (hoverTargets.has(node)) return true;
-      for (const child of node.children) {
-        if (hoverTargets.has(child) && !child.checkVisibility?.()) return true;
-      }
+      for (const child of hoverHolders.get(node) || [])
+        if (!child.checkVisibility?.()) return true;
     }
     return false;
   }
