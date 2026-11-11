@@ -970,19 +970,19 @@ fn asked_here(
 
 /// The answer to `record_read`: the records `records` of `app` in `workspace` (the one in front
 /// when unnamed), read through the record door as this person reads them, once they differ from
-/// `after` (the `revision` an earlier answer gave) or `wait_ms` passed: each as its hex, empty for
-/// one the workspace has none of, `null` for one still arriving. Each record is watched before
-/// it is read, so a reader holding a copy is woken by the next write to any of them.
+/// `after` (the `revision` an earlier answer gave) or `wait_ms` passed: as every reader of a
+/// record is answered ([`tilo_actions::remote::RecordReadings::readable`]). Each record is watched
+/// before it is read, so a reader holding a copy is woken by the next write to any of them.
 fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    use tilo_actions::remote::{RecordAddress, RecordAsk, RecordCopy};
-    let (Some(app), Some(records)) = (
-        request.get("app").and_then(Json::as_str),
-        request.get("records").and_then(Json::as_array),
-    ) else {
+    use tilo_actions::remote::{RecordAddress, RecordAsk};
+    let Some(app) = request.get("app").and_then(Json::as_str) else {
         return refusal("parse_error", "`record_read` takes `app` and `records`");
     };
-    let asks: Vec<RecordAsk> = records
-        .iter()
+    let asks: Vec<RecordAsk> = request
+        .get("records")
+        .and_then(Json::as_array)
+        .into_iter()
+        .flatten()
         .filter_map(Json::as_str)
         .map(|record| RecordAsk {
             address: RecordAddress {
@@ -1005,22 +1005,15 @@ fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
         );
     };
     let caller = actions.caller(ctx).in_workspace(workspace);
-    match tilo_actions::remote::read_records(reads.as_ref(), &caller, &asks, after, deadline) {
-        Ok(readings) => {
-            let copies: serde_json::Map<String, Json> = readings
-                .records
-                .into_iter()
-                .map(|(record, copy)| {
-                    let hex = copy.map(|copy| match copy {
-                        RecordCopy::Document(bytes) => hex::encode(bytes),
-                        RecordCopy::Absent => String::new(),
-                    });
-                    (record, json!(hex))
-                })
-                .collect();
-            json!({"answer": {"revision": readings.revision, "records": copies}})
-        }
-        Err(error) => action_refusal(&error),
+    match tilo_actions::remote::read_records(reads.as_ref(), &caller, &asks, after, deadline)
+        .map_err(|error| action_refusal(&error))
+        .and_then(|readings| {
+            readings
+                .readable()
+                .map_err(|error| refusal("unreadable", &error))
+        }) {
+        Ok(answer) => json!({ "answer": answer }),
+        Err(refused) => refused,
     }
 }
 

@@ -1842,58 +1842,35 @@ impl Chat<'_> {
         self.held(None).conversation(peer)
     }
 
-    /// Chat's record and the parts of its messages, as this device holds them, once they differ
-    /// from the revision `after`: read through the record door, which wakes the read on the next
-    /// write to any of them.
+    /// Chat's record and the first part of its messages (all a conversation here writes), as this
+    /// device holds them, once they differ from the revision `after`: read through the record door
+    /// as plain JSON, which wakes the read on the next write to any of them.
     fn held(&self, after: Option<&str>) -> HeldChat {
-        use tilo_resource::Resource as _;
-        // The record, and its messages' parts up to the one a post goes to.
-        let mut records = vec![String::new(), chat::parts::part(0).to_string()];
-        loop {
-            let deadline = tilo_test_env::hang_deadline();
-            let wait = deadline.saturating_duration_since(Instant::now());
-            let answer = self.device.ask(&json!({
-                "op": "record_read",
-                "app": "so.tilo.chat",
-                "records": records,
-                "after": after,
-                "wait_ms": u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
-            }));
-            assert!(
-                answer.get("err").is_none(),
-                "{} reads Chat's record: {answer}",
-                self.device.label
-            );
-            let answer = &answer["answer"];
-            let doc = |record: &str| {
-                let bytes = hex::decode(answer["records"][record].as_str()?).ok()?;
-                (!bytes.is_empty())
-                    .then(|| automerge::AutoCommit::load(&bytes).ok())
-                    .flatten()
-            };
-            let parts: Vec<_> = records[1..]
-                .iter()
-                .enumerate()
-                .filter_map(|(index, record)| {
-                    let part = chat::parts::ChatPart::read(&doc(record)?).ok()?;
-                    Some((index as u64, std::rc::Rc::new(part)))
-                })
-                .collect();
-            let messages = chat::messages::Messages::new(parts);
-            // A post goes to the next part only once the head is full: then that part is read too.
-            let next = records.len().saturating_sub(1) as u64;
-            if messages.post_part() >= next {
-                records.push(chat::parts::part(next).to_string());
-                continue;
-            }
-            let record = doc("").unwrap_or_default();
-            return HeldChat {
-                me: hex::encode(self.device.cert.user_public_key),
-                revision: answer["revision"].as_str().unwrap_or_default().to_owned(),
-                chat: chat::projection::read(&record),
-                messages: messages
-                    .with_kept(std::rc::Rc::new(chat::record::kept_messages(&record))),
-            };
+        let deadline = tilo_test_env::hang_deadline();
+        let wait = deadline.saturating_duration_since(Instant::now());
+        let answer = self.device.ask(&json!({
+            "op": "record_read",
+            "app": "so.tilo.chat",
+            "records": ["", chat::parts::part(0).to_string()],
+            "after": after,
+            "wait_ms": u64::try_from(wait.as_millis()).unwrap_or(u64::MAX),
+        }));
+        assert!(
+            answer.get("err").is_none(),
+            "{} reads Chat's record: {answer}",
+            self.device.label
+        );
+        let answer = &answer["answer"];
+        let mut values = answer["records"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|record| record["value"].clone());
+        HeldChat {
+            me: hex::encode(self.device.cert.user_public_key),
+            revision: answer["revision"].as_str().unwrap_or_default().to_owned(),
+            chat: values.next().unwrap_or_default(),
+            parts: values.collect(),
         }
     }
 
@@ -1984,28 +1961,33 @@ impl Chat<'_> {
     }
 }
 
-/// Chat's record and its messages as a device holds them, read at `revision`.
+/// Chat's record and the parts of its messages as a device holds them, read at `revision`.
 struct HeldChat {
     /// The device's person, as the workspace names them.
     me: String,
     revision: String,
-    chat: chat::record::Chat,
-    messages: chat::messages::Messages,
+    chat: Value,
+    /// Each part of the chain, in its order.
+    parts: Vec<Value>,
 }
 
 impl HeldChat {
-    /// The conversation with `peer`, as Chat shows it, or why there is none: Chat's own answers.
+    /// The conversation with `peer` as Chat shows it, or why there is none: its messages in the
+    /// chain's order (each part's, by the order key the record keeps), and how many of the
+    /// messages `peer` wrote lie past this person's read mark (a part, and how many of the
+    /// conversation's messages in it they saw).
     fn conversation(&self, peer: &str) -> Result<Conversation, String> {
         use chat::record::{Chat, Participant};
-        if self.chat.people.is_empty() {
+        let people = self.chat["people"]
+            .as_object()
+            .filter(|people| !people.is_empty());
+        let Some(people) = people else {
             return Err("the workspace's people are not in Chat's record yet".into());
-        }
+        };
         if peer == self.me
-            || !self
-                .chat
-                .people
-                .iter()
-                .any(|person| person.id.0 == peer && !person.agent)
+            || people
+                .get(peer)
+                .is_none_or(|person| person["agent"] == true)
         {
             return Err(format!("Chat knows no person {peer}"));
         }
@@ -2014,22 +1996,36 @@ impl HeldChat {
             Participant::person(peer),
         ])
         .to_string();
-        Ok(Conversation {
-            messages: self
-                .chat
-                .message_rows(&self.messages, &channel)
+        let mark = &self.chat["read"][&self.me][&channel];
+        let (from, seen) = (
+            mark["part"].as_u64().unwrap_or(0),
+            mark["seen"].as_u64().unwrap_or(0),
+        );
+        let mut messages = Vec::new();
+        let mut unread = 0u64;
+        for (index, part) in (0u64..).zip(&self.parts) {
+            let mut held: Vec<(&String, &Value)> = part["messages"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .filter(|(_, entry)| entry["v"]["channel"] == channel.as_str())
+                .collect();
+            held.sort_by(|(a, x), (b, y)| (x["k"].as_str(), a).cmp(&(y["k"].as_str(), b)));
+            let skip = if index == from { seen } else { 0 };
+            let top = held
                 .iter()
-                .map(|message| {
-                    json!({
-                        "id": message.id,
-                        "author": message.author,
-                        "text": message.text,
-                        "at": message.ts,
-                    })
-                })
-                .collect(),
-            unread: u64::from(self.chat.unread(&self.messages, &channel, &self.me)),
-        })
+                .filter(|(_, entry)| entry["v"]["parent"].is_null());
+            let past = top
+                .skip(usize::try_from(skip).unwrap_or(usize::MAX))
+                .filter(|(_, entry)| index >= from && entry["v"]["author"] != self.me.as_str())
+                .count();
+            unread = unread.saturating_add(u64::try_from(past).unwrap_or(u64::MAX));
+            messages.extend(held.into_iter().map(|(id, entry)| {
+                let message = &entry["v"];
+                json!({"id": id, "author": message["author"], "text": message["text"], "at": message["ts"]})
+            }));
+        }
+        Ok(Conversation { messages, unread })
     }
 }
 

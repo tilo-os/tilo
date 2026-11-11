@@ -154,6 +154,27 @@ pub fn read_records(
     }
 }
 
+impl RecordReadings {
+    /// The readings as every reader is answered: `{"revision", "records": [...]}`, each record
+    /// `{"record", "value"}` ([`RecordCopy::readable`]), `{"record", "absent": true}` for one the
+    /// workspace holds none of, or `{"record", "arriving": true}` for one still arriving.
+    ///
+    /// # Errors
+    ///
+    /// When a copy is no Automerge document.
+    pub fn readable(self) -> Result<serde_json::Value, String> {
+        let mut records = Vec::with_capacity(self.records.len());
+        for (record, copy) in self.records {
+            records.push(match copy {
+                None => serde_json::json!({"record": record, "arriving": true}),
+                Some(RecordCopy::Absent) => serde_json::json!({"record": record, "absent": true}),
+                Some(copy) => serde_json::json!({"record": record, "value": copy.readable()?}),
+            });
+        }
+        Ok(serde_json::json!({"revision": self.revision, "records": records}))
+    }
+}
+
 impl RecordCopy {
     /// The record as any reader reads it, whatever app keeps it: its maps as objects, lists as
     /// arrays, text as strings, counters and scalars as numbers, strings and booleans, bytes as
