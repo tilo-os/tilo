@@ -911,6 +911,51 @@ fn a_persons_face_opens_a_card_whose_message_opens_chat_on_their_conversation() 
     );
 }
 
+/// A face's card offers everyone here: where the bar shows a face in place of its people button
+/// (a phone's bar), the roster is one press from the person, not two.
+#[test]
+fn a_persons_card_offers_everyone_here() {
+    let _settled = ui::motion::testing::settled();
+    let mine = OwnPresence {
+        label: "Quinten".to_owned(),
+        user: Some(person(QUINTEN)),
+        ..OwnPresence::default()
+    };
+    let sync = Rc::new(Client::untethered(device(0xf0), mine));
+    let mut session = session_over(&sync, None);
+    ada_here_on_two_devices(&sync);
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 1100.0, y: 16.0 })
+        .expect("the pointer");
+    until(&mut session, "their face is in the bar", |session| {
+        control(session, &["Ada"]).is_some()
+    });
+    press_faces(&mut session);
+    let face = control(&session, &["Ada"]).expect("the face the person has here");
+    press(&mut session, face);
+    until(&mut session, "the card opens", |session| {
+        control(session, &["profile-everyone-here", "Everyone here"]).is_some()
+    });
+    let everyone = control(&session, &["profile-everyone-here", "Everyone here"])
+        .expect("the card offers everyone here");
+    press(&mut session, everyone);
+    until(
+        &mut session,
+        "the roster stands in the card's place",
+        |session| control(session, &["People"]).is_some(),
+    );
+    let labels = session.accessible_labels();
+    assert!(
+        !labels.iter().any(|label| label == "Ada’s profile"),
+        "the card gave way to the roster: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|label| label == "Ada"),
+        "she is a row of everyone here: {labels:?}"
+    );
+}
+
 /// Your own avatar opens your card, from the surface another person's does: your name and picture
 /// as everyone here sees them, and your identity, its backup and pairing another device, each in
 /// one place.

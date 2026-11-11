@@ -901,6 +901,14 @@ impl Panel {
                         .borrow_mut()
                         .push(PeopleAsk::Agent { client, ask });
                 }
+                // One person's card is a step inside who is here: everyone here stands in its
+                // place, as a second press on their face leaves the roster.
+                ProfileChoice::EveryoneHere => {
+                    let mut shown = self.shown.borrow_mut();
+                    shown.own_card = false;
+                    shown.card_of = None;
+                    shown.card_open = None;
+                }
                 // The rows of this person's own card: the session keeps their name, what they say
                 // of themselves and how available they are, and opens the pages their actions name.
                 // Nothing here reaches anyone else's card.
@@ -1792,11 +1800,14 @@ impl Widget for Panel {
             let modal = self.profile.modal_capture().is_some();
             self.take_choice();
             if !self.profile.is_open() {
-                // The card closed itself: it stood where the roster would,
-                // so there is nothing left standing here.
-                self.dismiss();
-                *ctx.handled = true;
-                return;
+                // The card closed itself. Its place is the roster's, so the roster stands there
+                // again when the card's choice asks for everyone here; a choice that takes the
+                // person elsewhere (a conversation, an agent's card) leaves nothing standing here.
+                if self.shown.borrow().card_open.is_some() {
+                    self.dismiss();
+                    *ctx.handled = true;
+                    return;
+                }
             }
             if *ctx.handled || modal {
                 *ctx.handled = true;

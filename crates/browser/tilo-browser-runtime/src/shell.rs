@@ -1509,7 +1509,10 @@ impl BrowserShell {
                 );
                 return;
             }
-            ProfileChoice::Availability(_)
+            // Everyone here is a card of someone else's: this one never stands where the
+            // roster is, so it offers no way to it.
+            ProfileChoice::EveryoneHere
+            | ProfileChoice::Availability(_)
             | ProfileChoice::Colour(_)
             | ProfileChoice::Visibility(_) => return,
         };
