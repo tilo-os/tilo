@@ -492,8 +492,6 @@ TEXT_CONSTRUCTORS = (
 # window a person opens.
 SURFACE_ROOTS = ("apps/", "crates/session/")
 
-FORMAT = re.compile(r"\bformat!\s*\(")
-
 
 def english_words(value: str) -> bool:
     """A literal that reads as English words rather than an id or a key."""
