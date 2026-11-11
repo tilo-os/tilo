@@ -2062,7 +2062,7 @@ impl WindowGroup {
             // The row's own controls name themselves; the window's furniture names what it does.
             return self
                 .new_tab_hit(p)
-                .then(|| (self.held.new_tab, crate::widget::tabs::NEW_TAB.to_owned()));
+                .then(|| (self.held.new_tab, crate::widget::tabs::new_tab_name()));
         }
         if !self.navigation_bar_visible() {
             return None;

@@ -887,7 +887,7 @@ fn a_row_that_holds_the_bar_publishes_the_windows_furniture() {
     };
     let search = frame.root_mut::<WindowGroup>().window_search().anchor();
     let names = (
-        crate::widget::tabs::NEW_TAB.to_owned(),
+        crate::widget::tabs::new_tab_name(),
         window_control_name("host-window-maximize"),
         window_control_name("host-window-close"),
         crate::i18n::I18nManager::lookup_plain("window-search-name"),
@@ -1443,7 +1443,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
     let _settled = crate::motion::testing::settled();
     let (mut frame, _window) = shell_window(holding_row_shell());
     let names = [
-        crate::widget::tabs::NEW_TAB.to_owned(),
+        crate::widget::tabs::new_tab_name(),
         window_control_name("host-window-maximize"),
         window_control_name("host-window-close"),
     ];
@@ -1593,7 +1593,7 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
     assert!(
         !stops
             .iter()
-            .any(|stop| stop.as_deref() == Some(crate::widget::tabs::NEW_TAB)),
+            .any(|stop| stop.as_deref() == Some(crate::widget::tabs::new_tab_name().as_str())),
         "the band bar's door is no stop of its own: {stops:?}"
     );
 }

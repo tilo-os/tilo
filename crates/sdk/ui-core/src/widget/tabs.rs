@@ -25,6 +25,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 
+#[path = "tabs_new_tab.rs"]
+mod new_tab;
 #[path = "tabs_paint.rs"]
 mod paint;
 #[path = "tabs_pill_layout.rs"]
@@ -41,7 +43,9 @@ mod tips;
 mod title_menu;
 #[path = "tabs_toolbar_row.rs"]
 mod toolbar_row;
+// The strip's door to another application, from its one definition.
 use crate::tokens::{EffectiveMotion, MotionSource};
+pub(crate) use new_tab::{new_tab_control, new_tab_name, paint_new_tab};
 use pill_layout::{chip_rects, fit_pill_widths};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
@@ -284,13 +288,13 @@ pub enum TabMark {
 }
 
 impl TabMark {
-    /// What the mark says to someone who cannot see it.
-    fn description(self) -> &'static str {
-        match self {
-            Self::Busy => "Loading",
-            Self::Playing => "Playing audio",
-            Self::Muted => "Muted",
-        }
+    /// What the mark says to someone who cannot see it, in the desktop's language.
+    fn description(self) -> String {
+        crate::i18n::I18nManager::lookup_plain(match self {
+            Self::Busy => "tab-loading",
+            Self::Playing => "tab-playing",
+            Self::Muted => "tab-muted",
+        })
     }
 
     /// Whether a click on the mark does something.
@@ -3818,36 +3822,6 @@ const TOOLBAR_LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
 /// Square at pill height so the "+" chip reads as part of the pill row.
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
-/// What the strip's new-tab control is called to assistive technology, and the tooltip of its
-/// glyph: a "+" needs no words in the row.
-pub(crate) const NEW_TAB: &str = "New tab";
-
-/// The window's own door to another application, as a bar reads it at `rect`: the "+" every
-/// tabbed app wears, in no words a bar would hold room for, named as [`NEW_TAB`] says.
-pub(crate) fn new_tab_control(rect: Rect) -> crate::window_toolbar::BarControl {
-    crate::window_toolbar::BarControl::new("new-tab", NEW_TAB_TARGET, rect)
-        .named(NEW_TAB.to_owned())
-        .icon(Some(icons::Icon::Plus.name().to_owned()))
-        .furniture()
-}
-
-/// Paint the new-tab door at `rect`: the shared small button, bare at rest so it never competes
-/// with a tab, a lift of the ground under the pointer. A bar and the row of a window that holds
-/// its bar draw the door through here, so it looks the same in either.
-pub(crate) fn paint_new_tab(
-    scene: &mut Scene,
-    transform: Affine,
-    tr: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    hovered: bool,
-) {
-    let face = super::ButtonFace::icon_only(rect, icons::Icon::Plus, NEW_TAB)
-        .control_size(super::ControlSize::Small)
-        .hovered(hovered);
-    super::Button::paint(scene, transform, tr, theme, &face);
-}
-
 const PILL_GAP: f64 = 6.0;
 /// Text inset on either end of a pill; the leading glyph starts here too.
 const PILL_PAD_X: f64 = 12.0;
@@ -4595,7 +4569,10 @@ impl Widget for TabBar {
                 } else {
                     node.with_children(vec![
                         drawn(&self.close_rects, AccessNode::new(Role::Button))
-                            .with_name(format!("Close {}", t.title))
+                            .with_name(crate::i18n::I18nManager::format(
+                                "tab-close-named",
+                                &[("title", t.title.clone().into())],
+                            ))
                             .with_action_target(format!("tab-close:{}", t.id))
                             .with_state(AccessState {
                                 focusable: true,
@@ -4642,7 +4619,10 @@ impl Widget for TabBar {
                         let mut node = node.with_description(mark.description());
                         node.children.push(
                             AccessNode::new(Role::ToggleButton)
-                                .with_name(format!("Mute {}", t.title))
+                                .with_name(crate::i18n::I18nManager::format(
+                                    "tab-mute-named",
+                                    &[("title", t.title.clone().into())],
+                                ))
                                 .with_action_target(format!("tab-mute:{}", t.id))
                                 .with_state(AccessState {
                                     focusable: true,
@@ -4658,7 +4638,7 @@ impl Widget for TabBar {
             })
             .collect();
         if self.new_tab {
-            let new_tab = AccessNode::new(Role::Button).with_name(NEW_TAB);
+            let new_tab = AccessNode::new(Role::Button).with_name(new_tab_name());
             let new_tab = if self.new_tab_rect.area() > 0.0 {
                 new_tab.with_bounds(self.new_tab_rect)
             } else {
@@ -5729,6 +5709,10 @@ mod window_controls_tests;
 #[cfg(test)]
 #[path = "tabs_phone_bar_tests.rs"]
 mod phone_bar_tests;
+
+#[cfg(test)]
+#[path = "tabs_new_tab_tests.rs"]
+mod new_tab_tests;
 
 #[cfg(test)]
 mod tests {
