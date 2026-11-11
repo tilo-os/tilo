@@ -259,7 +259,7 @@ fn open_tilo(
         // An update replaces what runs at the app's next launch; it does
         // not open the app.
         if action == ActionKind::RuntimeInstall {
-            return ActionOutcome::ok(ui::i18n::I18nManager::format(
+            return ActionOutcome::ok(crate::resource::STORE_CATALOG.t_args(
                 "store-runtime-installed",
                 &[
                     ("name", ui::i18n::ArgValue::Text(item.name.clone())),

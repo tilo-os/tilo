@@ -6,7 +6,6 @@
 //! row; a saved shortcut's Run stays with the inputs it is run with.
 
 use ui::framework::{BarActions, BarCommands};
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::window_toolbar::{ToolbarAction, ToolbarLocation, WindowToolbar};
 
@@ -116,7 +115,7 @@ impl ShortcutsWindow {
 
     /// The bar's actions for the open page.
     fn page_actions(&self, open: Open) -> Vec<ToolbarAction> {
-        let lookup = I18nManager::lookup_plain;
+        let lookup = |key: &str| crate::locales::CATALOG.t(key);
         let bar = &self.actions;
         let named = |icon: &str, name: String, entry: ToolbarAction| ToolbarAction {
             icon: icon.into(),

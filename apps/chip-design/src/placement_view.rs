@@ -3,7 +3,6 @@ use crate::resource::{Project as ChipProject, ProjectState};
 use crate::verification::placement::Placement;
 use crate::view::ChipEffect;
 use ui::framework::ViewCx;
-use ui::i18n::I18nManager;
 use ui::num::f32_of_f64;
 use ui::widget::{
     Button, Card, Column, Container, Element, Manual, Property, PropertyList, ScrollAxis,
@@ -11,7 +10,7 @@ use ui::widget::{
 };
 
 fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::view::CATALOG.t(key)
 }
 
 pub fn item(project: &ProjectState, report: &str, id: &str) -> Option<serde_json::Value> {

@@ -156,7 +156,7 @@ impl CanvasSurface {
         };
         let pictures = self.pictures.clone();
         let content = crate::content::store();
-        let phase = ui::i18n::I18nManager::lookup_plain("canvas-rendering-artwork");
+        let phase = crate::locales::CATALOG.t("canvas-rendering-artwork");
         Ok(cx.thread(
             move |progress| {
                 progress.report(phase, None, None);
@@ -286,14 +286,10 @@ pub(super) fn select_found(
     cx: &Reading,
 ) -> Result<Value, String> {
     if cx.live().with(|current| current != art) {
-        return Err(ui::i18n::I18nManager::lookup_plain(
-            "canvas-finding-changed",
-        ));
+        return Err(crate::locales::CATALOG.t("canvas-finding-changed"));
     }
     if cx.dispatcher().read_only() {
-        return Err(ui::i18n::I18nManager::lookup_plain(
-            "canvas-finding-read-only",
-        ));
+        return Err(crate::locales::CATALOG.t("canvas-finding-read-only"));
     }
     let mut selected = Artwork::from_doc(document).map_err(|error| error.to_string())?;
     let before = selected.clone();

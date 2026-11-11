@@ -94,11 +94,8 @@ fn group(group: &Group, keys: &PropertyColumn) -> Element {
         .rows
         .iter()
         .map(|(label, keys)| {
-            Property::new(
-                ui::i18n::I18nManager::lookup(label, None),
-                ui::spell_shortcut(keys),
-            )
-            .with_kind(TextKind::Identifier)
+            Property::new(crate::metadata::CATALOG.t(label), ui::spell_shortcut(keys))
+                .with_kind(TextKind::Identifier)
         })
         .collect();
     Box::new(

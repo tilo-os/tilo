@@ -1288,7 +1288,7 @@ impl MainPanel {
     }
 
     fn parent_path_label(&self) -> String {
-        ui::i18n::I18nManager::format(
+        crate::metadata::CATALOG.t_args(
             "notes-parent-path",
             &[("path", self.parent_path.clone().into())],
         )

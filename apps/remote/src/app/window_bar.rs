@@ -6,7 +6,6 @@
 //! The bar's search is the connections' search; the window draws no header
 //! row and the form no title of its own.
 
-use ui::i18n::I18nManager;
 use ui::widget::NavShell;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar};
 
@@ -39,7 +38,7 @@ impl RemoteApp {
                 toolbar.leading.push(
                     bar.entry(
                         "arrow-left",
-                        I18nManager::lookup_plain("window-toolbar-back"),
+                        crate::resource::CATALOG.t("window-toolbar-back"),
                         Action::Back,
                     )
                     .navigating(),

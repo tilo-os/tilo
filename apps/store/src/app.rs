@@ -1856,7 +1856,7 @@ impl StoreState {
                     .ok_or_else(|| "Unknown or disabled Flatpak repository.".to_string())?;
                 let title = source.title.clone();
                 self.reserve_job()?;
-                self.status_line = ui::i18n::I18nManager::format(
+                self.status_line = crate::resource::STORE_CATALOG.t_args(
                     "store-remote-loading",
                     &[("name", ui::i18n::ArgValue::Text(title))],
                 );
@@ -2795,7 +2795,7 @@ impl StoreState {
         };
         let first = first.id.clone();
         let items: Vec<StoreItem> = updatable.iter().map(|(item, _)| (*item).clone()).collect();
-        self.status_line = ui::i18n::I18nManager::format(
+        self.status_line = crate::resource::STORE_CATALOG.t_args(
             "store-update-all-starting",
             &[(
                 "count",
@@ -2824,7 +2824,7 @@ impl StoreState {
 }
 
 fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
-    ui::i18n::I18nManager::format(
+    crate::resource::STORE_CATALOG.t_args(
         "store-remote-state",
         &[
             (
@@ -2845,7 +2845,7 @@ fn remote_state_label(remote: &crate::flathub_client::Remote) -> String {
 
 fn remote_row(remote: &crate::flathub_client::Remote) -> LiveRow {
     let scope = remote_scope_label(remote);
-    let title = ui::i18n::I18nManager::format(
+    let title = crate::resource::STORE_CATALOG.t_args(
         "store-remote-title",
         &[
             ("name", ui::i18n::ArgValue::Text(remote.title.clone())),

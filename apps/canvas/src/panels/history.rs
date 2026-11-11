@@ -158,12 +158,8 @@ fn checkpoint_controls(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
             .push(Box::new(
                 TextInput::from_state(&name)
                     .with_id("canvas-checkpoint-label")
-                    .with_placeholder(ui::i18n::I18nManager::lookup_plain(
-                        "canvas-checkpoint-label",
-                    ))
-                    .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
-                        "canvas-checkpoint-label",
-                    )),
+                    .with_placeholder(crate::locales::CATALOG.t("canvas-checkpoint-label"))
+                    .with_accessible_name(crate::locales::CATALOG.t("canvas-checkpoint-label")),
             ))
             .push(cx.switch(&name, |cx, name| {
                 Box::new(
@@ -187,14 +183,14 @@ pub fn checkpoint_button(cx: &ViewCx<Artwork>) -> Element {
             .iter()
             .flat_map(|version| version.checkpoints.iter())
             .count();
-        let name = ui::i18n::I18nManager::format(
+        let name = crate::locales::CATALOG.t_args(
             "canvas-checkpoint-name",
             &[("number", checkpoints.saturating_add(1).into())],
         );
         Box::new(icon_button(
             cx,
             Icon::Flag,
-            &ui::i18n::I18nManager::lookup_plain("canvas-checkpoint"),
+            &crate::locales::CATALOG.t("canvas-checkpoint"),
             Artwork::CHECKPOINT.with(name),
         ))
     })
@@ -212,9 +208,7 @@ fn viewing(cx: &ViewCx<Artwork>, tools: &Tools) -> Element {
                 .no_wrap()
                 .with_padding(ui::tokens::Spacing::BASE.s4, ui::tokens::Spacing::BASE.s2)
                 .with_align_items(ui::taffy::AlignItems::Center)
-                .push(caption(&ui::i18n::I18nManager::lookup_plain(
-                    "canvas-viewing-past",
-                )))
+                .push(caption(&crate::locales::CATALOG.t("canvas-viewing-past")))
                 .push(Box::new(Spacer::new()))
                 .push(Box::new(
                     cx.button("canvas-restore", Artwork::RESTORE.with(version.clone()))
@@ -237,14 +231,14 @@ fn now_row(tools: &Tools) -> Element {
     Box::new(
         ControlRow::new(content)
             .choosing(&tools.preview, None)
-            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("canvas-history-now")),
+            .with_accessible_name(crate::locales::CATALOG.t("canvas-history-now")),
     )
 }
 
 fn entry_row(cx: &ViewCx<Artwork>, tools: &Tools, entry: &Entry) -> Element {
     let by_agent = entry.run.is_some();
     let action = if entry.action.is_empty() {
-        ui::i18n::I18nManager::lookup_plain("canvas-history-created")
+        crate::locales::CATALOG.t("canvas-history-created")
     } else {
         entry.action.clone()
     };
@@ -256,10 +250,10 @@ fn entry_row(cx: &ViewCx<Artwork>, tools: &Tools, entry: &Entry) -> Element {
         .into_iter()
         .collect();
     if entry.steps > 1 {
-        byline.push(ui::i18n::I18nManager::format(
-            "canvas-history-steps",
-            &[("steps", entry.steps.into())],
-        ));
+        byline.push(
+            crate::locales::CATALOG
+                .t_args("canvas-history-steps", &[("steps", entry.steps.into())]),
+        );
     }
     let when = ago(entry.time_ms);
     if !when.is_empty() {
@@ -307,10 +301,8 @@ fn entry_row(cx: &ViewCx<Artwork>, tools: &Tools, entry: &Entry) -> Element {
         content = content.push(Box::new(icon_button(
             cx,
             Icon::Undo2,
-            &ui::i18n::I18nManager::format(
-                "canvas-undo-run",
-                &[("run", entry.author.clone().into())],
-            ),
+            &crate::locales::CATALOG
+                .t_args("canvas-undo-run", &[("run", entry.author.clone().into())]),
             Artwork::UNDO_RUN.with(run.clone()),
         )));
     }

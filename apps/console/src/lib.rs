@@ -47,7 +47,6 @@ mod workspaces;
 use ui::time::{Duration, SystemTime};
 
 use ui::framework::{Publishes, RecordEnv};
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::RemoteActionTarget;
@@ -259,11 +258,11 @@ impl Doors {
 }
 
 pub(crate) fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::locales::CATALOG.t(key)
 }
 
 pub(crate) fn trf(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
-    I18nManager::format(key, args)
+    crate::locales::CATALOG.t_args(key, args)
 }
 
 /// When `at_ms` was, as "5 minutes ago".

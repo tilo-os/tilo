@@ -54,11 +54,11 @@ impl NoteDates {
             ("notes-edited-date", self.edited),
         ] {
             if let Some(date) = date(value) {
-                labels.push(I18nManager::format(key, &[("date", date.into())]));
+                labels.push(crate::metadata::CATALOG.t_args(key, &[("date", date.into())]));
             }
         }
         if labels.is_empty() {
-            labels.push(I18nManager::lookup("notes-date-unavailable", None));
+            labels.push(crate::metadata::CATALOG.t("notes-date-unavailable"));
         }
         labels
     }
@@ -79,13 +79,15 @@ impl NoteDates {
         let created = self.created.map(|seconds| when(seconds, now));
         let edited = self.edited.map(|seconds| when(seconds, now));
         let line = match (created, edited) {
-            (Some(created), Some(edited)) if created != edited => I18nManager::format(
+            (Some(created), Some(edited)) if created != edited => crate::metadata::CATALOG.t_args(
                 "notes-dates",
                 &[("created", created.into()), ("edited", edited.into())],
             ),
-            (Some(date), _) => I18nManager::format("notes-created-date", &[("date", date.into())]),
+            (Some(date), _) => {
+                crate::metadata::CATALOG.t_args("notes-created-date", &[("date", date.into())])
+            }
             (None, Some(date)) => {
-                I18nManager::format("notes-edited-date", &[("date", date.into())])
+                crate::metadata::CATALOG.t_args("notes-edited-date", &[("date", date.into())])
             }
             (None, None) => return Vec::new(),
         };
@@ -105,7 +107,7 @@ fn when(seconds: i64, now: chrono::DateTime<chrono::Local>) -> String {
     // reads as today rather than as a date in the future.
     if moment.date_naive() >= now.date_naive() {
         let time = ui::clock::time_of_day(&moment);
-        return I18nManager::format("notes-date-today", &[("time", time.into())]);
+        return crate::metadata::CATALOG.t_args("notes-date-today", &[("time", time.into())]);
     }
     if moment.year() == now.year() {
         ui::format::month_day(moment.date_naive())

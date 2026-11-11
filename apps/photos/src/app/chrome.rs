@@ -638,7 +638,7 @@ impl Photos {
                 ToolbarAction::new(
                     WINDOW_BACK,
                     "arrow-left",
-                    ui::i18n::I18nManager::lookup_plain("window-toolbar-back"),
+                    crate::resource::CATALOG.t("window-toolbar-back"),
                 )
                 .navigating(),
             );

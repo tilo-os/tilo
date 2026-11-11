@@ -9,8 +9,6 @@
 //! the rest — so the sentence says which of those happened and not which
 //! library reported it.
 
-use ui::i18n::I18nManager;
-
 /// The kinds of trouble worth telling apart.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Kind {
@@ -81,8 +79,8 @@ pub(crate) fn say(what: &str, error: &str) -> String {
     // (a test, a background reply), so the sentence is never a raw key.
     crate::CATALOG.ensure();
     let kind = Kind::of(error);
-    let sentence = I18nManager::lookup_plain(kind.key());
-    I18nManager::format(
+    let sentence = crate::CATALOG.t(kind.key());
+    crate::CATALOG.t_args(
         "maps-failure",
         &[("what", t(what).into()), ("reason", sentence.into())],
     )
@@ -97,13 +95,13 @@ pub(crate) const NEARBY: &str = "maps-what-nearby";
 /// Look up `key`, with the catalogue loaded on a thread no host loaded it on.
 pub(crate) fn t(key: &str) -> String {
     crate::CATALOG.ensure();
-    I18nManager::lookup_plain(key)
+    crate::CATALOG.t(key)
 }
 
 /// Look up `key`, interpolating `args`.
 pub(crate) fn t_args(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     crate::CATALOG.ensure();
-    I18nManager::format(key, args)
+    crate::CATALOG.t_args(key, args)
 }
 
 #[cfg(test)]

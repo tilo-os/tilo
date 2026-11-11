@@ -1229,7 +1229,7 @@ impl NotesApp {
                 self.self_dirty = true;
             }
             Err(error) => self.notify(
-                ui::i18n::I18nManager::format(
+                crate::metadata::CATALOG.t_args(
                     "notes-image-paste-failed",
                     &[("error", ui::i18n::ArgValue::from(error))],
                 ),
@@ -1273,7 +1273,7 @@ impl NotesApp {
             Err(error) => {
                 tracing::warn!(%error, "notes: image not inserted");
                 self.notify(
-                    ui::i18n::I18nManager::format(
+                    crate::metadata::CATALOG.t_args(
                         "notes-image-import-failed",
                         &[("error", ui::i18n::ArgValue::from(error))],
                     ),
@@ -1351,7 +1351,7 @@ impl NotesApp {
             .get(page)
             .map(|meta| meta.title.clone())
             .unwrap_or_default();
-        ui::i18n::I18nManager::format(
+        crate::metadata::CATALOG.t_args(
             "notes-deleted",
             &[
                 ("title", ui::i18n::ArgValue::from(title)),
@@ -1417,7 +1417,7 @@ impl NotesApp {
                 self.insert_image_bytes(&mut ctx.edits(), alt.trim(), bytes);
             }
             Err(error) => self.notify(
-                ui::i18n::I18nManager::format(
+                crate::metadata::CATALOG.t_args(
                     "notes-image-import-failed",
                     &[("error", ui::i18n::ArgValue::from(error))],
                 ),
@@ -3740,9 +3740,7 @@ impl NotesApp {
                     "notes-table-delete-column",
                 ] {
                     self.note_menu
-                        .push(MenuItem::selection(ui::i18n::I18nManager::lookup(
-                            key, None,
-                        )));
+                        .push(MenuItem::selection(crate::metadata::CATALOG.t(key)));
                 }
                 self.note_menu.push(MenuItem::separator());
             }

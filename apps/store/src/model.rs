@@ -616,7 +616,7 @@ impl StoreItem {
 fn processor_name(prefix: &str, arch: &str) -> String {
     let key = format!("{prefix}-{arch}");
     if ui::i18n::I18nManager::has_message(&key) {
-        ui::i18n::I18nManager::lookup_plain(&key)
+        crate::resource::STORE_CATALOG.t(&key)
     } else {
         arch.to_owned()
     }

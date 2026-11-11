@@ -1,7 +1,7 @@
 //! Shared retained widgets and the framework's consented file chooser.
 
 use ui::framework::{Effected, LaunchInput, ResourceApp, ViewCx};
-use ui::i18n::{EmbeddedCatalog, I18nManager};
+use ui::i18n::EmbeddedCatalog;
 use ui::portal::{FileFilter, PickRequest};
 use ui::tilo_resource::{self, Effect, Invoke};
 use ui::tokens::TextRole;
@@ -13,10 +13,10 @@ use crate::model::{AttentionCache, MAX_REPORT_BYTES, MAX_REPORTS, StorageReport,
 use crate::resource::{Project as ChipProject, ProjectState, import};
 use crate::verification::{CheckStatus, ReceiptStatus, VerificationReceipt, VerificationRecord};
 
-ui::embedded_catalog!(static CATALOG, ["de-DE", "en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::view::CATALOG.t(key)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Effect)]
@@ -668,7 +668,7 @@ fn verification_properties(id: &str, record: &VerificationRecord) -> PropertyLis
             if let Some(synthesis) = &variant.synthesis {
                 for memory in &synthesis.memories {
                     sections.push((
-                        I18nManager::format(
+                        crate::view::CATALOG.t_args(
                             "chip-study-memory-of",
                             &[
                                 ("memory", memory.name.clone().into()),
@@ -824,7 +824,7 @@ fn study_memory_properties(
     vec![
         property(
             "chip-study-memory-name",
-            &I18nManager::format(
+            &crate::view::CATALOG.t_args(
                 "chip-study-memory-of",
                 &[
                     ("memory", memory.name.clone().into()),

@@ -99,7 +99,7 @@ impl TasksWindow {
         }
         match filter {
             Filter::All => place.title(),
-            filter => ui::i18n::I18nManager::format(
+            filter => crate::locales::CATALOG.t_args(
                 "tasks-location-filtered",
                 &[
                     ("place", place.title().into()),

@@ -127,7 +127,7 @@ pub fn list_caption(item: &StoreItem) -> String {
 pub fn category_label(category: &str) -> String {
     let key = format!("store-category-{}", category.to_ascii_lowercase());
     if ui::i18n::I18nManager::has_message(&key) {
-        ui::i18n::I18nManager::lookup_plain(&key)
+        crate::resource::STORE_CATALOG.t(&key)
     } else {
         category.to_owned()
     }

@@ -380,7 +380,7 @@ impl Widget for GradientBar {
             .join(", ");
         Some(
             AccessNode::new(Role::Image)
-                .with_name(ui::i18n::I18nManager::lookup_plain("canvas-gradient-stops"))
+                .with_name(crate::locales::CATALOG.t("canvas-gradient-stops"))
                 .with_description(stops),
         )
     }
@@ -451,7 +451,7 @@ fn kind_picker(
     area: Rect,
     commit: &Rc<dyn Fn(Gradient)>,
 ) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let kinds = [Kind::Solid, Kind::Linear, Kind::Radial];
     let kind = Kind::of(mark);
     // The brush's starting ink when a shape has no fill: a document colour.
@@ -509,7 +509,7 @@ fn direction_and_stops(
     gradient: Gradient,
     active: &LocalState<usize>,
 ) -> Element {
-    let lookup = ui::i18n::I18nManager::lookup_plain;
+    let lookup = |key: &str| crate::locales::CATALOG.t(key);
     let mut row = Row::new()
         .no_wrap()
         .with_gap(ui::tokens::Spacing::BASE.s2)

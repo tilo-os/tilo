@@ -15,7 +15,6 @@ use crate::resource::{Project as ChipProject, project};
 use crate::view::ChipEffect;
 use ui::framework::{EffectCx, Effected, ViewCx};
 use ui::graph_editor::{Edge, connection_targets};
-use ui::i18n::I18nManager;
 use ui::icons::Icon;
 use ui::tilo_resource::{Id, Invoke};
 use ui::tokens::TextRole;
@@ -36,7 +35,7 @@ pub struct Selection {
     pub output: Option<(String, String)>,
 }
 fn tr(key: &str) -> String {
-    I18nManager::lookup_plain(key)
+    crate::view::CATALOG.t(key)
 }
 fn connect(edge: Edge) -> Invoke<ChipProject> {
     ChipProject::CONNECT.with(project::Connect {
@@ -169,7 +168,7 @@ pub fn body(
             .map_or_else(|| node.clone(), |n| tr(n.kind.key()));
         page = page.push(Box::new(
             Row::new()
-                .push(Box::new(Text::new(&I18nManager::format(
+                .push(Box::new(Text::new(&crate::view::CATALOG.t_args(
                     "chip-graph-connect-from",
                     &[
                         ("port", tr(&format!("chip-port-{port}")).into()),
@@ -188,7 +187,7 @@ pub fn body(
     }
     for rejected in &state.rejected {
         let edge = &rejected.edge;
-        page = page.push(Box::new(Text::new(&I18nManager::format(
+        page = page.push(Box::new(Text::new(&crate::view::CATALOG.t_args(
             "chip-graph-conflict-line",
             &[
                 ("from_node", edge.from_node.clone().into()),
@@ -252,7 +251,8 @@ fn zoom_controls(cx: &ViewCx<ChipProject>, zoom: &ui::LocalState<ViewportZoom>) 
         shown.percent().map_or_else(
             || tr("chip-graph-zoom-fitted"),
             |percent| {
-                I18nManager::format("chip-graph-zoom-percent", &[("percent", percent.into())])
+                crate::view::CATALOG
+                    .t_args("chip-graph-zoom-percent", &[("percent", percent.into())])
             },
         )
     });
@@ -298,7 +298,7 @@ pub fn operators(
     }
     for node in state.nodes.values() {
         let row = ListRow::new(format!("chip-operator-{}", node.id), tr(node.kind.key()))
-            .secondary(I18nManager::format(
+            .secondary(crate::view::CATALOG.t_args(
                 "chip-graph-node-at",
                 &[("x", node.x.into()), ("y", node.y.into())],
             ))
@@ -353,7 +353,7 @@ fn node_view(
             },
         )))
         .push(Box::new(
-            Text::new(&I18nManager::format(
+            Text::new(&crate::view::CATALOG.t_args(
                 "chip-tensor-shape",
                 &[("shape", displayed_shape.clone().into())],
             ))
@@ -362,7 +362,7 @@ fn node_view(
     for port in &visual.inputs {
         // Each port says whether it feeds the operator or comes out of it:
         // what a port is for, before anyone knows the graph.
-        let label = I18nManager::format(
+        let label = crate::view::CATALOG.t_args(
             "chip-graph-port-input",
             &[("port", tr(&format!("chip-port-{}", port.id)).into())],
         );
@@ -404,7 +404,7 @@ fn node_view(
         content = content.push(Box::new(effect_button(
             cx,
             &port_id(&node.id, &port.id, false),
-            &I18nManager::format(
+            &crate::view::CATALOG.t_args(
                 "chip-graph-port-output",
                 &[("port", tr(&format!("chip-port-{}", port.id)).into())],
             ),

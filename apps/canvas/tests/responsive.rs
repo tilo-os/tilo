@@ -28,7 +28,7 @@ fn short_scaled_windows_keep_project_choices_and_brush_controls_reachable() {
             "canvas-workspace-pixel",
         ] {
             let snapshot = app.harness().inspection();
-            let label = ui::i18n::I18nManager::lookup_plain(key);
+            let label = canvas::locales::CATALOG.t(key);
             let bounds = support::named_bounds(&snapshot.root, &label)
                 .unwrap_or_else(|| panic!("{label} unavailable at {width}x{height}"));
             assert!(

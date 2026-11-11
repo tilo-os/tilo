@@ -889,7 +889,7 @@ mod tests {
             .as_deref()
             .expect("reported, not silent");
         // The fixture has no host connection, which reports its own line.
-        let says = ui::i18n::I18nManager::format(
+        let says = crate::resource::STORE_CATALOG.t_args(
             "store-system-update-needed",
             &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
         );
@@ -949,10 +949,8 @@ mod tests {
         assert!(expired.is_empty());
         let error = error.unwrap();
         for refused in ["store-system-update-needed", "store-repository-expired"] {
-            let says = ui::i18n::I18nManager::format(
-                refused,
-                &[("name", ui::i18n::ArgValue::Text(MAIN.into()))],
-            );
+            let says = crate::resource::STORE_CATALOG
+                .t_args(refused, &[("name", ui::i18n::ArgValue::Text(MAIN.into()))]);
             assert!(!error.lines().any(|line| line == says), "{error}");
         }
     }

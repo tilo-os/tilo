@@ -277,7 +277,7 @@ fn row(
 fn status_text(row: &Row) -> String {
     let mut status = tr(row.status.label_key());
     if row.progress.1 > 0 {
-        status = ui::i18n::I18nManager::format(
+        status = crate::locales::CATALOG.t_args(
             "tasks-status-with-progress",
             &[
                 ("status", status.into()),

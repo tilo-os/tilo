@@ -280,7 +280,7 @@ impl NotesApp {
             return Err("the clipboard is unavailable".into());
         }
         self.notify(
-            ui::i18n::I18nManager::format(
+            crate::metadata::CATALOG.t_args(
                 "notes-link-copied",
                 &[("title", ui::i18n::ArgValue::from(label.to_string()))],
             ),
@@ -343,7 +343,7 @@ impl NotesApp {
             let imported = pages.len();
             cx.submit(crate::notion::import_action(&pages));
             completions.push(Completed::Notify(
-                ui::i18n::I18nManager::format(
+                crate::metadata::CATALOG.t_args(
                     "notes-notion-imported",
                     &[("pages", ui::i18n::ArgValue::from(imported.to_string()))],
                 ),
@@ -569,7 +569,7 @@ fn import_note(
     );
     done.push(Completed::Open(page));
     done.push(Completed::Notify(
-        ui::i18n::I18nManager::format(
+        crate::metadata::CATALOG.t_args(
             "notes-imported",
             &[("title", ui::i18n::ArgValue::from(title.to_string()))],
         ),
@@ -581,7 +581,7 @@ fn import_note(
 /// The window's word that an import failed with `error`.
 fn import_failed(error: &str) -> Completed {
     Completed::Notify(
-        ui::i18n::I18nManager::format(
+        crate::metadata::CATALOG.t_args(
             "notes-import-failed",
             &[("error", ui::i18n::ArgValue::from(error.to_string()))],
         ),

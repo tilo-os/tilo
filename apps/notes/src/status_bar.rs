@@ -96,7 +96,7 @@ impl StatusModel {
     /// The save state with why it is not durable and what to do about it.
     pub fn save_detail(&self) -> String {
         match (self.state.save_status, self.state.save_problem.as_deref()) {
-            (SaveStatus::Failed, Some(reason)) => ui::i18n::I18nManager::format(
+            (SaveStatus::Failed, Some(reason)) => crate::metadata::CATALOG.t_args(
                 "notes-status-failed-because",
                 &[("reason", ui::i18n::ArgValue::from(reason.to_owned()))],
             ),
@@ -110,14 +110,14 @@ impl StatusModel {
     pub fn right_text(&self) -> String {
         let notes = self.state.page_count;
         match self.state.word_count {
-            Some(words) => ui::i18n::I18nManager::format(
+            Some(words) => crate::metadata::CATALOG.t_args(
                 "notes-status-counts",
                 &[
                     ("notes", ui::i18n::ArgValue::from(notes)),
                     ("words", ui::i18n::ArgValue::from(words)),
                 ],
             ),
-            None => ui::i18n::I18nManager::format(
+            None => crate::metadata::CATALOG.t_args(
                 "notes-status-note-count",
                 &[("notes", ui::i18n::ArgValue::from(notes))],
             ),

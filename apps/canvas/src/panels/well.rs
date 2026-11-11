@@ -42,7 +42,7 @@ impl Well {
                 .as_ref()
                 .map_or_else(|| self.tools.hex(), |(name, _)| name.replace('-', " "))
         });
-        ui::i18n::I18nManager::format(
+        crate::locales::CATALOG.t_args(
             "canvas-well",
             &[
                 ("paint", paint.into()),

@@ -842,12 +842,12 @@ impl Music {
         let actions = self.actions.clone();
         self.page_part(ctx, span, y, key, move |asked| {
             Box::new(
-                ui::widget::Banner::error(ui::i18n::I18nManager::lookup_plain("arriving-failed"))
+                ui::widget::Banner::error(crate::i18n::t("arriving-failed"))
                     .with_message(text)
                     .with_action(super::super::page_part::press(
                         actions.as_ref(),
                         asked,
-                        Button::new(&id, &ui::i18n::I18nManager::lookup_plain("arriving-retry")),
+                        Button::new(&id, &crate::i18n::t("arriving-retry")),
                         retry,
                     )),
             )

@@ -64,7 +64,7 @@ fn ctrl(tools: &Tools, label: &str, does: &str, ch: &str) -> MenuEntry {
 }
 
 fn lookup(id: &str) -> String {
-    ui::i18n::I18nManager::lookup_plain(id)
+    crate::locales::CATALOG.t(id)
 }
 
 fn applying(dispatcher: &Dispatcher<Artwork>, label: &str, action: Invoke<Artwork>) -> MenuEntry {

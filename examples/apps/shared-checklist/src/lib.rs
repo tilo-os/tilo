@@ -27,7 +27,6 @@ pub const APP_TITLE: &str = "Shared Checklist";
 
 pub mod locales;
 
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// One item of the checklist.
@@ -106,9 +105,9 @@ fn item_row(row: &mut ViewCx<Checklist, Item>) -> Element {
 fn progress_text(checklist: &Checklist) -> String {
     let (done, total) = checklist.progress();
     if total == 0 {
-        return I18nManager::lookup_plain("checklist-empty");
+        return crate::locales::CATALOG.t("checklist-empty");
     }
-    I18nManager::format(
+    crate::locales::CATALOG.t_args(
         "checklist-progress",
         &[("done", done.into()), ("total", total.into())],
     )
@@ -127,7 +126,7 @@ impl ResourceApp for App {
 
     fn label(checklist: &Checklist) -> String {
         if checklist.name.is_empty() {
-            I18nManager::lookup_plain("checklist-untitled")
+            crate::locales::CATALOG.t("checklist-untitled")
         } else {
             checklist.name.clone()
         }

@@ -1,4 +1,3 @@
-use ui::i18n::I18nManager;
 use ui::prelude::*;
 
 /// One document. Its text fields are collaborative text: two people typing in
@@ -46,7 +45,7 @@ impl ResourceApp for App {
     /// The name the palette, search and history show for the open document.
     fn label(document: &Document) -> String {
         if document.title.trim().is_empty() {
-            I18nManager::lookup_plain("document-untitled")
+            crate::locales::CATALOG.t("document-untitled")
         } else {
             document.title.clone()
         }

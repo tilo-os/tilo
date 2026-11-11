@@ -84,19 +84,19 @@ pub fn remote_error(remote: &Remote, error: &app_host::client::CatalogueError) -
     use app_host::client::Refusal;
     tracing::warn!(repository = %remote.name, %error, "could not read Flatpak repository");
     match error.refusal() {
-        Some(Refusal::DeviceRepositoryStale) => ui::i18n::I18nManager::format(
+        Some(Refusal::DeviceRepositoryStale) => crate::resource::STORE_CATALOG.t_args(
             "store-device-repository-refresh",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
         ),
-        Some(Refusal::TimedOut) => ui::i18n::I18nManager::format(
+        Some(Refusal::TimedOut) => crate::resource::STORE_CATALOG.t_args(
             "store-repository-timeout",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
         ),
-        Some(Refusal::SystemUpdateNeeded) => ui::i18n::I18nManager::format(
+        Some(Refusal::SystemUpdateNeeded) => crate::resource::STORE_CATALOG.t_args(
             "store-system-update-needed",
             &[("name", ui::i18n::ArgValue::Text(remote.title.clone()))],
         ),
-        Some(Refusal::Expired) | None => ui::i18n::I18nManager::format(
+        Some(Refusal::Expired) | None => crate::resource::STORE_CATALOG.t_args(
             "store-repository-read-error",
             &[
                 ("name", ui::i18n::ArgValue::Text(remote.title.clone())),
@@ -580,7 +580,7 @@ mod tests {
         );
         assert_eq!(
             message,
-            ui::i18n::I18nManager::format(
+            crate::resource::STORE_CATALOG.t_args(
                 "store-repository-timeout",
                 &[("name", ui::i18n::ArgValue::Text("Fedora Flatpaks".into()))],
             )

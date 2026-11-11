@@ -93,7 +93,7 @@ struct Notice {
 
 /// A catalog message.
 fn say(key: &str) -> String {
-    ui::i18n::I18nManager::format(key, &[])
+    crate::locales::CATALOG.t_args(key, &[])
 }
 
 impl Notice {
