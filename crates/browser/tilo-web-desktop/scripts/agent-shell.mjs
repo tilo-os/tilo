@@ -197,6 +197,11 @@ const presentedFrames = tab => tab.evaluate('globalThis.tiloMount?.state?.()?.fr
 /** The frames a page draws before what a press asked of it shows: the press's own frame, the one
  * laying out what it opened, and one more for what that brought in. */
 const DRAWN_FRAMES = 3;
+/** The frames a window a press opened takes to show what it holds: the press's frame, the window
+ * standing as it opens, the app loading and drawing, and its first read of what it shows. A wait of
+ * {@link DRAWN_FRAMES} on a page drawing a frame every few seconds gave up while the window still
+ * loaded, and the card came a few frames later. */
+const WINDOW_FRAMES = 8;
 /** The longest a press waits for the page, however slowly it draws. */
 const DRAWN_CAP_MS = 90000;
 /**
@@ -208,7 +213,7 @@ const DRAWN_CAP_MS = 90000;
  * worked (a second Follow is a Stop following). Measured in frames, a slow page is waited for and a
  * fast one gives up as soon as before.
  */
-async function untilDrawn(tab, fn, ms, interval = 150) {
+async function untilDrawn(tab, fn, ms, interval = 150, frames = DRAWN_FRAMES) {
   const began = Date.now();
   const first = await presentedFrames(tab);
   for (;;) {
@@ -219,7 +224,7 @@ async function untilDrawn(tab, fn, ms, interval = 150) {
     if (waited > DRAWN_CAP_MS) return undefined;
     if (waited > ms) {
       const now = await presentedFrames(tab);
-      if (first === null || now === null || now - first >= DRAWN_FRAMES) return undefined;
+      if (first === null || now === null || now - first >= frames) return undefined;
     }
     await sleep(interval);
   }
@@ -429,7 +434,8 @@ const names = nodes => nodes.map(node => node.name || node.description).filter(B
  * stands in the top bar, named after them alone, so the words after the name tell the cursor
  * from it. */
 const agentCursor = nodes => nodes.find(node => node.role === 'Image'
-  && /^claude code(\s*:|\s+is writing here$)/i.test(node.name)
+  // The caret is named as the agent's tag reads ("Claude Code · Agent is writing here").
+  && /^claude code(\s*·\s*agent)?(\s*:|\s+is writing here$)/i.test(node.name)
   // The mark the text draws at the caret stands where it is drawn; a node with no bounds is
   // the agent at work with nothing drawn in text, which is not the cursor on what it writes.
   && node.rect && node.rect.x1 - node.rect.x0 > 0 && node.rect.y1 - node.rect.y0 > 0);
@@ -1723,14 +1729,27 @@ try {
           if (cardSays(await semantics(tab))) return;
           // The face's card may stand already (a face pressed again brings everyone here in its
           // place): its Open card is pressed where it is. Otherwise the face opens it, and Open
-          // card is pressed once a frame drew the card, not where an earlier frame had it.
+          // card is pressed once a frame drew the card, not where an earlier frame had it. While
+          // the person follows the agent on a phone, the bar folds the banner into the agent's
+          // face beside Stop: that face is the one the bar shows, pressed at its leading edge,
+          // away from Stop.
           if (!matching(await semantics(tab), /^open card$/i)) {
             const before = await presentedFrames(tab);
-            await press(tab, /^claude code, agent$/i, {what: "the agent's face"});
+            const banner = matching(await semantics(tab), /^following claude code$/i);
+            const face = await press(tab, /^claude code, agent$/i, {what: "the agent's face"});
+            if (!face && banner?.rect) {
+              const {x0, y0, y1} = banner.rect;
+              await clickAt(tab, x0 + (y1 - y0) / 2, (y0 + y1) / 2);
+              log(`pressed the agent's face in the following banner at ${Math.round(x0 + (y1 - y0) / 2)},${Math.round((y0 + y1) / 2)}`);
+            } else if (!face) {
+              log(`the bar shows no face of the agent to open its card from: ${names(await semantics(tab))}`);
+            }
             await untilDrawn(tab, async () => ((await presentedFrames(tab)) ?? 0) > (before ?? 0)
               && matching(await semantics(tab), /^open card$/i), 3000, 200);
           }
-          await press(tab, /^open card$/i, {what: "the agent's card"});
+          if (!await press(tab, /^open card$/i, {what: "the agent's card"})) {
+            log(`the agent's card offers no Open card: ${names(await semantics(tab))}`);
+          }
         };
         await openCard();
         // Console opens the card in a window of its own: on a page drawing a frame every few
@@ -1738,10 +1757,13 @@ try {
         const card = await untilDrawn(tab, async () => {
           const said = cardSays(await semantics(tab));
           return listsRun(said) ? said : undefined;
-        }, 20000);
+        }, 20000, 200, WINDOW_FRAMES);
         const cardNow = cardSays(await semantics(tab));
         check(`${combo}: the agent's card lists its run`, Boolean(card),
-          card ? card.name : cardNow ? `the card says "${cardNow.name}"` : `no card: ${names(await semantics(tab))}`);
+          card ? card.name : cardNow ? `the card says "${cardNow.name}"`
+            // The windows standing, by their tabs: what the desk holds at once, which the first
+            // names of the tree (one window's controls) do not say.
+            : `no card; the windows are ${(await semantics(tab)).filter(node => node.role === 'Tab').map(node => `"${node.name}"`).join(', ')}`);
         await shot(tab, combo, 'agent-card');
 
         // 6. Who is here, kept on screen, with the agent in it.
