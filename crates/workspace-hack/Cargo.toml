@@ -242,7 +242,7 @@ unic-langid-impl = { version = "0.9", default-features = false, features = ["ser
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
-uuid = { version = "1", features = ["serde", "v4", "v5"] }
+uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
@@ -497,7 +497,7 @@ unic-langid-impl = { version = "0.9", default-features = false, features = ["ser
 unicode-properties = { version = "0.1" }
 url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
-uuid = { version = "1", features = ["serde", "v4", "v5"] }
+uuid = { version = "1", features = ["serde", "v4", "v5", "v7"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
 wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }

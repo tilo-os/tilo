@@ -547,7 +547,7 @@ doc = false
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
-"iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
+"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
 "iroh-tickets-1_0_0" = { package = "iroh-tickets", version = "^1.0.0", default-features = false, features = [] }
 "iroh-util-0_6_0" = { package = "iroh-util", version = "^0.6.0", default-features = false, features = [] }
 "ironcalc_base-0_9_1" = { package = "ironcalc_base", version = "^0.9.1", default-features = false, features = [] }
@@ -921,7 +921,7 @@ doc = false
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
+"rustix-1_1_6" = { package = "rustix", version = "^1.1.6", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustix-openpty-0_2_0" = { package = "rustix-openpty", version = "^0.2.0", default-features = false, features = [] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
@@ -1470,7 +1470,7 @@ doc = false
 "utf8-ranges-1_0_5" = { package = "utf8-ranges", version = "^1.0.5", default-features = false, features = [] }
 "utf8_iter-1_0_4" = { package = "utf8_iter", version = "^1.0.4", default-features = false, features = [] }
 "utf8parse-0_2_2" = { package = "utf8parse", version = "^0.2.2", default-features = false, features = ["default"] }
-"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "sha1", "std", "v4", "v5"] }
+"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "sha1", "std", "v4", "v5", "v7"] }
 "vecmath-1_0_0" = { package = "vecmath", version = "^1.0.0", default-features = false, features = [] }
 "vello_common-0_0_8" = { package = "vello_common", version = "^0.0.8", default-features = false, features = ["png", "std"] }
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
@@ -1559,7 +1559,7 @@ doc = false
 "x509-cert-0_2_5" = { package = "x509-cert", version = "^0.2.5", default-features = false, features = ["default", "pem", "std"] }
 "x509-parser-0_17_0" = { package = "x509-parser", version = "^0.17.0", default-features = false, features = ["default"] }
 "x509-parser-0_18_1" = { package = "x509-parser", version = "^0.18.1", default-features = false, features = ["default", "ring", "verify"] }
-"xattr-1_6_1" = { package = "xattr", version = "^1.6.1", default-features = false, features = ["default", "unsupported"] }
+"xattr-1_7_0" = { package = "xattr", version = "^1.7.0", default-features = false, features = ["default", "unsupported"] }
 "xcursor-0_3_10" = { package = "xcursor", version = "^0.3.10", default-features = false, features = [] }
 "xkbcommon-0_8_0" = { package = "xkbcommon", version = "^0.8.0", default-features = false, features = ["default", "memmap2", "wayland"] }
 "xkbcommon-dl-0_4_2" = { package = "xkbcommon-dl", version = "^0.4.2", default-features = false, features = ["x11"] }
@@ -1827,6 +1827,7 @@ doc = false
 "fallible-iterator-0_3_0" = { package = "fallible-iterator", version = "^0.3.0", default-features = false, features = ["alloc", "default"] }
 "fallible-streaming-iterator-0_1_9" = { package = "fallible-streaming-iterator", version = "^0.1.9", default-features = false, features = [] }
 "fancy-regex-0_16_2" = { package = "fancy-regex", version = "^0.16.2", default-features = false, features = ["default", "perf", "std", "unicode"] }
+"fastbloom-0_17_0" = { package = "fastbloom", version = "^0.17.0", default-features = false, features = [] }
 "fastdivide-0_4_2" = { package = "fastdivide", version = "^0.4.2", default-features = false, features = [] }
 "fastrand-2_5_0" = { package = "fastrand", version = "^2.5.0", default-features = false, features = ["alloc", "default", "std"] }
 "fax-0_2_6" = { package = "fax", version = "^0.2.6", default-features = false, features = [] }
@@ -1985,7 +1986,7 @@ doc = false
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["metrics", "service"] }
 "iroh-metrics-derive-1_0_1" = { package = "iroh-metrics-derive", version = "^1.0.1", default-features = false, features = [] }
-"iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
+"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
 "irpc-derive-0_17_0" = { package = "irpc-derive", version = "^0.17.0", default-features = false, features = [] }
 "is-docker-0_2_0" = { package = "is-docker", version = "^0.2.0", default-features = false, features = [] }
 "is-wsl-0_4_0" = { package = "is-wsl", version = "^0.4.0", default-features = false, features = [] }
@@ -2000,6 +2001,7 @@ doc = false
 "kem-0_3_0" = { package = "kem", version = "^0.3.0", default-features = false, features = [] }
 "khronos-egl-6_0_0" = { package = "khronos-egl", version = "^6.0.0", default-features = false, features = ["1_0", "1_1", "1_2", "1_3", "1_4", "1_5", "default", "dynamic", "libloading"] }
 "khronos_api-3_1_0" = { package = "khronos_api", version = "^3.1.0", default-features = false, features = [] }
+"kio-0_5_9" = { package = "kio", version = "^0.5.9", default-features = false, features = [] }
 "kurbo-0_13_1" = { package = "kurbo", version = "^0.13.1", default-features = false, features = ["default", "std"] }
 "landlock-0_4_5" = { package = "landlock", version = "^0.4.5", default-features = false, features = [] }
 "launcher" = { path = "../../../crates/packaging/launcher", default-features = false, features = [] }
@@ -2183,6 +2185,9 @@ doc = false
 "quick-error-2_0_1" = { package = "quick-error", version = "^2.0.1", default-features = false, features = [] }
 "quick-xml-0_39_4" = { package = "quick-xml", version = "^0.39.4", default-features = false, features = ["default", "overlapped-lists", "serde", "serialize"] }
 "quick-xml-0_41_0" = { package = "quick-xml", version = "^0.41.0", default-features = false, features = ["default", "encoding", "encoding_rs", "serde", "serialize"] }
+"quinn-0_11_9" = { package = "quinn", version = "^0.11.9", default-features = false, features = ["bloom", "platform-verifier", "ring", "runtime-tokio", "rustls-ring"] }
+"quinn-proto-0_11_18" = { package = "quinn-proto", version = "^0.11.18", default-features = false, features = ["bloom", "platform-verifier", "ring", "rustls-ring"] }
+"quinn-udp-0_5_14" = { package = "quinn-udp", version = "^0.5.14", default-features = false, features = ["tracing"] }
 "quote-1_0_45" = { package = "quote", version = "^1.0.45", default-features = false, features = ["default", "proc-macro"] }
 "rand-0_10_3" = { package = "rand", version = "^0.10.3", default-features = false, features = ["alloc", "default", "std", "std_rng", "sys_rng", "thread_rng"] }
 "rand-0_8_8" = { package = "rand", version = "^0.8.8", default-features = false, features = ["alloc", "default", "getrandom", "libc", "rand_chacha", "std", "std_rng"] }
@@ -2202,6 +2207,7 @@ doc = false
 "rcgen-0_14_7" = { package = "rcgen", version = "^0.14.7", default-features = false, features = ["crypto", "default", "pem", "ring", "x509-parser"] }
 "read-fonts-0_39_2" = { package = "read-fonts", version = "^0.39.2", default-features = false, features = ["default", "std"] }
 "read-fonts-0_41_0" = { package = "read-fonts", version = "^0.41.0", default-features = false, features = ["experimental_font_api", "std"] }
+"ref-cast-1_0_25" = { package = "ref-cast", version = "^1.0.25", default-features = false, features = [] }
 "ref-cast-impl-1_0_25" = { package = "ref-cast-impl", version = "^1.0.25", default-features = false, features = [] }
 "regex-1_13_1" = { package = "regex", version = "^1.13.1", default-features = false, features = ["default", "perf", "perf-backtrack", "perf-cache", "perf-dfa", "perf-inline", "perf-literal", "perf-onepass", "std", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment"] }
 "regex-automata-0_4_18" = { package = "regex-automata", version = "^0.4.18", default-features = false, features = ["alloc", "default", "dfa", "dfa-build", "dfa-onepass", "dfa-search", "hybrid", "meta", "nfa", "nfa-backtrack", "nfa-pikevm", "nfa-thompson", "perf", "perf-inline", "perf-literal", "perf-literal-multisubstring", "perf-literal-substring", "std", "syntax", "unicode", "unicode-age", "unicode-bool", "unicode-case", "unicode-gencat", "unicode-perl", "unicode-script", "unicode-segment", "unicode-word-boundary"] }
@@ -2235,7 +2241,7 @@ doc = false
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
+"rustix-1_1_6" = { package = "rustix", version = "^1.1.6", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-cert-file-reader-0_4_2" = { package = "rustls-cert-file-reader", version = "^0.4.2", default-features = false, features = [] }
@@ -2278,6 +2284,7 @@ doc = false
 "serdect-0_4_3" = { package = "serdect", version = "^0.4.3", default-features = false, features = [] }
 "serial_test_derive-3_4_0" = { package = "serial_test_derive", version = "^3.4.0", default-features = false, features = ["async", "default"] }
 "settings-store" = { path = "../../../crates/system/settings-store", default-features = false, features = ["watch"] }
+"sfv-0_15_0" = { package = "sfv", version = "^0.15.0", default-features = false, features = ["default", "parsed-types"] }
 "sha1-0_10_6" = { package = "sha1", version = "^0.10.6", default-features = false, features = ["default", "oid", "std"] }
 "sha1-0_11_0" = { package = "sha1", version = "^0.11.0", default-features = false, features = ["alloc", "default", "oid"] }
 "sha1_smol-1_0_1" = { package = "sha1_smol", version = "^1.0.1", default-features = false, features = [] }
@@ -2412,7 +2419,7 @@ doc = false
 "tilo-media" = { path = "../../../crates/platform/tilo-media", default-features = false, features = ["default"] }
 "tilo-mime" = { path = "../../../crates/platform/tilo-mime", default-features = false, features = [] }
 "tilo-model-client" = { path = "../../../crates/agent/model-client", default-features = false, features = ["runtime-client"] }
-"tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json"] }
+"tilo-net" = { path = "../../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "webtransport"] }
 "tilo-notify" = { path = "../../../crates/platform/tilo-notify", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../../crates/browser/paint-stream", default-features = false, features = ["svg"] }
 "tilo-paths" = { path = "../../../crates/platform/tilo-paths", default-features = false, features = [] }
@@ -2534,7 +2541,7 @@ doc = false
 "utf8-ranges-1_0_5" = { package = "utf8-ranges", version = "^1.0.5", default-features = false, features = [] }
 "utf8_iter-1_0_4" = { package = "utf8_iter", version = "^1.0.4", default-features = false, features = [] }
 "utf8parse-0_2_2" = { package = "utf8parse", version = "^0.2.2", default-features = false, features = ["default"] }
-"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "sha1", "std", "v4", "v5"] }
+"uuid-1_26_0" = { package = "uuid", version = "^1.26.0", default-features = false, features = ["default", "rng", "serde", "sha1", "std", "v4", "v5", "v7"] }
 "vcpkg-0_2_15" = { package = "vcpkg", version = "^0.2.15", default-features = false, features = [] }
 "vello_common-0_0_8" = { package = "vello_common", version = "^0.0.8", default-features = false, features = ["png", "std"] }
 "vello_common-0_3_0" = { package = "vello_common", version = "^0.3.0", default-features = false, features = ["multithreading", "std"] }
@@ -2570,6 +2577,9 @@ doc = false
 "wayland-scanner-0_31_11" = { package = "wayland-scanner", version = "^0.31.11", default-features = false, features = [] }
 "wayland-sys-0_31_11" = { package = "wayland-sys", version = "^0.31.11", default-features = false, features = ["client", "dlopen", "egl", "once_cell"] }
 "web-time-1_1_0" = { package = "web-time", version = "^1.1.0", default-features = false, features = ["serde"] }
+"web-transport-proto-0_6_3" = { package = "web-transport-proto", version = "^0.6.3", default-features = false, features = [] }
+"web-transport-quinn-0_12_1" = { package = "web-transport-quinn", version = "^0.12.1", default-features = false, features = ["ring"] }
+"web-transport-trait-0_4_0" = { package = "web-transport-trait", version = "^0.4.0", default-features = false, features = [] }
 "webpki-roots-1_0_10" = { package = "webpki-roots", version = "^1.0.10", default-features = false, features = [] }
 "weezl-0_1_12" = { package = "weezl", version = "^0.1.12", default-features = false, features = ["alloc", "default", "std"] }
 "wgpu-29_0_3" = { package = "wgpu", path = "../../../vendor/wgpu", default-features = false, features = ["custom", "default", "dx12", "gles", "metal", "noop", "parking_lot", "std", "vulkan", "web", "webgpu", "wgpu-core", "wgsl"] }
@@ -2591,7 +2601,7 @@ doc = false
 "x25519-dalek-2_0_1" = { package = "x25519-dalek", version = "^2.0.1", default-features = false, features = ["alloc", "default", "precomputed-tables", "static_secrets", "zeroize"] }
 "x25519-dalek-3_0_0" = { package = "x25519-dalek", version = "^3.0.0", default-features = false, features = ["default", "precomputed-tables", "static_secrets", "zeroize"] }
 "x509-parser-0_18_1" = { package = "x509-parser", version = "^0.18.1", default-features = false, features = ["default", "ring", "verify"] }
-"xattr-1_6_1" = { package = "xattr", version = "^1.6.1", default-features = false, features = ["default", "unsupported"] }
+"xattr-1_7_0" = { package = "xattr", version = "^1.7.0", default-features = false, features = ["default", "unsupported"] }
 "xcursor-0_3_10" = { package = "xcursor", version = "^0.3.10", default-features = false, features = [] }
 "xkbcommon-dl-0_4_2" = { package = "xkbcommon-dl", version = "^0.4.2", default-features = false, features = [] }
 "xkeysym-0_2_1" = { package = "xkeysym", version = "^0.2.1", default-features = false, features = [] }
@@ -3155,7 +3165,7 @@ doc = false
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-io-0_6_2" = { package = "iroh-io", version = "^0.6.2", default-features = false, features = ["default", "smallvec", "tokio", "tokio-io"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["default", "metrics", "service"] }
-"iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
+"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["default", "metrics", "server", "tls-ring"] }
 "iroh-tickets-1_0_0" = { package = "iroh-tickets", version = "^1.0.0", default-features = false, features = [] }
 "iroh-util-0_6_0" = { package = "iroh-util", version = "^0.6.0", default-features = false, features = [] }
 "ironcalc_base-0_9_1" = { package = "ironcalc_base", version = "^0.9.1", default-features = false, features = [] }
@@ -3527,7 +3537,6 @@ doc = false
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rusticata-macros-4_1_0" = { package = "rusticata-macros", version = "^4.1.0", default-features = false, features = [] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "param", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustix-openpty-0_2_0" = { package = "rustix-openpty", version = "^0.2.0", default-features = false, features = [] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
@@ -4152,7 +4161,6 @@ doc = false
 "x509-cert-0_2_5" = { package = "x509-cert", version = "^0.2.5", default-features = false, features = ["default", "pem", "std"] }
 "x509-parser-0_17_0" = { package = "x509-parser", version = "^0.17.0", default-features = false, features = ["default"] }
 "x509-parser-0_18_1" = { package = "x509-parser", version = "^0.18.1", default-features = false, features = ["default", "ring", "verify"] }
-"xattr-1_6_1" = { package = "xattr", version = "^1.6.1", default-features = false, features = ["default", "unsupported"] }
 "xcursor-0_3_10" = { package = "xcursor", version = "^0.3.10", default-features = false, features = [] }
 "xkbcommon-0_8_0" = { package = "xkbcommon", version = "^0.8.0", default-features = false, features = ["default", "memmap2", "wayland"] }
 "xkbcommon-dl-0_4_2" = { package = "xkbcommon-dl", version = "^0.4.2", default-features = false, features = ["x11"] }
@@ -4571,7 +4579,7 @@ doc = false
 "iroh-dns-1_0_3" = { package = "iroh-dns", version = "^1.0.3", default-features = false, features = ["default", "tls-ring"] }
 "iroh-metrics-1_0_1" = { package = "iroh-metrics", version = "^1.0.1", default-features = false, features = ["metrics"] }
 "iroh-metrics-derive-1_0_1" = { package = "iroh-metrics-derive", version = "^1.0.1", default-features = false, features = [] }
-"iroh-relay-1_0_3" = { package = "iroh-relay", version = "^1.0.3", default-features = false, features = ["metrics", "tls-ring"] }
+"iroh-relay-1_0_3" = { package = "iroh-relay", path = "../../../vendor/iroh-relay", default-features = false, features = ["metrics", "tls-ring"] }
 "irpc-derive-0_17_0" = { package = "irpc-derive", version = "^0.17.0", default-features = false, features = [] }
 "is-docker-0_2_0" = { package = "is-docker", version = "^0.2.0", default-features = false, features = [] }
 "is-wsl-0_4_0" = { package = "is-wsl", version = "^0.4.0", default-features = false, features = [] }
@@ -4815,7 +4823,6 @@ doc = false
 "rustc_version-0_4_1" = { package = "rustc_version", version = "^0.4.1", default-features = false, features = [] }
 "rustfft-6_4_1" = { package = "rustfft", version = "^6.4.1", default-features = false, features = ["avx", "default", "neon", "sse"] }
 "rustix-0_38_44" = { package = "rustix", version = "^0.38.44", default-features = false, features = ["alloc", "default", "event", "fs", "libc-extra-traits", "mm", "pipe", "process", "std", "system", "thread", "use-libc-auxv"] }
-"rustix-1_1_4" = { package = "rustix", version = "^1.1.4", default-features = false, features = ["alloc", "default", "event", "fs", "mm", "mount", "net", "pipe", "process", "pty", "shm", "std", "stdio", "system", "termios", "thread", "time"] }
 "rustix-linux-procfs-0_1_1" = { package = "rustix-linux-procfs", version = "^0.1.1", default-features = false, features = ["default", "std"] }
 "rustls-0_23_46" = { package = "rustls", version = "^0.23.46", default-features = false, features = ["log", "logging", "ring", "std", "tls12"] }
 "rustls-native-certs" = { path = "../../../crates/system/tilo-native-certs", default-features = false, features = [] }
@@ -5165,7 +5172,6 @@ doc = false
 "x11rb-protocol-0_13_2" = { package = "x11rb-protocol", version = "^0.13.2", default-features = false, features = ["render", "res", "shape", "std", "xfixes"] }
 "x25519-dalek-2_0_1" = { package = "x25519-dalek", version = "^2.0.1", default-features = false, features = ["alloc", "default", "precomputed-tables", "static_secrets", "zeroize"] }
 "x25519-dalek-3_0_0" = { package = "x25519-dalek", version = "^3.0.0", default-features = false, features = ["default", "precomputed-tables", "static_secrets", "zeroize"] }
-"xattr-1_6_1" = { package = "xattr", version = "^1.6.1", default-features = false, features = ["default", "unsupported"] }
 "xcursor-0_3_10" = { package = "xcursor", version = "^0.3.10", default-features = false, features = [] }
 "xkbcommon-dl-0_4_2" = { package = "xkbcommon-dl", version = "^0.4.2", default-features = false, features = [] }
 "xkeysym-0_2_1" = { package = "xkeysym", version = "^0.2.1", default-features = false, features = [] }
