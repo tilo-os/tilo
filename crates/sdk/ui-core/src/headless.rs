@@ -8925,7 +8925,7 @@ impl crate::host_core::KeyHost for FrameHarness {
     }
 
     /// Where Tab and directional focus travel: [`Self::focus_order`], kept
-    /// inside the keyboard scope (the focused desktop window's content,
+    /// inside the keyboard scope (the focused desktop window,
     /// [`crate::widget::Widget::scopes_keyboard_focus`]) unless a trap or the
     /// action palette owns the keyboard.
     fn keyboard_travel_order(&self) -> Vec<NodeId> {

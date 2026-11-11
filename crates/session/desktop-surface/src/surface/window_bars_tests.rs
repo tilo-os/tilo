@@ -560,3 +560,194 @@ fn a_window_an_agent_opened_names_the_agent_and_its_run_and_one_a_person_opened_
     }
     assert!(named(&frame).is_empty(), "no window names an agent");
 }
+
+/// An app of two buttons, named `first-<tab>` and `last-<tab>`, so a test can tell whose window
+/// the keyboard is in.
+struct Form(ui::widget::Column);
+
+impl ui::widget::Decorator for Form {
+    type Inner = ui::widget::Column;
+    fn inner(&self) -> &ui::widget::Column {
+        &self.0
+    }
+    fn inner_mut(&mut self) -> &mut ui::widget::Column {
+        &mut self.0
+    }
+}
+
+impl AppWidget for Form {
+    fn app_kind(&self) -> AppKind {
+        AppKind::Editor
+    }
+    fn app_title(&self) -> &'static str {
+        "Form"
+    }
+    fn app_icon(&self) -> ui::widget::IconDescriptor {
+        ui::widget::IconDescriptor::Glyph("F")
+    }
+}
+
+/// Windows that each show a [`Form`], and History when it is opened.
+struct Forms;
+
+impl TileSource for Forms {
+    fn tile(&mut self, workspace: &Workspace, tab: &Tab) -> TileHost {
+        if matches!(&tab.tile, tilo_desktop_model::TileContent::LocalApp { app_id, .. }
+            if app_id == tilo_actions::remote::workspace_activity::APP_ID)
+        {
+            return WithHistory.tile(workspace, tab);
+        }
+        let id = tab.id;
+        TileHost::new(TileContent::App(Box::new(Form(
+            ui::widget::Column::new()
+                .push(Box::new(ui::widget::Button::new(
+                    &format!("first-{id}"),
+                    &format!("first-{id}"),
+                )))
+                .push(Box::new(ui::widget::Button::new(
+                    &format!("last-{id}"),
+                    &format!("last-{id}"),
+                ))),
+        ))))
+    }
+
+    fn launch(&mut self, workspace: &Workspace, id: u64, app: &str) -> Option<Tab> {
+        WithHistory.launch(workspace, id, app)
+    }
+}
+
+/// Tab travels the focused window, its bar and its app alike: from the app's last control it reaches
+/// the window's tab list, then the agent that opened the window, through the bar's other controls
+/// and back into the app, never into the other window. Shift+Tab walks back the same way, and Enter
+/// on the agent brings its run up in History.
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one walk round the window, forward, back and onto the agent"
+)]
+fn tab_walks_the_focused_windows_bar_and_app_and_enter_on_the_agent_opens_its_run() {
+    const AGENT: &str = "Jane Doe's agent";
+    let (surface, handle) = crate::surface::tests::desk_with(2, Box::new(Forms));
+    let mut frame = ui::headless::FrameHarness::for_root(
+        ui::state::State::new(),
+        surface,
+        (1600, 800),
+        ui::Theme::dark(),
+    );
+    for _ in 0..4 {
+        frame.relayout();
+    }
+    let (focused, other): (u64, u64) = {
+        let row = frame
+            .root::<DesktopSurface>()
+            .shown_row_ref()
+            .expect("the strip is shown");
+        let of = |want: bool| {
+            row.groups
+                .iter()
+                .find(|group| group.focused() == want)
+                .map(ui::widget::WindowGroup::active_tab_id)
+                .expect("one focused window and one other")
+        };
+        (of(true), of(false))
+    };
+    assert!(handle.set_opened_by(std::collections::BTreeMap::from([(
+        focused,
+        tilo_desktop_model::ownership::OpenedBy {
+            run: "agent-run:7".into(),
+            label: AGENT.into(),
+            title: "Fill Jane Doe's visa application".into(),
+        },
+    )])));
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let stop = |frame: &ui::headless::FrameHarness| {
+        frame
+            .focused_access_node()
+            .map(|node| (node.role, node.name.unwrap_or_default()))
+    };
+    let (first, last) = (format!("first-{focused}"), format!("last-{focused}"));
+    let id_of = |frame: &mut ui::headless::FrameHarness| {
+        stop(frame).map(|(_, name)| name).unwrap_or_default()
+    };
+
+    // The keyboard starts on the app's last control.
+    frame.click_named(&last).expect("the app's last control");
+    frame.relayout();
+    assert_eq!(id_of(&mut frame), last, "the click put the keyboard there");
+
+    // Tab from there reaches the window's bar: its tab list, then the agent.
+    let mut walked = Vec::new();
+    for _ in 0..12 {
+        frame.key("Tab");
+        frame.relayout();
+        let at = id_of(&mut frame);
+        assert!(
+            !at.ends_with(&format!("-{other}")),
+            "Tab never leaves the focused window: {walked:?} then {at}"
+        );
+        walked.push(stop(&frame));
+        if at == first {
+            break;
+        }
+    }
+    assert_eq!(
+        id_of(&mut frame),
+        first,
+        "Tab goes round the bar and back into the app: {walked:?}"
+    );
+    let tab_list = walked
+        .iter()
+        .position(|stop| {
+            stop.as_ref()
+                .is_some_and(|(role, _)| *role == ui::a11y::Role::TabBar)
+        })
+        .unwrap_or_else(|| panic!("Tab reaches the window's tab list: {walked:?}"));
+    assert_eq!(
+        walked
+            .get(tab_list + 1)
+            .cloned()
+            .flatten()
+            .map(|(_, name)| name)
+            .as_deref(),
+        Some(AGENT),
+        "the agent right after the tab list: {walked:?}"
+    );
+
+    // Shift+Tab walks back the same way, to the agent and then the tab list.
+    for expected in walked
+        .iter()
+        .rev()
+        .skip(1)
+        .take(walked.len() - tab_list - 2)
+    {
+        frame.key("Shift+Tab");
+        frame.relayout();
+        assert_eq!(&stop(&frame), expected, "Shift+Tab walks back: {walked:?}");
+    }
+    assert_eq!(
+        stop(&frame).map(|(_, name)| name).as_deref(),
+        Some(AGENT),
+        "Shift+Tab is back on the agent"
+    );
+    frame.key("Shift+Tab");
+    frame.relayout();
+    assert_eq!(stop(&frame), walked[tab_list], "and then on the tab list");
+
+    // Enter on the agent brings its run up in History.
+    frame.key("Tab");
+    frame.relayout();
+    frame.key("Enter");
+    for _ in 0..3 {
+        frame.relayout();
+    }
+    let history = tilo_actions::remote::workspace_activity::APP_ID;
+    assert!(
+        handle.read(|tree| tree.tabs().any(|tab| matches!(
+            &tab.tile,
+            tilo_desktop_model::TileContent::LocalApp { app_id, .. } if app_id == history
+        ))),
+        "Enter on the agent opened History for its run"
+    );
+}

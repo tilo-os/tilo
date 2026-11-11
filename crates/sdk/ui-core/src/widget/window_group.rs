@@ -573,13 +573,8 @@ impl WindowGroup {
     fn sync_host_keyboard(&mut self) {
         let active = self.bar.active_id();
         let focused = self.focused || self.search_active;
-        // Tab travels the window's own content, and its furniture while the app's own header row is
-        // the window's bar: the window's row and the app's are one bar then, and both are what the
-        // keyboard walks.
-        let held = self.held_bar.is_some();
         for (id, host) in &mut self.hosts {
             host.set_focused(focused && *id == active);
-            host.set_row_holds_bar(held);
         }
     }
 
@@ -3090,12 +3085,11 @@ impl Widget for WindowGroup {
         (!self.is_closing()).then(|| self.active_tab_id())
     }
 
-    /// While the app's own header row holds the bar, that row is the window's: Tab travels the
-    /// window, so the keyboard reaches the app's own row and the window's furniture in it, and never
-    /// the desktop's chrome around the window. A window that draws its own bar leaves travel to the
-    /// app, as it always has.
+    /// The focused window is where Tab travels: its bar (the tab list, the agent that opened it, the
+    /// app's slots, its controls) and the app's own controls, and never the other windows or the
+    /// desktop's chrome around it. Without that the bar's controls had no keyboard route at all.
     fn scopes_keyboard_focus(&self) -> bool {
-        self.focused && self.held_bar.is_some()
+        self.focused || self.search_active
     }
 
     /// A node of the bar's, activated: a tab's pill switches to that tab, a

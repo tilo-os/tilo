@@ -1,9 +1,10 @@
 //! Keyboard focus on the desktop surface, inside the frame pipeline the browser desktop runs: the
-//! window the person is in owns the keyboard. Tab cycles through that app's controls and never
-//! reaches the desktop's chrome, a window brought forward (opened, clicked, switched to) takes
-//! focus, a click anywhere in a window, partly off screen too, aims typing there, and an app's own
-//! search button opens search over its window. What each search reaches — one app's window, a
-//! window group's applications, or the workspace — and where the hit it offers opens are here too.
+//! window the person is in owns the keyboard. Tab cycles through that window's bar and app and
+//! never reaches the other windows or the desktop's chrome, a window brought forward (opened,
+//! clicked, switched to) takes focus, a click anywhere in a window, partly off screen too, aims
+//! typing there, and an app's own search button opens search over its window. What each search
+//! reaches — one app's window, a window group's applications, or the workspace — and where the hit
+//! it offers opens are here too.
 #![allow(
     clippy::unwrap_used,
     clippy::expect_used,
@@ -886,30 +887,41 @@ impl Drop for Desk {
 }
 
 #[test]
-fn tab_cycles_through_the_focused_app_and_never_reaches_the_desktop_chrome() {
+fn tab_cycles_through_the_focused_window_and_never_reaches_the_desktop_chrome() {
     let mut desk = Desk::new(2, 450);
     let first = desk.tabs[0];
-    // The first window is focused: its app's search button, two fields and late-built button are
-    // where Tab goes, in turn.
-    let app = "DesktopSurface[0]/GroupRow[0]/WindowGroup[0]/TileHost[0]/";
-    let mut visited = std::collections::HashSet::new();
-    for _ in 0..8 {
+    // The first window is focused: its bar's controls and its app's search button, two fields and
+    // late-built button are where Tab goes, in turn, round and round.
+    let window = "DesktopSurface[0]/GroupRow[0]/WindowGroup[0]/";
+    let app = format!("{window}TileHost[0]/");
+    let mut visited = Vec::new();
+    for _ in 0..24 {
         desk.driver.key("Tab");
         let focused = desk.focus_path();
         assert!(
-            focused.as_ref().is_some_and(|path| path.starts_with(app)),
-            "Tab stays in the focused window's app, not its bar or the next window: {focused:?}"
+            focused
+                .as_ref()
+                .is_some_and(|path| path.starts_with(window)),
+            "Tab stays in the focused window, not the next window or the desktop: {focused:?}"
         );
         visited.extend(focused);
     }
+    let distinct: std::collections::HashSet<&String> = visited.iter().collect();
+    let (in_app, in_bar): (Vec<&String>, Vec<&String>) = distinct
+        .into_iter()
+        .partition(|path| path.starts_with(&app));
     assert_eq!(
-        visited.len(),
+        in_app.len(),
         4,
         "Tab reaches each of the app's controls: {visited:?}"
     );
+    assert!(
+        !in_bar.is_empty(),
+        "and the window's bar, whose controls have no other keyboard route: {visited:?}"
+    );
     // And typing goes where Tab put focus.
     let field = format!("field-{first}-2");
-    for _ in 0..4 {
+    for _ in 0..visited.len() {
         if desk.focused_name().as_deref() == Some(field.as_str()) {
             break;
         }

@@ -210,7 +210,7 @@ impl crate::host_core::KeyHost for App {
     }
 
     /// The focus order, kept inside the keyboard scope (the focused desktop
-    /// window's content, [`crate::widget::Widget::scopes_keyboard_focus`])
+    /// window, [`crate::widget::Widget::scopes_keyboard_focus`])
     /// unless a trap owns the keyboard.
     fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
         if self.accessibility.focus_trap_active {

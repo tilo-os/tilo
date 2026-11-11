@@ -344,11 +344,6 @@ pub struct TileHost {
     /// changed ([`ContentDamage`]).
     content_damage: ContentDamage,
     pub focused: bool,
-    /// The window this tile shows holds its bar in the app's own header row: that row is the
-    /// window's bar, and the window's furniture stands in it
-    /// ([`crate::widget::window_header::RowFurniture`]). Tab travels the window then, which the
-    /// window says of itself, so the keyboard reaches the furniture after the app's own row.
-    row_holds_bar: bool,
     /// Last pointer position, so a button press (which carries none) can be
     /// attributed to this tile or to a neighbour.
     pointer: Option<Point>,
@@ -724,7 +719,6 @@ impl TileHost {
             content_shift: 0.0,
             content_damage: ContentDamage::new(),
             focused: false,
-            row_holds_bar: false,
             pointer: None,
             flush_edges: false,
             inside_growing_frame: false,
@@ -1309,12 +1303,6 @@ impl TileHost {
         self.focused = focused;
     }
 
-    /// Whether the window holds its bar in the app's own header row, which decides where Tab
-    /// travels (see [`Widget::scopes_keyboard_focus`]).
-    pub fn set_row_holds_bar(&mut self, held: bool) {
-        self.row_holds_bar = held;
-    }
-
     /// A call mid-animation restarts the curve.
     pub fn start_spawn_animation(&mut self) {
         self.spawned_at = Some(crate::time::now());
@@ -1833,13 +1821,6 @@ impl Widget for TileHost {
             TileContent::App(app) => app.take_focus_reset(),
             _ => false,
         }
-    }
-    /// The focused window's tile is where Tab travels: the app's controls,
-    /// never the window's bar or the desktop around it. While the app's own
-    /// header row holds that bar, the window says so itself: Tab travels the
-    /// window, whose furniture stands in the row the app draws.
-    fn scopes_keyboard_focus(&self) -> bool {
-        self.focused && !self.row_holds_bar
     }
     /// An app does not bring itself forward; only its desktop does.
     fn take_app_activation(&mut self) -> Option<crate::application::InstanceId> {

@@ -1478,7 +1478,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
         let slot = g
             .held_bar_for_tests()
             .expect("the app's row is the window's bar");
-        // Tab travels the window then, not the app alone: the row it holds is the window's bar, and
+        // Tab travels the window, not the app alone: the row it holds is the window's bar, and
         // the window's furniture stands in it. The app's own tile leaves travel to the window.
         g.set_focused(true);
         assert!(
@@ -1492,7 +1492,7 @@ fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
         );
         assert!(
             Widget::scopes_keyboard_focus(&*g),
-            "the focused window whose row holds the bar carries the keyboard"
+            "the focused window carries the keyboard"
         );
         crate::widget::window_controls::WindowControls::lay_out(slot.controls).close
     };
@@ -1570,19 +1570,19 @@ fn a_window_with_its_own_band_keeps_one_bar_stop() {
         let mut g = frame.root_mut::<WindowGroup>();
         assert!(g.draws_its_bar_for_tests());
         g.set_focused(true);
-        // Tab travels the app's own tile there: the bar is the window's, and the desktop's chrome is
-        // no part of what the person tabs around in the app.
+        // Tab travels the window there too, its bar and its app alike, never the desktop's chrome.
         assert!(
             g.active_host().is_some_and(|host| host.focused),
             "the app's own tile has the window's focus"
         );
         assert!(
-            g.active_host().is_some_and(Widget::scopes_keyboard_focus),
-            "and carries the keyboard"
+            g.active_host()
+                .is_some_and(|host| !Widget::scopes_keyboard_focus(host)),
+            "and lets the window carry the keyboard"
         );
         assert!(
-            !Widget::scopes_keyboard_focus(&*g),
-            "the window does not: its bar is its own"
+            Widget::scopes_keyboard_focus(&*g),
+            "the focused window carries the keyboard"
         );
     }
     let stops: Vec<Option<String>> = frame

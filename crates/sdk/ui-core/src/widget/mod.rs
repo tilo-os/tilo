@@ -1930,10 +1930,11 @@ pub trait Widget {
     }
 
     /// Whether Tab and directional focus travel stay inside this subtree
-    /// while no trap holds focus: the content of the focused desktop window,
-    /// so keyboard travel cycles through the app the person is in and never
-    /// wanders onto the desktop's chrome (its bars, menus and window
-    /// titles), which the keyboard reaches through its own shortcuts. Unlike
+    /// while no trap holds focus: the focused desktop window, so keyboard
+    /// travel cycles through the window the person is in (its bar and its
+    /// app) and never wanders onto the other windows or the desktop's chrome
+    /// (top bar, menus), which the keyboard reaches through its own
+    /// shortcuts. Unlike
     /// [`Self::traps_focus`] it moves no focus when it starts or ends, and
     /// pointer input is unaffected. Default `false`.
     fn scopes_keyboard_focus(&self) -> bool {

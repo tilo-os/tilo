@@ -279,8 +279,8 @@ impl HostTree<'_> {
         false
     }
 
-    /// `order` kept inside the keyboard scope: the focused desktop window's
-    /// content ([`crate::widget::Widget::scopes_keyboard_focus`]).
+    /// `order` kept inside the keyboard scope: the focused desktop window
+    /// ([`crate::widget::Widget::scopes_keyboard_focus`]).
     pub(crate) fn within_keyboard_scope(&self, order: Vec<NodeId>) -> Vec<NodeId> {
         let scopes: Vec<NodeId> = self
             .node_map
