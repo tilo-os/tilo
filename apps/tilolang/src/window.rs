@@ -233,6 +233,9 @@ pub struct Window {
     undo: ui::undo::UndoAccess,
     /// A later build this window took and has not drawn yet: its first frame says so.
     undrawn: Option<Undrawn>,
+    /// How many times the window had published on the door when its controls were last bound
+    /// to what it published ([`crate::resource::published_since`]).
+    bound: u64,
     /// The workspace's record of each person's own state, when the window has it: the view state
     /// they set and what they have seen, so the place they picked is still theirs after a restart
     /// and on their other devices ([`Personal`]).
@@ -290,6 +293,7 @@ impl Window {
             history: VecDeque::new(),
             undo: ui::undo::UndoAccess::new(),
             undrawn: None,
+            bound: 0,
             personal: None,
         }
     }
@@ -826,6 +830,12 @@ impl Widget for Window {
             self.instance.update()
         };
         let received = self.view.receive();
+        // A control whose event runs an action the window publishes is bound to it: a press
+        // runs it through the door, and an agent running it is seen there.
+        if let Some((bound, published)) = crate::resource::published_since(self.bound) {
+            self.bound = bound;
+            self.view.bind_published(&published);
+        }
         // What a view asked of the record's history (`undo(v)`, `undo(run)`) and the person's
         // Undo and Redo are the record's own history verbs, as the room path runs them: the
         // door builds each from the published verb and applies it to the record.

@@ -713,7 +713,6 @@ impl AppWindow {
     /// What the app offers the person at the window now: every action, or the actions of the
     /// resources whose labels moved, which replace theirs where they sit.
     fn take_actions(&mut self, catalogue: wire::ActionCatalogue) -> Result<(), String> {
-        let shown = self.catalogue();
         match catalogue {
             wire::ActionCatalogue::All(actions) => self.actions = crate::catalogue::read(&actions)?,
             wire::ActionCatalogue::Relabeled(actions) => {
@@ -737,25 +736,34 @@ impl AppWindow {
                 }
             }
         }
-        // The controls whose events run one of these are bound to it, and the window publishes
-        // each action as the resource its controls stand on.
+        // The window publishes each action as the resource its controls stand on.
         let published = self.catalogue();
-        self.reconciler
+        self.bind_published(&published);
+        Ok(())
+    }
+
+    /// Bind the window's controls to the actions the app publishes (`published`): a control
+    /// whose event runs one of them runs it through the door, the one path anyone else running
+    /// the action takes, and is where an agent running it is seen. An app whose instance runs
+    /// in the window's own process publishes its actions itself and binds them here; an app in
+    /// a host sends them ([`ToUi::Actions`]).
+    pub fn bind_published(&mut self, published: &[tilo_actions::ResourceSpec]) {
+        let shown = self
+            .reconciler
             .borrow()
             .adapter()
-            .published(published.clone());
+            .published(published.to_vec());
         // A control is bound to the action its event runs when its widget is built: controls
         // whose events would now take the other path are built again, so a press and anyone
         // else running the action take the one path.
         if self
             .built
             .as_ref()
-            .is_some_and(|built| rebinding(&shown, &published, built))
+            .is_some_and(|built| rebinding(&shown, published, built))
         {
             self.built = None;
             self.compose();
         }
-        Ok(())
     }
 
     /// The window's trees within its budget: one window's nodes are its own to spend.

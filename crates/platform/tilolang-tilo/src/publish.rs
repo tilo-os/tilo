@@ -348,7 +348,7 @@ impl ActionTypes {
             on_type.insert(
                 declared.name.clone(),
                 TypeActions {
-                    edits: edit_types(meta, &declared.name),
+                    edits: edit_types(meta, &declared.name, planner),
                     actions,
                     views: views_of(meta, &declared.name, words),
                     named: ResourceType {
@@ -2488,9 +2488,10 @@ pub fn edit_action(
 
 /// The two direct edit actions of a resource, whose target is its id: a bound text input and
 /// a bound checkbox.
-fn edit_types(meta: &Meta, type_name: &str) -> [Arc<ActionType>; 2] {
+fn edit_types(meta: &Meta, type_name: &str, planner: &Arc<dyn Planner>) -> [Arc<ActionType>; 2] {
     let make = |action: &'static str, label: &'static str, ty: ParamType| {
         let (meta, type_name) = (meta.clone(), type_name.to_owned());
+        let planner = Arc::clone(planner);
         let spec = ActionSpec::typed_on(
             action,
             label,
@@ -2506,6 +2507,14 @@ fn edit_types(meta: &Meta, type_name: &str) -> [Arc<ActionType>; 2] {
                 let value = json.get("value").cloned().unwrap_or(Json::Null);
                 let id = target.get::<String>().map_or("", String::as_str);
                 edit_action(&meta, &type_name, id, field, &value)
+                    // The edit is the caller's the door admitted: an agent's change is the
+                    // agent's, in history and wherever the field shows who changed it.
+                    .map(|mut planned| {
+                        if let Some(caller) = planner.caller() {
+                            planned.authorship.invoker = caller.actor;
+                        }
+                        planned
+                    })
                     .and_then(|planned| planned.encode().map_err(|error| error.to_string()))
                     .unwrap_or_else(|message| EncodedAction {
                         type_id: INVALID_ARGUMENTS_TYPE.to_owned(),

@@ -115,6 +115,7 @@ impl Described for TextInput {
             .with_placeholder(&placeholder)
             .with_change(change)
             .disabled(!enabled);
+        input.change_before = previous;
         if autofocus {
             input = input.wants_focus();
         }
@@ -164,6 +165,7 @@ impl Described for TextInput {
             let note = change_note(&by, previous.as_deref());
             (by.identity, note)
         });
+        self.change_before = previous;
         let edits = value.clone();
         self.set_on_change_view(move |text| edits.edited(Value::Text(text.to_owned())));
         let placeholder = placeholder.unwrap_or_default();

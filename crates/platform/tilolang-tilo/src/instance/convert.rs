@@ -48,7 +48,7 @@ pub(crate) fn convert_with<T>(
     let (rendered, reads) = {
         let instance = view.borrow();
         let toggles = |key: &str, event: &str| toggles(host, &instance, key, event);
-        let invokes = |key: &str, event: &str| invokes(&instance, key, event);
+        let invokes = |key: &str, event: &str| invokes(host, &instance, key, event);
         let reads: std::cell::RefCell<Vec<(String, String)>> = std::cell::RefCell::new(Vec::new());
         let preview = |reference: &crate::runtime::rich::Reference| {
             preview(host, names, reference, &mut reads.borrow_mut())
@@ -398,13 +398,31 @@ pub(crate) fn toggles(
 }
 
 /// The resource and the action the event `event` of the node `key` of `view` runs, when it
-/// runs an action on a resource: what a menu tells a placed command by.
+/// runs an action on a resource as it is: the action its control is bound to. An action that
+/// still asks for something (`Pick date…`) opens its form from the view's own event instead.
 pub(crate) fn invokes(
+    host: &Host,
     view: &ViewInstance,
     key: &str,
     event: &str,
 ) -> Option<(ResourceRef, String)> {
     let aref = view.event_action(key, event)?;
+    let given = aref
+        .args
+        .iter()
+        .position(|arg| *arg == Value::Missing)
+        .unwrap_or(aref.args.len());
+    let asks = host.find_in_packages(|package| {
+        package
+            .meta
+            .actions
+            .iter()
+            .find(|action| action.id == aref.action)
+            .map(|action| action.unbound(given).next().is_some())
+    })?;
+    if asks {
+        return None;
+    }
     match aref.args.first() {
         Some(Value::Ref(subject)) => Some((ResourceRef::clone(&subject.target), aref.action)),
         _ => None,

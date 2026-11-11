@@ -79,6 +79,9 @@ use touch::TouchIntent;
 #[path = "text_input_input.rs"]
 mod input;
 
+#[path = "text_input_written.rs"]
+mod written;
+
 /// Outline a field whose content was refused (a wrong password) in the
 /// danger colour, over the field's own edge at the control radius.
 pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, theme: &Theme) {
@@ -368,6 +371,8 @@ pub struct TextInput {
     /// ([`Self::with_change`]): their presence identity, which tints the field, and what the
     /// field says of it on hover.
     change: Option<(String, String)>,
+    /// What the field held before that change, when it is known: what it wrote is the rest.
+    change_before: Option<String>,
     is_focused: bool,
     /// Paint-only suppression for drag previews; focus, selection and IME remain intact.
     caret_paint_suppressed: bool,
@@ -845,6 +850,7 @@ impl TextInput {
             is_hovered: false,
             invalid: false,
             change: None,
+            change_before: None,
             is_focused: false,
             caret_paint_suppressed: false,
             ml_caret: None,
@@ -7198,6 +7204,7 @@ impl TextInput {
         theme: &Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
+        self.draw_written(scene, transform, text_renderer, theme, presence);
         if let Some(key) = crate::presence::capability::presence_key(self) {
             // Peer caret + selection reuse `caret_rect`/`selection_rect`, never a
             // re-derived approximation. `transform` maps the local rect to the scene.

@@ -95,8 +95,12 @@ impl Adapter {
     /// Offer the actions the app publishes (`resources`): an event that runs one of them is
     /// bound to the action itself, so pressing the control and anyone else running the action
     /// take one path, and what the window publishes names the control that is bound to it.
-    pub fn published(&self, resources: Vec<tilo_actions::ResourceSpec>) {
-        *self.published.borrow_mut() = resources;
+    /// Answers what was offered before.
+    pub fn published(
+        &self,
+        resources: Vec<tilo_actions::ResourceSpec>,
+    ) -> Vec<tilo_actions::ResourceSpec> {
+        std::mem::replace(&mut *self.published.borrow_mut(), resources)
     }
     /// What the components reported since the last call, as what the window applies.
     #[must_use]
@@ -535,14 +539,26 @@ pub(crate) fn bound_to(
     action: &str,
 ) -> Option<tilo_actions::ActionBinding<()>> {
     // The app publishes the resource it names as its own id with the app's before it: the
-    // action the view attached names the resource the same way the app's surface does.
-    let held = published.iter().find(|held| {
-        held.id
-            .as_str()
-            .rsplit_once(':')
-            .is_some_and(|(_, id)| id == resource)
-    })?;
-    tilo_actions::ActionBinding::unit_for(held, action).ok()
+    // action the view attached names the resource the same way the app's surface does. An
+    // item is published under the record that holds it.
+    fn holding<'a>(
+        published: &'a [tilo_actions::ResourceSpec],
+        resource: &str,
+    ) -> Option<&'a tilo_actions::ResourceSpec> {
+        published.iter().find_map(|held| {
+            if held
+                .id
+                .as_str()
+                .rsplit_once(':')
+                .is_some_and(|(_, id)| id == resource)
+            {
+                Some(held)
+            } else {
+                holding(&held.children, resource)
+            }
+        })
+    }
+    tilo_actions::ActionBinding::unit_for(holding(published, resource)?, action).ok()
 }
 
 impl Source for NodeSource<'_> {
