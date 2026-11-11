@@ -2845,6 +2845,15 @@ impl Task {
                 if let Ok(workspace_id) = route.workspace_id() {
                     self.planes_due.insert(workspace_id);
                 }
+                // What this session reads the route's writes with, its replica's readers read
+                // them with.
+                if let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) {
+                    self.engine.hand_keys(
+                        workspace,
+                        collab_types::ChannelRoute::new(&route.app_id, &route.record),
+                        keys.clone(),
+                    );
+                }
                 self.ciphers.insert(
                     route.clone(),
                     Box::new(tilo_peer_state::document_frame::KeysCipher(keys)),

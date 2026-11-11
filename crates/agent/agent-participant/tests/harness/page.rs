@@ -277,13 +277,14 @@ impl Page {
 
     /// The workspace's shared desk as the page has received it.
     pub fn desk(&mut self) -> Option<tilo_desktop_model::ownership::SharedDesktop> {
-        use tilo_automerge::ApplyIncoming as _;
         self.pump();
-        let mut doc = automerge::AutoCommit::new();
-        for (_, bytes) in self.documents.get(&self.desk_route()).into_iter().flatten() {
-            doc.load_incoming(bytes).unwrap();
-        }
-        tilo_desktop_model::shared_record::read(&doc, None)
+        let desk = self.desk_route();
+        let read = self
+            .peer
+            .engine()
+            .record(&desk.cluster_id, &desk.app_id, &desk.record);
+        let bytes = read.ok()??;
+        tilo_desktop_model::shared_record::read(&automerge::AutoCommit::load(&bytes).ok()?, None)
     }
 
     /// Send `message` to the host.

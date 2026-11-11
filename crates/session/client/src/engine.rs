@@ -451,25 +451,25 @@ impl Engine {
         // Taken before the workspace's view is held: the channel service's pump settles the groups
         // under its own lock and reads the workspace's governance there, so a read that asked it
         // for keys while holding the view would wait on it as it waits on the view.
-        let history = match handed {
-            Some(keys) => Some(Ok(keys)),
-            None => self
-                .keys
-                .get()
-                .and_then(|keys| keys.history_keys(workspace, &route)),
-        };
+        let history = self
+            .keys
+            .get()
+            .and_then(|keys| keys.history_keys(workspace, &route));
         // A sealed write the keys this device holds do not open yet — its epoch's key, or the key
         // of the branch it was sealed on, has not reached this device — is a record still
         // arriving here: it reads whole once the keys have, as the app's own channel holds such a
-        // write until they do.
+        // write until they do. The keys this session was handed open what they carry; the
+        // channel's own history keys open the rest.
         let mut unopened = false;
         let read = self.read_in(workspace, (app, record), known, maximum, &mut |write| {
-            let keys = history
-                .as_ref()
-                .ok_or("this session's channel service is not running")?
-                .as_ref()
-                .map_err(Clone::clone)?;
-            let opened = keys.open(write);
+            let opened = match (&handed, &history) {
+                (Some(handed), Some(Ok(history))) => {
+                    handed.open(write).or_else(|_| history.open(write))
+                }
+                (Some(handed), _) => handed.open(write),
+                (None, Some(history)) => history.as_ref().map_err(Clone::clone)?.open(write),
+                (None, None) => Err("this session's channel service is not running".into()),
+            };
             unopened |= opened.is_err();
             opened
         });

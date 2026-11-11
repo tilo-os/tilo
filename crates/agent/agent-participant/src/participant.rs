@@ -2213,7 +2213,7 @@ impl AgentParticipant {
     /// the view the agent worked in last, so the people see what it did
     /// ([`crate::desk`]). A workspace with no desk yet gets one, under its
     /// name.
-    fn show_on_desk(&mut self, route: &DocumentRoute) {
+    fn show_on_desk(&self, route: &DocumentRoute) {
         let desktop = desktop_route(&self.workspace);
         let Some(record) = self
             .apps
@@ -2269,15 +2269,16 @@ impl AgentParticipant {
         let place = |doc: &automerge::AutoCommit| {
             crate::desk::place_view(doc, (&self.workspace, name), &opener, &view)
         };
-        let change = match (self.unopened.desktop(), self.apps.get(&desktop)) {
-            (Some(doc), _) => place(&doc),
-            (None, Some(app)) => app.read(place).flatten(),
-            (None, None) => place(&automerge::AutoCommit::new()),
+        let held = self.unopened.desktop();
+        let (change, holds) = match (&held, self.apps.get(&desktop)) {
+            (Some(doc), _) => (place(doc), true),
+            (None, Some(app)) => (app.read(place).flatten(), true),
+            (None, None) => (place(&automerge::AutoCommit::new()), false),
         };
         let Some(change) = change else {
             return;
         };
-        let mutation = collab_types::DocumentMutation::Incremental(change);
+        let mutation = crate::desk::desk_mutation(holds, change);
         if let Err(error) = self.peer.publish(desktop.clone(), &mutation) {
             tracing::warn!(%error, "agent: its view did not reach the desk");
             return;

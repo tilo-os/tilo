@@ -2410,21 +2410,25 @@ impl Worker {
             record: &route.record,
             beside: None,
         };
-        let desktop = workspace
+        let held = workspace
             .records
             .as_ref()
-            .and_then(WorkspaceRecords::desktop)
-            .unwrap_or_default();
+            .and_then(WorkspaceRecords::desktop);
         let opener = crate::desk::Opener {
             person: &person,
             run,
         };
-        let Some(change) =
-            crate::desk::place_view(&desktop, (named, name.as_deref()), &opener, &view)
-        else {
+        let empty = automerge::AutoCommit::new();
+        let Some(change) = crate::desk::place_view(
+            held.as_ref().unwrap_or(&empty),
+            (named, name.as_deref()),
+            &opener,
+            &view,
+        ) else {
             return Ok(ActionOutput::default());
         };
-        self.commit(workspace_id, &desk, &DocumentMutation::Incremental(change))
+        let mutation = crate::desk::desk_mutation(held.is_some(), change);
+        self.commit(workspace_id, &desk, &mutation)
             .map_err(|reason| commit_failed(reason, true))?;
         Ok(ActionOutput::default())
     }
