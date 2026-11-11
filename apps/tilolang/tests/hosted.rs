@@ -377,6 +377,7 @@ impl Window {
                     held |= match *name {
                         "ctrl" => ModifiersState::CONTROL,
                         "shift" => ModifiersState::SHIFT,
+                        "alt" => ModifiersState::ALT,
                         other => panic!("no modifier {other}"),
                     };
                 }
@@ -1803,6 +1804,109 @@ fn a_rich_body_comes_back_as_its_document_when_its_note_is_opened_again() {
         other => panic!("a rich body: {other:?}"),
     };
     assert_eq!(kinds, ["heading", "list_item"]);
+}
+
+/// The blocks of the open note's body as the window holds them: each paragraph's kind and text.
+fn body_blocks(session: &mut Session) -> Vec<(String, String)> {
+    match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => rich
+            .blocks
+            .iter()
+            .map(|block| (block.kind.clone(), block.text.clone()))
+            .collect(),
+        other => panic!("a rich body: {other:?}"),
+    }
+}
+
+/// The level a block of the open note's body carries, when it is a heading.
+fn heading_level(session: &mut Session, block: usize) -> Option<i64> {
+    match session.field_value("Write something") {
+        Some(tilo_ui_host::Value::Rich(rich)) => match rich.blocks.get(block)?.attrs.get("level") {
+            Some(tilo_render_protocol::patch::rich::Attr::Int(level)) => Some(*level),
+            _ => None,
+        },
+        other => panic!("a rich body: {other:?}"),
+    }
+}
+
+/// A heading typed as `## ` at the start of a line is a heading of that level with no marker
+/// left, and Ctrl+Z brings the marker back: what the person typed last is one step of theirs,
+/// kept in the record.
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back() {
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("##");
+    session.settle();
+    session.window.type_text(" ");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), String::new())],
+        "the marker became the line's kind, and is no text of its own"
+    );
+    assert_eq!(
+        heading_level(&mut session, 0),
+        Some(2),
+        "two hashes make a second-level heading"
+    );
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "##".to_owned())],
+        "Ctrl+Z takes back the promotion alone: the words typed before it stay"
+    );
+}
+
+#[test]
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back_in_the_live_window() {
+    a_typed_heading_prefix_is_a_heading_undo_puts_back();
+}
+
+#[test]
+fn a_typed_heading_prefix_is_a_heading_undo_puts_back_in_the_frame_harness() {
+    let mut session = Session::rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("##");
+    session.settle();
+    session.window.type_text(" ");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), String::new())]
+    );
+    assert_eq!(heading_level(&mut session, 0), Some(2));
+    session.window.chord(&["ctrl"], "z");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "##".to_owned())]
+    );
+}
+
+/// The format menu's Ctrl+Alt+2 makes the line the person is in a heading, over writing that is
+/// already there, and Ctrl+Alt+0 makes it body text again: the record keeps the line's kind,
+/// and its words are never moved.
+#[test]
+fn the_heading_chord_makes_the_line_a_heading_and_body_text_again() {
+    let mut session = Session::live_rich();
+    new_note(&mut session, "Groceries");
+    session.window.type_text("Plan");
+    session.settle();
+    session.window.chord(&["ctrl", "alt"], "2");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("heading".to_owned(), "Plan".to_owned())]
+    );
+    assert_eq!(heading_level(&mut session, 0), Some(2));
+    session.window.chord(&["ctrl", "alt"], "0");
+    session.settle();
+    assert_eq!(
+        body_blocks(&mut session),
+        [("paragraph".to_owned(), "Plan".to_owned())],
+        "Ctrl+Alt+0 is the way back to body text"
+    );
 }
 
 /// The document editor as captured, when shots are asked for with `TILO_RICHBODY_SHOTS`: a

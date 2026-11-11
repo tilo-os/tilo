@@ -954,6 +954,10 @@ text-menu-bold = Fett
 text-menu-italic = Kursiv
 text-menu-underline = Unterstrichen
 text-menu-strikethrough = Durchgestrichen
+text-menu-heading-1 = Überschrift 1
+text-menu-heading-2 = Überschrift 2
+text-menu-heading-3 = Überschrift 3
+text-menu-body-text = Fließtext
 text-menu-bulleted-list = Aufzählung
 text-menu-numbered-list = Nummerierte Liste
 

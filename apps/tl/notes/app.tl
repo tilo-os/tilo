@@ -802,3 +802,17 @@ scenario "a note with an embed" -> Note {
         ),
     )
 }
+
+/// A page written in sections: a note whose body is headings two levels under its title, each
+/// with the prose under it.
+scenario "a note with headings" -> Note {
+    notebook.notes.insert(
+        Note(
+            title: "Autumn plan",
+            body: RichText.from_markdown(
+                "## Ship the editor\n\nOffline first, then sharing: nobody waits on a network to write.\n\n### Then\n\nThe importer, the table editor and the find bar.\n\n## Grow the garden\n\nTomatoes along the south wall, herbs by the door.\n\n### Seeds to order\n\nBasil, coriander, two kinds of chilli.",
+            ),
+        ),
+    )
+}
+ 

@@ -962,6 +962,10 @@ text-menu-bold = Bold
 text-menu-italic = Italic
 text-menu-underline = Underline
 text-menu-strikethrough = Strikethrough
+text-menu-heading-1 = Heading 1
+text-menu-heading-2 = Heading 2
+text-menu-heading-3 = Heading 3
+text-menu-body-text = Body text
 text-menu-bulleted-list = Bulleted list
 text-menu-numbered-list = Numbered list
 

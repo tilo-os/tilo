@@ -11622,58 +11622,6 @@ impl BlockEditor {
         }
     }
 
-    /// `TextInput` does NOT handle Tab, but intercept anyway so future
-    /// `TextInput` changes don't break the contract. Returns `true` when
-    /// the caller should stop routing this event any further.
-    fn try_tab_indent(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
-        use winit::event::{ElementState, KeyEvent};
-        use winit::keyboard::{Key, NamedKey};
-
-        let WindowEvent::KeyboardInput {
-            event:
-                KeyEvent {
-                    logical_key,
-                    state: ElementState::Pressed,
-                    ..
-                },
-            ..
-        } = event
-        else {
-            return false;
-        };
-        let Some(focused_idx) = self.focused else {
-            return false;
-        };
-        if !self.is_focused || self.tab_navigation || ctx.modifiers.state().alt_key() {
-            return false;
-        }
-        let command = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
-        let delta = match logical_key {
-            Key::Character(key) if command && key == "]" => 1,
-            Key::Character(key) if command && key == "[" => -1,
-            Key::Named(NamedKey::Tab)
-                if !command
-                    && (self.document_selection.is_some()
-                        || self.blocks.get(focused_idx).is_some_and(|b| {
-                            !matches!(
-                                b.kind,
-                                BlockKind::CodeBlock { .. } | BlockKind::Table { .. }
-                            )
-                        })) =>
-            {
-                if ctx.modifiers.state().shift_key() {
-                    -1
-                } else {
-                    1
-                }
-            }
-            _ => return false,
-        };
-        self.try_indent_selection(delta);
-        *ctx.handled = true;
-        true
-    }
-
     /// The `/` still falls through to `TextInput` (visible
     /// feedback); `slash_open_at` remembers where to strip it on commit.
     /// Code blocks excluded — `/` there is meaningful text.
@@ -11989,6 +11937,8 @@ mod clipboard;
 mod format;
 #[path = "block_editor_html.rs"]
 mod html;
+#[path = "block_editor_keys.rs"]
+mod keys;
 pub use html::{blocks_from_html, blocks_to_html};
 #[path = "block_editor_handle_reveal.rs"]
 mod handle_reveal;
@@ -12057,6 +12007,10 @@ mod image_paste_tests;
 #[cfg(test)]
 #[path = "block_editor_clipboard_tests.rs"]
 mod clipboard_tests;
+
+#[cfg(test)]
+#[path = "block_editor_heading_tests.rs"]
+mod heading_tests;
 
 impl BlockEditor {
     /// The current representation uses one stable block per source line.
@@ -13426,6 +13380,10 @@ impl BlockEditor {
             ) {
                 self.tab_navigation = false;
             }
+        }
+
+        if self.try_heading_shortcut(event, ctx) {
+            return;
         }
 
         // TextInput does NOT handle Tab, but intercept anyway so future

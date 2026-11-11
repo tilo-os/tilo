@@ -27,6 +27,9 @@ enum TextMenuAction {
     List {
         ordered: bool,
     },
+    /// A heading of that level, or body text when it is absent
+    /// ([`BlockEditor::set_heading`]).
+    Heading(Option<u8>),
 }
 
 /// The text menu and what each of its rows does.
@@ -330,6 +333,36 @@ impl BlockEditor {
             rows.push((item, Some(TextMenuAction::Mark(mark))));
         }
         rows.push((MenuItem::separator(), None));
+        // Headings by the level the editor draws, and the way back to body text: what a line is,
+        // as a list row says what a list is.
+        let mut headings: Vec<(Option<u8>, &str)> = BlockEditor::HEADING_LEVELS
+            .map(|level| {
+                (
+                    Some(level),
+                    match level {
+                        1 => "text-menu-heading-1",
+                        2 => "text-menu-heading-2",
+                        _ => "text-menu-heading-3",
+                    },
+                )
+            })
+            .collect();
+        headings.push((None, "text-menu-body-text"));
+        for (level, key) in headings {
+            let on = match (level, focused_kind.as_ref()) {
+                (Some(level), Some(kind)) => *kind == BlockKind::Heading(level),
+                (None, Some(kind)) => *kind == BlockKind::Paragraph,
+                (_, None) => false,
+            };
+            let mut item = MenuItem::action(label(key), || {}).with_checked(on);
+            if let Some(level) = level {
+                item = item.with_shortcut(Shortcut::command(level.to_string()).alt());
+            } else {
+                item = item.with_shortcut(Shortcut::command("0").alt());
+            }
+            rows.push((item, Some(TextMenuAction::Heading(level))));
+        }
+        rows.push((MenuItem::separator(), None));
         for (key, ordered) in [
             ("text-menu-bulleted-list", false),
             ("text-menu-numbered-list", true),
@@ -371,6 +404,9 @@ impl BlockEditor {
             }
             TextMenuAction::List { ordered } => {
                 self.toggle_list(ordered);
+            }
+            TextMenuAction::Heading(level) => {
+                self.set_heading(level);
             }
         }
         self.dirty = true;

@@ -29,6 +29,7 @@ mod engines;
 mod fixtures;
 mod foreign;
 #[cfg(feature = "record")]
+mod headings;
 mod history_views;
 mod incremental;
 mod index;
