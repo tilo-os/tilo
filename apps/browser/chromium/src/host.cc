@@ -1573,6 +1573,16 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
       }
     }
 #endif
+    // A capital letter is the shifted key of the letter below it, so a caller
+    // that writes `A` gets the key it wrote: Chromium reads a letter's case
+    // off the modifiers, and a press of `A` without shift would reach the page
+    // as `a`, a key nobody asked for. A chord is not a letter and is left as
+    // written: the extension's own shortcuts matched above, and Control+A
+    // stays Control+A.
+    if(latin && std::isupper(static_cast<unsigned char>(key[0])) && !d->GetBool("ctrl") && !d->GetBool("alt") && !d->GetBool("meta")) {
+      e.modifiers|=EVENTFLAG_SHIFT_DOWN;
+      key_modifiers_=e.modifiers;
+    }
     const auto mapping=tilo::MapKey(key,code);
     e.windows_key_code=mapping.windows;
     e.character=mapping.character;
