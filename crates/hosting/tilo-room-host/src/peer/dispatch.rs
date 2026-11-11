@@ -11,7 +11,7 @@ use super::{
     route_record_content,
 };
 #[cfg(test)]
-use super::{ReplayWrite, finish_replay_write};
+use super::{ReplayWrite, answered_as_replay, finish_replay_write};
 
 /// Handle one successfully-decoded inbound envelope: dispatch to
 /// [`handle_envelope`], then write any replay backlog to the wire —
@@ -29,16 +29,15 @@ pub(super) async fn handle_inbound_frame<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let replaying = matches!(
-        env,
-        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
-    );
+    let replaying = answered_as_replay(&env);
     let mut ticket = None;
-    let reply = handle_envelope(peer, env, session, subscribed, &mut ticket).await?;
+    let mut answer = Vec::new();
+    let reply = handle_envelope(peer, env, session, subscribed, &mut ticket, &mut answer).await?;
     let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
     Box::pin(finish_replay_write(
         ReplayWrite {
             ticket,
+            answer,
             reply,
             replaying,
         },
@@ -60,6 +59,7 @@ pub(super) async fn handle_envelope(
     session: &SessionCtx<'_>,
     subscribed: &mut Vec<u64>,
     replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
+    answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {
     match env {
         Envelope::Subscribe { workspace_id } => {
@@ -138,7 +138,7 @@ pub(super) async fn handle_envelope(
         | Envelope::VoiceShow { .. }
         | Envelope::VoiceCalls { .. }) => handle_voice(peer, session, subscribed, env).await,
         env @ Envelope::OpenRecord { .. } => {
-            handle_open_record(peer, session, subscribed, env).await
+            handle_open_record(peer, session, subscribed, env, answer).await
         }
         Envelope::RetiredLiveJoin { workspace_id } => {
             handle_live_join(peer, session, subscribed, workspace_id).await

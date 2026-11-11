@@ -4,8 +4,10 @@
 use super::{AuthenticatedPeer, Envelope, PeerError, SessionCtx, WorkspaceOperation};
 
 /// Handle `OpenRecord`: under the admission a replay has, mark the record
-/// held by the device, so its live changes reach it from now on, then send
-/// it everything retained of the record and, after it, [`Envelope::RecordOpened`].
+/// held by the device, so its live changes reach it from now on, then answer
+/// it in `answer` with everything retained of the record and, after it,
+/// [`Envelope::RecordOpened`]. The answer is written as a replay is: no live
+/// frame goes between its frames ([`super::answered_as_replay`]).
 /// A chain's head ([`neighbour_wire::chain_head`]) sends the chain's newest
 /// part, and the device follows the chain's heads from then on.
 /// Marking first means no change committed meanwhile is missed; one that is
@@ -15,6 +17,7 @@ pub(super) async fn handle_open_record(
     session: &SessionCtx<'_>,
     subscribed: &[u64],
     envelope: Envelope,
+    answer: &mut Vec<Envelope>,
 ) -> Result<Option<Envelope>, PeerError> {
     let Envelope::OpenRecord {
         workspace_id,
@@ -92,20 +95,10 @@ pub(super) async fn handle_open_record(
     .await
     .map_err(|error| PeerError::Protocol(format!("record read: {error}")))??;
     let sent = u32::try_from(frames.len()).unwrap_or(u32::MAX);
-    // On the queue the frames go out on, behind them: a reply is written by
-    // another task and could overtake them, so a device would hear the
-    // record was sent before it arrived.
-    let opened = Envelope::RecordOpened {
+    answer.extend(frames);
+    Ok(Some(Envelope::RecordOpened {
         workspace_id,
         channel,
         frames: sent,
-    };
-    for envelope in frames.into_iter().chain(std::iter::once(opened)) {
-        session
-            .outbound
-            .send(envelope)
-            .await
-            .map_err(|_| PeerError::Protocol("outbound writer closed".into()))?;
-    }
-    Ok(None)
+    }))
 }

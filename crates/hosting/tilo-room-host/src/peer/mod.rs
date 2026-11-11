@@ -50,8 +50,8 @@ use delivery::{
 use fanout::{LiveFanout, LiveFrame, live_budget};
 pub(crate) use replay::GovernanceCertificates;
 use replay::{
-    ReplayCatchup, ReplayWrite, ResumeLog, authorize_state_frame, authorize_state_recipient,
-    finish_replay_write, resume_record,
+    ReplayCatchup, ReplayWrite, ResumeLog, answered_as_replay, authorize_state_frame,
+    authorize_state_recipient, finish_replay_write, resume_record,
 };
 use session::inbound_bytes;
 #[cfg(test)]
