@@ -22,7 +22,9 @@
 //      in your workspace" and opens it;
 //   7. code expiry: a code that ran out while the tab was closed shows a fresh
 //      one with a note, and copying it follows the fresh one;
-//   8. offline, then online: the screen says it is offline, then carries on.
+//   8. offline, then online: the screen says it is offline, then carries on;
+//   9. an agent that runs `tilo login` the moment the prompt shows, before the
+//      Lounge let the tab in, is waited for, never refused, and gets in.
 //
 // usage: node setup-resume.mjs SITE_URL RELAY_ORIGIN TILO_BIN SITE_CA OUT_DIR
 //
@@ -306,12 +308,6 @@ const later = await browser.context();
 tab = await tabIn(later, 'closed-mid-way');
 await tab.navigate(site);
 await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
-// The host approves an agent's device only for a person it already let into
-// one of its workspaces, and the prompt is ready before the tab is let in:
-// an agent faster than that is refused ("this host serves another user
-// identity"). That race is not what this case tries, so the agent starts
-// once the tab is in.
-report.admittedBeforeAgent = Boolean(await until(tab, `!!localStorage.getItem('tilo-host-memberships')`, 120_000));
 await click(tab, 'first-run-agent');
 const promptC = await clipboard(tab);
 const agentC = login(codeOf(promptC), computer('two'));
@@ -360,4 +356,24 @@ check(await where(tab).then(at => at.step === 'waiting'), '8. offline: still on 
 await tab.send('Network.emulateNetworkConditions', {offline: false, latency: 0, downloadThroughput: -1, uploadThroughput: -1});
 check(await until(tab, `document.getElementById('first-run-net')?.textContent === ''`, 30_000), '8. online again: carries on, the note gone', await pageText(tab));
 await shot(tab, 'resume-8-online');
+await tab.close();
+
+// ---- 9. A fourth person: the agent logs in the moment the prompt shows.
+// The tab is let into the Lounge behind the first screen, after its prompt is
+// ready; an agent this quick asks before that, and is waited for.
+const quick = await browser.context();
+tab = await tabIn(quick, 'login-at-once');
+await tab.navigate(site);
+const offerE = await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready' && document.getElementById('first-run-offer').textContent`);
+const agentE = login(codeOf(offerE), computer('four'));
+report.admittedBeforeQuickAgent = await tab.evaluate(`!!localStorage.getItem('tilo-host-memberships')`);
+console.log(`9. tilo login started ${report.admittedBeforeQuickAgent ? 'after' : 'before'} the Lounge let the tab in`);
+await click(tab, 'first-run-agent');
+check(await until(tab, `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you') || document.documentElement.dataset.firstRun === 'connected'`, 120_000),
+  '9. an agent that logs in at once is approved', await pageText(tab));
+const ranE = await agentE;
+check(ranE.code === 0 && /Entered/.test(ranE.stdout), '9. tilo login run the moment the prompt showed finishes and enters',
+  `${ranE.stderr}${ranE.stdout}`.slice(-600));
+check(!/another user identity/.test(ranE.stderr), '9. never refused as another user identity', ranE.stderr.slice(-400));
+await shot(tab, 'resume-9-login-at-once');
 await finish();
