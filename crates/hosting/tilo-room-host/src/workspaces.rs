@@ -2695,7 +2695,12 @@ impl Workspaces {
             .map_err(|error| error.to_string())?;
         crate::timing::event("room.settle.access", accessing, 0);
         // A device the workspace no longer admits is sent to no one: what it
-        // retained to introduce itself goes.
+        // retained to introduce itself goes, unless it brings a revocation
+        // this workspace holds nowhere else. Every newcomer is sent the
+        // revocations the workspace holds beside its governance, and the
+        // hellos that bring any other: a hello can be the only record of a
+        // revocation, of a device no workspace row lists, and forgetting it
+        // would let that device in again.
         if !dropped.is_empty() {
             let hosted = host
                 .workspaces
@@ -2704,8 +2709,14 @@ impl Workspaces {
                 .get(&workspace.workspace_id())
                 .cloned();
             if let Some(hosted) = hosted {
+                let held = workspace.peer().revocations();
                 let forgotten = crate::compaction::owner_run(&hosted, move |store| {
-                    store.forget_hellos(&dropped)
+                    let payloads = std::sync::Arc::clone(store.payloads());
+                    store.forget_hellos(&dropped, &|body| {
+                        payloads.identity(body).is_some_and(|(_, brought)| {
+                            brought.iter().any(|entry| !held.contains(entry))
+                        })
+                    })
                 })
                 .await?;
                 tracing::debug!(workspace = %workspace.workspace(), forgotten, "forgot the hellos of devices the workspace no longer admits");

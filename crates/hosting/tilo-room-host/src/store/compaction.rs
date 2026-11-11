@@ -216,14 +216,21 @@ impl WorkspaceStore {
     /// Forget the identity hello each of `devices` retained here: devices
     /// the workspace no longer admits, whose hello a replay no longer sends
     /// anyone. A workspace many people pass through would otherwise keep one
-    /// for every device that ever came. Must run on the persistence owner.
-    /// Returns how many entries it forgot.
+    /// for every device that ever came. A device's hello stays whole when
+    /// `keeps` holds for any of its entries' bodies: one that brings a
+    /// revocation the workspace holds nowhere else, which a replay still
+    /// sends every newcomer. Must run on the persistence owner. Returns how
+    /// many entries it forgot.
     ///
     /// # Errors
     ///
-    /// Returns an error when a lineage's new, empty generation cannot be
-    /// written.
-    pub(crate) fn forget_hellos(&self, devices: &[[u8; 32]]) -> Result<usize, StoreError> {
+    /// Returns an error when a lineage cannot be read or its new, empty
+    /// generation cannot be written.
+    pub(crate) fn forget_hellos(
+        &self,
+        devices: &[[u8; 32]],
+        keeps: &dyn Fn(&[u8]) -> bool,
+    ) -> Result<usize, StoreError> {
         let mut forgotten = 0_usize;
         for device in devices {
             let channel = hello_channel(device);
@@ -237,6 +244,19 @@ impl WorkspaceStore {
             };
             let names = record_names(&active)?;
             if names.is_empty() {
+                continue;
+            }
+            let mut kept = false;
+            for name in &names {
+                let bytes = fs::read(active.join(name))?;
+                if super::retained::body_of(&bytes, self.workspace_id)
+                    .is_some_and(|body| keeps(&body))
+                {
+                    kept = true;
+                    break;
+                }
+            }
+            if kept {
                 continue;
             }
             self.forget_channel_listing(&channel);
