@@ -2380,9 +2380,12 @@ impl Session {
             return;
         };
         // The rows read here, on the loop that holds the arrangement: nothing off this thread
-        // reads a place. What is offered is compared with what was offered before — a live
-        // surface's revision moves every pass, and a catalogue rebuilt for it would cost the
-        // loop every frame — so the broker is told only when the rows themselves moved.
+        // reads a place. They are read again only once the door moved, and what is offered then
+        // is compared with what was offered before, so the broker is told only when the rows
+        // themselves moved.
+        if !actions.door_moved(self.shared.doors.revision()) {
+            return;
+        }
         let rows = tilo_actions::door::survey_placed(&self.shared.doors.resources());
         if actions.offer(rows)
             && let Some(broker) = self.action_plane.as_ref().and_then(Plane::agent_broker)
