@@ -138,16 +138,7 @@ impl Task {
             Envelope::WorkspaceBootstrap {
                 workspace_id,
                 bootstrap,
-            } => {
-                match self
-                    .replicas
-                    .bootstrap(workspace_id, &bootstrap, web_time::SystemTime::now())
-                {
-                    Ok(true) => self.follow_governance(workspace_id),
-                    Ok(false) => {}
-                    Err(error) => self.fail("protocol-rejected", error),
-                }
-            }
+            } => self.bootstrapped(workspace_id, &bootstrap),
             Envelope::Delta {
                 workspace_id,
                 author_device_public_key,
@@ -200,28 +191,41 @@ impl Task {
                 self.fail("protocol-rejected", reason.clone());
                 self.acknowledge(op, Err(reason));
             }
-            Envelope::RecordContent { ref frame, .. } => {
-                // A surface this page asked for is the peer's, not a record's
-                // content: it is kept for deciding, and what waited for it is
-                // decided at the top of the session loop.
-                let device = self.config.cert.device_public_key;
-                match self.surface_wants.piece(&device, frame, now) {
-                    Some(arrived) => {
-                        self.surfaces_arrived |=
-                            crate::surfaces::keep(&arrived.hash, arrived.bytes);
-                    }
-                    None => {
-                        if let Some(event) = addressed(envelope) {
-                            self.emit(&event);
-                        }
-                    }
-                }
-            }
+            content @ Envelope::RecordContent { .. } => self.record_content(content, now),
             envelope => {
                 if let Some(event) = addressed(envelope) {
                     self.emit(&event);
                 }
             }
+        }
+    }
+
+    /// The host's bootstrap of `workspace_id`, its member roster: once the
+    /// replica takes it, the workspace's governance is followed from it.
+    fn bootstrapped(&mut self, workspace_id: u64, bootstrap: &[u8]) {
+        match self
+            .replicas
+            .bootstrap(workspace_id, bootstrap, web_time::SystemTime::now())
+        {
+            Ok(true) => self.follow_governance(workspace_id),
+            Ok(false) => {}
+            Err(error) => self.fail("protocol-rejected", error),
+        }
+    }
+
+    /// A piece of record content the host sent. A surface this page asked
+    /// for is the peer's, not a record's content: it is kept for deciding,
+    /// and what waited for it is decided at the top of the session loop.
+    fn record_content(&mut self, envelope: Envelope, now: u64) {
+        if let Envelope::RecordContent { frame, .. } = &envelope {
+            let device = self.config.cert.device_public_key;
+            if let Some(arrived) = self.surface_wants.piece(&device, frame, now) {
+                self.surfaces_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
+                return;
+            }
+        }
+        if let Some(event) = addressed(envelope) {
+            self.emit(&event);
         }
     }
 
