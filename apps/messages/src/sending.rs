@@ -281,13 +281,11 @@ impl Sending {
             let _ = sent?;
             // Read the conversation again: the message is in it now, and the
             // composer empties only once it is.
-            let read = crate::history::tilo_call(crate::history::OPEN_DIRECT_CONVERSATION, &peer);
             let opened = history.clone();
             let sending = sending.clone();
             let sent_text = sent_text.clone();
             let answered = answered.clone();
-            Ok(cx.call(&read, move |(), read, _| {
-                let page = crate::history::direct_page(sent_route, &peer, read?)?;
+            history.read_conversation(sent_route, &peer, cx, move |page, _| {
                 opened.publish(page);
                 if sending.draft.get() == sent_text {
                     sending.draft.set(String::new());
@@ -298,7 +296,7 @@ impl Sending {
                     "operation": answered,
                     "status": "submitted",
                 })))
-            }))
+            })
         }))
     }
 }

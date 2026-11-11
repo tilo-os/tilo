@@ -688,13 +688,15 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
             request_id: uuid::Uuid::from_u128(3),
             source: b.1.device_public_key,
             target: engine.device(),
-            message: RemoteActionMessage::RecordRequest {
+            message: RemoteActionMessage::RecordRead {
                 correlation: 5,
-                query: tilo_actions::remote::RecordQuery {
-                    workspace: WORKSPACE.into(),
+                on_behalf_of: None,
+                read: tilo_actions::remote::RecordReadRequest {
                     app: "test.app".into(),
                     record: "tab:1".into(),
-                    offset: 0,
+                    joined: false,
+                    after: None,
+                    wait_ms: None,
                 },
             },
         },
@@ -705,7 +707,7 @@ async fn requests_a_device_does_not_answer_are_refused_at_once() {
     let answer = send(&b_endpoint, engine.addr(), &wanted)
         .await
         .expect("a request nothing serves is answered");
-    let RemoteActionMessage::RecordResponse {
+    let RemoteActionMessage::RecordReading {
         correlation: 5,
         result: Err(error),
     } = answer

@@ -222,12 +222,14 @@ fn task_person(caller: &Caller) -> Option<(&str, &str)> {
 }
 
 /// Whose device certificate reads for `caller`, and in which workspace: an agent task's person,
-/// or the person themself reading their own workspace's records (a view of them, a test).
+/// the person themself reading their own workspace's records (a view of them, a test), or an
+/// app on their device reading another app's records for them, as the workspace grants it.
 fn reader(caller: &Caller) -> Option<(&str, &str)> {
     match caller.principal() {
         CallerPrincipal::Person(person) if !caller.is_session_delegated() => {
             Some((person.as_str(), caller.workspace()?))
         }
+        CallerPrincipal::App(_) => Some((caller.acting_for_person()?, caller.workspace()?)),
         _ => task_person(caller),
     }
 }

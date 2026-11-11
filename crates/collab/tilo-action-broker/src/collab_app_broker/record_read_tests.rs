@@ -355,6 +355,34 @@ fn a_person_or_an_agent_task_acting_for_them_reads_records_here() {
     drop(f.state);
 }
 
+/// An app on the person's device reads another app's records for them only as far as the
+/// workspace grants it, and never acting for nobody.
+#[test]
+fn an_app_reads_another_apps_record_for_its_person_as_the_workspace_grants_it() {
+    const MESSAGES: &str = "so.tilo.messages";
+    let f = fixture();
+    let app = Caller::local_app(MESSAGES)
+        .acting_for(f.person.clone())
+        .in_workspace(f.workspace.clone());
+    assert!(
+        matches!(
+            f.read(&app, NOTES, ""),
+            Err(ActionHostError::Refused { reason }) if reason == RECORD_READ_REFUSED
+        ),
+        "an app the workspace grants nothing reads nothing of Notes"
+    );
+    f.membership.write().workspaces[0].allow_app(Subject::app(MESSAGES), NOTES, KindSet::READ);
+    assert_eq!(
+        f.read(&app, NOTES, "").unwrap(),
+        RecordCopy::Document(format!("{NOTES}/").into_bytes()),
+        "granted, it reads the record with the person's device"
+    );
+    assert!(
+        matches!(f.read(&app, MAIL, ""), Err(ActionHostError::Refused { .. })),
+        "a grant on Notes reads nothing of Mail"
+    );
+}
+
 /// A reader watching a record is woken once by the next write that lands on it, and not by a
 /// write to another record.
 #[test]

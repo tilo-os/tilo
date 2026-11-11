@@ -113,8 +113,8 @@ impl AgentParticipant {
                     reason: "an app action runs to completion when invoked".into(),
                 }),
             },
-            RemoteActionMessage::RecordRequest { correlation, .. } => {
-                RemoteActionMessage::RecordResponse {
+            RemoteActionMessage::RecordRead { correlation, .. } => {
+                RemoteActionMessage::RecordReading {
                     correlation,
                     result: Err(ActionHostError::Unavailable {
                         reason: "an agent keeps no records to lend".into(),
@@ -158,7 +158,9 @@ impl AgentParticipant {
             | RemoteActionMessage::ContentPutResponse { .. }
             | RemoteActionMessage::ContentGetResponse { .. }
             | RemoteActionMessage::CatalogueResponse { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RecordReading { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }

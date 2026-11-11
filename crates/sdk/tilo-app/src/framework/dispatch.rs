@@ -1476,6 +1476,22 @@ impl<R: Resource> Dispatcher<R> {
         Ok(self.core.opener.call(parent, target, argument))
     }
 
+    /// Read `read`, a record of the window's workspace, through the host's
+    /// record door, continuing `parent` as [`Self::call_published`] does.
+    pub(crate) fn read_record(
+        &self,
+        parent: Option<tilo_actions::InvocationId>,
+        read: tilo_actions::remote::RecordReadRequest,
+    ) -> Result<ui_core::remote_actions::RecordReadCall, String> {
+        if self.core.past {
+            return Err("a past version reads nothing".into());
+        }
+        if let Some(custody) = &self.core.custody {
+            custody.check()?;
+        }
+        Ok(self.core.opener.read_record(parent, read))
+    }
+
     /// Invoke an action published on a nested resource, such as one item of
     /// a collection.
     pub(crate) fn invoke_at(

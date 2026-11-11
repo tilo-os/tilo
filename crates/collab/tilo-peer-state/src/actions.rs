@@ -574,7 +574,7 @@ impl ActionPlane {
         let request = &action.message;
         match self.authorize(remote, &signed).await {
             Ok((caller, _workspace)) => self.dispatch(&caller, request).await,
-            Err(error) => refusal(request, error),
+            Err(error) => tilo_actions::remote::refuse(request, error),
         }
     }
 
@@ -693,7 +693,7 @@ impl ActionPlane {
             }
             // A request this device does not answer is said so, never left
             // for the caller to wait on.
-            other if other.is_request() => refusal(
+            other if other.is_request() => tilo_actions::remote::refuse(
                 other,
                 ActionHostError::Unavailable {
                     reason: "this device does not answer that request".into(),
@@ -922,57 +922,6 @@ fn refusal_of(error: &crate::MembershipError) -> tilo_actions::remote::ActionHos
         | MembershipError::RevocationRoot
         | MembershipError::Revocation(_) => ActionHostError::NotPermitted,
     }
-}
-
-/// The answer to a request the device did not do, in the request's own shape
-/// so the caller learns why instead of waiting.
-fn refusal(
-    request: &RemoteActionMessage,
-    error: tilo_actions::remote::ActionHostError,
-) -> Option<RemoteActionMessage> {
-    Some(match request {
-        RemoteActionMessage::CatalogueRequest { correlation, .. } => {
-            RemoteActionMessage::CatalogueResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        RemoteActionMessage::Invoke(invoke) => RemoteActionMessage::Receipt(InvocationReceipt {
-            invocation: invoke.invocation,
-            status: ReceiptStatus::Rejected { error },
-        }),
-        RemoteActionMessage::Observe { invocation, .. } => RemoteActionMessage::Update {
-            invocation: *invocation,
-            state: None,
-        },
-        RemoteActionMessage::Cancel { invocation } => RemoteActionMessage::CancelResponse {
-            invocation: *invocation,
-            result: Err(error),
-        },
-        RemoteActionMessage::RecordRequest { correlation, .. } => {
-            RemoteActionMessage::RecordResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        RemoteActionMessage::FeedbackRequest { correlation, .. } => {
-            RemoteActionMessage::FeedbackResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
-            RemoteActionMessage::ConfirmationResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
-        RemoteActionMessage::Confirm { correlation, .. } => RemoteActionMessage::ConfirmResponse {
-            correlation: *correlation,
-            result: Err(error),
-        },
-        _ => return None,
-    })
 }
 
 /// The answer a dispatcher's pending gives, or the refusal of one it

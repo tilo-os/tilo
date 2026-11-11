@@ -16,8 +16,9 @@ use super::{ActionHostError, Caller};
 pub const RECORD_READS_UNAVAILABLE: &str = "this host reads no records outside their apps";
 
 /// What a caller that is neither a person nor an agent task acting for its person is told.
-pub const RECORD_READS_FOR_TASKS: &str = "only a person, or an agent acting for the person who \
-     admitted it, reads records outside their app; a person's device hands its agents nothing here";
+pub const RECORD_READS_FOR_TASKS: &str = "only a person, an app acting for its person, or an agent \
+     acting for the person who admitted it, reads records outside their app; a person's device \
+     hands its agents nothing here";
 
 /// One record of a workspace, by its app (the id whose records it is) and its id there (empty for
 /// the app's record of the workspace).
@@ -152,6 +153,66 @@ pub fn read_records(
         }
         let _ = woken.wait_timeout(deadline.saturating_duration_since(now));
     }
+}
+
+/// Answer `read`, asked as `correlation`, for `caller` from `reads`, the host's record door: on
+/// a thread of its own, which the wait for a write past `read.after` and the record's capture hold.
+pub(super) fn serve_read(
+    reads: Option<std::sync::Arc<dyn RecordReads>>,
+    caller: &Caller,
+    correlation: u64,
+    read: super::RecordReadRequest,
+) -> super::Pending<super::RemoteActionMessage> {
+    serve_readings(reads, caller, read).map(move |result| {
+        super::RemoteActionMessage::RecordReading {
+            correlation,
+            result,
+        }
+    })
+}
+
+fn serve_readings(
+    reads: Option<std::sync::Arc<dyn RecordReads>>,
+    caller: &Caller,
+    read: super::RecordReadRequest,
+) -> super::Pending<Result<String, ActionHostError>> {
+    let (answer, answered) = super::pending();
+    let Some(reads) = reads else {
+        answer.complete(Err(ActionHostError::Unavailable {
+            reason: RECORD_READS_UNAVAILABLE.into(),
+        }));
+        return answered;
+    };
+    let caller = caller.clone();
+    let deadline = super::wait::deadline(read.wait_ms.unwrap_or(0));
+    let ask = [RecordAsk {
+        address: RecordAddress {
+            app: read.app,
+            record: read.record,
+        },
+        joined: read.joined,
+    }];
+    // Without a thread the completer goes with the closure: the caller hears the read dropped.
+    let _ = std::thread::Builder::new()
+        .name("record-read".into())
+        .spawn(move || {
+            answer.complete(
+                read_records(
+                    reads.as_ref(),
+                    &caller,
+                    &ask,
+                    read.after.as_deref(),
+                    deadline,
+                )
+                .and_then(|readings| {
+                    readings
+                        .readable()
+                        .map(|answer| answer.to_string())
+                        .map_err(|reason| ActionHostError::Refused { reason })
+                }),
+            );
+        });
+    answered
 }
 
 impl RecordReadings {

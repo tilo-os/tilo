@@ -101,6 +101,10 @@ pub(super) struct ConnectionActionHost {
 }
 
 impl tilo_actions::remote::ActionHost for ConnectionActionHost {
+    fn record_reads(&self) -> Option<std::sync::Arc<dyn tilo_actions::remote::RecordReads>> {
+        self.state.record_reads()
+    }
+
     fn query(
         &self,
         caller: &Caller,
@@ -678,10 +682,19 @@ impl AppBrokerState {
                     person.clone()
                 })
             }
-            // Records are read device to device by the shell; an application
-            // does not reach another device's records through this door.
-            RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::FeedbackRequest { .. }
+            // The app's own records it reads as the person using it; another
+            // app's as itself, acting for them, by what the workspace grants it.
+            RemoteActionMessage::RecordRead { read, .. } => Some(if read.app == app_id {
+                person.clone()
+            } else {
+                match person.principal() {
+                    tilo_actions::remote::CallerPrincipal::Person(id) => {
+                        as_app.acting_for(id.clone())
+                    }
+                    _ => as_app,
+                }
+            }),
+            RemoteActionMessage::FeedbackRequest { .. }
             // Questions travel between a person's own devices; an
             // application neither asks nor answers them.
             | RemoteActionMessage::ConfirmationRequest { .. }
@@ -700,7 +713,9 @@ impl AppBrokerState {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
+            | RemoteActionMessage::RecordReading { .. }
             | RemoteActionMessage::FeedbackResponse { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::ConfirmResponse { .. }

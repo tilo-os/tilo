@@ -901,21 +901,11 @@ pub enum RemoteActionMessage {
         invocation: InvocationId,
         result: Result<(), ActionHostError>,
     },
-    /// Ask a device for a workspace record it holds, from `query.offset` on.
-    /// The same authenticated device-to-device route as an action, but
-    /// answered by the device from what its app last made durable, not by
-    /// an action host: a record is readable where it is kept whether or not
-    /// its app is running.
-    RecordRequest {
-        correlation: u64,
-        query: RecordQuery,
-    },
-    /// Answer to [`Self::RecordRequest`] with the same correlation: the next
-    /// piece of the record, or why it is not given.
-    RecordResponse {
-        correlation: u64,
-        result: Result<RecordPiece, ActionHostError>,
-    },
+    /// Retired: records are read through the record door ([`Self::RecordRead`]). Kept in
+    /// place because the variants after it are encoded by position.
+    RetiredRecordRequest,
+    /// Retired with [`Self::RetiredRecordRequest`].
+    RetiredRecordResponse,
     /// Ask the person, on one of their own devices ([`ConfirmationQuestion`]).
     ConfirmationRequest {
         correlation: u64,
@@ -989,63 +979,40 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<Box<ConfirmedInvocation>, ActionHostError>,
     },
+    /// Read a record of the caller's workspace through the one record door
+    /// ([`RecordReads`]), decided as every reader of it is; continuing
+    /// `on_behalf_of`, an invocation the host delivered to the caller, it is
+    /// that invocation's caller's read.
+    RecordRead {
+        correlation: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_behalf_of: Option<InvocationId>,
+        read: RecordReadRequest,
+    },
+    /// Answer to [`Self::RecordRead`], same correlation: the readings as
+    /// JSON text ([`RecordReadings::readable`]).
+    RecordReading {
+        correlation: u64,
+        result: Result<String, ActionHostError>,
+    },
 }
 
-/// Largest piece of a record one answer carries, before encoding.
-pub const MAX_RECORD_PIECE_BYTES: usize = 384 * 1024;
-
-/// Which record to read, and from where in its stored bytes.
+/// One record a reader asks for over the action door: alone, or `joined`
+/// as the chain of parts whose base it is, once it differs from the revision
+/// `after` or `wait_ms` passed.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordQuery {
-    // Sent as `room`: a frame reaches peers on other builds, which read the key they know.
-    #[serde(rename = "room", alias = "workspace")]
-    pub workspace: String,
-    /// The application whose record it is.
+pub struct RecordReadRequest {
+    /// The app whose record it is.
     pub app: String,
-    /// The record's id in that workspace.
+    /// Its id there; empty for the app's record of the workspace.
     pub record: String,
-    /// Where in the stored document this piece starts.
-    pub offset: u64,
-}
-
-/// One piece of a stored record document.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecordPiece {
-    /// The whole document's length.
-    pub total: u64,
-    /// Where this piece starts.
-    pub offset: u64,
-    /// The piece, hex-encoded so the frame stays self-describing text.
-    bytes: String,
-}
-
-impl RecordPiece {
-    #[must_use]
-    pub fn new(total: u64, offset: u64, bytes: &[u8]) -> Self {
-        Self {
-            total,
-            offset,
-            bytes: hex::encode(bytes),
-        }
-    }
-
-    /// The piece's bytes; `None` when they are not well-formed.
-    #[must_use]
-    pub fn bytes(&self) -> Option<Vec<u8>> {
-        if !self.bytes.len().is_multiple_of(2) || self.bytes.len() > MAX_RECORD_PIECE_BYTES * 2 {
-            return None;
-        }
-        (0..self.bytes.len())
-            .step_by(2)
-            .map(|at| {
-                self.bytes
-                    .get(at..at.saturating_add(2))
-                    .and_then(|pair| u8::from_str_radix(pair, 16).ok())
-            })
-            .collect()
-    }
+    #[serde(default)]
+    pub joined: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+    /// How long to wait for a write past `after`, at most [`MAX_REMOTE_WAIT`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wait_ms: Option<u32>,
 }
 
 impl RemoteActionMessage {
@@ -1085,7 +1052,7 @@ impl RemoteActionMessage {
                 | Self::Invoke(_)
                 | Self::Observe { .. }
                 | Self::Cancel { .. }
-                | Self::RecordRequest { .. }
+                | Self::RecordRead { .. }
                 | Self::FeedbackRequest { .. }
                 | Self::ConfirmationRequest { .. }
                 | Self::ContentPutRequest { .. }
@@ -1247,16 +1214,9 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         RemoteActionMessage::Cancel { invocation } => host
             .cancel(caller, &invocation)
             .map(move |result| RemoteActionMessage::CancelResponse { invocation, result }),
-        // A record is read by the device that keeps it, never through an
-        // action host; a host asked for one says so.
-        RemoteActionMessage::RecordRequest { correlation, .. } => {
-            Pending::ready(RemoteActionMessage::RecordResponse {
-                correlation,
-                result: Err(ActionHostError::Unavailable {
-                    reason: "records are read from the device that keeps them".into(),
-                }),
-            })
-        }
+        RemoteActionMessage::RecordRead {
+            correlation, read, ..
+        } => record_read::serve_read(host.record_reads(), caller, correlation, read),
         // A question is the person's to answer, on the device they are at.
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => Pending::ready(
             confirmation::unanswered(correlation, ActionHostError::ConfirmationRequired),
@@ -1289,7 +1249,9 @@ pub fn serve<H: ActionHost + Clone + Send + 'static>(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::RetiredRecordRequest
+        | RemoteActionMessage::RetiredRecordResponse
+        | RemoteActionMessage::RecordReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
@@ -1338,12 +1300,10 @@ pub fn refuse(
             invocation: *invocation,
             result: Err(error),
         },
-        RemoteActionMessage::RecordRequest { correlation, .. } => {
-            RemoteActionMessage::RecordResponse {
-                correlation: *correlation,
-                result: Err(error),
-            }
-        }
+        RemoteActionMessage::RecordRead { correlation, .. } => RemoteActionMessage::RecordReading {
+            correlation: *correlation,
+            result: Err(error),
+        },
         RemoteActionMessage::ConfirmationRequest { correlation, .. } => {
             confirmation::unanswered(*correlation, error)
         }
@@ -1367,7 +1327,9 @@ pub fn refuse(
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
         | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::RecordResponse { .. }
+        | RemoteActionMessage::RetiredRecordRequest
+        | RemoteActionMessage::RetiredRecordResponse
+        | RemoteActionMessage::RecordReading { .. }
         | RemoteActionMessage::FeedbackResponse { .. }
         | RemoteActionMessage::ConfirmationResponse { .. }
         | RemoteActionMessage::RetiredResourceWatch { .. }
@@ -2133,78 +2095,6 @@ mod tests {
                 }),
             },
         ]
-    }
-
-    #[test]
-    fn a_record_query_keeps_the_key_peers_on_other_builds_read() {
-        let request = RemoteActionMessage::RecordRequest {
-            correlation: 1,
-            query: RecordQuery {
-                workspace: "studio".into(),
-                app: "dev.tilo.notes".into(),
-                record: "uuid:1".into(),
-                offset: 0,
-            },
-        };
-        let wire = RemoteActionFrame::new(request.clone()).encode().unwrap();
-        let written: serde_json::Value = serde_json::from_slice(&wire).unwrap();
-        let query = &written["message"]["RecordRequest"]["query"];
-        assert_eq!(
-            query["room"], "studio",
-            "a peer on another build reads this"
-        );
-        assert!(
-            query.get("workspace").is_none(),
-            "the frame is not written in two keys"
-        );
-        let older = serde_json::json!({
-            "version": REMOTE_ACTIONS_VERSION,
-            "message": {"RecordRequest": {"correlation": 1, "query": {
-                "workspace": "studio", "app": "dev.tilo.notes", "record": "uuid:1", "offset": 0}}},
-        });
-        let decoded = RemoteActionFrame::decode(&serde_json::to_vec(&older).unwrap())
-            .unwrap()
-            .message;
-        assert_eq!(
-            decoded, request,
-            "a frame written after the rename still reads"
-        );
-    }
-
-    #[test]
-    fn a_record_piece_round_trips_and_action_hosts_never_serve_records() {
-        let bytes: Vec<u8> = (0..=255).collect();
-        let request = RemoteActionMessage::RecordRequest {
-            correlation: 4,
-            query: RecordQuery {
-                workspace: "workspace".into(),
-                app: "dev.tilo.notes".into(),
-                record: "uuid:1".into(),
-                offset: 0,
-            },
-        };
-        assert!(request.is_request());
-        let answer = RemoteActionMessage::RecordResponse {
-            correlation: 4,
-            result: Ok(RecordPiece::new(256, 0, &bytes)),
-        };
-        let wire = RemoteActionFrame::new(answer.clone()).encode().unwrap();
-        let decoded = RemoteActionFrame::decode(&wire).unwrap().message;
-        assert_eq!(decoded, answer);
-        let RemoteActionMessage::RecordResponse {
-            result: Ok(piece), ..
-        } = decoded
-        else {
-            panic!("a record piece")
-        };
-        assert_eq!(piece.bytes(), Some(bytes));
-        assert!(matches!(
-            refuse(&request, ActionHostError::NotPermitted),
-            Some(RemoteActionMessage::RecordResponse {
-                correlation: 4,
-                result: Err(ActionHostError::NotPermitted)
-            })
-        ));
     }
 
     /// Every message round-trips through a frame, frames from another version are refused not

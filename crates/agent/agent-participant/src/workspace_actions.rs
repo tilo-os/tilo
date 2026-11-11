@@ -472,8 +472,10 @@ impl WorkspaceActions {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RecordRead { .. }
+            | RemoteActionMessage::RecordReading { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::Confirm { .. }
@@ -634,8 +636,10 @@ impl HostActions {
             | RemoteActionMessage::Receipt(_)
             | RemoteActionMessage::Update { .. }
             | RemoteActionMessage::CancelResponse { .. }
-            | RemoteActionMessage::RecordRequest { .. }
-            | RemoteActionMessage::RecordResponse { .. }
+            | RemoteActionMessage::RecordRead { .. }
+            | RemoteActionMessage::RecordReading { .. }
+            | RemoteActionMessage::RetiredRecordRequest
+            | RemoteActionMessage::RetiredRecordResponse
             | RemoteActionMessage::ConfirmationRequest { .. }
             | RemoteActionMessage::ConfirmationResponse { .. }
             | RemoteActionMessage::Confirm { .. }

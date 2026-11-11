@@ -817,3 +817,48 @@ fn the_page_before_is_asked_for_by_the_oldest_message_shown() {
         "every read before it asked for the newest page: {asked:?}"
     );
 }
+
+/// The conversation with a person reads from Chat's messages as the record door answers them:
+/// only theirs with this person, in each part's order, the person's as incoming.
+#[test]
+fn a_direct_conversation_reads_from_chats_messages() {
+    let (me, peer) = ("aa", "bb");
+    let channel = "direct:person:aa|person:bb";
+    let route = routing::Route {
+        person: Id::from_raw("bb"),
+        association: Id::from_raw("tilo"),
+        sender: Id::from_raw("me"),
+        service: "tilo".into(),
+        scope: String::new(),
+        recipient: peer.into(),
+        revision: String::new(),
+    };
+    let readings = serde_json::json!({"revision": "r", "records": [
+        {"record": "part.0", "value": {"messages": {
+            "m2": {"k": "b", "v": {"channel": channel, "author": me, "text": "fine", "ts": 2}},
+            "m1": {"k": "a", "v": {"channel": channel, "author": peer, "text": "hi", "ts": 1}},
+            "x": {"k": "a", "v": {"channel": "general", "author": peer, "text": "elsewhere", "ts": 1}},
+        }}},
+        {"record": "part.1", "arriving": true},
+    ]});
+    let page = crate::history::direct_page(route, (me, peer), &readings);
+    let read: Vec<_> = page
+        .messages
+        .iter()
+        .map(|message| {
+            (
+                message.id.as_str(),
+                message.text.to_string(),
+                message.direction,
+                message.timestamp_ms,
+            )
+        })
+        .collect();
+    assert_eq!(
+        read,
+        [
+            ("m1", "hi".to_owned(), Direction::Incoming, 1000),
+            ("m2", "fine".to_owned(), Direction::Outgoing, 2000),
+        ]
+    );
+}
