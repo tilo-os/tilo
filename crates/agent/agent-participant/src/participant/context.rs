@@ -75,7 +75,7 @@ impl AgentParticipant {
         let mut open: Vec<(DocumentRoute, Vec<ActionDescriptor>)> = self
             .apps
             .iter()
-            .map(|(route, app)| (route.clone(), app.survey()))
+            .map(|(route, app)| (route.clone(), super::record_door::offered(route, app)))
             .collect();
         // The records the task names, by title or by app, are what it is
         // about, and only theirs are offered: a record open from an earlier
@@ -496,6 +496,9 @@ impl AgentParticipant {
         address: &ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<ActionOutput, String> {
+        if super::record_door::reads(route, address) {
+            return self.read_record(route);
+        }
         let app = self
             .apps
             .get(route)
@@ -517,6 +520,21 @@ impl AgentParticipant {
                 actions::Refusal::Door(error) => format!("{}: {error}", error.code()),
                 actions::Refusal::Agent(reason) => reason,
             })
+    }
+}
+
+impl AgentParticipant {
+    /// The open record `route` read through the record door, with what its app keeps beside it.
+    pub(super) fn read_record(&self, route: &DocumentRoute) -> Result<ActionOutput, String> {
+        let replica = self
+            .apps
+            .get(route)
+            .ok_or_else(|| "that document is not open".to_string())?;
+        super::record_door::read(
+            route,
+            replica,
+            crate::control::agent_id(&self.identity.delegation),
+        )
     }
 }
 

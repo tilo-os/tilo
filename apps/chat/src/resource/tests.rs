@@ -403,13 +403,6 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
         serde_json::to_value(message.resource().unwrap()).unwrap(),
         reference
     );
-    let target = item("messages", &message.id);
-    let result = app
-        .call_on(&target, "read-message", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
-    assert_eq!(result["attachments"][0]["at"], reference);
-    assert_eq!(result["author"], message.author);
     app.set_role(ui::permissions::Role::Viewer);
     assert!(
         app.call_on(
@@ -420,14 +413,6 @@ fn shared_space_resource_journey_preserves_address_author_and_viewer_boundary() 
         .is_err()
     );
     assert_eq!(messages(&mut app).len(), 1);
-    let read = app
-        .call_on(&target, "read-message", serde_json::json!({}))
-        .unwrap()
-        .unwrap();
-    assert_eq!(
-        read["attachments"][0]["at"], reference,
-        "viewers can inspect an address, with no grant to its target"
-    );
 }
 
 #[test]
@@ -615,7 +600,6 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
         "mark-read",
         "move-channel",
         "delete-channel",
-        "read-messages",
         "read-feedback-destination",
     ] {
         assert!(

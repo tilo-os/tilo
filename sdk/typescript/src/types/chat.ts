@@ -542,11 +542,6 @@ export interface Workspace extends tilo.Resource {
     message?: string;
     channel?: string;
   }): Promise<void>;
-  readMessages(args: {
-    channel: string;
-    pageSize?: number;
-    cursor?: string;
-  }): Promise<void>;
   exportContent(args: {
     channel: string;
     format?: string;

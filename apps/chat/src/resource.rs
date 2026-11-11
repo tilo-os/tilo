@@ -700,13 +700,10 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         // two people it is between, so opening and sending read and write the
         // same record and the same parts as a channel's.
         ChatEffect::OpenDirectConversation { public_key } => {
-            let (_, id) = chat
-                .borrow()
-                .direct_conversation(public_key, &cx.live().get())?;
             let state = cx.live().get();
-            let mut chat = chat.borrow_mut();
-            chat.open_conversation(&id, &state);
-            return Ok(chat.opened_direct_answer(public_key, &id, &state));
+            let (_, id) = chat.borrow().direct_conversation(public_key, &state)?;
+            chat.borrow_mut().open_conversation(&id, &state);
+            return Ok(ui::framework::Effected::done());
         }
         ChatEffect::OpenAgent { agent } => {
             let state = cx.live().get();
@@ -747,21 +744,6 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
                 .send_from_box(to, attached.clone(), text, &state);
         }
         _ => {}
-    }
-    if let ChatEffect::ReadMessages {
-        channel,
-        page_size,
-        cursor,
-    } = &effect
-    {
-        let chat = chat.borrow();
-        return crate::effects::read_messages(
-            &chat.held_messages(),
-            (channel, &|id| chat.display_name(id)),
-            *page_size,
-            cursor.as_deref(),
-        )
-        .map(ui::framework::Effected::value);
     }
     if let ChatEffect::ExportContent { channel, format } = &effect {
         return chat

@@ -169,25 +169,6 @@ fn two_peoples_chat_is_the_workspaces_own_messages() {
         ["hello from Ada", "hello from Bob"],
         "both people's messages are in the one conversation"
     );
-
-    // An agent reads it as any conversation: `read-messages` on its id.
-    let id = Chat::direct_id([Participant::person(ada), Participant::person(bob)]);
-    let page = ada_window
-        .effect(&crate::effects::ChatEffect::ReadMessages {
-            channel: id.to_string(),
-            page_size: None,
-            cursor: None,
-        })
-        .expect("the conversation reads as a channel does")
-        .value
-        .expect("a page");
-    let read: Vec<&str> = page["messages"]
-        .as_array()
-        .expect("its messages")
-        .iter()
-        .filter_map(|message| message["text"].as_str())
-        .collect();
-    assert_eq!(read, said, "the same messages, in the same order");
 }
 
 /// What a window's box sends goes to the conversation Chat already keeps with
@@ -403,7 +384,6 @@ fn a_persons_card_opens_the_conversation_chat_keeps() {
         for operation in [
             ChatEffect::OPEN_DIRECT_CONVERSATION.id,
             ChatEffect::SEND_DIRECT_MESSAGE.id,
-            ChatEffect::READ_MESSAGES.id,
         ] {
             assert!(
                 offered.contains(&operation),

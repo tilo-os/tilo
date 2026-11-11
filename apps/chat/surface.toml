@@ -308,15 +308,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "read-messages"
-kind = "read"
-params = [
-  { name = "channel", type = "text", required = true },
-  { name = "pageSize", type = { option = "int" }, required = false },
-  { name = "cursor", type = { option = "text" }, required = false },
-]
-
-[[resources.verbs]]
 id = "export-content"
 kind = "read"
 params = [

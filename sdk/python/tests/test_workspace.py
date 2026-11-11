@@ -200,6 +200,22 @@ async def test_any_path_has_a_link_and_a_bad_one_is_refused(workspace, door):
         await workspace.link("notes/Nothing")
 
 
+async def test_a_conversation_is_read_from_the_chat_record(workspace, door):
+    chain = "derived:messages@derived:default@tab:0000000000000000"
+    door.records[("so.tilo.chat", chain)] = {"messages": {"m1": {"channel": "general", "text": "hi"}}}
+
+    read = await workspace.record("so.tilo.chat", chain, parts=True, after="r0")
+
+    assert read["records"][0]["value"]["messages"]["m1"]["text"] == "hi"
+    assert door.asked("tilo_read")[-1]["arguments"] == {
+        "path": f"record:so.tilo.chat:{chain}",
+        "parts": True,
+        "after": "r0",
+    }
+    absent = await workspace.record("so.tilo.chat")
+    assert absent["records"] == [{"record": "", "absent": True}]
+
+
 async def test_a_run_group_is_undone_as_one_task(workspace, door):
     async with workspace.run("Fill Jane's application") as group:
         await workspace.do(f"{TODO}#append-paragraph", text="Buy milk")

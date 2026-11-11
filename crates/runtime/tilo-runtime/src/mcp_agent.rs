@@ -116,7 +116,7 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_read",
-            "Read a resource as compact text. `notes/Todo`: markdown, each block ending in its id (`^c01e`, `{#c01e}`) that block actions take alone. A long read ends with a cursor to pass back. `notes` alone: what the app publishes. `record:<app>:<id>`: the record as JSON and revision; after: a revision to wait past; parts: join its chain",
+            "Read a resource as compact text. `notes/Todo`: markdown, each block ending in its id (`^c01e`, `{#c01e}`) that block actions take alone. A long read ends with a cursor to pass back. `notes` alone: what the app publishes. `record:<app>:<id>`: the record as JSON and revision; after: a revision to wait past; parts: join its chain. Conversations are read so: `record:so.tilo.chat:` holds channels and people, and its messages (each naming its channel, author and text) are in the chain a `chain:<id>` row of `tilo_ls chat` names, read as `record:so.tilo.chat:<id>` with parts",
             json!({"path":string,"cursor":string,"max_chars":integer,"parts":{"type":"boolean"},"after":string}),
             json!(["path"]),
             read.clone(),
@@ -706,7 +706,7 @@ fn action_rank(name: &str, action: &ActionDescriptor) -> Option<u8> {
 
 /// The action that reads a resource, among those its directory level offers:
 /// the one declared to read its document, else one named `read`, else a view
-/// whose action starts with `read` (`read-messages` next to `read`).
+/// whose action starts with `read` (`read-settings` next to `read`).
 fn reads_action(actions: &[ActionDescriptor]) -> Option<ActionDescriptor> {
     actions
         .iter()

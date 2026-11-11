@@ -82,35 +82,6 @@ impl ChatApp {
         self.request_relayout();
     }
 
-    /// The conversation with `peer` as opening it answers: its messages in
-    /// the order the window shows them, and how many of them this person has
-    /// not seen.
-    pub(crate) fn opened_direct_answer(&mut self, peer: &str, id: &Id, chat: &Chat) -> Effected {
-        let channel = id.to_string();
-        let held = self.held_messages();
-        let rows = chat.message_rows(&held, &channel);
-        let messages: Vec<serde_json::Value> = rows
-            .iter()
-            .map(|message| {
-                serde_json::json!({
-                    "id": message.id,
-                    "author": message.author,
-                    "text": message.text,
-                    "at": message.ts,
-                })
-            })
-            .collect();
-        let unread = chat.unread(&held, &channel, &self.me.id);
-        if self.active_channel == channel {
-            self.messages = rows;
-        }
-        Effected::value(serde_json::json!({
-            "peer": peer,
-            "messages": messages,
-            "unread": unread,
-        }))
-    }
-
     /// Post `text`, with what it carries, to the conversation `id` now, as
     /// the record's `post` does, and say whether it was taken.
     pub(crate) fn post_to_conversation(
@@ -270,7 +241,7 @@ impl ChatApp {
     /// by a written address. Every person has one, not only those the
     /// conversation with whom holds a message yet: a caller asks for the
     /// row before it can write the first message. Its messages are read as
-    /// any conversation's, by `read-messages` on its id.
+    /// any conversation's, from the chat's record and its parts.
     pub(crate) fn direct_conversation_rows(&self) -> Vec<LiveRow> {
         self.channels
             .iter()
@@ -291,14 +262,6 @@ impl ChatApp {
                             text: String::new(),
                         }
                         .bound_asking(&["text"]),
-                    )
-                    .operation(
-                        ChatEffect::ReadMessages {
-                            channel: channel.id.clone(),
-                            page_size: None,
-                            cursor: None,
-                        }
-                        .bound_asking(&["pageSize", "cursor"]),
                     ),
                 )
             })

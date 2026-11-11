@@ -1032,12 +1032,12 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     };
     let listed = messages(&agent);
     let question = listed.last().unwrap().clone();
-    let read = invoke(&mut agent, &question, "read-message", serde_json::json!({}));
-    let read = read.value.unwrap();
-    assert_eq!(read["text"], "Where does Odysseus wake up?");
-    assert_eq!(read["author"], "Visitor");
-    assert_eq!(read["agent"], false);
-    assert_eq!(read["mine"], false);
+    // An agent reads the conversation from the chat's record and its parts.
+    let asked = crate::testing::messages_in(&records, "c_chat")
+        .pop()
+        .unwrap();
+    assert_eq!(asked.text, "Where does Odysseus wake up?");
+    assert_eq!(asked.author, "Visitor");
 
     // Its work is recorded on the message itself, in the part of the
     // chat's messages that holds it.
@@ -1062,15 +1062,22 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
     );
     let reply = messages(&agent).last().unwrap().clone();
     assert_ne!(reply, question);
-    let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
-        .value
+    // The agent's work is recorded on its reply.
+    let said_text = "On Scheria, on the shore of the Phaeacians.";
+    let work = |records: &ui::record::RecordStore| {
+        let said = crate::testing::messages_in(records, "c_chat");
+        let reply = said
+            .iter()
+            .find(|message| message.text == said_text)
+            .unwrap();
+        serde_json::to_value(&reply.work).unwrap()
+    };
+    let answered = crate::testing::messages_in(&records, "c_chat")
+        .pop()
         .unwrap();
-    assert_eq!(read["author"], "agent-task:reading");
-    assert_eq!(read["text"], "On Scheria, on the shore of the Phaeacians.");
-    assert_eq!(read["authorName"], "Reading agent");
-    assert_eq!(read["agent"], true);
-    assert_eq!(read["work"]["state"]["state"], "done");
-    assert_eq!(read["work"]["trace"][0]["label"], "Add note");
+    assert_eq!(answered.text, said_text);
+    assert_eq!(work(&records)["state"]["state"], "done");
+    assert_eq!(work(&records)["trace"][0]["label"], "Add note");
 
     let (author, agents) = records
         .read(&checkout.id, |doc| {
@@ -1103,11 +1110,9 @@ fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
         serde_json::json!({"work": {"state": "refused"}}),
     );
     agent.wait_until(ui::time::Duration::ZERO, |_| true);
-    let read = invoke(&mut agent, &reply, "read-message", serde_json::json!({}))
-        .value
-        .unwrap();
     assert_eq!(
-        read["work"]["state"]["state"], "done",
+        work(&records)["state"]["state"],
+        "done",
         "a person cannot rewrite an agent's work"
     );
     visitor.close_components();

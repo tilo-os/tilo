@@ -61,8 +61,9 @@ pub enum ChatEffect {
         #[param("Model command", choices = ["ask", "stop", "retry", "continue"])]
         command: String,
     },
-    /// Show or hide reasoning actually supplied by the provider.
-    #[effect(view, row, item = messages, audience = "agents")]
+    /// Show or hide reasoning actually supplied by the provider, in the
+    /// caller's own view.
+    #[effect(view, row, item = messages, audience = "agents", participant)]
     ShowAgentReasoning { message: String, expanded: bool },
     /// Open conversation
     #[effect(view, row, item = channels)]
@@ -76,7 +77,10 @@ pub enum ChatEffect {
     #[effect(view, row, item = categories)]
     ToggleCategory { category: String },
     /// Reveal message
-    #[effect(view, row, item = messages)]
+    ///
+    /// Scrolls the caller's own view to the message: the view its row
+    /// discloses through, under the reader's read of the chat's messages.
+    #[effect(view, row, item = messages, participant)]
     RevealMessage { message: String },
     /// Reveal message range
     #[effect(view, row, returns, item = messages, audience = "agents")]
@@ -95,9 +99,9 @@ pub enum ChatEffect {
     /// Open the conversation with an agent: where search's agent hit goes.
     #[effect(view, returns, participant)]
     OpenAgent { agent: String },
-    /// Open the conversation with a certified person public key, as the read
-    /// of it is answered: it changes only whose view is showing what.
-    #[effect(view, returns, audience = "agents", participant)]
+    /// Open the conversation with a certified person public key: it changes
+    /// only whose view is showing what.
+    #[effect(view, audience = "agents", participant)]
     OpenDirectConversation { public_key: String },
     /// Send to the direct conversation with a certified person public key.
     #[effect(job, returns, audience = "agents")]
@@ -118,22 +122,6 @@ pub enum ChatEffect {
         #[param("The message")]
         text: String,
     },
-    /// Read message
-    ///
-    /// The message as a value: who wrote it, whether that is an agent, its
-    /// whole text and the agent's record of its work. A message is the
-    /// workspace's: this read is what discloses its row, under the reader's own
-    /// policy, where the row's views (show the reasoning, reveal it) are the
-    /// window's own.
-    #[effect(
-        view,
-        row,
-        returns,
-        item = messages,
-        audience = "agents",
-        tag = ui::tilo_actions::DOCUMENT_READ_TAG
-    )]
-    ReadMessage { message: String },
     /// Read workspace
     ///
     /// The workspace's categories and channels and its people as the record
@@ -146,24 +134,6 @@ pub enum ChatEffect {
         message: Option<String>,
         #[param("A channel whose latest messages to include, each with the message it answers")]
         channel: Option<String>,
-    },
-    /// Read conversation messages
-    ///
-    /// A page of the channel's messages, oldest first, from every part of
-    /// the chat's messages this window holds, each with its author's id
-    /// (`author`) and name (`authorName`); `cursor` is the preceding page's
-    /// `nextCursor`.
-    #[effect(kind = "read", returns, audience = "agents")]
-    ReadMessages {
-        #[param("Id of the channel")]
-        channel: String,
-        #[param(
-            "Maximum messages in this page, 1 to 32 (default 32); more reads 32",
-            name = "pageSize"
-        )]
-        page_size: Option<u8>,
-        #[param("The preceding page's nextCursor")]
-        cursor: Option<String>,
     },
     /// Export conversation
     ///
@@ -316,9 +286,6 @@ impl ChatApp {
             | ChatEffect::Send { .. } => {
                 return Err("a direct conversation answers where the chat is held".into());
             }
-            ChatEffect::ReadMessage { message } => {
-                return self.read_message(&message).map(Effected::value);
-            }
             ChatEffect::AttachFile { channel, path } => {
                 self.attach_file_effect(&channel, path.as_ref())?;
             }
@@ -332,9 +299,7 @@ impl ChatApp {
                     "videoCapture": false,
                 })));
             }
-            ChatEffect::ReadWorkspace { .. }
-            | ChatEffect::ReadMessages { .. }
-            | ChatEffect::ExportContent { .. } => {
+            ChatEffect::ReadWorkspace { .. } | ChatEffect::ExportContent { .. } => {
                 return Err("the record answers this read".into());
             }
             ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
@@ -740,122 +705,6 @@ impl ChatApp {
         self.reselect();
         Ok(())
     }
-
-    /// One message as a value: who wrote it, whether that is an agent, its
-    /// whole text and the agent's record of its work.
-    fn read_message(&self, id: &str) -> Result<serde_json::Value, String> {
-        let message = self
-            .search_messages
-            .iter()
-            .find(|message| message.id == id)
-            .ok_or("message no longer exists")?;
-        let agent_name = self.agent_authors.get(&message.author).cloned();
-        let agent = agent_name.is_some()
-            || self
-                .search_users
-                .iter()
-                .any(|user| user.id == message.author && user.is_agent);
-        Ok(serde_json::json!({
-            "id": message.id,
-            "channel": message.channel,
-            "parent": message.parent,
-            "author": message.author,
-            "authorName": agent_name.unwrap_or_else(|| self.display_name(&message.author)),
-            "agent": agent,
-            "mine": self.is_me(&message.author),
-            "ts": message.ts,
-            "edited": message.edited,
-            "text": message.text,
-            "work": message.work,
-            "attachments": message.attachments,
-            "share": message.share,
-        }))
-    }
-}
-
-/// The most messages one [`read_messages`] page holds.
-const PAGE_MOST: usize = 32;
-
-/// The answer of [`ChatEffect::ReadMessages`]: `channel`'s messages in
-/// `held` (every part of the chat's messages the window holds), oldest
-/// first, a page of at most `page_size` after `cursor`, with the cursor of
-/// the next page when there is more. Each names its author by id and by
-/// the name `name` gives them, as the window shows it.
-///
-/// A page asked larger than [`PAGE_MOST`] reads a full page: a caller
-/// asking for more wants as many as it can have, and reads on from the
-/// cursor. A message delivered or bridged under another name is shown by
-/// it ([`crate::transcript::shown_author`]).
-pub(crate) fn read_messages(
-    held: &crate::messages::Messages,
-    (channel, name): (&str, &dyn Fn(&str) -> String),
-    page_size: Option<u8>,
-    cursor: Option<&str>,
-) -> Result<serde_json::Value, String> {
-    let size = page_size.map_or(PAGE_MOST, |size| usize::from(size).min(PAGE_MOST));
-    if size == 0 {
-        return Err(format!("a page holds 1 to {PAGE_MOST} messages"));
-    }
-    let after = cursor
-        .map(|cursor| {
-            let (ts, id) = cursor
-                .split_once(':')
-                .ok_or("not a cursor of this channel")?;
-            Ok::<_, String>((
-                ts.parse::<i64>().map_err(|_| "not a cursor")?,
-                id.to_owned(),
-            ))
-        })
-        .transpose()?;
-    // The timeline's order, as the window shows it ([`crate::messages::Messages::iter`]):
-    // the chain's, which every device reads the same. A message written on a
-    // device whose clock was behind another's keeps its place in the
-    // conversation rather than jumping back in time.
-    let mut messages: Vec<(&tilo_resource::Id, &crate::record::Message)> = held
-        .iter()
-        .filter(|(_, found)| found.channel.as_str() == channel)
-        .collect();
-    if let Some((ts, last)) = &after {
-        // On from the cursor's message where it is still held. When it has
-        // gone since (deleted), on from the first message in the timeline
-        // written after the second it was in: messages written in that same
-        // second are read again rather than skipped.
-        let start = messages
-            .iter()
-            .position(|(id, _)| id.as_str() == last)
-            .map_or_else(
-                || {
-                    messages
-                        .iter()
-                        .position(|(_, found)| found.ts > *ts)
-                        .unwrap_or(messages.len())
-                },
-                |at| at.saturating_add(1),
-            );
-        messages.drain(..start);
-    }
-    let more = messages.len() > size;
-    messages.truncate(size);
-    let next = more
-        .then(|| {
-            messages
-                .last()
-                .map(|(id, found)| format!("{}:{}", found.ts, id.as_str()))
-        })
-        .flatten();
-    Ok(serde_json::json!({
-        "channel": channel,
-        "messages": messages.iter().map(|(id, found)| serde_json::json!({
-            "id": id.as_str(),
-            "author": found.author.0.as_str(),
-            "authorName": crate::transcript::shown_author(found, name),
-            "ts": found.ts.to_string(),
-            "parent": found.parent.as_ref().map_or("", tilo_resource::Id::as_str),
-            "edited": found.edited,
-            "text": found.text,
-        })).collect::<Vec<_>>(),
-        "nextCursor": next,
-    }))
 }
 
 /// How many of a channel's latest messages [`read_workspace`] includes: a
@@ -1095,15 +944,7 @@ impl ChatApp {
                 }),
             )
         } else {
-            row.operation(
-                ChatEffect::ReadMessages {
-                    channel: id.to_owned(),
-                    page_size: None,
-                    cursor: None,
-                }
-                .bound_asking(&["pageSize", "cursor"]),
-            )
-            .operation(crate::feedback::destination_read::spec(id))
+            row.operation(crate::feedback::destination_read::spec(id))
         })
     }
 
@@ -1325,7 +1166,7 @@ mod audience_tests {
     use super::ChatEffect;
     use ui::tilo_resource::Effect;
 
-    /// What an agent reads of a conversation, or the reasoning it folds, is
+    /// Where an agent reveals a message, or the reasoning it folds, is
     /// not something a person looks for in search: those effects stay offered
     /// to agents and out of people's listings, while revealing a found
     /// message reaches both.
@@ -1338,7 +1179,6 @@ mod audience_tests {
             .map(|decl| decl.id)
             .collect();
         for agent_only in [
-            ChatEffect::READ_MESSAGE.id,
             ChatEffect::REVEAL_MESSAGE_RANGE.id,
             ChatEffect::SHOW_AGENT_REASONING.id,
         ] {

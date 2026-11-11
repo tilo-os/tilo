@@ -1081,7 +1081,7 @@ fn the_record_offers_each_item_its_views_with_no_window_open() {
     };
 
     let said = item("messages", &message);
-    for effect in ["reveal-message", "reveal-message-range", "read-message"] {
+    for effect in ["reveal-message", "reveal-message-range"] {
         assert!(
             actions(&said).iter().any(|id| id == effect),
             "{effect}: {:?}",

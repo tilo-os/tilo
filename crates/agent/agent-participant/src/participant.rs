@@ -56,6 +56,7 @@ mod logs;
 mod obligations;
 mod parts;
 mod planning;
+mod record_door;
 mod records;
 mod repairs;
 mod running;
@@ -2102,6 +2103,9 @@ impl AgentParticipant {
                 "the agent is not delegated {}",
                 route.app_id
             )));
+        }
+        if record_door::reads(route, address) {
+            return self.read_record(route).map(Some).map_err(Refusal::Agent);
         }
         let app = self
             .apps

@@ -401,53 +401,6 @@ fn a_part_a_peer_started_is_started_here_and_takes_the_peers_changes() {
     assert_eq!(devices.guest_reads().last().unwrap(), "the first post");
 }
 
-/// read-messages reads a channel's messages from every part of the chat's
-/// messages, not the chat record (which holds none), page by page.
-#[test]
-fn read_messages_pages_through_a_channel_across_its_parts() {
-    let mut workspace = Workspace::demo().unwrap();
-    let later = fill_part(&mut workspace, 0);
-    assert_eq!(workspace.messages().part_of(&Id::from_raw(&later)), Some(1));
-    let held = workspace.messages();
-    let mut seen = Vec::new();
-    let mut cursor: Option<String> = None;
-    loop {
-        let page = crate::effects::read_messages(
-            &held,
-            ("c_general", &|id| format!("name of {id}")),
-            Some(7),
-            cursor.as_deref(),
-        )
-        .unwrap();
-        for message in page["messages"].as_array().unwrap() {
-            assert_eq!(
-                message["authorName"],
-                format!("name of {}", message["author"].as_str().unwrap()),
-                "each message names its author as the window does"
-            );
-        }
-        let ids: Vec<String> = page["messages"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|message| message["id"].as_str().unwrap().to_owned())
-            .collect();
-        assert!(ids.len() <= 7);
-        seen.extend(ids);
-        match page["nextCursor"].as_str() {
-            Some(next) => cursor = Some(next.to_owned()),
-            None => break,
-        }
-    }
-    assert!(seen.contains(&"m_welcome".to_owned()), "part 0's");
-    assert_eq!(seen.last(), Some(&later), "and part 1's, last");
-    let unique: std::collections::BTreeSet<_> = seen.iter().collect();
-    assert_eq!(unique.len(), seen.len(), "each once");
-    assert!(
-        crate::effects::read_messages(&held, ("c_general", &str::to_owned), Some(0), None).is_err()
-    );
-}
-
 /// A direct conversation's unread count follows the chain, as the read mark
 /// does, though a message written elsewhere carries an earlier time than the
 /// message before it: a clock behind another device's does not make a message

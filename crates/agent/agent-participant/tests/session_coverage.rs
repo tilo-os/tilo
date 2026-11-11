@@ -2473,6 +2473,11 @@ async fn a_news_replan_that_finds_nothing_to_do_keeps_the_task_waiting() {
 /// The id under which the planning request `body` offers `action`
 /// (`<resource>#<action>`).
 fn offered(body: &str, action: &str) -> String {
+    offered_on(body, "", action)
+}
+
+/// The id of the operation `action` offered in `body` whose id names `on`.
+fn offered_on(body: &str, on: &str, action: &str) -> String {
     let request: serde_json::Value = serde_json::from_str(body).unwrap();
     let text: String = request["messages"]
         .as_array()
@@ -2496,7 +2501,9 @@ fn offered(body: &str, action: &str) -> String {
                 .rev()
                 .find(|(_, c)| !in_id(*c))
                 .map_or(0, |(i, c)| i + c.len_utf8());
-            text.get(start..end).map(str::to_owned)
+            text.get(start..end)
+                .filter(|id| id.contains(on))
+                .map(str::to_owned)
         })
         .unwrap_or_else(|| panic!("{action} is offered: {text}"))
 }
