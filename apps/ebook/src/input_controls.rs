@@ -463,7 +463,7 @@ impl NoteComposer {
         };
         vec![
             AccessNode::new(Role::Dialog)
-                .with_name(&ui::i18n::I18nManager::lookup_plain("ebook-a11y-edit-note"))
+                .with_name(ui::i18n::I18nManager::lookup_plain("ebook-a11y-edit-note"))
                 .with_state(AccessState::new().modal(true))
                 .with_children(vec![
                     input,
@@ -932,7 +932,7 @@ impl SchemeColorSheet {
         };
         vec![
             AccessNode::new(Role::Dialog)
-                .with_name(&ui::i18n::I18nManager::lookup_plain(
+                .with_name(ui::i18n::I18nManager::lookup_plain(
                     "ebook-a11y-choose-colour",
                 ))
                 .with_bounds(self.panel)

@@ -1300,7 +1300,7 @@ impl Widget for AuthenticatorApp {
         if self.add_panel.is_open() {
             return Some(
                 AccessNode::new(Role::Group)
-                    .with_name(&crate::i18n::t("totp-a11y-app"))
+                    .with_name(crate::i18n::t("totp-a11y-app"))
                     .with_bounds(self.rect),
             );
         }
@@ -1311,10 +1311,10 @@ impl Widget for AuthenticatorApp {
         if let Some(message) = &store.persistence_message {
             children.push(
                 AccessNode::new(Role::Toolbar)
-                    .with_name(&crate::i18n::t("totp-a11y-key-status"))
+                    .with_name(crate::i18n::t("totp-a11y-key-status"))
                     .with_children(vec![
                         AccessNode::new(Role::Button)
-                            .with_name(&crate::i18n::t("totp-a11y-retry-keys"))
+                            .with_name(crate::i18n::t("totp-a11y-retry-keys"))
                             .with_description(message.as_str())
                             .with_state(AccessState::new().focusable(true))
                             .with_bounds(self.retry_rect)
@@ -1344,7 +1344,7 @@ impl Widget for AuthenticatorApp {
                                 &[("name", ui::i18n::ArgValue::Text(name.clone()))],
                             )
                         })
-                        .with_description(&crate::i18n::t("totp-a11y-codes-hidden"))
+                        .with_description(crate::i18n::t("totp-a11y-codes-hidden"))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
@@ -1352,7 +1352,7 @@ impl Widget for AuthenticatorApp {
                         )
                         .with_action_target(format!("totp.reveal:{id}")),
                     AccessNode::new(Role::Button)
-                        .with_name(&crate::i18n::t_args(
+                        .with_name(crate::i18n::t_args(
                             "totp-a11y-copy-code",
                             &[("name", ui::i18n::ArgValue::Text(name.clone()))],
                         ))
@@ -1368,21 +1368,21 @@ impl Widget for AuthenticatorApp {
                         )
                         .with_action_target(format!("totp.copy:{id}")),
                     AccessNode::new(Role::Button)
-                        .with_name(&crate::i18n::t_args(
+                        .with_name(crate::i18n::t_args(
                             "totp-a11y-edit",
                             &[("name", ui::i18n::ArgValue::Text(name.clone()))],
                         ))
                         .with_state(AccessState::new().focusable(true))
                         .with_action_target(format!("totp.edit:{id}")),
                     AccessNode::new(Role::Button)
-                        .with_name(&crate::i18n::t_args(
+                        .with_name(crate::i18n::t_args(
                             "totp-a11y-move-up",
                             &[("name", ui::i18n::ArgValue::Text(name.clone()))],
                         ))
                         .with_state(AccessState::new().focusable(true).disabled(index == 0))
                         .with_action_target(format!("totp.move-up:{id}")),
                     AccessNode::new(Role::Button)
-                        .with_name(&crate::i18n::t_args(
+                        .with_name(crate::i18n::t_args(
                             "totp-a11y-move-down",
                             &[("name", ui::i18n::ArgValue::Text(name.clone()))],
                         ))
@@ -1393,7 +1393,7 @@ impl Widget for AuthenticatorApp {
                         )
                         .with_action_target(format!("totp.move-down:{id}")),
                     AccessNode::new(Role::Button)
-                        .with_name(&crate::i18n::t_args(
+                        .with_name(crate::i18n::t_args(
                             "totp-a11y-delete",
                             &[("name", ui::i18n::ArgValue::Text(name.clone()))],
                         ))
@@ -1403,11 +1403,11 @@ impl Widget for AuthenticatorApp {
                 if !account.secret_is_valid() {
                     row_children.push(
                         AccessNode::new(Role::Button)
-                            .with_name(&crate::i18n::t_args(
+                            .with_name(crate::i18n::t_args(
                                 "totp-a11y-set-up",
                                 &[("name", ui::i18n::ArgValue::Text(name.clone()))],
                             ))
-                            .with_description(&crate::i18n::t("totp-a11y-set-up-description"))
+                            .with_description(crate::i18n::t("totp-a11y-set-up-description"))
                             .with_state(AccessState::new().focusable(true))
                             .with_action_target(format!("totp.setup:{id}")),
                     );
@@ -1418,7 +1418,7 @@ impl Widget for AuthenticatorApp {
                 Some(
                     AccessNode::new(Role::ListItem)
                         .with_name(name)
-                        .with_description(&crate::i18n::t("totp-a11y-account"))
+                        .with_description(crate::i18n::t("totp-a11y-account"))
                         .with_state(
                             AccessState::new()
                                 .focusable(true)
@@ -1433,7 +1433,7 @@ impl Widget for AuthenticatorApp {
             .collect();
         children.push(
             AccessNode::new(Role::List)
-                .with_name(&crate::i18n::t("totp-a11y-accounts"))
+                .with_name(crate::i18n::t("totp-a11y-accounts"))
                 .with_description(&if total == 0 {
                     crate::i18n::t("totp-a11y-none")
                 } else {
@@ -1447,7 +1447,7 @@ impl Widget for AuthenticatorApp {
         );
         Some(
             AccessNode::new(Role::Group)
-                .with_name(&crate::i18n::t("totp-a11y-app"))
+                .with_name(crate::i18n::t("totp-a11y-app"))
                 .with_bounds(self.rect)
                 .with_children(children),
         )

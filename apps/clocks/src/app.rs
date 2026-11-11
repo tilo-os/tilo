@@ -485,7 +485,7 @@ fn repeat_control(selection: &ui::LocalState<BTreeSet<WeekdayKey>>, id: &'static
         ui::widget::ToggleGroup::multiple_from_state(days, selection)
             .control_size(ui::widget::ControlSize::Large)
             .with_id(id)
-            .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("clocks-repeat-on")),
+            .with_accessible_name(ui::i18n::I18nManager::lookup_plain("clocks-repeat-on")),
     )
 }
 
@@ -567,7 +567,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                     let minute = alarm.minute;
                     let weekdays = alarm.weekdays();
                     Button::new(
-                        &format!("clocks.alarm.{{id}}.edit"),
+                        &format!("clocks.alarm.{id}.edit"),
                         &ui::i18n::I18nManager::lookup_plain("clocks-edit"),
                     )
                     .control_size(ui::widget::ControlSize::Large)
@@ -591,7 +591,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                 .push(Box::new(
                     list_controls.button(
                         Button::new(
-                            &format!("clocks.alarm.{{id}}.remove"),
+                            &format!("clocks.alarm.{id}.remove"),
                             &ui::i18n::I18nManager::lookup_plain("clocks-remove"),
                         )
                         .control_size(ui::widget::ControlSize::Large),
@@ -636,7 +636,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             TextInput::from_state(&edit_label)
                                 .with_id("clocks.alarm.edit.label")
                                 .with_kind(TextInputKind::Name)
-                                .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                                .with_placeholder(ui::i18n::I18nManager::lookup_plain(
                                     "clocks-alarm-label-placeholder",
                                 )),
                         ))
@@ -647,7 +647,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         .push(Box::new(
                             TimePicker::from_state(&edit_time)
                                 .with_id("clocks.alarm.edit.time")
-                                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
+                                .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
                                     "clocks-alarm-time",
                                 )),
                         ))
@@ -703,7 +703,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                             TextInput::from_state(&draft_label)
                                 .with_id("clocks.alarm.label")
                                 .with_kind(TextInputKind::Name)
-                                .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                                .with_placeholder(ui::i18n::I18nManager::lookup_plain(
                                     "clocks-alarm-label-placeholder",
                                 )),
                         ))
@@ -714,7 +714,7 @@ fn alarms_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element 
                         .push(Box::new(
                             TimePicker::from_state(&draft)
                                 .with_id("clocks.alarm.time")
-                                .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
+                                .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
                                     "clocks-alarm-time",
                                 )),
                         ))
@@ -831,7 +831,7 @@ fn timer_card(
                     Row::new()
                         .push(Box::new(
                             controls.button(
-                                Button::new(&format!("clocks.timer.{{id}}.add-minute"), "+1 min")
+                                Button::new(&format!("clocks.timer.{id}.add-minute"), "+1 min")
                                     .with_accessible_name(&ui::i18n::I18nManager::format(
                                         "clocks-add-minute-to",
                                         &[("name", ui::i18n::ArgValue::Text(timer.label.clone()))],
@@ -843,7 +843,7 @@ fn timer_card(
                         .push(Box::new(
                             controls.button(
                                 Button::new(
-                                    &format!("clocks.timer.{{id}}.toggle"),
+                                    &format!("clocks.timer.{id}.toggle"),
                                     &if running {
                                         ui::i18n::I18nManager::lookup_plain("clocks-pause")
                                     } else if finished {
@@ -881,7 +881,7 @@ fn timer_card(
                                     .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
                                         "clocks-remove-timer-name",
                                     ))
-                                    .tooltip(&ui::i18n::I18nManager::lookup_plain(
+                                    .tooltip(ui::i18n::I18nManager::lookup_plain(
                                         "clocks-remove-timer-name",
                                     ))
                                     .role(ui::widget::ButtonRole::Destructive)
@@ -1029,10 +1029,10 @@ fn timers_screen(
                     TextInput::from_state(&custom_label)
                         .with_id("clocks.timer.custom.label")
                         .with_kind(TextInputKind::Name)
-                        .with_accessible_name(&ui::i18n::I18nManager::lookup_plain(
+                        .with_accessible_name(ui::i18n::I18nManager::lookup_plain(
                             "clocks-timer-label-name",
                         ))
-                        .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+                        .with_placeholder(ui::i18n::I18nManager::lookup_plain(
                             "clocks-timer-label-placeholder",
                         )),
                 ))
@@ -1090,6 +1090,10 @@ fn timers_screen(
     )
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one screen across helpers"
+)]
 fn stopwatch_screen(state: &ui::LocalState<Shown>, controls: &Controls) -> Element {
     let controls = controls.clone();
     let ticking = state.clone();
@@ -1220,6 +1224,10 @@ pub(crate) fn section_title(mode: usize) -> String {
     })
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "declarative UI builder that reads top-to-bottom; splitting it would scatter one window across helpers"
+)]
 fn surface(
     mode: &ui::LocalState<usize>,
     title: &ui::LocalState<String>,
@@ -1316,7 +1324,7 @@ fn surface(
             })
             .collect(),
     )])
-    .with_accessible_name(&ui::i18n::I18nManager::lookup_plain("clocks-title"))
+    .with_accessible_name(ui::i18n::I18nManager::lookup_plain("clocks-title"))
     .bind_selection(selection)
     .on_view("clocks.screens", move |id| {
         if let Ok(mode) = id.parse::<usize>() {
@@ -1447,7 +1455,7 @@ impl ClocksApp {
         let validation_error = ui::LocalState::new(None);
         let mode = ui::LocalState::new(WORLD);
         let selection = ui::LocalState::new(Some(WORLD.to_string()));
-        let title = ui::LocalState::new(section_title(WORLD).to_owned());
+        let title = ui::LocalState::new(section_title(WORLD));
         let activations = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         if live {
             let sink = activations.clone();
@@ -1857,7 +1865,7 @@ impl ui::widget::Decorator for ClocksApp {
             self.store.selection.set(selected);
         }
         if self.title.with(|title| title != &section_title(mode)) {
-            self.title.set(section_title(mode).to_owned());
+            self.title.set(section_title(mode));
         }
         self.inner.sync(d, p);
     }

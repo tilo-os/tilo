@@ -877,14 +877,14 @@ impl Widget for Music {
         };
         let player = AccessNode::new(Role::Group)
             .with_hashed_key("player")
-            .with_name(&ui::i18n::I18nManager::lookup_plain("music-a11y-player"))
+            .with_name(ui::i18n::I18nManager::lookup_plain("music-a11y-player"))
             .with_value(format!("{current}; volume {}%", self.pb.volume))
             .with_description(player_status)
             .with_state(AccessState::new().busy(self.active_resolve_request.is_some()));
         let search = AccessNode::new(Role::Button)
             .with_hashed_key("search")
-            .with_name(&ui::i18n::I18nManager::lookup_plain("music-a11y-search"))
-            .with_description(&ui::i18n::I18nManager::lookup_plain(
+            .with_name(ui::i18n::I18nManager::lookup_plain("music-a11y-search"))
+            .with_description(ui::i18n::I18nManager::lookup_plain(
                 "music-a11y-search-description",
             ))
             .with_action_target("music.open-search");
@@ -925,7 +925,7 @@ impl Widget for Music {
                         .with_children(vec![
                             AccessNode::new(Role::Button)
                                 .with_name(super::HOME_EMPTY_ACTION)
-                                .with_description(&ui::i18n::I18nManager::lookup_plain(
+                                .with_description(ui::i18n::I18nManager::lookup_plain(
                                     "music-a11y-choose-source",
                                 ))
                                 .with_action_target("music.connect-source"),
@@ -935,8 +935,8 @@ impl Widget for Music {
                 let (message, offers_search) = super::first_run_copy(super::ONLINE_CATALOGUE);
                 let search = offers_search.then(|| {
                     AccessNode::new(Role::Button)
-                        .with_name(&ui::i18n::I18nManager::lookup_plain("music-a11y-search"))
-                        .with_description(&ui::i18n::I18nManager::lookup_plain(
+                        .with_name(ui::i18n::I18nManager::lookup_plain("music-a11y-search"))
+                        .with_description(ui::i18n::I18nManager::lookup_plain(
                             "music-a11y-search-description-simple",
                         ))
                         .with_action_target("music.open-search")
@@ -944,7 +944,7 @@ impl Widget for Music {
                 page_content.push(
                     AccessNode::new(Role::Group)
                         .with_hashed_key("library-empty")
-                        .with_name(&ui::i18n::I18nManager::lookup_plain("music-a11y-empty"))
+                        .with_name(ui::i18n::I18nManager::lookup_plain("music-a11y-empty"))
                         .with_description(message)
                         .with_children(search.into_iter().collect()),
                 );
@@ -1235,8 +1235,8 @@ impl Widget for Music {
         let children = vec![search, page, player];
         Some(
             AccessNode::new(Role::Group)
-                .with_name(&ui::i18n::I18nManager::lookup_plain("music-title"))
-                .with_description(&ui::i18n::I18nManager::lookup_plain(
+                .with_name(ui::i18n::I18nManager::lookup_plain("music-title"))
+                .with_description(ui::i18n::I18nManager::lookup_plain(
                     "music-a11y-description",
                 ))
                 .with_children(children),

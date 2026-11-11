@@ -4301,16 +4301,14 @@ impl Widget for CalendarApp {
             })
             .collect();
         let mut root = AccessNode::new(Role::Window)
-            .with_name(&ui::i18n::I18nManager::lookup_plain("calendar-title"))
+            .with_name(ui::i18n::I18nManager::lookup_plain("calendar-title"))
             .with_bounds(self.rect)
             .with_children(controls);
         root.children.extend(self.task_list_access_nodes());
         if self.syncing() {
             root.children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(&ui::i18n::I18nManager::lookup_plain(
-                        "calendar-a11y-syncing",
-                    ))
+                    .with_name(ui::i18n::I18nManager::lookup_plain("calendar-a11y-syncing"))
                     .with_live(ui::a11y::Politeness::Polite),
             );
         }
@@ -4324,7 +4322,7 @@ impl Widget for CalendarApp {
         if self.detail_open && matches!(self.selection, Some(Sel::Event(_))) {
             root.children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(&ui::i18n::I18nManager::lookup_plain("calendar-a11y-editor")),
+                    .with_name(ui::i18n::I18nManager::lookup_plain("calendar-a11y-editor")),
             );
             if let Some(conflict) = self.local_schedule_conflict_summary() {
                 root.children
@@ -4734,7 +4732,7 @@ fn invite_input(requested: &std::rc::Rc<std::cell::Cell<bool>>) -> Box<TextInput
     let requested = std::rc::Rc::clone(requested);
     Box::new(
         TextInput::local()
-            .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
                 "calendar-invite-placeholder",
             ))
             .with_id("event_invite")
@@ -4760,7 +4758,7 @@ fn title_field() -> Box<TextInput> {
 fn location_field() -> Box<TextInput> {
     Box::new(
         TextInput::local()
-            .with_placeholder(&ui::i18n::I18nManager::lookup_plain(
+            .with_placeholder(ui::i18n::I18nManager::lookup_plain(
                 "calendar-location-placeholder",
             ))
             .with_id("event_location"),
