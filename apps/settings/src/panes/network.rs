@@ -435,9 +435,10 @@ fn wake_description(status: &NetworkWakeStatus) -> &'static str {
 /// What a new hotspot is called until the person names it.
 const DEFAULT_HOTSPOT_NAME: &str = "Tilo Hotspot";
 
+/// The name a saved profile is shown by; the profile's id stays the value
+/// the selector carries, so two networks with one name stay apart.
 fn profile_label(profile: &SavedNetworkProfile) -> String {
-    let short_uuid: String = profile.uuid.chars().take(8).collect();
-    format!("{} ({})", profile.name, short_uuid)
+    profile.name.clone()
 }
 
 /// The entries of a list separated by commas or spaces, at most 17.
@@ -2404,13 +2405,13 @@ impl NetworkModel {
         if !self
             .profiles
             .iter()
-            .any(|p| p.kind == "802-3-ethernet" && profile_label(p) == current)
+            .any(|p| p.kind == "802-3-ethernet" && p.uuid == current)
         {
             self.wired_profile.set(
                 self.profiles
                     .iter()
                     .find(|p| p.kind == "802-3-ethernet")
-                    .map(profile_label)
+                    .map(|p| p.uuid.clone())
                     .unwrap_or_default(),
             );
         }
