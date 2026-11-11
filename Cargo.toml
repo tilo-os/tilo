@@ -36,6 +36,7 @@ exclude = [
     "vendor/alacritty_terminal",
     "vendor/twilight-http-ratelimiting",
     "vendor/iroh",
+    "vendor/iroh-relay",
     "vendor/netwatch",
     "vendor/noq-udp",
     "vendor/accesskit_unix",
