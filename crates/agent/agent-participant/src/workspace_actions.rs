@@ -51,6 +51,7 @@
 mod bounded;
 mod content;
 mod feedback;
+mod keys;
 mod link;
 mod publish;
 mod reads;
@@ -65,7 +66,7 @@ pub use terminal::{ShellRan, TERMINAL_APP, Watching, WorkspaceShell};
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::apps::{AppCatalogue, Seed};
@@ -74,6 +75,7 @@ use crate::participant::SharedDesktop;
 use crate::participant::actions::{Outcome, door_outcome, open_row, record_of, record_provider};
 use crate::worker::{ConfinedReplica, ConfinedViews};
 use collab_types::DocumentMutation;
+use keys::{Keys, catalogue_keys, invoke_keys};
 use tilo_actions::InteractionPhase;
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, ActorPlace, Caller,
@@ -237,6 +239,22 @@ impl Job {
             | Self::Content { workspace_id, .. }
             | Self::ContentGet { workspace_id, .. } => Some(*workspace_id),
             Self::Feedback { .. } | Self::Ran(_) | Self::Joined(_) | Self::Forget(_) => None,
+        }
+    }
+
+    /// What the job must have before it reads its workspace: what it is about
+    /// to read names what it waits for. An invocation is named here by its id
+    /// alone: the worker reads its request from the ledger
+    /// ([`Worker::keys`]).
+    fn keys(&self) -> Keys {
+        match self {
+            Self::Catalogue { query, .. } => catalogue_keys(query),
+            Self::Feedback { .. }
+            | Self::Invoke { .. }
+            | Self::Ran(_)
+            | Self::Content { .. }
+            | Self::ContentGet { .. }
+            | Self::Joined(_) => Keys::Joined,
         }
     }
 }
@@ -764,10 +782,8 @@ fn sealed_for(
 struct Workspace {
     peer: PeerHandle,
     events: PeerEvents,
-    /// Signalled whenever the session's status or events change.
-    wake: Arc<(Mutex<bool>, Condvar)>,
-    /// Set while requests wait for the workspace to be joined: its next
-    /// change hands the service's thread [`Job::Joined`].
+    /// Set while requests wait for this workspace: its next change hands the
+    /// service's thread [`Job::Joined`], which looks at what waited again.
     awaited: Arc<AtomicBool>,
     ready: bool,
     /// What earlier waits for keys gave up on.
@@ -798,14 +814,12 @@ impl Workspace {
             Arc::new(MemoryPeerStore::default()),
         );
         let events = peer.events();
-        let wake = Arc::new((Mutex::new(false), Condvar::new()));
         let awaited = Arc::new(AtomicBool::new(false));
-        let signal = Arc::clone(&wake);
         let (waiting, service) = (Arc::clone(&awaited), Arc::downgrade(shared));
         peer.on_change(Arc::new(move || {
-            let (flag, condvar) = &*signal;
-            *flag.lock_recover() = true;
-            condvar.notify_all();
+            // Only the change that arrives while a request waits is worth the
+            // thread's turn: the workspace's other changes still reach it as
+            // documents.
             if waiting.swap(false, Ordering::SeqCst)
                 && let Some(shared) = service.upgrade()
                 && let Some(jobs) = shared.jobs.lock_recover().as_ref()
@@ -817,7 +831,6 @@ impl Workspace {
         Ok(Self {
             peer,
             events,
-            wake,
             awaited,
             ready: false,
             gave_up: GaveUp::default(),
@@ -870,10 +883,12 @@ impl Workspace {
         )
     }
 
-    /// Wait for the keys of what `needs` reads in the joined workspace. Every
-    /// wait is woken by the session (a key arriving wakes it), never polled.
-    /// A request reaches here once the workspace joined, or once it waited
-    /// [`JOIN_WAIT`] for that in vain ([`Worker::admit`]).
+    /// Take the keys of what `needs` reads in the joined workspace from the
+    /// host's records, and say what the workspace opened. A request reaches
+    /// here once its workspace is joined and what it reads opened, or once it
+    /// waited [`JOIN_WAIT`] or [`KEYS_WAIT`] for that in vain
+    /// ([`Worker::admit`]): nothing waits here, so one workspace's keys do not
+    /// hold the service's thread against the other workspaces' requests.
     ///
     /// A record to act on whose keys do not arrive within [`KEYS_WAIT`] is
     /// refused: nothing acts on a record seen only in part. A listing gives
@@ -891,12 +906,9 @@ impl Workspace {
                 reason: "the host has not joined the workspace yet".into(),
             });
         }
-        let keyed = Instant::now()
-            .checked_add(KEYS_WAIT)
-            .unwrap_or_else(Instant::now);
-        // Keys the host device holds are handed over as soon as a
-        // route needs them: the record acted on at once (fresh every time),
-        // and every route that arrives sealed while this waits.
+        // Keys the host device holds are handed over as soon as a route needs
+        // them: the record acted on at once (fresh every time), and every
+        // route that arrived sealed while the request waited.
         let mut handed = HashSet::new();
         if let Some(link) = link
             && let Needs::Act { app_id, record } = needs
@@ -909,23 +921,15 @@ impl Workspace {
             };
             self.take_host_keys(vec![route], needs, link, &mut handed)?;
         }
-        loop {
-            self.settle(workspace_id, keyed, |workspace| {
-                let sealed = workspace.sealed(workspace_id, needs);
-                sealed.is_empty()
-                    || (link.is_some() && sealed.iter().any(|route| !handed.contains(route)))
-            });
-            let unhanded: Vec<DocumentRoute> = self
-                .sealed(workspace_id, needs)
-                .into_iter()
-                .filter(|route| !handed.contains(route))
-                .collect();
-            match link {
-                Some(link) if !unhanded.is_empty() => {
-                    self.take_host_keys(unhanded, needs, link, &mut handed)?;
-                }
-                _ => break,
-            }
+        let sealed: Vec<DocumentRoute> = self
+            .sealed(workspace_id, needs)
+            .into_iter()
+            .filter(|route| !handed.contains(route))
+            .collect();
+        if let Some(link) = link
+            && !sealed.is_empty()
+        {
+            self.take_host_keys(sealed, needs, link, &mut handed)?;
         }
         let sealed = self.sealed(workspace_id, needs);
         match needs {
@@ -1015,31 +1019,6 @@ impl Workspace {
             .or_else(|| status.room_members.into_keys().find(named))
             .or_else(|| status.room_devices.into_keys().find(named))
     }
-
-    /// Take the session's events until `settled`, or until `deadline`.
-    fn settle(&mut self, workspace_id: u64, deadline: Instant, settled: impl Fn(&Self) -> bool) {
-        loop {
-            {
-                let (flag, _) = &*self.wake;
-                *flag.lock_recover() = false;
-            }
-            self.pump(workspace_id);
-            if settled(self) {
-                // The session queues a change's events before the status
-                // that reports it: take what arrived since the pump above.
-                self.pump(workspace_id);
-                return;
-            }
-            let Some(left) = deadline.checked_duration_since(Instant::now()) else {
-                return;
-            };
-            let (flag, condvar) = &*self.wake;
-            let guard = flag.lock_recover();
-            let _ = condvar
-                .wait_timeout_while(guard, left, |changed| !*changed)
-                .unwrap_or_else(PoisonError::into_inner);
-        }
-    }
 }
 
 fn bytes_of(mutation: &DocumentMutation) -> Vec<u8> {
@@ -1055,6 +1034,17 @@ fn change_digest(author: &[u8; 32], bytes: &[u8]) -> [u8; 32] {
     *hasher.finalize().as_bytes()
 }
 
+/// A request held off the service's thread until its workspace is ready for
+/// it: joined, and holding the keys of what the request reads.
+struct Waiting {
+    /// When it arrived: the wait it reports, and what its deadline is counted
+    /// from.
+    queued: Instant,
+    /// When it runs in any case, and says how far it got.
+    deadline: Instant,
+    job: Job,
+}
+
 struct Worker {
     member: WorkspaceMember,
     catalogue: AppCatalogue,
@@ -1066,9 +1056,9 @@ struct Worker {
     bounded: BTreeMap<bounded::BoundedKey, bounded::BoundedReplica>,
     /// The route of the mounted record each part is held beside.
     beside: HashMap<DocumentRoute, DocumentRoute>,
-    /// Requests waiting for their workspace to be joined, oldest first, by
-    /// workspace: the thread answers others meanwhile.
-    joining: HashMap<u64, VecDeque<(Instant, Job)>>,
+    /// Requests waiting for their workspace to be ready for them, oldest
+    /// first, by workspace: the thread answers others meanwhile.
+    joining: HashMap<u64, VecDeque<Waiting>>,
     clock: u64,
     /// What the host says for the runs it executes ([`run_voice`]).
     voices: run_voice::RunVoices,
@@ -1220,44 +1210,129 @@ impl Worker {
         }
     }
 
-    /// Run `job`, or have it wait for its workspace to be joined: a fresh
-    /// workspace's first requests wait for its join while the thread answers
-    /// requests of workspaces it has joined, instead of every request waiting
-    /// for every join before it. A workspace's requests run in the order they
-    /// came.
+    /// Run `job`, or have it wait off this thread until its workspace is ready
+    /// for it: joined, and holding the keys of what it reads. A fresh
+    /// workspace's first requests wait for its join and keys while the thread
+    /// answers requests of workspaces already open, instead of every request
+    /// waiting for every join and every key before it. A workspace's requests
+    /// run in the order they came.
     fn admit(&mut self, queued: Instant, job: Job) {
-        if let Some(workspace_id) = job.workspace()
-            && (self.joining.contains_key(&workspace_id) || !self.joined(workspace_id))
-        {
-            self.joining
-                .entry(workspace_id)
-                .or_default()
-                .push_back((queued, job));
-            self.resume(workspace_id);
-            return;
+        if let Some(workspace_id) = job.workspace() {
+            let keys = self.keys(&job);
+            // The workspace is in hand before the change is asked for below,
+            // so a change that lands in between still wakes this thread.
+            drop(self.membership(workspace_id));
+            if !self.ready(workspace_id, keys.needs()) {
+                self.hold(workspace_id, queued, job);
+                return;
+            }
+            self.stop_waiting_if_idle(workspace_id);
         }
         self.timed(queued, job);
     }
 
-    /// Run the requests waiting for `workspace_id` once it joined; until
-    /// then, its next change wakes the thread to look again.
+    /// What `job` waits for before it can read its workspace.
+    fn keys(&self, job: &Job) -> Keys {
+        match job {
+            Job::Invoke { invocation, .. } => self
+                .ledger()
+                .entries
+                .get(invocation)
+                .map_or(Keys::Joined, |entry| invoke_keys(&entry.request)),
+            other => other.keys(),
+        }
+    }
+
+    /// Hold `job` off the thread until `workspace_id`'s next change, and ask
+    /// the session to hand this thread that change. Past [`JOIN_WAIT`] for a
+    /// join and [`KEYS_WAIT`] for keys, the job runs anyway and says how far
+    /// it got: a join that never comes, or keys that never arrive, answer the
+    /// request rather than holding it for ever.
+    fn hold(&mut self, workspace_id: u64, queued: Instant, job: Job) {
+        let bound = if self.joined(workspace_id) {
+            KEYS_WAIT
+        } else {
+            JOIN_WAIT
+        };
+        let deadline = queued.checked_add(bound).unwrap_or(queued);
+        self.awaiting(workspace_id, true);
+        self.joining
+            .entry(workspace_id)
+            .or_default()
+            .push_back(Waiting {
+                queued,
+                deadline,
+                job,
+            });
+    }
+
+    /// Run the requests waiting for `workspace_id`, its change just arrived:
+    /// those that are ready run here, and those still waiting for keys are
+    /// held again with what they have waited so far.
     fn resume(&mut self, workspace_id: u64) {
-        if !self.joining.contains_key(&workspace_id) {
+        let Some(waiting) = self.joining.remove(&workspace_id) else {
             return;
-        }
-        // Asked before looking, so a change in between still wakes it.
-        if let Some(workspace) = self.workspaces.get(&workspace_id) {
-            workspace.awaited.store(true, Ordering::SeqCst);
-        }
-        if !self.joined(workspace_id) {
-            return;
-        }
-        if let Some(workspace) = self.workspaces.get(&workspace_id) {
-            workspace.awaited.store(false, Ordering::SeqCst);
-        }
-        for (queued, job) in self.joining.remove(&workspace_id).unwrap_or_default() {
+        };
+        self.awaiting(workspace_id, true);
+        for Waiting {
+            queued,
+            deadline,
+            job,
+        } in waiting
+        {
+            let keys = self.keys(&job);
+            if job.workspace() == Some(workspace_id) && !self.ready(workspace_id, keys.needs()) {
+                self.joining
+                    .entry(workspace_id)
+                    .or_default()
+                    .push_back(Waiting {
+                        queued,
+                        deadline,
+                        job,
+                    });
+                continue;
+            }
             self.timed(queued, job);
         }
+        self.stop_waiting_if_idle(workspace_id);
+    }
+
+    /// Whether a request for `workspace_id` can run now: the workspace is
+    /// joined, or it could not be joined at all, which the request reports;
+    /// and what it reads has opened, or the host holds no keys to hand it.
+    fn ready(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
+        if !self.joined(workspace_id) {
+            return false;
+        }
+        matches!(needs, Needs::Joined) || self.opened(workspace_id, needs)
+    }
+
+    /// Hand this device the host's keys for the records of `workspace_id`
+    /// `needs` reads that are still sealed, and say whether they opened. A
+    /// record keeps waiting until what the keys open arrives: the session's
+    /// next change wakes this thread to look again.
+    fn opened(&mut self, workspace_id: u64, needs: Needs<'_>) -> bool {
+        if self.membership(workspace_id).is_err() {
+            // Nothing is there to read: the request says so itself.
+            return true;
+        }
+        let Some(link) = self.shared.link.get().cloned() else {
+            return true;
+        };
+        let Some(workspace) = self.workspaces.get_mut(&workspace_id) else {
+            return true;
+        };
+        workspace.pump(workspace_id);
+        let sealed = workspace.sealed(workspace_id, needs);
+        if sealed.is_empty() {
+            return true;
+        }
+        let mut handed = HashSet::new();
+        let handed_now = workspace
+            .take_host_keys(sealed, needs, link.as_ref(), &mut handed)
+            .is_ok();
+        // What the host holds no keys to is the request's to report.
+        handed_now && workspace.sealed(workspace_id, needs).is_empty()
     }
 
     /// Whether a request for `workspace_id` can run now: the workspace is
@@ -1272,32 +1347,47 @@ impl Worker {
         }
     }
 
-    /// When the oldest request waiting for a join has waited [`JOIN_WAIT`].
+    /// Ask the session to hand this thread `workspace_id`'s next change, or
+    /// stop asking once nothing waits for it.
+    fn awaiting(&self, workspace_id: u64, waiting: bool) {
+        if let Some(workspace) = self.workspaces.get(&workspace_id) {
+            workspace.awaited.store(waiting, Ordering::SeqCst);
+        }
+    }
+
+    /// Stop asking to be woken for `workspace_id` once nothing waits for it.
+    fn stop_waiting_if_idle(&self, workspace_id: u64) {
+        if !self.joining.contains_key(&workspace_id) {
+            self.awaiting(workspace_id, false);
+        }
+    }
+
+    /// When the request that waited longest runs in any case: a join gives up
+    /// later than keys do, and each request's own deadline counts from when it
+    /// arrived.
     fn joining_until(&self) -> Option<Instant> {
         self.joining
             .values()
             .filter_map(VecDeque::front)
-            .filter_map(|(queued, _)| queued.checked_add(JOIN_WAIT))
+            .map(|waiting| waiting.deadline)
             .min()
     }
 
-    /// Run the requests that waited [`JOIN_WAIT`] for their workspace in
-    /// vain: each is told it was not joined.
+    /// Run the requests that waited in vain for their workspace or its keys:
+    /// each says how far it got.
     fn give_up_joining(&mut self) {
         let now = Instant::now();
-        let overdue = |(queued, _): &(Instant, Job)| {
-            queued
-                .checked_add(JOIN_WAIT)
-                .is_none_or(|until| until <= now)
-        };
         let mut due = Vec::new();
         self.joining.retain(|_, waiting| {
-            while waiting.front().is_some_and(overdue) {
+            while waiting
+                .front()
+                .is_some_and(|waiting| waiting.deadline <= now)
+            {
                 due.extend(waiting.pop_front());
             }
             !waiting.is_empty()
         });
-        for (queued, job) in due {
+        for Waiting { queued, job, .. } in due {
             self.timed(queued, job);
         }
     }
@@ -1730,18 +1820,10 @@ impl Worker {
             return Ok(page);
         }
         // A record named by its provider waits for its own keys; a listing
-        // waits for the workspace's once.
-        let named = query
-            .provider
-            .as_deref()
-            .and_then(|provider| record_of(provider, ""));
-        let needs = named
-            .as_ref()
-            .map_or(Needs::Workspace, |route| Needs::Read {
-                app_id: &route.app_id,
-                record: &route.record,
-            });
-        let state = self.refresh(workspace_id, needs)?;
+        // waits for the workspace's once ([`catalogue_keys`], which the
+        // service's thread admitted this request by).
+        let keys = catalogue_keys(query);
+        let state = self.refresh(workspace_id, keys.read())?;
         let revision = state.revision.to_string();
         // A workspace nothing was written in yet is named by the provider
         // asked for, so its new records are offered.
@@ -2049,14 +2131,11 @@ impl Worker {
                 .map(|output| (output, None));
         }
         // Acting on a record waits for that record's keys and no other's;
-        // opening an app on a new record needs only the workspace.
-        let named = record_of(&request.target.provider, "");
-        let needs = named.as_ref().map_or(Needs::Joined, |route| Needs::Act {
-            app_id: &route.app_id,
-            record: &route.record,
-        });
+        // opening an app on a new record needs only the workspace
+        // ([`invoke_keys`], which the service's thread admitted this request
+        // by).
         let state = self
-            .refresh(workspace_id, needs)
+            .refresh(workspace_id, invoke_keys(request).act())
             .map_err(Outcome::Rejected)?;
         if request
             .revision

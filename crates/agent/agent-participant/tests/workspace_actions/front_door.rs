@@ -752,3 +752,129 @@ async fn history_names_a_minted_keys_agent_by_the_name_it_was_minted_with() {
         "{history}"
     );
 }
+
+/// Workspaces a backend works in at once while the relay is busy making more:
+/// the shape of the burst a startup driving a workspace per customer sees,
+/// large enough that a first answer queueing behind the others' joins cannot
+/// be mistaken for a slow machine.
+const WORKED_AT_ONCE: usize = 50;
+
+/// Workspaces the same backend makes meanwhile, so the relay is busy with
+/// other work than the burst's while the burst is answered.
+const MADE_MEANWHILE: usize = 200;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workspaces_joined_at_once_each_answer_their_first_catalogue() {
+    let on_relay = door_on_relay_limiting(
+        ISSUER,
+        Some(tilo_relay::member_limits::MemberLimitsConfig::default()),
+    )
+    .await;
+    let door = Arc::clone(&on_relay.door);
+    let (ada, _) = tilo_user_identity::UserIdentity::generate("Ada", 1);
+    let page = enrol(&ada, "Ada's browser", DeviceCapabilities::member());
+    let key = approved_key(&on_relay, &ada, &page, "Customer backend").await;
+    let mut account = Mcp {
+        door: &door,
+        path: "/mcp".into(),
+        token: key.clone(),
+        session: None,
+    };
+    let (status, init) = account.initialize().await;
+    assert_eq!(status, 200, "{init}");
+    let mut made = Vec::with_capacity(WORKED_AT_ONCE);
+    for customer in 0..WORKED_AT_ONCE {
+        let created = account
+            .did(
+                "account/workspaces#create",
+                json!({"name": format!("Customer {customer}")}),
+            )
+            .await;
+        made.push(
+            created["workspace"]["id"]
+                .as_str()
+                .unwrap_or_else(|| panic!("a workspace is made: {created}"))
+                .to_owned(),
+        );
+    }
+
+    // The same backend keeps making workspaces while it works in the ones it
+    // has: the relay's app workers answer the burst beside that work, as they
+    // answer a startup's hundreds.
+    let busy = tokio::spawn({
+        let door = Arc::clone(&door);
+        let token = key.clone();
+        async move {
+            let mut making = Mcp {
+                door: &door,
+                path: "/mcp".into(),
+                token,
+                session: None,
+            };
+            assert_eq!(making.initialize().await.0, 200);
+            for customer in WORKED_AT_ONCE..WORKED_AT_ONCE + MADE_MEANWHILE {
+                making
+                    .did(
+                        "account/workspaces#create",
+                        json!({"name": format!("Customer {customer}")}),
+                    )
+                    .await;
+            }
+        }
+    });
+
+    // Every one of them joined at once, each asking for its catalogue once:
+    // the answer is the runtime's own bound — a call the host does not answer
+    // within it fails, which none of these may.
+    let mut working = tokio::task::JoinSet::new();
+    for workspace in made {
+        let door = Arc::clone(&door);
+        let token = key.clone();
+        working.spawn(async move {
+            let mut session = Mcp {
+                door: &door,
+                path: format!("/w/{workspace}/mcp"),
+                token,
+                session: None,
+            };
+            let began = Instant::now();
+            let (status, init) = session.initialize().await;
+            assert_eq!(status, 200, "{workspace}: {init}");
+            let entered = began.elapsed();
+            let (status, listed) = session
+                .post(json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                             "params": {"name": "tilo_ls", "arguments": {}}}))
+                .await;
+            assert_eq!(status, 200, "{workspace}: {listed}");
+            assert_eq!(
+                listed["result"]["isError"], false,
+                "{workspace} is answered within the wait a call allows: {listed}"
+            );
+            (entered, began.elapsed())
+        });
+    }
+    let (mut entering, mut answering) = (Vec::new(), Vec::new());
+    while let Some(worked) = working.join_next().await {
+        let (entered, answered) = worked.expect("a session worked");
+        entering.push(entered);
+        answering.push(answered);
+    }
+    busy.await.expect("the backend made its workspaces");
+    let (p50, p95, max) = (
+        quantile(&answering, 0.5),
+        quantile(&answering, 0.95),
+        quantile(&answering, 1.0),
+    );
+    eprintln!(
+        "{WORKED_AT_ONCE} workspaces joined and answered at once while {MADE_MEANWHILE} more were made: p50 {p50:?}, p95 {p95:?}, max {max:?}; entered p50 {:?}, max {:?}",
+        quantile(&entering, 0.5),
+        quantile(&entering, 1.0),
+    );
+    // The last of them costs what the middle one did: no first answer waits
+    // for the joins before it, so the burst's tail is the machine's jitter,
+    // not the queue's length.
+    assert!(
+        max <= p50 * 3 + Duration::from_secs(2),
+        "{WORKED_AT_ONCE} answered at once: p50 {p50:?} but the slowest {max:?}, which is a queue"
+    );
+}
