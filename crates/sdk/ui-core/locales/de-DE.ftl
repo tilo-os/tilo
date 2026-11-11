@@ -781,6 +781,7 @@ search-kind-playlists = Wiedergabelisten
 search-kind-tabs = Tabs
 search-kind-window-groups = Fenstergruppen
 window-root-name = Tilo-Anwendungsfenster
+# Was das leere Feld der Palette sagt, worüber die Suche geht, nicht wie es heißt.
 action-palette-query = Aktionen und Ergebnisse durchsuchen
 search-field-filter = Filtern
 search-field-placeholder = Suchen

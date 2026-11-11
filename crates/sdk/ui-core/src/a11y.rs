@@ -565,6 +565,13 @@ impl AccessNode {
         self
     }
 
+    /// Set or drop the description, for a node whose default one would only
+    /// repeat what its name already says.
+    pub fn with_optional_description(mut self, description: Option<String>) -> Self {
+        self.description = description;
+        self
+    }
+
     pub fn with_value(mut self, value: impl Into<String>) -> Self {
         self.value = Some(value.into());
         self

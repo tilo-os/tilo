@@ -203,17 +203,19 @@ impl Widget for ActionPalette {
             && let Some(field) = self.field.accessibility()
         {
             let target = self.target("field");
-            // A step collecting an action's argument is named by what it asks
-            // for, as the host-fed palette names it; the query says what it
-            // searches.
-            let name = if self.in_argument_mode() {
-                crate::i18n!(self.field.placeholder())
+            // The query is the field it is, named by the field; what it covers
+            // stays its description. A step collecting an action's argument is
+            // asked in the action's own words, as the host-fed palette names
+            // it, and the placeholder repeating them adds nothing.
+            let field = if self.in_argument_mode() {
+                field
+                    .with_name(crate::i18n!(self.field.placeholder()))
+                    .with_optional_description(None)
             } else {
-                crate::i18n::widget_format("action-palette-query", &[])
+                field
             };
             children.push(
                 field
-                    .with_name(name)
                     .with_hashed_key(&target)
                     .with_action_target(target)
                     .with_bounds(self.field.get_rect()),

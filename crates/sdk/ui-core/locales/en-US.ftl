@@ -788,6 +788,7 @@ search-kind-playlists = Playlists
 search-kind-tabs = Tabs
 search-kind-window-groups = Window groups
 window-root-name = Tilo application window
+# What the palette's empty field says the query covers, not what it is called.
 action-palette-query = Search actions and results
 search-field-filter = Filter
 search-field-placeholder = Search
