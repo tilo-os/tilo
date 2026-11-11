@@ -2497,7 +2497,22 @@ impl Namespace {
             return None;
         }
         let meta = self.node_meta(id)?;
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.node_attr(ino, id, &meta))
+    }
+
+    /// The attributes the mount presents for node `id` at `ino`: its kind, size and time, and the
+    /// mode the record was given (`chmod`, a checkout's executable scripts), which replicates with
+    /// it; a record nobody gave one keeps the default.
+    fn node_attr(&self, ino: u64, id: &str, meta: &NodeMeta) -> FileAttr {
+        let mut attr = Self::attr_for(ino, meta.kind, meta.size, meta.mtime);
+        if let Some(posix) = self
+            .record_id_for_id(id)
+            .and_then(|record| self.posix_attrs(record))
+            .filter(|posix| !posix.symlink)
+        {
+            attr.perm = u16::try_from(posix.mode & 0o7777).unwrap_or(attr.perm);
+        }
+        attr
     }
 
     /// Attribute lookup for a kernel file handle whose directory entry has
@@ -2509,7 +2524,7 @@ impl Namespace {
             return Some(Self::attr_for(ROOT_INO, NodeKind::Dir, 0, 0));
         }
         let meta = self.node_meta(id)?;
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.node_attr(ino, id, &meta))
     }
 
     /// [`Self::getattr`] and [`Self::hash_for`] of a live node, reading it
@@ -2523,10 +2538,7 @@ impl Namespace {
             return None;
         }
         let meta = self.node_meta(id)?;
-        Some((
-            Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
-            meta.hash,
-        ))
+        Some((self.node_attr(ino, id, &meta), meta.hash))
     }
 
     /// Everything one FUSE request asks about `ino`, read in one pass so the
@@ -2556,7 +2568,7 @@ impl Namespace {
         let obj = self.node(id)?;
         let meta = self.node_meta_at(id, &obj)?;
         Some(InodeView {
-            attr: Self::attr_for(ino, meta.kind, meta.size, meta.mtime),
+            attr: self.node_attr(ino, id, &meta),
             hash: meta.hash,
             live,
             path: if live && query.path {
@@ -2587,7 +2599,7 @@ impl Namespace {
         let child = self.child_named(&parent_id, name)?;
         let meta = self.node_meta(&child)?;
         let ino = self.ino_for_id(&child);
-        Some(Self::attr_for(ino, meta.kind, meta.size, meta.mtime))
+        Some(self.node_attr(ino, &child, &meta))
     }
 
     pub fn readdir(&mut self, ino: u64) -> Option<Vec<(u64, FileType, FileNameV1)>> {

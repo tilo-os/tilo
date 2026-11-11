@@ -106,4 +106,25 @@ mod tests {
         assert!(link.symlink);
         assert_eq!(PosixAttrs::default_for(true).mode, 0o755);
     }
+
+    /// The mount presents the mode a record was given, so a checkout's script made executable is
+    /// one the kernel lets run; a record given none is a plain 0644 file.
+    #[test]
+    fn a_file_is_presented_with_the_mode_it_was_given() {
+        let mut ns = Namespace::new("a").unwrap();
+        let ino = ns
+            .create_file(crate::namespace::ROOT_INO, "tool", None, 0, 1)
+            .unwrap();
+        assert_eq!(ns.getattr(ino).unwrap().perm, 0o644);
+        let record = ns.record_id_for(ino).unwrap();
+        assert!(ns.put_posix_attrs(record, &PosixAttrs::of_local(0o104_755, false, false)));
+        assert_eq!(
+            ns.getattr(ino).unwrap().perm,
+            0o755,
+            "executable, and never setuid"
+        );
+        let mut b = Namespace::from_bytes("b", &ns.save()).unwrap();
+        let there = b.lookup(crate::namespace::ROOT_INO, "tool").unwrap();
+        assert_eq!(there.perm, 0o755, "the mode replicates with the file");
+    }
 }

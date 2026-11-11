@@ -5740,8 +5740,8 @@ impl Filesystem for QuickFS {
         req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
-        _umask: u32,
+        mode: u32,
+        umask: u32,
         _flags: i32,
         reply: ReplyCreate,
     ) {
@@ -5770,6 +5770,10 @@ impl Filesystem for QuickFS {
                 return;
             }
         };
+        if let Err(error) = self.set_mode(ino, mode & !umask) {
+            reply.error(to_errno(error));
+            return;
+        }
         let attr = self.ns().getattr(ino);
         let Some(attr) = attr else {
             reply.error(to_errno(EIO));
@@ -5914,7 +5918,7 @@ impl Filesystem for QuickFS {
         &self,
         req: &Request,
         ino: INodeNo,
-        _mode: Option<u32>,
+        mode: Option<u32>,
         _uid: Option<u32>,
         _gid: Option<u32>,
         size: Option<u64>,
@@ -5935,13 +5939,22 @@ impl Filesystem for QuickFS {
             reply.error(to_errno(ENOENT));
             return;
         }
-        if size.is_some()
+        if (size.is_some() || mode.is_some())
             && let Err(e) = self.check_access(ino.0, Access::Write)
         {
             reply.error(to_errno(e));
             return;
         }
-        // Handle truncation/extension; ignore perm/owner/time changes.
+        // A mode is the record's, as on any Linux file system: a checkout's scripts stay
+        // executable. Setuid never replicates (`PosixAttrs::of_local`); owner and times are
+        // ignored.
+        if let Some(mode) = mode
+            && let Err(errno) = self.set_mode(ino.0, mode)
+        {
+            reply.error(to_errno(errno));
+            return;
+        }
+        // Handle truncation/extension.
         // Truncation never reads the bytes it drops: a stage only changes its
         // length, and an unopened file commits the kept prefix.
         if let Some(new_size) = size
@@ -5973,8 +5986,8 @@ impl Filesystem for QuickFS {
         req: &Request,
         parent: INodeNo,
         name: &OsStr,
-        _mode: u32,
-        _umask: u32,
+        mode: u32,
+        umask: u32,
         reply: ReplyEntry,
     ) {
         let name = name.as_bytes();
@@ -5989,6 +6002,10 @@ impl Filesystem for QuickFS {
                 return;
             }
         };
+        if let Err(error) = self.set_mode(ino, mode & !umask) {
+            reply.error(to_errno(error));
+            return;
+        }
         let attr = self.ns().getattr(ino);
         match attr {
             Some(attr) => {

@@ -155,6 +155,13 @@ impl QuickFS {
 
     /// Publishes `attrs` for the record at `ino` when they differ from what
     /// it has.
+    /// Give `ino` the permission bits of `mode`, as `chmod` and a create's mode do: what
+    /// replicates of them ([`PosixAttrs::of_local`]: never setuid, setgid on directories only).
+    pub(crate) fn set_mode(&self, ino: u64, mode: u32) -> Result<(), i32> {
+        let dir = self.ns().getattr(ino).ok_or(ENOENT)?.kind == FileType::Directory;
+        self.set_posix(ino, PosixAttrs::of_local(mode, dir, false), dir)
+    }
+
     fn set_posix(&self, ino: u64, attrs: PosixAttrs, dir: bool) -> Result<(), i32> {
         {
             let mut ns = self.ns();

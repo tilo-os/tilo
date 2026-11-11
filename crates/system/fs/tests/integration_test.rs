@@ -1047,7 +1047,9 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
     }
     // Phase `fuse_document_roundtrip_and_opaque_still_works`.
     // A recognized document format is stored as a CRDT and round-trips
-    // through the mount; unknown formats stay opaque bytes.
+    // through the mount byte for byte; unknown formats stay opaque bytes; a
+    // file's mode is its own, so a script made executable runs, and setuid
+    // never sticks.
     {
         require_fuse!();
         tilo_test_env::within("the FUSE document round trip", async {
@@ -1078,12 +1080,43 @@ async fn fuse_projects_reads_writes_and_reports_sync_state() {
                 "document round-trip lost content: {back:?}"
             );
 
+            // What a program writes to a document reads back as written, though
+            // Markdown would join the paragraph's two lines.
+            let question = b"Question X\nfirst line of thought\n";
+            std::fs::write(path.join("question.md"), question).expect("write question");
+            assert_eq!(
+                std::fs::read(path.join("question.md")).unwrap(),
+                question,
+                "a document's file is the bytes written"
+            );
+
             // An unknown format stays opaque bytes (exact round-trip).
             std::fs::write(path.join("data.bin"), b"\x00\x01raw-bytes\xff").expect("write bin");
             assert_eq!(
                 std::fs::read(path.join("data.bin")).unwrap(),
                 b"\x00\x01raw-bytes\xff"
             );
+
+            // A script given an executable mode keeps it and runs.
+            {
+                use std::os::unix::fs::PermissionsExt as _;
+                let tool = path.join("tool");
+                std::fs::write(&tool, b"#!/bin/sh\necho ran\n").expect("write tool");
+                let mode = |file: &std::path::Path| {
+                    std::fs::metadata(file).unwrap().permissions().mode() & 0o7777
+                };
+                assert_eq!(mode(&tool), 0o644, "a new file has the default mode");
+                std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o755))
+                    .expect("chmod +x");
+                assert_eq!(mode(&tool), 0o755, "chmod is kept");
+                let ran = std::process::Command::new(&tool)
+                    .output()
+                    .expect("the tool runs");
+                assert_eq!(ran.stdout, b"ran\n");
+                std::fs::set_permissions(&tool, std::fs::Permissions::from_mode(0o4755))
+                    .expect("chmod u+s");
+                assert_eq!(mode(&tool), 0o755, "setuid never sticks");
+            }
             shutdown_fuse_fixture(session, &path, shutdown_endpoint, shutdown_store).await;
         })
         .await;
