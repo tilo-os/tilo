@@ -1149,7 +1149,9 @@ mod tests {
         // phase: a relay on the host's own loopback is dialled at the address
         // `pasta` maps there
         let local = with_relay("127.0.0.1:7704");
-        let line = local.hand_off(&browser::test_material("127.0.0.1:7704")).unwrap();
+        let line = local
+            .hand_off(&browser::test_material("127.0.0.1:7704"))
+            .unwrap();
         assert_eq!(
             dialled(&line),
             "10.0.2.4:7704".parse().unwrap(),

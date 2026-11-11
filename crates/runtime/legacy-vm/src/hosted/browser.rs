@@ -103,7 +103,8 @@ pub fn hand_off(material: &str, relay: Endpoint) -> Result<String, String> {
         .map_err(|error| format!("the material is not the relay's: {error}"))?;
     // An endpoint address is its id and where it is reached; the session
     // dials the address written here, and no other.
-    material.relay = EndpointAddr::from_parts(material.relay.id, [TransportAddr::Ip(relay.socket())]);
+    material.relay =
+        EndpointAddr::from_parts(material.relay.id, [TransportAddr::Ip(relay.socket())]);
     serde_json::to_string(&material).map_err(|error| error.to_string())
 }
 
@@ -127,7 +128,10 @@ pub fn test_material(relay: &str) -> String {
         record: "browser-1".into(),
         device: cert,
         secret: [2; 32],
-        relay: EndpointAddr::from_parts(test_relay_id(), [TransportAddr::Ip(relay.parse().unwrap())]),
+        relay: EndpointAddr::from_parts(
+            test_relay_id(),
+            [TransportAddr::Ip(relay.parse().unwrap())],
+        ),
         user_public_key: [1; 32],
         account: "acct-1".into(),
     };
