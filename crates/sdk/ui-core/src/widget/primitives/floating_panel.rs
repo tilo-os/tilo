@@ -235,6 +235,9 @@ pub struct FloatingPanel {
     width: Option<f32>,
     fill_width: bool,
     fill_height: bool,
+    /// The height the panel's window should be, when it is the whole of a surface that fits its
+    /// content ([`Self::fit_height`]): what its parts need, followed on the expand/collapse motion.
+    fit: Option<Fit>,
     rect: Rect,
     header_rect: Rect,
     body_rect: Rect,
@@ -242,6 +245,14 @@ pub struct FloatingPanel {
     /// person asked for it comes in, and one the window's first paint shows rests. Its motion is
     /// the library's (`WindowMotion::OPEN`), and a still theme or reduced motion lands it at once.
     placed: crate::motion::Placed,
+}
+
+/// The height a panel that fits its content wants, and the motion its window follows to it.
+#[derive(Default)]
+struct Fit {
+    /// What its parts need, as of its last layout.
+    wanted: f64,
+    extent: crate::motion::Extent,
 }
 
 /// Make a field placed in a header slot embedded: no fill, no outline.
@@ -273,6 +284,7 @@ impl FloatingPanel {
             width: None,
             fill_width: false,
             fill_height: false,
+            fit: None,
             rect: Rect::ZERO,
             header_rect: Rect::ZERO,
             body_rect: Rect::ZERO,
@@ -326,6 +338,17 @@ impl FloatingPanel {
         self
     }
 
+    /// Be the whole of a surface whose height follows the panel's content: the panel takes the
+    /// height it is offered, as [`Self::fill_height`] does, and asks the window for the height its
+    /// parts need ([`Widget::preferred_window_size`]), moving there on the expand/collapse motion
+    /// when its page changes. A window that cannot be that tall leaves the body scrolling.
+    #[must_use]
+    pub fn fit_height(mut self) -> Self {
+        self.fill_height = true;
+        self.fit = Some(Fit::default());
+        self
+    }
+
     /// The header slot, to change what it holds in place. A field put there is embedded.
     pub(crate) fn header_mut(&mut self) -> &mut Option<Box<dyn Widget>> {
         &mut self.header
@@ -356,6 +379,16 @@ impl FloatingPanel {
 
     fn body_is_empty(&self) -> bool {
         self.body_rect.height() <= 0.5
+    }
+
+    /// Whether the panel arrives, or its window moves to the height its parts need.
+    fn moving(&self) -> bool {
+        let now = crate::motion::frame_now();
+        self.placed.is_moving(now)
+            || self
+                .fit
+                .as_ref()
+                .is_some_and(|fit| fit.extent.is_moving(now))
     }
 
     fn slots_mut(&mut self) -> impl Iterator<Item = &mut Box<dyn Widget>> {
@@ -500,6 +533,14 @@ impl Widget for FloatingPanel {
             Rect::ZERO
         };
         self.body_rect = rects.next().unwrap_or(Rect::ZERO);
+        // What the body has beyond the room it was given (or short of it) is what the panel's
+        // window is short of (or has to spare).
+        if let Some(fit) = &mut self.fit
+            && let Some(scroll) = self.body.primary_vertical_scroll()
+        {
+            let beyond = scroll.metrics.content - scroll.metrics.viewport;
+            fit.wanted = (self.rect.height() + beyond).max(1.0).ceil();
+        }
     }
 
     fn draw(
@@ -511,6 +552,14 @@ impl Widget for FloatingPanel {
         presence: &PresenceCtx,
     ) {
         let now = crate::motion::frame_now();
+        if let Some(fit) = &mut self.fit {
+            fit.extent.follow(
+                fit.wanted,
+                theme.motion(),
+                crate::motion::input_source(),
+                now,
+            );
+        }
         self.placed.follow(
             self.rect,
             true,
@@ -528,11 +577,20 @@ impl Widget for FloatingPanel {
     /// Whether the panel is arriving: what asks for frames while it does, and what its slots
     /// ask for. Nothing at rest.
     fn needs_animation_frame(&self) -> bool {
-        self.placed.is_moving(crate::motion::frame_now()) || self.slots_frame()
+        self.moving() || self.slots_frame()
     }
 
     fn needs_redraw(&self) -> bool {
-        self.placed.is_moving(crate::motion::frame_now()) || self.slots_redraw()
+        self.moving() || self.slots_redraw()
+    }
+
+    /// The height its parts need, while it fits its window to them: the window follows it.
+    fn preferred_window_size(&self) -> Option<(f64, f64)> {
+        let fit = self.fit.as_ref()?;
+        let now = crate::motion::frame_now();
+        // Nothing to say before its first frame has measured its parts.
+        (self.rect.width() > 0.0 && fit.extent.target() > 0.0)
+            .then(|| (self.rect.width(), fit.extent.get(now).max(1.0).round()))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

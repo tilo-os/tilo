@@ -11,18 +11,18 @@ use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
     Button, ButtonRole, Column, Container, Element, ListRow, ProgressBar, Row, Scrollable, Section,
-    Segment, SignalLevel, Slider, Text, TextInput, Toggle, ToggleGroup,
+    Segment, SignalLevel, Slider, Spacer, Text, TextInput, Toggle, ToggleGroup,
 };
 
 use super::Parts;
 use crate::QsSection;
 use crate::effect::QsEffect;
-use crate::faces::{Item, NetworkFace, StreamFace};
+use crate::faces::{Item, NetworkFace, StreamFace, TileFace};
 use crate::hosted::{HostedActions, HostedRow};
 use crate::i18n::{t, t_args};
 use crate::resource::QuickSettings;
 
-/// `section`'s page: Back and its name, then what it lists.
+/// `section`'s page: Back and its name, a radio's switch, then what it lists.
 pub(super) fn page(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts) -> Element {
     let title = t(section_title(section));
     Column::new()
@@ -33,10 +33,39 @@ pub(super) fn page(cx: &ViewCx<QuickSettings>, section: QsSection, parts: &Parts
             cx,
             &title,
             &t("qs-back-to-controls"),
-            None,
+            Some(cx.switch(&parts.switches, move |cx, switches| {
+                switches
+                    .iter()
+                    .find(|face| face.section == Some(section))
+                    .map_or_else(
+                        || Box::new(Spacer::fixed(0.0)) as Element,
+                        |face| radio_switch(&cx.actions(), face),
+                    )
+            })),
         ))
         .push(self::section(cx, section, parts))
         .into_widget()
+}
+
+/// A radio's switch in its section's header: on and off as its tile turns it, and inert while a
+/// change of it is under way.
+fn radio_switch(actions: &Actions<QuickSettings>, face: &TileFace) -> Element {
+    let toggle = Toggle::from_state(&LocalState::new(face.on))
+        .with_id("qs-section-switch")
+        .with_accessible_name(&face.label);
+    Box::new(match &face.switch {
+        Some(QsEffect::SetWifi { .. }) => actions.bind_effect(toggle, QsEffect::SET_WIFI),
+        Some(QsEffect::SetWired { .. }) => actions.bind_effect(toggle, QsEffect::SET_WIRED),
+        Some(QsEffect::SetBluetooth { .. }) => actions.bind_effect(toggle, QsEffect::SET_BLUETOOTH),
+        Some(QsEffect::SetVpn { profile, .. }) => {
+            let profile = profile.clone();
+            actions.bind_effect(
+                toggle,
+                QsEffect::SET_VPN.map(move |on: bool| (profile.clone(), on)),
+            )
+        }
+        _ => toggle.with_enabled(false),
+    })
 }
 
 /// The heading a section's page is titled with.

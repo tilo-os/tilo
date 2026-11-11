@@ -55,6 +55,11 @@ pub(crate) struct Layers {
     /// How the session draws a surface it is moving, by the same name: one coming or going is posed
     /// here frame by frame until it rests. A name the session never posed is drawn as it stands.
     poses: std::collections::BTreeMap<String, LayerPose>,
+    /// Where the session stands a surface it places itself, by the same name: the room it may
+    /// take, in the layout's logical coordinates, whatever its anchors and margins say. It is as
+    /// big as it asks for inside that room, so a panel that fits its content resizes there, and
+    /// moving it costs its app nothing.
+    places: std::collections::BTreeMap<String, Rectangle<i32, Logical>>,
     /// The layer surface the session handed the keyboard to, by name, and where the keyboard was
     /// before: it goes back there when that surface is hidden while it still holds it.
     lent: Option<(String, Option<WlSurface>)>,
@@ -104,6 +109,7 @@ impl Layers {
             surfaces: Vec::new(),
             visibility: std::collections::BTreeMap::new(),
             poses: std::collections::BTreeMap::new(),
+            places: std::collections::BTreeMap::new(),
             lent: None,
         }
     }
@@ -247,12 +253,19 @@ impl State {
         let Some(placed) = self.layers.surfaces.get(index) else {
             return;
         };
-        // A surface that named no output goes where the session connected its client for — the
-        // on-screen keyboard stands on the display the person types on — and on the first output
-        // otherwise.
-        let output = placed
-            .output
-            .clone()
+        let place = self.layers.places.get(&placed.namespace).copied();
+        // A surface the session places stands on the output its place is on. One that named no
+        // output goes where the session connected its client for — the on-screen keyboard stands
+        // on the display the person types on — and on the first output otherwise.
+        let output = place
+            .and_then(|place| {
+                let place = place.to_f64();
+                self.output_under(Point::from((
+                    place.loc.x + place.size.w / 2.0,
+                    place.loc.y + place.size.h / 2.0,
+                )))
+            })
+            .or_else(|| placed.output.clone())
             .or_else(|| self.client_output(placed.surface.wl_surface()))
             .or_else(|| self.space.outputs().next().cloned());
         let geometry = output
@@ -265,7 +278,11 @@ impl State {
         let Some(geometry) = geometry else {
             return;
         };
-        let rect = placement(&placed.request(), geometry);
+        let request = placed.request();
+        let rect = place.map_or_else(
+            || placement(&request, geometry),
+            |room| within(&request, room),
+        );
         placed.rect = rect;
         if !send {
             return;
@@ -407,6 +424,45 @@ impl State {
             self.layers.poses.insert(namespace.to_owned(), pose);
         }
         self.mark_redraw_all();
+    }
+
+    /// Stand the session's layer surface `namespace` in `room` (logical layout coordinates), as big
+    /// as it asks for inside it, whatever its own anchors and margins say; `None` gives it back to
+    /// them. Moving it, or giving it less room, is a configure, not a new surface.
+    pub(crate) fn place_layer_in(
+        &mut self,
+        namespace: &str,
+        room: Option<Rectangle<i32, Logical>>,
+    ) {
+        let changed = match room {
+            Some(room) => self.layers.places.insert(namespace.to_owned(), room) != Some(room),
+            None => self.layers.places.remove(namespace).is_some(),
+        };
+        if !changed {
+            return;
+        }
+        for index in 0..self.layers.surfaces.len() {
+            if self
+                .layers
+                .surfaces
+                .get(index)
+                .is_some_and(|placed| placed.namespace == namespace)
+            {
+                self.place_layer(index, true);
+            }
+        }
+        self.mark_redraw_all();
+    }
+
+    /// Where the session's layer surface `namespace` stands now, in logical layout coordinates:
+    /// the size its app asked for inside the room it was given. `None` before it stands anywhere.
+    pub(crate) fn layer_rect(&self, namespace: &str) -> Option<Rectangle<i32, Logical>> {
+        self.layers
+            .surfaces
+            .iter()
+            .find(|placed| placed.namespace == namespace && placed.output.is_some())
+            .map(|placed| placed.rect)
+            .filter(|rect| rect.size.w > 0 && rect.size.h > 0)
     }
 
     /// Place every layer surface again: an output came, went or changed.
@@ -700,6 +756,22 @@ impl State {
     }
 }
 
+/// Where a surface asking `request` stands in the `room` the session gave it: at its corner, as big
+/// as it asks for inside it, and the whole of it on an axis it names no size for.
+fn within(
+    request: &LayerSurfaceCachedState,
+    room: Rectangle<i32, Logical>,
+) -> Rectangle<i32, Logical> {
+    let side = |asked: i32, room: i32| if asked > 0 { asked.min(room) } else { room };
+    Rectangle::new(
+        room.loc,
+        Size::from((
+            side(request.size.w, room.size.w),
+            side(request.size.h, room.size.h),
+        )),
+    )
+}
+
 /// Where a surface asking `request` of `output` is put: the edges it is anchored to keep it at the
 /// margin, both edges of an axis stretch it between them, and one edge with a size of its own keeps
 /// that size there.
@@ -844,6 +916,22 @@ mod tests {
             output(),
         );
         assert_eq!(low.loc, Point::from((1000 - 300 - 10, 800 - 200 - 20)));
+    }
+
+    /// A popover the session places stands at its room's corner whatever its anchors say, as tall
+    /// as the page it asks for and never past the room.
+    #[test]
+    fn a_surface_the_session_places_is_as_big_as_it_asks_inside_its_room() {
+        let room = Rectangle::new(Point::from((892, 32)), Size::from((380, 640)));
+        let asked = request(Anchor::TOP | Anchor::LEFT, (380, 412), (0, 0, 0, 0));
+        assert_eq!(
+            within(&asked, room),
+            Rectangle::new(Point::from((892, 32)), Size::from((380, 412)))
+        );
+        let tall = request(Anchor::TOP | Anchor::LEFT, (380, 900), (0, 0, 0, 0));
+        assert_eq!(within(&tall, room).size, Size::from((380, 640)));
+        let open = request(Anchor::TOP | Anchor::LEFT, (0, 0), (0, 0, 0, 0));
+        assert_eq!(within(&open, room), room);
     }
 
     #[test]

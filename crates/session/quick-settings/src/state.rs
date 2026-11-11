@@ -81,9 +81,6 @@ pub struct QuickSettingsState {
     pub rotation_available: bool,
     /// `display.rotation_lock`: the screen stays put when the device turns.
     pub rotation_lock: bool,
-    /// The section whose page replaces the controls (Wi-Fi's networks,
-    /// Bluetooth's devices, a VPN's profiles, the battery); at most one.
-    pub section: Option<crate::QsSection>,
     /// The form for joining a network that broadcasts no name; `None`
     /// except while it is up.
     pub wifi_hidden: Option<crate::HiddenNetworkPrompt>,
@@ -170,7 +167,6 @@ impl Default for QuickSettingsState {
             night_light: night_light_shows(),
             rotation_available: os_actions::has_accelerometer(),
             rotation_lock: settings_store::hardware::ROTATION_LOCK.get(),
-            section: None,
             wifi_hidden: None,
             wifi_joining: None,
             wifi_password: None,
@@ -287,16 +283,5 @@ impl QuickSettingsState {
             volume_available: false,
             ..Self::fixture()
         }
-    }
-
-    /// Open `section`'s page, closing any other: one section is open at a
-    /// time.
-    pub fn open_section(&mut self, section: crate::QsSection) {
-        self.section = Some(section);
-    }
-
-    /// Open `section`, or close it when it is the one open.
-    pub fn toggle_section(&mut self, section: crate::QsSection) {
-        self.section = (self.section != Some(section)).then_some(section);
     }
 }

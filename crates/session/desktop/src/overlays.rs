@@ -187,8 +187,8 @@ pub struct Size {
 /// The width of a popover hanging under the bar, logical pixels.
 pub const POPOVER_WIDTH: f64 = 380.0;
 
-/// The height of a popover hanging under the bar: its footprint, which no page it shows moves. What
-/// a page has beyond it scrolls inside it.
+/// The most height a popover hanging under the bar takes: it is as tall as the page it shows up to
+/// this, and what a page has beyond it scrolls inside it.
 pub const POPOVER_HEIGHT: f64 = 640.0;
 
 /// The gap between a popover and the edges of its display.

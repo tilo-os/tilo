@@ -885,6 +885,9 @@ translation, one text-input and drag stack stay in place; the requests a layer
 surface has no notion of (a title, app id, client side decorations, minimize,
 maximize, fullscreen, move, resize, a window menu) are ignored for one. Its
 first configure arrives through the layer shell's handler and takes the size
-the compositor gives it, then a redraw is asked for as for a toplevel. A
+the compositor gives it, then a redraw is asked for as for a toplevel.
+`request_inner_size` on a layer surface asks the compositor for that size
+(`set_size` and a commit) and the window takes what the next configure
+gives, so a panel that fits its content resizes in place. A
 compositor without the layer shell reports the window as uncreatable instead
 of opening a toplevel somewhere else.

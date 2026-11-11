@@ -37,6 +37,8 @@ use crate::resource::{Page, QuickSettings};
 pub(crate) struct Parts {
     sliders: LocalState<Sliders>,
     tiles: LocalState<Vec<TileFace>>,
+    /// The radios' switches their sections' pages carry in their headers.
+    switches: LocalState<Vec<TileFace>>,
     rows: LocalState<Vec<RowFace>>,
     sections: Rc<HashMap<QsSection, LocalState<Vec<Item>>>>,
     accessory: LocalState<Accessory>,
@@ -97,6 +99,7 @@ impl Parts {
         Self {
             sliders: readings.project(Sliders::of),
             tiles: readings.project(faces::tiles),
+            switches: readings.project(faces::section_switches),
             rows: readings.project(faces::rows),
             sections: Rc::new(sections),
             accessory: readings.project(|state| Accessory {
@@ -160,10 +163,9 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
         .with_inset(Rhythm::Related)
         .with_child(page);
     // The panel is the floating card every surface of its kind stands on, and
-    // its footprint is the surface's: the window it stands in is the size the
-    // desk gives a popover, so the card keeps its edges whichever page it
-    // shows — a page with more on it scrolls inside the body, and one with
-    // less leaves the footer where it was.
+    // the whole of its surface: as tall as the page it shows, growing and
+    // shrinking with it as a section opens and closes, up to the room the
+    // desk gives a popover — a page with more than that scrolls in the body.
     let card = FloatingPanel::new(Box::new(
         Scrollable::new_vertical()
             .fill_parent_height()
@@ -172,7 +174,7 @@ pub(crate) fn panel(cx: &ViewCx<QuickSettings>) -> Element {
     ))
     .footer(root::footer(cx))
     .fill_width()
-    .fill_height();
+    .fit_height();
     Box::new(card) as Element
 }
 

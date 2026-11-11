@@ -2617,9 +2617,9 @@ impl App {
         }
         self.invalidate_widget_resource_cache();
         // What the window's layout needs follows the tree and the theme it
-        // was built with; asked once per build, not per frame.
+        // was built with; asked once per build, not per frame. The size it
+        // wants follows its layout, and is asked after each layout pass.
         self.window.minimum_width = crate::widget::minimum_window_width(self.root_widget.as_ref());
-        self.window.preferred_size = self.root_widget.preferred_window_size();
         requested
     }
 
@@ -2638,6 +2638,12 @@ impl App {
     /// part over whatever is behind.
     #[cfg(feature = "native")]
     fn reconcile_minimum_size(&mut self, window: &Window) {
+        // A window that wants a size of its own may want another at every frame: a panel whose
+        // height follows its page moves there on a spring.
+        if self.window.preferred_size.is_some() {
+            self.window.preferred_size =
+                crate::widget::preferred_window_size(self.root_widget.as_ref());
+        }
         if self.window.preferred_size != self.window.preferred_size_stated {
             self.window.preferred_size_stated = self.window.preferred_size;
             let size = self

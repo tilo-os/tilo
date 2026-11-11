@@ -1,6 +1,8 @@
 //! Quick settings, as the session keeps it: the app that draws the panel runs for the session's
-//! life, standing where the stack places it, shown while the stack has its slot up and hidden
-//! between openings, and shows what the session's services publish.
+//! life, started with the session so the first opening only shows it, standing where the stack
+//! places it, shown while the stack has its slot up and hidden between openings, and shows what
+//! the session's services publish. It is as tall as the page it shows, inside the room the stack
+//! gives a popover.
 //! The panel is a process of its own, so nothing here crosses an `Rc` between the two: what it
 //! shows of the device is the services' readings, and what a press does is the services' actions,
 //! both reached over the broker as any app of the session reaches them. What is left to the session
@@ -11,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use tilo_desktop::overlays::Slot;
+use tilo_desktop::overlays::{POPOVER_HEIGHT, POPOVER_WIDTH, Slot};
 use tilo_desktop_surface::navigation::ChromeEffect;
 use tilo_session_core::surface::LayerPose;
 use ui::kurbo::Rect;
@@ -32,8 +34,9 @@ const PROGRAM: &str = "tilo-quick-settings";
 /// slot opens and closes.
 pub const SURFACE_NAMESPACE: &str = "tilo-quick-settings";
 
-/// How many times the panel's app is started for the same place before it is given up on: one that
-/// will not stay up leaves the device's controls to their keys rather than starting for ever.
+/// How many times the panel's app is started before it is given up on until the panel is opened
+/// anew: one that will not stay up leaves the device's controls to their keys rather than starting
+/// for ever.
 const TRIES: u32 = 3;
 
 /// The settings app, which quick settings opens.
@@ -58,9 +61,11 @@ pub fn surface() -> Result<Surface, StartError> {
 pub fn surface_of(program: impl Into<PathBuf>) -> Surface {
     Surface::new(SURFACE, program)
         .layer(Layer::Overlay)
-        // It stands where the stack placed the slot: wherever that is, it is above the windows it
-        // covers.
+        // It stands where the stack placed the slot, which the compositor is told: wherever that
+        // is, it is above the windows it covers. Its app starts at the most room a popover has and
+        // asks for the height of the page it shows.
         .anchor(Anchor::TOP | Anchor::LEFT)
+        .size((whole(POPOVER_WIDTH), whole(POPOVER_HEIGHT)))
         // Its field takes the keyboard when the person presses it, and the window they were typing
         // in keeps it until then.
         .keyboard(Keyboard::OnDemand)
@@ -73,21 +78,16 @@ pub fn installed(surfaces: &[Surface]) -> bool {
     surfaces.iter().any(|surface| surface.name == SURFACE)
 }
 
-/// Where the panel's app stands while the stack has the slot up: the display it is placed on, its
-/// size, and its margin from that display's edge.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// Whether the panel's app runs.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Run {
-    /// It does not run: the panel is down, or its app is not installed.
+    /// It is to be started: it was not yet, or it exited.
     Down,
-    /// It runs where the stack placed the slot.
-    Standing {
-        /// The display it stands on.
-        output: String,
-        /// Its size in logical pixels.
-        size: (u32, u32),
-        /// Its margin from the display's edges: top, right, bottom, left.
-        margin: (i32, i32, i32, i32),
-    },
+    /// It was started, and runs while its process does.
+    Started,
+    /// It would not stay up, or cannot start: it is not started again until the panel is opened
+    /// anew.
+    GivenUp,
 }
 
 /// Whether the panel, opened for its controls, is still to take the keyboard once its surface
@@ -176,9 +176,8 @@ impl crate::Session {
     /// Follow quick settings: its app runs for the session's life, standing where the stack places
     /// it, shown while the stack has the slot up and hidden between openings, and is asked for the
     /// page the keys asked for.
-    /// The popover's place is the stack's: the app is started again when the place moved under it —
-    /// the caret that opened it, another display, or one that changed shape — as the on-screen
-    /// keyboard is. Opening it where it already stands costs no start.
+    /// The popover's place is the stack's, and the compositor stands the panel there: the caret that
+    /// opened it, another display, or one that changed shape moves it, and costs its app no start.
     pub(crate) fn follow_quick_settings(&mut self) {
         if !self.shared.quick_settings {
             // No app of this session draws the panel: what the stack holds is the stack's, and
@@ -187,80 +186,50 @@ impl crate::Session {
         }
         self.follow_panel_back();
         let open = self.shared.overlays.is_open(Slot::QuickSettings);
-        let drawn = self.compositor.layer_drawn(SURFACE_NAMESPACE);
         let place = self.shared.overlays.place(Slot::QuickSettings);
-        self.quick_settings_panel.follow(open, drawn, place);
-        if !open {
+        if let Some(place) = place {
+            // Where the stack places it, and the most room it has there. Down, it keeps the last
+            // place, so it leaves from where it stood.
+            self.compositor.place_layer_in(
+                SURFACE_NAMESPACE,
+                Some((
+                    offset(place.x0),
+                    offset(place.y0),
+                    offset(place.width()).max(1),
+                    offset(place.height()).max(1),
+                )),
+            );
+        }
+        // Where it stands is as tall as its page: what a press outside it is judged by.
+        let stands = self
+            .compositor
+            .layer_rect(SURFACE_NAMESPACE)
+            .map(|(x, y, width, height)| {
+                Rect::new(
+                    f64::from(x),
+                    f64::from(y),
+                    f64::from(x.saturating_add(width)),
+                    f64::from(y.saturating_add(height)),
+                )
+            });
+        self.shared
+            .overlays
+            .stands(Slot::QuickSettings, stands.filter(|_| open));
+        let drawn = self.compositor.layer_drawn(SURFACE_NAMESPACE);
+        self.quick_settings_panel
+            .follow(open, drawn, stands.or(place));
+        if !open || place.is_none() {
+            // Down, or up where the stack cannot say: nothing shows, and its app runs on hidden, so
+            // the next opening only shows it.
             self.hide_quick_settings();
-            // Asked again when the panel opens again, a panel that would not stay up is tried
-            // afresh.
-            self.quick_settings_starts = 0;
             self.quick_settings_keyboard = PanelKeys::Settled;
             self.shared.panel_asks.borrow_mut().clear();
             self.shared.panel_back.set(None);
+            self.run_quick_settings(false);
             return;
         }
-        let Some(place) = place else {
-            // The stack has it up where it cannot say: nothing to place the app at.
-            self.stop_quick_settings();
+        if !self.run_quick_settings(true) {
             return;
-        };
-        let Some(standing) = self.quick_settings_run_where(place) else {
-            tracing::warn!("quick settings asked for a display this session does not show");
-            self.stop_quick_settings();
-            return;
-        };
-        // The app may have exited since the last pass: it stands on nothing then, and is started
-        // again where the stack places it.
-        if self.quick_settings_run != Run::Down && !self.surfaces.running(SURFACE) {
-            self.quick_settings_run = Run::Down;
-            self.quick_settings_starts = self.quick_settings_starts.saturating_add(1);
-            if self.quick_settings_starts >= TRIES {
-                tracing::error!(
-                    starts = self.quick_settings_starts,
-                    "quick settings would not stay up: it is not started again until the panel is opened anew"
-                );
-                self.shared.overlays.close(Slot::QuickSettings);
-                return;
-            }
-        }
-        if self.quick_settings_run != standing {
-            if self.quick_settings_run != Run::Down {
-                // Another display, or one that changed shape: a fresh start,
-                // and its tries with it.
-                self.quick_settings_starts = 0;
-                self.stop_quick_settings();
-            }
-            let Some(surface) = self
-                .surface_apps
-                .iter()
-                .find(|surface| surface.name == SURFACE)
-            else {
-                // The app was installed when the session started and is gone from its list now:
-                // nothing draws the panel.
-                tracing::warn!("no quick settings app is installed");
-                return;
-            };
-            let Run::Standing {
-                output,
-                size,
-                margin,
-            } = &standing
-            else {
-                return;
-            };
-            let placed = surface
-                .clone()
-                .on(output.clone())
-                .size(*size)
-                .margin(*margin);
-            if let Err(error) = self.start_surface(&placed) {
-                tracing::warn!(%error, "quick settings did not start");
-                self.shared.overlays.close(Slot::QuickSettings);
-                return;
-            }
-            tracing::debug!(%output, ?size, "quick settings stands");
-            self.quick_settings_run = standing;
         }
         // Up, where it stands: the surface is shown rather than started, so an opening the panel
         // already stands for costs nothing.
@@ -289,6 +258,64 @@ impl crate::Session {
             self.quick_settings_keyboard = PanelKeys::Settled;
         }
         self.ask_panel(asked);
+    }
+
+    /// Keep the panel's app running, `open` or not: started when it does not run, and given up on
+    /// when it will not stay up, until the panel is opened anew. Whether it runs now.
+    fn run_quick_settings(&mut self, open: bool) -> bool {
+        if self.quick_settings_run == Run::GivenUp {
+            if !open {
+                return false;
+            }
+            // Opened anew: a panel that would not stay up is tried afresh.
+            self.quick_settings_starts = 0;
+            self.quick_settings_run = Run::Down;
+        }
+        if self.quick_settings_run == Run::Started {
+            if self.surfaces.running(SURFACE) {
+                return true;
+            }
+            self.quick_settings_starts = self.quick_settings_starts.saturating_add(1);
+            self.quick_settings_run = Run::Down;
+            if self.quick_settings_starts >= TRIES {
+                tracing::error!(
+                    starts = self.quick_settings_starts,
+                    "quick settings would not stay up: it is not started again until the panel is opened anew"
+                );
+                self.give_up_quick_settings();
+                return false;
+            }
+        }
+        let Some(surface) = self
+            .surface_apps
+            .iter()
+            .find(|surface| surface.name == SURFACE)
+            .cloned()
+        else {
+            // The app was installed when the session started and is gone from its list now:
+            // nothing draws the panel.
+            tracing::warn!("no quick settings app is installed");
+            self.give_up_quick_settings();
+            return false;
+        };
+        if !open {
+            // Started between openings, it stands hidden from its first frame.
+            self.hide_quick_settings();
+        }
+        if let Err(error) = self.start_surface(&surface) {
+            tracing::warn!(%error, "quick settings did not start");
+            self.give_up_quick_settings();
+            return false;
+        }
+        tracing::debug!(open, "quick settings started");
+        self.quick_settings_run = Run::Started;
+        true
+    }
+
+    /// Stop trying to run the panel's app until the panel is opened anew; an open panel closes.
+    fn give_up_quick_settings(&mut self) {
+        self.quick_settings_run = Run::GivenUp;
+        self.shared.overlays.close(Slot::QuickSettings);
     }
 
     /// Tell the running panel what the keys asked of it, in order.
@@ -370,52 +397,6 @@ impl crate::Session {
         if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(false) {
             self.compositor.show_layer(SURFACE_NAMESPACE, false);
         }
-    }
-
-    /// Stop quick settings' app, if it runs: it stands somewhere else now.
-    pub(crate) fn stop_quick_settings(&mut self) {
-        if self.quick_settings_run != Run::Down {
-            self.quick_settings_run = Run::Down;
-            self.surfaces.stop(SURFACE);
-        }
-    }
-
-    /// Where the panel's app stands, as the stack placed it: the display the place is on, its size,
-    /// and the margin from that display's edge.
-    fn quick_settings_run_where(&self, place: Rect) -> Option<Run> {
-        let displays: Vec<(String, Rect)> = self
-            .compositor
-            .outputs()
-            .into_iter()
-            .filter(|output| output.enabled)
-            .filter_map(|output| {
-                let (x, y, width, height) = output.rect?;
-                Some((
-                    output.name,
-                    Rect::new(
-                        f64::from(x),
-                        f64::from(y),
-                        f64::from(x.saturating_add(width)),
-                        f64::from(y.saturating_add(height)),
-                    ),
-                ))
-            })
-            .collect();
-        let center = place.center();
-        let (output, display) = displays
-            .iter()
-            .find(|(_, display)| display.contains(center))
-            .or_else(|| displays.first())?;
-        Some(Run::Standing {
-            output: output.clone(),
-            size: (whole(place.width()), whole(place.height())),
-            margin: (
-                offset(place.y0 - display.y0),
-                0,
-                0,
-                offset(place.x0 - display.x0),
-            ),
-        })
     }
 }
 

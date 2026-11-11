@@ -139,16 +139,37 @@ pub(crate) struct TileFace {
 pub(crate) fn tiles(state: &QuickSettingsState) -> Vec<TileFace> {
     visible_controls(&state.arrangement, state)
         .into_iter()
-        .map(|control| TileFace {
-            control,
-            icon: tile_icon(control, state),
-            label: tile_label(control, state),
-            detail: subline(control, state),
-            on: tile_on(control, state),
-            switch: tile_switch(control, state),
-            section: section_of(control, state),
-        })
+        .map(|control| tile(control, state))
         .collect()
+}
+
+/// `control`'s tile.
+fn tile(control: QuickSettingsControl, state: &QuickSettingsState) -> TileFace {
+    TileFace {
+        control,
+        icon: tile_icon(control, state),
+        label: tile_label(control, state),
+        detail: subline(control, state),
+        on: tile_on(control, state),
+        switch: tile_switch(control, state),
+        section: section_of(control, state),
+    }
+}
+
+/// The radios whose section's page has their switch in its header, as their tiles say: the
+/// page is where the person turns the radio on to see what it reaches, whether or not its tile is
+/// on the controls page.
+pub(crate) fn section_switches(state: &QuickSettingsState) -> Vec<TileFace> {
+    [
+        QuickSettingsControl::Wifi,
+        QuickSettingsControl::Bluetooth,
+        QuickSettingsControl::Vpn,
+    ]
+    .into_iter()
+    .filter(|control| available(*control, state))
+    .map(|control| tile(control, state))
+    .filter(|face| face.section.is_some())
+    .collect()
 }
 
 /// The controls of `arrangement` this machine has what they control for.

@@ -24,6 +24,7 @@ use sctk::compositor::{CompositorState, Region, SurfaceData, SurfaceDataExt};
 use sctk::seat::pointer::{PointerDataExt, ThemedPointer};
 use sctk::shell::wlr_layer::LayerSurfaceConfigure;
 use sctk::shell::xdg::window::{DecorationMode, WindowConfigure};
+use sctk::shell::WaylandSurface;
 use sctk::shm::slot::SlotPool;
 use sctk::shm::Shm;
 use sctk::subcompositor::SubcompositorState;
@@ -845,6 +846,14 @@ impl WindowState {
 
     /// Try to resize the window when the user can do so.
     pub fn request_inner_size(&mut self, inner_size: Size) -> PhysicalSize<u32> {
+        // A layer surface asks the compositor for its size, which answers
+        // with a configure: the window takes the size that gives it.
+        if let Some(layer) = self.window.layer() {
+            let size: LogicalSize<u32> = inner_size.to_logical(self.scale_factor());
+            layer.set_size(size.width, size.height);
+            layer.commit();
+            return logical_to_physical_rounded(self.inner_size(), self.scale_factor());
+        }
         if self
             .last_configure
             .as_ref()

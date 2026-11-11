@@ -3213,22 +3213,47 @@ pub(crate) use nav_shell::memory::remember_for_app as remember_sidebar_widths_fo
 /// ([`Widget::minimum_window_width`]): the first widget in the tree with an
 /// opinion, outermost first.
 pub fn minimum_window_width<W: Widget + ?Sized>(root: &W) -> Option<f64> {
+    first_window_answer(root, W::minimum_window_width, &|widget| {
+        widget.minimum_window_width()
+    })
+}
+
+/// The size the window `root` lays out wants to be ([`Widget::preferred_window_size`]): the first
+/// widget in the tree with an opinion, outermost first.
+pub fn preferred_window_size<W: Widget + ?Sized>(root: &W) -> Option<(f64, f64)> {
+    first_window_answer(root, W::preferred_window_size, &|widget| {
+        widget.preferred_window_size()
+    })
+}
+
+/// The first answer the widgets of `root` 's tree give, outermost first: `own` asks `root` , `ask`
+/// every widget under it.
+fn first_window_answer<W: Widget + ?Sized, T>(
+    root: &W,
+    own: impl FnOnce(&W) -> Option<T>,
+    ask: &dyn Fn(&dyn Widget) -> Option<T>,
+) -> Option<T> {
     // A retained boundary (an app in a tile) answers inside its own scope.
     let _entry = root
         .callback_binding()
         .map(|binding| binding.enter())
         .transpose()
         .ok()?;
-    if let Some(width) = root.minimum_window_width() {
-        return Some(width);
+    if let Some(answer) = own(root) {
+        return Some(answer);
     }
     let mut found = None;
     root.for_each_child(&mut |child| {
         if found.is_none() {
-            found = minimum_window_width(child);
+            found = first_answer_under(child, ask);
         }
     });
     found
+}
+
+/// [`first_window_answer`] of a widget under the root.
+fn first_answer_under<T>(widget: &dyn Widget, ask: &dyn Fn(&dyn Widget) -> Option<T>) -> Option<T> {
+    first_window_answer(widget, |widget| ask(widget), ask)
 }
 pub mod window_controls;
 pub mod window_header;

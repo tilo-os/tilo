@@ -520,8 +520,8 @@ pub struct Session {
     /// so one that keeps exiting is given up on rather than started for ever.
     #[cfg(target_os = "linux")]
     pub(crate) keyboard_starts: u32,
-    /// Where quick settings' app stands, and how often it was started at
-    /// that place: one that keeps exiting is given up on.
+    /// Whether quick settings' app runs, and how often it was started: one
+    /// that keeps exiting is given up on until the panel is opened anew.
     #[cfg(target_os = "linux")]
     pub(crate) quick_settings_run: crate::quick_settings::Run,
     #[cfg(target_os = "linux")]

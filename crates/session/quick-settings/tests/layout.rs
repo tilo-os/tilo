@@ -26,6 +26,14 @@ fn staged(scenario: &str) -> HeadlessApp<QuickSettingsApp> {
 /// The panel on a desktop: the scenario's readings, and the host it records
 /// what it is asked to do on.
 fn hosted(scenario: &str) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
+    hosted_at(scenario, VIEWPORT)
+}
+
+/// [`hosted`], in a window of `viewport` .
+fn hosted_at(
+    scenario: &str,
+    viewport: (u32, u32),
+) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
     let host = Rc::new(FixtureHost::new(scenarios::readings(Some(scenario))));
     let lent: Rc<dyn tilo_quick_settings::host::PanelHost> = host.clone();
     let mut app =
@@ -33,9 +41,15 @@ fn hosted(scenario: &str) -> (HeadlessApp<QuickSettingsApp>, Rc<FixtureHost>) {
     for invoke in scenarios::actions(Some(scenario)) {
         app.invoke(invoke).unwrap();
     }
-    app.harness().resize(VIEWPORT).unwrap();
+    app.harness().resize(viewport).unwrap();
     app.settle();
     (app, host)
+}
+
+/// The size the panel asks its window to be.
+fn wanted(app: &mut HeadlessApp<QuickSettingsApp>) -> (f64, f64) {
+    ui::widget::preferred_window_size(app.harness().root_widget())
+        .expect("the panel says how big its window is")
 }
 
 /// The panel's own surface: the card fills the window the desk gives a
@@ -1221,4 +1235,83 @@ fn a_page_change_keeps_the_panels_edges() {
         section_first.y0 >= wifi.y0,
         "and its controls start where the page under it did: {section_first:?} against {wifi:?}"
     );
+}
+
+/// The panel is as tall as the page it shows, inside the room the desk gives a popover: in a
+/// window of that height its page fits without scrolling, the footer on the card's bottom edge,
+/// and it asks for no other.
+#[test]
+fn the_panel_is_as_tall_as_the_page_it_shows() {
+    use tilo_quick_settings::resource::{PANEL_HEIGHT, PANEL_WIDTH};
+    let _settled = ui::motion::testing::settled();
+    let room = (PANEL_WIDTH, PANEL_HEIGHT);
+    let mut heights = Vec::new();
+    for scenario in ["bluetooth", "battery", "vpn"] {
+        let (mut app, _) = hosted_at(scenario, room);
+        let (width, height) = wanted(&mut app);
+        assert!(
+            (width - f64::from(PANEL_WIDTH)).abs() < 0.5,
+            "{scenario}: as wide as it was given: {width}"
+        );
+        assert!(
+            height < f64::from(PANEL_HEIGHT) && height > 100.0,
+            "{scenario}: no empty room under its page: {height}"
+        );
+        #[allow(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a whole number of logical pixels"
+        )]
+        app.harness().resize((PANEL_WIDTH, height as u32)).unwrap();
+        app.settle();
+        let (_, again) = wanted(&mut app);
+        assert!(
+            (again - height).abs() < 0.5,
+            "{scenario}: at that height its page fits, and it asks for nothing else: {again}"
+        );
+        let card = card(&mut app);
+        let footer = target(&mut app, "qs-power");
+        assert!(
+            (card.height() - height).abs() < 1.0,
+            "{scenario}: the card is the window: {card:?}"
+        );
+        assert!(
+            footer.y1 <= card.y1 && card.y1 - footer.y1 < 24.0,
+            "{scenario}: the footer stands on its bottom edge: {footer:?} {card:?}"
+        );
+        heights.push(height);
+    }
+    assert!(
+        heights
+            .windows(2)
+            .any(|pair| (pair[0] - pair[1]).abs() > 1.0),
+        "each page is as tall as it is: {heights:?}"
+    );
+}
+
+/// A radio's page has the radio's switch in its header, beside the title: Bluetooth that is off
+/// is turned on where its devices are listed.
+#[test]
+fn a_radios_page_turns_the_radio_on_and_off_from_its_header() {
+    for tile in ["qs-tile-wifi", "qs-tile-bluetooth", "qs-tile-vpn"] {
+        let (mut app, host) = hosted("controls");
+        open_details(&mut app, tile);
+        let title = target(&mut app, "qs-page-title");
+        let switch = target(&mut app, "qs-section-switch");
+        assert!(
+            switch.x0 > title.x1 && (switch.center().y - title.center().y).abs() < 6.0,
+            "{tile}: the switch stands in the header, after the title: {switch:?} {title:?}"
+        );
+        click(&mut app, "qs-section-switch");
+        let ran = host.ran();
+        assert!(
+            matches!(
+                (tile, ran.as_slice()),
+                ("qs-tile-wifi", [QsEffect::SetWifi { on: false }])
+                    | ("qs-tile-bluetooth", [QsEffect::SetBluetooth { on: false }])
+                    | ("qs-tile-vpn", [QsEffect::SetVpn { .. }])
+            ),
+            "{tile}: the switch turns its radio: {ran:?}"
+        );
+    }
 }

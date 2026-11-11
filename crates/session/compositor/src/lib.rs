@@ -2215,6 +2215,26 @@ impl Compositor {
         self.data.state.layer_drawn(namespace)
     }
 
+    /// Stand the session's layer surface `namespace` in `room` (`x, y, w, h` , logical layout
+    /// coordinates), as big as its app asks for inside it, whatever its own anchors and margins
+    /// say; `None` gives it back to them. A popover the session places moves and gets less room
+    /// with a configure, not a new start of its app.
+    pub fn place_layer_in(&mut self, namespace: &str, room: Option<(i32, i32, i32, i32)>) {
+        let room = room.map(|(x, y, w, h)| Rectangle::new((x, y).into(), (w, h).into()));
+        self.data.state.place_layer_in(namespace, room);
+    }
+
+    /// Where the session's layer surface `namespace` stands now (`x, y, w, h` , logical layout
+    /// coordinates): a panel that fits its content is as tall as its page. `None` before it
+    /// stands anywhere.
+    #[must_use]
+    pub fn layer_rect(&self, namespace: &str) -> Option<(i32, i32, i32, i32)> {
+        self.data
+            .state
+            .layer_rect(namespace)
+            .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    }
+
     /// Draw the layer surface `namespace` as `pose` says from the next frame on, or as it stands
     /// again for `None` : how the session moves a panel of its own, whose app cannot know it was
     /// shown or hidden.

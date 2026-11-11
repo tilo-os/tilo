@@ -169,9 +169,9 @@ impl QuickSettings {
 /// The app.
 pub struct QuickSettingsApp;
 
-/// The panel's footprint, as the desk sizes a popover and the window the
-/// card fills: the desk's `POPOVER_WIDTH` and `POPOVER_HEIGHT` place the
-/// window, so what the panel shows never changes where it stands.
+/// The most room the panel has, as the desk sizes a popover (its
+/// `POPOVER_WIDTH` and `POPOVER_HEIGHT`): the window starts there and is
+/// as tall as the page it shows.
 pub const PANEL_WIDTH: u32 = 380;
 pub const PANEL_HEIGHT: u32 = 640;
 

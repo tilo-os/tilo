@@ -900,6 +900,9 @@ fn lay_out_window(
     app.layout.last_layout_logical = Some(logical);
     app.layout.last_layout_scale = Some(scale_factor);
     app.layout.layout_dirty = false;
+    // The size the window wants follows what was laid out in it: a panel whose height follows its
+    // page measures that page here.
+    app.window.preferred_size = crate::widget::preferred_window_size(app.root_widget.as_ref());
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
     }
