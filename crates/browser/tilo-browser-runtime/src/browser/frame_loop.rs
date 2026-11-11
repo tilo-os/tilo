@@ -250,7 +250,7 @@ impl ApplicationHandler<u64> for Runner {
                         WindowEvent::MouseWheel { .. } => observe_wheel(m.id, &mut event),
                         _ => {}
                     }
-                    m.semantics.borrow_mut().note_input(&event);
+                    m.semantics.borrow_mut().note_input(&event, ui::time::now());
                     let start = m.metric_start();
                     let passes = m.frame.relayout_frames();
                     crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&event));
