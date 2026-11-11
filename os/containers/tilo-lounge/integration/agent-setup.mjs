@@ -199,8 +199,15 @@ const click = async (tab, id) => {
     await tab.send('Input.dispatchMouseEvent', {type, x: box.x, y: box.y, button: 'left', clickCount: 1});
   }
 };
-// What the page put on the clipboard, once it did.
-const copied = (tab, what) => until(tab, `navigator.clipboard.readText().then(text => text.includes('tilo login') ? text : '', () => '')`,
+// What is on the clipboard now, read in the tab in front as the clipboard requires.
+const clipboardNow = tab => tab.evaluate(`navigator.clipboard.readText().catch(() => '')`).catch(() => '');
+// What the page put on the clipboard, once it did. The page writes it inside
+// the click and the browser lands the write a moment later, and the
+// clipboard is the browser's, shared by every tab: a prompt an earlier copy
+// left there is not this one, so the read waits for the clipboard to change
+// from what it held before the click (`before`).
+const copied = (tab, what, before) => until(tab,
+  `navigator.clipboard.readText().then(text => text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`,
   `${what} on the clipboard`);
 // The code and site a prompt names.
 const commandOf = prompt => {
@@ -241,9 +248,10 @@ await until(first, `document.getElementById('first-run')?.dataset.setup === 'rea
 report.promptShownMs = Date.now() - visited;
 report.promptBeforeAdmission = await first.evaluate(`document.documentElement.dataset.entry !== 'open'`);
 const shown = await first.evaluate(`document.getElementById('first-run-offer').textContent`);
+const beforeSetup = await clipboardNow(first);
 await click(first, 'first-run-agent');
 await until(first, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click on Set up');
-const prompt = await copied(first, 'the setup prompt');
+const prompt = await copied(first, 'the setup prompt', beforeSetup);
 if (prompt !== shown) await fail(`the click copied something else than the prompt shown: ${prompt} / ${shown}`);
 report.prompt = prompt;
 const setup = commandOf(prompt);
@@ -353,9 +361,10 @@ if (/lounge/i.test(reloaded.title) || reloaded.title !== signedUp.title) {
 // 2. Back on a browser that keeps nothing: signed in through the agent.
 const second = await visit('returning');
 await until(second, `document.getElementById('first-run')?.dataset.signIn === 'ready'`, 'the sign-in prompt made');
+const beforeSignIn = await clipboardNow(second);
 await click(second, 'first-run-agent-sign-in');
 await until(second, `document.documentElement.dataset.firstRun === 'waiting'`, 'the first screen answering the click on Sign in with your agent');
-const again = await copied(second, 'the sign-in prompt');
+const again = await copied(second, 'the sign-in prompt', beforeSignIn);
 report.signInPrompt = again;
 const signIn = commandOf(again);
 if (!signIn) await fail(`the sign-in prompt names no tilo login code: ${again}`);
