@@ -4,7 +4,7 @@
 // and the tab stays on the wait list when it reloads. The site is the web
 // entry's bundle served beside the relay, as the image serves it.
 //
-// usage: node wait-list-door.mjs SITE_URL MAIL_DIR OUT_DIR
+// usage: node wait-list-door.mjs SITE_URL MAIL_DIR OUT_DIR [BEFORE_URL]
 //
 // Prints a JSON report and keeps the screenshots and the tab's console in
 // OUT_DIR; exits non-zero when a step did not happen or the page failed.
@@ -12,9 +12,9 @@ import {mkdirSync, readdirSync, readFileSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
-const [site, mailDir, out] = process.argv.slice(2);
+const [site, mailDir, out, before] = process.argv.slice(2);
 if (!site || !mailDir || !out) {
-  console.error('usage: node wait-list-door.mjs SITE_URL MAIL_DIR OUT_DIR');
+  console.error('usage: node wait-list-door.mjs SITE_URL MAIL_DIR OUT_DIR [BEFORE_URL]');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -75,6 +75,29 @@ const until = async (expression, what, timeout = 180_000) => {
     await sleep(250);
   }
 };
+
+// 0. What a stranger saw before the wait list came back: the setup screen,
+// at a site whose home nothing admits them to. Taken from a browser of its
+// own, so neither visit sees the other's storage.
+if (before) {
+  const was = await browser.tab({firstRun: true});
+  await was.send('Emulation.setDeviceMetricsOverride', {width: 1280, height: 800, deviceScaleFactor: 1, mobile: false});
+  await was.navigate(before);
+  for (let tries = 0; tries < 240; tries += 1) {
+    const shown = await was.evaluate(`!!document.getElementById('first-run')`).catch(() => false);
+    if (shown) break;
+    await sleep(250);
+  }
+  const png = await was.screenshot().catch(() => null);
+  if (png) writeFileSync(join(out, '0-before-today.png'), png);
+  report.before = await was.evaluate(`({
+    firstScreen: !!document.getElementById('first-run'),
+    heading: document.querySelector('#first-run h1')?.textContent?.trim() ?? null,
+    door: document.documentElement.dataset.door ?? null,
+  })`).catch(() => null);
+  console.log(`ok: the before shot (${report.before?.heading})`);
+  await was.close().catch(() => {});
+}
 
 // 1. The wait list is the front door: the setup screen is not over it.
 await tab.navigate(site);

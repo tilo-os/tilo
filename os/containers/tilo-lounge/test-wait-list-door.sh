@@ -45,6 +45,21 @@ grep -q '"url"' "$work/mail-sink.log" || lounge_fail "the mail sink did not star
 
 start_lounge "$bundle" "$work"
 
-node "$here/integration/wait-list-door.mjs" "$site_origin" "$work/mail" "$work/wait-list-door" \
+# What a stranger's browser saw before the wait list came back: the same
+# bundle, its home naming a host that is not there, so nothing admits them
+# and the setup screen is what stays. It is the "before" of the pair.
+before_port=$((sink_port + 1))
+node "$here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
+  'https://127.0.0.1:9' Lounge 'https://127.0.0.1:9/peer/v1/directory/lounge/' "$before_port" \
+  > "$work/site-before.log" 2>&1 &
+lounge_pids+=($!)
+for _ in $(seq 300); do
+  grep -q '"url"' "$work/site-before.log" && break
+  sleep 0.1
+done
+before_origin=$(sed -n 's/.*"url": *"\([^"]*\)".*/\1/p' "$work/site-before.log")
+[[ -n $before_origin ]] || lounge_fail "the before site did not start: $(cat "$work/site-before.log")"
+
+node "$here/integration/wait-list-door.mjs" "$site_origin" "$work/mail" "$work/wait-list-door" "$before_origin" \
   || lounge_fail 'a stranger at the invitation-only door was not kept on its wait list'
 echo 'ok: a stranger saw the wait list, left an address, confirmed it from the mail, and stayed on the list'

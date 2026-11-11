@@ -155,6 +155,9 @@ if [ -n "$wait_list" ]; then
   case $wait_list in
     ''|*[!0-9]*) fail "TILO_ROOMS_WAIT_LIST_MAX is a count, not $wait_list" ;;
   esac
+  # The list is what a door taking people by invitation offers those it turns
+  # away: an open door turns nobody away.
+  [ "$admission" = invite ] || fail "TILO_ROOMS_WAIT_LIST_MAX needs TILO_ROOMS_ADMISSION=invite"
   set -- "$@" --wait-list-max "$wait_list"
 fi
 person_storage=${TILO_ROOMS_PERSON_STORAGE_GB:-}
