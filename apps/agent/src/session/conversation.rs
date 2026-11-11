@@ -9,10 +9,10 @@
 //! the summons derive (chat keeps that rule), so nothing here has to be
 //! stored to find it, and the conversation needs no record of its own.
 //!
-//! What the run records is what a person reads: its state, the route that
-//! decided it, the operations it dispatched, and — once, when it ends — its
-//! words. Every record a run makes lands in one group, so its turn is undone
-//! whole.
+//! What the run records is what a person reads: its state, the operations it
+//! dispatched, and — once, when it ends — its answer. How the run was planned
+//! stays in the run's own record. Every record a run makes lands in one group,
+//! so its turn is undone whole.
 
 use anyhow::Result;
 use serde_json::{Map, Value, json};
@@ -58,18 +58,16 @@ impl Cause {
     }
 }
 
-/// The turn a run answers, as it is being told: the cause, how the run
-/// decided, and the operations it has dispatched so far.
+/// The turn a run answers, as it is being told: the cause, the operations
+/// it has dispatched so far, and the answer it ends with.
 #[derive(Clone, Debug)]
 pub(super) struct Record {
     cause: Cause,
-    /// `model` or `floor`: which path chose the run's steps.
-    route: &'static str,
-    /// The decider's account of why, in its own words.
-    why: String,
     /// The operations dispatched so far, each keyed by the id it was given
     /// when it was dispatched; every record repeats them whole.
     steps: Vec<Value>,
+    /// The words the run answers with, when it has any: the reply's text.
+    answer: Option<String>,
 }
 
 /// The turn `run` answers, checked against what a conversation gives and
@@ -104,8 +102,8 @@ pub(super) fn validate(run: &runtime_collab::TaskRunEnvelope) -> Result<Cause, S
 
 impl Session {
     /// Start recording the turn `run` answers: what the reply will be told
-    /// is kept from here, and which route decides the run.
-    pub(super) fn start_turn(&mut self, cause: Cause, (route, why): (&'static str, String)) {
+    /// is kept from here.
+    pub(super) fn start_turn(&mut self, cause: Cause) {
         tracing::info!(
             conversation = %cause.conversation,
             message = %cause.message,
@@ -113,10 +111,24 @@ impl Session {
         );
         self.record = Some(Record {
             cause,
-            route,
-            why,
             steps: Vec::new(),
+            answer: None,
         });
+    }
+
+    /// End `run` as done: `answer` is the reply's text, and the run's own
+    /// record says `done` when there is no answer.
+    pub(super) fn succeed_turn(
+        &mut self,
+        run: &runtime_collab::TaskRunEnvelope,
+        answer: Option<String>,
+        done: String,
+    ) -> Result<()> {
+        if let Some(record) = self.record.as_mut() {
+            record.answer.clone_from(&answer);
+        }
+        let message = answer.unwrap_or(done);
+        self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
     }
 
     /// Tell the conversation what `run` reports now, as the reply to its
@@ -129,18 +141,18 @@ impl Session {
         use runtime_collab::TaskRunUpdate;
         match update {
             TaskRunUpdate::Accepted => self.record_state(run, "taken", json!({}), None),
-            TaskRunUpdate::Progress {
-                message,
-                presentation: None,
-            } => self.record_state(run, "doing", json!({"did": message}), None),
-            // A streamed presentation is the model's own output, shown where
-            // it streams, and what a run spent is its keeper's count: neither
-            // is a state of the turn.
+            // Progress narrates the run to its own record; the reply shows
+            // the operations it dispatched instead. What a run spent is its
+            // keeper's count. Neither is a state of the turn.
             TaskRunUpdate::Progress { .. }
             | TaskRunUpdate::DirectionsApplied { .. }
             | TaskRunUpdate::Spent { .. } => Ok(()),
-            TaskRunUpdate::Succeeded { message } => {
-                self.record_state(run, "provider_complete", json!({}), Some(message))
+            TaskRunUpdate::Succeeded { .. } => {
+                let answer = self
+                    .record
+                    .as_ref()
+                    .and_then(|record| record.answer.clone());
+                self.record_state(run, "provider_complete", json!({}), answer.as_deref())
             }
             TaskRunUpdate::Failed { message } => {
                 self.record_state(run, "refused", json!({}), Some(message))
@@ -244,8 +256,6 @@ impl Session {
             return Ok(());
         };
         work.insert("state".into(), json!(state));
-        work.insert("route".into(), json!(record.route));
-        work.insert("why".into(), json!(record.why));
         work.insert("trace".into(), Value::Array(record.steps.clone()));
         let mut arguments = Map::new();
         arguments.insert("message".into(), json!(record.cause.message.clone()));

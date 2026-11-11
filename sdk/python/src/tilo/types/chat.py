@@ -54,8 +54,6 @@ __all__ = [
     "TriageUpdate",
     "WorkspaceFiles",
     "AgentFinish",
-    "AgentReasoning",
-    "AgentRoute",
     "AgentStepOutcome",
     "AgentWorkState",
     "Anchor",
@@ -85,9 +83,9 @@ __all__ = [
     "Spent",
     "Workspace",
     "Messages",
+    "Drafts",
     "WorkspaceEmoji",
     "ChatAgent",
-    "Drafts",
 ]
 
 class Category(TypedDict):
@@ -283,12 +281,6 @@ class WorkspaceFiles(TypedDict):
 
 AgentFinish = Literal["complete", "truncated", "refused", "cancelled", "failed"]
 
-class AgentReasoning(TypedDict):
-    route: AgentRoute
-    why: str
-
-AgentRoute = Literal["model", "floor"]
-
 AgentStepOutcome = dict[str, Any]
 """One of asked, applied, no_change, refused: an object whose case the app tags it with."""
 
@@ -402,7 +394,6 @@ class WindowShare(TypedDict):
 class Work(TypedDict):
     stream: ProviderStream | None
     state: Transition | None
-    reasoning: AgentReasoning | None
     trace: list[Step]
 
 class WorkUpdate(TypedDict):
@@ -410,8 +401,6 @@ class WorkUpdate(TypedDict):
     app: str | None
     did: str | None
     about: str | None
-    route: str | None
-    why: str | None
     trace: list[StepUpdate]
 
 class Emoji(TypedDict):
@@ -902,6 +891,15 @@ class Messages(Resource):
         return self.action("stream-output", **args)
 
 
+class Drafts(Resource):
+    """Chat drafts — `chat.drafts`."""
+    drafts: dict[str, str]
+
+    def start_draft(self, *, key: str) -> Run | None:
+        """Runs the app's action."""
+        return self.action("start-draft", key=key)
+
+
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
     emoji: dict[str, Emoji]
@@ -1008,14 +1006,5 @@ class ChatAgent(Resource):
     def retire_agent(self, *, agent: str) -> Run | None:
         """Runs the app's action."""
         return self.action("retire-agent", agent=agent)
-
-
-class Drafts(Resource):
-    """Chat drafts — `chat.drafts`."""
-    drafts: dict[str, str]
-
-    def start_draft(self, *, key: str) -> Run | None:
-        """Runs the app's action."""
-        return self.action("start-draft", key=key)
 
 

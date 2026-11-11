@@ -15,7 +15,7 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{AvatarSize, Button, ButtonFace, ControlSize};
 
-use super::agent_work::measure_agent_work;
+use super::agent_work::{draw_agent_work, measure_agent_work};
 use super::{composer_editor_width, square, time_label};
 use crate::app::{ChatApp, Hit};
 use crate::model;
@@ -113,7 +113,7 @@ impl ChatApp {
                     .is_some_and(|stream| !stream.reasoning.is_empty())
         }) {
             controls.push((
-                crate::i18n::t(if self.expanded_reasoning.contains(&message.id) {
+                crate::i18n::t(if self.expanded_agent.contains(&message.id) {
                     "chat-agent-hide-reasoning"
                 } else {
                     "chat-agent-show-reasoning"
@@ -377,7 +377,8 @@ impl ChatApp {
             height += ButtonFace::height(ControlSize::Regular, theme) + f64::from(sp.s2);
         }
         if let Some(work) = &message.work {
-            height += measure_agent_work(tr, theme, work, width);
+            let open = self.expanded_agent.contains(&message.id);
+            height += measure_agent_work(tr, theme, work, open, width);
         }
         for file in message.files() {
             height += self.attachment_flow_height(file, f64::from(width), tr, theme);
@@ -450,7 +451,7 @@ impl ChatApp {
             .is_some_and(|stream| !stream.reasoning.is_empty())
         {
             let height = ButtonFace::height(ControlSize::Regular, theme);
-            let caption = crate::i18n::t(if self.expanded_reasoning.contains(&m.id) {
+            let caption = crate::i18n::t(if self.expanded_agent.contains(&m.id) {
                 "chat-agent-hide-reasoning"
             } else {
                 "chat-agent-show-reasoning"
@@ -461,12 +462,12 @@ impl ChatApp {
             yy += height + f64::from(sp.s2);
         }
         if let Some(work) = &m.work {
-            let height = measure_agent_work(tr, theme, work, tw);
-            Self::draw_agent_work(
-                PaintCtx::new(scene, tf, tr, theme),
-                work,
-                Rect::new(tx, yy, tx + f64::from(tw), yy + height),
-            );
+            let open = self.expanded_agent.contains(&m.id);
+            let height = measure_agent_work(tr, theme, work, open, tw);
+            let area = Rect::new(tx, yy, tx + f64::from(tw), yy + height);
+            if draw_agent_work(&mut PaintCtx::new(scene, tf, tr, theme), work, open, area) {
+                Self::push_hit(hits, area, Hit::AgentWork(m.id.clone()));
+            }
             yy += height;
         }
         for file in m.files() {

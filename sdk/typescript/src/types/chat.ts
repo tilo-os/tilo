@@ -245,14 +245,6 @@ export interface WorkspaceFiles {
 /** One of "complete", "truncated", "refused", "cancelled", "failed". */
 export type AgentFinish = "complete" | "truncated" | "refused" | "cancelled" | "failed";
 
-export interface AgentReasoning {
-  route: AgentRoute;
-  why: string;
-}
-
-/** One of "model", "floor". */
-export type AgentRoute = "model" | "floor";
-
 /** One of asked, applied, no_change, refused: an object whose case the app tags it with. */
 export type AgentStepOutcome = Record<string, unknown>;
 
@@ -380,7 +372,6 @@ export interface WindowShare {
 export interface Work {
   stream: ProviderStream | null;
   state: Transition | null;
-  reasoning: AgentReasoning | null;
   trace: Step[];
 }
 
@@ -389,8 +380,6 @@ export interface WorkUpdate {
   app: string | null;
   did: string | null;
   about: string | null;
-  route: string | null;
-  why: string | null;
   trace: StepUpdate[];
 }
 
@@ -646,6 +635,19 @@ export function messages(ws: tilo.Workspace, path: string): Messages {
   return resourceProxy(ws, path) as unknown as Messages;
 }
 
+/** Chat drafts — `chat.drafts`. */
+export interface Drafts extends tilo.Resource {
+  drafts: Record<string, string>;
+  startDraft(args: {
+    key: string;
+  }): Promise<tilo.Run | void>;
+}
+
+/** The `chat.drafts` kind at `path`. */
+export function drafts(ws: tilo.Workspace, path: string): Drafts {
+  return resourceProxy(ws, path) as unknown as Drafts;
+}
+
 /** Workspace emoji — `tilo.workspace.emoji`. */
 export interface WorkspaceEmoji extends tilo.Resource {
   emoji: Record<string, Emoji>;
@@ -709,18 +711,5 @@ export interface ChatAgent extends tilo.Resource {
 /** The `chat.agent` kind at `path`. */
 export function chatAgent(ws: tilo.Workspace, path: string): ChatAgent {
   return resourceProxy(ws, path) as unknown as ChatAgent;
-}
-
-/** Chat drafts — `chat.drafts`. */
-export interface Drafts extends tilo.Resource {
-  drafts: Record<string, string>;
-  startDraft(args: {
-    key: string;
-  }): Promise<tilo.Run | void>;
-}
-
-/** The `chat.drafts` kind at `path`. */
-export function drafts(ws: tilo.Workspace, path: string): Drafts {
-  return resourceProxy(ws, path) as unknown as Drafts;
 }
 

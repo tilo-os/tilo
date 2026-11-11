@@ -1875,12 +1875,18 @@ fn a_run_records_its_turn_in_the_conversation() {
     let first = records.first().expect("the reply was told the run started");
     assert_eq!(first["message"], "asked", "on the reply to the message");
     assert_eq!(first["work"]["state"], "taken");
-    assert_eq!(first["work"]["route"], "model");
-    assert!(
-        first["work"]["why"]
-            .as_str()
-            .is_some_and(|why| !why.is_empty())
-    );
+    // How the run was planned is the run's own record, never the reply's.
+    for record in &records {
+        let work = &record["work"];
+        assert!(
+            work.get("route").is_none() && work.get("why").is_none(),
+            "{work}"
+        );
+        assert!(
+            work.get("did").is_none_or(|did| did == "Append paragraph"),
+            "{work}"
+        );
+    }
     let last = records.last().unwrap();
     assert_eq!(last["work"]["state"], "provider_complete");
     assert_eq!(last["say"], "Wrote it.", "the reply's words, once");

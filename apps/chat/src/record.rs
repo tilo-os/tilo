@@ -329,13 +329,14 @@ fn participants_of_old_channels(doc: &mut ui::tilo_resource::Doc) -> Result<(), 
 /// stored by their variant now. Versions up to 3 kept a message's shared
 /// resource and the record it lives in as two fields, and its file in a
 /// third; the three are one list of attachments now
-/// ([`upgrade_attachments`]).
+/// ([`upgrade_attachments`]). Versions up to 4 kept how an agent planned its
+/// work beside it (`reasoning`); that is the run's own record, and it goes.
 ///
 /// # Errors
 /// When `from` is not a version a part was, or a stored value does not read
 /// as its new type.
 pub(crate) fn upgrade_part(doc: &mut ui::tilo_resource::Doc, from: u32) -> Result<(), ModelError> {
-    if !(1..=3).contains(&from) {
+    if !(1..=4).contains(&from) {
         return Err(ModelError::invalid(format!(
             "no chat part migration from {from}"
         )));
@@ -425,7 +426,7 @@ pub(crate) fn kept_names(doc: &ui::tilo_resource::Doc) -> BTreeMap<String, Strin
 /// [`upgrade_part`] of one message stored at `message`: each step leaves a
 /// value already stored as it reads where it is.
 fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<(), ModelError> {
-    use crate::model::{AgentReasoning, AgentStepOutcome, AgentWorkState};
+    use crate::model::{AgentStepOutcome, AgentWorkState};
     use tilo_reference::StoredFile;
     retype_json::<Vec<ClipBlock>>(doc, message, "body")?;
     retype_json::<Vec<Revision>>(doc, message, "history")?;
@@ -436,11 +437,11 @@ fn upgrade_message(doc: &mut ui::tilo_resource::Doc, message: &ObjId) -> Result<
     retype_variant_fields::<Option<StoredFile>>(doc, message, "attachment")?;
     upgrade_attachments(doc, message)?;
     if let Some(work) = map_at(doc, message, "work")? {
+        ui::tilo_resource::Slot::Key(&work, "reasoning").remove(doc)?;
         retype_json::<Option<Transition>>(doc, &work, "state")?;
         if let Some(transition) = map_at(doc, &work, "state")? {
             retype_variant_fields::<AgentWorkState>(doc, &transition, "state")?;
         }
-        retype_json::<Option<AgentReasoning>>(doc, &work, "reasoning")?;
         if let Some(stream) = map_at(doc, &work, "stream")? {
             retype_json::<Option<crate::agent_stream::AgentFinish>>(doc, &stream, "finish")?;
         }
@@ -921,13 +922,11 @@ impl Identified for Person {
 /// An agent's record of its work on a message, written by that agent.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Work {
-    /// Incremental provider output; independent of the agent's public rationale.
+    /// Incremental provider output.
     pub stream: Option<ProviderStream>,
     /// Where it is, and since when: one authored claim, never mixed with
     /// another's time.
     pub state: Option<Transition>,
-    /// How it decided, in the decider's words.
-    pub reasoning: Option<crate::model::AgentReasoning>,
     /// One row per operation it dispatched, rewritten when the app answers.
     pub trace: Keyed<Step>,
 }
@@ -1031,12 +1030,6 @@ pub struct WorkUpdate {
     /// What it is about (`doing`).
     #[serde(default)]
     pub about: Option<String>,
-    /// Which path decided: `model` or `floor`.
-    #[serde(default)]
-    pub route: Option<String>,
-    /// The decider's account of why.
-    #[serde(default)]
-    pub why: Option<String>,
     /// The operations dispatched so far, each by the id minted when it was.
     #[serde(default)]
     pub trace: Vec<StepUpdate>,

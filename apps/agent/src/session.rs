@@ -492,8 +492,7 @@ impl Session {
         self.begin_task_watch();
         self.record = None;
         let plan = self.planner(run);
-        let route = if plan.is_model() { "model" } else { "floor" };
-        self.start_turn(cause, (route, plan.announcing()));
+        self.start_turn(cause);
         // The reply that answers the turn is recorded through the
         // conversation's own action, so the actions this workspace publishes
         // are read before the first record: the person sees the reply the
@@ -539,10 +538,7 @@ impl Session {
                     }
                     // The model's own reply is the run's result, whole: an
                     // answer to a question is what the issue asked for.
-                    let message = finish.reply.unwrap_or_else(|| {
-                        format!("Completed {completed} action(s) the broker approved")
-                    });
-                    self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+                    self.succeed_turn(run, finish.reply, planning::finished(&plan, completed))
                 }
                 agent_loop::LoopEnd::Failed(message) => self.fail_task(run, &message),
                 agent_loop::LoopEnd::Cancelled(message) => self.cancel_task(run, &message),
@@ -616,8 +612,7 @@ impl Session {
                 Err(TaskActionStop::Failed(message)) => return self.fail_task(run, &message),
             }
         }
-        let message = reply.unwrap_or_else(|| planning::finished(&plan, actions.len()));
-        self.report_task(run, runtime_collab::TaskRunUpdate::Succeeded { message })
+        self.succeed_turn(run, reply, planning::finished(&plan, actions.len()))
     }
 
     /// Invoke one planned action through the broker's invocation path.

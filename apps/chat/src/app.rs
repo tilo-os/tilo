@@ -128,7 +128,7 @@ pub(super) fn unread_mentions(messages: &[Message], unread: usize, me: &[&str]) 
 )]
 pub struct ChatApp {
     pub(crate) host_model: crate::host_model::HostModel,
-    pub(crate) expanded_reasoning: std::collections::HashSet<String>,
+    pub(crate) expanded_agent: std::collections::HashSet<String>,
     // CRDT projection (rebuilt every sync / after a mutation).
     pub(crate) channels: Vec<Channel>,
     pub(crate) categories: Vec<crate::model::Category>,
@@ -790,7 +790,7 @@ impl ChatApp {
             // `--shots`/tests from binding a real iroh endpoint per instance.
             perms: ChatPermissions::permissive(),
             host_model: crate::host_model::HostModel::default(),
-            expanded_reasoning: std::collections::HashSet::new(),
+            expanded_agent: std::collections::HashSet::new(),
             dispatch: None,
             read_asked: None,
             read_refused: None,

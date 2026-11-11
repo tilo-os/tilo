@@ -96,17 +96,12 @@ chat-start-call = Anruf starten
 chat-start-video-call = Videoanruf starten
 
 # Belege, die an der Antwort eines Agents hängen; die Verfügbarkeit kommt aus der Präsenz.
-chat-agent-work-taken = Anfrage angenommen
-chat-agent-work-waiting = Zuletzt gemeldet: wartet auf den Zustand der App: { $app }
-chat-agent-work-intent = Letzte Absicht: { $action }
-chat-agent-work-intent-about = Letzte Absicht: { $action }: { $about }
-chat-agent-work-done = Erledigt: { $action }
+chat-agent-work-waiting = Wartet auf { $app }
+chat-agent-work-did = { $count ->
+    [one] Hat eine Sache erledigt
+   *[other] Hat { $count } Sachen erledigt
+}
 chat-agent-work-refused = Diese Anfrage konnte nicht abgeschlossen werden
-chat-agent-work-model-rationale = Begründung des Modells
-chat-agent-work-rule-match = Regel passt
-chat-agent-work-model-choice = Vom eingestellten Modell gewählt
-chat-agent-work-rule-choice = Gegen die veröffentlichte Aktionsliste geprüft
-chat-agent-work-rationale = { $route }: { $why }
 chat-agent-work-step-requested = Angefragt: { $target }
 chat-agent-work-step-applied = Angewandt: { $target }
 chat-agent-work-step-no-change = Keine Änderung: { $target }

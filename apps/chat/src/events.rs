@@ -826,10 +826,10 @@ impl ChatApp {
                 };
                 self.thread_scroll.set_offset_y(target);
             }
-            Hit::AgentReasoning(id) => {
+            Hit::AgentReasoning(id) | Hit::AgentWork(id) => {
                 self.thread_follow = false;
-                if !self.expanded_reasoning.remove(&id) {
-                    self.expanded_reasoning.insert(id);
+                if !self.expanded_agent.remove(&id) {
+                    self.expanded_agent.insert(id);
                 }
             }
             Hit::EmojiGroup(group) => self.emoji_picker.select_group(group),

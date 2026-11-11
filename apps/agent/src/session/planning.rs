@@ -77,7 +77,7 @@ pub(super) fn unmatched(plan: &Planner, why: &str) -> String {
 /// so the outcome does not read as a model's work.
 pub(super) fn finished(plan: &Planner, actions: usize) -> String {
     match plan {
-        Planner::Model { .. } => format!("Completed {actions} action(s) the broker approved"),
+        Planner::Model { .. } => format!("Completed {actions} action(s)"),
         Planner::Words {
             reason: Words::NoModel,
         } => format!("Done: {actions} action(s) matched to the request's words, without a model."),
@@ -154,10 +154,7 @@ mod tests {
 
     #[test]
     fn an_outcome_says_whether_a_model_produced_it() {
-        assert_eq!(
-            finished(&model(), 2),
-            "Completed 2 action(s) the broker approved"
-        );
+        assert_eq!(finished(&model(), 2), "Completed 2 action(s)");
         assert_eq!(
             finished(
                 &Planner::Words {

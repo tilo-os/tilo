@@ -212,7 +212,7 @@ pub struct NewMessage {
     search = ChatPart::search,
     effects = crate::effects::ChatEffect,
     item_views = crate::effects::item_views,
-    version = 4,
+    version = 5,
     migrate = crate::record::upgrade_part,
 )]
 impl ChatPart {
@@ -650,12 +650,12 @@ impl ChatPart {
         &mut self,
         cx: &mut ActionCx,
         message: &Id,
-        #[param("Where the work is, what was done and why")] work: WorkUpdate,
+        #[param("Where the work is and what was done")] work: WorkUpdate,
         #[param("The reply's words, when it has none yet")] say: Option<String>,
     ) -> Result<(), Refusal> {
         let me = author(cx)?;
         let since = seconds(cx);
-        let (state, reasoning, trace) = crate::model::AgentWork::from_update(&work)
+        let (state, trace) = crate::model::AgentWork::from_update(&work)
             .map_err(Refusal::new)?
             .into_parts();
         let summons = self
@@ -694,8 +694,6 @@ impl ChatPart {
         if !unchanged {
             record.state = Some(Transition { state, since });
         }
-        // Each update says why, or that no reason is on record now.
-        record.reasoning = reasoning;
         for step in trace {
             let id = Id::from_raw(step.id.clone());
             let row = Step {

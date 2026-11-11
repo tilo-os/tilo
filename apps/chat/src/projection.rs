@@ -429,7 +429,6 @@ fn work_row(work: &crate::record::Work) -> Option<AgentWork> {
                 |outcome| crate::model::AgentWorkState::ProviderFinished { outcome },
             ),
         since: transition.since,
-        reasoning: work.reasoning.clone(),
         trace,
     })
 }

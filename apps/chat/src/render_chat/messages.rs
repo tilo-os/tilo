@@ -19,22 +19,20 @@ use ui::widget::conversation::{
 };
 use ui::widget::{ArrivalFace, SkeletonFace, SkeletonShape};
 use ui::widget::{
-    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, CardFace, ChipFace, ControlSize,
-    EmptyState, EmptyStateContent, MediaArt,
+    AvatarFace, AvatarSize, Button, ButtonFace, ButtonRole, ChipFace, ControlSize, EmptyState,
+    EmptyStateContent, MediaArt,
 };
 
 /// The skeleton standing for the messages of an earlier part on their way.
 const EARLIER_SHAPE: SkeletonShape = SkeletonShape::Text { lines: 3 };
 
-use super::agent_work::{
-    AgentWorkLineStyle, AgentWorkPresentation, draw_agent_work_line, measure_agent_work,
-};
+use super::agent_work::{draw_agent_work, measure_agent_work};
 use super::{
     MessageColumn, RowM, TimelineItem, attachment_icon, clock_label, file_card_height,
     header_row_h, media_face, media_meta, paint_field, paint_file_card, thread_bar_h, time_label,
 };
 use crate::app::{ChatApp, Hit};
-use crate::model::{self, AgentWork, Message};
+use crate::model::{self, Message};
 use crate::paint::{line_in, line_of, text, width_of};
 
 impl ChatApp {
@@ -552,9 +550,9 @@ impl ChatApp {
         let work_h = if editing {
             0.0
         } else {
-            m.work
-                .as_ref()
-                .map_or(0.0, |work| measure_agent_work(tr, theme, work, text_w))
+            m.work.as_ref().map_or(0.0, |work| {
+                measure_agent_work(tr, theme, work, self.expanded_agent.contains(&m.id), text_w)
+            })
         };
         // The header, reaction and thread bands are measured through the same
         // helpers the draw pass uses, so the reserved height is the painted
@@ -713,21 +711,9 @@ impl ChatApp {
             let paint = PaintCtx::new(scene, tf, tr, theme);
             self.draw_reasoning_toggle(paint, rm, &m.id, column, y, hits);
         }
-        if !rm.editing
-            && let Some(work) = &m.work
-        {
-            Self::draw_agent_work(
-                PaintCtx::new(scene, tf, tr, theme),
-                work,
-                Rect::new(
-                    column.text_x,
-                    *y,
-                    column.text_x + f64::from(column.text_width),
-                    *y + rm.work_h,
-                ),
-            );
-            *y += rm.work_h;
-        }
+        let folds = (!rm.editing)
+            .then(|| self.draw_row_work(PaintCtx::new(scene, tf, tr, theme), &m, rm, column, y))
+            .flatten();
         // Right-click a message (header + body) opens its menu: editing
         // your own, reporting anyone else's, removing it as a moderator.
         // Recorded before the reaction / thread hits so those still win in
@@ -738,6 +724,10 @@ impl ChatApp {
                 Rect::new(area.x0, content_top, area.x1, *y),
                 Hit::MessageMenu { msg: m.id.clone() },
             );
+        }
+        // Above the row's menu: a press on what the agent did opens the list.
+        if let Some(area) = folds {
+            Self::push_hit(hits, area, Hit::AgentWork(m.id.clone()));
         }
         self.push_author_hit(&m, &parts, hits);
         if !rm.editing {
@@ -768,7 +758,7 @@ impl ChatApp {
             text: tr,
             theme,
         } = paint;
-        let caption = crate::i18n::t(if self.expanded_reasoning.contains(id) {
+        let caption = crate::i18n::t(if self.expanded_agent.contains(id) {
             "chat-agent-hide-reasoning"
         } else {
             "chat-agent-show-reasoning"
@@ -782,6 +772,28 @@ impl ChatApp {
         Button::paint(scene, tf, tr, theme, &ButtonFace::new(rect, &caption));
         Self::push_hit(hits, rect, Hit::AgentReasoning(id.to_owned()));
         *y += rm.reasoning_h;
+    }
+
+    /// What the agent did for the reply `m`, from `*y`; advances `*y` past it.
+    /// Returns where it is when it folds, to open and close it there.
+    fn draw_row_work(
+        &self,
+        mut paint: PaintCtx<'_>,
+        m: &Message,
+        rm: &RowM,
+        column: MessageColumn,
+        y: &mut f64,
+    ) -> Option<Rect> {
+        let work = m.work.as_ref()?;
+        let area = Rect::new(
+            column.text_x,
+            *y,
+            column.text_x + f64::from(column.text_width),
+            *y + rm.work_h,
+        );
+        *y += rm.work_h;
+        let open = self.expanded_agent.contains(&m.id);
+        draw_agent_work(&mut paint, work, open, area).then_some(area)
     }
 
     /// Keep where a shown message drew its texts, cut to the timeline's
@@ -999,41 +1011,6 @@ impl ChatApp {
             );
         }
         *y += header_row_h(tr, theme);
-    }
-
-    /// Paint the durable account an agent attached to its own reply.
-    ///
-    /// The card deliberately avoids a spinner or a claim that the agent is
-    /// live. `AgentWork` records what has happened; current availability is
-    /// still communicated by presence. The rationale is the agent's public
-    /// explanation, never hidden chain-of-thought, and trace rows exist only
-    /// for operations the dispatch path actually attempted.
-    pub(super) fn draw_agent_work(mut paint: PaintCtx<'_>, work: &AgentWork, card: Rect) {
-        let theme = paint.theme;
-        let spacing = &theme.tokens.spacing;
-        CardFace::new().paint(&mut paint, card);
-
-        let presentation = AgentWorkPresentation::from(work);
-        let inset = f64::from(spacing.s3);
-        let width = ui::num::f32_of_f64((card.width() - 2.0 * inset).max(0.0));
-        let mut y = card.y0 + inset;
-        y += draw_agent_work_line(
-            &mut paint,
-            &presentation.summary,
-            AgentWorkLineStyle::Summary,
-            Point::new(card.x0 + inset, y),
-            width,
-        );
-        for line in presentation.details {
-            y += f64::from(spacing.s2);
-            y += draw_agent_work_line(
-                &mut paint,
-                &line.text,
-                line.style,
-                Point::new(card.x0 + inset, y),
-                width,
-            );
-        }
     }
 
     /// The "Edited" marker, attachment, reactions and thread link below the

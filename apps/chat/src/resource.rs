@@ -687,11 +687,6 @@ pub(crate) fn agent_work(summons: &Id) -> Invoke<ChatPart> {
             app: None,
             did: Some("Add function".into()),
             about: Some("Revenue curve, preserving the current graph bounds".into()),
-            route: Some("model".into()),
-            why: Some(
-                "Calculator offers the requested graph operation and no bounds change is needed."
-                    .into(),
-            ),
             trace: vec![crate::record::StepUpdate {
                 id: "00000000-0000-4000-8000-000000000001".into(),
                 sequence: 0,

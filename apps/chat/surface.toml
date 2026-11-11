@@ -1,5 +1,7 @@
 # Written by `tilo-app surface`; review changes like an API change.
 
+format = 2
+
 [[resources]]
 kind = "chat.workspace"
 label = "Chat"
@@ -645,7 +647,7 @@ fields = [
 [[resources]]
 kind = "chat.messages"
 label = "Messages"
-version = 4
+version = 5
 fields = [
   { path = "messages", type = { collection = { named = "Message" } }, readonly = true, stored = "collection" },
   { path = "messages.*.channel", type = "text", readonly = true },
@@ -671,9 +673,6 @@ fields = [
   { path = "messages.*.work.state", type = { option = { named = "Transition" } }, stored = "record" },
   { path = "messages.*.work.state.state", type = { named = "AgentWorkState" } },
   { path = "messages.*.work.state.since", type = "int" },
-  { path = "messages.*.work.reasoning", type = { option = { named = "AgentReasoning" } }, stored = "record" },
-  { path = "messages.*.work.reasoning.route", type = { named = "AgentRoute" } },
-  { path = "messages.*.work.reasoning.why", type = "text" },
   { path = "messages.*.work.trace", type = { collection = { named = "Step" } }, stored = "keyed" },
   { path = "messages.*.work.trace.*.id", type = "text" },
   { path = "messages.*.work.trace.*.sequence", type = "int" },
@@ -827,7 +826,7 @@ id = "record-work"
 kind = "undoable"
 params = [
   { name = "message", type = "text", required = true, schema = { type = "string" } },
-  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, route = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } }, why = { type = ["string", "null"] } }, required = ["state"] } },
+  { name = "work", type = { named = "WorkUpdate" }, required = true, schema = { type = "object", additionalProperties = false, properties = { about = { type = ["string", "null"] }, app = { type = ["string", "null"] }, did = { type = ["string", "null"] }, state = { type = "string" }, trace = { type = "array", items = { type = "object", additionalProperties = false, properties = { id = { type = "string" }, label = { type = "string" }, outcome = { type = "string" }, resource = { type = "string" }, sequence = { type = "integer", minimum = 0 }, why = { type = ["string", "null"] } }, required = ["id", "resource", "label", "outcome"] } } }, required = ["state"] } },
   { name = "say", type = { option = "text" }, required = false, schema = { type = ["string", "null"] } },
 ]
 
@@ -856,20 +855,6 @@ cases = [
   { name = "refused" },
   { name = "cancelled" },
   { name = "failed" },
-]
-
-[[resources.types]]
-name = "AgentReasoning"
-fields = [
-  { name = "route", type = { named = "AgentRoute" } },
-  { name = "why", type = "text" },
-]
-
-[[resources.types]]
-name = "AgentRoute"
-cases = [
-  { name = "model" },
-  { name = "floor" },
 ]
 
 [[resources.types]]
@@ -1091,7 +1076,6 @@ name = "Work"
 fields = [
   { name = "stream", type = { option = { named = "ProviderStream" } } },
   { name = "state", type = { option = { named = "Transition" } } },
-  { name = "reasoning", type = { option = { named = "AgentReasoning" } } },
   { name = "trace", type = { collection = { named = "Step" } } },
 ]
 
@@ -1102,9 +1086,22 @@ fields = [
   { name = "app", type = { option = "text" } },
   { name = "did", type = { option = "text" } },
   { name = "about", type = { option = "text" } },
-  { name = "route", type = { option = "text" } },
-  { name = "why", type = { option = "text" } },
   { name = "trace", type = { list = { named = "StepUpdate" } } },
+]
+
+[[resources]]
+kind = "chat.drafts"
+label = "Chat drafts"
+version = 1
+fields = [
+  { path = "drafts", type = { map = "rich_text" } },
+]
+
+[[resources.verbs]]
+id = "start-draft"
+kind = "undoable"
+params = [
+  { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 
 [[resources]]
@@ -1268,20 +1265,5 @@ name = "Spent"
 fields = [
   { name = "day", type = "text" },
   { name = "cost_micros", type = "int" },
-]
-
-[[resources]]
-kind = "chat.drafts"
-label = "Chat drafts"
-version = 1
-fields = [
-  { path = "drafts", type = { map = "rich_text" } },
-]
-
-[[resources.verbs]]
-id = "start-draft"
-kind = "undoable"
-params = [
-  { name = "key", type = "text", required = true, schema = { type = "string" } },
 ]
 

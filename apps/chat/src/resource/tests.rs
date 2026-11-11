@@ -814,10 +814,6 @@ fn every_scenario_stages_through_the_resource_and_its_surface() {
     assert_eq!(reply.author, DEMO_AGENT, "the agent authors its own reply");
     assert_eq!(reply.parent.as_deref(), Some(DEMO_SUMMONS));
     let work = reply.work.expect("reply carries work evidence");
-    assert_eq!(
-        work.reasoning.as_ref().unwrap().route,
-        crate::model::AgentRoute::Model
-    );
     assert!(matches!(
         work.trace.as_slice(),
         [crate::model::AgentStep {
