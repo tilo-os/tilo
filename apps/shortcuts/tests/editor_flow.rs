@@ -356,12 +356,14 @@ fn every_operation_is_a_published_action() {
             "`{action}` is published"
         );
     }
-    // The door's effects are published on the drafts, beside their edits.
+    // The door's effects are published on the drafts, beside their edits. The framework's own
+    // share verbs stand on every record's root, so they are no part of what the door declares.
     let mut effects: Vec<&str> = workbench
         .actions
         .iter()
         .filter(|spec| spec.kind == ui::tilo_actions::OperationKind::Effect)
         .map(|spec| spec.id.as_str())
+        .filter(|id| !ui::tilo_resource::share::is_share_verb(id))
         .collect();
     effects.sort_unstable();
     assert_eq!(

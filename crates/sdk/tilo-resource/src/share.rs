@@ -21,6 +21,13 @@ use tilo_actions::{
 pub const SHARE_LINK: &str = tilo_actions::remote::SHARE_LINK_ACTION;
 /// The link with an invitation for someone not yet in the workspace.
 pub const SHARE_INVITE_LINK: &str = "share-invite-link";
+
+/// Whether `action` is one of the framework's own share verbs, offered beside
+/// every resource's own: a resource's other actions are what the app declared.
+#[must_use]
+pub fn is_share_verb(action: &str) -> bool {
+    action == SHARE_LINK || action == SHARE_INVITE_LINK
+}
 /// `share-link` on `resource`, which `provider` publishes: how one app asks
 /// another app's resource for its link without knowing its views.
 #[must_use]
@@ -73,12 +80,7 @@ pub struct ShareRequest {
 /// Offer `share-link` and `share-invite-link` on `resource` when it
 /// declares a view and does not offer them already.
 pub fn offer(resource: &mut tilo_actions::ResourceSpec) {
-    if resource.views.is_empty()
-        || resource
-            .actions
-            .iter()
-            .any(|spec| spec.id == SHARE_LINK || spec.id == SHARE_INVITE_LINK)
-    {
+    if resource.views.is_empty() || resource.actions.iter().any(|spec| is_share_verb(&spec.id)) {
         return;
     }
     let views: Vec<SharedView> = resource
@@ -137,9 +139,7 @@ pub fn offer_tree(resource: &mut tilo_actions::ResourceSpec) {
 
 /// Offer the link actions again after `resource` gained views.
 pub fn reoffer(resource: &mut tilo_actions::ResourceSpec) {
-    resource
-        .actions
-        .retain(|spec| spec.id != SHARE_LINK && spec.id != SHARE_INVITE_LINK);
+    resource.actions.retain(|spec| !is_share_verb(&spec.id));
     offer(resource);
 }
 
