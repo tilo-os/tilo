@@ -52,7 +52,7 @@ use tilo_relay_client::Host;
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
 use tilo_relay_protocol::workspaces::{PreAdmission, WorkspaceRole};
 use tilo_session::{Options, Session};
-use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerEvent, PeerHandle};
+use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerHandle};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
 
@@ -1386,17 +1386,6 @@ impl LoungeHost {
         // a write lands. The page's writes reach the host through other runtimes' work, so the wait
         // is the suite's, not a second count.
         tilo_test_env::wait_until("the page's line to reach the lounge's host", || {
-            for event in page.drain() {
-                if let PeerEvent::CompactionRequested {
-                    route: asked,
-                    request,
-                } = event
-                {
-                    assert_eq!(asked, route, "the record the page wrote");
-                    page.compact(request, chat.save())
-                        .expect("the page hands its record over");
-                }
-            }
             let held = block_on_within(
                 runtime,
                 "the lounge's records",
