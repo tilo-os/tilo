@@ -688,12 +688,7 @@ impl FrameHarness {
         let furniture = crate::widget::window_header::RowFurniture::of(slot);
         let mut out = Vec::new();
         if furniture.new_tab.area() > 0.0 {
-            out.push(
-                BarControl::new("new-tab", "tab-new", furniture.new_tab)
-                    .named(crate::widget::tabs::NEW_TAB.to_owned())
-                    .icon(Some(crate::icons::Icon::Plus.name().to_owned()))
-                    .furniture(),
-            );
+            out.push(crate::widget::tabs::new_tab_control(furniture.new_tab));
         }
         for (slot, control, rect) in [
             (

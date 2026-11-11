@@ -1145,15 +1145,8 @@ impl TabBar {
                 out.push(control);
             }
         };
-        // The strip's own door to another application, after the tabs: a control of the bar as
-        // much as the app's slots are, and read with them.
         if self.new_tab_rect.area() > 0.0 {
-            push(
-                BarControl::new("new-tab", "tab-new", self.new_tab_rect)
-                    .named(NEW_TAB.to_owned())
-                    .icon(Some(icons::Icon::Plus.name().to_owned()))
-                    .furniture(),
-            );
+            push(new_tab_control(self.new_tab_rect));
         }
         if let Some(toolbar) = self.active_toolbar() {
             let slots = self.toolbar_row.slots();
@@ -3824,6 +3817,15 @@ pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 /// What the strip's new-tab control is called to assistive technology, and the tooltip of its
 /// glyph: a "+" needs no words in the row.
 pub(crate) const NEW_TAB: &str = "New tab";
+
+/// The window's own door to another application, as a bar reads it at `rect`: the "+" every
+/// tabbed app wears, in no words a bar would hold room for, named as [`NEW_TAB`] says.
+pub(crate) fn new_tab_control(rect: Rect) -> crate::window_toolbar::BarControl {
+    crate::window_toolbar::BarControl::new("new-tab", NEW_TAB_TARGET, rect)
+        .named(NEW_TAB.to_owned())
+        .icon(Some(icons::Icon::Plus.name().to_owned()))
+        .furniture()
+}
 
 /// Paint the new-tab door at `rect`: the shared small button, bare at rest so it never competes
 /// with a tab, a lift of the ground under the pointer. A bar and the row of a window that holds
