@@ -88,7 +88,14 @@ impl WindowMenuPopup {
             clippy::cast_possible_truncation,
             reason = "a point on the desk, a few thousand logical pixels at most"
         )]
-        self.menu.open_at([at.x as f32, at.y as f32]);
+        let at = [at.x as f32, at.y as f32];
+        // Inside the area the popup covers, as the bar's own menus open inside theirs: the frame
+        // that draws the menu may name no window of its own, or one another widget left behind.
+        if self.rect.is_zero_area() {
+            self.menu.open_at(at);
+        } else {
+            self.menu.open_at_clamped(at, self.rect);
+        }
         self.tab = Some(tab);
         true
     }

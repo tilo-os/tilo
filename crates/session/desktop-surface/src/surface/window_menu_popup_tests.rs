@@ -56,3 +56,37 @@ fn a_row_clicked_in_the_menu_does_it_to_the_window_whose_bar_asked() {
         "the row clicked filled the strip with the window whose bar asked"
     );
 }
+
+/// The menu stands where the bar was pressed, inside the area the popup covers, whatever
+/// window the frame that draws it names: a page's frame can name none of its own, or a box a
+/// widget drawn before left behind.
+#[test]
+fn the_menu_stands_where_the_bar_was_pressed_whatever_the_frame_names() {
+    let (_surface, handle) = one_window_desk(1);
+    let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs[0].id);
+    let mut popup = WindowMenuPopup::new(handle.clone());
+    // Laid out over the whole page, as a host mounts it.
+    popup.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
+    handle
+        .shared
+        .borrow_mut()
+        .menus
+        .push((tab, Point::new(578.0, 58.0)));
+    assert!(popup.follow().changed, "the bar's ask opens the menu");
+    let presence = ui::presence::PresenceCtx::default();
+    presence.viewport.set(Some(Rect::new(0.0, 0.0, 1.0, 1.0)));
+    let theme = ui::Theme::dark();
+    let mut text = ui::text_render::TextRenderer::new();
+    popup.draw_overlay(
+        &mut ui::vello::Scene::new(),
+        ui::kurbo::Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &presence,
+    );
+    let menu = popup.menu.get_rect();
+    assert!(
+        menu.x0 >= 578.0 && menu.y0 >= 58.0 && menu.width() > 100.0,
+        "the menu stands under the press, at its own size: {menu:?}"
+    );
+}

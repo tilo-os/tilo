@@ -1096,8 +1096,16 @@ try {
       failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
     }
     await settle(a.tab, 1);
-    // A row the click took closes the menu: still listed, the click never reached it.
-    const open = (await namesOf(a.tab)).some(name => /^(Fill the strip|Give the strip back)$/.test(name));
+    // A row the click took closes the menu: still standing somewhere on the page, the click
+    // never reached it. A closed menu keeps naming its rows, standing nowhere.
+    await a.tab.evaluate('globalThis.tiloMount?.requestSemantics?.()').catch(() => {});
+    await settle(a.tab, 1);
+    let open = false;
+    for (const name of ['Fill the strip', 'Give the strip back']) {
+      const node = JSON.parse(await find(a.tab, name));
+      const b = node?.bounds;
+      if (b && (b.x1 ?? b.x + b.width) > (b.x0 ?? b.x) && (b.y1 ?? b.y + b.height) > (b.y0 ?? b.y)) open = true;
+    }
     return {row, open};
   };
   const desk = await centreOf(a.tab);
