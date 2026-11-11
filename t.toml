@@ -5025,6 +5025,7 @@ on = ["dispatch", "stable"]
 name = "tilo-sh-vm-host"
 run = "cargo build --locked -p tilo-relay --bin tilo-enroll\nbash os/containers/tilo-sh/test-vm-host.sh /target/images/image-vm-host/image.oci.tar /target/publish/hosted-guest/image \"$CARGO_TARGET_DIR/debug/tilo-enroll\"\n"
 setup = { run = "dnf install -y --setopt=install_weak_deps=False podman xfsprogs util-linux && dnf clean all" }
+env = { CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "", CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_RUSTFLAGS = "" }
 needs = ["image-vm-host", "image-hosted-guest"]
 requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
 isolation = "vm"
