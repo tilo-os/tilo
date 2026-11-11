@@ -79,8 +79,6 @@ pub(crate) struct Replicated {
     pub(crate) ask_content: fn(u32),
     /// The certified device key (hex) the workspace's documents are kept as.
     pub(crate) device_of: fn(u32) -> Option<String>,
-    /// Whether the workspace holds a record, open or delivered.
-    pub(crate) has_record: fn(u32, &str, &str) -> bool,
     /// A record as the workspace committed it, without what is still being typed.
     pub(crate) committed_record: fn(u32, &str, &str, &str) -> Option<Vec<u8>>,
     /// The one stream of record changes this page feeds.
@@ -146,10 +144,6 @@ pub(crate) fn ask_content(id: u32) {
 
 pub(crate) fn device_of(id: u32) -> Option<String> {
     installed(None, |replicated| (replicated.device_of)(id))
-}
-
-pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
-    installed(false, |replicated| (replicated.has_record)(id, app, record))
 }
 
 pub(crate) fn committed_record(

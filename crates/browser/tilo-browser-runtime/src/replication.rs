@@ -77,7 +77,6 @@ pub(crate) fn install() {
         follow_answers,
         ask_content,
         device_of,
-        has_record,
         committed_record,
         changes,
         record_document,
