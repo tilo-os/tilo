@@ -1,9 +1,8 @@
 //! Fill a public workspace with people, as its door takes them in: each a
-//! new person with their own root and device, asking the workspace's door
-//! (`<relay>/peer/v1/directory/<workspace>/`) as a page's Join does, then
-//! redeeming the invitation it answers with on the relay. Nothing is written
-//! around the relay: the members are the host's own, by the path every
-//! visitor takes.
+//! new person with their own root and device, entering through the
+//! workspace's door on a session with the relay, as a page's Join does.
+//! Nothing is written around the relay: the members are the host's own, by
+//! the path every visitor takes.
 //!
 //! ```sh
 //! seed-lounge RELAY_ORIGIN WORKSPACE COUNT [CA_PEM]
@@ -13,8 +12,8 @@
 //! Caddy CA), trusted beside the system's roots. Prints one JSON line:
 //! `{"joined": N, "seconds": S}`.
 
-use base64::Engine as _;
-use tilo_relay_protocol::workspaces::JoinReply;
+use std::sync::Arc;
+
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, DeviceIdentity, UserIdentity};
 
 #[tokio::main]
@@ -41,23 +40,16 @@ async fn main() -> Result<(), String> {
         );
     }
     let client = builder.build().map_err(|error| error.to_string())?;
-    let door = tilo_net::Url::parse(&format!(
-        "{}/peer/v1/directory/{workspace}/",
-        relay.trim_end_matches('/')
-    ))
-    .map_err(|error| error.to_string())?;
+    let host = tilo_relay_client::https::Origin::new(&client, &relay);
+    let info = tilo_relay_client::https::host_info(&host)
+        .await
+        .map_err(|error| format!("the relay: {error}"))?;
+    let address = info.address.ok_or("the relay takes no device sessions")?;
     let began = std::time::Instant::now();
     let mut joined: usize = 0;
-    for (index, number) in (0..count).zip(1..) {
+    for number in 1..=count {
         let name = format!("Seeded member {number}");
         let (root, user) = UserIdentity::generate(&name, 1);
-        let person = tilo_workspace_directory::Person {
-            user: user.public_key,
-            name: name.clone(),
-        };
-        let granted = tilo_workspace_directory::join(&client, &door, &person)
-            .await
-            .map_err(|error| format!("{name}: the door: {error}"))?;
         let (device, identity) = DeviceIdentity::generate(format!("{name}'s browser"), 1);
         let mut cert = DeviceCert {
             user_public_key: user.public_key,
@@ -71,27 +63,38 @@ async fn main() -> Result<(), String> {
         };
         tilo_user_identity::sign_device_cert(&mut cert, &root)
             .map_err(|error| error.to_string())?;
-        let invitation = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(&granted.invitation)
-            .map_err(|error| error.to_string())?;
-        let origin = granted.origin.unwrap_or_else(|| relay.clone());
-        let host = tilo_relay_client::https::Origin::new(&client, &origin);
-        let mut request = [0; 32];
-        request[..8].copy_from_slice(&(index as u64).to_le_bytes());
-        let reply = tilo_relay_client::invite::ask_to_join_pre_admitted(
-            &host,
-            &invitation,
-            &cert,
+        let held = tilo_session_host::device::Held {
+            cert,
+            host_cert: Some(info.host_cert.clone()),
+        };
+        let (cert, entering) = tilo_session_host::device::door_entry(
+            &info.host_cert,
+            &workspace,
             &device,
-            request,
-            &name,
-            granted.admission_token.as_bytes(),
+            tilo_session_host::device::Entering {
+                held: Some(&held),
+                root: None,
+                label: &name,
+                name: &name,
+                token: None,
+            },
         )
         .await
-        .map_err(|error| format!("{name}: joining: {error}"))?;
-        if !matches!(reply, JoinReply::Admitted { .. }) {
-            return Err(format!("{name} was not admitted: {reply:?}"));
-        }
+        .map_err(|refused| format!("{name}: {}", refused.message))?;
+        let session = tilo_session_host::PeerHandle::start(
+            tilo_session_host::PeerConfig {
+                host: tilo_session_host::Host::published(&address),
+                cert,
+                host_cert: info.host_cert.clone(),
+                revocations: tilo_user_identity::RevocationList::new(),
+                entering: Some(entering),
+            },
+            Arc::new(device),
+            Arc::new(tilo_session_host::MemoryPeerStore::default()),
+        );
+        let entered = tilo_session_host::device::entered(&session).await;
+        session.close();
+        entered.map_err(|refused| format!("{name} was not admitted: {}", refused.message))?;
         joined = number;
         if joined.is_multiple_of(50) {
             eprintln!("seed-lounge: {joined} of {count} joined");
