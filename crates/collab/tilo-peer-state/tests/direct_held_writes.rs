@@ -138,8 +138,10 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     let root = SigningKey::from_bytes(&[1; 32]);
     let (host_key, host_cert) = common::device_with(&root, 2, DeviceCapabilities::host());
     let (b_key, b_cert) = device(&root, 3);
+    // A third member, whose writes the host passes on to the second.
+    let (c_key, c_cert) = device(&root, 4);
     let now = SystemTime::now();
-    let devices = vec![host_cert.clone(), b_cert.clone()];
+    let devices = vec![host_cert.clone(), b_cert.clone(), c_cert.clone()];
     let mut govern = StatePeer::new(
         WORKSPACE,
         host_cert.clone(),
@@ -206,11 +208,14 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     .await
     .expect("the member holds the record");
 
-    // Two writes of the host's, the second building on the first, reach the
-    // member the other way round.
+    // Two writes of another member's, the second building on the first, reach
+    // the member through the host the other way round. They are that member's
+    // own, numbered on its own sequence: written as the host's in a copy of its
+    // replica, they would take the numbers the host's next catch-up takes too,
+    // and the member answered for the deferred write asks for one.
     let mut author = host.read(Clone::clone);
-    let first = write(&mut author, &host_key, "first", "1");
-    let second = write(&mut author, &host_key, "second", "2");
+    let first = write(&mut author, &c_key, "first", "1");
+    let second = write(&mut author, &c_key, "second", "2");
     host.send(second.clone()).unwrap();
     let waited = hears(&mut heard, &second, "the second write").await;
     assert!(
@@ -221,7 +226,15 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     host.send(first.clone()).unwrap();
     let released = hears(&mut heard, &first, "the first write").await;
     // The first write takes the second in with it: nobody asked again.
-    assert_eq!(b.read(|b| value(b, "first")).as_deref(), Some("1"));
+    assert_eq!(
+        b.read(|b| value(b, "first")).as_deref(),
+        Some("1"),
+        "the first write lands as it is heard: landed {}, retained {}, fresh {}, report {:?}",
+        released.landed,
+        released.retained,
+        released.fresh,
+        released.report
+    );
     assert_eq!(
         b.read(|b| value(b, "second")).as_deref(),
         Some("2"),
@@ -242,7 +255,7 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
         report
             .released()
             .iter()
-            .all(|released| released.author == host_key.verifying_key().to_bytes()),
+            .all(|released| released.author == c_key.verifying_key().to_bytes()),
         "a released write is its author's"
     );
 
