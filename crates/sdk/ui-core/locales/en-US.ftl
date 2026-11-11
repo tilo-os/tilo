@@ -1302,3 +1302,4 @@ media-fullscreen-exit = Exit fullscreen
 media-playback-settings = Playback settings
 media-toggle-on = On
 media-toggle-off = Off
+floating-window-title = Floating window

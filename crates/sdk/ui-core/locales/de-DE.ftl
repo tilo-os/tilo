@@ -1268,3 +1268,4 @@ media-fullscreen-exit = Vollbild verlassen
 media-playback-settings = Wiedergabeeinstellungen
 media-toggle-on = Ein
 media-toggle-off = Aus
+floating-window-title = Schwebendes Fenster
