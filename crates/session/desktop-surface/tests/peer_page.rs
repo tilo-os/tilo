@@ -157,6 +157,39 @@ fn a_viewer_draws_the_frame_its_publisher_holds() {
 }
 
 #[test]
+fn the_page_view_code_hands_over_the_tile_a_viewer_draws() {
+    use tilo_desktop_surface::page_code::PAGE;
+
+    let engine = engine();
+    let objects = payloads(&engine);
+    // What the reading side asks for, instead of a stream of its own: the code
+    // this build links, or with `lazy-page-view` the module a desk fetches the
+    // first time a page travels to it.
+    let page = PAGE.get().expect("the page view this build links").open();
+    for object in &objects {
+        page.apply(object);
+    }
+    let harness = FrameHarness::new(
+        ui::state::State::new(),
+        page.tile("Browser".into()),
+        (WIDTH, HEIGHT),
+    );
+    let viewed = harness.render_rgba();
+
+    let mut stream = PageStream::new();
+    for object in &objects {
+        stream.apply(object);
+    }
+    let stream = Rc::new(RefCell::new(stream));
+    let (direct, _) = drawn(&stream);
+    assert_eq!(
+        OffscreenRenderer::pixels_differing_beyond_aa(&viewed, &direct),
+        0,
+        "the code's tile draws the page a viewer holds"
+    );
+}
+
+#[test]
 fn a_page_stream_takes_the_tab_of_its_window_and_lets_it_go_when_it_ends() {
     let mut minter = IdMinter::new(7);
     let (tree, tab) = desk(&mut minter);

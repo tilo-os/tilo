@@ -30,6 +30,10 @@ peer-view = [
 # with: it fetches it the first time the centre opens
 # (`NOTIFICATION_CENTRE`).
 lazy-notification-centre = []
+# Leave a window page's viewer (the frame another device publishes, and the
+# renderer that draws it) out of what the program starts with: it fetches it
+# the first time a page travels to a desk (`PAGE`).
+lazy-page-view = []
 
 [dependencies]
 # Sorts without a copy of std's sort per call site, which kept the web

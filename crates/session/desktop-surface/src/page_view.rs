@@ -28,6 +28,8 @@ use ui::webview::paint::{BlobSource, PageCanvas, PageRenderer};
 use ui::widget::{MediaAspect, MediaGrid, TaffyTreeExt, Widget};
 use ui::{TextRenderer, Theme};
 
+use crate::page_code::PageHandle;
+
 /// Images one page keeps: the frame names the images it needs, and a page
 /// that replaced more than this since its last whole frame starts again at one
 /// anyway.
@@ -254,5 +256,28 @@ impl Widget for PageView {
 impl BlobSource for Blobs {
     fn blob(&self, hash: &[u8; 32]) -> Option<Arc<Vec<u8>>> {
         self.bytes.get(hash).cloned()
+    }
+}
+
+/// One window's page, as [`PageCode`](crate::page_code::PageCode) hands it over.
+pub(crate) struct Viewer {
+    stream: Rc<RefCell<PageStream>>,
+}
+
+impl Viewer {
+    pub(crate) fn new() -> Self {
+        Self {
+            stream: Rc::new(RefCell::new(PageStream::new())),
+        }
+    }
+}
+
+impl PageHandle for Viewer {
+    fn apply(&self, payload: &[u8]) -> bool {
+        self.stream.borrow_mut().apply(payload)
+    }
+
+    fn tile(&self, alt: String) -> Box<dyn ui::widget::AppWidget> {
+        Box::new(PageView::new(Rc::clone(&self.stream), alt))
     }
 }

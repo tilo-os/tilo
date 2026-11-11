@@ -12,7 +12,8 @@
 //! desktop asks for as it first lays out, the notification centre,
 //! which opening it asks for, the HTML presenter, which a page mounted
 //! with `dom: true` asks for, the directory and invite sheets, which
-//! opening one asks for.
+//! opening one asks for, a hosted window's page, which the first page to
+//! reach the desk asks for.
 //!
 //! Like an app's `definition()` (`crate::split`), each export below is the
 //! only way to the code it hands over, so the splitter moves that code into
@@ -194,6 +195,13 @@ split_code! {
 }
 
 split_code! {
+    /// A window's page drawn from the paint stream another device publishes:
+    /// the first page that travels to a desk asks for it.
+    mod page_view: tilo_desktop_surface::page_code::PageCode = tilo_desktop_surface::page_code::builtin_page()
+        => tilo_desktop_surface::page_code::PAGE, module = "page_view", hash = "b46c0a91e7d23f58";
+}
+
+split_code! {
     /// A theme's surface shader: the first theme that states one asks for it.
     mod surface_shader: tilo_ui::part_paint::SurfaceShaderCode = tilo_ui::part_paint::builtin_surface_shader()
         => tilo_ui::part_paint::SURFACE_SHADER, module = "surface_shader", hash = "c40e7b19d2a6f385";
@@ -284,4 +292,5 @@ pub(crate) fn register() {
     questions::register();
     desktop_search::register();
     notification_centre::register();
+    page_view::register();
 }

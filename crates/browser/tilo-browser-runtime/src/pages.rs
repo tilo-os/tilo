@@ -6,18 +6,23 @@
 //! its host — the session this page's peer is with — for exactly the tracks of
 //! the windows on its desk ([`follow`]), and what those tracks bring rebuilds
 //! the frame the hosting device holds ([`heard`]). The tile itself is the
-//! toolkit's [`PageView`](tilo_desktop_surface::page_view::PageStream), the
-//! same one the native desk draws a page with.
+//! toolkit's page view (`tilo_desktop_surface::page_view`), the same one the
+//! native desk draws a page with; its code is in a module of its own, so a
+//! desk that never shows a hosted window never loads it ([`PAGE`]).
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::rc::Rc;
 
 use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::page_view::PageStream;
+use tilo_desktop_surface::page_code::{PAGE, PageHandle};
 use ui::widget::{TileContent, TileHost};
 
 use crate::peer_sync;
+
+/// Payloads one page keeps while the page view's code is on its way: the
+/// first whole frame and what follows it, not a page's history.
+const MAX_WAITING: usize = 64;
 
 /// The pages this page draws, by the tab each window stands in.
 #[derive(Default)]
@@ -29,9 +34,40 @@ struct Pages {
 }
 
 struct Tile {
-    stream: Rc<RefCell<PageStream>>,
+    /// The page's viewer, once the page view's code is in.
+    page: Option<Rc<dyn PageHandle>>,
+    /// What came before it: the payloads, so the publisher's first whole frame
+    /// is not lost to the fetch.
+    waiting: Vec<Vec<u8>>,
     /// What the tile is called, for a reader who cannot see the page.
     title: String,
+}
+
+impl Tile {
+    /// The viewer, opened the first time a tile asks for one and handed
+    /// everything that waited. The first ask loads the page view's code.
+    fn open(&mut self) -> Option<Rc<dyn PageHandle>> {
+        if self.page.is_none() {
+            let page = PAGE.get()?.open();
+            for object in self.waiting.drain(..) {
+                page.apply(&object);
+            }
+            self.page = Some(page);
+        }
+        self.page.clone()
+    }
+
+    /// Take one object of the page. Whether the frame the tile shows changed.
+    fn apply(&mut self, payload: &[u8]) -> bool {
+        if let Some(page) = &self.page {
+            return page.apply(payload);
+        }
+        if self.waiting.len() >= MAX_WAITING {
+            self.waiting.remove(0);
+        }
+        self.waiting.push(payload.to_vec());
+        false
+    }
 }
 
 thread_local! {
@@ -79,17 +115,15 @@ pub(crate) fn follow(id: u32, workspace: &str, desk: &DesktopHandle) -> bool {
 /// frame the tile draws, and the mounts drawing that workspace lay out again.
 pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
     let changed = PAGES.with_borrow_mut(|pages| {
-        let stream = Rc::clone(
-            &pages
-                .tiles
-                .entry(tab)
-                .or_insert_with(|| Tile {
-                    stream: Rc::new(RefCell::new(PageStream::new())),
-                    title: String::new(),
-                })
-                .stream,
-        );
-        stream.borrow_mut().apply(body)
+        pages
+            .tiles
+            .entry(tab)
+            .or_insert_with(|| Tile {
+                page: None,
+                waiting: Vec::new(),
+                title: String::new(),
+            })
+            .apply(body)
     });
     if changed {
         crate::browser::presence::page_arrived(id, workspace_id, tab);
@@ -97,21 +131,17 @@ pub(crate) fn heard(id: u32, workspace_id: u64, tab: u64, body: &[u8]) {
 }
 
 /// The tile of window `tab` while this page draws its page: the page itself, or the arriving card
-/// until its publisher's first whole frame comes. `None` while nothing of it is here, so the host's
-/// own tile answers that tab.
+/// until its publisher's first whole frame comes. `None` while nothing of it is here, or while the
+/// page view's code is still on its way, so the host's own tile answers that tab.
 pub(crate) fn tile(tab: u64, title: &str) -> Option<TileHost> {
-    let stream = PAGES.with_borrow(|pages| {
-        let held = pages.tiles.get(&tab)?;
-        Some(Rc::clone(&held.stream))
+    let (page, alt) = PAGES.with_borrow_mut(|pages| {
+        let tile = pages.tiles.get_mut(&tab)?;
+        let alt = if title.is_empty() {
+            tile.title.clone()
+        } else {
+            title.to_owned()
+        };
+        Some((tile.open()?, alt))
     })?;
-    let alt = if title.is_empty() {
-        PAGES
-            .with_borrow(|pages| pages.tiles.get(&tab).map(|tile| tile.title.clone()))
-            .unwrap_or_default()
-    } else {
-        title.to_owned()
-    };
-    Some(TileHost::new(TileContent::App(Box::new(
-        tilo_desktop_surface::page_view::PageView::new(stream, alt),
-    ))))
+    Some(TileHost::new(TileContent::App(page.tile(alt))))
 }
