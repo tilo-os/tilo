@@ -307,7 +307,7 @@ impl App {
         }
         if self.collaboration.manager.is_connected() {
             match self.pending_primary_document() {
-                Ok(Some((mutation, heads))) => {
+                Ok(Some((mutation, heads, commit))) => {
                     tracing::debug!(
                         target: "tilo.state",
                         event = "document_send",
@@ -319,14 +319,7 @@ impl App {
                         heads = heads.len(),
                         "queueing document mutation"
                     );
-                    let request = match mutation {
-                        collab_types::DocumentMutation::Snapshot(bytes) => {
-                            crate::collaboration::CollabRequest::document_snapshot(bytes)
-                        }
-                        collab_types::DocumentMutation::Incremental(bytes) => {
-                            crate::collaboration::CollabRequest::document_incremental(bytes)
-                        }
-                    };
+                    let request = document_routes::part_request(mutation, None, commit);
                     let result = self.collaboration.manager.try_send(request);
                     if self.note_document_send(&result) {
                         self.advance_primary_document(heads);

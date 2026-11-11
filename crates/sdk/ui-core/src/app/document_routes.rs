@@ -727,30 +727,37 @@ fn publication_commits(parts: &mut [Part]) -> Vec<Option<collab_types::Workspace
     }
     for (workspace, group) in groups {
         let units: Vec<collab_types::UnitMutation> = group.iter().map(|(_, unit)| *unit).collect();
-        let author = collab_types::CommitAuthor {
-            principal: None,
-            device: [0; 32],
-        };
-        match collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, &units) {
-            Ok(group_commits) => {
-                for ((index, _), commit) in group.iter().zip(group_commits) {
-                    if let Some(slot) = commits.get_mut(*index) {
-                        *slot = commit;
-                    }
-                }
-            }
-            Err(error) => {
-                tracing::warn!(%error, "collab: a published change commits to no action");
+        for ((index, _), commit) in group.iter().zip(unit_commits(workspace, &units)) {
+            if let Some(slot) = commits.get_mut(*index) {
+                *slot = commit;
             }
         }
     }
     commits
 }
 
+/// The commit each of `units`, all of `workspace`, travels under: one entry
+/// per unit, `None` for one that carries no change or names no action.
+pub(super) fn unit_commits(
+    workspace: uuid::Uuid,
+    units: &[collab_types::UnitMutation],
+) -> Vec<Option<collab_types::WorkspaceCommit>> {
+    let author = collab_types::CommitAuthor {
+        principal: None,
+        device: [0; 32],
+    };
+    collab_types::WorkspaceCommit::of_units(&workspace.to_string(), &author, units).unwrap_or_else(
+        |error| {
+            tracing::warn!(%error, "collab: a published change commits to no action");
+            vec![None; units.len()]
+        },
+    )
+}
+
 /// What one part of the pass sends: its changes under the commit of the
 /// action that made them, or as the transport carries them when the part is
 /// no action's.
-fn part_request(
+pub(super) fn part_request(
     mutation: collab_types::DocumentMutation,
     authorization: Option<std::sync::Arc<dyn crate::collaboration::DocumentCustody>>,
     commit: Option<collab_types::WorkspaceCommit>,
