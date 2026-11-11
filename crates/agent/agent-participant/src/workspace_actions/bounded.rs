@@ -29,10 +29,12 @@ use super::{
     Seed, Worker, WorkspaceState, reads,
 };
 use tilo_actions::InvocationUpdate;
+use tilo_actions::door::ActionAddress;
 use tilo_actions::remote::{
-    ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
+    ActorPlace, ConfirmationQuestion, ConfirmationReply, InvocationReceipt, InvocationState,
 };
 use tilo_lock::MutexRecover as _;
+use tilo_relay_protocol::live::LiveAnchor;
 use ui::permissions::policy::{self, ActionKind, Answer, TreePath};
 
 /// How long the person's answer to one invocation stays good for running it.
@@ -745,40 +747,53 @@ impl Worker {
             }
             Err(error) => return Err(super::door_outcome(&error)),
         };
-        let left_at = app
-            .presence()
-            .map(|(anchor, head)| tilo_actions::remote::ActorPlace {
-                anchor: hex::encode(anchor.cursor),
-                head: hex::encode(head.cursor),
-            });
+        let left_at = app.presence().map(placed);
         let holder = key.0.clone();
-        let taken: Vec<(DocumentRoute, DocumentMutation)> = super::take_all(app, &holder)
-            .map_err(|error| super::commit_failed(error.to_string(), false))?
-            .into_iter()
-            .map(|(changed, mutation)| (changed.unwrap_or_else(|| holder.clone()), mutation))
-            .collect();
-        // Their standing now, not as it was when the replica opened: a
-        // member removed or narrowed meanwhile writes nothing.
+        let taken = super::take_all(app, &holder)
+            .map_err(|error| super::commit_failed(error.to_string(), false))?;
+        self.save_bounded(
+            workspace_id,
+            (who, route, state),
+            (&holder, taken),
+            (declared.as_deref(), confirmed),
+        )?;
+        self.bounded.insert(key, held);
+        Ok((output, left_at))
+    }
+
+    /// Save what an action changed for `who`: every field of every change
+    /// checked against their standing read now, so that a member removed or
+    /// narrowed since their replica opened writes nothing, and only then
+    /// applied here and saved durably.
+    #[allow(
+        clippy::result_large_err,
+        reason = "the outcome becomes the receipt the host records"
+    )]
+    fn save_bounded(
+        &mut self,
+        workspace_id: u64,
+        (who, route, state): (&Bounded, &DocumentRoute, &WorkspaceState),
+        (holder, taken): (&DocumentRoute, Vec<(DocumentRoute, DocumentMutation)>),
+        (declared, confirmed): (Option<&str>, bool),
+    ) -> Result<(), Outcome> {
         let policy = self
             .policy_at(workspace_id, who, route)
             .map_err(Outcome::Rejected)?;
         let permissions = bounded_permissions(&policy, who).map_err(Outcome::Rejected)?;
         for (changed, mutation) in &taken {
             // What it wrote, from the record's own replica: neither the record
-            // nor its history is read for what one change touched.
-            let written = reads::record_id(&changed.record).ok().and_then(|record| {
-                self.mounted
-                    .get(&holder)
-                    .and_then(|mounted| mounted.app.changed_keys(&record, mutation))
-            });
-            let before = if written.is_none() {
-                state.document(changed).ok().map(|(bytes, _)| bytes)
-            } else {
-                None
+            // nor its history is read for what one change touched. Only a
+            // record the replica does not hold is read before and diffed.
+            let written = reads::record_id(&changed.record)
+                .ok()
+                .and_then(|record| self.app_at(holder)?.changed_keys(&record, mutation));
+            let before = match written {
+                Some(_) => None,
+                None => state.document(changed).ok().map(|(bytes, _)| bytes),
             };
             let refused = refused_writes(
                 &permissions,
-                (&changed.app_id, declared.as_deref()),
+                (&changed.app_id, declared),
                 before.as_deref(),
                 mutation,
                 (written, confirmed),
@@ -791,13 +806,13 @@ impl Worker {
             }
         }
         for (changed, mutation) in taken {
-            if let Some(mounted) = self.mounted.get(&holder) {
-                let merged = if changed == holder {
-                    mounted.app.apply(&mutation)
+            if let Some(app) = self.app_at(holder) {
+                let merged = if &changed == holder {
+                    app.apply(&mutation)
                 } else {
                     reads::record_id(&changed.record)
                         .map_err(crate::apps::AppError::Merge)
-                        .and_then(|record| mounted.app.apply_record(&record, &mutation))
+                        .and_then(|record| app.apply_record(&record, &mutation))
                 };
                 if let Err(error) = merged {
                     tracing::warn!(%error, "workspace actions: a change made for someone did not merge here");
@@ -806,22 +821,27 @@ impl Worker {
             self.commit_durably(workspace_id, &changed, &mutation)
                 .map_err(|reason| super::commit_failed(reason, true))?;
         }
-        self.bounded.insert(key, held);
-        Ok((output, left_at))
+        Ok(())
+    }
+
+    /// The app this worker holds mounted at `holder`, if it holds one there.
+    pub(super) fn app_at(&self, holder: &DocumentRoute) -> Option<&ConfinedReplica> {
+        self.mounted.get(holder).map(|mounted| &mounted.app)
+    }
+
+    /// Whether the record at `holder` publishes `address` to its owner: what
+    /// tells an action a caller may not run from one that does not exist.
+    pub(super) fn publishes(&self, holder: &DocumentRoute, address: &ActionAddress) -> bool {
+        self.app_at(holder)
+            .is_some_and(|app| app.descriptor(address).is_some())
     }
 }
 
-impl Worker {
-    /// Whether the record at `holder` publishes `address` to its owner: what
-    /// tells an action a caller may not run from one that does not exist.
-    fn publishes(
-        &self,
-        holder: &DocumentRoute,
-        address: &tilo_actions::door::ActionAddress,
-    ) -> bool {
-        self.mounted
-            .get(holder)
-            .is_some_and(|mounted| mounted.app.descriptor(address).is_some())
+/// Where an action left its actor, for the door that shows it working.
+pub(super) fn placed((anchor, head): (LiveAnchor, LiveAnchor)) -> ActorPlace {
+    ActorPlace {
+        anchor: hex::encode(anchor.cursor),
+        head: hex::encode(head.cursor),
     }
 }
 
