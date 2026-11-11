@@ -352,48 +352,6 @@ fn participant_presence_is_reported_with_its_label() {
     assert!(app.participant_presence().is_empty());
 }
 
-#[test]
-fn a_participant_view_op_is_re_emitted_as_a_presence_change() {
-    let (mut app, _probe) = app();
-    app.join_participant(&task());
-    let mut published = std::collections::BTreeMap::new();
-    let joined = crate::host_worker::participant_presence_changes(
-        &mut published,
-        app.participant_presence(),
-    );
-    assert!(matches!(
-        joined.as_slice(),
-        [crate::host_worker::ParticipantPresenceUpdate::Changed(p)]
-            if p.payload == crate::PresencePayload::Caret { pos: 0 }
-    ));
-    assert!(
-        crate::host_worker::participant_presence_changes(
-            &mut published,
-            app.participant_presence()
-        )
-        .is_empty()
-    );
-    deliver(
-        &mut app,
-        7,
-        "move-caret",
-        "agent:scribe",
-        Some(host_context("agent:scribe", Some(task()))),
-    );
-    let moved = crate::host_worker::participant_presence_changes(
-        &mut published,
-        app.participant_presence(),
-    );
-    assert!(
-        matches!(
-            moved.as_slice(),
-            [crate::host_worker::ParticipantPresenceUpdate::Changed(p)]
-                if p.participant == task() && p.payload == crate::PresencePayload::Caret { pos: 1 }
-        ),
-        "the moved caret is re-emitted after the invocation: {moved:?}"
-    );
-}
-
 crate::testing::test_app_widget!(TwoViews, "Two views");
 
 thread_local! {

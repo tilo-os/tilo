@@ -3541,6 +3541,7 @@ impl RecordStore {
         Ok(parked.action_state.writers.borrow().clone())
     }
 
+    #[cfg(test)]
     pub(crate) fn require_invocation_provenance(
         &self,
         checkout: &RecordCheckout,

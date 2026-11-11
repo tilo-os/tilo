@@ -2043,6 +2043,31 @@ impl AppBrokerState {
         self.start_job(caller, origin, &delivered, request).await
     }
 
+    /// The connection ready to take `address` in `destination`, and the address it takes it
+    /// at: the native task's own, an instance of the app for a `start` (`starts`), else the
+    /// app's ready publisher of it.
+    fn ready_for(
+        &self,
+        destination: &LaunchDestination,
+        native: Option<&super::native_task_execution::NativeLaunch>,
+        starts: bool,
+        address: &tilo_actions::ActionAddress,
+    ) -> Option<(u64, tilo_actions::ActionAddress)> {
+        let workspace = destination.workspace.id().to_string();
+        match native {
+            Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
+            None if starts => self
+                .running_instance(&destination.app_id, &workspace, &address.action)
+                .map(|peer_id| (peer_id, address.clone())),
+            None => self.ready_delivery(
+                &destination.app_id,
+                &workspace,
+                destination.record.as_deref(),
+                address,
+            ),
+        }
+    }
+
     /// Answer `request`, a workspace's `start` of its app ([`super::windowless_instances::started_app`]),
     /// with `peer_id`, the instance that runs now. The journal blocks, so it answers on the
     /// delivery runtime's blocking pool.
@@ -2119,20 +2144,9 @@ impl AppBrokerState {
             if tokio::time::Instant::now() >= deadline.deadline() {
                 return Err(expired());
             }
-            let ready = match native {
-                Some(native) => native.ready(self).map(|peer_id| (peer_id, address.clone())),
-                // A `start` is ready once an instance of the app runs.
-                None if started.is_some() => self
-                    .running_instance(app_id, &workspace_id, &address.action)
-                    .map(|peer_id| (peer_id, address.clone())),
-                None => self.ready_delivery(
-                    app_id,
-                    &workspace_id,
-                    destination.record.as_deref(),
-                    address,
-                ),
-            };
-            if let Some((peer_id, published)) = ready {
+            if let Some((peer_id, published)) =
+                self.ready_for(destination, native, started.is_some(), address)
+            {
                 if native.is_none()
                     && let Some(started) = started
                 {

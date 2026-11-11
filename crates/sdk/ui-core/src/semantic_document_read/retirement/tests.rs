@@ -162,9 +162,3 @@ fn retirement_and_drop_allocate_nothing_after_eager_mutex_initialization() {
     });
     assert_eq!(stats.allocations, 0);
 }
-
-// Fixed negative observation for actual SDK lifecycle synchronization tests.
-// No guard, positive authority, or callback is exposed outside cfg(test).
-pub(crate) fn retirement_requested(handle: &RetirementHandle) -> bool {
-    handle.value.marker.requested.load(Ordering::Acquire)
-}
