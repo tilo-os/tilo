@@ -870,13 +870,16 @@ impl Session {
         // banner shows, and the readout's band while it stands.
         let banner_stack = crate::panels::Reserved::new();
         let readout_band = crate::panels::Reserved::new();
+        // Where each display stands and where the person types, filled in every pass: what the
+        // readout and the floating layer keep clear of.
+        let readout_place = crate::panels::ReadoutPlaces::default();
         let _activity_layer = mount_activities(
             &mut compositor,
             &mut doors,
             &activities,
             &cards,
-            banner_stack.clone(),
-            readout_band.clone(),
+            (banner_stack.clone(), readout_band.clone()),
+            (&readout_place, &handle),
             &options,
         );
         mount_banners(
@@ -958,28 +961,27 @@ impl Session {
         let shortcut_guide =
             crate::shortcut_guide::ShortcutGuide::new(guide_seat, Rc::clone(&guide_state));
         let guide_keys = Rc::clone(&guide_state);
-        let (commands, controls_reading, invocations, triggered, readout_place, readout) =
-            mount_controls(
-                &mut compositor,
-                &mut doors,
-                Rc::clone(&shortcuts),
-                portal_shortcuts,
-                guide_keys,
-                KeyContext {
-                    controller: Rc::clone(&controller),
-                    controller_keys: Rc::clone(&controller_keys),
-                    displays: display_seat
-                        .as_ref()
-                        .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
-                    fold,
-                    overlays: overlays.clone(),
-                    desk: Rc::clone(&desk_overlays),
-                    reveals: Rc::clone(&reveals),
-                    panel: panel_keys.clone(),
-                },
-                options.scale,
-                readout_band,
-            );
+        let (commands, controls_reading, invocations, triggered, readout) = mount_controls(
+            &mut compositor,
+            &mut doors,
+            Rc::clone(&shortcuts),
+            portal_shortcuts,
+            guide_keys,
+            KeyContext {
+                controller: Rc::clone(&controller),
+                controller_keys: Rc::clone(&controller_keys),
+                displays: display_seat
+                    .as_ref()
+                    .map(|seat| tilo_sheets::Seat::presentation(seat).clone()),
+                fold,
+                overlays: overlays.clone(),
+                desk: Rc::clone(&desk_overlays),
+                reveals: Rc::clone(&reveals),
+                panel: panel_keys.clone(),
+            },
+            options.scale,
+            (readout_band, &readout_place),
+        );
         // The readout draws in the person's theme like the desk and the shell
         // do: its ground is the theme's floating surface, never a fixed fill.
         readout.borrow_mut().set_theme(presentation.theme);

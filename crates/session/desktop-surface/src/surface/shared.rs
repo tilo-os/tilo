@@ -34,6 +34,7 @@ impl Shared {
     ) -> Self {
         Self {
             tree,
+            dock: super::floats::Dock::default(),
             holders: HashMap::new(),
             opened_by: std::collections::BTreeMap::new(),
             window_offers: Vec::new(),

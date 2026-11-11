@@ -12,9 +12,7 @@ use std::collections::HashMap;
 use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, Workspace, WorkspaceSlot};
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
-use ui::widget::{
-    FLOAT_CARD_ROOM, FLOAT_CARD_SIZE, FloatAsk, GroupRow, HANDLE_SLOT_PX, Widget, keep_float_inside,
-};
+use ui::widget::{FLOAT_CARD_SIZE, FloatAsk, GroupRow, Widget};
 
 use super::Shared;
 
@@ -130,93 +128,67 @@ pub(super) fn opened_beside(row: &GroupRow, group: u64) -> Option<u64> {
         .or_else(|| standing(index.saturating_add(1)))
 }
 
-/// Where a conversation card sent from the window standing at `sender` floats on the desk `desk`:
-/// the card's size, beside that window and clear of it — after it where the desk has room there,
-/// else before it — level with its middle, so it reads as the window's answer rather than a corner
-/// notice. Only a desk too narrow for both lets the card overlap the window, as little as it can.
-#[must_use]
-pub(super) fn card_beside(desk: Rect, sender: Rect) -> Rect {
-    let gap = HANDLE_SLOT_PX + FLOAT_CARD_ROOM;
-    let (width, height) = FLOAT_CARD_SIZE;
-    let height = height.min(desk.height() - 2.0 * FLOAT_CARD_ROOM).max(1.0);
-    let y = sender.center().y - height / 2.0;
-    let card = |x: f64| {
-        keep_float_inside(
-            desk,
-            Rect::from_origin_size(Point::new(x, y), (width, height)),
-        )
-    };
-    let after = card(sender.x1 + gap);
-    let before = card(sender.x0 - gap - width);
-    let covered = |card: Rect| (card.x1.min(sender.x1) - card.x0.max(sender.x0)).max(0.0);
-    if covered(before) < covered(after) {
-        before
-    } else {
-        after
-    }
+/// A window floating as a card in the floating layer's column on this device: the layer stacks it
+/// with the activities' cards, by the one rule they all stand by, and the desk stands the window
+/// where the layer put it ([`super::DesktopHandle::dock_at`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DockedCard {
+    /// The window, by its group id.
+    pub group: u64,
+    /// The size it stands at: the card, or its header alone while collapsed.
+    pub size: (f64, f64),
 }
 
-/// Stand the window `group` of the strip `strip` over the desk beside the window `sender` it
-/// opened next to, where that window stands on screen now ([`card_beside`]). The strip shares its
-/// room with the card ([`GroupRow::share_with_floating_neighbour`]), so a window that has the desk
-/// to itself leaves the card room after it. Returns whether the tree changed.
-pub(super) fn stand_beside(
-    shared: &mut Shared,
-    strip: StripId,
-    row: &GroupRow,
-    (group, sender): (u64, u64),
-    area: CanvasPlace,
-) -> bool {
-    let Some(beside) = row
-        .groups
-        .iter()
-        .find(|held| held.id == sender)
-        .map(Widget::get_rect)
-        .filter(|rect| rect.width() > 0.0)
-    else {
-        return false;
-    };
-    let at = card_beside(row.get_rect(), beside);
-    set(
-        shared,
-        strip,
-        group,
-        Some(FloatPlace::of_rect(area, place_of(at))),
+/// The windows this device docks in the layer's column, and where the layer last put each. Docking
+/// is this device's: the record keeps the window floating, and where on another device's display
+/// it stands is that device's column.
+#[derive(Default)]
+pub(super) struct Dock {
+    /// The docked windows, by group, each at its card size.
+    pub(super) cards: std::collections::BTreeMap<u64, DockedCard>,
+    /// Where the layer put each docked window, in desk coordinates.
+    pub(super) slots: std::collections::BTreeMap<u64, Rect>,
+    /// The docked windows folded to their header, with the size they open to again.
+    pub(super) collapsed: std::collections::BTreeMap<u64, (f64, f64)>,
+}
+
+/// The place a card docked in the work area `area` keeps in the record: the layer's corner, until
+/// the layer gives it its place in the column — and on a device that does not dock it.
+#[must_use]
+fn docked_place(area: Rect) -> Rect {
+    let (width, height) = FLOAT_CARD_SIZE;
+    let inset = ui::floating_layer::EDGE_INSET;
+    let height = height.min(area.height() - 2.0 * inset).max(1.0);
+    Rect::from_origin_size(
+        Point::new(area.x1 - inset - width, area.y1 - inset - height),
+        (width, height),
     )
 }
 
 impl super::DesktopSurface {
-    /// Stand the float `group` beside the window it opened next to, as the strip has it now, and
-    /// again once the reveal brings that window into view whole. Returns that window.
-    pub(super) fn open_beside(&mut self, strip: StripId, group: u64) -> Option<u64> {
+    /// Dock the float `group` of `strip` in the floating layer's column, and return the window it
+    /// opened beside: the strip shows that one, clear of the column.
+    pub(super) fn dock(&self, strip: StripId, group: u64) -> Option<u64> {
         let row = self.rows.get(&strip)?;
-        let sender = opened_beside(row, group)?;
+        let sender = opened_beside(row, group);
         let area = area_of(row.get_rect());
-        stand_beside(
-            &mut self.shared.borrow_mut(),
+        let at = docked_place(row.get_rect());
+        let mut shared = self.shared.borrow_mut();
+        set(
+            &mut shared,
             strip,
-            row,
-            (group, sender),
-            area,
+            group,
+            Some(FloatPlace::of_rect(area, place_of(at))),
         );
-        self.standing = Some((strip, group, sender));
-        Some(sender)
+        shared.dock.cards.insert(
+            group,
+            DockedCard {
+                group,
+                size: (at.width(), at.height()),
+            },
+        );
+        sender
     }
-}
-
-/// The float `standing` waits for, beside the window the reveal just brought into view on `row`:
-/// it stands beside it where it is on screen now. Returns whether the tree changed.
-pub(super) fn stand_revealed(
-    standing: &mut Option<(StripId, u64, u64)>,
-    shared: &std::cell::RefCell<Shared>,
-    strip: StripId,
-    row: &GroupRow,
-) -> bool {
-    let Some((_, float, sender)) = standing.take_if(|(waits, ..)| *waits == strip) else {
-        return false;
-    };
-    let area = area_of(row.get_rect());
-    stand_beside(&mut shared.borrow_mut(), strip, row, (float, sender), area)
 }
 
 /// Lift the window `group` above the desk where it stands: a chord or a
@@ -246,15 +218,48 @@ pub(super) fn lift(
     )
 }
 
+/// Fold the docked card `group` to its header, `header` tall, or open it to its size again.
+/// Returns whether the dock changed.
+fn collapse(dock: &mut Dock, group: u64, header: f64) -> bool {
+    let Some(card) = dock.cards.get_mut(&group) else {
+        return false;
+    };
+    if let Some(open) = dock.collapsed.remove(&group) {
+        card.size = open;
+    } else {
+        dock.collapsed.insert(group, card.size);
+        card.size = (card.size.0, header);
+    }
+    true
+}
+
 /// The float `row` reports let go, kept in the workspace's record: a window let go off the strip
 /// floats at the hand; one let go over it snaps back (the row has already moved it to its gap).
 /// Returns whether the tree changed.
 pub(super) fn carry_out(
     shared: &mut Shared,
     strip: StripId,
+    row: &GroupRow,
     ask: FloatAsk,
-    area: CanvasPlace,
 ) -> bool {
+    let area = area_of(row.get_rect());
+    let group = match ask {
+        // A card folds to its header in the column, and opens from it again.
+        FloatAsk::Collapse { group } => {
+            // A card folded to its header stands as tall as its window's bar.
+            let header = row
+                .groups
+                .iter()
+                .find(|held| held.id == group)
+                .map_or(0.0, |held| held.bar_rect().height());
+            return collapse(&mut shared.dock, group, header);
+        }
+        // A card the person carried or snapped is theirs to place: it leaves the column.
+        FloatAsk::Float { group, .. } | FloatAsk::Snap { group } => group,
+    };
+    shared.dock.cards.remove(&group);
+    shared.dock.slots.remove(&group);
+    shared.dock.collapsed.remove(&group);
     let group = match ask {
         FloatAsk::Float { group, at } => {
             if !set(
@@ -273,61 +278,10 @@ pub(super) fn carry_out(
             }
             group
         }
+        FloatAsk::Collapse { group } => group,
     };
     // The window the hand let go of is the one the person works in: it takes the keyboard, floating
     // or back in its strip.
     shared.tree.set_active_group(strip, group);
     true
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    const DESK: Rect = Rect::new(0.0, 36.0, 1280.0, 788.0);
-
-    fn overlap(a: Rect, b: Rect) -> f64 {
-        let i = a.intersect(b);
-        i.width().max(0.0) * i.height().max(0.0)
-    }
-
-    /// A conversation sent from a window stands beside it, clear of it, wherever the desk has room
-    /// for the card on either side, and inside the desk.
-    #[test]
-    fn a_sent_conversation_never_covers_the_window_it_was_sent_from_when_there_is_room() {
-        let (width, _) = FLOAT_CARD_SIZE;
-        for x0 in (0..1280).step_by(40) {
-            for w in [400.0, 552.0, 700.0, 860.0] {
-                let sender = Rect::new(f64::from(x0), 80.0, f64::from(x0) + w, 788.0);
-                let room_after = DESK.x1 - sender.x1;
-                let room_before = sender.x0 - DESK.x0;
-                let need = width + HANDLE_SLOT_PX + 2.0 * FLOAT_CARD_ROOM;
-                let card = card_beside(DESK, sender);
-                assert!(
-                    DESK.contains(card.origin()) && card.x1 <= DESK.x1 && card.y1 <= DESK.y1,
-                    "{card:?} stays on the desk"
-                );
-                if room_after >= need || room_before >= need {
-                    assert!(
-                        overlap(card, sender) <= 0.0,
-                        "{card:?} covers the sender {sender:?}"
-                    );
-                }
-            }
-        }
-    }
-
-    /// The card is a card, not a window lifted whole: list-panel wide, and level with the window
-    /// it answers rather than pinned to a corner of the screen.
-    #[test]
-    fn a_sent_conversation_is_a_card_level_with_its_window() {
-        let sender = Rect::new(16.0, 80.0, 760.0, 788.0);
-        let card = card_beside(DESK, sender);
-        assert!((card.width() - FLOAT_CARD_SIZE.0).abs() < 0.5);
-        assert!(card.x0 > sender.x1, "after the window, where there is room");
-        assert!(
-            (card.center().y - sender.center().y).abs() < 1.0,
-            "level with its window: {card:?}"
-        );
-    }
 }

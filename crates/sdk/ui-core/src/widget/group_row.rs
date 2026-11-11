@@ -571,6 +571,9 @@ pub struct Pan {
     viewport: Rect,
     /// Canvas-x gutter before the first group (the strip-edge gutter).
     inset: f64,
+    /// How much of the viewport's trailing edge the cards floating over the desk take: a window
+    /// brought into view stands clear of them where it fits beside them ([`GroupRow::set_trailing_clear`]).
+    clear: f64,
     /// Horizontal scroll offset (px): each child renders at `-scroll_x`; at rest it is bounded by
     /// `pan_max_scroll_x`, and a direct gesture may hold a resisted value just outside.
     scroll_x: f64,
@@ -624,18 +627,21 @@ impl Pan {
 
     /// [`Self::max_scroll_x`] once the windows are `content_w` wide.
     fn max_scroll_x_of(&self, content_w: f64) -> f64 {
+        // The strip ends past its last window by its gutter, and by the cards floating over the
+        // desk there: its last window can stand clear of them.
         let gutter = if content_w > self.inset {
-            self.inset
+            self.inset + self.clear
         } else {
             0.0
         };
         (content_w + gutter - self.viewport.width()).max(0.0)
     }
 
-    /// The leading inset again after the last group, once there is one.
+    /// The leading inset again after the last group, once there is one, and the room the cards
+    /// floating over the desk take there.
     fn trailing_gutter(&self) -> f64 {
         if self.content_w > self.inset {
-            self.inset
+            self.inset + self.clear
         } else {
             0.0
         }
@@ -800,6 +806,12 @@ impl Pan {
         let margin = HANDLE_SLOT_PX.min(slack / 2.0);
         let left_bound = self.viewport.x0 + margin;
         let right_bound = self.viewport.x1 - margin;
+        // A window that fits beside the cards over the desk stands clear of them.
+        let right_bound = if gr.width() <= right_bound - self.clear - left_bound {
+            right_bound - self.clear
+        } else {
+            right_bound
+        };
         let mut sx = self.scroll_x;
         // An oversized group cannot fit, so reveal its start consistently; checking the original
         // rect after a right-edge correction would right-align it.
@@ -1469,6 +1481,16 @@ impl GroupRow {
 
     pub fn leading_inset(&self) -> f64 {
         self.leading_inset
+    }
+
+    /// Keep `px` of the viewport's trailing edge clear for the cards floating over the desk there:
+    /// a window brought into view from now on stands clear of them where it fits beside them.
+    pub fn set_trailing_clear(&mut self, px: f64) {
+        let px = px.max(0.0);
+        self.pan.clear = px;
+        for lane in &mut self.lanes {
+            lane.pan.clear = px;
+        }
     }
 
     pub fn set_leading_inset(&mut self, px: f64) {

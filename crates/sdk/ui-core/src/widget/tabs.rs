@@ -25,6 +25,8 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
 
+#[path = "tabs_bar_layout.rs"]
+mod bar_layout;
 #[path = "tabs_new_tab.rs"]
 mod new_tab;
 #[path = "tabs_paint.rs"]
@@ -512,6 +514,11 @@ pub struct TabBar {
     /// The slots each tab's app declared for the window's bar
     /// ([`crate::window_toolbar`]), by tab id. Sidecar like the others.
     toolbars: HashMap<u64, crate::window_toolbar::WindowToolbar>,
+    /// The window floats as a card: its bar is the card's header, naming what the window is about
+    /// beside the card's own controls ([`Self::set_card`]).
+    card: Option<HashMap<u64, crate::window_toolbar::WindowToolbar>>,
+    /// The card's collapse was pressed, once.
+    pending_collapse: bool,
     /// Each tab's location picture (a page's favicon), decoded from its
     /// slots: it stands where the app's icon would.
     location_images: HashMap<u64, icons::AppImage>,
@@ -696,6 +703,8 @@ impl TabBar {
             tabbed,
             tabbed_changed_at: None,
             toolbars: HashMap::new(),
+            card: None,
+            pending_collapse: false,
             location_images: HashMap::new(),
             toolbar_row: Box::new(super::window_toolbar_row::ToolbarRow::new()),
             motion: EffectiveMotion::default(),
@@ -846,6 +855,12 @@ impl TabBar {
                 None => self.location_images.remove(&id),
             };
         }
+        if let Some(card) = self.card.as_mut() {
+            match toolbar.as_ref() {
+                Some(toolbar) => card.insert(id, toolbar.card_form()),
+                None => card.remove(&id),
+            };
+        }
         match toolbar {
             Some(toolbar) => self.toolbars.insert(id, toolbar),
             None => self.toolbars.remove(&id),
@@ -956,8 +971,9 @@ impl TabBar {
     }
 
     fn active_toolbar(&self) -> Option<&crate::window_toolbar::WindowToolbar> {
+        let toolbars = self.card.as_ref().unwrap_or(&self.toolbars);
         self.window_controls
-            .then(|| self.toolbars.get(&self.active_id))
+            .then(|| toolbars.get(&self.active_id))
             .flatten()
     }
 
@@ -1139,177 +1155,6 @@ impl TabBar {
     #[must_use]
     pub fn history_action_rect(&self) -> Rect {
         self.history_action
-    }
-
-    /// The bar as it lays itself out now: every control it shows, in reading order (the active
-    /// tab's own slots — the sidebar toggle, Back and Forward, the leading actions, the views and
-    /// the location's picker, the actions and the overflow button — then the window's History
-    /// control and own controls), and the room it leaves empty beside its location's label. A
-    /// capture, an inspector and a layout check read the bar through it, and every one of them
-    /// shows each control once.
-    #[must_use]
-    pub fn bar_layout(&self) -> crate::window_toolbar::BarLayout {
-        use super::window_controls::WindowControl;
-        use crate::window_toolbar::{BarControl, BarLayout};
-        let lookup = crate::i18n::I18nManager::lookup_plain;
-        let mut spare = 0.0;
-        let mut out = Vec::new();
-        let mut push = |control: BarControl| {
-            if control.rect[2] > 0.0 && control.rect[3] > 0.0 {
-                out.push(control);
-            }
-        };
-        if self.new_tab_rect.area() > 0.0 {
-            push(new_tab_control(self.new_tab_rect));
-        }
-        if let Some(toolbar) = self.active_toolbar() {
-            let slots = self.toolbar_row.slots();
-            spare = slots.spare;
-            if toolbar.sidebar.is_some() && !slots.sidebar_folded(toolbar) {
-                let key = if toolbar.sidebar == Some(true) {
-                    "window-toolbar-hide-sidebar"
-                } else {
-                    "window-toolbar-show-sidebar"
-                };
-                push(
-                    BarControl::new(
-                        "sidebar",
-                        super::window_toolbar_row::SIDEBAR_TARGET,
-                        slots.sidebar,
-                    )
-                    .named(lookup(key)),
-                );
-            }
-            if toolbar.navigation.is_some() {
-                push(
-                    BarControl::new("back", super::window_toolbar_row::BACK_TARGET, slots.back)
-                        .named(lookup("window-toolbar-back")),
-                );
-                if !slots.forward_folded(toolbar) {
-                    push(
-                        BarControl::new(
-                            "forward",
-                            super::window_toolbar_row::FORWARD_TARGET,
-                            slots.forward,
-                        )
-                        .named(lookup("window-toolbar-forward")),
-                    );
-                }
-            }
-            if let Some(location) = toolbar.location.as_ref() {
-                push(
-                    BarControl::new(
-                        "location",
-                        super::window_toolbar_row::LOCATION_TARGET,
-                        slots.location,
-                    )
-                    .named(location.label.clone()),
-                );
-            }
-            for (index, (action, rect)) in toolbar.leading.iter().zip(&slots.leading).enumerate() {
-                let labelled = action.labelled && slots.labelled;
-                let icon = (!action.icon.is_empty()).then(|| action.icon.clone());
-                if icon.is_none() && !labelled {
-                    continue;
-                }
-                let control = BarControl::new("leading", action.id.clone(), *rect)
-                    .named(action.name.clone())
-                    .words(slots.leading_words.get(index).copied().unwrap_or(0.0));
-                let control = if action.primary {
-                    control.primary()
-                } else {
-                    control
-                };
-                push(if labelled {
-                    control.icon(icon).labelled()
-                } else {
-                    control.icon(icon)
-                });
-            }
-            if let (Some(views), Some(first), Some(last)) = (
-                toolbar.views.as_ref(),
-                slots.views.first(),
-                slots.views.last(),
-            ) {
-                push(
-                    BarControl::new(
-                        "views",
-                        super::window_toolbar_row::VIEWS_MENU_TARGET,
-                        first.union(*last),
-                    )
-                    .named(views.name.clone()),
-                );
-            }
-            if let Some(views) = toolbar.views.as_ref()
-                && slots.views_menu.area() > 0.0
-            {
-                let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
-                let label = chosen.map_or(views.name.as_str(), |view| view.label.as_str());
-                push(
-                    BarControl::new(
-                        "views-menu",
-                        super::window_toolbar_row::VIEWS_MENU_TARGET,
-                        slots.views_menu,
-                    )
-                    .named(label.to_owned())
-                    .icon(Some(icons::Icon::ChevronDown.name().to_owned()))
-                    .menu(),
-                );
-            }
-            for (index, (action, rect)) in toolbar.actions.iter().zip(&slots.actions).enumerate() {
-                let mut control = BarControl::new("action", action.id.clone(), *rect)
-                    .named(action.name.clone())
-                    .words(slots.action_words.get(index).copied().unwrap_or(0.0));
-                if !action.icon.is_empty() {
-                    control = control.icon(Some(action.icon.clone()));
-                }
-                if action.menu || !action.items.is_empty() {
-                    control = control.menu();
-                }
-                if action.primary {
-                    control = control.primary();
-                }
-                push(if action.labelled && slots.actions_labelled {
-                    control.labelled()
-                } else {
-                    control
-                });
-            }
-            if slots.overflow.area() > 0.0 {
-                push(
-                    BarControl::new(
-                        "overflow",
-                        super::window_toolbar_row::OVERFLOW_TARGET,
-                        slots.overflow,
-                    )
-                    .named(lookup("window-toolbar-more"))
-                    .icon(Some(icons::Icon::MoreHorizontal.name().to_owned()))
-                    .menu(),
-                );
-            }
-        }
-        if self.history_action.area() > 0.0 {
-            push(
-                BarControl::new("history", WINDOW_HISTORY_TARGET, self.history_action)
-                    .named(lookup("history-mode-title")),
-            );
-        }
-        for (slot, control, rect) in [
-            ("minimize", WindowControl::Minimize, self.controls.minimize),
-            ("maximize", WindowControl::Maximize, self.controls.maximize),
-            ("close", WindowControl::Close, self.controls.close),
-        ] {
-            push(
-                BarControl::new(slot, control.target(), rect)
-                    .named(lookup(control.name_key(self.resize)))
-                    .icon(Some(control.icon(self.resize).name().to_owned())),
-            );
-        }
-        BarLayout {
-            spare,
-            controls: out,
-            labels: self.painted_labels(),
-        }
     }
 
     /// Whether tabs close from the strip (default `true`). Without it no
@@ -1519,7 +1364,8 @@ impl TabBar {
         let is_pinned = self.icon_only(t.id);
         // Tabs are not pills: the control radius (design language, Shape).
         let radius = f64::from(theme.tokens.radii.control);
-        let Some(&target) = self.tab_rects.get(i) else {
+        // A pill laid out no room draws nothing: a card's header shows none.
+        let Some(&target) = self.tab_rects.get(i).filter(|rect| rect.width() > 0.0) else {
             return;
         };
 
@@ -2633,6 +2479,11 @@ impl TabBar {
         let Some(t) = self.tabs.get(i) else {
             return PILL_MIN_PX;
         };
+        // A card's header leads with whom or what it is about, as a card names its activity:
+        // the window's one tab draws nothing before it.
+        if self.card.is_some() && self.solo() {
+            return 0.0;
+        }
         if self.icon_only(t.id) {
             return PINNED_W;
         }
@@ -3155,9 +3006,10 @@ impl TabBar {
                     super::window_controls::WindowControl::Maximize => {
                         self.pending_max = Some(active);
                     }
-                    // The group's bar lays out no minimize: the strip closes
-                    // and restores, the desktop's window menu minimizes.
-                    super::window_controls::WindowControl::Minimize => {}
+                    // Only a card's header lays out a minimize: it folds the card to its header.
+                    super::window_controls::WindowControl::Minimize => {
+                        self.pending_collapse = true;
+                    }
                 }
             }
             *handled = true;
@@ -3367,6 +3219,25 @@ impl TabBar {
         (in_row && !apps && self.tabs.iter().any(|t| t.id == self.active_id))
             .then_some((self.active_id, p))
     }
+    /// Show the bar as the header of a card floating over the desk, or as the window's bar again.
+    pub fn set_card(&mut self, card: bool) {
+        self.touch();
+        if self.card.is_some() == card {
+            return;
+        }
+        self.card = card.then(|| {
+            self.toolbars
+                .iter()
+                .map(|(id, toolbar)| (*id, toolbar.card_form()))
+                .collect()
+        });
+    }
+
+    /// The card's collapse was pressed since the last call.
+    pub fn take_collapse(&mut self) -> bool {
+        std::mem::take(&mut self.pending_collapse)
+    }
+
     pub fn take_max(&mut self) -> Option<u64> {
         self.pending_max.take()
     }
@@ -3806,6 +3677,8 @@ pub const TAB_PILL_INSET_Y: f64 = 6.0;
 /// close), as assistive technology and automation address them.
 pub const WINDOW_HISTORY_TARGET: &str = "window-history";
 pub const WINDOW_MAXIMIZE_TARGET: &str = "window-maximize";
+/// The collapse of a window floating as a card.
+pub const WINDOW_COLLAPSE_TARGET: &str = "window-collapse";
 pub const WINDOW_CLOSE_TARGET: &str = "window-close";
 /// Action target of a window's new-tab door, as assistive technology and
 /// automation address it.
@@ -4155,8 +4028,14 @@ impl Widget for TabBar {
                 self.tabbed = tabbed;
                 self.tabbed_changed_at = Some(crate::time::now());
             }
-            let history = self.history.contains_key(&self.active_id);
-            let controls = super::window_controls::WindowControls::lay_out(self.tab_row());
+            // A card's header carries the card's controls alone: History is the window's, in its
+            // strip.
+            let history = self.card.is_none() && self.history.contains_key(&self.active_id);
+            let controls = if self.card.is_some() {
+                super::window_controls::WindowControls::lay_out_card(self.tab_row())
+            } else {
+                super::window_controls::WindowControls::lay_out(self.tab_row())
+            };
             // Someone else's window, or one its person only watches, is not
             // theirs to close: the bar offers what the policy allows.
             self.controls = if self.held_ids.contains_key(&self.active_id) {
@@ -4499,6 +4378,7 @@ impl Widget for TabBar {
         // The window's own controls, by what they do.
         out.extend([
             (WINDOW_HISTORY_TARGET.to_string(), self.history_action),
+            (WINDOW_COLLAPSE_TARGET.to_string(), self.controls.minimize),
             (WINDOW_MAXIMIZE_TARGET.to_string(), self.controls.maximize),
             (WINDOW_CLOSE_TARGET.to_string(), self.controls.close),
         ]);
@@ -4678,6 +4558,17 @@ impl Widget for TabBar {
                 history.state.checked = Some(control.is_open());
                 tab_children.push(history);
             }
+            let collapses = self.controls.minimize.area() > 0.0;
+            if collapses {
+                tab_children.push(button(
+                    Role::Button,
+                    crate::i18n::I18nManager::lookup_plain(
+                        super::window_controls::WindowControl::Minimize.name_key(self.resize),
+                    ),
+                    WINDOW_COLLAPSE_TARGET,
+                    self.controls.minimize,
+                ));
+            }
             tab_children.push(button(
                 Role::Button,
                 crate::i18n::I18nManager::lookup_plain(
@@ -4702,6 +4593,7 @@ impl Widget for TabBar {
             let slots = self.toolbar_row.accessibility();
             if !slots.is_empty() {
                 let controls = 1
+                    + usize::from(collapses)
                     + usize::from(closes)
                     + usize::from(self.history.contains_key(&self.active_id));
                 let at = tab_children.len().saturating_sub(controls);
@@ -4745,6 +4637,10 @@ impl Widget for TabBar {
                 WINDOW_CLOSE_TARGET => return self.start_closing(active),
                 WINDOW_MAXIMIZE_TARGET => {
                     self.pending_max = Some(active);
+                    return true;
+                }
+                WINDOW_COLLAPSE_TARGET if self.controls.minimize.area() > 0.0 => {
+                    self.pending_collapse = true;
                     return true;
                 }
                 WINDOW_HISTORY_TARGET => return self.press_history(active),

@@ -133,6 +133,8 @@ impl WindowControl {
     #[must_use]
     pub fn name_key(self, resize: Resize) -> &'static str {
         match (self, resize) {
+            // A window floating as a card folds to its header, as every card over the desk does.
+            (WindowControl::Minimize, Resize::Snap) => "host-window-collapse",
             (WindowControl::Minimize, _) => "host-window-minimize",
             (WindowControl::Maximize, Resize::Maximize) => "host-window-maximize",
             (WindowControl::Maximize, Resize::Restore) => "host-window-restore",
@@ -145,6 +147,7 @@ impl WindowControl {
     #[must_use]
     pub fn icon(self, resize: Resize) -> icons::Icon {
         match (self, resize) {
+            (WindowControl::Minimize, Resize::Snap) => icons::Icon::ChevronDown,
             (WindowControl::Minimize, _) => icons::Icon::Minus,
             (WindowControl::Maximize, Resize::Maximize) => icons::Icon::Maximize2,
             (WindowControl::Maximize, Resize::Restore) => icons::Icon::Minimize2,
@@ -186,6 +189,16 @@ impl WindowControls {
     #[must_use]
     pub fn lay_out_own_window(row: Rect) -> Self {
         Self::place(row, true)
+    }
+
+    /// The controls of a window floating as a card: collapse, snap back and close, standing flat
+    /// on the card's own ground as a card's header controls do, with no pill of their own.
+    #[must_use]
+    pub fn lay_out_card(row: Rect) -> Self {
+        Self {
+            pill: Rect::ZERO,
+            ..Self::place(row, true)
+        }
     }
 
     fn place(row: Rect, minimize: bool) -> Self {
@@ -318,7 +331,7 @@ impl WindowControls {
 
     /// Paint the pill and its controls.
     pub fn paint(&self, scene: &mut Scene, transform: Affine, theme: &Theme, state: ControlsState) {
-        if self.pill.area() <= 0.0 {
+        if self.iter().next().is_none() {
             return;
         }
         paint_pill(scene, transform, self.pill, theme);

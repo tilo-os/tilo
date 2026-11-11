@@ -929,6 +929,20 @@ impl From<HistoryOffer> for crate::widget::HistoryControl {
 }
 
 impl WindowToolbar {
+    /// What a window floating as a card shows of these in its header: whom or what it is about,
+    /// alone, as a card's header names its activity — the app's own controls are the window's
+    /// in its strip.
+    #[must_use]
+    pub fn card_form(&self) -> Self {
+        Self {
+            location: self.location.clone().map(|location| ToolbarLocation {
+                editable: false,
+                ..location
+            }),
+            ..Self::default()
+        }
+    }
+
     /// Whether there is anything to show.
     #[must_use]
     pub fn is_empty(&self) -> bool {

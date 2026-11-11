@@ -178,6 +178,9 @@ impl WindowGroup {
             self.floating = floating;
             self.held_dirty = true;
             self.bar.set_new_tab(self.opens_tabs && !floating);
+            self.bar.set_card(floating);
+            self.bar
+                .set_search_control((!floating).then_some(super::SEARCH_CONTROL_ROOM));
         }
     }
 
@@ -185,6 +188,11 @@ impl WindowGroup {
     #[must_use]
     pub fn is_floating(&self) -> bool {
         self.floating
+    }
+
+    /// The person folded the floating card to its header, or opened it again, once.
+    pub fn take_pending_collapse(&mut self) -> bool {
+        self.bar.take_collapse()
     }
 
     /// The person asked the floating window back into its strip, once.

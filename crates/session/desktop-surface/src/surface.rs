@@ -54,6 +54,7 @@ mod commands;
 mod displays;
 mod floating;
 mod floats;
+pub use floats::DockedCard;
 mod history;
 mod hung;
 mod launch;
@@ -187,6 +188,9 @@ pub trait TileSource {
 
 struct Shared {
     tree: DesktopTree,
+    /// The floating windows this device stands in the floating layer's column, and where the
+    /// layer put each ([`DesktopHandle::docked_cards`], [`DesktopHandle::dock_at`]).
+    dock: floats::Dock,
     /// Whoever holds each window someone else opened, by tab ([`DesktopHandle::set_holders`]).
     holders: HashMap<TabId, ui::widget::TabHolder>,
     /// The agent run that opened each window an agent opened, by tab
@@ -334,6 +338,22 @@ impl DesktopHandle {
 
     pub fn revision(&self) -> u64 {
         self.shared.borrow().revision
+    }
+
+    /// The floating windows that stand as cards in the floating layer's column on this device.
+    #[must_use]
+    pub fn docked_cards(&self) -> Vec<DockedCard> {
+        self.shared.borrow().dock.cards.values().cloned().collect()
+    }
+
+    /// Where the floating layer put each docked window this pass, by group, in desk coordinates:
+    /// the desk stands each there from its next pass.
+    pub fn dock_at(&self, slots: std::collections::BTreeMap<u64, Rect>) {
+        let mut shared = self.shared.borrow_mut();
+        if shared.dock.slots != slots {
+            shared.dock.slots = slots;
+            shared.wake.wake();
+        }
     }
 
     /// Changes whenever the navigation snapshot may: the tree or what the surface presents beside
@@ -822,9 +842,6 @@ pub struct DesktopSurface {
     close_reports: Vec<ui::application::ComponentCloseReport>,
     /// A launched window to pan into view once it has been laid out.
     reveal: Option<(StripId, GroupId)>,
-    /// A window opened floating, and the one it opened beside: it stands beside that window where
-    /// the reveal has it on screen.
-    standing: Option<(StripId, GroupId, GroupId)>,
     /// Tabs of a shown strip whose content is not built yet, in build order. Only the focused
     /// window is built before the strip's first frame; the rest follow within a per-frame budget.
     unbuilt: Vec<(StripId, TabId)>,
@@ -965,7 +982,6 @@ impl DesktopSurface {
             relayout: false,
             close_reports: Vec::new(),
             reveal: None,
-            standing: None,
             unbuilt: Vec::new(),
             swipe: None,
             pan_follow: None,
@@ -1230,18 +1246,37 @@ impl DesktopSurface {
         let shown = self.shown;
         let mut returning = None;
         for (strip, row) in &mut self.rows {
-            let floats = if Some(*strip) == shown {
-                floats::floats_of(
-                    &self.shared.borrow().tree,
-                    *strip,
-                    floats::area_of(row.get_rect()),
-                )
-                .into_iter()
-                .map(|(group, at)| (group, row.keep_float_inside(at)))
-                .collect()
+            let floats: HashMap<u64, Rect> = if Some(*strip) == shown {
+                let mut shared = self.shared.borrow_mut();
+                let floats =
+                    floats::floats_of(&shared.tree, *strip, floats::area_of(row.get_rect()));
+                // A docked window the record no longer floats has left the column.
+                if !floats.is_empty() || !shared.dock.cards.is_empty() {
+                    let dock = &mut shared.dock;
+                    dock.cards.retain(|group, _| floats.contains_key(group));
+                    dock.slots.retain(|group, _| floats.contains_key(group));
+                }
+                floats
+                    .into_iter()
+                    .map(|(group, at)| {
+                        let at = shared.dock.slots.get(&group).copied().unwrap_or(at);
+                        (group, row.keep_float_inside(at))
+                    })
+                    .collect()
             } else {
                 HashMap::new()
             };
+            // While cards stand in the column, a window the strip brings into view stands clear of
+            // it where it fits.
+            let lane = self
+                .shared
+                .borrow()
+                .dock
+                .cards
+                .values()
+                .map(|card| card.size.0 + 2.0 * ui::floating_layer::EDGE_INSET)
+                .fold(0.0_f64, f64::max);
+            row.set_trailing_clear(lane);
             // A window the record put back in its strip after floating is the one the person just
             // snapped back: its strip brings it into view as it does a window that opens or takes
             // the focus, or the window lands where the pan left the strip rather than where it
@@ -1527,8 +1562,7 @@ impl DesktopSurface {
         }
         // A window lifted over the desk, or let go back into its strip.
         if let Some(ask) = row.take_pending_float() {
-            let area = floats::area_of(row.get_rect());
-            changed |= floats::carry_out(&mut shared, strip_id, ask, area);
+            changed |= floats::carry_out(&mut shared, strip_id, row, ask);
         }
         let mut new_tab = None;
         let mut search_in = None;
@@ -1768,7 +1802,7 @@ impl DesktopSurface {
                 row.share_with_neighbour(group);
             }
         }
-        let beside = float.then(|| self.open_beside(strip, group)).flatten();
+        let beside = float.then(|| self.dock(strip, group)).flatten();
         self.reveal = Some((strip, beside.unwrap_or(group)));
         self.structure_dirty = true;
     }
@@ -2052,7 +2086,6 @@ impl Widget for DesktopSurface {
                 // their new window must show it.
                 row.apply_layout(taffy, child, inner);
             }
-            self.relayout |= floats::stand_revealed(&mut self.standing, &self.shared, *strip, row);
         }
         self.reveal = pending;
         self.note_laid_strip();

@@ -8,6 +8,9 @@
 //! closes alone; the last one ends the loop, as a process's only window
 //! always has. A process the session started with no window runs its app
 //! unshown until the shell asks it for a window, which then takes its place.
+//!
+//! Each window keeps its own bar ([`crate::hosted_window::HostedWindow`]):
+//! the place one window shows is never the bar of another of the process.
 
 use super::{App, AppHandler, UserEvent};
 use winit::application::ApplicationHandler;
@@ -33,6 +36,8 @@ pub(super) fn serve_door(proxy: &EventLoopProxy<UserEvent>) -> Option<()> {
 pub(super) struct ProcessWindows<'a, 'b> {
     /// The launch's window first, while it is open.
     windows: Vec<AppHandler>,
+    /// Each window's bar, beside it in `windows`: what its app declares while it runs.
+    bars: Vec<crate::hosted_window::HostedWindow>,
     proxy: EventLoopProxy<UserEvent>,
     open: Option<&'a mut OpenWindow<'b>>,
     /// The window that last had the keyboard: input of no window goes to it.
@@ -45,8 +50,12 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         proxy: EventLoopProxy<UserEvent>,
         open: Option<&'a mut OpenWindow<'b>>,
     ) -> Self {
+        // The launch's window declared its bar before the loop ran it: it keeps that bar.
+        let bar = crate::hosted_window::HostedWindow::new();
+        bar.declare(crate::window_toolbar::declared());
         Self {
             windows: vec![first],
+            bars: vec![bar],
             proxy,
             open,
             focused: None,
@@ -86,6 +95,8 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
                 return;
             }
             let mut closed = self.windows.remove(index);
+            let bar = self.bars.remove(index);
+            let _bar = crate::window_toolbar::enter(Some(&bar));
             closed.exiting(event_loop);
             drop(closed);
         }
@@ -99,6 +110,8 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         let Some(open) = self.open.as_mut() else {
             return;
         };
+        let bar = crate::hosted_window::HostedWindow::new();
+        let scope = crate::window_toolbar::enter(Some(&bar));
         let Some(mut app) = open(pending) else {
             return;
         };
@@ -107,7 +120,9 @@ impl<'a, 'b> ProcessWindows<'a, 'b> {
         ));
         let mut handler = app.into_handler(&self.proxy, None, |_| {});
         handler.resumed(event_loop);
+        drop(scope);
         self.windows.push(handler);
+        self.bars.push(bar);
         // The app ran with no window until now: the window serves what it
         // served, so it goes, and the process is a windowed one from here.
         for unshown in self.windows.iter().filter(|handler| handler.windowless) {
@@ -124,13 +139,15 @@ impl ApplicationHandler<UserEvent> for ProcessWindows<'_, '_> {
             event @ (UserEvent::Wake(_)
             | UserEvent::DevSessionStop
             | UserEvent::DevSessionReload) => {
-                for handler in &mut self.windows {
+                for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
+                    let _bar = crate::window_toolbar::enter(Some(bar));
                     handler.user_event(event_loop, event.clone());
                 }
             }
             UserEvent::RenderReady(window_id) => {
                 let index = self.owner(window_id).unwrap_or(0);
                 if let Some(handler) = self.windows.get_mut(index) {
+                    let _bar = crate::window_toolbar::enter(self.bars.get(index));
                     handler.user_event(event_loop, UserEvent::RenderReady(window_id));
                 }
             }
@@ -138,12 +155,14 @@ impl ApplicationHandler<UserEvent> for ProcessWindows<'_, '_> {
             event @ UserEvent::AccessKit { window_id, .. } => {
                 let index = self.owner(window_id).unwrap_or(0);
                 if let Some(handler) = self.windows.get_mut(index) {
+                    let _bar = crate::window_toolbar::enter(self.bars.get(index));
                     handler.user_event(event_loop, event);
                 }
             }
             event => {
                 let index = self.front();
                 if let Some(handler) = self.windows.get_mut(index) {
+                    let _bar = crate::window_toolbar::enter(self.bars.get(index));
                     handler.user_event(event_loop, event);
                 }
             }
@@ -152,20 +171,23 @@ impl ApplicationHandler<UserEvent> for ProcessWindows<'_, '_> {
     }
 
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        for handler in &mut self.windows {
+        for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
+            let _bar = crate::window_toolbar::enter(Some(bar));
             handler.resumed(event_loop);
         }
         self.close_finished(event_loop);
     }
 
     fn suspended(&mut self, event_loop: &ActiveEventLoop) {
-        for handler in &mut self.windows {
+        for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
+            let _bar = crate::window_toolbar::enter(Some(bar));
             handler.suspended(event_loop);
         }
     }
 
     fn exiting(&mut self, event_loop: &ActiveEventLoop) {
-        for handler in &mut self.windows {
+        for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
+            let _bar = crate::window_toolbar::enter(Some(bar));
             handler.exiting(event_loop);
         }
     }
@@ -183,13 +205,15 @@ impl ApplicationHandler<UserEvent> for ProcessWindows<'_, '_> {
         // launch's, as every window did when it was the only one.
         let index = self.owner(window_id).unwrap_or(0);
         if let Some(handler) = self.windows.get_mut(index) {
+            let _bar = crate::window_toolbar::enter(self.bars.get(index));
             handler.window_event(event_loop, window_id, event);
         }
         self.close_finished(event_loop);
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        for handler in &mut self.windows {
+        for (handler, bar) in self.windows.iter_mut().zip(&self.bars) {
+            let _bar = crate::window_toolbar::enter(Some(bar));
             handler.about_to_wait(event_loop);
         }
         self.close_finished(event_loop);

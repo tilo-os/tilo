@@ -144,7 +144,9 @@ impl WindowGroup {
             }
             return;
         }
-        if !self.navigation_bar_visible() {
+        // A card's header names what the window is about and offers the card's controls: the
+        // window's search is the window's, in its strip.
+        if !self.navigation_bar_visible() || self.is_floating() {
             self.search.place(Rect::ZERO, 0.0);
             return;
         }

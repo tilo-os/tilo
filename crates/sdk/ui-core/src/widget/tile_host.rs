@@ -899,21 +899,6 @@ impl TileHost {
         self.edge_by_card = by_card;
     }
 
-    /// Stroke the window's edge along the card `rect` it is drawn at, out to
-    /// where the card stands: the silhouette and focus ring a window keeps
-    /// when it is drawn as one card off the desk. The tile's own edge is off
-    /// then ([`Self::set_edge_by_card`]), so this is its only outline.
-    pub fn draw_card_edge(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        radius: f64,
-        rect: Rect,
-    ) {
-        self.draw_edge_at(scene, transform, theme, radius, rect);
-    }
-
     /// Name `tab` to a panic hook while this tile's application runs: see
     /// [`panic_scope`](super::panic_scope).
     pub fn set_panic_scope(&self, tab: u64) {
