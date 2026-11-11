@@ -2182,7 +2182,7 @@ impl TerminalWidget {
         let failed = writer.write_all(bytes).is_err() || writer.flush().is_err();
         drop(writer);
         if failed {
-            self.mark_disconnected("Terminal input failed — session unavailable");
+            self.mark_disconnected("Terminal input failed. Session unavailable.");
             return Err("terminal input failed; the session is now disconnected".to_string());
         }
         Ok(())
@@ -4826,7 +4826,6 @@ impl TerminalWidget {
         } else {
             EmptyStateContent {
                 icon: Some(Icon::Terminal),
-                message: Some("Output appears here once a shell session starts."),
                 ..EmptyStateContent::new("No shell running")
             }
         };
@@ -6678,7 +6677,7 @@ impl TerminalWidget {
             output_rx,
             content,
         );
-        widget.mark_disconnected("Terminal process has not opened — input unavailable");
+        widget.mark_disconnected("Terminal process has not opened. Input unavailable.");
         widget
     }
 
@@ -6821,7 +6820,7 @@ impl TerminalWidget {
                 }
             });
         if reader_result.is_err() {
-            widget.mark_disconnected("Terminal unavailable — PTY reader could not start");
+            widget.mark_disconnected("Terminal unavailable. Its input could not be read.");
             request_terminal_wake(&widget.waker);
         }
     }

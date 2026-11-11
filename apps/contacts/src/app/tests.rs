@@ -4828,9 +4828,9 @@ fn exported_node(app: &mut Live, name: &str) -> Option<ui::accesskit::Node> {
 }
 
 /// Writing the first contact replaces the content's first-run pane with the
-/// form, so the list beside it says the book is empty and where the new
-/// contact will appear instead of standing blank. Someone who may only view
-/// is told so, and offered no New contact that would be refused.
+/// form, so the list beside it says the book is empty instead of standing
+/// blank. Someone who may only view is told so, and offered no New contact
+/// that would be refused.
 #[test]
 fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     let mut app = Live::empty(1280, 800);
@@ -4847,10 +4847,7 @@ fn the_list_beside_the_first_contacts_form_says_the_book_is_empty() {
     let state = exported_node(&mut app, "No contacts yet")
         .expect("the list beside the form names the empty book");
     assert_eq!(state.role(), ui::accesskit::Role::Group);
-    assert_eq!(
-        state.description(),
-        Some("The contact you're adding appears here once you save it.")
-    );
+    assert_eq!(state.description(), None, "the empty book speaks once");
     assert!(
         app.shared.borrow().painted.is_empty(),
         "no row stands where the empty state is drawn"
