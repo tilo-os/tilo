@@ -2137,11 +2137,12 @@ impl AppCheck<'_> {
         // places and offers what adds to them is on the window at every time, never only once
         // the window's bar is out. Read at one text and display scale per size: the row stands
         // or does not by the width the sidebar has.
-        let declares = staged
+        let names_its_sidebar = staged
             .composed()
             .is_some_and(|composed| declares_sidebar_header(&composed));
-        let canonical = layout.display_scale == 1.0 && (layout.text_scale - 1.0).abs() < 1e-6;
-        if one_window && canonical {
+        let as_shipped =
+            (layout.display_scale - 1.0).abs() < 1e-6 && (layout.text_scale - 1.0).abs() < 1e-6;
+        if one_window && as_shipped {
             let stands = staged
                 .harness_mut()
                 .sidebar_at_rest(viewport, layout.theme())
@@ -2151,7 +2152,7 @@ impl AppCheck<'_> {
                         self.dir.display(),
                     )
                 })?;
-            problems.extend(audit::sidebar_header_at_rest(declares, stands));
+            problems.extend(audit::sidebar_header_at_rest(names_its_sidebar, stands));
         }
         for problem in &mut problems {
             // A list draws a row as one widget keyed by the row: what it is about is the row

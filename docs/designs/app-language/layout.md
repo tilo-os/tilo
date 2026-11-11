@@ -107,6 +107,11 @@ stands over and under it, so a list under a notice is not read as a row of it. I
 stands once: a list folds the branch of a row standing open into its item, since the document under
 that row lists it, so no step of a task is read both there and again as a row of the list.
 
+It reads a window as it stands at rest too, its bar hidden over the window's top edge, and holds a
+sidebar that declares a header row — the words that name its places and the buttons that add to
+them — to drawing it there: what a sidebar says of itself is on the window at every time, never
+only once the person reaches for the bar (`sidebar-header-on-reveal`).
+
 It reads the words a window shows where their ink stands, the bar's own painted labels among
 them — the words of its tabs, its location, its pickers and its notices: two words drawn in one
 place are a `text-on-text` finding unless a surface of one's own stands between them, since
