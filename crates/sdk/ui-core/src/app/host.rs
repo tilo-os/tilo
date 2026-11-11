@@ -1,6 +1,10 @@
-use crate::widget::DrawChild;
 // Frame layout and drawing shared by every host of App, and App's host-facing
 // behaviour. The native event-loop runner is `app/native_runner.rs`.
+
+// Only the frame's own draw passes draw widgets as children; the portable
+// toolkit has no window to draw.
+#[cfg(feature = "native")]
+use crate::widget::DrawChild;
 
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
