@@ -3,10 +3,11 @@
 # people's workspaces (Firecracker, crates/runtime/legacy-vm/src/hosted).
 #
 # Two variants build from this one file, and both are a root *filesystem*, not a
-# disk and not an installed system: no systemd, no bootloader, no kernel
-# inside. tools/ci/publish/hosted-guest.sh exports the container's filesystem
-# into a raw ext4 (`rootfs.ext4`), which every VM's disk starts as a reflinked
-# copy of, and that the guest grows to its size at boot. PID 1 is
+# disk and not an installed system: no bootloader and no init system inside —
+# nothing is booted from them, they are unpacked as a VM's own root.
+# tools/ci/publish/hosted-guest.sh exports the container's filesystem into a raw
+# ext4 (`rootfs.ext4`), which every VM's disk starts as a reflinked copy of, and
+# that the guest grows to its size at boot. PID 1 is
 # os/hosted-guest/hosted-init, which mounts what a guest needs, grows the
 # filesystem and hands over to the guest agent (crates/runtime/legacy-agent) —
 # a VM must answer within a few hundred milliseconds of being restored.
@@ -21,8 +22,17 @@
 #   runs one Tilo session in place of a person's computer: the headless session
 #   drawing on the CPU (the hosts have no GPU), Browser as the signed tapp a
 #   device installs, and the Chromium engine runtime it requires. It has no
-#   compiler and no language runtime; its stages say what it holds.
+#   compiler and no language runtime; its stages say what it holds. It is
+#   Fedora (OS_BASE_REF below), not Debian: what it runs is the Tilo OS's own
+#   userspace, compiled against the OS base's glibc, and no other
+#   distribution's loader can resolve it.
 ARG BASE_REF
+# The Fedora base the Tilo OS image is built from, which the browser guest's
+# root filesystem is built from too: one pin, not a copy — the digest is
+# os/base-snapshot.env's BASE_REF, which hosted-guest.sh reads and passes here.
+# The session, the runtime bundle's engines and Browser are compiled against the
+# same release, so the guest's loader, libm and libc are theirs.
+ARG OS_BASE_REF
 # The build context holding the guest agent, built by this repository's CI
 # (hosted-guest.sh agent). The three names below are also what
 # os/external-assets/github-assets.tsv pins, and the cache
@@ -39,7 +49,9 @@ COPY --from=github-assets / /
 # The tenant's own account (uid 1000, a real shell), the subreaper the agent
 # runs under (tini), e2fsprogs to grow the filesystem at boot, and the guest
 # agent with the init that runs it. Neither the agent nor the init is a service:
-# nothing else is started, and there is no manager to start it with.
+# nothing else is started, and there is no manager to start it with. The tenant,
+# the init and the agent are the same in both guests
+# (os/hosted-guest/guest-tenant); only the distribution under them differs.
 FROM ${BASE_REF} AS guest-base
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8
 RUN apt-get update \
@@ -52,24 +64,108 @@ RUN apt-get update \
       util-linux \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
-RUN useradd --create-home --uid 1000 --user-group --shell /bin/bash tilo \
- && install -d -o tilo -g tilo /home/tilo/.local/bin /home/tilo/.local/share
 COPY --from=hosted-agent /tilo-legacy-agent /usr/libexec/tilo/tilo-legacy-agent
 COPY os/hosted-guest/hosted-init /usr/libexec/tilo/hosted-init
-RUN set -eu; \
-    chmod 0755 /usr/libexec/tilo/hosted-init /usr/libexec/tilo/tilo-legacy-agent; \
-    bash -n /usr/libexec/tilo/hosted-init; \
-    agent_says=$(/usr/libexec/tilo/tilo-legacy-agent --user no-such-user 2>&1 || true); \
-    case $agent_says in \
-      *"no ordinary user"*) echo 'agent: runs on this root filesystem' ;; \
-      *) echo "agent: $agent_says"; exit 1 ;; \
-    esac
+RUN --mount=type=bind,source=os/hosted-guest/guest-tenant,target=/run/tilo-guest-tenant,ro \
+    bash /run/tilo-guest-tenant
+
+# ---- The browser guest's base ------------------------------------------------
+# The OS's own Fedora base, not a distribution of the guest's own: the session,
+# the runtime bundle's engines, Browser and the Chromium engine host are the OS
+# userspace, compiled against this base, and another distribution's libm answers
+# none of it. Over it, what they load: Mesa's software Vulkan driver is how the
+# session draws — the hosts have no GPU, so every frame is rasterized on the CPU
+# (wgpu takes lavapipe's adapter) — and the rest is what the session's Wayland
+# and X11 client stack, the engines and CEF's libcef.so record in DT_NEEDED, and
+# what Chromium needs for offscreen rendering (NSS, cups, audio, fonts). The
+# closure check below fails the build, naming the library, when a list falls
+# short.
+#
+# One transaction, finalized the way the OS image finalizes each of its own
+# (os/scripts/finalize-rpmdb.sh): a package database rewritten in place tears
+# when the next layer captures it, so it is rebuilt onto a fresh inode, verified,
+# left readable from a read-only /usr, and dnf's diagnostic state is dropped.
+FROM ${OS_BASE_REF} AS browser-base
+ENV LANG=C.UTF-8
+RUN --mount=type=bind,source=os/scripts/finalize-rpmdb.sh,target=/run/tilo-finalize-rpmdb,ro \
+    --mount=type=bind,source=os/scripts/clean-dnf-layer-state.sh,target=/usr/libexec/tilo/clean-dnf-layer-state,ro \
+    dnf install -y --setopt=install_weak_deps=False --skip-unavailable \
+    # What every guest has: shadow-utils for the tenant's account, the subreaper
+    # the agent runs under (tini), e2fsprogs for the init to grow the filesystem
+    # with, iproute for its loopback, and util-linux for setpriv, which the smoke
+    # test runs as the tenant with.
+      ca-certificates \
+      e2fsprogs \
+      iproute \
+      shadow-utils \
+      tini \
+      util-linux \
+    # The session's and the engine's libraries.
+      alsa-lib \
+      at-spi2-core \
+      atk \
+      cairo \
+      cups-libs \
+      dbus-daemon \
+      dbus-tools \
+      dejavu-sans-fonts \
+      fontconfig \
+      freetype \
+      gstreamer1 \
+      gstreamer1-plugins-base \
+      harfbuzz \
+      harfbuzz-icu \
+      libICE \
+      libSM \
+      libX11 \
+      libX11-xcb \
+      libXcomposite \
+      libXcursor \
+      libXdamage \
+      libXext \
+      libXfixes \
+      libXi \
+      libXinerama \
+      libXrandr \
+      libXrender \
+      libXres \
+      libXtst \
+      libatomic \
+      libglvnd-egl \
+      libglvnd-glx \
+      libglvnd-opengl \
+      libinput \
+      libseat \
+      libunwind \
+      libwayland-client \
+      libwayland-egl \
+      libwayland-server \
+      libxcb \
+      libxkbcommon \
+      libxkbcommon-x11 \
+      mesa-dri-drivers \
+      mesa-libgbm \
+      mesa-vulkan-drivers \
+      nspr \
+      nss \
+      pango \
+      pixman \
+      vulkan-loader \
+      xcb-util-cursor \
+      xcb-util-image \
+      xcb-util-keysyms \
+ && bash /run/tilo-finalize-rpmdb
+COPY --from=hosted-agent /tilo-legacy-agent /usr/libexec/tilo/tilo-legacy-agent
+COPY os/hosted-guest/hosted-init /usr/libexec/tilo/hosted-init
+RUN --mount=type=bind,source=os/hosted-guest/guest-tenant,target=/run/tilo-guest-tenant,ro \
+    bash /run/tilo-guest-tenant
 
 # ---- The browser guest's payload --------------------------------------------
 # Browser and its engine runtime, and the app store, arranged exactly as a
-# device arranges them (os/scripts/pack-apps.sh, tilo-install). Python, binutils
-# and the libraries the shared runtime loads on first use live in this stage
-# only: the root filesystem the hypervisor boots holds none of them.
+# device arranges them (os/scripts/pack-apps.sh, tilo-install). binutils is how
+# this stage resolves the runtime's native closure, and the base's python3 runs
+# the pack scripts: both are this stage's, and the root filesystem the hypervisor
+# boots runs neither.
 #
 #   session          hosted-guest.sh browser-session: /usr as the session's
 #                    components install it (os/components.toml)
@@ -77,20 +173,15 @@ RUN set -eu; \
 #                    binary and the packing tools
 #   chromium-engine  os-chromium-<arch>: the pinned CEF build
 #   font-seed        every font of the catalog, by digest
-FROM guest-base AS browser-payload
+FROM browser-base AS browser-payload
 ARG CHROMIUM_RUNTIME_VERSION
 ARG RUNTIME_RELEASE=2026.07
 ARG SOURCE_DATE_EPOCH=0
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} RUNTIME_RELEASE=${RUNTIME_RELEASE}
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      binutils \
-      libglib2.0-0t64 \
-      libgstreamer-plugins-base1.0-0 \
-      libgstreamer1.0-0 \
-      python3 \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+RUN --mount=type=bind,source=os/scripts/finalize-rpmdb.sh,target=/run/tilo-finalize-rpmdb,ro \
+    --mount=type=bind,source=os/scripts/clean-dnf-layer-state.sh,target=/usr/libexec/tilo/clean-dnf-layer-state,ro \
+    dnf install -y --setopt=install_weak_deps=False --skip-unavailable binutils \
+ && bash /run/tilo-finalize-rpmdb
 # The repository the pack scripts read: the app manifests and their budgets,
 # the fonts' catalog, and the tools.
 COPY os/ /build/os/
@@ -180,90 +271,20 @@ RUN mkdir -p /etc/tilo \
 # ---- The browser guest -------------------------------------------------------
 # What a device has of Tilo, on a root filesystem that holds nothing else: the
 # session and Browser (above), and the libraries the session draws with and the
-# engine runs against. No compiler, no shell tools, no node, no Rust, no Python.
-FROM guest-base AS browser
+# engine runs against (the base). No compiler, no node, no Rust, no Python.
+FROM browser-base AS browser
 ARG CHROMIUM_RUNTIME_VERSION
-# Mesa's software Vulkan driver is how the session draws: the hosts have no GPU,
-# so every frame is rasterized on the CPU (wgpu takes lavapipe's adapter). The
-# rest is what the session's Wayland/X11 client stack and CEF's libcef.so record
-# in DT_NEEDED, and what Chromium needs for offscreen rendering (NSS, cups,
-# fonts, audio) — the check below fails the build, naming the library, when a
-# list falls short.
-RUN apt-get update \
- && apt-get install -y --no-install-recommends \
-      dbus \
-      fontconfig \
-      fonts-dejavu-core \
-      libasound2t64 \
-      libatk1.0-0t64 \
-      libatspi2.0-0t64 \
-      libatomic1 \
-      libcairo2 \
-      libcups2t64 \
-      libdbus-1-3 \
-      libdrm2 \
-      libegl1 \
-      libexpat1 \
-      libfontconfig1 \
-      libfreetype6 \
-      libgbm1 \
-      libgl1 \
-      libgl1-mesa-dri \
-      libglib2.0-0t64 \
-      libglvnd0 \
-      libglx0 \
-      libharfbuzz-icu0 \
-      libharfbuzz0b \
-      libice6 \
-      libinput10 \
-      libnspr4 \
-      libnss3 \
-      libopengl0 \
-      libpango-1.0-0 \
-      libpangocairo-1.0-0 \
-      libpcre2-8-0 \
-      libpixman-1-0 \
-      libseat1 \
-      libselinux1 \
-      libsm6 \
-      libstdc++6 \
-      libudev1 \
-      libunwind8 \
-      libvulkan1 \
-      libwayland-client0 \
-      libwayland-egl1 \
-      libwayland-server0 \
-      libx11-6 \
-      libx11-xcb1 \
-      libxcb-cursor0 \
-      libxcb-image0 \
-      libxcb-keysyms1 \
-      libxcb-randr0 \
-      libxcb-render0 \
-      libxcb-shape0 \
-      libxcb-shm0 \
-      libxcb-sync1 \
-      libxcb-xfixes0 \
-      libxcb-xkb1 \
-      libxcb1 \
-      libxcomposite1 \
-      libxcursor1 \
-      libxdamage1 \
-      libxext6 \
-      libxfixes3 \
-      libxi6 \
-      libxinerama1 \
-      libxkbcommon-x11-0 \
-      libxkbcommon0 \
-      libxrandr2 \
-      libxrender1 \
-      libxres1 \
-      libxtst6 \
-      mesa-libgallium \
-      mesa-vulkan-drivers \
-      zlib1g \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives
+# The base is Fedora because what runs here is the OS's userspace, and with it
+# come the packages a distribution installs for itself. The one that matters is
+# the interpreter: python3 is the payload stage's (it packed the store there),
+# and nothing on this root filesystem runs one. Fedora's own at-spi2-core and
+# gstreamer1 require it, and dnf would take them with it — and with them the
+# accessibility and media libraries libcef.so loads — so exactly the interpreter
+# is removed, and the database's derived sidecars with it: nothing here installs
+# a package, so nothing reads that database again.
+RUN rpm -e --nodeps $(rpm -qa --queryformat '%{NAME}\n' \
+      | grep -E '^(python3|python3-.*|python-unversioned-command)$') \
+ && rm -f /usr/lib/sysimage/rpm/rpmdb.sqlite-wal /usr/lib/sysimage/rpm/rpmdb.sqlite-shm
 # The session, its fonts and its interface declaration (as the check arranged
 # them), then the store and the runtimes from the payload stage, then the script
 # the guest agent starts a session with and the proof that it does.

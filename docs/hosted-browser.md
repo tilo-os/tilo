@@ -25,8 +25,12 @@ Linux VM. A browser environment is that service's VM with these differences:
 - **Its image** is the browser guest: the hosted guest's kernel and init, a
   headless Tilo session (`--backend headless`, rendering on the CPU: the
   hosts have no GPU), Browser, and the Chromium engine runtime Browser
-  requires. It has no compiler, shell tools or language runtimes. CI builds,
-  signs and pins it next to the hosted guest
+  requires. It has no compiler, shell tools or language runtimes. What it runs
+  is the Tilo OS's own userspace, so its root filesystem is the Fedora base the
+  OS image is built from (`os/base-snapshot.env`) rather than the workspace
+  guest's Debian: the session, the runtime's engines and Browser are compiled
+  against that base's libc, and no other distribution's loader can resolve them.
+  CI builds, signs and pins it next to the hosted guest
   (`registry.tilo.so/tilo/hosted-browser-guest`, pinned as
   `HOSTED_BROWSER_GUEST_X86_64_REF` in `os/hosted-guest-snapshot.env`). Hosts
   never build it.
