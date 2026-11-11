@@ -2351,7 +2351,7 @@ impl Instance {
             .members_from
             .as_ref()
             .is_some_and(|(person, policy, people)| {
-                *person == standing.person && *policy == standing.policy && *people == self.people
+                *person == standing.person && *policy == *standing.policy && *people == self.people
             });
         if seen {
             return false;
@@ -2360,7 +2360,11 @@ impl Instance {
             crate::members::members_of(&standing, &self.people),
             Some(crate::members::reads_of(&standing, &self.people, &host)),
         );
-        self.members_from = Some((standing.person, standing.policy, self.people.clone()));
+        self.members_from = Some((
+            standing.person,
+            std::sync::Arc::unwrap_or_clone(standing.policy),
+            self.people.clone(),
+        ));
         true
     }
 

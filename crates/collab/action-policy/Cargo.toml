@@ -17,7 +17,7 @@ path = "src/lib.rs"
 # wall clock as well as the native one.
 
 [dependencies]
-serde.workspace = true
+serde = { workspace = true, features = ["rc"] }
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 
 [dev-dependencies]

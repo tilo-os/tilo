@@ -72,6 +72,7 @@ fn workspace_policy(member: &str) -> tilo_action_policy::WorkspacePolicy {
         ui::permissions::PermissionContext::member_of(WORKSPACE, member.to_owned(), Role::Editor)
             .standing()
             .policy
+            .as_ref()
             .clone();
     for kind in [
         tilo_action_policy::ActionKind::Read,

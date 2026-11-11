@@ -61,7 +61,11 @@ fn subject_key(subject: &Subject) -> String {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Standing {
     pub person: String,
-    pub policy: WorkspacePolicy,
+    /// Shared, not copied: a host keeps every member device's standing in a
+    /// workspace, and each holds the workspace's whole policy, so a copy each
+    /// made one more member cost a copy of every member's policy. Encoded as
+    /// the policy itself.
+    pub policy: std::sync::Arc<WorkspacePolicy>,
     #[serde(default)]
     pub bounds: Vec<Bound>,
 }
@@ -69,10 +73,13 @@ pub struct Standing {
 impl Standing {
     /// A person acting as themselves.
     #[must_use]
-    pub fn person(policy: WorkspacePolicy, person: impl Into<String>) -> Self {
+    pub fn person(
+        policy: impl Into<std::sync::Arc<WorkspacePolicy>>,
+        person: impl Into<String>,
+    ) -> Self {
         Self {
             person: person.into(),
-            policy,
+            policy: policy.into(),
             bounds: Vec::new(),
         }
     }
