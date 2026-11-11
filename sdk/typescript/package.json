@@ -1,5 +1,5 @@
 {
-  "name": "@tilo/sdk",
+  "name": "tilo-sdk",
   "version": "0.1.0",
   "description": "Drive Tilo workspaces from JavaScript and TypeScript: the same resources, actions, runs and undo as clicking or an agent.",
   "license": "MIT OR Apache-2.0",

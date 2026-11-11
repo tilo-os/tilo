@@ -2,7 +2,7 @@
  * Drive Tilo workspaces from JavaScript and TypeScript.
  *
  * ```ts
- * import { Tilo } from "@tilo/sdk";
+ * import { Tilo } from "tilo-sdk";
  *
  * const tilo = new Tilo();                    // key: TILO_API_KEY, door: TILO_DOOR
  * const ws = tilo.workspace("jane-doe");

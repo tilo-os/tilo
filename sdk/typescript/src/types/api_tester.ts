@@ -14,8 +14,8 @@
  * says where it is.
  */
 
-import { resourceProxy } from "@tilo/sdk";
-import type * as tilo from "@tilo/sdk";
+import { resourceProxy } from "tilo-sdk";
+import type * as tilo from "tilo-sdk";
 
 /** One of "none", "bearer", "basic", "api_key". */
 export type AuthScheme = "none" | "bearer" | "basic" | "api_key";

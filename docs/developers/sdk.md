@@ -6,6 +6,10 @@ agent through MCP, a program in tilolang. The SDKs (Python, TypeScript) and the 
 one more way in, over the same resources and the same actions, with the same permissions,
 history and undo. There is no second API.
 
+Both SDKs are published as `tilo-sdk` (`uv add tilo-sdk`, `bun add tilo-sdk`). The Python module
+is `tilo`: plain `tilo` on PyPI is another project's name, so only the distribution is
+`tilo-sdk`. A release tag publishes both, at that tag's version.
+
 ## One model, four ways in
 
 | | Who uses it | What it sends | What comes back |

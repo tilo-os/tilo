@@ -1,8 +1,11 @@
-# tilo (Python SDK)
+# tilo-sdk (Python SDK)
 
 Drive Tilo workspaces from Python: the same resources, actions, runs, undo
 and attribution a person clicking or an agent over MCP gets. No second API:
 every call here is a `tools/call` an agent makes, asking for typed answers.
+
+The distribution is `tilo-sdk` (`uv add tilo-sdk`); the module it installs is
+`tilo`.
 
 ```python
 import asyncio, pathlib

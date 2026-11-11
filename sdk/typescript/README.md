@@ -1,12 +1,16 @@
-# @tilo/sdk
+# tilo-sdk
 
 Drive Tilo workspaces from JavaScript and TypeScript: the same resources,
 actions, runs, undo and attribution a person clicking or an agent over MCP
 gets. No second API: every call here is the `tools/call` an agent makes,
 asking for typed answers.
 
+```sh
+bun add tilo-sdk            # or: npm install tilo-sdk
+```
+
 ```ts
-import { Tilo } from "@tilo/sdk";
+import { Tilo } from "tilo-sdk";
 
 const tilo = new Tilo();                          // key: TILO_API_KEY, door: TILO_DOOR
 const applicant = await tilo.workspaces.create("Applicant: Jane Doe");

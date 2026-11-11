@@ -650,6 +650,36 @@ run = "bash tools/ci/sdk-typescript.sh"
 image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
 requires = ["arch=x86_64"]
 
+# The SDKs' release to npm and PyPI, tools/ci/publish/sdks.sh: both packages publish under the
+# one name tilo-sdk (on PyPI plain `tilo` belongs to an unrelated project, on npm the @tilo scope
+# is not available), and the version is the release tag's, never a number in the tree. The check
+# that publishes runs on release tags, with the registries' tokens and nowhere else; a version
+# already on a registry is skipped, so re-running a tag finishes a release that stopped halfway
+# rather than failing on what it already sent. Dispatched on a branch it publishes nothing:
+# sdks.sh refuses any ref but a release tag.
+#
+# What runs on main is the same build with no token: both packages are built as a tag would
+# build them, their artifacts are packed and read back, and the version a tag would write is
+# exercised on a stand-in. A renamed package, a manifest that stops being publishable or an
+# import package that falls out of the wheel breaks here, long before a tag does. It runs again
+# in the tag's own publish run, on that tag's version, before anything is sent.
+[[check]]
+name = "publish-sdks-dry-run"
+run = "bash tools/ci/publish/sdks.sh check"
+needs = ["sdk-python", "sdk-typescript"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+on = ["main", "dispatch"]
+
+[[check]]
+name = "publish-sdks"
+run = "bash tools/ci/publish/sdks.sh publish"
+needs = ["sdk-python", "sdk-typescript", "publish-sdks-dry-run"]
+image = { check = "image-ci-sdk", path = "/target/publish/ci-sdk/image.oci.tar" }
+requires = ["arch=x86_64"]
+on = ["tag:v[0-9]*.[0-9]*.[0-9]*", "dispatch"]
+secrets = ["NPM_TOKEN", "PYPI_TOKEN"]
+
 [[check]]
 name = "sdk-policy"
 run = "python3 tools/policy/check_app_capabilities.py\npython3 tools/web/generate_web_desktop.py --check\npython3 tools/apps/generate_catalogue_fleet.py --check\npython3 tools/sdk/publish_check.py --report-only\n"

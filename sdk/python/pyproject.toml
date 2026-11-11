@@ -1,5 +1,5 @@
 [project]
-name = "tilo"
+name = "tilo-sdk"
 version = "0.1.0"
 description = "Drive Tilo workspaces from Python: the same resources, actions, runs and undo as clicking or an agent."
 readme = "README.md"
