@@ -224,6 +224,12 @@ async fn a_key_works_through_the_door_on_the_relay_and_ends_when_revoked() {
             .any(|row| row["id"] == on_relay.lobby.as_str() && row["role"] == "editor"),
         "the home workspace the key was let into: {listed}"
     );
+    // Each names the host it is on: the relay, for these.
+    assert!(
+        rows.iter()
+            .all(|row| row["host"].as_str().is_some_and(|host| !host.is_empty())),
+        "every workspace names its host: {listed}"
+    );
 
     // The relay's app workers answer it there, with no tab of anyone's
     // open.

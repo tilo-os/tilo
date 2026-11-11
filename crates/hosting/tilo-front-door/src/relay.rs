@@ -44,13 +44,19 @@ pub struct Workspace {
     /// The workspace's id (a UUID): what every action names it by.
     pub id: String,
     pub name: String,
-    /// The host serving it, named as hosts are (`eu1.tilo.sh`).
-    pub host: String,
+    /// The host serving it, named as hosts are: a relay's name
+    /// (`eu1.tilo.sh`), or the person's device that hosts it. `None` while
+    /// none of their devices said where it is hosted.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// The part the person takes in it: `owner` for a workspace of their own,
     /// else the role they hold there (`viewer`, `commenter`, `editor`,
     /// `moderator`). `None` when the answer did not say.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub role: Option<String>,
+    /// Where its host is reached, as the person's list says.
+    #[serde(skip)]
+    pub address: Option<tilo_relay_session::workspaces::WorkspaceHostAddress>,
 }
 
 /// Why the relay did not answer what was asked.
@@ -225,7 +231,9 @@ impl Relay {
         Ok((connection.workspace(&listing), invitation))
     }
 
-    /// The workspaces `connection`'s grant reaches here: the person's own.
+    /// The workspaces `connection`'s grant reaches: the person's list as the
+    /// relay keeps it, every workspace of theirs wherever it is hosted (one
+    /// of their desktops, a paired device, this relay), each naming its host.
     ///
     /// # Errors
     /// The relay was not reached or refused.
@@ -233,20 +241,19 @@ impl Relay {
         let lobby = self.lobby(connection).await?;
         let listed = connection
             .device
-            .host_action(
-                lobby,
-                tilo_relay_session::workspaces::LIST_ROOMS,
-                Map::new(),
-                "tilo front door",
-            )
+            .personal_list(lobby)
             .await
             .map_err(RelayError::from)?;
-        let listed: Vec<tilo_relay_session::workspaces::WorkspaceListing> =
-            serde_json::from_value(listed)
-                .map_err(|error| RelayError::Unavailable(error.to_string()))?;
         Ok(listed
-            .iter()
-            .map(|listing| connection.workspace(listing))
+            .workspaces
+            .into_iter()
+            .map(|listed| Workspace {
+                id: listed.workspace,
+                name: listed.name,
+                host: listed.host.as_ref().map(|host| host.name.clone()),
+                role: listed.role,
+                address: listed.host,
+            })
             .collect())
     }
 
@@ -430,8 +437,9 @@ impl Connection {
         Workspace {
             id: listing.workspace.clone(),
             name: listing.name.clone(),
-            host: self.host.clone(),
+            host: Some(self.host.clone()),
             role: listing.role.clone(),
+            address: None,
         }
     }
 

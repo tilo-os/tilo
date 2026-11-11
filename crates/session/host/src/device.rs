@@ -15,7 +15,8 @@ use tilo_relay_client::login::{Door, SignIn};
 use tilo_relay_client::{CertifyError, DeviceSigner, HttpClient};
 use tilo_relay_protocol::web::HostInfo;
 use tilo_relay_session::workspaces::{
-    CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, WorkspaceListing,
+    CREATE_OWN_ROOM, CreatedWorkspace, HOST_ACTIONS_PROVIDER, HOST_ROOMS_RESOURCE, KEEP_PERSONAL,
+    LIST_PERSONAL, PersonalList, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
 use web_time::{Duration as Wait, Instant};
@@ -363,6 +364,43 @@ impl Device {
                 .map_err(HostRefusal::from)?;
         }
         Ok(listing)
+    }
+
+    /// The person's workspace list as the host keeps it, asked from inside `workspace_id`: every
+    /// workspace of theirs their devices said, wherever it is hosted, with the workspaces this host
+    /// keeps for them, each naming its host. A key for one workspace reads that one alone.
+    ///
+    /// # Errors
+    /// The host did not answer, refused, or answered something else.
+    pub async fn personal_list(&self, workspace_id: u64) -> Result<PersonalList, HostRefusal> {
+        let listed = self
+            .host_action(workspace_id, LIST_PERSONAL, Map::new(), &self.label)
+            .await?;
+        serde_json::from_value(listed).map_err(|error| {
+            HostRefusal::malformed(format!("The host answered no workspace list: {error}"))
+        })
+    }
+
+    /// Keep `list` on the host as the person's workspace list, asked from inside `workspace_id`:
+    /// what their keys read back with [`Self::personal_list`]. Only a device of the person's own
+    /// keeps it.
+    ///
+    /// # Errors
+    /// The host did not answer or refused.
+    pub async fn keep_personal(
+        &self,
+        workspace_id: u64,
+        list: &PersonalList,
+    ) -> Result<(), HostRefusal> {
+        let mut arguments = Map::new();
+        arguments.insert(
+            "list".to_owned(),
+            serde_json::to_value(list)
+                .map_err(|error| HostRefusal::malformed(error.to_string()))?,
+        );
+        self.host_action(workspace_id, KEEP_PERSONAL, arguments, &self.label)
+            .await
+            .map(drop)
     }
 
     /// The host's own operation `action` with `arguments`, asked in `workspace_id`.

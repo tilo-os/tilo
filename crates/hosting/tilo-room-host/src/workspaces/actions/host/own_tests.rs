@@ -139,6 +139,10 @@ async fn standing(
 }
 
 #[tokio::test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "a stranger's own workspace from the offer through asking again"
+)]
 async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = governor();
@@ -167,9 +171,12 @@ async fn anyone_gets_one_workspace_of_their_own_and_administers_it() {
         [
             CREATE_OWN_ROOM,
             DELETE_ROOM,
-            tilo_relay_session::workspaces::LIST_ROOMS
+            tilo_relay_session::workspaces::LIST_ROOMS,
+            tilo_relay_session::workspaces::LIST_PERSONAL,
+            tilo_relay_session::workspaces::KEEP_PERSONAL,
         ],
-        "a stranger makes, deletes and lists the workspaces of their own, and nothing else"
+        "a stranger makes, deletes and lists the workspaces of their own, keeps and reads their \
+         list, and nothing else"
     );
     let created = create_own(&host, &guest, json!({"name": "Ada's workspace"}))
         .await

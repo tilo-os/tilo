@@ -182,6 +182,137 @@ pub const ATTACH_HOST: &str = "room.attach-host";
 /// confirmed it stopped.
 pub const DETACH_HOST: &str = "room.detach-host";
 
+/// The person's whole workspace list, as one of their own devices keeps it
+/// here: argument `list`, a [`PersonalList`] naming each workspace of theirs,
+/// wherever it is hosted (one of their desktops, a paired device, a relay),
+/// with that host's signed address. Only a device of the person's own keeps
+/// it, never an agent's grant or a stand-in; each keep replaces the last.
+/// Answers `{"kept": count}`.
+pub const KEEP_PERSONAL: &str = "room.personal.keep";
+/// The caller's person's workspace list ([`PersonalList`]): the one their
+/// devices kept here, with the workspaces this host keeps for them, each
+/// naming its host and how to reach it. Any certified key of the person's
+/// reads it; an agent's grant reads only what its scope reaches.
+pub const LIST_PERSONAL: &str = "room.personal";
+/// The most workspaces a kept list names.
+pub const MAX_PERSONAL_WORKSPACES: usize = 4096;
+
+/// A person's workspaces, each with where it is hosted: what
+/// [`LIST_PERSONAL`] answers and [`KEEP_PERSONAL`] keeps.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalList {
+    pub workspaces: Vec<PersonalWorkspace>,
+}
+
+/// One workspace of a person's list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PersonalWorkspace {
+    /// The workspace's UUID.
+    pub workspace: String,
+    /// Its name.
+    pub name: String,
+    /// Where it is hosted, when the list says: `None` for a workspace no
+    /// device of the person said the host of yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<WorkspaceHostAddress>,
+    /// The part the person takes in it, when the host that answers knows:
+    /// `owner` for one of their own, else the role they hold.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+}
+
+/// Where a workspace is hosted, as a device dials it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceHostAddress {
+    /// The host as people know it: a relay's name (`eu1.tilo.sh`), or the
+    /// label of the person's device that hosts it.
+    pub name: String,
+    /// The host's own signed address for the workspace
+    /// (`tilo_peer_state::join::TransportHint`), postcard in hex: what a
+    /// device dials, checked against the host's certificate it carries.
+    /// `None` for a workspace the host that answered the list keeps itself:
+    /// the reader reaches it where it asked, and a person with hundreds of
+    /// them there reads their list in one answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
+}
+
+impl WorkspaceHostAddress {
+    /// The address `hint` (a `TransportHint`, postcard) gives, named as its
+    /// host's certificate names it; `None` for a hint that is no signed
+    /// workspace address.
+    #[must_use]
+    pub fn of_hint(hint: &[u8]) -> Option<Self> {
+        let decoded: tilo_workspace_join::TransportHint = postcard::from_bytes(hint).ok()?;
+        let (host, _) =
+            tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+                &decoded,
+            )
+            .ok()?;
+        Some(Self {
+            name: host.host_device_certificate.device_label,
+            hint: Some(hex::encode(hint)),
+        })
+    }
+
+    /// The signed address this names, checked against its host's certificate.
+    ///
+    /// # Errors
+    /// It is no signed workspace address.
+    pub fn address(
+        &self,
+    ) -> Result<tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1, String> {
+        let hint = self
+            .hint
+            .as_deref()
+            .ok_or("the host that answered keeps it: it is reached there")?;
+        let bytes = hex::decode(hint).map_err(|error| error.to_string())?;
+        let decoded: tilo_workspace_join::TransportHint =
+            postcard::from_bytes(&bytes).map_err(|error| error.to_string())?;
+        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1::authenticate_transport_hint(
+            &decoded,
+        )
+        .map(|(host, _)| host)
+        .map_err(|error| error.to_string())
+    }
+}
+
+impl PersonalList {
+    /// Whether every entry is a workspace UUID with a printable name and an
+    /// address of bounded size, and the list is no longer than
+    /// [`MAX_PERSONAL_WORKSPACES`]: what a host keeps.
+    ///
+    /// # Errors
+    /// What is wrong with it, for the device that sent it.
+    pub fn check(&self) -> Result<(), String> {
+        if self.workspaces.len() > MAX_PERSONAL_WORKSPACES {
+            return Err(format!(
+                "a list names at most {MAX_PERSONAL_WORKSPACES} workspaces"
+            ));
+        }
+        for entry in &self.workspaces {
+            uuid::Uuid::parse_str(&entry.workspace)
+                .map_err(|_| format!("{:?} names no workspace", entry.workspace))?;
+            if entry.name.chars().count() > 200 || entry.name.chars().any(char::is_control) {
+                return Err(format!(
+                    "the name of {} is not a workspace's name",
+                    entry.workspace
+                ));
+            }
+            if let Some(host) = &entry.host
+                && (host.name.chars().count() > 200
+                    || host
+                        .hint
+                        .as_deref()
+                        .is_some_and(|hint| hint.len() > 16 * 1024 || hex::decode(hint).is_err()))
+            {
+                return Err(format!("the host of {} is not an address", entry.workspace));
+            }
+        }
+        Ok(())
+    }
+}
+
 /// What [`HOST_ROOM`] and [`ATTACH_HOST`] answer.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HostedWorkspace {

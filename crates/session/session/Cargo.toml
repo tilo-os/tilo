@@ -220,6 +220,9 @@ tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 # This device's session with a workspace's host, which runs the person's
 # actions on that workspace's records in its own workers.
 tilo-session-host = { path = "../../session/host" }
+# The person's workspace list, as their keys read it and the hosts of their
+# workspaces keep it.
+tilo-relay-session = { path = "../../hosting/tilo-relay-session" }
 # This device's relays wait in the collaboration endpoint until a workspace
 # it shows has someone else in it, and its key is published only then.
 tilo-endpoint-reachability = { path = "../../system/endpoint-reachability" }

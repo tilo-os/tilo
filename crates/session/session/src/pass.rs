@@ -552,7 +552,14 @@ impl Session {
         self.shared.serve_mentions();
         self.follow_collaboration();
         self.follow_automation();
-        self.shared.follow_records();
+        // The person's list is kept on the hosts of their workspaces through the sessions the
+        // broker reaches them on.
+        let hosted = self
+            .action_plane
+            .as_ref()
+            .and_then(crate::plane::Plane::action_broker)
+            .and_then(|broker| broker.hosted_workspaces());
+        self.shared.follow_records(hosted.as_deref());
         // What was sent since the last look, by a box, an agent or a script.
         self.shared.deliver_sends();
         // The community this computer is configured for is joined on its own,

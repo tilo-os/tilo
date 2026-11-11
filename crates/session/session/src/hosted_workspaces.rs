@@ -134,6 +134,73 @@ fn placed_on_host(
         .then_some(host)
 }
 
+/// Keep `list`, the person's workspace list, on every dedicated host of a workspace `engine` holds,
+/// through the sessions `hosted` keeps with them: what the person's keys that run on no device of
+/// theirs read it back from. One ask per host, in one of its workspaces this device is in; a host
+/// that does not answer is told the next time the list moves.
+pub(crate) fn keep_on_hosts(
+    hosted: &dyn tilo_action_broker::services::HostedWorkspaces,
+    engine: &Engine,
+    list: &tilo_relay_session::workspaces::PersonalList,
+) {
+    let own = engine.identity().device_cert.device_public_key;
+    let mut asked = std::collections::BTreeSet::new();
+    for (workspace, hint) in engine.host_hints() {
+        let Ok(hint) = postcard::from_bytes::<tilo_peer_state::join::TransportHint>(&hint) else {
+            continue;
+        };
+        let Some(host) = placed_on_host(&hint, own) else {
+            continue;
+        };
+        if !asked.insert(host.host_device_certificate.device_public_key) {
+            continue;
+        }
+        let Some(actions) = hosted.host_actions(&workspace) else {
+            continue;
+        };
+        let mut arguments = serde_json::Map::new();
+        let Ok(value) = serde_json::to_value(list) else {
+            return;
+        };
+        arguments.insert("list".to_owned(), value);
+        let request = InvokeRequest {
+            on_behalf_of: None,
+            invocation: InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: tilo_relay_session::workspaces::HOST_ACTIONS_PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(
+                    tilo_relay_session::workspaces::HOST_ROOMS_RESOURCE,
+                    tilo_relay_session::workspaces::KEEP_PERSONAL,
+                ),
+            },
+            argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+            context: None,
+            confirmation: None,
+            revision: None,
+            wait_ms: Some(20_000),
+            appearance: None,
+        };
+        let label = host.host_device_certificate.device_label.clone();
+        actions.invoke(&Caller::local_person("tilo"), request).then(
+            move |answered| match answered {
+                Some(Ok(receipt))
+                    if matches!(
+                        receipt.status,
+                        tilo_actions::remote::ReceiptStatus::Completed { .. }
+                    ) =>
+                {
+                    tracing::debug!(host = %label, "the person's workspace list is kept on a host");
+                }
+                other => tracing::info!(
+                    host = %label,
+                    answer = ?other.map(|answer| answer.map(|receipt| receipt.status)),
+                    "a host did not keep the person's workspace list"
+                ),
+            },
+        );
+    }
+}
+
 impl tilo_action_broker::services::HostedWorkspaces for HostedWorkspaces {
     fn host_actions(&self, workspace: &str) -> Option<Arc<dyn ActionHost + Send + Sync>> {
         let placed = self.placed(workspace)?;

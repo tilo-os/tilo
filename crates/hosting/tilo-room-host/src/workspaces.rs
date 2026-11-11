@@ -60,6 +60,7 @@ mod memberships;
 mod own;
 mod pages;
 mod peer_parts;
+mod personal;
 mod publication;
 use publication::{Change, SinceBase, starts_over, withdraws};
 #[cfg(test)]
@@ -847,6 +848,8 @@ struct WorkspacesInner {
     /// Which people each workspace here lists, by person, as its governance
     /// settled last ([`memberships`]).
     memberships: memberships::Memberships,
+    /// The workspace lists people's devices kept here ([`personal`]).
+    personal: personal::PersonalLists,
     /// The devices the host's own person runs an agent on, and their open
     /// sessions ([`agent_door`]).
     agent_door: agent_door::AgentDoor,
@@ -1038,6 +1041,7 @@ impl Workspaces {
                 door: wait_list::DoorSettings::default(),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
+                personal: personal::PersonalLists::new(&dir),
                 agent_door: agent_door::AgentDoor::default(),
             }),
         };
@@ -2614,37 +2618,6 @@ impl Workspaces {
         drop(workspace);
         tracing::info!(workspace = %identity, archived, "the workspace's history before an admission is archived");
         Ok(())
-    }
-
-    /// The signed Iroh address a joining device dials to redeem an
-    /// invitation of `workspace`: the relay this host is reached through and
-    /// the addresses a stranger can dial, never the ones only the network
-    /// around this host knows (`tilo_delivery_protocol::workspace_join::reachable`).
-    fn transport_hint(
-        &self,
-        workspace: &GovernedWorkspace,
-    ) -> Result<tilo_peer_state::join::TransportHint, CollaborationError> {
-        let host = &self.inner.host;
-        // An invitation is handed to whoever the link reaches, so what this
-        // host answers at inside its own network stays out of it.
-        let endpoint_addr =
-            tilo_delivery_protocol::workspace_join::reachable(&host.endpoint.addr());
-        let packet_relay_url = endpoint_addr
-            .relay_urls()
-            .next()
-            .map_or_else(|| "iroh:direct".to_owned(), ToString::to_string);
-        tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1 {
-            version: 1,
-            mode: host.mode,
-            room: workspace.workspace().to_owned(),
-            workspace_id: workspace.workspace_id(),
-            endpoint_addr,
-            host_user_public_key: host.cert.user_public_key,
-            host_device_certificate: host.cert.clone(),
-            packet_relay_url,
-        }
-        .transport_hint(&host.key)
-        .map_err(|error| CollaborationError::new(error.to_string()))
     }
 
     fn revocations(&self) -> RevocationList {

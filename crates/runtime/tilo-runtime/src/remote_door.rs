@@ -72,6 +72,10 @@ struct Hello {
     /// is admitted and nobody is asked.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     probe: bool,
+    /// Only read the person's workspace list, as this door's device holds
+    /// it: nothing is admitted and nobody is asked.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    list: bool,
 }
 
 /// What a door answers a hello, and a host a local [`Forward`].
@@ -82,6 +86,11 @@ pub enum Answer {
     Open,
     /// The door would open for this device; a probe ends here.
     Here,
+    /// The person's workspaces, as this device holds them, for a hello that
+    /// asked only for them.
+    List {
+        list: tilo_relay_session::workspaces::PersonalList,
+    },
     /// The door does not open, and why.
     Refused { reason: String },
 }
@@ -241,6 +250,17 @@ fn holds(root: [u8; 32], certificate: &DeviceCert, now: SystemTime) -> Result<()
     Ok(())
 }
 
+/// What a hello asks of a door.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Asked {
+    /// Open, and carry the agent's MCP.
+    Open,
+    /// Only whether it would open.
+    Probe,
+    /// Only the person's workspace list.
+    List,
+}
+
 /// Where a connection comes from: the device that dialed, and the workspace
 /// its agent asked for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -328,6 +348,13 @@ pub trait Arrivals: Send + Sync {
     /// # Errors
     /// Why this device serves it nothing; the dialer is told.
     fn arrive(&self, arrival: Arrival) -> Result<(), String>;
+
+    /// The person's workspaces as this device holds them, each with its
+    /// host's signed address: what a key of theirs that dials this door reads
+    /// to find where to enter. `None` while this device holds no list.
+    fn listed(&self) -> Option<tilo_relay_session::workspaces::PersonalList> {
+        None
+    }
 }
 
 /// The door one device answers the person's other devices' agents at.
@@ -353,7 +380,7 @@ impl RemoteDoor {
 
     /// What this door says to a hello from `dialer`: whom it admits, or why
     /// not.
-    fn decide(&self, dialer: [u8; 32], line: &[u8]) -> Result<(Origin, bool), Refusal> {
+    fn decide(&self, dialer: [u8; 32], line: &[u8]) -> Result<(Origin, Asked), Refusal> {
         let hello: Hello = serde_json::from_slice(line).map_err(|_| Refusal::Unreadable)?;
         let bytes = hex::decode(&hello.certificate).map_err(|_| Refusal::Unreadable)?;
         let device: DeviceCert = postcard::from_bytes(&bytes).map_err(|_| Refusal::Unreadable)?;
@@ -361,7 +388,29 @@ impl RemoteDoor {
         let workspace = hello
             .workspace
             .filter(|workspace| uuid::Uuid::parse_str(workspace).is_ok());
-        Ok((Origin { device, workspace }, hello.probe))
+        let asked = if hello.list {
+            Asked::List
+        } else if hello.probe {
+            Asked::Probe
+        } else {
+            Asked::Open
+        };
+        Ok((Origin { device, workspace }, asked))
+    }
+
+    /// The person's list as `device` reads it: the workspaces its scope
+    /// reaches, for a key made for one of them.
+    fn list_for(&self, device: &DeviceCert) -> Answer {
+        let Some(mut list) = self.arrivals.listed() else {
+            return Answer::Refused {
+                reason: "this device holds no workspace list yet".to_owned(),
+            };
+        };
+        if let Some(scope) = device.capabilities.agent {
+            list.workspaces
+                .retain(|workspace| scope.reaches(&workspace.workspace));
+        }
+        Answer::List { list }
     }
 
     async fn answer(&self, connection: &Connection) {
@@ -375,8 +424,9 @@ impl RemoteDoor {
             return;
         };
         let refused = match self.decide(dialer, &line) {
-            Ok((_, true)) => Answer::Here,
-            Ok((origin, false)) => match self.open(origin) {
+            Ok((_, Asked::Probe)) => Answer::Here,
+            Ok((origin, Asked::List)) => self.list_for(&origin.device),
+            Ok((origin, Asked::Open)) => match self.open(origin) {
                 Ok(local) => {
                     if write_line(&mut send, &Answer::Open).await.is_err() {
                         return;
@@ -546,6 +596,7 @@ pub async fn open(
             certificate: hex::encode(certificate),
             workspace: workspace.map(str::to_owned),
             probe,
+            list: false,
         };
         write_line(&mut send, &hello)
             .await
@@ -565,10 +616,61 @@ pub async fn open(
                 connection.close(0_u32.into(), b"refused");
                 Err(reason)
             }
+            Answer::List { .. } => {
+                connection.close(0_u32.into(), b"unasked");
+                Err("its door answered something it was not asked".to_owned())
+            }
         }
     };
     let within = if probe { PROBE_WITHIN } else { HELLO_WITHIN };
     tokio::time::timeout(within, dialing)
+        .await
+        .unwrap_or_else(|_| Err("it does not answer".to_owned()))
+}
+
+/// The person's workspace list as the device at `addr` holds it, read from
+/// its door by `endpoint` as the device `own` certifies: each workspace with
+/// its host's signed address, those a key for one workspace reaches alone.
+///
+/// # Errors
+/// The device does not answer, refuses this one, or holds no list yet.
+pub async fn read_list(
+    endpoint: &Endpoint,
+    addr: EndpointAddr,
+    own: &DeviceCert,
+) -> Result<tilo_relay_session::workspaces::PersonalList, String> {
+    let reading = async {
+        let connection = endpoint
+            .connect(addr, ALPN)
+            .await
+            .map_err(|error| format!("it does not answer: {error}"))?;
+        let (mut send, mut recv) = connection
+            .open_bi()
+            .await
+            .map_err(|error| format!("it does not answer: {error}"))?;
+        let certificate = postcard::to_allocvec(own).map_err(|error| error.to_string())?;
+        let hello = Hello {
+            certificate: hex::encode(certificate),
+            workspace: None,
+            probe: false,
+            list: true,
+        };
+        write_line(&mut send, &hello)
+            .await
+            .map_err(|error| format!("it does not answer: {error}"))?;
+        let line = read_line(&mut recv)
+            .await
+            .map_err(|error| format!("its door does not answer: {error}"))?;
+        connection.close(0_u32.into(), b"read");
+        match serde_json::from_slice::<Answer>(&line) {
+            Ok(Answer::List { list }) => Ok(list),
+            Ok(Answer::Refused { reason }) => Err(reason),
+            Ok(Answer::Open | Answer::Here) | Err(_) => {
+                Err("its door answers in a way this device does not read".to_owned())
+            }
+        }
+    };
+    tokio::time::timeout(HELLO_WITHIN, reading)
         .await
         .unwrap_or_else(|_| Err("it does not answer".to_owned()))
 }
@@ -658,7 +760,7 @@ pub fn ask_forward(stream: &mut UnixStream, forward: &Forward) -> io::Result<()>
             io::ErrorKind::PermissionDenied,
             format!("{} did not let this agent in: {reason}", forward.device),
         )),
-        Ok(Answer::Here) | Err(_) => Err(io::Error::new(
+        Ok(Answer::Here | Answer::List { .. }) | Err(_) => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!(
                 "this device's host does not carry agents to another device: it answered {}",

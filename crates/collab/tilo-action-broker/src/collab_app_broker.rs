@@ -1307,6 +1307,12 @@ mod policy_context;
 mod published_service;
 
 impl AppBrokerState {
+    /// The hosts of the workspaces this device takes part in but does not
+    /// host, as the session gave them.
+    pub(crate) fn hosted_workspaces(&self) -> Option<Arc<dyn crate::services::HostedWorkspaces>> {
+        self.services.hosted_workspaces.clone()
+    }
+
     /// Attach the authority a harness admits its devices under, when it
     /// has one; a broker takes one authority, from wherever it comes.
     fn attach_certificate_authority(
