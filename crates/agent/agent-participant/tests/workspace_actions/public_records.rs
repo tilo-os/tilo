@@ -130,7 +130,12 @@ async fn the_hosts_action_service_reads_and_acts_on_a_public_workspaces_records(
         cluster_id: workspace.clone(),
         record: note.wire_record().to_owned(),
     };
-    support::written(&member.peer, &route, &note.take_mutation().unwrap()).await;
+    support::written(
+        &member.peer,
+        &route,
+        &note.take_mutation().unwrap().unwrap(),
+    )
+    .await;
     let provider = record_provider(&route);
 
     // The host's own action service never had the note: its session was sent
@@ -528,7 +533,7 @@ async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_n
     support::written(
         &browser.peer,
         &notes_route,
-        &founded.take_mutation().unwrap(),
+        &founded.take_mutation().unwrap().unwrap(),
     )
     .await;
     admit_person(&hosted, &host, &workspace, &computer, MemberRole::Editor).await;

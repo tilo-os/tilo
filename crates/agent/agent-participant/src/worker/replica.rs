@@ -795,7 +795,11 @@ impl ConfinedReplica {
                     "the worker replaced a record it did not create",
                 ))
             }
-            Reply::Failed(reason) => Err(worker_error(reason)),
+            Reply::Failed(reason) => {
+                // The worker kept its changes: they are asked for again.
+                inner.dirty = true;
+                Err(worker_error(reason))
+            }
             _ => {
                 inner.process = None;
                 Err(worker_error("the worker answered out of turn"))
@@ -932,7 +936,11 @@ impl ConfinedReplica {
         }
         let taken = match self.call(&mut inner, &Request::TakeRecordMutations)? {
             Reply::RecordMutations(taken) => taken,
-            Reply::Failed(reason) => return Err(worker_error(reason)),
+            Reply::Failed(reason) => {
+                // The worker kept its changes: they are asked for again.
+                inner.beside_dirty = true;
+                return Err(worker_error(reason));
+            }
             _ => {
                 inner.process = None;
                 return Err(worker_error("the worker answered out of turn"));

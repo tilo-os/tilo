@@ -460,7 +460,7 @@ impl Page {
         };
         browser
             .peer
-            .write(route.clone(), &page.take_mutation().unwrap())
+            .write(route.clone(), &page.take_mutation().unwrap().unwrap())
             .unwrap();
         Self {
             app: page,
@@ -491,7 +491,7 @@ impl Page {
                     },
                 )
                 .unwrap();
-                if let Some(own) = app.take_mutation() {
+                if let Some(own) = app.take_mutation().unwrap() {
                     browser.peer.write(creator.route.clone(), &own).unwrap();
                 }
                 return Self {

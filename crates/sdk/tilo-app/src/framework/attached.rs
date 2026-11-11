@@ -684,11 +684,27 @@ impl AttachedView {
         self.records.read(&self.checkout.id, read)
     }
 
-    /// The participant's changes since the last call, or `None`. The first
-    /// call on a record the participant created returns it whole.
-    pub fn take_changes(&mut self) -> Option<DocumentMutation> {
-        let next = publish(&mut self.sync, &self.records, &self.checkout.id)?;
-        Some(next)
+    /// The participant's changes since the last call, or `None` when it
+    /// changed nothing. The first call on a record the participant created
+    /// returns it whole.
+    ///
+    /// # Errors
+    /// The record's changes could not be collected (it is not open here or
+    /// its store is busy). Distinct from `Ok(None)`: what the participant
+    /// changed is still in the record, unsent, and goes with the next call.
+    pub fn take_changes(&mut self) -> Result<Option<DocumentMutation>, String> {
+        publish(&mut self.sync, &self.records, &self.checkout.id)
+    }
+
+    /// Run `during` while the view's records are held for reading, as a
+    /// frame's read holds them: collecting this participant's changes, or
+    /// setting them aside, finds the store busy. `None` when the record is
+    /// not open. For tests of what a host answers then.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn while_records_busy<R>(&mut self, during: impl FnOnce(&mut Self) -> R) -> Option<R> {
+        let records = self.records.clone();
+        let id = self.checkout.id.clone();
+        records.read(&id, |_| during(self))
     }
 
     /// Merge a peer's change into the view's record. Incremental changes
@@ -703,9 +719,12 @@ impl AttachedView {
         {
             return Ok(false);
         }
-        // What this participant did and has not taken stays its own.
+        // What this participant did and has not taken stays its own: when
+        // it cannot be set aside, the peer's change is not merged either.
         if self.sync.snapshotted() {
-            self.sync.set_aside(&self.records, &self.checkout.id).ok();
+            self.sync
+                .set_aside(&self.records, &self.checkout.id)
+                .map_err(|error| set_aside_failed(&self.checkout.id, &error))?;
         }
         let changed = self
             .sync
@@ -811,12 +830,42 @@ impl AttachedView {
     /// The participant's changes to `record`, one the view holds beside
     /// its own ([`Self::records_beside`]), since the last call: the whole
     /// record the first time, for one the participant started.
+    ///
+    /// # Errors
+    /// As [`Self::take_changes`].
     pub fn take_record_changes(
         &mut self,
         record: &ui_core::record::RecordId,
-    ) -> Option<DocumentMutation> {
+    ) -> Result<Option<DocumentMutation>, String> {
         let sync = self.beside.entry(record.clone()).or_default();
         publish(sync, &self.records, record)
+    }
+
+    /// The participant's changes to every record the view holds beside its
+    /// own ([`Self::take_record_changes`]), by record; all or none of them.
+    ///
+    /// # Errors
+    /// As [`Self::take_changes`], for any one of them: those taken before it
+    /// are kept to go with the next call, so a write is never half reported.
+    pub fn take_records_beside_changes(
+        &mut self,
+    ) -> Result<Vec<(ui_core::record::RecordId, DocumentMutation)>, String> {
+        let mut taken = Vec::new();
+        for checkout in self.records_beside() {
+            match self.take_record_changes(&checkout.id) {
+                Ok(Some(mutation)) => taken.push((checkout.id, mutation)),
+                Ok(None) => {}
+                Err(error) => {
+                    for (record, mutation) in taken {
+                        if let Some(sync) = self.beside.get_mut(&record) {
+                            sync.put_back(mutation);
+                        }
+                    }
+                    return Err(error);
+                }
+            }
+        }
+        Ok(taken)
     }
 
     /// Merge a peer's change into `record`, a part of one of the app's
@@ -874,7 +923,8 @@ impl AttachedView {
             .entry(record.clone())
             .or_insert_with(move || RecordSync::delivered(heads));
         if sync.snapshotted() {
-            sync.set_aside(&self.records, record).ok();
+            sync.set_aside(&self.records, record)
+                .map_err(|error| set_aside_failed(record, &error))?;
         }
         let changed = sync.merge(&self.records, &checkout, mutation.clone())?;
         self.frame.relayout();
@@ -883,19 +933,43 @@ impl AttachedView {
 }
 
 /// What to publish next of `record` as `sync` stands: the record whole the
-/// first time, then this participant's own changes set aside since.
+/// first time, then this participant's own changes set aside since; `None`
+/// when it changed nothing.
+///
+/// A failure to collect them is an error, never `None`: a host answers a
+/// write by what this returns, and "nothing changed" would answer one that
+/// was never saved as done.
 fn publish(
     sync: &mut RecordSync,
     records: &RecordStore,
     id: &ui_core::record::RecordId,
-) -> Option<DocumentMutation> {
+) -> Result<Option<DocumentMutation>, String> {
+    let failed = |error: String| {
+        format!(
+            "this participant's change to {} could not be collected: {error}",
+            id.as_str()
+        )
+    };
     if !sync.snapshotted() {
-        let whole = sync.take_outbound(records, id).ok()??;
+        let Some(whole) = sync.take_outbound(records, id).map_err(failed)? else {
+            return Ok(None);
+        };
         sync.advance(whole.heads);
-        return Some(whole.mutation);
+        return Ok(Some(whole.mutation));
     }
-    sync.set_aside(records, id).ok()?;
-    sync.take_set_aside()
+    sync.set_aside(records, id).map_err(failed)?;
+    Ok(sync.take_set_aside())
+}
+
+/// Why a peer's change to `record` was not merged: this participant's own
+/// changes to it could not be set aside first, so the record is left as it
+/// was, its own changes still to go out, rather than merged around them.
+fn set_aside_failed(record: &ui_core::record::RecordId, error: &str) -> String {
+    format!(
+        "a peer's change to {} was not merged: this participant's own changes to it \
+         could not be set aside first ({error})",
+        record.as_str()
+    )
 }
 
 /// The heads of the record `document` holds: what a participant joining it
