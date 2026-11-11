@@ -4,7 +4,7 @@
 d-so-tilo-shell = Shell
 
 d-4jk2lkpt = Desk
-    .doc = This device's desk as the session holds it: the time in the person's style, who they are, their notifications, the workspaces on this device, the tasks running for them and the surface the desk shows over its windows.
+    .doc = This device's desk: the time in the person's style, who they are, their notifications, the workspaces on this device, the tasks running for them and the surface the desk shows over its windows.
     .noun = { $count ->
         [one] desk
        *[other] desks
@@ -13,7 +13,7 @@ d-4jk2lkpt = Desk
 d-kx4rprro = Person
 
 d-6unuw4qc = Here
-    .doc = The surface the person is in: `none` at rest, else one of `surface`'s names.
+    .doc = The surface the person is in, such as the overview or the notifications; empty at rest.
 
 d-wey3uqyo = Switcher revealed
     .doc = Whether the switcher's panel shows: a quick Alt+Tab switches windows and draws nothing.
@@ -40,7 +40,7 @@ d-pql2t5r3 = Timer paused
 d-qb4cqhjk = Timer stopwatch
 
 d-zxfieu2y = Ask
-    .doc = The question the session puts to the person about themselves; empty when none waits.
+    .doc = The question the person is asked about themselves; empty when none waits.
 
 d-w2fyvufg = Ask detail
     .doc = What answering the question brings.
@@ -89,7 +89,7 @@ d-pdaqdidq = Tray
     .doc = The running applications' tray items, in the order they registered.
 
 d-n2fzxj5u = Styles
-    .doc = The desk styles every installed package offers, as the session publishes them: each a view of the arrangement, listed by its own words.
+    .doc = The desk styles the installed apps offer: each a view of the arrangement, listed by its own words.
 
 d-4jk2lkpt-filter-switcher_revealed = Switcher revealed
 
@@ -110,14 +110,14 @@ d-4jk2lkpt-filter-dock_reached = Dock reached
 d-4jk2lkpt-filter-dock_covered = Dock covered
 
 d-zxwtaxaw = Desk style
-    .doc = A desk style: a view of the arrangement an installed package declares, as the session finds it.
+    .doc = A desk style: a view of the arrangement an installed app declares.
     .noun = { $count ->
         [one] desk style
        *[other] desk styles
     }
 
 d-ly2aksp3 = Key
-    .doc = The style, by the view reference it names: what the session keeps it by.
+    .doc = The style's view reference, which the record keeps it by.
 
 d-t6ojc3kt = Style
     .doc = The view reference: a package and a view, what `Viewing.style` names.
@@ -132,10 +132,10 @@ d-rhx3oobw = Line
     .doc = The view's doc line, in its author's words: what the switch lists it by.
 
 d-ifgxec27 = Loads
-    .doc = Whether the style loads: false for one whose package does not compile against the shell and the session, or whose view failed when it ran, so the switch can say so and the desk shows the built-in strips until it is fixed.
+    .doc = Whether the style loads: false for one whose app is not here or does not work with this desk, or whose view failed when it ran, so the switch can say so and the desk shows the built-in strips until it is fixed.
 
 d-eihyiyeb = Reason
-    .doc = Why the style does not load, in the runtime's words, when it does not; empty when it does.
+    .doc = Why the style does not load, in the words it failed with, when it does not; empty when it does.
 
 d-zxwtaxaw-filter-loads = Loads
 
@@ -609,7 +609,7 @@ d-qsnrl2gk = Title
     .doc = Its name on the dock, and what assistive technology reads.
 
 d-6gyb7csc = Icon
-    .doc = The glyph it shows, by the platform icon's kebab-case name.
+    .doc = The glyph it shows, by its icon's name.
 
 d-k376lylv = Pinned
     .doc = Whether the person pinned it; a running app that is not pinned is there while it runs.

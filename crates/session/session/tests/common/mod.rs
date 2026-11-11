@@ -46,7 +46,7 @@ pub const CANVAS_ENTRY: &str = "Find something, or ask";
 pub const LAUNCHER_SEARCH: &str = "Search apps, windows, actions and files";
 /// The overview's field, announced the same way rather than by the state's name in the code
 /// (`query`).
-pub const OVERVIEW_SEARCH: &str = "Search windows across your workspaces";
+pub const OVERVIEW_SEARCH: &str = "Search windows";
 /// The workspaces surface's field, announced the same way rather than by the state's name in the
 /// code (`name`).
 pub const WORKSPACE_NAME: &str = "Name a new workspace";

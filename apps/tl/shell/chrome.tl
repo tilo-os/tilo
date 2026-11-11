@@ -144,7 +144,7 @@ type DockItem {
     key: Text
     /// Its name on the dock, and what assistive technology reads.
     title: Text
-    /// The glyph it shows, by the platform icon's kebab-case name.
+    /// The glyph it shows, by its icon's name.
     icon: Text
     /// Whether the person pinned it; a running app that is not pinned is there while it runs.
     pinned: Bool = true
