@@ -54,7 +54,7 @@ start_lounge "$bundle" "$work"
 # and the setup screen is what stays. It is the "before" of the pair.
 before_port=$((sink_port + 1))
 node "$here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-  'https://127.0.0.1:9' Lounge 'https://127.0.0.1:9/peer/v1/directory/lounge/' "$before_port" \
+  'https://127.0.0.1:9' Lounge 'https://127.0.0.1:9/peer/v1/directory/lounge/' "$before_port" '' \
   > "$work/site-before.log" 2>&1 &
 lounge_pids+=($!)
 for _ in $(seq 300); do

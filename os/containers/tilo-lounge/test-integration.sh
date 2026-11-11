@@ -273,12 +273,18 @@ verify_directory() {
 # The web entry, served over TLS with the entry configuration this deployment
 # writes: its home is the Lounge, joined through the door the relay lists the
 # workspace `$1` names at, and its directory is the relay's.
+# Who the host is comes from the image's own `tilo-relay page-host`, as the
+# operator sets the web entry's TILO_WEB_HOME_HOST_INFO, so the pages dial the
+# host as named instead of asking it first.
 site_url=''
 start_site() {
   stop_site
   : > "$work/site.log"
+  local info
+  info=$(b run "$container" -- /usr/local/bin/tilo-relay page-host "http://127.0.0.1:$plain_port") \
+    || fail 'the relay did not say who it is (tilo-relay page-host)'
   node "$here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$1/" "$site_port" \
+    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$1/" "$site_port" "$info" \
     >> "$work/site.log" 2>&1 &
   site_pid=$!
   for _ in $(seq 300); do

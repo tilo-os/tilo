@@ -6,15 +6,19 @@
 // relay's shelf for the page's own request for the invitation (the web entry
 // image's `TILO_WEB_SHELF`).
 //
-// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN NAME ADMISSION PORT
+// usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN NAME ADMISSION PORT HOST_INFO
+// HOST_INFO is the line `tilo-relay page-host` prints for the workspace's
+// host, which the web entry image hands its page from TILO_WEB_HOME_HOST_INFO
+// so the page dials that host as named; an empty HOST_INFO is only for a site
+// whose host is not there to ask.
 // Prints {"url": "https://127.0.0.1:<port>"} once it listens.
 import {readFileSync, statSync, existsSync} from 'node:fs';
 import {createServer, request as httpsRequest} from 'node:https';
 import {extname, join, normalize} from 'node:path';
 
-const [site, cert, key, origin, name, admission, port] = process.argv.slice(2);
-if (!site || !cert || !key || !origin || !name || !admission || !port) {
-  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN NAME ADMISSION PORT');
+const [site, cert, key, origin, name, admission, port, info] = process.argv.slice(2);
+if (!site || !cert || !key || !origin || !name || !admission || !port || info === undefined) {
+  console.error('usage: node site.mjs SITE_DIR CERT KEY WORKSPACE_ORIGIN NAME ADMISSION PORT HOST_INFO');
   process.exit(2);
 }
 
@@ -32,10 +36,10 @@ const TYPES = {
 };
 
 // What the web entry image writes as its entry configuration from
-// TILO_WEB_HOME_HOST and TILO_WEB_HOME_DOOR, for a site whose home workspace
-// is hosted at `origin`.
+// TILO_WEB_HOME_HOST, TILO_WEB_HOME_HOST_INFO and TILO_WEB_HOME_DOOR, for a
+// site whose home workspace is hosted at `origin`.
 const entry = JSON.stringify({
-  home: {name, host: {origin}, admission},
+  home: {name, host: info ? {origin, info} : {origin}, admission},
   directory: `${origin}/peer/v1/directory`,
 });
 

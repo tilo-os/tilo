@@ -99,8 +99,13 @@ start_lounge() {
   room=$(cat "$volume/lounge/room-id" 2>/dev/null) || lounge_fail 'the Lounge kept no workspace id'
   echo "ok: the Lounge is Ready ($room)"
 
+  # Who the host is, as the operator hands it to the web entry
+  # (TILO_WEB_HOME_HOST_INFO), so the page dials it without asking it first.
+  local info
+  info=$("$relay_bin" page-host "http://127.0.0.1:$plain_port") \
+    || lounge_fail 'the relay did not say who it is (tilo-relay page-host)'
   node "$lounge_here/integration/site.mjs" "$work/site" "$work/site.crt" "$work/site.key" \
-    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$room/" "$site_port" >> "$site_log" 2>&1 &
+    "$relay_origin" Lounge "$relay_origin/peer/v1/directory/$room/" "$site_port" "$info" >> "$site_log" 2>&1 &
   local site_pid=$!
   lounge_pids+=("$site_pid")
   for _ in $(seq 300); do
