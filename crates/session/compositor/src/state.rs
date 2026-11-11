@@ -593,13 +593,7 @@ impl State {
             .elements()
             .filter(|window| {
                 let holding = self.protocols.idle_inhibitors.iter().any(|surface| {
-                    surface.is_alive()
-                        && (window
-                            .toplevel()
-                            .is_some_and(|toplevel| toplevel.wl_surface() == surface)
-                            || window
-                                .x11_surface()
-                                .is_some_and(|x11| x11.wl_surface().as_ref() == Some(surface)))
+                    surface.is_alive() && surface_of(window).as_ref() == Some(surface)
                 });
                 holding
                     && self.space.element_location(window).is_some_and(|location| {
@@ -917,6 +911,7 @@ impl State {
     /// the topmost one that wants the keyboard, else to the focused client;
     /// a release to where its press went ([`crate::keys`]).
     pub(crate) fn key(&mut self, keycode: u32, pressed: bool, serial: Serial, time: u32) {
+        self.sync_keyboard_owner();
         let Some(keyboard) = self.seat.get_keyboard() else {
             return;
         };
@@ -953,11 +948,7 @@ impl State {
                 let latin = handle
                     .raw_latin_sym_or_raw_current_sym()
                     .unwrap_or(unmodified);
-                let text = if pressed {
-                    state.typed(keysym, modifiers)
-                } else {
-                    None
-                };
+                let text = pressed.then(|| state.typed(keysym, modifiers)).flatten();
                 let key = HostKey {
                     keycode,
                     pressed,
@@ -1364,15 +1355,8 @@ impl State {
     /// Give the window with `id` the keyboard, for a seat's keys: it is not raised and stays
     /// inactive, so the person's desk looks as it did.
     pub(crate) fn focus_window_id(&mut self, id: u64, serial: Serial) {
-        let surface = self.mapped_window(id).and_then(|window| {
-            window
-                .toplevel()
-                .map(|toplevel| toplevel.wl_surface().clone())
-                .or_else(|| crate::xwayland::x11_wl_surface(window))
-        });
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, surface, serial);
-        }
+        let surface = self.mapped_window(id).and_then(surface_of);
+        self.set_keyboard_focus(surface, serial);
     }
 
     pub(crate) fn clamp_to_outputs(&self, point: Point<f64, Logical>) -> Point<f64, Logical> {
@@ -1424,13 +1408,7 @@ impl State {
         if let Some(toplevel) = window.toplevel() {
             toplevel.send_pending_configure();
         }
-        let surface = window
-            .toplevel()
-            .map(|toplevel| toplevel.wl_surface().clone())
-            .or_else(|| crate::xwayland::x11_wl_surface(window));
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, surface, serial);
-        }
+        self.set_keyboard_focus(surface_of(window), serial);
     }
 
     /// The modal dialog in front of `window` : its own modal dialog, or that dialog's, and so on.
@@ -1610,9 +1588,7 @@ impl State {
         // A panel over the windows that holds the keyboard keeps it while it shows: the window
         // gets it back when the panel is hidden.
         if self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus())
+            .keyboard_focus()
             .is_some_and(|focus| self.layers.shows_surface(&focus))
         {
             return;
@@ -1677,6 +1653,11 @@ const X11_IDS: u64 = 1 << 40;
 const X11_DISPLAY_SHIFT: u32 = 32;
 
 /// The id of `window` , when it has one.
+/// The `wl_surface` a window draws into: its toplevel's, or an X11 window's once Xwayland told us.
+pub(crate) fn surface_of(window: &Window) -> Option<WlSurface> {
+    smithay::wayland::seat::WaylandFocus::wl_surface(window).map(std::borrow::Cow::into_owned)
+}
+
 pub(crate) fn window_id(state: &State, window: &Window) -> Option<u64> {
     if let Some(toplevel) = window.toplevel() {
         return window_id_of(toplevel.wl_surface());
@@ -2398,12 +2379,16 @@ impl State {
 
     /// The window whose surface has keyboard focus.
     pub(crate) fn focused_window(&self) -> Option<WindowInfo> {
-        let focus = self.seat.get_keyboard()?.current_focus()?;
+        let toplevel = self.focused_element()?.toplevel()?;
+        Some(window_info(&self.display, &self.icons, toplevel))
+    }
+
+    /// The window, of a Wayland or an X11 client, whose surface the keyboard belongs to.
+    pub(crate) fn focused_element(&self) -> Option<&Window> {
+        let focus = self.keyboard_focus()?;
         self.space
             .elements()
-            .filter_map(Window::toplevel)
-            .find(|toplevel| toplevel.wl_surface() == &focus)
-            .map(|toplevel| window_info(&self.display, &self.icons, toplevel))
+            .find(|window| surface_of(window).as_ref() == Some(&focus))
     }
 
     /// The app of the window `surface` belongs to: its toplevel's app id. A surface of no window (a

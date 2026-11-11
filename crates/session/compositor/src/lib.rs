@@ -688,11 +688,7 @@ impl Compositor {
     /// the shortcut guide, which see keys before any client does.
     #[must_use]
     pub fn host_takes_keys(&self) -> bool {
-        self.data
-            .state
-            .hosts
-            .iter()
-            .any(|host| host.wants_keyboard())
+        self.data.state.host_holds_keys()
     }
 
     /// Whether a fullscreen window is up: it owns its display, and with it the controller in the
@@ -863,6 +859,7 @@ impl Compositor {
             self.data.state.mark_redraw_all();
         }
         self.display.dispatch_clients(&mut self.data.state)?;
+        self.data.state.sync_keyboard_owner();
         self.sync_text_input();
         self.data.state.refresh();
         if let Some(x11) = self.data.state.x11.clone() {

@@ -20,7 +20,6 @@ use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Client, DisplayHandle, Resource as _};
 use smithay::utils::{Logical, Point, SERIAL_COUNTER, Scale, Size};
-use smithay::wayland::seat::WaylandFocus as _;
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
@@ -79,28 +78,14 @@ impl State {
     /// Whether the window with the keyboard is fullscreen: it covers its display and, being a game
     /// or a video, owns the input that plays it.
     pub(crate) fn fullscreen(&self) -> bool {
-        let Some(focus) = self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus())
-        else {
-            return false;
-        };
-        self.space.elements().any(|window| {
-            let focused = window
-                .wl_surface()
-                .is_some_and(|surface| surface.as_ref() == &focus)
-                || window
-                    .x11_surface()
-                    .is_some_and(|x11| x11.wl_surface() == Some(focus.clone()));
-            focused
-                && (window.toplevel().is_some_and(|toplevel| {
-                    toplevel.current_state().states.contains(
-                        smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
-                    )
-                }) || window
-                    .x11_surface()
-                    .is_some_and(smithay::xwayland::X11Surface::is_fullscreen))
+        self.focused_element().is_some_and(|window| {
+            window.toplevel().is_some_and(|toplevel| {
+                toplevel.current_state().states.contains(
+                    smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State::Fullscreen,
+                )
+            }) || window
+                .x11_surface()
+                .is_some_and(smithay::xwayland::X11Surface::is_fullscreen)
         })
     }
 
@@ -154,37 +139,24 @@ impl State {
         let Some(holder) = &self.lock.holder else {
             return;
         };
-        if holder.is_alive() {
-            return;
-        }
-        if !self.lock.by_session {
-            self.lift_lock();
-            return;
-        }
-        self.lock.holder = None;
-        self.mark_redraw_all();
-        self.lock.locked = false;
-        self.lock.by_session = false;
-        self.lock.pending = None;
-        self.lock.surfaces.clear();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+        if !holder.is_alive() {
+            self.lift_lock(!self.lock.by_session);
         }
     }
 
-    /// End the session's lock: the client that held it lifted it, or is gone. The scene it covered
-    /// is drawn again on the next frame.
-    fn lift_lock(&mut self) {
+    /// End the client's lock: the client that held it lifted it (`lifted`), or is gone. The scene
+    /// it covered is drawn again on the next frame.
+    fn lift_lock(&mut self, lifted: bool) {
         self.lock.holder = None;
         self.mark_redraw_all();
         self.lock.locked = false;
         self.lock.by_session = false;
-        self.lock_lifted();
+        if lifted {
+            self.lock_lifted();
+        }
         self.lock.pending = None;
         self.lock.surfaces.clear();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
-        }
+        self.set_keyboard_focus(None, SERIAL_COUNTER.next_serial());
     }
 
     /// Tell the lock screen its frame was shown: a client draws its next frame after the one it
@@ -380,13 +352,11 @@ impl SessionLockHandler for State {
         self.lock.by_session = self.idle.session.is_locked();
         self.lock_shown();
         self.lock.pending = Some(confirmation);
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
-        }
+        self.set_keyboard_focus(None, SERIAL_COUNTER.next_serial());
     }
 
     fn unlock(&mut self) {
-        self.lift_lock();
+        self.lift_lock(true);
     }
 
     fn new_surface(&mut self, surface: LockSurface, wl_output: WlOutput) {
@@ -402,9 +372,7 @@ impl SessionLockHandler for State {
             .surfaces
             .last()
             .map(|(_, surface)| surface.wl_surface().clone());
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, focus, SERIAL_COUNTER.next_serial());
-        }
+        self.set_keyboard_focus(focus, SERIAL_COUNTER.next_serial());
     }
 }
 

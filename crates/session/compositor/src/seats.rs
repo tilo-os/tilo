@@ -195,10 +195,7 @@ impl State {
         let held = self.seats.get(seat)?.clone();
         let person = Person {
             pointer: self.pointer,
-            focus: self
-                .seat
-                .get_keyboard()
-                .and_then(|keyboard| keyboard.current_focus()),
+            focus: self.keyboard_focus(),
             keys: std::mem::take(&mut self.seats.shown_keys),
         };
         let serial = smithay::utils::SERIAL_COUNTER.next_serial();
@@ -306,9 +303,7 @@ impl State {
         self.seat_keys_only = false;
         // The person's pointer and focus come back.
         self.seat_pointer((person.pointer.x, person.pointer.y), serial, time);
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, person.focus.clone(), serial);
-        }
+        self.set_keyboard_focus(person.focus.clone(), serial);
         let pressed: Vec<u32> = person.keys.difference(&held.keys).copied().collect();
         keys(self, &pressed, true, serial, time);
         self.seats.shown_keys = person.keys;

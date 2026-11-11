@@ -626,7 +626,18 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
             pressed: false,
         })
         .unwrap();
-    pump(&mut compositor, &mut [&mut client], |_, _| true);
+    // The window is left while the surface holds the keys: it draws no caret and repeats nothing.
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        !clients[0].seen.keyboard_focused
+    });
+    assert_eq!(
+        compositor
+            .focused_window()
+            .and_then(|info| info.app_id)
+            .as_deref(),
+        Some("typing"),
+        "the window stays the one in front"
+    );
     let keys = log.borrow().keys.clone();
     assert_eq!(keys.len(), 2);
     assert_eq!(
@@ -647,6 +658,7 @@ fn a_hosted_surface_that_wants_the_keyboard_takes_keys_from_the_focused_window()
     pump(&mut compositor, &mut [&mut client], |_, clients| {
         clients[0].seen.keys.len() == 1
     });
+    assert!(client.seen.keyboard_focused, "the window has the keys back");
     assert_eq!(log.borrow().keys.len(), 2);
 }
 

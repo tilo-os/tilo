@@ -290,3 +290,14 @@ would paint it with two channels swapped.
   texture that carries it, in both import paths.
 
 Remove this once upstream maps the opaque 10-bit RGB formats.
+
+## A copy made just before the keyboard left is kept (`wl_data_device`, primary selection)
+
+smithay took a selection only from the client holding the keyboard. The
+compositor takes the keys from a client while a surface of its own is typed
+into, so a copy whose request arrived after that (Ctrl+C, then a key that
+opens such a surface at once) was dropped. `src/input/keyboard/mod.rs`
+remembers the focus the keyboard last left for no one and that leave's serial;
+`src/wayland/seat/keyboard.rs` `client_of_object_may_set_selection` also takes
+a selection from that client for an event serial before the leave, and both
+`SetSelection` requests ask it.

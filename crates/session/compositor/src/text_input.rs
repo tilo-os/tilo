@@ -245,17 +245,15 @@ impl State {
     /// Keep the field the person types into on the keyboard's focus, whoever draws it: a client
     /// tells its `text-input-v3` object, and the compositor's own fields are served by the input
     /// method directly.
-    /// A hosted field takes the focus from every client while it has it: the input method composes
-    /// there, and its candidate window stands where the field's caret does.
+    /// A hosted field holds the keyboard, so no client's field has the focus while it is served:
+    /// the input method composes there, and its candidate window stands where the field's caret
+    /// does.
     pub(crate) fn sync_text_input(&mut self) {
         let host = self.host_text_input();
-        let focused = if host.is_some() {
-            None
-        } else {
-            self.seat
-                .get_keyboard()
-                .and_then(|keyboard| keyboard.current_focus())
-        };
+        let focused = self
+            .seat
+            .get_keyboard()
+            .and_then(|keyboard| keyboard.current_focus());
         let handle = self.seat.text_input().clone();
         if handle.focus() != focused {
             handle.leave();

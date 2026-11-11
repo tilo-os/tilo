@@ -262,11 +262,7 @@ fn centre_of(rect: Rectangle<i32, Logical>) -> Point<f64, Logical> {
 
 /// The rect of the window whose surface has the keyboard focus, logical.
 fn focused_rect(state: &State) -> Option<Rectangle<i32, Logical>> {
-    let focus = state.seat.get_keyboard()?.current_focus()?;
-    let window = state
-        .space
-        .elements()
-        .find(|window| window.toplevel().is_some_and(|t| t.wl_surface() == &focus))?;
+    let window = state.focused_element()?;
     let location = state.space.element_location(window)?;
     Some(Rectangle::new(location, window.geometry().size))
 }

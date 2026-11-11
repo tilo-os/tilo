@@ -484,10 +484,7 @@ impl State {
     /// whether the panel was opened from the keyboard or pressed, the field the person was typing
     /// in has it back when the panel goes. A surface lent it already keeps where it came from.
     fn lend_keyboard_to(&mut self, namespace: &str, focus: WlSurface) -> bool {
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return false;
-        };
-        let before = keyboard.current_focus();
+        let before = self.keyboard_focus();
         if before.as_ref() == Some(&focus) {
             return true;
         }
@@ -499,7 +496,7 @@ impl State {
         {
             self.layers.lent = Some((namespace.to_owned(), before));
         }
-        keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
+        self.set_keyboard_focus(Some(focus), SERIAL_COUNTER.next_serial());
         true
     }
 
@@ -513,17 +510,14 @@ impl State {
             self.layers.lent = Some((lent_to, before));
             return;
         }
-        let Some(keyboard) = self.seat.get_keyboard() else {
-            return;
-        };
-        let holds = keyboard.current_focus().is_some_and(|focus| {
+        let holds = self.keyboard_focus().is_some_and(|focus| {
             self.layers.surfaces.iter().any(|placed| {
                 placed.namespace == namespace && *placed.surface.wl_surface() == focus
             })
         });
         if holds {
             let back = before.filter(Resource::is_alive);
-            keyboard.set_focus(self, back, SERIAL_COUNTER.next_serial());
+            self.set_keyboard_focus(back, SERIAL_COUNTER.next_serial());
         }
     }
 
@@ -665,14 +659,8 @@ impl State {
             self.layers.settling.remove(&namespace);
         }
         self.layers.surfaces.remove(index);
-        if let Some(root) = root
-            && self
-                .seat
-                .get_keyboard()
-                .is_some_and(|keyboard| keyboard.current_focus().as_ref() == Some(&root))
-            && let Some(keyboard) = self.seat.get_keyboard()
-        {
-            keyboard.set_focus(self, None, SERIAL_COUNTER.next_serial());
+        if root.is_some() && self.keyboard_focus() == root {
+            self.set_keyboard_focus(None, SERIAL_COUNTER.next_serial());
         }
         self.mark_redraw_all();
     }
@@ -693,9 +681,7 @@ impl State {
             return;
         }
         let focus = placed.surface.wl_surface().clone();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
-        }
+        self.set_keyboard_focus(Some(focus), SERIAL_COUNTER.next_serial());
     }
 
     /// A pointer press landed at `point` : a layer surface there that takes the keyboard while

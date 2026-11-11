@@ -351,10 +351,7 @@ impl XdgDialogHandler for State {
         let Some(parent) = toplevel.parent() else {
             return;
         };
-        let focused = self
-            .seat
-            .get_keyboard()
-            .and_then(|keyboard| keyboard.current_focus());
+        let focused = self.keyboard_focus();
         if !is_modal || focused.as_ref() != Some(&parent) {
             return;
         }
