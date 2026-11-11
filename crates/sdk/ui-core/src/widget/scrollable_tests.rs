@@ -2134,3 +2134,37 @@ fn stable_vertical_gutter_keeps_media_columns_across_overflow() {
         );
     }
 }
+
+#[test]
+#[allow(clippy::float_cmp, reason = "a give at rest is exactly zero")]
+fn a_browsers_swipe_past_the_top_springs_back_once_it_pauses() {
+    use crate::time::testing::with_monotonic_time;
+    // A browser's trackpad deltas carry no phase: winit hands each over as
+    // `Moved`, and only the pause after them ends the gesture.
+    let mut s = vertical(1000.0);
+    let mut wheel = crate::widget::PhaselessWheel::default();
+    let start = crate::time::now();
+    let feed = |s: &mut Scrollable, event: &WindowEvent| {
+        if let WindowEvent::MouseWheel { delta, phase, .. } = event {
+            s.on_wheel(delta, *phase, false, 1.0);
+        }
+    };
+    with_monotonic_time(start, || {
+        let mut up = WindowEvent::MouseWheel {
+            device_id: winit::event::DeviceId::dummy(),
+            delta: MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(0.0, 60.0)),
+            phase: TouchPhase::Moved,
+        };
+        wheel.observe(&mut up, start);
+        feed(&mut s, &up);
+        assert!(s.drawn_offset().1 < 0.0, "pulled past the top");
+    });
+    let due = wheel.deadline().expect("the swipe runs");
+    with_monotonic_time(due, || {
+        let end = wheel.end_if_due(due).expect("its pause ends it");
+        feed(&mut s, &end);
+    });
+    with_monotonic_time(due + Duration::from_secs(1), || {
+        assert_eq!(s.drawn_offset(), (0.0, 0.0), "sprung back to the top");
+    });
+}

@@ -56,6 +56,42 @@ pub(crate) async fn sleep_ms(ms: u32) {
 /// loop works out when the next frame is due.
 pub(super) struct Runner;
 
+thread_local! {
+    /// The browser's wheel events carry no touch phase: each mount's swipe
+    /// in progress, begun and ended here so a scroll view's give springs
+    /// back and a glide or a hand-off sees the swipe end as on a native
+    /// trackpad ([`ui::widget::PhaselessWheel`]).
+    static WHEEL_GESTURES: RefCell<std::collections::BTreeMap<u64, ui::widget::PhaselessWheel>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
+}
+
+/// Mount `id`'s wheel `event` begins or continues its swipe.
+fn observe_wheel(id: u64, event: &mut WindowEvent) {
+    let now = ui::time::now();
+    WHEEL_GESTURES.with_borrow_mut(|gestures| gestures.entry(id).or_default().observe(event, now));
+}
+
+/// End mount `id`'s swipe once paused at `now`, as the frame's input: the
+/// frame hears it as a native trackpad's lift. Returns when the swipe
+/// still running ends unless the fingers move again.
+fn end_paused_wheel(m: &mut Mount, id: u64, now: ui::time::Instant) -> Option<ui::time::Instant> {
+    let (ended, due) = WHEEL_GESTURES.with_borrow_mut(|gestures| {
+        let gesture = gestures.get_mut(&id)?;
+        let ended = gesture.end_if_due(now);
+        let due = gesture.deadline();
+        if due.is_none() {
+            gestures.remove(&id);
+        }
+        Some((ended, due))
+    })?;
+    if let Some(end) = ended {
+        crate::clipboard::during_input(&m.status, || m.frame.send_host_event(&end));
+        m.pending = true;
+        m.window.request_redraw();
+    }
+    due
+}
+
 impl Runner {
     fn replay_deferred(&mut self, event_loop: &ActiveEventLoop) {
         let pending = REPLAYING
@@ -204,6 +240,7 @@ impl ApplicationHandler<u64> for Runner {
                             (touch.location.x, touch.location.y) =
                                 m.viewport.map_pointer(touch.location.x, touch.location.y);
                         }
+                        WindowEvent::MouseWheel { .. } => observe_wheel(m.id, &mut event),
                         _ => {}
                     }
                     let start = m.metric_start();
@@ -310,6 +347,11 @@ impl ApplicationHandler<u64> for Runner {
                     } else {
                         wake(due);
                     }
+                }
+                // A swipe paused long enough has ended: the frame hears it
+                // as a native trackpad's lift.
+                if let Some(due) = end_paused_wheel(m, id, now) {
+                    wake(due);
                 }
                 if m.hidden || m.error.is_some() || !m.presents() || m.viewport.suspended() {
                     return Ok(());

@@ -1,6 +1,6 @@
 mod action_directory_identity;
 mod wheel;
-pub use wheel::{WHEEL_GESTURE_GAP, line_of_wheel, sideways_travel};
+pub use wheel::{PhaselessWheel, WHEEL_GESTURE_GAP, line_of_wheel, sideways_travel};
 mod action_emitter;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
