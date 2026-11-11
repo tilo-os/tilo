@@ -330,6 +330,12 @@ fn short(revision: &str) -> &str {
 /// of its edge first, so the cut-out keeps no halo of it. The cleaned
 /// pictures are kept as content and named in the action, so every replica
 /// gives the marks the same pixels; undo brings the originals back.
+///
+/// This resolves the pictures the action names, so it runs before the action
+/// is submitted and cannot wait for a decoder: it decodes at once here, as
+/// [`crate::picture::decode`] does off the frame. Only refining an edge makes
+/// a matte, and refining needs threads, so a browser page has none to clean
+/// with.
 pub fn clean(using: &mut UseSelection) -> Result<(), String> {
     if !matches!(using.what.as_str(), "mask" | "clear") || using.defringe == Some(false) {
         return Ok(());

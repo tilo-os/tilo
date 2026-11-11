@@ -171,7 +171,7 @@ pub fn colour_region(
     art: &Artwork,
     query: &ColourQuery,
 ) -> Result<Region, String> {
-    let mut search = ColourSearch::start(renderer, text, art, query.clone());
+    let mut search = ColourSearch::start(art, query.clone());
     // Answered at once where the thread can wait for its pictures; a
     // caller that cannot wait is told pictures cannot be had here.
     search
@@ -185,7 +185,11 @@ pub fn colour_region(
 /// asked for; [`poll`](Self::poll) it every frame until it answers.
 pub struct ColourSearch {
     query: ColourQuery,
-    looking: Looking,
+    /// The look asked for, once the pictures it must see are decoded; `None`
+    /// until then.
+    looking: Option<Looking>,
+    /// The glance the first look takes.
+    sight: Option<Glance>,
 }
 
 /// A picture the search is waiting for.
@@ -206,14 +210,11 @@ struct Glance {
 }
 
 impl ColourSearch {
-    /// Start looking for what `query` names in `art`.
+    /// Start looking for what `query` names in `art`: the first look is taken
+    /// once the pictures it must see are decoded, which [`poll`](Self::poll)
+    /// waits for.
     #[must_use]
-    pub fn start(
-        renderer: &mut Renderer,
-        text: &mut TextRenderer,
-        art: &Artwork,
-        query: ColourQuery,
-    ) -> Self {
+    pub fn start(art: &Artwork, query: ColourQuery) -> Self {
         let scale = (f64::from(WAND_SIDE) / art.width.max(art.height).max(1.0)).min(2.0);
         let whole = Glance {
             view: art.bounds(),
@@ -221,8 +222,11 @@ impl ColourSearch {
             near: None,
             first: None,
         };
-        let looking = ask(renderer, text, art, &query, whole);
-        Self { query, looking }
+        Self {
+            query,
+            looking: None,
+            sight: Some(whole),
+        }
     }
 
     /// The area found, once its pictures came; `None` while one is still
@@ -233,22 +237,37 @@ impl ColourSearch {
         text: &mut TextRenderer,
         art: &Artwork,
     ) -> Option<Result<Region, String>> {
+        if self.looking.is_none() {
+            // Colour is found in the pictures themselves, never in the
+            // placeholder the canvas shows while a just-opened photograph is
+            // still being decoded: the look is taken once they are here.
+            if !renderer.pictures.ready(art) {
+                return None;
+            }
+            let sight = self.sight.take()?;
+            let query = self.query.clone();
+            self.looking = Some(ask(renderer, text, art, &query, sight));
+        }
         loop {
-            let answer = self.looking.pixels.take()?;
+            let mut looking = self.looking.take()?;
+            let Some(answer) = looking.pixels.take() else {
+                self.looking = Some(looking);
+                return None;
+            };
             let found = crate::view_ops::rgba_of(Some(answer)).and_then(|(rgba, width, height)| {
                 let picture = crate::wand::Picture {
                     rgba: &rgba,
                     width: width as usize,
                     height: height as usize,
                 };
-                find_in(art, &self.query, &picture, &self.looking.sight)
+                find_in(art, &self.query, &picture, &looking.sight)
             });
             let found = match found {
                 Ok(found) => found,
                 Err(why) => return Some(Err(why)),
             };
-            let scale = self.looking.sight.scale;
-            let found = if let Some(first) = self.looking.sight.first.take() {
+            let scale = looking.sight.scale;
+            let found = if let Some(first) = looking.sight.first.take() {
                 if found.is_empty() { first } else { found }
             } else if let Some((view, closer_scale)) = closer(art, &self.query, &found, scale) {
                 let sight = Glance {
@@ -257,7 +276,8 @@ impl ColourSearch {
                     near: Some(found.grown(3.0 / scale)),
                     first: Some(found),
                 };
-                self.looking = ask(renderer, text, art, &self.query, sight);
+                let query = self.query.clone();
+                self.looking = Some(ask(renderer, text, art, &query, sight));
                 continue;
             } else {
                 found

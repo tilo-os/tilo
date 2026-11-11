@@ -42,6 +42,21 @@ impl CanvasSurface {
         op: &ViewOp,
         cx: &mut Reading,
     ) -> ui::framework::EffectAnswer {
+        // A picture is decoded off the frame, and a page cannot wait for the
+        // decoder: an answer that must show the pictures themselves asks
+        // again once they are here rather than answer from a placeholder.
+        if !ui::rt::available(ui::rt::Feature::BlockOn) {
+            let version = match op {
+                ViewOp::Look { look } => look.version.as_deref(),
+                ViewOp::Inspect { inspect } => inspect.version.as_deref(),
+                ViewOp::Measure { measure } => measure.version.as_deref(),
+                _ => None,
+            };
+            let (art, _, _) = Self::at_version(cx, version)?;
+            if !self.tools.renderer.borrow_mut().pictures.ready(&art) {
+                return Err(crate::locales::CATALOG.t("canvas-pictures-decoding"));
+            }
+        }
         let mut answer = self.answer(op, cx)?;
         if let Some(done) = answer.poll() {
             return done.map(ui::framework::Effected::Done);
@@ -83,12 +98,7 @@ impl CanvasSurface {
         document: ui::tilo_resource::Doc,
         cx: &mut Reading,
     ) -> ui::framework::Effected {
-        let text = self.look_text.get_or_insert_with(TextRenderer::new);
-        let mut renderer = self.tools.renderer.borrow_mut();
-        let patient = std::mem::replace(&mut renderer.pictures.patient, true);
-        let search = ColourSearch::start(&mut renderer, text, &art, query);
-        renderer.pictures.patient = patient;
-        drop(renderer);
+        let search = ColourSearch::start(&art, query);
         let asked = art.clone();
         let reply = cx.reply_then(move |_, output, cx| {
             let d = output
