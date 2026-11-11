@@ -488,6 +488,23 @@ impl WindowShares {
         self.send_outgoing(desk, sync);
     }
 
+    /// What the other devices heard in the desk's workspaces are called, by the salt each mints
+    /// its ids under: what the desk names the device of a window open elsewhere by, the same
+    /// names a shared window's host goes by.
+    pub(crate) fn device_names(
+        &self,
+        desk: &DesktopHandle,
+        sync: &Client,
+    ) -> BTreeMap<u16, String> {
+        let heard: Vec<(EndpointId, String)> = desk.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|held| sync.workspace_devices(&held.policy.workspace))
+                .collect()
+        });
+        device_names_of(self.salt, &heard)
+    }
+
     /// When the shares next need a pass of their own: a viewer's ask for a window said again before
     /// its host stops hearing it, an ask that stops counting as this device still viewing what it
     /// asked for, or the next frame of a shared window that has someone to send it to.
@@ -1983,6 +2000,40 @@ fn owners_of(
         );
     }
     owners
+}
+
+/// What each other device heard in the workspaces is called, by the salt it mints its ids under:
+/// what the desk says of a window open on that device
+/// ([`tilo_desktop_policy::DesktopPolicy::name_devices`]). `devices` are the ones heard, each
+/// with its name, and `salt` is this device's own. A salt names one device or none: this
+/// device's names nothing, a device heard with no name has none, and a salt the keys of two
+/// devices fold to is neither's, so the desk never names the wrong device.
+fn device_names_of(salt: u16, devices: &[(EndpointId, String)]) -> BTreeMap<u16, String> {
+    let mut heard: BTreeMap<u16, (EndpointId, &str)> = BTreeMap::new();
+    let mut shared = BTreeSet::from([salt]);
+    for (device, name) in devices {
+        let minted = tilo_desktop_model::ids::device_salt_of_key(device.as_bytes());
+        match heard.get_mut(&minted) {
+            Some((known, _)) if known != device => {
+                shared.insert(minted);
+            }
+            // The same device, heard in another of the workspaces: the first name it gave
+            // stands, and a workspace it gave none in leaves the name to the next.
+            Some((_, called)) => {
+                if called.trim().is_empty() {
+                    *called = name.as_str();
+                }
+            }
+            None => {
+                heard.insert(minted, (*device, name.as_str()));
+            }
+        }
+    }
+    heard
+        .into_iter()
+        .filter(|(minted, (_, name))| !shared.contains(minted) && !name.trim().is_empty())
+        .map(|(minted, (_, name))| (minted, name.to_owned()))
+        .collect()
 }
 
 /// The desk without the tab `tab` , and without the strip `strip` when that was made for it and

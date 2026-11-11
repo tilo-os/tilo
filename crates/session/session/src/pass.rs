@@ -230,6 +230,18 @@ impl Session {
             &self.shared.pages,
             Instant::now(),
         );
+        // A window open on another device says which: the desk is told what the devices heard
+        // in its workspaces are called, the names a shared window's host goes by.
+        if let Some(sync) = sync.as_deref() {
+            let names = self
+                .shared
+                .window_shares
+                .borrow()
+                .device_names(&self.shared.handle, sync);
+            self.shared
+                .desktop
+                .with_policy(|policy| policy.name_devices(names));
+        }
     }
 
     /// What the desk's walk reached this pass, handed to the panel that shows it: whether the
