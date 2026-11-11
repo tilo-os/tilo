@@ -94,20 +94,15 @@ pub fn decode(bytes: &[u8]) -> Option<Rgba> {
     if bytes.len() > MAX_ENCODED_BYTES {
         return None;
     }
-    // Read dimensions before decoding pixels. `load_from_memory` otherwise
-    // allocates the full RGBA image before Photos can apply its own limit.
-    let reader = image::ImageReader::new(Cursor::new(bytes))
-        .with_guessed_format()
-        .ok()?;
-    let (w, h) = reader.into_dimensions().ok()?;
+    // Read dimensions from the header before decoding pixels, so a decode
+    // never allocates past Photos' own limit.
+    let (w, h) = ui::image_codec::dimensions(bytes)?;
     if !within_decode_limits(w, h) {
         return None;
     }
     let orientation = encoded_exif_orientation(bytes);
-    let img = image::load_from_memory(bytes).ok()?;
-    let rgba = img.to_rgba8();
-    let (w, h) = (rgba.width(), rgba.height());
-    let decoded = Rgba::new(w, h, rgba.into_raw())?;
+    let decoded = ui::image_codec::decode_now(bytes, None).ok()?;
+    let decoded = Rgba::new(decoded.width, decoded.height, decoded.rgba)?;
     Some(normalize_exif_orientation(decoded, orientation))
 }
 

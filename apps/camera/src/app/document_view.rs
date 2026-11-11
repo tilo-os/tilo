@@ -441,13 +441,13 @@ impl CameraApp {
                     *index == selected && Some((*crop, *rotation)) == key
                 });
         if !current && let Some(page) = self.document_scan.pages.get(selected) {
-            let rendered = page.rendered().to_rgba8();
-            let (width, height) = rendered.dimensions();
+            let rendered = page.rendered();
+            let (width, height) = (rendered.width, rendered.height);
             self.document_preview = Some((
                 selected,
                 page.crop,
                 page.rotation,
-                Image::from_rgba(std::sync::Arc::from(rendered.into_raw()), width, height)
+                Image::from_rgba(std::sync::Arc::from(rendered.rgba), width, height)
                     .with_fit(ImageFit::Contain),
                 (width, height),
             ));

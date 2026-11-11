@@ -48,8 +48,6 @@ rayon = "1.12.0"
 uuid.workspace = true
 # Exports are PNGs; looks are JPEGs unless a caller asks for PNG.
 png = "0.18"
-# Pictures are PNGs, JPEGs or WebPs; exports are any of the three.
-image = { workspace = true, features = ["png", "jpeg", "webp"] }
 # SVG import; without its font stack, text is read by hand.
 usvg = { version = "0.47", default-features = false }
 # SVG export embeds a painted layer's picture.
@@ -72,6 +70,8 @@ zip.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Tests build and read their image fixtures.
+image = { workspace = true, features = ["png", "jpeg", "webp"] }
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `canvas` claims `--features canvas/thin` in the
 # collection build, and the app then links the whole runtime statically.

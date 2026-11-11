@@ -84,14 +84,14 @@ const MAX_THUMB_CACHE: usize = 2;
 /// A deterministic paper-like fixture for screenshots and interaction tests.
 /// It deliberately contains varied blocks, rules and columns so crop,
 /// rotation, scaling and page previews exercise real contrast and geometry.
-fn sample_document_image() -> image::DynamicImage {
-    let page = image::RgbImage::from_fn(1240, 1754, |x, y| {
+fn sample_document_image() -> ui::image_codec::DecodedImage {
+    let colour = |x: u32, y: u32| -> [u8; 3] {
         let in_rect = |x0, y0, x1, y1| x >= x0 && x < x1 && y >= y0 && y < y1;
         if in_rect(80, 80, 1160, 230) {
             if in_rect(130, 125, 600, 158) || in_rect(130, 174, 430, 193) {
-                image::Rgb([245, 248, 255])
+                [245, 248, 255]
             } else {
-                image::Rgb([52, 99, 176])
+                [52, 99, 176]
             }
         } else if in_rect(80, 290, 500, 312)
             || in_rect(80, 338, 740, 351)
@@ -110,22 +110,30 @@ fn sample_document_image() -> image::DynamicImage {
             || in_rect(80, 1170, 970, 1183)
             || in_rect(80, 1208, 1050, 1221)
         {
-            image::Rgb([55, 59, 67])
+            [55, 59, 67]
         } else if in_rect(80, 700, 1160, 704)
             || in_rect(80, 1000, 1160, 1004)
             || in_rect(80, 1320, 1160, 1324)
         {
-            image::Rgb([174, 179, 187])
+            [174, 179, 187]
         } else if in_rect(80, 1390, 350, 1510)
             || in_rect(405, 1390, 675, 1510)
             || in_rect(730, 1390, 1160, 1510)
         {
-            image::Rgb([229, 233, 239])
+            [229, 233, 239]
         } else {
-            image::Rgb([246, 246, 242])
+            [246, 246, 242]
         }
-    });
-    image::DynamicImage::ImageRgb8(page)
+    };
+    let rgba = (0..1754_u32)
+        .flat_map(|y| (0..1240_u32).map(move |x| (x, y)))
+        .flat_map(|(x, y)| {
+            let [r, g, b] = colour(x, y);
+            [r, g, b, 255]
+        })
+        .collect();
+    ui::image_codec::DecodedImage::from_rgba(1240, 1754, rgba)
+        .unwrap_or_else(|| ui::image_codec::DecodedImage::filled(1240, 1754, [246, 246, 242, 255]))
 }
 
 /// The selected page as last rendered: its index, crop and rotation, the
@@ -202,7 +210,7 @@ struct RecState {
 }
 
 enum DocumentJobResult {
-    Capture(Result<image::DynamicImage, String>),
+    Capture(Result<ui::image_codec::DecodedImage, String>),
     Recognize {
         page: usize,
         result: Result<tilo_ocr::Recognition, tilo_ocr::Error>,
@@ -1404,10 +1412,16 @@ impl CameraApp {
                 let spawn = ui::rt::spawn_thread("camera-document-capture", move || {
                     let result = tilo_capture::scanner::scan_page(&scanner_device, settings)
                         .and_then(|bytes| {
-                            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                                .map_err(|error| {
-                                    format!("scanner returned an invalid PNG: {error}")
+                            ui::png::decode_rgba8(&bytes)
+                                .ok()
+                                .and_then(|page| {
+                                    ui::image_codec::DecodedImage::from_rgba(
+                                        page.width,
+                                        page.height,
+                                        page.rgba,
+                                    )
                                 })
+                                .ok_or_else(|| "scanner returned an invalid PNG".to_owned())
                         });
                     let _ = sender.send(DocumentJobResult::Capture(result));
                 });
@@ -4664,7 +4678,7 @@ mod tests {
             app.apply(Action::CaptureDocument, &mut Edits::lend(&mut doc), &root);
             assert_eq!(app.document_scan.pages.len(), 1);
             let page = app.document_scan.pages[0].rendered();
-            assert_eq!((page.width(), page.height()), (1240, 1754));
+            assert_eq!((page.width, page.height), (1240, 1754));
             assert_eq!(app.toast.as_deref(), Some("Page 1 captured"));
 
             app.begin_document_crop();
@@ -4678,11 +4692,11 @@ mod tests {
             app.apply(Action::ApplyDocumentCrop, &mut Edits::lend(&mut doc), &root);
             assert!(app.document_crop_editor.is_none());
             let page = app.document_scan.pages[0].rendered();
-            assert_eq!((page.width(), page.height()), (992, 1404));
+            assert_eq!((page.width, page.height), (992, 1404));
 
             app.rotate_document_page();
             let page = app.document_scan.pages[0].rendered();
-            assert_eq!((page.width(), page.height()), (1404, 992));
+            assert_eq!((page.width, page.height), (1404, 992));
 
             let (sender, receiver) = mpsc::channel();
             app.document_job = Some(receiver);

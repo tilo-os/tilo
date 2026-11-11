@@ -32,10 +32,10 @@ pub fn recognize_text(
     let bytes =
         crate::model::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
     let rgba = pixels::decode(&bytes).ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
-    let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
+    let image = ui::image_codec::DecodedImage::from_rgba(rgba.w, rgba.h, rgba.bytes)
         .ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
-    let document = tilo_ocr::recognize(&image::DynamicImage::ImageRgba8(image), language)
-        .map_err(|error| error.user_message().to_owned())?;
+    let document =
+        tilo_ocr::recognize(&image, language).map_err(|error| error.user_message().to_owned())?;
     let mut text = document.plain_text();
     truncate_chars(&mut text, MAX_OCR_CHARS);
     let provenance = AnalysisProvenance {
@@ -70,10 +70,10 @@ pub fn analyze_image(
     let bytes =
         crate::model::bytes_of(open, store).ok_or_else(|| tr("photos-analysis-error-not-here"))?;
     let rgba = pixels::decode(&bytes).ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
-    let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
+    let image = ui::image_codec::DecodedImage::from_rgba(rgba.w, rgba.h, rgba.bytes)
         .ok_or_else(|| tr("photos-analysis-error-unreadable"))?;
-    let prepared = tilo_vision::prepare(&image::DynamicImage::ImageRgba8(image), &bytes)
-        .map_err(|error| error.user_message().to_owned())?;
+    let prepared =
+        tilo_vision::prepare(&image, &bytes).map_err(|error| error.user_message().to_owned())?;
     let result = tilo_vision::analyze(capability, prepared)
         .map_err(|error| error.user_message().to_owned())?;
     Ok(image_analysis_from_vision_result(open, capability, result))
@@ -107,9 +107,9 @@ pub fn detect_people(
         let rgba = pixels::decode(&bytes).ok_or_else(|| {
             "A selected photograph cannot be safely prepared for People recognition".to_owned()
         })?;
-        let image = image::RgbaImage::from_raw(rgba.w, rgba.h, rgba.bytes)
+        let image = ui::image_codec::DecodedImage::from_rgba(rgba.w, rgba.h, rgba.bytes)
             .ok_or_else(|| "A selected photograph has invalid decoded pixels".to_owned())?;
-        prepared.push((photo_id, image::DynamicImage::ImageRgba8(image), bytes));
+        prepared.push((photo_id, image, bytes));
     }
     let result = tilo_vision::cluster_faces(capability, prepared)
         .map_err(|error| error.user_message().to_owned())?;

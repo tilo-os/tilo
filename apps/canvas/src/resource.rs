@@ -506,14 +506,7 @@ fn picture_size(src: &str, bytes: &[u8]) -> Result<(u32, u32), String> {
     } else {
         "the picture"
     };
-    let format = image::guess_format(bytes)
-        .map_err(|error| format!("{named} is not a PNG, JPEG or WebP: {error}"))?;
-    if !matches!(
-        format,
-        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
-    ) {
-        return Err(format!("{named} is {format:?}, not a PNG, JPEG or WebP"));
-    }
+    crate::picture::accepted(bytes).map_err(|error| format!("{named}: {error}"))?;
     let (width, height) = crate::picture::dimensions(bytes)
         .map_err(|error| format!("{named} cannot be read: {error}"))?;
     if width.max(height) > crate::picture::MAX_PICTURE_SIDE || width == 0 || height == 0 {

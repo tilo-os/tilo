@@ -49,9 +49,6 @@ winit.workspace = true
 taffy.workspace = true
 anyhow.workspace = true
 
-# Capture encoding plus portal-selected image decoding for code scanning.
-# Default features are trimmed to formats cameras and image portals provide.
-image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 # The shared preview pipeline (recent-capture peek) and bounded image decoder.
 tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
@@ -66,6 +63,8 @@ rqrr.workspace = true
 
 
 [dev-dependencies]
+# Tests build and read their image fixtures.
+image = { workspace = true, features = ["png", "jpeg"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # A brokered camera whose permission prompt a test answers.
 tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner", "test-support"] }

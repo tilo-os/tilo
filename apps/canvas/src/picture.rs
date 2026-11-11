@@ -29,33 +29,38 @@ pub const MAX_PICTURE_SIDE: u32 = 8192;
 /// A PNG, JPEG or WebP decoded to straight RGBA, at most
 /// [`MAX_PICTURE_SIDE`] pixels a side.
 pub fn decode(bytes: &[u8]) -> Result<ImageData, String> {
-    let format = image::guess_format(bytes).map_err(|error| error.to_string())?;
-    if !matches!(
-        format,
-        image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP
-    ) {
-        return Err(format!("{format:?} is not PNG, JPEG or WebP"));
-    }
+    accepted(bytes)?;
     let (width, height) = dimensions(bytes)?;
     if width.max(height) > MAX_PICTURE_SIDE {
         return Err(format!(
             "the picture is over {MAX_PICTURE_SIDE} pixels a side"
         ));
     }
-    let decoded =
-        image::load_from_memory_with_format(bytes, format).map_err(|error| error.to_string())?;
-    let rgba = decoded.to_rgba8();
-    let (width, height) = rgba.dimensions();
-    Ok(ui::raster::rgba8(rgba.into_raw(), width, height))
+    let decoded = ui::image_codec::decode_now(bytes, None).map_err(|error| error.to_string())?;
+    Ok(ui::raster::rgba8(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+    ))
+}
+
+/// The format of a picture Canvas keeps: PNG, JPEG or WebP.
+///
+/// # Errors
+///
+/// What it is otherwise.
+pub fn accepted(bytes: &[u8]) -> Result<ui::image_codec::Format, String> {
+    use ui::image_codec::Format;
+    match ui::image_codec::sniff(bytes) {
+        Some(format @ (Format::Png | Format::Jpeg | Format::WebP)) => Ok(format),
+        Some(format) => Err(format!("{format:?} is not PNG, JPEG or WebP")),
+        None => Err("not a PNG, JPEG or WebP".to_owned()),
+    }
 }
 
 /// A picture's size in pixels, read from its header.
 pub fn dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
-    image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|error| error.to_string())?
-        .into_dimensions()
-        .map_err(|error| error.to_string())
+    ui::image_codec::dimensions(bytes).ok_or_else(|| "its size cannot be read".to_owned())
 }
 
 pub fn bytes_of(content: &tilo_content::ContentStore, address: &str) -> Option<Vec<u8>> {
