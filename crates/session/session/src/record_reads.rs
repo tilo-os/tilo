@@ -672,7 +672,7 @@ mod tests {
         let (head_record, newest_record) = chain_records();
         let channel = neighbour_wire::app_document_channel(APP, &head_record);
         link.host_ready(topic_of(workspace), true);
-        let head = context(workspace, &head_record, cert.clone());
+        let head = context(workspace, &head_record, cert);
 
         let mut arriving = records
             .await_arriving_record(&head)

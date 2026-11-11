@@ -521,7 +521,7 @@ fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_it
 
     // The host sends the part that is the chain's newest, which reaches this device's records: the
     // read it asked for is announced as an app is told of a record no window holds.
-    reader.announce([newest.clone()]);
+    reader.announce([newest]);
     let deadline = tilo_test_env::hang_deadline();
     while chain.parts().is_empty() {
         assert!(
