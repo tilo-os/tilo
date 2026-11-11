@@ -501,21 +501,38 @@ impl PresenceCtx {
         // colour, saying what it is doing here: one tag for the agent and its
         // action, clear of the text around it.
         let words = self.interaction_status_label(interaction);
-        let (bounds, tag) = super::render::draw_agent_nametag(
-            paint.scene,
-            paint.transform,
-            paint.text,
-            paint.theme,
-            (tip, viewport),
-            (visible_locus, &place.ink),
-            &words,
-            actor_color,
-        );
-        self.note_caret_tag(super::CaretTag {
-            user: user.clone(),
-            label: words,
-            rect: paint.transform.transform_rect_bbox(tag),
-        });
+        // A caret it writes with may wear that tag already (an agent writing in a document): the
+        // pointer then goes without, one tag for one agent.
+        let worn = self
+            .caret_tags()
+            .iter()
+            .any(|tag| tag.user == user && tag.label == words);
+        let bounds = if worn {
+            super::render::draw_agent_pointer_alone(
+                paint.scene,
+                paint.transform,
+                paint.theme,
+                (tip, viewport),
+                actor_color,
+            )
+        } else {
+            let (bounds, tag) = super::render::draw_agent_nametag(
+                paint.scene,
+                paint.transform,
+                paint.text,
+                paint.theme,
+                (tip, viewport),
+                (visible_locus, &place.ink),
+                &words,
+                actor_color,
+            );
+            self.note_caret_tag(super::CaretTag {
+                user: user.clone(),
+                label: words,
+                rect: paint.transform.transform_rect_bbox(tag),
+            });
+            bounds
+        };
         let marker = AgentActionMarker {
             invocation: interaction.invocation,
             tip,

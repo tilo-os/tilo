@@ -888,6 +888,20 @@ pub fn draw_peer_cursors(
 /// tag must leave readable, and `ink` the words around it, which it never
 /// covers. Returns the bounds painted and the tag's own, in the scene's
 /// coordinates before `transform`.
+/// An agent's pointer at `tip`, without a tag: its tag already stands where it works. Returns the
+/// pointer's paint bounds within `viewport`.
+pub(super) fn draw_agent_pointer_alone(
+    scene: &mut Scene,
+    transform: Affine,
+    theme: &Theme,
+    (tip, viewport): (Point, Rect),
+    color: Color,
+) -> Rect {
+    let at = (tip.x, tip.y);
+    draw_peer_pointer(scene, transform, theme, at, color, true);
+    pointer_bounds(at).intersect(viewport)
+}
+
 pub(super) fn draw_agent_nametag(
     scene: &mut Scene,
     transform: Affine,
