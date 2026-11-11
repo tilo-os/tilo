@@ -14,6 +14,8 @@
     reason = "layer geometry: logical coordinates of an output and the surfaces on it, far from i32 limits"
 )]
 
+use std::time::{Duration, Instant};
+
 use smithay::backend::renderer::element::surface::{
     WaylandSurfaceRenderElement, render_elements_from_surface_tree,
 };
@@ -63,6 +65,10 @@ pub(crate) struct Layers {
     /// The layer surface the session handed the keyboard to, by name, and where the keyboard was
     /// before: it goes back there when that surface is hidden while it still holds it.
     lent: Option<(String, Option<WlSurface>)>,
+    /// The layer surfaces the session has shown that have not yet drawn the size they asked for,
+    /// by name, and when showing them gives up waiting: the first frame a person sees is at the
+    /// size the panel fits, never a room-sized frame its app draws before it resizes.
+    settling: std::collections::BTreeMap<String, Instant>,
 }
 
 /// Where the session stands a layer surface it places: the room it may take in the layout's
@@ -72,6 +78,10 @@ pub(crate) struct Place {
     pub(crate) room: Rectangle<i32, Logical>,
     pub(crate) rests_at_bottom: bool,
 }
+
+/// How long showing a surface waits for its app to draw at the size it asked for before it shows
+/// the frame it has: a panel that cannot resize must not stay hidden.
+const SETTLE: Duration = Duration::from_millis(500);
 
 /// One layer surface and where it is on its output.
 struct Placed {
@@ -91,6 +101,15 @@ impl Placed {
     fn has_buffer(&self) -> bool {
         with_renderer_surface_state(self.surface.wl_surface(), |state| state.buffer().is_some())
             .unwrap_or(false)
+    }
+
+    /// The logical size of the buffer its client last committed: what the person would see if the
+    /// session showed it now.
+    fn buffer_size(&self) -> Option<Size<i32, Logical>> {
+        with_renderer_surface_state(self.surface.wl_surface(), |state| {
+            state.surface_size().or_else(|| state.buffer_size())
+        })
+        .flatten()
     }
 
     /// What its client asked of it: its anchors, margins and size.
@@ -119,6 +138,7 @@ impl Layers {
             poses: std::collections::BTreeMap::new(),
             places: std::collections::BTreeMap::new(),
             lent: None,
+            settling: std::collections::BTreeMap::new(),
         }
     }
 
@@ -147,16 +167,30 @@ impl Layers {
             .unwrap_or(true)
     }
 
-    /// Whether the person sees `placed` and input reaches it: the session shows it, and its client
-    /// has drawn it.
+    /// Whether the person sees `placed` and input reaches it: the session shows it, its client
+    /// has drawn it, and that frame is the size it asked for rather than one drawn before it
+    /// resized.
     fn visible(&self, placed: &Placed) -> bool {
-        self.shows(placed) && placed.has_buffer()
+        self.shows(placed) && !self.settling.contains_key(&placed.namespace) && placed.has_buffer()
     }
 
     /// Whether the session shows the layer surface `namespace` ; `None` when it never said, which
     /// is shown.
     fn shown(&self, namespace: &str) -> Option<bool> {
         self.visibility.get(namespace).copied()
+    }
+
+    /// When showing a surface next gives up waiting for its app to draw the size it asked for.
+    fn settle_deadline(&self) -> Option<Instant> {
+        self.settling.values().copied().min()
+    }
+
+    /// Showing surfaces that waited too long for their app take the frame they have: whether any
+    /// gave up.
+    fn expire_settling(&mut self, now: Instant) -> bool {
+        let before = self.settling.len();
+        self.settling.retain(|_, until| *until > now);
+        self.settling.len() != before
     }
 
     /// Whether the client of `namespace` has drawn it: a surface shows nothing before its first
@@ -323,6 +357,18 @@ impl State {
             return;
         };
         self.place_layer(index, true);
+        // The frame it committed is at the size its app asks for: the one the person may see.
+        let settled = self.layers.surfaces.get(index).and_then(|placed| {
+            let at_asked = placed.buffer_size().is_some_and(|size| {
+                (size.w - placed.rect.size.w).abs() <= 1 && (size.h - placed.rect.size.h).abs() <= 1
+            });
+            (at_asked && self.layers.settling.contains_key(&placed.namespace))
+                .then(|| placed.namespace.clone())
+        });
+        if let Some(namespace) = settled {
+            self.layers.settling.remove(&namespace);
+            self.mark_redraw_all();
+        }
         // Frames of a surface the session hid change nothing on the desk and take no keyboard: it
         // stands there for the opening that shows it.
         if self
@@ -344,7 +390,15 @@ impl State {
             return;
         }
         self.layers.visibility.insert(namespace.to_owned(), shown);
-        if !shown {
+        if shown && self.layers.places.contains_key(namespace) {
+            // A surface the session places fits itself: the person sees the frame its app draws
+            // once it is shown, not one drawn while it was hidden and never answered. Hold it
+            // back until that frame is the size it asked for.
+            self.layers
+                .settling
+                .insert(namespace.to_owned(), Instant::now() + SETTLE);
+        } else if !shown {
+            self.layers.settling.remove(namespace);
             self.return_layer_keyboard(namespace);
         }
         self.mark_redraw_all();
@@ -469,6 +523,29 @@ impl State {
             .filter(|rect| rect.size.w > 0 && rect.size.h > 0)
     }
 
+    /// Whether the person sees the layer surface `namespace` and input reaches it.
+    pub(crate) fn layer_visible(&self, namespace: &str) -> bool {
+        self.layers
+            .surfaces
+            .iter()
+            .find(|placed| placed.namespace == namespace)
+            .is_some_and(|placed| self.layers.visible(placed))
+    }
+
+    /// When showing a layer surface next takes the frame its app has, whether or not it resized:
+    /// the loop wakes then so a panel that could not resize is still shown.
+    pub(crate) fn layer_settle_deadline(&self) -> Option<Instant> {
+        self.layers.settle_deadline()
+    }
+
+    /// Showing surfaces that waited too long for a frame at the size they asked for take the one
+    /// they have.
+    pub(crate) fn expire_layer_settling(&mut self, now: Instant) {
+        if self.layers.expire_settling(now) {
+            self.mark_redraw_all();
+        }
+    }
+
     /// Place every layer surface again: an output came, went or changed.
     pub(crate) fn place_layers(&mut self) {
         for index in 0..self.layers.surfaces.len() {
@@ -510,6 +587,14 @@ impl State {
             .surfaces
             .get(index)
             .map(|placed| placed.surface.wl_surface().clone());
+        if let Some(namespace) = self
+            .layers
+            .surfaces
+            .get(index)
+            .map(|placed| placed.namespace.clone())
+        {
+            self.layers.settling.remove(&namespace);
+        }
         self.layers.surfaces.remove(index);
         if let Some(root) = root
             && self

@@ -77,6 +77,10 @@ pub(crate) struct Shared {
     /// the clipboard opened to paste, the page Escape goes back from — waiting
     /// for its app to be up.
     pub(crate) panel_asks: Rc<RefCell<Vec<&'static str>>>,
+    /// The clipboard panel a key asked for at the caret, waiting for the field it was pressed in
+    /// to commit the caret its last key moved: `None` when nothing waits. The instant is when the
+    /// wait gives up and places the panel at the caret the desk has.
+    pub(crate) pending_paste: Cell<Option<std::time::Instant>>,
     /// The ask the panel goes back on, while it has not answered whether it
     /// had anywhere to go back to: Escape closes the panel only from its main
     /// page, and the panel says which page that is.

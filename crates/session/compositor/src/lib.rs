@@ -430,6 +430,9 @@ impl Compositor {
         if let Some((serial, at)) = self.data.state.take_retired() {
             self.recorder.note_retirement(serial, at);
         }
+        // A surface shown past the time its app had to draw its fitted frame takes the frame it
+        // has, rather than staying hidden.
+        self.data.state.expire_layer_settling(Instant::now());
         self.recorder.begin_tick(Instant::now());
     }
 
@@ -1016,6 +1019,13 @@ impl Compositor {
     #[must_use]
     pub fn text_caret(&self) -> Option<TextCaret> {
         self.data.state.text_caret()
+    }
+
+    /// Whether the focused field has committed the caret the keys it received left: a surface a
+    /// key opens at the caret waits for it rather than standing where the caret was before the
+    /// field's last redraw.
+    pub fn caret_settled(&mut self) -> bool {
+        self.data.state.caret_settled()
     }
 
     /// Insert `text` into the field the person is typing into, whatever that field asks of its
@@ -2252,6 +2262,20 @@ impl Compositor {
             .state
             .layer_rect(namespace)
             .map(|rect| (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h))
+    }
+
+    /// When showing a layer surface next gives up waiting for a frame at the size its app asks
+    /// for, so a panel that cannot resize is still shown.
+    #[must_use]
+    pub fn layer_settle_deadline(&self) -> Option<Instant> {
+        self.data.state.layer_settle_deadline()
+    }
+
+    /// Whether the person sees the layer surface `namespace`: it is shown, its app has drawn it,
+    /// and that frame is the size it asked for.
+    #[must_use]
+    pub fn layer_visible(&self, namespace: &str) -> bool {
+        self.data.state.layer_visible(namespace)
     }
 
     /// Draw the layer surface `namespace` as `pose` says from the next frame on, or as it stands

@@ -649,6 +649,17 @@ impl Overlays {
         self.0.borrow().displays.caret
     }
 
+    /// Where the surface standing in `slot` was last seen, as its app drew it: the size a panel
+    /// that fits its content asked for, which is shorter than the room when its page is.
+    #[must_use]
+    pub fn surface(&self, slot: Slot) -> Option<Rect> {
+        self.0
+            .borrow()
+            .slots
+            .get(&slot)
+            .and_then(|state| state.stands)
+    }
+
     /// Put `slot` up, standing at `anchor` or where the slot stands by itself.
     /// One anchored surface at a time: the person looks at the one they just opened, so the others
     /// go down with it. Their widgets follow the stack ([`Self::is_open`]), which is how the chrome

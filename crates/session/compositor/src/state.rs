@@ -8,6 +8,7 @@
     reason = "smithay geometry: logical and physical coordinates of outputs and windows, far from i32 limits"
 )]
 
+use std::cell::Cell;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::{Duration, Instant};
@@ -926,6 +927,7 @@ impl State {
         };
         // evdev codes sit 8 below their XKB keycodes.
         let code = keycode.saturating_add(8);
+        let moves_caret = Cell::new(false);
         let routed = keyboard.input(
             self,
             code.into(),
@@ -966,6 +968,14 @@ impl State {
                     text,
                     modifiers,
                 };
+                // Typing and the plain navigation keys move a field's caret; a chord and a
+                // modifier do not. What it moved waits for the field to commit before a surface
+                // opens at it.
+                moves_caret.set(
+                    !handle.modified_sym().is_modifier_key()
+                        && (key.text.is_some()
+                            || !(modifiers.ctrl || modifiers.alt || modifiers.logo)),
+                );
                 if !pressed {
                     if let Some(host) = state.host_keys.release(keycode) {
                         // A held modifier's release also reaches what else answers it: a surface
@@ -1021,6 +1031,9 @@ impl State {
                 {
                     self.key_delivered(&focus, keycode);
                     self.note_input_on(&focus);
+                    if moves_caret.get() {
+                        self.note_caret_may_move();
+                    }
                 }
             }
         }

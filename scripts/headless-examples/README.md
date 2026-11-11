@@ -37,7 +37,8 @@ and its apps built (`dist/dev/nested-session-build.sh`) and so is not part of
 
 `notes-caret-proof.py` opens Notes the same way, types a page with no input
 method running, and checks that the desk holds the body's caret, that it follows
-the typing, and that Super+V opens the clipboard pane under the caret's line.
+the typing, and that Super+V, pressed the moment the caret moves, opens the
+clipboard pane under that caret's line, its first frame as tall as its page.
 
 For examples that connect to an existing compositor, start it once with:
 

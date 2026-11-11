@@ -151,6 +151,15 @@ pub(super) fn state_dump(tree: &DesktopTree, desk: &Desk<'_>) -> Json {
                     Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
                 })
                 .collect::<serde_json::Map<_, _>>(),
+            // Where each surface that is up stands as its app drew it: a panel that fits its
+            // content is shorter than the room the stack gave it.
+            "surfaces": Slot::ALL
+                .into_iter()
+                .filter_map(|slot| {
+                    let at = desk.overlays.surface(slot)?;
+                    Some((slot.as_str().to_owned(), json!([at.x0, at.y0, at.x1, at.y1])))
+                })
+                .collect::<serde_json::Map<_, _>>(),
             // Whether freed heap is still to be handed back to the kernel
             // (a close asked for a trim), and how many trims have run.
             "heap_trim": {

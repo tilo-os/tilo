@@ -153,6 +153,7 @@ impl Session {
         // What the services published this pass is what every surface of the machine shows.
         self.shared.follow_status();
         self.follow_readout();
+        self.follow_pending_paste();
         self.shared.show_answered_readouts();
         // The surface apps are answered after the services took in what their devices did, so a
         // panel is sent the reading of this pass.
@@ -419,6 +420,8 @@ impl Session {
                 .as_ref()
                 .and_then(|portal| portal.next_deadline(locked)),
             crate::platform::keys::next_readout_deadline(&self.shared.waiting.borrow()),
+            self.shared.pending_paste.get(),
+            self.compositor.layer_settle_deadline(),
             Some(self.update_finish.next_deadline()),
         ];
         deadlines.into_iter().flatten().min()

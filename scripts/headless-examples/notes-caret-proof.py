@@ -8,8 +8,8 @@ the desk's own state, as the paste pane and the presence carets read it:
 
   caret    the desk holds a caret once the page's name is typed, follows it
            down into the body, and moves right as more is typed
-  paste    Super+V opens the clipboard pane under the caret's line, starting
-           near the caret's column
+  paste    Super+V, pressed the moment the caret moves, opens the clipboard pane
+           under that caret's line, its first frame as tall as its page
   closed   Escape closes the pane and the caret stays where it was
 
 It needs the session and the tree's apps built (dist/dev/nested-session-build.sh,
@@ -57,7 +57,13 @@ def caret(session) -> list | None:
 
 
 def pane(session) -> list | None:
-    """Where the clipboard pane stands, `[x0, y0, x1, y1]`, while it is open."""
+    """Where the clipboard pane is drawn, `[x0, y0, x1, y1]`, while it is open: the size its app
+    asked for, which is shorter than the room when its page is."""
+    return (chrome(session).get("surfaces") or {}).get(PANE)
+
+
+def room(session) -> list | None:
+    """The room the stack gave the clipboard pane, `[x0, y0, x1, y1]`."""
     return (chrome(session).get("places") or {}).get(PANE)
 
 
@@ -133,23 +139,29 @@ def main() -> int:
               json.dumps(caret(session)))
         at = moved or first
 
-        # Something for the pane to offer, then the caret back at the line's end.
+        # The caret back at the line's end, then Super+V at once: the pane is placed at the
+        # caret the app's last redraw moved, not the one the desk knew before it.
         session.chord("Control", "a")
         session.chord("Control", "c")
         session.key("End")
-        # The app tells the desk its caret when it next draws: the person
-        # pauses as long before reaching for Super+V.
-        at = wait_for("the caret at rest", lambda: settled(lambda: caret(session))) or at
-        session.snapshot(SHOTS / "01-typed.png")
-
         session.chord("Super", "v")
-        opened = wait_for("the clipboard pane at rest", lambda: settled(lambda: pane(session)))
+        # The first frame the person sees is the size the panel fits, never the room it was
+        # given: the desk holds the pane back until its app has drawn that frame.
+        opened = wait_for("the clipboard pane, drawn", lambda: pane(session))
+        end = wait_for("the caret at rest", lambda: settled(lambda: caret(session))) or at
         shot = session.snapshot(SHOTS / "02-super-v-at-caret.png")
         if check("Super+V opens the clipboard pane", opened is not None):
-            check("the pane opens under the caret's line", at[3] <= opened[1] <= at[3] + 24,
-                  f"caret {json.dumps(at)}, pane {json.dumps(opened)}")
-            check("the pane starts near the caret's column", abs(opened[0] - at[0]) <= 24,
-                  f"caret {json.dumps(at)}, pane {json.dumps(opened)}")
+            span = room(session) or opened
+            check("the pane's first frame is as tall as its page, not its room",
+                  40 <= opened[3] - opened[1] <= 0.55 * (span[3] - span[1]),
+                  f"pane {json.dumps(opened)}, room {json.dumps(span)}")
+            check("the pane opens under the caret's line", end[3] <= opened[1] <= end[3] + 24,
+                  f"caret {json.dumps(end)}, pane {json.dumps(opened)}")
+            # Its room starts at the caret's column, unless the window runs out before a pane
+            # that wide fits beside it: then it takes the room from the window's edge.
+            check("the pane starts at the caret's column, inside its room",
+                  span[0] - 1 <= opened[0] <= end[0] + 24,
+                  f"caret {json.dumps(end)}, pane {json.dumps(opened)}, room {json.dumps(span)}")
         print(f"  shot {shot}")
 
         session.key("Escape")

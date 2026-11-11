@@ -202,7 +202,8 @@ impl crate::Session {
                 standing.rests_at_bottom,
             );
         }
-        // Where it stands is as tall as its page: what a press outside it is judged by.
+        // Where it stands is as tall as its page: what a press outside it is judged by. A surface
+        // still drawing the frame it fits takes no press until the person sees it.
         let stands = self
             .compositor
             .layer_rect(SURFACE_NAMESPACE)
@@ -214,9 +215,10 @@ impl crate::Session {
                     f64::from(y.saturating_add(height)),
                 )
             });
+        let visible = self.compositor.layer_visible(SURFACE_NAMESPACE);
         self.shared
             .overlays
-            .stands(Slot::QuickSettings, stands.filter(|_| open));
+            .stands(Slot::QuickSettings, stands.filter(|_| open && visible));
         let drawn = self.compositor.layer_drawn(SURFACE_NAMESPACE);
         self.quick_settings_panel.follow(
             open,
@@ -244,9 +246,12 @@ impl crate::Session {
             // on.
             self.shared.panel_asks.borrow_mut().push("show-controls");
         }
-        self.show_quick_settings();
-        // What the keys asked the panel to show, which it can only be told while it runs.
+        // What the keys asked the panel to show, which it can only be told while it runs. It is
+        // told before it shows, so the first frame it commits is that page, fitted, rather than
+        // the page it was left on.
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
+        self.ask_panel(&asked);
+        self.show_quick_settings();
         // Opened for its controls, the panel takes the keyboard: Tab walks them, Enter opens a
         // section. Opened to paste, the field the person types in keeps it, so the copy they
         // choose lands there.
@@ -262,7 +267,6 @@ impl crate::Session {
         {
             self.quick_settings_keyboard = PanelKeys::Settled;
         }
-        self.ask_panel(asked);
     }
 
     /// Keep the panel's app running, `open` or not: started when it does not run, and given up on
@@ -324,8 +328,8 @@ impl crate::Session {
     }
 
     /// Tell the running panel what the keys asked of it, in order.
-    fn ask_panel(&mut self, asked: Vec<&'static str>) {
-        for action in asked {
+    fn ask_panel(&mut self, asked: &[&'static str]) {
+        for &action in asked {
             let id = self.ask_surface(
                 SURFACE,
                 crate::keys::QUICK_SETTINGS,

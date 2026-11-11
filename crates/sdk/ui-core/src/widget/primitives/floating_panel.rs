@@ -552,13 +552,20 @@ impl Widget for FloatingPanel {
         presence: &PresenceCtx,
     ) {
         let now = crate::motion::frame_now();
+        // A panel arriving is as tall as its page from its first frame: the window it shows in is
+        // fitted, and no spring from the room it was given runs behind the person's eyes.
+        let arriving = self.placed.is_moving(now);
         if let Some(fit) = &mut self.fit {
-            fit.extent.follow(
-                fit.wanted,
-                theme.motion(),
-                crate::motion::input_source(),
-                now,
-            );
+            if arriving {
+                fit.extent.snap(fit.wanted);
+            } else {
+                fit.extent.follow(
+                    fit.wanted,
+                    theme.motion(),
+                    crate::motion::input_source(),
+                    now,
+                );
+            }
         }
         self.placed.follow(
             self.rect,
@@ -588,9 +595,17 @@ impl Widget for FloatingPanel {
     fn preferred_window_size(&self) -> Option<(f64, f64)> {
         let fit = self.fit.as_ref()?;
         let now = crate::motion::frame_now();
-        // Nothing to say before its first frame has measured its parts.
-        (self.rect.width() > 0.0 && fit.extent.target() > 0.0)
-            .then(|| (self.rect.width(), fit.extent.get(now).max(1.0).round()))
+        // The first measurement is the height it wants, and a panel arriving is that tall before
+        // the frame following its arrival: the window it first shows in is fitted, not the room
+        // it was given. A page that changes under a panel already up moves the window on its
+        // spring.
+        let height = if fit.extent.is_known() && !self.placed.is_moving(now) {
+            fit.extent.get(now)
+        } else {
+            fit.wanted
+        };
+        (self.rect.width() > 0.0 && height > 0.0)
+            .then(|| (self.rect.width(), height.max(1.0).round()))
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
@@ -743,6 +758,41 @@ mod tests {
         assert!(
             panel.placed.settles_at().is_some(),
             "and it will arrive at a time of the motion's own"
+        );
+    }
+
+    /// A panel arriving asks for the height of its page on its first frame, not the room it was
+    /// given before: the frame a person first sees is fitted.
+    #[test]
+    fn a_panel_arriving_asks_for_the_height_of_its_page() {
+        let _frame = crate::motion::pin_frame();
+        let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new())).fit_height();
+        let now = crate::motion::frame_now();
+        let room = Rect::new(0.0, 0.0, 380.0, 577.0);
+        panel.rect = room;
+        let fit = panel.fit.as_mut().expect("it fits its page");
+        // The page it showed before was the room; the one it is built for is shorter.
+        fit.extent.follow(
+            room.height(),
+            Theme::dark().motion(),
+            crate::tokens::MotionSource::Pointer,
+            now,
+        );
+        fit.wanted = 180.0;
+        // Shown from closed, it is on its way in.
+        panel.placed.snap(room, false);
+        panel.placed.follow(
+            room,
+            true,
+            Theme::dark().motion(),
+            crate::tokens::MotionSource::Pointer,
+            now,
+        );
+        assert!(panel.placed.is_moving(now));
+        assert_eq!(
+            Widget::preferred_window_size(&panel),
+            Some((380.0, 180.0)),
+            "the window it first shows in is as tall as its page"
         );
     }
 }
