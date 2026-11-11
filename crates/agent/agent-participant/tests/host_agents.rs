@@ -1009,7 +1009,8 @@ async fn a_hosted_agent_asks_the_persons_device_before_an_action_that_asks_first
     assert_eq!(question.workspace, WORKSPACE);
     // The action as the reader offers it, not the agent's own words.
     assert_eq!(question.action_label, "Remove from library");
-    assert_eq!(question.resource_label, "Books");
+    // The library is named as it is now, holding the book just shelved.
+    assert_eq!(question.resource_label, "1 books");
     assert_eq!(question.risk, "destructive");
     assert!(
         question.question().starts_with("Careful wants to ")
