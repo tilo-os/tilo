@@ -685,6 +685,21 @@ wait_for_socket "$ush_socket" "$!" || die "the ush supervisor did not start (see
 # nothing it plays is heard on the machine running it. A headless session has
 # no speakers, so it gets one null sink: an output with a name and a level to
 # show and change.
+# The machine's own cards and Bluetooth are the host's, and its PipeWire holds
+# them. WirePlumber's hardware monitors would open those devices in this
+# session, find them taken, and retry without pause: a core spent for as long
+# as the session runs. Its session manager still runs (default nodes, volume,
+# routing); it just has no hardware to enumerate.
+wireplumber_config=$XDG_CONFIG_HOME/wireplumber/wireplumber.conf.d
+mkdir -p "$wireplumber_config"
+cat > "$wireplumber_config/50-nested-session.conf" <<'WIREPLUMBER'
+wireplumber.profiles = {
+  main = {
+    hardware.audio = disabled
+    hardware.bluetooth = disabled
+  }
+}
+WIREPLUMBER
 for tool in pipewire pipewire-pulse wireplumber pw-cli; do
     command -v "$tool" >/dev/null \
         || die "$tool is required on PATH: the session would start with no sound"

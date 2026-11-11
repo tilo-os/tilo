@@ -8,6 +8,13 @@ Mail, Chat) and installed as signed packages. Every check below drives it the wa
 REPL or an agent does, and each one is there because a bug in that path was invisible to the
 unit tests and found only by starting a session by hand:
 
+  audio    the session's sound is its own: one null output, no device of the machine's in its
+           graph, and the session manager answers (that output is the default sink).
+           Catches WirePlumber's audio monitor enumerating the machine's ALSA cards inside the
+           session: a card the host's PipeWire holds makes it retry without pause, spending a
+           core per running session, and Settings then lists hardware the session does not
+           own.
+
   open     the four apps, opened at once onto the workspace's canvas, each present a first
            frame on the first try.
            Catches the broker, channel-key and workspace lock deadlock (fixed in b33cc45ace7):
@@ -100,6 +107,8 @@ BOUND_RESOURCE_PREFIX = "tilo-ui-bound:v1:"
 # How long any one wait may take before it counts as a hang: a first frame takes well under a
 # second here, so this bounds only a path that never answers.
 HANG_BOUND = float(os.environ.get("TILO_TEST_HANG_BOUND_SECS", "30"))
+# The one output a nested session's sound has (tilo_media::audio::SESSION_SINK).
+SESSION_SINK = "tilo-sink"
 # What the person asks the agent, and the one reply the test-only model gives.
 REQUEST = "Tidy up the release tasks"
 FIXED_REPLY = "The release tasks are tidy. (This is the e2e test model's fixed reply.)"
@@ -455,6 +464,24 @@ CHANNEL = "Tide release"
 TASK_TITLE = "Write the Tide release notes"
 
 
+def check_audio(session: Session) -> dict:
+    """The session's sound is its own: one null output, none of the machine's devices."""
+    env = session.env()
+    props = [entry.get("info", {}).get("props", {}) for entry in json.loads(run(["pw-dump"], env=env))]
+    hardware = sorted({str(p.get("device.name") or p.get("node.name")) for p in props
+                       if p.get("device.api") in ("alsa", "bluez5")})
+    if hardware:
+        raise Failed(f"the session's sound enumerates the machine's hardware {hardware}: its "
+                     "WirePlumber must leave the audio and Bluetooth monitors off")
+    sinks = sorted(str(p.get("node.name")) for p in props if p.get("media.class") == "Audio/Sink")
+    if sinks != [SESSION_SINK]:
+        raise Failed(f"the session's outputs are {sinks}, not only its own {SESSION_SINK}")
+    default = run(["wpctl", "inspect", "@DEFAULT_AUDIO_SINK@"], env=env)
+    if SESSION_SINK not in default:
+        raise Failed(f"the session's output is not the default sink; wpctl says {default[-800:]}")
+    return {"sinks": sinks}
+
+
 def check_open(session: Session) -> dict:
     """The four apps opened at once, onto the canvas, each with a first frame, first try."""
     session.invoke("actions", "workspace.show-canvas")
@@ -716,7 +743,7 @@ def check_dev(session: Session) -> dict:
 
 # --- the run -------------------------------------------------------------------------------
 
-CHECKS = ["open", "canvas", "repl", "ask", "restart", "dev"]
+CHECKS = ["audio", "open", "canvas", "repl", "ask", "restart", "dev"]
 
 
 def build_session(out: Path) -> Path:
@@ -783,6 +810,7 @@ def main() -> int:
         session.start(install=True)
         summary["start_seconds"] = round(time.monotonic() - began, 1)
         steps: dict[str, Callable[[], dict]] = {
+            "audio": lambda: check_audio(session),
             "open": lambda: check_open(session),
             "canvas": lambda: check_canvas(session),
             "repl": lambda: check_repl(session, out),
