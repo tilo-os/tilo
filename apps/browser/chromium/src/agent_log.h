@@ -214,8 +214,8 @@ class AgentLog final : public CefDevToolsMessageObserver {
     if(known==open_.end() && name!="Network.requestWillBeSent") {
       if(name!="Network.responseReceived" && name!="Network.loadingFinished" && name!="Network.loadingFailed") return;
       auto response=p->GetDictionary("response");
-      const auto type=Str(p,"type")=="Document" || Str(response,"type")=="Document"?"Document":"other";
-      if(type!="Document") return;
+      const bool document=Str(p,"type")=="Document" || Str(response,"type")=="Document";
+      if(!document) return;
       const auto url=Cut(Str(response,"url"),kMaxUrl);
       if(url.rfind("http",0)!=0) return;
       auto opened=CefDictionaryValue::Create();
