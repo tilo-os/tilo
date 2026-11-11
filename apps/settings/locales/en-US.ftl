@@ -1620,7 +1620,7 @@ perm-open-workspace = Open workspace access
 perm-no-grants-title = No workspace access
 perm-no-grants-body = No app can reach anything outside its own workspace.
 perm-unavailable-title = Workspace access can't be checked
-perm-unavailable-body = Which apps have extra access is unknown, because that record could not be read.
+perm-unavailable-body = The access list could not be read, so it is unknown which apps have extra access.
 perm-unavailable-caption = Open workspace access, or try again once the desktop session has finished starting.
 perm-grants-summary = { $grants } { $grants ->
         [one] grant

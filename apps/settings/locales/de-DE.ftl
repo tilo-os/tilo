@@ -1620,7 +1620,7 @@ perm-open-workspace = Arbeitsbereich-Zugriff öffnen
 perm-no-grants-title = Kein Arbeitsbereich-Zugriff
 perm-no-grants-body = Keine App erreicht etwas außerhalb ihres eigenen Arbeitsbereichs.
 perm-unavailable-title = Arbeitsbereich-Zugriff kann nicht geprüft werden
-perm-unavailable-body = Welche Apps zusätzlichen Zugriff haben, ist unbekannt, weil diese Daten nicht gelesen werden konnten.
+perm-unavailable-body = Die Zugriffsliste konnte nicht gelesen werden. Welche Apps zusätzlichen Zugriff haben, ist daher unbekannt.
 perm-unavailable-caption = Öffne den Arbeitsbereich-Zugriff oder versuche es erneut, sobald die Desktop-Sitzung vollständig gestartet ist.
 perm-grants-summary = { $grants } { $grants ->
         [one] Zugriff

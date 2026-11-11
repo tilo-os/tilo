@@ -96,7 +96,7 @@ tilolang-from = Aus
 tilolang-linked = Daraus entstanden
 
 app-activate-window = Dieses Fenster anzeigen
-app-activate-window-description = Bringt das bereits offene Fenster dieser App nach vorn.
+app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
 tilolang-form-cancel = Abbrechen
 tilolang-none-value = Keine Angabe
 tilolang-empty-value = Leer

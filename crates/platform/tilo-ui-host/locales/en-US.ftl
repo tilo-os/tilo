@@ -110,7 +110,7 @@ tilolang-from = From
 tilolang-linked = Made from this
 
 app-activate-window = Show this window
-app-activate-window-description = Bring the window this app already has to the front.
+app-activate-window-description = Bring this app's window to the front.
 tilolang-form-cancel = Cancel
 tilolang-none-value = None
 tilolang-empty-value = Empty

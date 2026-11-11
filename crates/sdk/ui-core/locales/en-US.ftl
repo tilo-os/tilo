@@ -734,7 +734,7 @@ device-display-request-pending = A display placement request is already pending.
 device-display-session-disconnected = The Tilo session disconnected.
 
 app-activate-window = Show this window
-app-activate-window-description = Bring this window to the front.
+app-activate-window-description = Bring this app's window to the front.
 
 terminal-service-control-unavailable = The terminal service isn't answering. Try again.
 terminal-service-protocol-unavailable = This window needs a newer Tilo on this computer. Update, then try again.

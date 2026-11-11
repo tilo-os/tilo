@@ -728,7 +728,7 @@ device-display-request-pending = Eine Anfrage zur Bildschirmposition steht berei
 device-display-session-disconnected = Die Verbindung zur Tilo-Sitzung wurde getrennt.
 
 app-activate-window = Dieses Fenster anzeigen
-app-activate-window-description = Dieses Fenster in den Vordergrund holen.
+app-activate-window-description = Das Fenster dieser App in den Vordergrund holen.
 
 terminal-service-control-unavailable = Der Terminaldienst antwortet nicht. Versuche es erneut.
 terminal-service-protocol-unavailable = Dieses Fenster braucht ein neueres Tilo auf diesem Computer. Aktualisiere und versuche es dann erneut.
