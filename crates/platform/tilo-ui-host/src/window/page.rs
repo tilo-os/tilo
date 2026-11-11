@@ -36,6 +36,8 @@ impl AppWindow {
 
     /// Whether `field` is a control of the page the window draws for the item its own view
     /// shows (a tree beside what it shows), rather than of the window's own list or sidebar.
+    /// A view with no item beside it stands in the content slot as the window's own page: its
+    /// fields are the window's resource, and what the app sends for them is what they show.
     pub(super) fn page_field(&self, field: &str) -> bool {
         let (lane, local) = lane_of(field);
         if lane != Lane::Root {
@@ -44,6 +46,9 @@ impl AppWindow {
         let Some(built) = &self.built else {
             return false;
         };
+        if self.shown_in_place.is_none() && chosen_item_of(built).is_none() {
+            return false;
+        }
         content_nodes(built).iter().any(|node| {
             let mut keys = BTreeSet::new();
             bound_keys(node, &mut keys);
