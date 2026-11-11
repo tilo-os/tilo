@@ -788,18 +788,29 @@ impl MainPanel {
     pub(crate) fn title_focused(&self) -> bool {
         self.title_label.is_editing()
     }
+    /// Give the panel back the keyboard the window's saved view names.
+    ///
+    /// A title edit is this person's own gesture — their New note, their
+    /// rename — and is never reopened by the window being presented again:
+    /// following someone brings this window forward, and another
+    /// participant's action changes the note under it, neither of which may
+    /// put the person's keyboard in a field they did not open. A saved view
+    /// that names the title (`NotesFocus::Title`, which this window no longer
+    /// writes) gives back the note's body instead, which is where the person
+    /// stands.
     pub(crate) fn finish_local_focus(&mut self, focus: crate::local_view::NotesFocus) {
         self.title_label.cancel();
         let _ = self.title_label.take_outcome();
         self.pending_rename = None;
         self.empty_action_focused = false;
         self.editor.set_focus(false);
-        if self.page_id.is_some() {
-            match focus {
-                crate::local_view::NotesFocus::Title => self.title_label.begin_edit(),
-                crate::local_view::NotesFocus::Editor => self.editor.set_focus(true),
-                _ => {}
-            }
+        if self.page_id.is_some()
+            && matches!(
+                focus,
+                crate::local_view::NotesFocus::Editor | crate::local_view::NotesFocus::Title
+            )
+        {
+            self.editor.set_focus(true);
         }
     }
 
