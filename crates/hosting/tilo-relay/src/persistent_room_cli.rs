@@ -171,7 +171,9 @@ pub struct PersistentArgs {
     /// How many requests left at the door the workspace keeps while it takes
     /// people by invitation: each is an address (an email) someone who asked
     /// without an invitation leaves, on the workspace's wait list for whoever
-    /// may invite until they take it off. `0`: the door keeps none.
+    /// may invite until they take it off. `0`: the door keeps none. It is the
+    /// door taking people by invitation that turns them away, so it is that
+    /// door this goes with.
     #[arg(
         long = "wait-list-max",
         value_name = "COUNT",
@@ -179,10 +181,11 @@ pub struct PersistentArgs {
         requires = "invitation_only"
     )]
     pub wait_list_max: usize,
-    /// Whoever runs the workspace sends mail from the web entry DOOR (a URL
-    /// ending in `/`): members may ask it to mail an invitation on that
-    /// door to a confirmed address on the wait list, which it hears as an
-    /// `invite_mail` event.
+    /// The web entry DOOR (a URL ending in `/`) the wait list's mails are
+    /// sent from, which their links open: the confirmation link, and an
+    /// invitation a member asks the door to mail to a confirmed address. It
+    /// defaults to the workspace's own web entry; without mail configured,
+    /// the list keeps addresses and mails nothing.
     #[arg(
         long = "wait-list-mail",
         value_name = "DOOR",

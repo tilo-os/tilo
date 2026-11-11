@@ -156,7 +156,34 @@ report.reloadListed = await tab.evaluate(`document.getElementById('arrival-wait-
 await shot('3-on-the-list.png');
 console.log(`ok: a reload stays on the wait list (${report.reloadListed})`);
 
-// 5. Nothing behind the door opened: no membership, no desk.
+// 5. A phone, in German: the same door, its field stacked under its button.
+const phone = await browser.tab({firstRun: true});
+await phone.send('Page.addScriptToEvaluateOnNewDocument', {
+  source: `Object.defineProperty(navigator, 'language', {get: () => 'de-DE'});`,
+});
+await phone.send('Emulation.setDeviceMetricsOverride', {width: 390, height: 844, deviceScaleFactor: 2, mobile: true});
+await phone.navigate(site);
+for (let tries = 0; tries < 480; tries += 1) {
+  const ready = await phone.evaluate(`document.documentElement.dataset.waitList === 'form'`).catch(() => false);
+  if (ready) break;
+  await sleep(250);
+}
+report.phone = await phone.evaluate(`({
+  waitList: document.documentElement.dataset.waitList ?? null,
+  heading: document.getElementById('arrival-door-heading')?.textContent?.trim() ?? null,
+  button: document.querySelector('#arrival-wait button')?.textContent?.trim() ?? null,
+  note: document.getElementById('arrival-wait-note')?.textContent?.trim() ?? null,
+  stacked: (() => {
+    const form = document.getElementById('arrival-wait');
+    return form ? getComputedStyle(form).gridTemplateColumns.split(' ').length > 1 : null;
+  })(),
+})`).catch(() => null);
+const phoneShot = await phone.screenshot().catch(() => null);
+if (phoneShot) writeFileSync(join(out, '4-phone-german.png'), phoneShot);
+console.log(`ok: a phone in German (${report.phone?.heading})`);
+await phone.close().catch(() => {});
+
+// 6. Nothing behind the door opened: no membership, no desk.
 report.memberships = await tab.evaluate(`globalThis.localStorage?.getItem('tilo-host-memberships') ?? null`);
 report.arrival = await tab.evaluate(`document.documentElement.dataset.arrival`);
 if (report.memberships) await finish(1, `a stranger at the wait list was let into the workspace: ${report.memberships}`);
