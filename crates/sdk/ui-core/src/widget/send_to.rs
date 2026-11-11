@@ -129,7 +129,7 @@ impl SendToBox {
             open: false,
             about: None,
             subjects: Vec::new(),
-            to: vec![Recipient::new_agent(crate::i18n!("send-to-new-agent"))],
+            to: vec![Recipient::new_agent(String::new())],
             addressed: false,
             search: String::new(),
             search_selection: Selection::default(),
@@ -260,8 +260,7 @@ impl SendToBox {
         if self.addressed {
             self.to.extend_from_slice(to);
         } else {
-            self.to
-                .push(Recipient::new_agent(crate::i18n!("send-to-new-agent")));
+            self.to.push(Recipient::new_agent(String::new()));
         }
         self.search.clear();
         self.search_selection = Selection::default();
@@ -495,16 +494,14 @@ impl SendToBox {
             .iter()
             .map(|recipient| {
                 !(self.addressed
-                    || recipient.kind == RecipientKind::NewAgent
-                        && recipient.name
-                            == crate::i18n::I18nManager::lookup_plain("send-to-new-agent"))
+                    || recipient.kind == RecipientKind::NewAgent && recipient.name.is_empty())
             })
             .collect();
         let asks = self
             .to
             .iter()
             .zip(&removable)
-            .map(|(recipient, remove)| self.chip_ask(&recipient.name, *remove))
+            .map(|(recipient, remove)| self.chip_ask(&chip_name(recipient), *remove))
             .collect();
         (removable, asks)
     }
@@ -1179,7 +1176,7 @@ impl SendToBox {
             let text_x = chip.x0 + self.text_lead();
             let room = remove.map_or(chip.x1 - row * 0.2, |remove| remove.x0);
             let shown = text_renderer.elide_to_width_style(
-                &recipient.name,
+                &chip_name(recipient),
                 (room - text_x - row * 0.1).max(1.0) as f32,
                 &style,
             );
@@ -1474,11 +1471,7 @@ impl SendToBox {
             position = position.saturating_add(1);
             node.with_position(position, total)
         };
-        let chips: Vec<String> = self
-            .to
-            .iter()
-            .map(|recipient| recipient.name.clone())
-            .collect();
+        let chips: Vec<String> = self.to.iter().map(chip_name).collect();
         let mut children = Vec::new();
         children.push(action(
             AccessNode::new(Role::TextInput)
@@ -1710,6 +1703,16 @@ fn subject_glyph(subject: &SharedSelection) -> crate::icons::Icon {
         .map_or(crate::icons::Icon::AppWindow, |app| {
             crate::icons::app_glyph(app, None)
         })
+}
+
+/// What a recipient's chip reads: its name, and for the new agent nobody named
+/// yet, that it is a new agent — the session names it by what it is asked.
+fn chip_name(recipient: &Recipient) -> String {
+    if recipient.kind == RecipientKind::NewAgent && recipient.name.is_empty() {
+        crate::i18n::I18nManager::lookup_plain("send-to-new-agent")
+    } else {
+        recipient.name.clone()
+    }
 }
 
 #[cfg(test)]

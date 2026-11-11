@@ -1416,7 +1416,7 @@ fn turns(
                 .iter()
                 .copied()
                 .filter(|(message_id, message)| {
-                    !message.text.trim().is_empty()
+                    (!message.text.trim().is_empty() || !message.attachments.is_empty())
                         && person_of(&message.author.0).is_some()
                         && part
                             .messages
@@ -1451,11 +1451,12 @@ fn turns(
             // The conversation's address in the workspace, as the desk and the apps name it, and
             // the message's own beneath it.
             let address = format!("{}/channels/{id}", chat::Chat::KIND);
+            let (instruction, subject) = request(message);
             turns.push(Entry {
                 run: TrackerRun {
                     issue: format!("{address}/messages/{message_id}"),
                     title: chat.display_names(id, Some(person)),
-                    instruction: message.text.clone(),
+                    instruction,
                     agent: agent.clone(),
                     epoch: 1,
                     starter,
@@ -1463,7 +1464,7 @@ fn turns(
                     finished_by_agent: false,
                     paused_through: None,
                     budget: None,
-                    subject: None,
+                    subject,
                     model: None,
                     directions: Vec::new(),
                     question: None,
@@ -1475,6 +1476,40 @@ fn turns(
         }
     }
     (turns, agents)
+}
+
+/// What a message asks of the agents it summons: its words, and what it carries as the records
+/// they name — the first of them the run's subject, which the agent acts on through that record's
+/// own actions, and every other one said beside the words. A file or words quoted from nowhere are
+/// said as what they are.
+fn request(message: &chat::record::Message) -> (String, Option<tilo_actions::SelectionSubject>) {
+    let mut subject = None;
+    let mut instruction = message.text.trim().to_owned();
+    for attached in &message.attachments {
+        let named = attached.subject();
+        if subject.is_none() && named.is_some() {
+            subject = named;
+            continue;
+        }
+        let line = match (named, attached) {
+            (Some(named), _) => format!(
+                "It also carries {:?} ({} `{}`, in `{}`).",
+                attached.label(),
+                named.resource.kind,
+                named.resource.id,
+                named.app_id
+            ),
+            (None, tilo_reference::Attached::Text { text, .. }) => {
+                format!("It quotes: {text:?}.")
+            }
+            (None, _) => format!("It carries the file {:?}.", attached.label()),
+        };
+        if !instruction.is_empty() {
+            instruction.push('\n');
+        }
+        instruction.push_str(&line);
+    }
+    (instruction, subject)
 }
 
 /// The session's Chat service, as a test drives it: what it publishes, and one of its actions
@@ -1590,6 +1625,47 @@ mod tests {
         );
         assert_eq!(entry.looked, Looked::by(ME));
         assert!(entry.run.active);
+    }
+
+    /// What a send-to box carried reaches the agent as the record it names: the run's subject is
+    /// that record, to act on through its own actions, and a message carrying it with no words is
+    /// a turn too.
+    #[test]
+    fn what_a_message_carries_is_the_subject_of_its_turn() {
+        let chat = workspace();
+        let issue = tilo_reference::ResourceAt {
+            app: "so.tilo.tasks".into(),
+            record: None,
+            reference: tilo_reference::ResourceRef::whole(
+                "tasks.issue",
+                "tasks.tracker/issues/42",
+                "Launch checklist",
+            ),
+        };
+        let mut handed = message(ME, "", 10);
+        handed.attachments = vec![
+            tilo_reference::Attached::resource(
+                issue.clone(),
+                Some(tilo_reference::Anchor::item("42")),
+                "Launch checklist",
+            ),
+            tilo_reference::Attached::Text {
+                text: "before Friday".into(),
+                from: None,
+            },
+        ];
+        let entries = read(&chat, &part(vec![("m1", handed)]));
+        let [entry] = entries.as_slice() else {
+            panic!("a message carrying a task alone is a turn, not {entries:?}");
+        };
+        let subject = entry.run.subject.as_ref().expect("the task is the subject");
+        assert_eq!(subject.app_id, "so.tilo.tasks");
+        assert_eq!(subject.resource.id, "tasks.tracker/issues/42");
+        assert_eq!(
+            subject.anchor.place,
+            Some(tilo_actions::SelectionPlace::item("42"))
+        );
+        assert_eq!(entry.run.instruction, "It quotes: \"before Friday\".");
     }
 
     /// A message Chat writes names its author by the bare id the record write

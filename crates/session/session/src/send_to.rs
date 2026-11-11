@@ -50,7 +50,7 @@ impl Shared {
         }
         let (workspace, target) = match addressed(self.feedback.as_ref(), workspace, to)? {
             Addressed::Message { workspace, to } => {
-                let resolved = self.recipients_of(&workspace, &to)?;
+                let resolved = self.recipients_of(&workspace, &to, &agent_name(text, attached))?;
                 let target = send_target(&workspace, &resolved, attached, text)?;
                 (workspace, target)
             }
@@ -79,11 +79,17 @@ impl Shared {
 
     /// Who a message goes to, as the names a box holds: an agent named as a
     /// new one is made here first, so the message never goes to an agent the
-    /// workspace does not list.
+    /// workspace does not list. A new agent the person did not name is named
+    /// `asked`, by what it is asked to do.
     ///
     /// # Errors
     /// A new agent could not be made or admitted, or nobody is left to go to.
-    fn recipients_of(&self, workspace: &str, to: &[Recipient]) -> Result<Vec<Recipient>, String> {
+    fn recipients_of(
+        &self,
+        workspace: &str,
+        to: &[Recipient],
+        asked: &str,
+    ) -> Result<Vec<Recipient>, String> {
         let feed = self.workspace_settings_feed();
         let mut resolved: Vec<Recipient> = Vec::with_capacity(to.len());
         for recipient in to {
@@ -91,12 +97,12 @@ impl Shared {
                 RecipientKind::NewAgent => {
                     // A new agent takes the workspace's default model and the colour its identity
                     // gives it.
-                    let made = feed.make_agent(Some(workspace), &recipient.name, "", None)?;
-                    resolved.push(Recipient::found(
-                        RecipientKind::Agent,
-                        made.clone(),
-                        recipient.name.clone(),
-                    ));
+                    let name = match recipient.name.trim() {
+                        "" => asked,
+                        named => named,
+                    };
+                    let made = feed.make_agent(Some(workspace), name, "", None)?;
+                    resolved.push(Recipient::found(RecipientKind::Agent, made, name));
                 }
                 RecipientKind::Agent
                 | RecipientKind::Person
@@ -137,6 +143,43 @@ impl Shared {
     /// ([`ui::floating_surface::FloatingSurfaceHostMessage::ShareSelection`]).
     pub(crate) fn take_send_from(&self) -> bool {
         self.send_from.replace(false)
+    }
+}
+
+/// The most characters a new agent's name takes from what it is asked.
+const AGENT_NAME_CHARS: usize = 40;
+
+/// What a new agent nobody named is called: the first words it is asked, else what it is sent,
+/// so the many agents a person makes from boxes are told apart in every list and search.
+fn agent_name(text: &str, attached: &[tilo_reference::Attached]) -> String {
+    let asked = text.lines().map(str::trim).find(|line| !line.is_empty());
+    let source = asked
+        .or_else(|| {
+            attached
+                .iter()
+                .map(|attached| attached.label().trim())
+                .find(|label| !label.is_empty())
+        })
+        .unwrap_or_default();
+    let mut name = String::new();
+    for word in source.split_whitespace() {
+        let wanted = name.chars().count() + usize::from(!name.is_empty()) + word.chars().count();
+        if wanted > AGENT_NAME_CHARS {
+            if name.is_empty() {
+                name = word.chars().take(AGENT_NAME_CHARS - 1).collect();
+            }
+            name.push('…');
+            break;
+        }
+        if !name.is_empty() {
+            name.push(' ');
+        }
+        name.push_str(word);
+    }
+    let mut letters = name.chars();
+    match letters.next() {
+        Some(first) => first.to_uppercase().chain(letters).collect(),
+        None => crate::i18n::t("send-to-agent-unnamed"),
     }
 }
 
@@ -265,6 +308,30 @@ mod tests {
             "where the box stood is the desk's to place the conversation by, not the chat's"
         );
     }
+    /// A new agent nobody named is called by what it is asked, else by what it is sent, so a
+    /// person's many agents are told apart.
+    #[test]
+    fn a_new_agent_is_named_by_what_it_is_asked() {
+        let task = Attached::Text {
+            text: "Launch checklist".into(),
+            from: None,
+        };
+        assert_eq!(
+            agent_name("split this into subtasks\nand label them", &[task.clone()]),
+            "Split this into subtasks"
+        );
+        assert_eq!(
+            agent_name("  ", std::slice::from_ref(&task)),
+            "Launch checklist"
+        );
+        let long = agent_name(
+            "summarise every review comment on the release notes and draft replies",
+            &[],
+        );
+        assert_eq!(long, "Summarise every review comment on the…");
+        assert!(long.chars().count() <= AGENT_NAME_CHARS + 1);
+    }
+
     /// A report's chip is the one place this computer sends reports: one send
     /// is one report, filed in the channel the destination names in the
     /// workspace that keeps it, carrying what the window picked and the words,

@@ -92,6 +92,7 @@ desk-window-did-not-open = { $app } started but did not open a window
 ## The "Always allow" answers this computer kept for the agents at its door,
 ## which could not be read: each agent whose answer it was is asked again.
 agent-bindings-app-name = Agents
+send-to-agent-unnamed = Agent
 agent-bindings-lost-title = { $agent } is asked again
 agent-bindings-lost-body = This computer could not read that you let { $agent } work here, so it asks you again the next time { $agent } connects. Nothing else was removed.
 agent-bindings-unreadable-title = Your answers about agents could not be read
