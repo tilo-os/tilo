@@ -101,7 +101,7 @@ impl Session {
         // once.
         let launch = self.shared.launch.clone();
         if let Some(launch) = &launch {
-            launch.follow_render_node(|| self.compositor.render_node());
+            launch.follow_render_node(|| self.compositor.render_node(), self.first_frame);
             launch.start_asked_now();
         }
         // What search reads of the desk is read in turns that have nothing to draw. What arrived

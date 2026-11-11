@@ -75,6 +75,9 @@ struct State {
     authority_at: Option<u64>,
     /// The GPU the compositor renders on, for an app to render on the same.
     render_node: Option<PathBuf>,
+    /// The compositor drew its first frame with no GPU to import from: its apps were pinned to the
+    /// software renderer it draws with ([`Apps::follow_render_node`]).
+    software: bool,
     /// The session's launch records, once it has lent them: what its broker admits a connection by,
     /// and so what each launch it makes is written into.
     launches: Option<std::sync::Arc<crate::Launches>>,
@@ -168,6 +171,7 @@ impl Apps {
                 authority: Authority::new(),
                 authority_at: None,
                 render_node: None,
+                software: false,
                 launches: None,
                 doors: None,
                 me: Weak::new(),
@@ -209,10 +213,38 @@ impl Apps {
     /// import on when it starts importing dma-bufs, which can be after the session first hands
     /// the launcher its node. Until then a launch had none, and an app that opens the GPU itself
     /// got no pin at all (on a machine without a GPU, every installed driver in its loader).
-    pub fn follow_render_node(&self, node: impl FnOnce() -> Option<PathBuf>) {
+    ///
+    /// Once the compositor has drawn (`drawn`) with no GPU to import from, it draws with the
+    /// software renderer, and so must its apps: the launcher of each is handed the software pin
+    /// (lavapipe alone, Mesa's EGL vendor, no device-select layer), which a launch with no render
+    /// node takes into its sandbox (`launcher::gpu::inherited_software_pin`). Without it an app
+    /// that opens the GPU itself loaded every installed driver, and Chat crashed in a VM without
+    /// 3D.
+    pub fn follow_render_node(&self, node: impl FnOnce() -> Option<PathBuf>, drawn: bool) {
         let mut state = self.state.borrow_mut();
-        if state.render_node.is_none() {
-            state.render_node = node();
+        if state.render_node.is_some() || state.software {
+            return;
+        }
+        state.render_node = node();
+        if state.render_node.is_none() && drawn {
+            state.software = true;
+            #[cfg(target_os = "linux")]
+            match launcher::gpu::software_pin(&launcher::gpu::IcdSearch::default()) {
+                Ok(pin) => {
+                    for (key, value) in pin.env() {
+                        state
+                            .environment
+                            .forwarded
+                            .entry(key.to_owned())
+                            .or_insert(value);
+                    }
+                    tracing::info!(
+                        vulkan = %pin.vulkan_icd_json.display(),
+                        "no GPU: the apps opened from here on render with the software renderer"
+                    );
+                }
+                Err(why) => tracing::info!(%why, "no GPU, and no software renderer to pin apps to"),
+            }
         }
     }
 
@@ -1677,19 +1709,50 @@ mod tests {
     fn a_launch_follows_the_render_node_the_compositor_names_later() {
         let apps = apps();
         apps.set_render_node(None);
-        apps.follow_render_node(|| None);
+        apps.follow_render_node(|| None, false);
         assert_eq!(apps.state.borrow().render_node, None);
-        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/card1")));
+        assert!(
+            !apps.state.borrow().software,
+            "nothing is decided before the first frame"
+        );
+        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/card1")), true);
         assert_eq!(
             apps.state.borrow().render_node.as_deref(),
             Some(Path::new("/dev/dri/card1"))
         );
-        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/renderD128")));
+        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/renderD128")), true);
         assert_eq!(
             apps.state.borrow().render_node.as_deref(),
             Some(Path::new("/dev/dri/card1")),
             "the node it took stays"
         );
+    }
+
+    /// A compositor that has drawn with no GPU to import from draws in software, and the apps it
+    /// opens are handed the software renderer's pin, where this machine has one.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_compositor_that_drew_without_a_gpu_pins_its_apps_to_the_software_renderer() {
+        let apps = apps();
+        apps.follow_render_node(|| None, true);
+        let state = apps.state.borrow();
+        assert!(state.software);
+        assert_eq!(state.render_node, None);
+        match launcher::gpu::software_pin(&launcher::gpu::IcdSearch::default()) {
+            Ok(pin) => {
+                for (key, value) in pin.env() {
+                    assert_eq!(
+                        state.environment.variables().get(key),
+                        Some(&value),
+                        "{key}"
+                    );
+                }
+            }
+            Err(_) => assert!(
+                !state.environment.forwarded.contains_key("VK_DRIVER_FILES"),
+                "no software renderer here, so nothing is pinned"
+            ),
+        }
     }
 
     /// An agent is a service the launcher runs, and the agent's own options follow the entrypoint:
