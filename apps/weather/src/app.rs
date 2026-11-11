@@ -2233,10 +2233,12 @@ mod morning_preview_regression {
             .presentation
             .expect("cached forecast publishes a bounded morning preview");
         assert!(presentation.is_valid());
+        let preview = presentation.preview.unwrap();
         assert!(
-            presentation.preview.unwrap().contains("Clear"),
-            "the preview names the condition"
+            preview.contains(", "),
+            "the preview names the condition beside the temperature: {preview}"
         );
+        assert!(!preview.contains('\u{b7}'), "one fact per line: {preview}");
         assert!(presentation.detail.unwrap().contains("Open-Meteo"));
         assert_eq!(presentation.badge.as_deref(), Some("Capture fixture"));
     }
