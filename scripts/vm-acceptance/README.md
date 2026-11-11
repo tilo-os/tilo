@@ -173,7 +173,9 @@ files, the environment (opened from Terminal there, the tool runs, the checkout 
 is its only member and the source's chat stayed behind (WB03). An edit in the first branch (a
 note, a line and a file in its tree, its tool, a new environment) shows neither in the source nor
 the second branch, and one in the source not in the branches (WB04), also after the session
-restarts (WB05). An agent started in the first branch's environment (`guest/mcp_agent.sh`) is
+restarts, when Chat in the first branch still holds none of the source's chat, takes a line of its
+own, and its history is not held back (WB05). The tool runs as `~/.local/bin/e2e-tool` itself, and
+the question is a `.md` whose bytes read back as written. An agent started in the first branch's environment (`guest/mcp_agent.sh`) is
 admitted there, finds that branch's notes and not the source's later one, and its environment
 reads neither the source's nor the sibling's tree (WB06).
 

@@ -44,7 +44,7 @@ BRANCHES = ("Question A", "Question B")
 CLI_BRANCH = "Question C"
 ENVIRONMENT = "Lab"
 # What the person keeps in the workspace's files, under its tree (the environments' `~`).
-QUESTION = "research/question.txt"
+QUESTION = "research/question.md"
 TOOL = ".local/bin/e2e-tool"
 CHECKOUT = "src/notes-tools"
 DATA_DIR = "research/data"
@@ -419,7 +419,7 @@ def in_shell(ctx, terminal: ae.Terminal, tree: str, name: str, script: str) -> N
 
 # What a shell in an environment says about itself and its tree, a field a line.
 SAY = ("for v in TILO_WORKSPACE TILO_ENVIRONMENT HOME; do printf '%s %s %s\\n' {M}-ENV \"$v\" \"${!v:-none}\"; "
-       "done; printf '%s %s\\n' {M}-TOOL \"$(bash ~/" + TOOL + " 2>&1 | head -1 | tr ' ' _)\"; "
+       "done; printf '%s %s\\n' {M}-TOOL \"$(~/" + TOOL + " 2>&1 | head -1 | tr ' ' _)\"; "
        "printf '%s %s\\n' {M}-QUESTION \"$(head -1 ~/" + QUESTION + " 2>/dev/null | tr ' ' _)\"; "
        "if command -v git >/dev/null; then printf '%s %s\\n' {M}-GIT "
        "\"$(git -C ~/" + CHECKOUT + " log -1 --format=%s 2>&1 | tr ' ' _)\"; else echo {M}-GIT absent; fi")
@@ -755,6 +755,11 @@ def chat_says(ctx, ws: dict, text: str, label: str) -> dict:
             "readable": rows is not None}
 
 
+def holds(heard: dict) -> bool:
+    """Whether what `chat_says` heard holds the text: in Chat's read, the listing, or on screen."""
+    return any(heard.get(key) for key in ("read", "listed", "shown"))
+
+
 def post_chat(ctx, ws: dict, text: str) -> None:
     """The person says `text` in `ws`'s chat, in its first channel, through Chat's own post."""
     ae.select_workspace(ctx, ws)
@@ -988,6 +993,7 @@ def after_restart(ctx, res):
     # The person closes their windows and restarts the session: what each workspace holds comes back
     # from its own records and files, not from windows that stayed open.
     ctx.reset()
+    since = ctx.vm.exec("date +%s", check=False).strip()
     ctx.vm.restart_session(timeout=180)
     started = time.monotonic()
     ctx.facts.pop("awake_at", None)
@@ -1026,6 +1032,28 @@ def after_restart(ctx, res):
     seen, wrong = apart(ctx, scene, "restarted")
     ctx.write("WB05-seen.json", json.dumps(seen, indent=1))
     problems.extend(wrong)
+    # Chat works in the first branch after the restart: it still holds none of the source's chat,
+    # takes a line of its own, and its records' history is not held back; the source keeps its chat.
+    first = scene["branches"][0]
+    if scene["chat"]:
+        try:
+            before = chat_says(ctx, first, scene["chat"], "restarted-branch")
+            problems.want(not holds(before), f"after the restart {first['name']}'s Chat holds the source's "
+                                             f"chat: {before}")
+            line = f"Branch line {scene['run']}"
+            post_chat(ctx, first, line)
+            heard = wait_until(lambda: holds(chat_says(ctx, first, line, "restarted-branch-line")), 30,
+                               interval=2.0)
+            problems.want(bool(heard), f"after the restart {first['name']}'s Chat does not hold the line the "
+                                       "person said there")
+            kept = chat_says(ctx, scene["source"], scene["chat"], "restarted-source")
+            problems.want(holds(kept), f"after the restart the source's Chat lost its chat: {kept}")
+        except CheckFailed as exc:
+            problems.append(f"after the restart Chat in {first['name']}: {exc}")
+        blocked = ctx.vm.root_exec(
+            f"journalctl --no-pager -o cat --since @{since or 0} | grep -a 'so.tilo.chat' "
+            "| grep -a 'does not match its binding' | tail -n 3 | cut -c1-400", timeout=180, check=False).strip()
+        problems.want(not blocked, f"after the restart Chat's history is held back: {blocked}")
     problems.judge()
 
 
