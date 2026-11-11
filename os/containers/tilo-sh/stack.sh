@@ -83,6 +83,8 @@ D-Bus or runtime directory. TILO_SH_BUNDLE names a built desktop bundle
 Images: TILO_SH_IMAGE_LOUNGE, TILO_SH_IMAGE_DOOR and TILO_SH_IMAGE_WEB name an
 OCI archive or a registry reference instead of this checkout's t build (e.g.
 the registry.tilo.so/tilo/lounge@sha256:… production pins).
+TILO_SH_VM_HOST=0 leaves the VM host out where it could run (it runs as
+root through sudo).
 State: TILO_SH_STATE (default \${XDG_STATE_HOME:-~/.local/state}/tilo-sh-local).
 Needs t, bwrap, curl, python3, wasm-bindgen and wasm-opt (for the bundle);
 with --images, podman (rootless is fine) instead of bwrap and the toolchain.
@@ -290,7 +292,7 @@ vm_skip_reason() {
 }
 
 # Whether this stack's VM host is up.
-vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
+vm_host_running() { [[ -z $(vm_host_blocker) && -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
 
 # The front door's environment: apps/tilo-front-door/deployment.yaml.
 door_env() {
@@ -378,7 +380,11 @@ vm_state=${TILO_SH_VM_HOST_STATE:-/var/lib/tilo-sh-local-vm}
 # production (KVM, its own cgroup tree, a raw block device it formats, a jail
 # helper given capabilities), which rootless podman cannot give it, so it runs
 # as root over its own state, through sudo.
+# TILO_SH_VM_HOST=0 leaves it out on a machine that could run it, so the
+# stack never asks for root there (check.sh reads the same variable: 1 adds
+# the hosted Browser's steps, which need it).
 vm_host_blocker() {
+  [[ ${TILO_SH_VM_HOST:-} != 0 ]] || { echo 'TILO_SH_VM_HOST=0 leaves it out'; return; }
   [[ -e /dev/kvm ]] || { echo 'this machine has no /dev/kvm'; return; }
   if [[ $EUID != 0 ]] && ! sudo -n true 2>/dev/null; then
     echo 'it needs root (a raw block device for its state, cgroup delegation and setcap for its jail helper) and sudo here asks for a password; run: sudo -E env TILO_SH_STATE=$vm_state bash os/containers/tilo-sh/vm-host.sh up'
