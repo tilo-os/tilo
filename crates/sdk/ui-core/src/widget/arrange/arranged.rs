@@ -14,7 +14,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::Side;
-use super::units::{At, Fit, Length};
+use super::units::{At, Fit, Length, WidthClass};
 use crate::interaction::InteractionEnvironment;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
@@ -218,8 +218,13 @@ pub struct Arranged<L: Layout> {
     node: Option<NodeId>,
     resolved: Resolved,
     /// Leads this container reserves before its content: a document's body stands one lead
-    /// in, under the text its heading's control leads to.
+    /// in, under the text its heading's control leads to. Kept only where the column it is
+    /// laid in has the room for it: on a phone's screen what it holds starts on the page's
+    /// gutter, and the words keep the width the indent would have taken.
     lead: i16,
+    /// The width class of the column this container was last laid out in: what decides whether
+    /// the column has room for its lead.
+    column: Option<WidthClass>,
     /// How the person reaches the window, which sizes a lead.
     interaction: InteractionEnvironment,
     rect: Rect,
@@ -238,6 +243,7 @@ impl<L: Layout> Arranged<L> {
             node: None,
             resolved: Resolved::fixed(16.0, 8.0),
             lead: 0,
+            column: None,
             interaction: InteractionEnvironment::default(),
             rect: Rect::ZERO,
             id: None,
@@ -399,9 +405,9 @@ impl<L: Layout> Arranged<L> {
     }
 
     /// The container's style: what its layout arranges with, and the lead it reserves before
-    /// its content.
+    /// its content. A column without the room for a lead reserves none.
     fn container_style(&self) -> Style {
-        let lead = if self.lead > 0 {
+        let lead = if self.lead > 0 && self.column != Some(WidthClass::Compact) {
             lead_width(self.lead, &self.resolved)
         } else {
             0.0
@@ -645,7 +651,15 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
         };
         let allocated = laid.size;
         let aspects = self.derive_aspects(tree);
-        if self.layout.settle(allocated, &self.resolved) {
+        // The column this pass gave the container decides whether what it holds keeps the lead.
+        // A change of class is a change of style, solved again on the next pass.
+        let mut room_changed = false;
+        if self.lead > 0 {
+            let column = WidthClass::with_history(allocated.width / self.resolved.rem, self.column);
+            room_changed = self.column != Some(column);
+            self.column = Some(column);
+        }
+        if self.layout.settle(allocated, &self.resolved) || room_changed {
             return self.restyle(tree) || aspects;
         }
         aspects

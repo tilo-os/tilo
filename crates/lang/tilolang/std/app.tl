@@ -617,7 +617,10 @@ view document<R>(of: R, content: View) {
 /// What follows a document's heading, one row lead in: the body starts under the text the
 /// heading's control leads to, so a task's notes, subtasks and facts stand in the column its
 /// title's text does, and the box that says the item is done stands in the gutter to their
-/// left. A document whose heading opens with its title alone has no lead to make.
+/// left. A document whose heading opens with its title alone has no lead to make, and a page
+/// on a phone's screen keeps none either: the column there is too narrow to give a control's
+/// cell out of every line, so the body starts on the page's gutter and the heading keeps its
+/// control beside its title.
 template view body(content: View) {
     // A document's blocks under its heading are groups of their own, a group gutter apart: a
     // section's heading keeps its content a step under it and more room over it.

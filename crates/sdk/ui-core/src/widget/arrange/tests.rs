@@ -161,12 +161,46 @@ fn a_container_that_keeps_a_padding_insets_what_it_holds() {
         .padding(Rhythm::Section)
         .push(boxed(100.0));
     led.set_lead(1);
-    solve(&mut led, &theme, 400.0);
+    // A column with the room for a lead: on a phone's screen it keeps none, and this is the
+    // padding's own test.
+    solve(&mut led, &theme, 600.0);
     let held = rects(&led)[0];
     assert!(
         held.x0 > pad + 0.5,
         "a lead stands what it holds further in than the padding alone: {held:?}"
     );
+}
+
+/// A column without the room for a row lead keeps none: on a phone's screen what a document's
+/// body holds starts on the page's gutter, so the words keep the width a control's cell would
+/// take from every line, while the column it is read in is a column.
+#[test]
+fn a_phone_screen_keeps_no_lead_where_a_column_does() {
+    use super::units::COMPACT_BELOW;
+    let theme = Theme::dark();
+    let rem = f64::from(rem_of(&theme));
+    let lead = f64::from(Resolved::of(&theme).lead());
+    assert!(lead > 0.0);
+    // The narrowest a column stands: `WidthClass::Medium`, where a lead has room again.
+    let column = f64::from(COMPACT_BELOW) * rem;
+    for (width, kept) in [
+        (320.0, false),
+        (390.0, false),
+        (column - 1.0, false),
+        (column, true),
+        (1280.0, true),
+    ] {
+        let mut body = Stack::stack().fill_width().push(boxed(100.0));
+        body.set_lead(1);
+        solve(&mut body, &theme, width as f32);
+        let held = rects(&body)[0];
+        let inset = if kept { lead } else { 0.0 };
+        assert!(
+            (held.x0 - inset).abs() < 0.5,
+            "{width} wide: what it holds stands at {}, where a lead is {lead}",
+            held.x0
+        );
+    }
 }
 
 /// Where the body of `root` — its second child, which leads — holds what is written in it.
