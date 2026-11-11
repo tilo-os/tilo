@@ -54,6 +54,16 @@ const LINE: &str = "Row";
 /// A heading's widget: the band a section goes by, over what the section holds.
 const HEADING: &str = "SectionHeader";
 
+/// A section's widget: the groups a page is made of, each under its heading.
+const SECTION: &str = "Section";
+
+/// The writing a page holds: the editable text a person writes, which the page's own sections
+/// stand after.
+const WRITING: &str = "BlockEditor";
+
+/// A rule's widget: the line that says one part of a page ends and the next begins.
+const RULE: &str = "Divider";
+
 /// A page's widget: the readable column a screen's content stands on.
 const PAGE: &str = "Page";
 
@@ -78,6 +88,17 @@ fn rect(r: [f64; 4]) -> Rect {
 
 fn has_area(r: Rect) -> bool {
     r.width() > EPSILON && r.height() > EPSILON
+}
+
+/// Whether a block takes room a person reads. A rule says one part of a page ends and the next
+/// begins although it is a single device pixel tall, so it counts wherever a box of the page's
+/// own does.
+fn stands(widget: &str, r: Rect) -> bool {
+    if widget == RULE {
+        r.width() > EPSILON && r.height() > 0.0
+    } else {
+        has_area(r)
+    }
 }
 
 /// Whether a box, or anything it holds, gives a screen reader words to announce.
@@ -743,6 +764,7 @@ impl Walk<'_> {
         self.cramped_card(node, keys);
         self.shown_twice(node, keys);
         self.heading_rhythm(node, keys);
+        self.unruled_body(node, keys);
         for child in &node.children {
             if floats(&child.widget) {
                 continue;
@@ -1129,6 +1151,64 @@ impl Walk<'_> {
                      its own content: a heading keeps clearly more room over it than under it, \
                      so it reads with what it opens"
                 ),
+            );
+        }
+    }
+
+    /// A page's own sections standing straight under the writing it holds: a section's heading is
+    /// set like the writing's headings and stands no further from the writing than they stand
+    /// from each other, so what the page says of itself reads as one more line of what was
+    /// written. A rule says where the writing ends.
+    fn unruled_body(&mut self, node: &InspectionNode, keys: &[String]) {
+        // A page's writing and its own parts read at the page's rhythm; a section inside a card
+        // is the box's to space.
+        if self.page.is_none() {
+            return;
+        }
+        let standing: Vec<&InspectionNode> = node
+            .children
+            .iter()
+            .filter(|child| stands(&child.widget, rect(child.rect)) && !floats(&child.widget))
+            .collect();
+        for (index, child) in standing.iter().enumerate() {
+            if child.widget != WRITING {
+                continue;
+            }
+            let Some(next) = index.checked_add(1).and_then(|after| standing.get(after)) else {
+                continue;
+            };
+            // What a person reads straight after the writing: the box that follows it, or the
+            // first block in that box.
+            let opens = if next.widget == SECTION {
+                *next
+            } else {
+                let Some(first) = next.children.iter().find(|child| {
+                    stands(&child.widget, rect(child.rect)) && !floats(&child.widget)
+                }) else {
+                    continue;
+                };
+                first
+            };
+            if opens.widget != SECTION {
+                continue;
+            }
+            let at = opens
+                .children
+                .iter()
+                .find(|child| child.widget == HEADING)
+                .unwrap_or(opens);
+            let mut told = keys.to_vec();
+            if let Some(id) = opens.test_id.clone() {
+                told.push(id);
+            }
+            self.push(
+                Kind::UnruledBody,
+                at,
+                &told,
+                "it stands straight under the writing, with nothing between them: a rule over the \
+                 page's own sections says where the writing ends, so its headings never read as \
+                 another line of the text"
+                    .to_owned(),
             );
         }
     }

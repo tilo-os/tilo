@@ -101,7 +101,8 @@ selected once, a list offers one add entry, a name a screen reader announces is 
 code identifier, a destructive control says "Delete", a surface holds no surface of its own kind,
 a narrow window keeps a 16 px gutter, a list beside the page it opens highlights the row that page
 shows, a section's heading keeps clearly more room under the block over it than over the content it
-opens, and a surface whose corners round — a card, a notice — keeps a gutter from the edge of the
+opens, the page's own sections stand under a rule that says where the writing they follow ends, and
+a surface whose corners round — a card, a notice — keeps a gutter from the edge of the
 column or window it stands in, where an edge would cut its shape, and the gap of a sibling from what
 stands over and under it, so a list under a notice is not read as a row of it. It reads that an item
 stands once: a list folds the branch of a row standing open into its item, since the document under

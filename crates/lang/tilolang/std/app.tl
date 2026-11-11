@@ -626,6 +626,17 @@ template view body(content: View) {
     }
 }
 
+/// The page's own sections after the writing it holds: what links here, the discussion, the
+/// history. A rule says where a person's writing ends, so a heading the page goes by never reads
+/// as another line of what was written, and each section stands a group gutter under it, further
+/// from the writing than the writing's own headings stand from each other.
+template view after_body(content: View) {
+    stack(gap: .group) {
+        divider()
+        content
+    }
+}
+
 /// A window that is a page of `of`: its content at the readable measure, or as a `canvas` at
 /// the window's full width, under `header`, the page's own controls, and the actions the host
 /// puts in the bar with them. A `fill` page is exactly the window's height and scrolls inside

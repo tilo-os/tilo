@@ -169,10 +169,15 @@ pub enum Kind {
     /// caret. One line stands in the middle of a field that tall; text that wraps, a box given
     /// lines of its own and a document's page start at their inset.
     LineOffCentre,
+    /// A page's own sections — what links here, the discussion, its history — standing straight
+    /// under the writing the page holds, with no rule between them: a section's heading is set
+    /// like the writing's own headings and stands no further from it than they stand from each
+    /// other, so what the page says of itself is read as another line of what was written.
+    UnruledBody,
 }
 
 impl Kind {
-    pub const ALL: [Self; 50] = [
+    pub const ALL: [Self; 51] = [
         Self::Overflow,
         Self::ClippedText,
         Self::Overlap,
@@ -223,6 +228,7 @@ impl Kind {
         Self::SidebarHeaderOnReveal,
         Self::PresenceTag,
         Self::LineOffCentre,
+        Self::UnruledBody,
     ];
 
     pub fn name(self) -> &'static str {
@@ -277,6 +283,7 @@ impl Kind {
             Self::SidebarHeaderOnReveal => "sidebar-header-on-reveal",
             Self::PresenceTag => "presence-tag",
             Self::LineOffCentre => "line-off-centre",
+            Self::UnruledBody => "unruled-body",
         }
     }
 }

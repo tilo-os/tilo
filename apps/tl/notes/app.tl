@@ -463,8 +463,10 @@ view note_page(n: Note) {
             on links_query(text): set(link_text, text)
         }
         std.linked(n, compact: true)
-        discussion.thread(n)
-        std.history(n)
+        std.after_body {
+            discussion.thread(n)
+            std.history(n)
+        }
     }
 }
 
@@ -815,4 +817,3 @@ scenario "a note with headings" -> Note {
         ),
     )
 }
- 

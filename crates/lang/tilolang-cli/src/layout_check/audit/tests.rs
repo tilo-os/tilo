@@ -902,6 +902,73 @@ fn empty_surfaces(root: &InspectionNode) -> Vec<Problem> {
         .collect()
 }
 
+fn unruled_bodies(root: &InspectionNode) -> Vec<Problem> {
+    inspect(root, (1280, 800), None, 1.0)
+        .into_iter()
+        .filter(|p| p.kind == Kind::UnruledBody)
+        .collect()
+}
+
+/// A page's own sections stand under a rule, apart from the writing the page holds: a heading
+/// set like the writing's own and standing no further from it reads as another line of the text.
+#[test]
+fn a_page_section_after_the_writing_stands_under_a_rule() {
+    let page = |between: Vec<InspectionNode>, wrapped: bool| {
+        let top = 400.0;
+        let section = holding(
+            node("Section", "section", [304.0, top, 320.0, 120.0], None),
+            vec![
+                node(
+                    HEADING,
+                    "heading",
+                    [304.0, top, 320.0, 29.0],
+                    Some(Role::Heading { level: 2 }),
+                ),
+                node("ListRow", "row", [304.0, top + 37.0, 320.0, 36.0], None),
+            ],
+        );
+        let mut blocks = vec![node(
+            "BlockEditor",
+            "writing",
+            [304.0, 120.0, 320.0, 250.0],
+            None,
+        )];
+        if wrapped {
+            blocks.push(holding(
+                node("Stack", "tail", [304.0, top - 24.0, 320.0, 144.0], None),
+                {
+                    let mut tail = between;
+                    tail.push(section);
+                    tail
+                },
+            ));
+        } else {
+            blocks.extend(between);
+            blocks.push(section);
+        }
+        holding(
+            node("Page", "page", [304.0, 100.0, 320.0, 600.0], None),
+            blocks,
+        )
+    };
+    let rule = || node("Divider", "rule", [304.0, 378.0, 320.0, 1.0], None);
+    let unruled = unruled_bodies(&page(Vec::new(), false));
+    assert_eq!(unruled.len(), 1, "{unruled:?}");
+    assert!(unruled[0].detail.contains("writing"), "{unruled:?}");
+    assert!(
+        unruled_bodies(&page(vec![rule()], false)).is_empty(),
+        "a rule between the writing and the page's own sections says where the writing ends"
+    );
+    assert!(
+        unruled_bodies(&page(vec![rule()], true)).is_empty(),
+        "the rule stands in the box the page's sections are gathered in"
+    );
+    assert!(
+        !unruled_bodies(&page(Vec::new(), true)).is_empty(),
+        "a box of the page's own sections with no rule over them changes nothing"
+    );
+}
+
 /// A card standing empty in a column paints a filled block with nothing in it, and what it
 /// promised is not there: a surface is drawn for what it holds, so one holding nothing — or
 /// only a placeholder that never filled — is no surface at all. What holds words, a control
