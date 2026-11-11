@@ -43,6 +43,9 @@ struct Notes {
     /// How many times the app answers that its directory cannot be read now, as while
     /// another actor's action is being applied. `u32::MAX` never can.
     cannot_list: Arc<Mutex<u32>>,
+    /// How many times the app's top level lists nothing though it says the page is whole,
+    /// as for an instant while its view is rebuilt.
+    lists_less: Arc<Mutex<u32>>,
     /// Rows a search's page holds, when set: more come in a second page.
     search_page: Arc<Mutex<Option<usize>>>,
     /// How many times the app's directory moves on between a search's
@@ -119,6 +122,7 @@ impl Notes {
             invoked: Arc::default(),
             moves: Arc::default(),
             cannot_list: Arc::default(),
+            lists_less: Arc::default(),
             search_page: Arc::default(),
             search_moves: Arc::default(),
             asked: Arc::default(),
@@ -747,6 +751,15 @@ impl Notes {
             });
         } else if query.needle.is_empty() {
             let parent = query.parent_resource.clone().unwrap_or_default();
+            let less = *self.lists_less.lock().unwrap();
+            if provider != WORKSPACE && parent.is_empty() && less > 0 {
+                *self.lists_less.lock().unwrap() = less.saturating_sub(1);
+                return Pending::ready(Ok(CataloguePage {
+                    revision: "v1".into(),
+                    exhausted: true,
+                    ..CataloguePage::default()
+                }));
+            }
             rows.retain(|row| row.parent_resource == parent);
             let moves = *self.moves.lock().unwrap();
             if provider != WORKSPACE && parent.is_empty() && moves > 0 {
@@ -2245,44 +2258,6 @@ fn a_directory_that_never_holds_still_is_reported() {
     );
 }
 
-/// An app that cannot read its directory for a moment, as while another actor's action is
-/// being applied, is asked again: the caller sees what the app has, not an app with nothing.
-#[test]
-fn an_app_that_cannot_list_for_a_moment_is_asked_again() {
-    let steady = Notes::new(true);
-    let busy = Notes::new(true);
-    *busy.cannot_list.lock().unwrap() = 3;
-    let (expected, failed) = run(tool(&agent(&steady), "tilo_ls", json!({"path": "notes"})));
-    assert!(!failed, "{expected}");
-    let (listed, failed) = run(tool(&agent(&busy), "tilo_ls", json!({"path": "notes"})));
-    assert!(!failed, "{listed}");
-    assert_eq!(listed, expected);
-    assert_eq!(*busy.cannot_list.lock().unwrap(), 0);
-}
-
-/// An app that never can is said to be unable to list once the time an action is waited for
-/// has passed: it is not reported as an app without the thing that was named.
-#[test]
-fn an_app_that_never_can_list_is_not_reported_as_empty() {
-    let busy = Notes::new(true);
-    *busy.cannot_list.lock().unwrap() = u32::MAX;
-    let (text, failed, waited) = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap()
-        .block_on(async {
-            let started = tokio::time::Instant::now();
-            let (text, failed) =
-                tool(&agent(&busy), "tilo_read", json!({"path": "notes/Todo"})).await;
-            (text, failed, started.elapsed())
-        });
-    assert!(failed, "{text}");
-    assert!(text.contains("cannot list"), "{text}");
-    assert!(!text.contains("it has:"), "{text}");
-    assert!(waited >= std::time::Duration::from_millis(DEFAULT_WAIT_MS));
-}
-
 #[test]
 fn a_changing_directory_is_read_again_at_once_then_after_a_growing_pause() {
     let ms = std::time::Duration::from_millis;
@@ -2992,3 +2967,6 @@ fn an_action_the_person_must_allow_answers_pending_with_the_ask() {
         assert!(text.contains("requires confirmation"), "{text}");
     });
 }
+
+#[path = "mcp_agent_flux_tests.rs"]
+mod flux;

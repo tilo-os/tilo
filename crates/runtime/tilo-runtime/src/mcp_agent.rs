@@ -56,6 +56,9 @@ pub use tilo::{TaskHosts, TaskProgram};
 
 /// Resource rows one directory level reads at most, across its pages.
 const LEVEL_PAGES: usize = 4;
+/// Times a name not found is looked for again, after pauses that double from 5 ms to 200 ms:
+/// about seven tenths of a second in all.
+const LOOKS_AGAIN: u32 = 8;
 /// Rows asked per page.
 const PAGE_ROWS: u32 = 128;
 /// Containers at an app's top level whose contents the app's root also
@@ -1129,15 +1132,11 @@ struct Resolved {
     revision: String,
 }
 
-/// Whether `page` is what an app answers when its directory cannot be read now
-/// (`collaboration::action_directory::unavailable_page`): it stopped at a limit with nothing
-/// read, names no revision and offers nothing to continue from.
+/// Whether `page` says of itself that it is not all there is and cannot be gone on from: it
+/// stopped at a limit, is not the end and offers no cursor. An app answers so when its
+/// directory cannot be read now and when a page of it broke off.
 fn cannot_be_read_now(page: &tilo_actions::remote::CataloguePage) -> bool {
-    page.budget_exhausted
-        && !page.exhausted
-        && page.revision.is_empty()
-        && page.rows.is_empty()
-        && page.next_cursor.is_empty()
+    page.budget_exhausted && !page.exhausted && page.next_cursor.is_empty()
 }
 
 impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
@@ -1202,10 +1201,9 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                     );
                 }
                 // An app that cannot read its directory right now, as while another actor's
-                // action is being applied, answers a page with no revision, no rows and
-                // nowhere to go on from. That is not a level with nothing in it: it is read
-                // again as a directory that moved on is, for as long as an action is waited
-                // for.
+                // action is being applied, answers a page that is not the end and has nowhere
+                // to go on from. That is not a level with nothing in it: it is read again as
+                // a directory that moved on is, for as long as an action is waited for.
                 if cannot_be_read_now(&page) {
                     if deadline.is_some_and(|deadline| tokio::time::Instant::now() < deadline) {
                         continue 'snapshot;
@@ -1567,29 +1565,35 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 return Ok((only, among));
             }
         }
-        let here = match parent {
-            Some(owner) => self.level(provider, &owner.id, levels).await?,
-            None => self.app_children(provider, levels).await?,
-        };
-        let found = match pick(segment, &here.children, forms)? {
-            Some(node) => node.clone(),
-            None => self
-                .deep(provider, segment, parent, levels, forms)
-                .await?
-                .ok_or_else(|| {
-                    format!(
-                        "no {segment} in {app}; it has: {}",
-                        list_names(
-                            &here
-                                .children
-                                .iter()
-                                .map(|node| node.name(&here.children))
-                                .collect::<Vec<_>>()
-                        )
-                    )
-                })?,
-        };
-        Ok((found, here))
+        // An app's directory is rebuilt whenever its document changes, and for an instant it
+        // lists less than it has. A name not found is looked for again for a moment, the
+        // levels read anew, before the app is said not to have it.
+        let mut looks: u32 = 0;
+        loop {
+            let here = match parent {
+                Some(owner) => self.level(provider, &owner.id, levels).await?,
+                None => self.app_children(provider, levels).await?,
+            };
+            let found = match pick(segment, &here.children, forms)? {
+                Some(node) => Some(node.clone()),
+                None => self.deep(provider, segment, parent, levels, forms).await?,
+            };
+            if let Some(found) = found {
+                return Ok((found, here));
+            }
+            if looks >= LOOKS_AGAIN {
+                let names: Vec<_> = (here.children.iter())
+                    .map(|node| node.name(&here.children))
+                    .collect();
+                return Err(format!(
+                    "no {segment} in {app}; it has: {}",
+                    list_names(&names)
+                ));
+            }
+            looks = looks.saturating_add(1);
+            tokio::time::sleep(restart_pause(looks.saturating_add(1))).await;
+            levels.clear();
+        }
     }
 
     /// A resource `name` names somewhere below `within` (or anywhere in the
