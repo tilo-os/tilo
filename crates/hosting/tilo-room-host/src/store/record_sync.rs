@@ -134,7 +134,7 @@ fn desktop_channel() -> [u8; 32] {
 }
 
 /// The channel a retained lineage directory `<author>-<channel>` holds.
-fn lineage_channel(name: &OsStr) -> Option<[u8; 32]> {
+pub(super) fn lineage_channel(name: &OsStr) -> Option<[u8; 32]> {
     let (_, channel) = name.to_str()?.split_once('-')?;
     // ignored-failure: an entry not named `<author>-<channel>` is not a lineage
     hex::decode(channel).ok()?.try_into().ok()

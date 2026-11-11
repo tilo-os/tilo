@@ -102,6 +102,7 @@ pub struct StateSource {
     pub(super) policy: Arc<std::sync::RwLock<crate::policy::TrustPolicy>>,
     pub(super) own_user: [u8; 32],
     pub(super) agents: AgentRegistry,
+    pub(super) environments: crate::environment::EnvironmentRegistry,
     pub(super) lease: Option<Arc<std::sync::atomic::AtomicBool>>,
     pub(super) session_live: Option<Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -128,6 +129,7 @@ impl StateSource {
             )),
             own_user,
             agents: AgentRegistry::default(),
+            environments: crate::environment::EnvironmentRegistry::default(),
             lease: Some(lease),
             session_live: None,
         }
@@ -151,6 +153,7 @@ impl StateSource {
             policy: session.trust_policy.clone(),
             own_user: *session.own_user_public_key,
             agents: session.agents.clone(),
+            environments: session.environments.clone(),
             lease: None,
             session_live: session.connection_live.cloned(),
         }
@@ -161,6 +164,7 @@ impl StateSource {
             policy: &self.policy,
             own_user: &self.own_user,
             agents: &self.agents,
+            environments: &self.environments,
         }
     }
     /// Whether `peer` may hold state in `runtime`'s workspace under this source's
@@ -178,13 +182,23 @@ impl StateSource {
         self.authorized_for(runtime, WorkspaceOperation::State)
     }
     /// Whether this source may take a frame of its own into the workspace now,
-    /// on the plane `op`.
+    /// on the plane `op`, changing the record on `channel` (`None` for a frame
+    /// that belongs to no record): a browser environment's device writes its
+    /// own record and nothing else.
     fn publishes(
         &self,
         runtime: &crate::workspace::WorkspaceRuntime,
         op: WorkspaceOperation,
+        channel: Option<[u8; 32]>,
     ) -> bool {
-        self.authorized_for(runtime, op)
+        self.write_reaches(channel) && self.authorized_for(runtime, op)
+    }
+
+    /// Whether `channel` is inside what this source may write: everything for
+    /// a member, its own record for a browser environment's device.
+    fn write_reaches(&self, channel: Option<[u8; 32]>) -> bool {
+        crate::environment::scope_of(&self.environments, &self.peer.device_public_key)
+            .is_none_or(|scope| scope.reaches(channel))
     }
     fn authorized_for(
         &self,
@@ -430,7 +444,8 @@ pub(super) async fn handle_delta(
     // A page asks a record's channel for access on a plane of its own, and is
     // refused there by name.
     let op = crate::peer::admission::plane_of(&env);
-    let Some(source) = authorized_state_source(&ws, peer, session, op).await? else {
+    let channel = crate::peer::admission::record_of(&env);
+    let Some(source) = authorized_state_source(&ws, peer, session, op, channel).await? else {
         trace_native_publication("server_source_refused", &env, None);
         // A live revoke already pushed NotAuthorised and dropped this
         // subscriber; a follow-up write must close rather than refuse twice.
@@ -446,7 +461,7 @@ pub(super) async fn handle_delta(
         let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id,
-            reason: refused_reason(&runtime, &asker.trust(), peer, op).into(),
+            reason: refused_reason(&runtime, &asker.trust(), peer, op, channel).into(),
         }));
     };
     trace_native_publication("server_authorized", &env, None);
@@ -685,6 +700,7 @@ pub(super) async fn handle_delta_prefix(
     }
     // A prefix of changes rides on the plane its first change does.
     let op = crate::peer::admission::plane_of(first);
+    let channel = crate::peer::admission::record_of(first);
     let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
@@ -698,7 +714,8 @@ pub(super) async fn handle_delta_prefix(
             "author does not match authenticated device".into(),
         ));
     }
-    let Some(source) = authorized_state_source(&workspace, peer, session, op).await? else {
+    let Some(source) = authorized_state_source(&workspace, peer, session, op, channel).await?
+    else {
         trace_all(&envelopes, "server_source_refused");
         let runtime = workspace.lock().await;
         if !current_session(&runtime, peer, session.outbound) {
@@ -712,7 +729,7 @@ pub(super) async fn handle_delta_prefix(
         let asker = StateSource::new(peer, session);
         return Ok(Some(Envelope::NotAuthorised {
             workspace_id: *workspace_id,
-            reason: refused_reason(&runtime, &asker.trust(), peer, op).into(),
+            reason: refused_reason(&runtime, &asker.trust(), peer, op, channel).into(),
         }));
     };
     trace_all(&envelopes, "server_authorized");
@@ -789,10 +806,11 @@ pub(super) async fn authorized_state_source(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
     op: WorkspaceOperation,
+    channel: Option<[u8; 32]>,
 ) -> Result<Option<StateSource>, PeerError> {
     let source = StateSource::new(peer, session);
     let runtime = crate::workspace_io::fresh_membership(workspace).await?;
-    Ok(source.publishes(&runtime, op).then_some(source))
+    Ok(source.publishes(&runtime, op, channel).then_some(source))
 }
 
 /// Why the relay took none of `peer`'s frames into the workspace: the
@@ -803,11 +821,15 @@ pub(super) fn refused_reason(
     trust: &workspace_access::RelayTrust<'_>,
     peer: &AuthenticatedPeer,
     op: WorkspaceOperation,
+    channel: Option<[u8; 32]>,
 ) -> &'static str {
+    let outside = crate::environment::scope_of(trust.environments, &peer.device_public_key)
+        .filter(|scope| !scope.reaches(channel))
+        .map(|_| workspace_access::DenyReason::OutOfEnvironmentScope.reason());
     match workspace_access::decide(runtime, trust, peer, op) {
         workspace_access::Decision::Deny(reason) => reason.reason(),
         workspace_access::Decision::Admit | workspace_access::Decision::AdmitAndEnrol => {
-            unpublished()
+            outside.unwrap_or_else(unpublished)
         }
     }
 }

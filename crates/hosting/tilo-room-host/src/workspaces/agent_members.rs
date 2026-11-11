@@ -40,6 +40,9 @@ impl Workspaces {
             policy: &host.trust_policy,
             own_user: &host.cert.user_public_key,
             agents: &host.agents,
+            // No plane here asks about a browser environment's device: one
+            // asks to join as a delegated agent, which an environment is not.
+            environments: crate::environment::none(),
         }
     }
 

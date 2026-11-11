@@ -110,6 +110,7 @@ impl WorkspaceStore {
         outer: &mut Option<fs::ReadDir>,
         phase: u8,
         every_record: bool,
+        channels: Option<&std::collections::BTreeSet<[u8; 32]>>,
     ) -> Result<Option<fs::DirEntry>, StoreError> {
         loop {
             let Some(entry) = outer.as_mut().invariant("outer missing")?.next() else {
@@ -119,6 +120,14 @@ impl WorkspaceStore {
             if phase == 2 && entry.file_type()?.is_dir() {
                 let name = entry.file_name();
                 if !every_record && self.leaves_out_on_demand(&name)? {
+                    continue;
+                }
+                // A confined device is replayed the lineages of its own
+                // record's channel; another record's is none of its.
+                if channels.is_some_and(|channels| {
+                    super::record_sync::lineage_channel(&name)
+                        .is_some_and(|channel| !channels.contains(&channel))
+                }) {
                     continue;
                 }
             }
@@ -478,6 +487,9 @@ pub struct ReplayBuild {
     /// Replay every record, on-demand ones and earlier parts of chains
     /// included: a host attached to the workspace keeps all of it.
     every_record: bool,
+    /// Replay only these record channels' lineages: a browser environment's
+    /// device reaches its own record and nothing else of the workspace.
+    channels: Option<std::collections::BTreeSet<[u8; 32]>>,
     /// The frames listed to pin when the capture is prepared
     /// (`capture.manifest`): the retained frames, with the lease that keeps
     /// them in place until then ([`CaptureLeases`]), or a final cut's held
@@ -559,6 +571,15 @@ impl ReplayBuild {
     /// Replay on-demand records and earlier parts of chains too.
     pub(crate) fn with_every_record(mut self, every_record: bool) -> Self {
         self.every_record = every_record;
+        self
+    }
+    /// Replay only the lineages of these record channels: everything else of
+    /// the workspace stays out of this device's replay.
+    pub(crate) fn with_channels(
+        mut self,
+        channels: Option<std::collections::BTreeSet<[u8; 32]>>,
+    ) -> Self {
+        self.channels = channels;
         self
     }
     /// Discard this build's work directory.
@@ -857,6 +878,7 @@ impl WorkspaceStore {
             next_pin: 0,
             skip: None,
             every_record: false,
+            channels: None,
             listed: Some((
                 io::BufWriter::new(File::create(root.join("capture.manifest"))?),
                 (!pending_only).then(|| self.lease_capture()),
@@ -1017,9 +1039,12 @@ impl WorkspaceStore {
                         }
                     }
                 }
-            } else if let Some(entry) =
-                self.next_listed(&mut build.outer, build.phase, build.every_record)?
-            {
+            } else if let Some(entry) = self.next_listed(
+                &mut build.outer,
+                build.phase,
+                build.every_record,
+                build.channels.as_ref(),
+            )? {
                 let name = entry.file_name();
                 let kind = entry.file_type()?;
                 match build.phase {

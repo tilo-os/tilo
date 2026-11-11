@@ -30,6 +30,13 @@ pub(super) async fn handle_open_record(
     if !subscribed.contains(&workspace_id) {
         return refused("open a record of a subscribed room");
     }
+    // A browser environment's device opens its own record and no other.
+    if session
+        .environment(&peer.device_public_key)
+        .is_some_and(|scope| !scope.reaches(Some(channel)))
+    {
+        return refused(crate::workspace_access::DenyReason::OutOfEnvironmentScope.reason());
+    }
     let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
         return refused("workspace not bound on this relay");
     };

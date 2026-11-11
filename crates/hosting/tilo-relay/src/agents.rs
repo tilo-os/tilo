@@ -844,6 +844,7 @@ fn attach_records(
             // the address they are given is the public one.
             relay: crate::hosted_browser::relay_address().map_err(RelayError::Identity)?,
             workspaces: relay.workspaces().cloned(),
+            environments: relay.web_context().relay.environments.clone(),
             runtime: tokio::runtime::Handle::current(),
             certification: relay.confirmations(),
         });

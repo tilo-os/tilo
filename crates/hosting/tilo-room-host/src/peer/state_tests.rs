@@ -76,6 +76,7 @@ impl Fixture {
             admin: None,
             fetch: None,
             agents: Box::leak(Box::default()),
+            environments: Box::leak(Box::default()),
             positions: None,
             compactor: None,
             member_limits,
@@ -179,6 +180,7 @@ impl Fixture {
             )),
             own_user: user.public_key,
             agents: AgentRegistry::default(),
+            environments: crate::environment::EnvironmentRegistry::default(),
             lease: None,
             session_live: None,
         };
@@ -1201,6 +1203,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 admin: None,
                 fetch: None,
                 agents: Box::leak(Box::default()),
+                environments: Box::leak(Box::default()),
                 positions: None,
                 compactor: None,
                 member_limits: None,

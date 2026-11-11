@@ -461,6 +461,7 @@ async fn fixture(meter: Arc<Counting>) -> Fixture {
         key: host_key,
         relay: relay.relay.node_addr(),
         workspaces: None,
+        environments: relay.relay.environments(),
         runtime: tokio::runtime::Handle::current(),
         certification: relay.relay.confirmations(),
     });
@@ -922,4 +923,332 @@ async fn a_page_action_answer_names_one_invocation_of_one_host() {
         "neither reached the window"
     );
     assert_eq!(*fixture.meter.recorded.lock().unwrap(), 0, "nothing ran");
+}
+
+/// The record a customer wrote before Browser opened: another app's.
+const NOTES: &str = "so.tilo.notes";
+const NOTES_RECORD: &str = "notes-1";
+
+/// The channel the window's own record lives on, and the one a customer's
+/// document lives on: what every plane of the workspace tells a record by.
+fn window_channel() -> [u8; 32] {
+    tilo_relay::environment::record_channel(tilo_relay::hosted_browser::APP, "record-1")
+}
+
+fn notes_channel() -> [u8; 32] {
+    tilo_relay::environment::record_channel(NOTES, NOTES_RECORD)
+}
+
+/// One change of `channel`'s record, as a device writes it.
+fn change(channel: [u8; 32], marker: &[u8]) -> Vec<u8> {
+    tilo_relay::coedit::CoeditPayload::RetainedDelta {
+        channel,
+        body: marker.to_vec(),
+    }
+    .encode()
+    .unwrap()
+}
+
+/// Every envelope a session hears in `within`, the ones it already holds first.
+async fn heard(client: &RelayClient, within: std::time::Duration) -> Vec<Envelope> {
+    let mut out = Vec::new();
+    while let Ok(Some(envelope)) = tokio::time::timeout(within, client.recv()).await {
+        out.push(envelope);
+    }
+    out
+}
+
+/// The record channel each change a session heard belongs to.
+fn changed(envelopes: &[Envelope]) -> Vec<[u8; 32]> {
+    envelopes
+        .iter()
+        .filter_map(|envelope| {
+            let Envelope::Delta { delta, .. } = envelope else {
+                return None;
+            };
+            match tilo_relay::coedit::CoeditPayload::decode(delta)? {
+                tilo_relay::coedit::CoeditPayload::Checkpoint { channel, .. }
+                | tilo_relay::coedit::CoeditPayload::RetainedDelta { channel, .. } => Some(channel),
+            }
+        })
+        .collect()
+}
+
+impl Fixture {
+    /// The environment's own session: the device the relay certified, joining
+    /// the one workspace it was placed in.
+    async fn environment_session(&self) -> RelayClient {
+        let material = self.environments.material();
+        let environment = DeviceIdentity::of(&material);
+        subscribe(&self.relay.relay, &self.user, &environment).await
+    }
+}
+
+#[tokio::test]
+async fn the_relay_confines_an_environments_device_to_the_record_it_placed() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    let device = fixture.environments.material().device.device_public_key;
+    assert_eq!(
+        tilo_relay::environment::scope_of(&fixture.relay.relay.environments(), &device),
+        Some(tilo_relay::environment::EnvironmentScope::for_record(
+            WS,
+            tilo_relay::hosted_browser::APP,
+            "record-1"
+        )),
+        "the placement names the one record its device reaches"
+    );
+}
+
+#[tokio::test]
+async fn an_environment_hears_its_own_record_and_no_other() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let environment = fixture.environment_session().await;
+    let writer = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    for (channel, marker) in [
+        (notes_channel(), b"a customer's document".as_slice()),
+        (window_channel(), b"the window's own state".as_slice()),
+    ] {
+        writer
+            .send(Envelope::Delta {
+                workspace_id: WS,
+                author_device_public_key: fixture.agent.device_pubkey(),
+                authored_at_ns: tilo_clock::unix_now_ns(),
+                delta: change(channel, marker),
+                signature: [0; 64],
+            })
+            .unwrap();
+    }
+    let heard = heard(&environment, std::time::Duration::from_millis(500)).await;
+    assert_eq!(
+        changed(&heard),
+        [window_channel()],
+        "a page that escapes Chromium reads no other record of the workspace: {heard:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_environment_writes_its_record_and_no_other() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let environment = fixture.environment_session().await;
+    let device = fixture.environments.material().device.device_public_key;
+    environment
+        .send(Envelope::Delta {
+            workspace_id: WS,
+            author_device_public_key: device,
+            authored_at_ns: tilo_clock::unix_now_ns(),
+            delta: change(notes_channel(), b"overwritten by a page"),
+            signature: [0; 64],
+        })
+        .unwrap();
+    let refusal = next(&environment, "environment").await;
+    let Envelope::NotAuthorised {
+        workspace_id,
+        reason,
+    } = refusal
+    else {
+        panic!("a write to another record is refused: {refusal:?}");
+    };
+    assert_eq!(workspace_id, WS);
+    assert!(
+        reason.contains("environment"),
+        "the refusal names the rule: {reason}"
+    );
+
+    environment
+        .send(Envelope::Delta {
+            workspace_id: WS,
+            author_device_public_key: device,
+            authored_at_ns: tilo_clock::unix_now_ns(),
+            delta: change(window_channel(), b"the page clicked"),
+            signature: [0; 64],
+        })
+        .unwrap();
+    let tolerance = heard(&environment, std::time::Duration::from_millis(300)).await;
+    assert!(
+        !tolerance
+            .iter()
+            .any(|envelope| matches!(envelope, Envelope::NotAuthorised { .. })),
+        "its own record is its to write: {tolerance:?}"
+    );
+    let retained: Vec<Envelope> =
+        tilo_relay::store::WorkspaceStore::open(&fixture.relay.state_root, WS, true)
+            .unwrap()
+            .load_retained()
+            .unwrap()
+            .into_iter()
+            .filter_map(|frame| {
+                tilo_relay::frame::decode(frame.get(4..)?)
+                    .ok()
+                    .filter(|envelope| matches!(envelope, Envelope::Delta { .. }))
+            })
+            .collect();
+    assert_eq!(
+        changed(&retained),
+        [window_channel()],
+        "the window's own write is the only record this workspace keeps from it"
+    );
+}
+
+#[tokio::test]
+async fn an_environment_opens_its_own_record_and_no_other() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let environment = fixture.environment_session().await;
+    environment
+        .send(Envelope::OpenRecord {
+            workspace_id: WS,
+            channel: notes_channel(),
+        })
+        .unwrap();
+    let refusal = next(&environment, "environment").await;
+    assert!(
+        matches!(&refusal, Envelope::NotAuthorised { reason, .. } if reason.contains("environment")),
+        "another record does not open for it: {refusal:?}"
+    );
+    environment
+        .send(Envelope::OpenRecord {
+            workspace_id: WS,
+            channel: window_channel(),
+        })
+        .unwrap();
+    let answer = next(&environment, "environment").await;
+    assert!(
+        matches!(answer, Envelope::RecordOpened { channel, .. } if channel == window_channel()),
+        "its own record opens: {answer:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_environments_replay_is_its_own_record_and_no_other() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let writer = subscribe(&fixture.relay.relay, &fixture.user, &fixture.agent).await;
+    for (channel, marker) in [
+        (notes_channel(), b"a customer's document".as_slice()),
+        (window_channel(), b"the window's own state".as_slice()),
+    ] {
+        writer
+            .send(Envelope::Delta {
+                workspace_id: WS,
+                author_device_public_key: fixture.agent.device_pubkey(),
+                authored_at_ns: tilo_clock::unix_now_ns(),
+                delta: change(channel, marker),
+                signature: [0; 64],
+            })
+            .unwrap();
+    }
+    // It joins after both records were written: what reaches it — queued
+    // before its subscription, then replayed behind it — is its own record.
+    let material = fixture.environments.material();
+    let environment = DeviceIdentity::of(&material);
+    let client = RelayClient::connect(
+        client_endpoint().await,
+        fixture.relay.relay.node_addr(),
+        fixture.user.user_pk,
+        environment.cert.clone(),
+        environment.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("connect");
+    client
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
+    let mut heard = Vec::new();
+    let mut ready = false;
+    while let Ok(Some(envelope)) =
+        tokio::time::timeout(std::time::Duration::from_millis(700), client.recv()).await
+    {
+        ready |= matches!(envelope, Envelope::Ready { .. });
+        heard.push(envelope);
+    }
+    assert!(ready, "the environment's subscription is answered");
+    assert_eq!(
+        changed(&heard),
+        [window_channel()],
+        "the replay of another record stays out: {heard:?}"
+    );
+}
+
+#[tokio::test]
+async fn an_environment_answers_a_page_action_and_never_calls_one() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    let seen = window_session(&fixture.relay.relay, &fixture.user, &material, Asks::Never).await;
+    let environment = fixture.environment_session().await;
+    // The window's device calls the workspace's door itself: not its to do.
+    environment
+        .send(Envelope::RemoteAction {
+            workspace_id: WS,
+            version: REMOTE_ACTION_ENVELOPE_VERSION,
+            to_device_public_key: fixture.home,
+            from_device_public_key: material.device.device_public_key,
+            from_user_public_key: material.user_public_key,
+            frame: frame(RemoteActionMessage::Invoke(InvokeRequest {
+                on_behalf_of: None,
+                invocation: InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: "so.tilo.notes".into(),
+                    address: ActionAddress::new("notes", "delete"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+            })),
+        })
+        .unwrap();
+    let answer = next(&environment, "environment").await;
+    assert!(
+        matches!(answer, Envelope::RemoteActionUndeliverable { .. }),
+        "a window's device calls no door of the workspace: {answer:?}"
+    );
+    assert!(seen.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_stopped_environment_reaches_nothing() {
+    let fixture = fixture(Arc::new(Counting::default())).await;
+    fixture.list_environment().await;
+    let material = fixture.environments.material();
+    let device = material.device.device_public_key;
+    fixture.browsers.stopped(WS);
+    assert_eq!(
+        tilo_relay::environment::scope_of(&fixture.relay.relay.environments(), &device),
+        None,
+        "a stopped environment's device is forgotten"
+    );
+    // The relay forgets its device from the workspace as it stops it (`Workspaces`'
+    // listing, which this fixture's host has none of).
+    admit_members(
+        &fixture.relay.relay,
+        WS,
+        &[fixture.agent.device_pubkey()],
+        &fixture.relay.state_root,
+    )
+    .await;
+    let environment = DeviceIdentity::of(&material);
+    let refused = RelayClient::connect(
+        client_endpoint().await,
+        fixture.relay.relay.node_addr(),
+        fixture.user.user_pk,
+        environment.cert.clone(),
+        environment.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .expect("the environment's device dials the host");
+    refused
+        .send(Envelope::Subscribe { workspace_id: WS })
+        .unwrap();
+    let answer = next(&refused, "environment").await;
+    assert!(
+        !matches!(answer, Envelope::Ready { .. }),
+        "a stopped environment's device is no device of the workspace: {answer:?}"
+    );
 }

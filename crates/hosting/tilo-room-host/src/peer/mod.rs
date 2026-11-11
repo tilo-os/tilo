@@ -194,6 +194,9 @@ pub struct PeerContext {
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
     /// Agent devices this host was told about, see [`AgentRegistry`].
     pub agents: AgentRegistry,
+    /// The devices this host certified for its browser environments, and the
+    /// one record each reaches ([`crate::environment`]).
+    pub environments: crate::environment::EnvironmentRegistry,
     /// Mints and checks resumable subscribers' positions; `None` refuses
     /// resumption, and a `SubscribeFrom` replays everything.
     pub positions: Option<crate::position::PositionIssuer>,
@@ -248,6 +251,7 @@ struct SessionCtx<'a> {
     app_serving: Option<&'a Arc<dyn crate::app_serving::AppServingPlane>>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
     agents: &'a AgentRegistry,
+    environments: &'a crate::environment::EnvironmentRegistry,
     positions: Option<crate::position::PositionIssuer>,
     compactor: Option<&'a crate::compaction::Compactor>,
     member_limits: Option<&'a crate::member_limits::MemberLimits>,
@@ -288,7 +292,15 @@ impl SessionCtx<'_> {
             policy: self.trust_policy,
             own_user: self.own_user_public_key,
             agents: self.agents,
+            environments: self.environments,
         }
+    }
+
+    /// What `device` reaches when it is one of this host's browser
+    /// environments' devices ([`crate::environment`]): its one workspace and
+    /// the one record there. `None` for every other device.
+    fn environment(&self, device: &[u8; 32]) -> Option<crate::environment::EnvironmentScope> {
+        crate::environment::scope_of(self.environments, device)
     }
 
     /// The workspace admission decision for `peer` on `op`.

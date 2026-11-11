@@ -50,8 +50,9 @@ Linux VM. A browser environment is that service's VM with these differences:
   workspace opens Browser.
 
 The session in the VM is **a device of the workspace**, like the VM host's
-member device: the relay certifies a fresh device for it when it hands the
-environment to the workspace, admits that device to that workspace only, and
+member device, and the narrowest one there is: the relay certifies a fresh
+device for it when it hands the environment to the workspace, confines it to
+that workspace and that window's record (see [Isolation](#isolation)), and
 forgets it when the environment stops. The session opens the Browser window
 on the workspace's Browser record, so the window is live, published and
 subscribed like a Browser window on anyone's computer, and its page actions
@@ -114,6 +115,49 @@ was handed to, and it is never handed back to the pool.
   processes, Firecracker's rate limiters bound bandwidth (200 Mbit/s), and
   the idle and lifetime limits above bound time.
 
+### The environment's device reaches one record and one page
+
+A web page is strangers' code and Chromium runs a JIT on it, so the session
+in the VM has to be treated as a device a page may already hold the key of.
+The relay therefore confines it to what its window is: one workspace and the
+one Browser record the open made (`tilo_room_host::environment`). The
+confinement is the relay's, decided where the relay certifies the device and
+asking the session in the VM nothing; a page that escapes Chromium and takes
+the device's key finds the same narrow door as the session does.
+
+Every plane of the workspace asks it. In the relay's state plane — where a
+device syncs a workspace's records — a confined device is replayed the
+history of its own record's channel and no other, is handed none of another
+record's live changes, is refused when it opens another record, and is
+refused when it writes to another channel. On the live plane it publishes its
+own participant namespace, where its window's page track lives, and is
+offered no track of anyone else's — no call, no camera, no screen, no other
+window — while a viewer's ask for its page arrives as a demand on that track
+rather than as a subscription of its own. A remote action it sends is refused
+unless it answers the page action the relay handed it, so a window's device
+calls no door of the workspace; compute, environments, content discovery and
+the workspace's administration are refused outright. What is left is what
+[Built and what is not](#what-is-built-and-what-is-not)'s fourth unit needs:
+join, sync its record, publish its page, answer.
+
+This is the register the relay keeps for the devices it confines, beside the
+agent register that confines an agent to its delegation. It is not a
+delegation — those are signed by the person's root, which a host does not
+hold — and not a certificate capability: the record is a fact of one
+placement, made by the relay when someone opens Browser, and the next open in
+that workspace may make another.
+
+Two things reach it besides its own record, and both are deliberate. It
+receives the workspace's own document — the desk layout, which names the
+records it may not read — because a session cannot join a workspace without
+it; and it receives the frames the relay itself commits to the workspace,
+which are governance and sealed compaction checkpoints. Neither carries
+content it could open: record content is sealed under each record channel's
+keys, and the device holds no other record's.
+
+When the environment stops, its device is forgotten from the workspace and
+from that register, and the session that held it has nothing left to reach.
+
 ## Placement and routing
 
 The relay places a workspace's Browser the way it places a shell
@@ -157,10 +201,17 @@ one line:
 The session starts headless (`--backend headless`), with that device as its
 identity, joins the workspace through `relay`, and opens Browser on `record`,
 then reports the window's provider (`up 42`) so the relay can route page
-actions and the open can answer. An agent names that window `browser@42`; the
+actions and the open can answer. What it may then use of the workspace is
+exactly the scope above: the record `record` names (its channel is
+`neighbour_wire::app_document_channel("so.tilo.browser", record)`), the keys
+of that record's channel, its own participant namespace on the workspace's
+live plane — where it publishes `page/<tab>`, one track for its window — and
+the incoming page actions it answers. It subscribes to no one: a viewer asks
+for its page by demanding its track, which the relay serves from the
+publisher's side, so the session hears the ask without watching the
+workspace. An agent names that window `browser@42`; the
 provider token itself is the number, which is what every live window of the
-desk publishes under. It keeps the window live, published and subscribed
-until it stops.
+desk publishes under. It keeps the window live and published until it stops.
 
 Door agents' calls go to the workspace host's device. So the relay forwards
 a page action addressed to the hosted Browser window to the device holding

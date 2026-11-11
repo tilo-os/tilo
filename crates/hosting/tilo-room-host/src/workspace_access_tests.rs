@@ -45,6 +45,7 @@ fn letter(decision: Decision) -> char {
         Decision::Deny(DenyReason::AgentWithdrawn) => 'w',
         Decision::Deny(DenyReason::AgentExpired) => 'e',
         Decision::Deny(DenyReason::AgentOutOfScope) => 'o',
+        Decision::Deny(DenyReason::OutOfEnvironmentScope) => 'b',
         Decision::Deny(DenyReason::NotADelegatedAgent) => 'd',
     }
 }
@@ -56,6 +57,7 @@ struct Relay {
     revocations: RwLock<RevocationList>,
     policy: RwLock<TrustPolicy>,
     agents: AgentRegistry,
+    environments: crate::environment::EnvironmentRegistry,
 }
 
 impl Relay {
@@ -75,6 +77,7 @@ impl Relay {
             revocations: RwLock::new(RevocationList::new()),
             policy: RwLock::new(policy),
             agents: Arc::default(),
+            environments: crate::environment::EnvironmentRegistry::default(),
         }
     }
 
@@ -84,6 +87,7 @@ impl Relay {
             policy: &self.policy,
             own_user: &self.owner,
             agents: &self.agents,
+            environments: &self.environments,
         }
     }
 

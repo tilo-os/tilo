@@ -41,6 +41,15 @@
 //! revocations (a minted grant's issuer included) are step 1, checked at
 //! every handshake and audit.
 //!
+//! A hosted browser environment's device is certified as a member device of
+//! the workspace's person, and is no member: a page that escapes Chromium
+//! holds its key, so its rule replaces steps 4 to 6 as an agent's does. After
+//! step 1, it is admitted iff the relay registered it for this workspace
+//! ([`crate::environment`]), on the planes a window's session works on — and
+//! its one record is what it reaches within them: the state plane's replay,
+//! live fan-out, opening and changes ask its scope what a frame's record is,
+//! and the live plane offers it no namespace but its own.
+//!
 //! A public workspace is no exception to the rule: whoever visits it is a
 //! member of it with the role its owner gave them, and every device certified
 //! by that member's root is that member's device, admitted to the channels its
@@ -225,6 +234,9 @@ pub enum DenyReason {
     AgentOutOfScope,
     /// Not a member of the workspace.
     NotAMember,
+    /// A hosted browser environment's device, outside the one workspace and
+    /// the one record the relay confines it to.
+    OutOfEnvironmentScope,
     /// Governed membership as an agent asked for by a device that is no
     /// delegated agent of this relay's user, or for a workspace this relay does
     /// not govern.
@@ -243,6 +255,9 @@ impl DenyReason {
             Self::AgentExpired => "the agent's delegation expired",
             Self::AgentOutOfScope => "the agent is not delegated this room",
             Self::NotAMember => "device not in workspace membership",
+            Self::OutOfEnvironmentScope => {
+                "a browser environment's device reaches one workspace and its own record"
+            }
             #[cfg(any(test, feature = "agents"))]
             Self::NotADelegatedAgent => {
                 "only a delegated agent of this relay's user joins a room it governs as an agent"
@@ -261,6 +276,9 @@ pub struct RelayTrust<'a> {
     pub own_user: &'a [u8; 32],
     /// Agent delegations this relay was told about.
     pub agents: &'a AgentRegistry,
+    /// Hosted browser environments' devices, and the one record each reaches
+    /// ([`crate::environment`]).
+    pub environments: &'a crate::environment::EnvironmentRegistry,
 }
 
 impl RelayTrust<'_> {
@@ -453,6 +471,9 @@ pub(crate) fn decide_in(
     if let Err(reason) = trust.principal(peer, workspace.runtime.store.workspace_id(), now_ns) {
         return Decision::Deny(reason);
     }
+    if let Some(scope) = crate::environment::scope_of(trust.environments, &peer.device_public_key) {
+        return environment_decision(workspace, scope, op);
+    }
     if let Some(scope) = peer.cert.capabilities.agent {
         return grant_decision(workspace, peer, scope, op);
     }
@@ -489,6 +510,25 @@ pub(crate) fn decide_in(
         }
     }
     Decision::Deny(DenyReason::NotAMember)
+}
+
+/// The rule for a hosted browser environment's device, whose scope the relay
+/// registered when it placed the environment ([`crate::environment`]): its one
+/// workspace, on the planes a window's session works on, and no other. Its
+/// record is narrower than a plane, so what a frame carries decides it: the
+/// state plane's replay, live fan-out, record opening and changes ask
+/// [`crate::environment::EnvironmentScope::reaches`], and the live plane
+/// offers such a device no namespace of anyone else's.
+fn environment_decision(
+    workspace: WorkspaceFacts<'_>,
+    scope: crate::environment::EnvironmentScope,
+    op: WorkspaceOperation,
+) -> Decision {
+    if scope.admits(workspace.runtime.store.workspace_id(), op) {
+        Decision::Admit
+    } else {
+        Decision::Deny(DenyReason::OutOfEnvironmentScope)
+    }
 }
 
 /// The rule for an agent's grant whose certificate holds relay-wide (see the

@@ -38,6 +38,10 @@ struct Grant {
     namespace: String,
     /// The subtree every participant of the same scope publishes in.
     scope: String,
+    /// Whether this participant is a hosted browser environment's device: it
+    /// publishes its window's page and is offered nobody else's tracks, so no
+    /// call, camera, screen or other window of the workspace reaches it.
+    environment: bool,
     admitted: AtomicBool,
     /// Reports each change of `admitted`: the relay re-observes on it and cuts
     /// a session whose answer narrowed.
@@ -45,13 +49,19 @@ struct Grant {
 }
 
 impl Grant {
-    fn new(workspace: u64, workspace_name: &str, peer: AuthenticatedPeer) -> Self {
+    fn new(
+        workspace: u64,
+        workspace_name: &str,
+        peer: AuthenticatedPeer,
+        environment: bool,
+    ) -> Self {
         let namespace = Namespace::new(&Scope::workspace(workspace_name), peer.device_public_key);
         Self {
             workspace,
             peer,
             scope: namespace.scope_path(),
             namespace: namespace.path(),
+            environment,
             admitted: AtomicBool::new(true),
             changed: watch::channel(0_u64).0,
         }
@@ -81,16 +91,27 @@ impl SessionAuthorization for Grant {
     }
 
     fn subscription_prefix(&self) -> Option<&str> {
-        Some(&self.scope)
+        // A browser environment's device hears nobody: its session publishes
+        // its window's page, and a viewer's ask arrives as a demand on that
+        // track, not as a subscription of its own. So no track of the
+        // workspace — a call, a camera, a screen, another window's page — is
+        // offered to it, whatever its session asks for.
+        (!self.environment).then_some(self.scope.as_str())
     }
 
     fn current(&self, direction: Direction, namespace: &str) -> bool {
         self.admitted()
             && match direction {
                 Direction::Publish => namespace == self.namespace,
-                Direction::Subscribe => namespace
-                    .strip_prefix(&self.scope)
-                    .is_some_and(|rest| rest.starts_with("/participant/")),
+                // A browser environment's device is offered no track of the
+                // workspace, whoever asks: no call, camera, screen or other
+                // window reaches it.
+                Direction::Subscribe => {
+                    !self.environment
+                        && namespace
+                            .strip_prefix(&self.scope)
+                            .is_some_and(|rest| rest.starts_with("/participant/"))
+                }
             }
     }
 
@@ -115,13 +136,18 @@ type Members = BTreeMap<DeviceKey, Arc<Grant>>;
 /// nobody here.
 pub(crate) struct Authority {
     relay: RelayProtocol,
+    /// The devices this host certified for its browser environments: they
+    /// publish their window's page and are offered nobody else's tracks.
+    environments: crate::environment::EnvironmentRegistry,
     members: Mutex<Members>,
 }
 
 impl Authority {
     pub(crate) fn new(relay: RelayProtocol) -> Self {
+        let environments = relay.environments.clone();
         Self {
             relay,
+            environments,
             members: Mutex::new(Members::new()),
         }
     }
@@ -246,7 +272,8 @@ impl Authority {
             member.set(true);
             member
         } else {
-            let member = Arc::new(Grant::new(id, &workspace, peer));
+            let environment = crate::environment::scope_of(&self.environments, &device).is_some();
+            let member = Arc::new(Grant::new(id, &workspace, peer, environment));
             self.members.lock_recover().insert(key, member.clone());
             member
         };
@@ -316,5 +343,63 @@ impl Plane {
     /// the plane does.
     pub(crate) fn tasks(&mut self) -> Vec<tokio::task::JoinHandle<()>> {
         std::mem::take(&mut self.tasks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A device of the person who owns the workspace, as the plane admits one.
+    fn peer(device: [u8; 32]) -> AuthenticatedPeer {
+        AuthenticatedPeer {
+            user_public_key: [0xA1; 32],
+            device_public_key: device,
+            cert: tilo_user_identity::DeviceCert {
+                user_public_key: [0xA1; 32],
+                device_public_key: device,
+                device_label: "Browser".into(),
+                capabilities: tilo_user_identity::DeviceCapabilities::member(),
+                issued_at_ns: 0,
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
+            },
+        }
+    }
+
+    fn names(device: [u8; 32]) -> Namespace {
+        Namespace::new(&Scope::workspace("ws-1"), device)
+    }
+
+    #[test]
+    fn a_member_hears_every_participant_of_its_workspace() {
+        let grant = Grant::new(7, "ws-1", peer([1; 32]), false);
+        assert_eq!(grant.subscription_prefix(), Some(grant.scope.as_str()));
+        assert!(grant.current(Direction::Subscribe, &names([2; 32]).path()));
+        assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
+        assert!(
+            !grant.current(Direction::Publish, &names([2; 32]).path()),
+            "nobody publishes in another participant's name"
+        );
+    }
+
+    #[test]
+    fn a_browser_environment_publishes_its_window_and_hears_nobody() {
+        let grant = Grant::new(7, "ws-1", peer([1; 32]), true);
+        assert_eq!(
+            grant.publication(),
+            Some(names([1; 32]).path().as_str()),
+            "it publishes its own window's page"
+        );
+        assert!(grant.subscriptions().is_empty());
+        assert_eq!(
+            grant.subscription_prefix(),
+            None,
+            "no track of the workspace is offered to it: no call, camera, screen or other window"
+        );
+        assert!(!grant.current(Direction::Subscribe, &names([2; 32]).path()));
+        assert!(!grant.current(Direction::Subscribe, &names([1; 32]).path()));
+        assert!(grant.current(Direction::Publish, &names([1; 32]).path()));
     }
 }

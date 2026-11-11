@@ -75,6 +75,23 @@ pub(super) async fn handle_remote_action(
     {
         return refuse(U::NotAuthorised, "sender may not act in the workspace");
     }
+    // A browser environment's device answers the page actions the relay hands
+    // it and originates none: what it holds is a window, not a member's
+    // standing to call the workspace's doors.
+    if session.environment(&peer.device_public_key).is_some()
+        && matches!(
+            tilo_actions::remote::RemoteActionFrame::decode(&frame),
+            Ok(tilo_actions::remote::RemoteActionFrame {
+                message: tilo_actions::remote::RemoteActionMessage::Invoke(_),
+                ..
+            })
+        )
+    {
+        return refuse(
+            U::NotAuthorised,
+            "a browser environment's device answers page actions, it does not call actions",
+        );
+    }
     if to == *session.own_device_public_key {
         // An action of a window this host serves but does not hold (a Browser
         // whose page runs on a VM host) is handed to the device that holds it,

@@ -332,6 +332,23 @@ pub(super) fn plane_of(envelope: &Envelope) -> WorkspaceOperation {
     }
 }
 
+/// The channel of the record `envelope` changes, or `None` for a frame that
+/// belongs to no record (the workspace's own document, its governance).
+pub(super) fn record_of(envelope: &Envelope) -> Option<[u8; 32]> {
+    let Envelope::Delta { delta, .. } = envelope else {
+        return None;
+    };
+    channel_of(delta)
+}
+
+/// The record channel a state frame's body names, when it names one.
+pub(super) fn channel_of(delta: &[u8]) -> Option<[u8; 32]> {
+    match crate::coedit::CoeditPayload::decode(delta)? {
+        crate::coedit::CoeditPayload::Checkpoint { channel, .. }
+        | crate::coedit::CoeditPayload::RetainedDelta { channel, .. } => Some(channel),
+    }
+}
+
 fn carries_channel_access(envelope: &Envelope) -> bool {
     use neighbour_wire::NeighbourMsg;
     let Envelope::Delta { delta, .. } = envelope else {
@@ -417,7 +434,13 @@ pub(super) async fn enqueue_state_inner(
     let admission_trace = StateAdmissionTrace::new(&envelope);
     let mut wait_trace = AdmissionWaitTrace(admission_trace.clone());
     let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
-    let preparation = prepare_admission(workspace.clone(), source.clone(), author, delta_len);
+    let preparation = prepare_admission(
+        workspace.clone(),
+        source.clone(),
+        author,
+        delta_len,
+        record_of(&envelope),
+    );
     let mut turn = StateTurn {
         envelope: Some(envelope),
         sync,
@@ -538,6 +561,7 @@ async fn prepare_admission(
     source: Option<StateSource>,
     author: [u8; 32],
     delta_len: usize,
+    channel: Option<[u8; 32]>,
 ) -> Result<AdmissionRecipients, crate::store::StoreError> {
     let runtime = crate::workspace_io::fresh_membership(&workspace).await?;
     // What an attached host sent is not carried to another attached host.
@@ -576,11 +600,24 @@ async fn prepare_admission(
     // actions the host runs for members read through that session, and
     // would otherwise never see a bot complete what a member started.
     let host_commit = source.is_none();
+    // A browser environment's device reaches its own record and nothing else
+    // of the workspace: a frame of another record is no change of its own.
+    let outside = |device: &[u8; 32]| {
+        source
+            .as_ref()
+            .map(|source| &source.environments)
+            .is_some_and(|environments| {
+                crate::environment::scope_of(environments, device)
+                    .is_some_and(|scope| !scope.reaches(channel))
+            })
+    };
     let sessions = runtime
         .subscribers
         .iter()
         .filter(|(key, _)| {
-            (**key != author || host_commit) && !(from_attached && runtime.attached(key))
+            (**key != author || host_commit)
+                && !(from_attached && runtime.attached(key))
+                && !outside(key)
         })
         .map(|(key, sub)| (*key, sub.tx.clone()))
         .collect::<Vec<_>>();
@@ -598,6 +635,7 @@ async fn prepare_admission(
                 })
         })
         .collect::<Vec<_>>();
+    recipients.retain(|key| !outside(key));
     recipients.extend(sessions.iter().map(|(key, _)| *key));
     if from_attached {
         recipients.retain(|key| !runtime.attached_hosts.contains(key));

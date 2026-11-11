@@ -166,8 +166,9 @@ impl BrowserMeter for Unmetered {
 }
 
 /// What placing needs of the host itself, once it runs: the certificate it
-/// makes environments' devices with, where it is reached, and the workspaces
-/// it serves.
+/// makes environments' devices with, where it is reached, the workspaces it
+/// serves, and the register that confines each environment's device to the one
+/// record it was placed for.
 pub struct Authority {
     pub user_public_key: [u8; 32],
     /// The person's stand-in approver for this host
@@ -182,6 +183,10 @@ pub struct Authority {
     /// Where the session in the environment joins the workspace.
     pub relay: EndpointAddr,
     pub workspaces: Option<crate::workspaces::Workspaces>,
+    /// The relay's environments' devices, confined to the record each was
+    /// placed for ([`crate::environment`]): what every plane of the workspace
+    /// asks before it lets one in, or hands it a change.
+    pub environments: crate::environment::EnvironmentRegistry,
     /// The runtime the workspaces run on: listing a device writes membership
     /// there.
     pub runtime: tokio::runtime::Handle,
@@ -606,7 +611,17 @@ impl HostedBrowsers {
         };
         let window = self.environments.start(&material)?;
         // The workspace lists the environment's device while it runs, so the
-        // window's actions reach it and its own session is admitted.
+        // window's actions reach it, and confines it to that record before its
+        // session can ask for anything: the scope is registered here, at the
+        // relay, and the device itself is asked nothing.
+        self.confine(
+            &device,
+            Some(crate::environment::EnvironmentScope::for_record(
+                workspace_id,
+                APP,
+                record,
+            )),
+        );
         self.list(workspace_id, &device, true);
         open.insert(
             workspace_id,
@@ -626,7 +641,18 @@ impl HostedBrowsers {
             return;
         };
         self.environments.stop(&stopped.workspace);
+        self.confine(&stopped.device, None);
         self.list(workspace_id, &stopped.device, false);
+    }
+
+    /// Register the scope an environment's device reaches, or forget it and
+    /// with it everything the device could reach.
+    fn confine(&self, device: &DeviceCert, scope: Option<crate::environment::EnvironmentScope>) {
+        let authority = self.authority.lock_recover();
+        let Some(authority) = authority.as_ref() else {
+            return;
+        };
+        crate::environment::confine(&authority.environments, device.device_public_key, scope);
     }
 
     /// List (or forget) the environment's device in the workspace it serves,

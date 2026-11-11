@@ -20,6 +20,8 @@ pub mod attach;
 pub mod authority_epoch;
 pub mod compaction;
 #[doc(hidden)]
+pub mod environment;
+#[doc(hidden)]
 pub mod handshake;
 pub mod host;
 #[doc(hidden)]

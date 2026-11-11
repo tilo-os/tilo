@@ -49,6 +49,9 @@ pub(crate) struct Authority {
     /// The replay includes on-demand records: the subscriber is a peer
     /// relay, which keeps all of the workspace.
     every_record: bool,
+    /// The replay covers only these record channels: a browser environment's
+    /// device reaches its own record and nothing else of the workspace.
+    channels: Option<std::collections::BTreeSet<[u8; 32]>>,
     // The owner keeps admission during abandoned-spool reclamation.
     _permit: OwnedSemaphorePermit,
 }
@@ -147,6 +150,14 @@ impl ReplayTicket {
         }
         self
     }
+    /// Replay only these record channels' history: what a browser
+    /// environment's device is replayed of the workspace.
+    pub(crate) fn with_channels(mut self, channels: std::collections::BTreeSet<[u8; 32]>) -> Self {
+        if let Some(authority) = Arc::get_mut(&mut self.authority) {
+            authority.channels = Some(channels);
+        }
+        self
+    }
     fn with_permit(
         device: [u8; 32],
         connection: Option<Arc<AtomicBool>>,
@@ -163,6 +174,7 @@ impl ReplayTicket {
                 reserved: crate::timing::start(),
                 released: OnceLock::new(),
                 every_record: false,
+                channels: None,
                 _permit: permit,
             }),
         }
@@ -457,6 +469,7 @@ impl State {
             self.replays.entries.remove(&authority.id.0);
         }
         if !self.replays.entries.contains_key(&authority.id.0) {
+            let channels = authority.channels.clone();
             let build = if let Some(held) = held {
                 self.store
                     .start_pending_replay_capture(authority.id, authority.device, held)
@@ -468,6 +481,7 @@ impl State {
                         build
                             .skipping(skip)
                             .with_every_record(authority.every_record)
+                            .with_channels(channels)
                     })
             };
             // Its ticket's drop wakes this owner to reclaim the entry. One

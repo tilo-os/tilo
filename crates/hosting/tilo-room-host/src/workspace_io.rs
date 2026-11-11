@@ -829,6 +829,7 @@ mod tests {
             policy: &policy,
             own_user: &owner,
             agents: &agents,
+            environments: Box::leak(Box::default()),
         };
         let removed = crate::workspace_access::tests::unsigned_peer(owner, [1; 32]);
         for mode in [AdmissionMode::Explicit, AdmissionMode::SameOwner] {
@@ -866,6 +867,7 @@ mod tests {
             policy: &policy,
             own_user: &owner,
             agents: &agents,
+            environments: Box::leak(Box::default()),
         };
         let stranger = crate::workspace_access::tests::unsigned_peer([8; 32], [1; 32]);
         assert_eq!(

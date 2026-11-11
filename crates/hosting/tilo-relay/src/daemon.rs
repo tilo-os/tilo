@@ -612,6 +612,7 @@ impl Relay {
             home_peer_bundle: cfg.home_peer_bundle.clone(),
             autobind: handler.autobind.clone(),
             agents: handler.agents.clone(),
+            environments: handler.environments.clone(),
         };
         let management = ManagementProtocol {
             endpoint: endpoint.clone(),
@@ -862,6 +863,15 @@ impl Relay {
     #[must_use]
     pub const fn workspaces(&self) -> Option<&crate::workspaces::Workspaces> {
         self.workspaces.as_ref()
+    }
+
+    /// The devices this relay certified for its browser environments, and the
+    /// one record each reaches ([`crate::environment`]): what the relay
+    /// confines each environment to when it places it, and what every plane of
+    /// its workspaces asks before it lets one in.
+    #[must_use]
+    pub fn environments(&self) -> crate::environment::EnvironmentRegistry {
+        self.sessions.handler.environments.clone()
     }
 
     /// What this host keeps for each workspace it serves: its one content
@@ -1221,6 +1231,7 @@ struct DiscoveryProtocol {
     home_peer_bundle: PathBuf,
     autobind: Option<WorkspaceAutobind>,
     agents: crate::peer::AgentRegistry,
+    environments: crate::environment::EnvironmentRegistry,
 }
 
 impl DiscoveryProtocol {
@@ -1230,6 +1241,7 @@ impl DiscoveryProtocol {
             policy: &self.trust_policy,
             own_user: &self.identity.user_public_key,
             agents: &self.agents,
+            environments: &self.environments,
         }
     }
 }

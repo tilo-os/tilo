@@ -188,9 +188,15 @@ pub(super) async fn subscribe(
     let mut ticket =
         ReplayTicket::reserve(peer.device_public_key, session.connection_live.cloned()).await?;
     // A host this workspace is attached to keeps all of the workspace; a device
-    // opens on-demand records.
+    // opens on-demand records. A browser environment's device is replayed its
+    // own record and nothing else of the workspace.
     if ws.lock().await.attached(&peer.device_public_key) {
         ticket = ticket.with_every_record();
+    } else if let Some(channel) = session
+        .environment(&peer.device_public_key)
+        .and_then(|scope| scope.channel)
+    {
+        ticket = ticket.with_channels(std::iter::once(channel).collect());
     }
     crate::timing::event("join.ticket_wait", waited, 0);
     let capturing = crate::timing::start();

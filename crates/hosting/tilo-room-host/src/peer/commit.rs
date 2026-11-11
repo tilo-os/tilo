@@ -209,8 +209,9 @@ async fn admit_commit(
     if let Some(full) = over_storage(peer, session, &ws).await {
         return refused(&full);
     }
+    let channel = crate::peer::admission::channel_of(&delta);
     let Some(source) =
-        authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish).await?
+        authorized_state_source(&ws, peer, session, WorkspaceOperation::Publish, channel).await?
     else {
         return refused(unpublished());
     };

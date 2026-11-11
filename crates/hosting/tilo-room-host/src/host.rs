@@ -242,6 +242,7 @@ impl HostSessions {
             admin: Arc::default(),
             fetch: Arc::default(),
             agents: Arc::default(),
+            environments: Arc::default(),
             compactor: crate::compaction::Compactor::new(
                 identity.device_signing_key.clone(),
                 identity.device_cert.clone(),
@@ -1021,6 +1022,9 @@ pub struct RelayProtocol {
     /// for its connection there.
     pub fetch: Arc<std::sync::OnceLock<Arc<dyn crate::peer::FetchGrants>>>,
     pub agents: crate::peer::AgentRegistry,
+    /// The devices this host certified for its browser environments, see
+    /// [`crate::environment`].
+    pub environments: crate::environment::EnvironmentRegistry,
     pub compactor: crate::compaction::Compactor,
     pub(crate) member_limits: Option<Arc<crate::member_limits::MemberLimits>>,
     /// Told each device whose session here authenticated
@@ -1036,6 +1040,7 @@ impl RelayProtocol {
             policy: &self.trust_policy,
             own_user: &self.identity.user_public_key,
             agents: &self.agents,
+            environments: &self.environments,
         }
     }
 
@@ -1066,6 +1071,7 @@ impl RelayProtocol {
             admin: self.admin.get().cloned(),
             fetch: self.fetch.get().cloned(),
             agents: self.agents.clone(),
+            environments: self.environments.clone(),
             positions: Some(crate::position::PositionIssuer::new(
                 &self.identity.signing_key.to_bytes(),
             )),
