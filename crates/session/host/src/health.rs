@@ -58,6 +58,10 @@ pub enum EntryHealth {
         message: String,
         /// How long the door asked to wait before the next try.
         retry_after_secs: Option<u64>,
+        /// The door's own refusal, when a workspace's door turned the device away: what it
+        /// says about a wait list the workspace keeps, which its page offers.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        door: Option<tilo_relay_protocol::directory::DoorRefused>,
     },
 }
 
@@ -84,10 +88,12 @@ impl EntryHealth {
                 code,
                 message,
                 retry_after_secs,
+                door,
             } => Self::Refused {
                 code,
                 message: message.clone(),
                 retry_after_secs: *retry_after_secs,
+                door: door.clone(),
             },
         }
     }

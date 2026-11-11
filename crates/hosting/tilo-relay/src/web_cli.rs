@@ -392,6 +392,9 @@ pub(crate) fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) 
                     .join("fetch-proxy.prom"),
             ),
         }),
+        // The door's wait list is the room's own: whoever starts one sets it
+        // on the config it gives the listener.
+        door: None,
     }
 }
 

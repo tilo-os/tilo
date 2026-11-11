@@ -548,6 +548,7 @@ pub async fn entering_certificate(
                 .to_owned(),
             refusal: None,
             retry_after_ms: None,
+            door: None,
         });
     };
     tilo_relay_client::invite::guest_certificate(root, device.device_public_key(), label, now_ns)
@@ -557,6 +558,7 @@ pub async fn entering_certificate(
             message: error.to_string(),
             refusal: None,
             retry_after_ms: None,
+            door: None,
         })
 }
 
@@ -674,12 +676,14 @@ pub async fn entered(peer: &PeerHandle) -> Result<Admission, HostRefusal> {
                 code,
                 message,
                 retry_after_secs,
+                door,
             }) => {
                 return Err(HostRefusal {
                     code: code.to_owned(),
                     message,
                     refusal: None,
                     retry_after_ms: retry_after_secs.map(|secs| secs.saturating_mul(1000)),
+                    door,
                 });
             }
             None => {}
@@ -716,6 +720,10 @@ pub struct HostRefusal {
     /// How long the host asks to wait before the next try, in milliseconds, when it asked.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
+    /// The door's own refusal, when a workspace's door turned the device away: what it says
+    /// about a wait list the workspace keeps, which its page offers.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub door: Option<tilo_relay_protocol::directory::DoorRefused>,
 }
 
 impl HostRefusal {
@@ -755,6 +763,7 @@ impl HostRefusal {
             message: error.to_string(),
             refusal: None,
             retry_after_ms: None,
+            door: None,
         }
     }
 
@@ -767,6 +776,7 @@ impl HostRefusal {
                 .to_owned(),
             refusal: None,
             retry_after_ms: Some(retry_after_ms),
+            door: None,
         }
     }
 
@@ -784,6 +794,7 @@ impl HostRefusal {
             message: why.to_owned(),
             refusal: None,
             retry_after_ms: None,
+            door: None,
         }
     }
 
@@ -795,6 +806,7 @@ impl HostRefusal {
             message: why,
             refusal: None,
             retry_after_ms: None,
+            door: None,
         }
     }
 
@@ -808,6 +820,7 @@ impl HostRefusal {
                 .map_or_else(|| reason.to_owned(), |refusal| refusal.message.clone()),
             refusal,
             retry_after_ms: None,
+            door: None,
         }
     }
 }
@@ -830,6 +843,7 @@ impl From<CertifyError> for HostRefusal {
                 message: why,
                 refusal: None,
                 retry_after_ms: None,
+                door: None,
             },
             CertifyError::RateLimited { retry_after_ms } => Self::rate_limited(retry_after_ms),
             other => Self::unanswered(&other.to_string()),

@@ -110,6 +110,7 @@ fn web_of(relay: &Relay, host: &Host) -> Web {
         stand_ins: Arc::new(stand_in::StandIns::new(
             relay.state_root().join("stand-ins"),
         )),
+        door: None,
     }
 }
 
@@ -1441,6 +1442,305 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
             .is_none(),
         "the key is forgotten"
     );
+
+    stop(relay, serving).await;
+}
+
+/// The secret `mail` carries for `parameter`, as the page it lands on reads
+/// it: the hex after `?<parameter>=` (or `&<parameter>=`) in the mail's text.
+fn link_secret(mail: &crate::door::mail::Mail, parameter: &str) -> String {
+    let at = mail
+        .text
+        .find(&format!("{parameter}="))
+        .unwrap_or_else(|| panic!("no {parameter} in the mail: {}", mail.text));
+    let rest = &mail.text[at + parameter.len() + 1..];
+    let end = rest
+        .find(|character: char| !character.is_ascii_hexdigit())
+        .unwrap_or(rest.len());
+    rest[..end].to_owned()
+}
+
+/// The mails `mailer` took, once it has `count` of them: the door's outbox
+/// sends in its own task, so a check waits for it rather than reading once.
+async fn mails_taken(
+    mailer: &crate::door::mail::FakeMailer,
+    count: usize,
+) -> Vec<crate::door::mail::Mail> {
+    for _ in 0..200 {
+        let taken = mailer.sent.lock().unwrap().clone();
+        if taken.len() >= count {
+            return taken;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    mailer.sent.lock().unwrap().clone()
+}
+
+/// A relay serving one workspace, listed and taking people by invitation
+/// only, with the door's wait list keeping `max` addresses.
+async fn invitation_only_host(
+    root: &SigningKey,
+    seed: u8,
+) -> (Relay, Host, String, tempfile::TempDir) {
+    let host = host(
+        root,
+        seed,
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let workspaces = relay.workspaces().unwrap().clone();
+    let workspace = workspaces.create("Plaza").await.unwrap().workspace;
+    workspaces
+        .publish(
+            &workspace,
+            &host.cert,
+            tilo_relay_protocol::directory::Listing {
+                description: "Coffee and tea".into(),
+                default_role: tilo_relay_protocol::workspaces::WorkspaceRole::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    workspaces
+        .list_invitation_only(&workspace, &host.cert, true)
+        .await
+        .unwrap();
+    (relay, host, workspace, state)
+}
+
+/// The door of `workspace`, keeping `max` addresses and mailing them through
+/// `mailer`.
+fn wait_list_door(
+    relay: &Relay,
+    workspace: &str,
+    max: usize,
+    mailer: Arc<crate::door::mail::FakeMailer>,
+) -> Arc<crate::door::WaitListDoor> {
+    let workspaces = relay.workspaces().unwrap();
+    let door = Arc::new(crate::door::WaitListDoor::with_mailer(
+        workspaces,
+        workspace,
+        max,
+        Some("hello@tilo.example"),
+        mailer,
+        "https://site.example/",
+    ));
+    let _ = workspaces.offer_wait_list(door.offered());
+    door
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its workspaces serve the door until the relay shuts down at the end"
+)]
+async fn an_invitation_only_door_keeps_an_address_confirms_it_and_takes_it_off() {
+    use tilo_relay_protocol::directory::{DoorRefusalCode, DoorRefused};
+
+    let root = SigningKey::from_bytes(&[150; 32]);
+    let (relay, host, workspace, _state) = invitation_only_host(&root, 151).await;
+    let mailer = Arc::new(crate::door::mail::FakeMailer::default());
+    let mut web = web_of(&relay, &host);
+    web.door = Some(wait_list_door(&relay, &workspace, 4, mailer.clone()));
+    let (addr, serving) = serve_web(Arc::new(web)).await;
+
+    // Someone the door turns away is told it keeps a wait list, where the
+    // contact is, and that it mails.
+    let join = serde_json::json!({
+        "userPublicKey": hex::encode([41u8; 32]),
+        "displayName": "Ada",
+    })
+    .to_string();
+    let (status, head, body) = exchange(
+        addr,
+        &format!(
+            "POST {API_PREFIX}/directory/{workspace}/join HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            join.len()
+        ),
+        join.as_bytes(),
+    )
+    .await;
+    assert_eq!(status, 403, "{head}");
+    let refused: DoorRefused = serde_json::from_slice(&body).unwrap();
+    assert_eq!(refused.code, DoorRefusalCode::InvitationOnly);
+    assert!(refused.wait_list, "{refused:?}");
+    assert_eq!(refused.contact.as_deref(), Some("hello@tilo.example"));
+    assert!(refused.mail, "{refused:?}");
+
+    let ask = |step: &str, body: serde_json::Value| {
+        let body = body.to_string();
+        let head = format!(
+            "POST {API_PREFIX}/directory/{workspace}/{step} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, body.as_bytes()).await }
+    };
+
+    // The address is kept, and the confirmation link mailed to it.
+    let (status, head, body) = ask(
+        "wait-list",
+        serde_json::json!({"email": "Ada@Example.org", "language": "de-DE"}),
+    )
+    .await;
+    assert_eq!(status, 200, "{head} {}", String::from_utf8_lossy(&body));
+    let kept: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(kept["email"], "Ada@Example.org", "kept as typed");
+    assert_eq!(kept["mail"], true);
+    let removal = kept["removal"].as_str().unwrap().to_owned();
+    assert_eq!(removal.len(), 64);
+    let sent = mails_taken(&mailer, 1).await;
+    assert_eq!(sent.len(), 1, "one confirmation: {sent:?}");
+    let (to, confirm, remove_link) = (
+        sent[0].to.clone(),
+        link_secret(&sent[0], "wait-list-confirm"),
+        link_secret(&sent[0], "wait-list-remove"),
+    );
+    assert_eq!(to, "Ada@Example.org");
+    assert_eq!(
+        remove_link, removal,
+        "the mail's removal link carries the secret the door handed out"
+    );
+    // The mail is in the language the door was read in.
+    assert_eq!(confirm.len(), 64);
+
+    // Until the link is opened the address waits, and is listed to nobody.
+    let (status, head, body) =
+        ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        "pending"
+    );
+
+    let (status, head, body) =
+        ask("wait-list/confirm", serde_json::json!({"token": confirm})).await;
+    assert_eq!(status, 200, "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["confirmed"],
+        true
+    );
+    let (_, _, body) = ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        "listed"
+    );
+    // Opened again, the same link confirms nothing new and is no error.
+    let (status, _, _) = ask("wait-list/confirm", serde_json::json!({"token": confirm})).await;
+    assert_eq!(status, 200);
+
+    // Taking the address off answers alike, and mails word that it left.
+    let (status, head, body) =
+        ask("wait-list/remove", serde_json::json!({"secret": removal})).await;
+    assert_eq!(status, 200, "{head} {}", String::from_utf8_lossy(&body));
+    let left = mails_taken(&mailer, 2).await;
+    assert_eq!(left.len(), 2, "a removal is mailed: {left:?}");
+    assert_eq!(left[1].to, "Ada@Example.org");
+    let (_, _, body) = ask("wait-list/standing", serde_json::json!({"secret": removal})).await;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["standing"],
+        "gone"
+    );
+    // A secret no entry has is answered as one that took an entry off.
+    let (status, _, _) = ask(
+        "wait-list/remove",
+        serde_json::json!({"secret": hex::encode([9u8; 32])}),
+    )
+    .await;
+    assert_eq!(status, 200);
+
+    // A key this door never handed out is refused, not guessed at.
+    let (status, _, body) = ask(
+        "wait-list/standing",
+        serde_json::json!({"secret": "not-a-secret"}),
+    )
+    .await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "invalid-secret"
+    );
+
+    // Nothing that is not an address is no address.
+    let (status, _, body) = ask("wait-list", serde_json::json!({"email": "nope"})).await;
+    assert_eq!(status, 400);
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "invalid-email"
+    );
+
+    stop(relay, serving).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the relay and its workspaces keep their state until the relay shuts down at the end"
+)]
+async fn the_wait_list_is_bounded_by_the_workspace_and_by_the_visitors_network() {
+    let root = SigningKey::from_bytes(&[152; 32]);
+    let (relay, host, workspace, _state) = invitation_only_host(&root, 153).await;
+    let mailer = Arc::new(crate::door::mail::FakeMailer::default());
+    let mut web = web_of(&relay, &host);
+    web.door = Some(wait_list_door(&relay, &workspace, 1, mailer));
+    let (addr, serving) = serve_web(Arc::new(web)).await;
+
+    let ask = |step: &str, body: serde_json::Value| {
+        let body = body.to_string();
+        let head = format!(
+            "POST {API_PREFIX}/directory/{workspace}/{step} HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        async move { exchange(addr, &head, body.as_bytes()).await }
+    };
+
+    // The workspace keeps one address: a second one is told the list is full.
+    let (status, head, _) = ask("wait-list", serde_json::json!({"email": "ada@example.org"})).await;
+    assert_eq!(status, 200, "{head}");
+    let (status, head, body) =
+        ask("wait-list", serde_json::json!({"email": "bo@example.org"})).await;
+    assert_eq!(status, 503, "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "wait-list-full"
+    );
+
+    // One address cannot fill the door's windows either: six asks in the
+    // window are one too many, and the answer says when to come back.
+    let mut limited = None;
+    for index in 0..6 {
+        let (status, head, body) = ask(
+            "wait-list",
+            serde_json::json!({"email": format!("someone{index}@example.org")}),
+        )
+        .await;
+        if status == 429 {
+            limited = Some((head, body));
+            break;
+        }
+    }
+    let (head, body) = limited.expect("the sixth ask from one address is refused");
+    assert!(head.contains("retry-after:"), "{head}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&body).unwrap()["code"],
+        "too-many"
+    );
+
+    // A workspace this door does not serve keeps no wait list.
+    let other = relay
+        .workspaces()
+        .unwrap()
+        .create("Elsewhere")
+        .await
+        .unwrap()
+        .workspace;
+    let body = serde_json::json!({"email": "cy@example.org"}).to_string();
+    let head = format!(
+        "POST {API_PREFIX}/directory/{other}/wait-list HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        body.len()
+    );
+    let (status, head, _) = exchange(addr, &head, body.as_bytes()).await;
+    assert_eq!(status, 404, "{head}");
 
     stop(relay, serving).await;
 }

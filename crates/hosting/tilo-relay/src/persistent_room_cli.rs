@@ -32,6 +32,7 @@ use tilo_relay_session::workspaces::SetMemberRoleRequest;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 use crate::web_cli::{WorkspaceArgs, enrol, operator_lines, start_relay_lending, web_config};
+use tilo_relay::door;
 
 mod bots;
 mod discord_sign_in;
@@ -175,7 +176,7 @@ pub struct PersistentArgs {
         long = "wait-list-max",
         value_name = "COUNT",
         default_value_t = 0,
-        requires = "members_only"
+        requires = "invitation_only"
     )]
     pub wait_list_max: usize,
     /// Whoever runs the workspace sends mail from the web entry DOOR (a URL
@@ -730,7 +731,7 @@ async fn answer_wait_list(
         reason,
         full,
     };
-    if !governance.members_only || governance.wait_list_max == 0 {
+    if !governance.invitation_only || governance.wait_list_max == 0 {
         return refused("the workspace keeps no wait list".into(), false);
     }
     let Some(removal) = hex32(&removal_sha256) else {
@@ -773,13 +774,6 @@ async fn answer_wait_list(
     }
 }
 
-fn mailbox(mailbox: tilo_relay::workspaces::Mailbox) -> operator::WaitListMailbox {
-    operator::WaitListMailbox {
-        contact: mailbox.contact,
-        language: mailbox.language,
-    }
-}
-
 /// Take off the wait list the entry whose removal secret hashes to
 /// `removal_sha256`, for whoever left it: answered alike whether or not
 /// one did.
@@ -801,7 +795,10 @@ async fn answer_unlist(
     {
         Ok((told, contact)) => OperatorEvent::Unlisted {
             request,
-            told: told.map(mailbox),
+            told: told.map(|mailbox| operator::WaitListMailbox {
+                contact: mailbox.contact,
+                language: mailbox.language,
+            }),
             contact_sha256: contact.map(hex::encode),
         },
         Err(error) => OperatorEvent::WaitListFailed {
@@ -900,36 +897,6 @@ async fn answer_wait_list_command(
             request: String::new(),
             reason: "not a wait-list command".into(),
         },
-    }
-}
-
-/// The event that has the operator mail an invitation a member asked for.
-fn invite_mail(
-    mail: tilo_relay::workspaces::WaitListMail,
-    request: String,
-) -> (OperatorEvent, tokio::sync::oneshot::Sender<bool>) {
-    (
-        OperatorEvent::InviteMail {
-            request,
-            to: mailbox(mail.to),
-            link: mail.link,
-            removal: hex::encode(mail.removal),
-        },
-        mail.queued,
-    )
-}
-
-type MailAcks = std::collections::BTreeMap<String, tokio::sync::oneshot::Sender<bool>>;
-
-fn publish_invite_mail(asked: tilo_relay::workspaces::WaitListMail, mail_acks: &mut MailAcks) {
-    mail_acks.retain(|_, sender| !sender.is_closed());
-    if mail_acks.len() >= 512 {
-        let _ = asked.queued.send(false);
-    } else {
-        let request = hex::encode(rand::random::<[u8; 32]>());
-        let (event, queued) = invite_mail(asked, request.clone());
-        mail_acks.insert(request, queued);
-        println!("{}", event.to_line());
     }
 }
 
@@ -1528,9 +1495,35 @@ pub(crate) async fn run(
         // reads, its old history archived beside the replay. Runs once per start
         // that names it; a record that still reads is left as it is.
         refound_records(&workspaces, &workspace, &persistent.refound, &state).await?;
+        // The wait list, when the workspace takes people by invitation and
+        // keeps one: the addresses' windows and the mail the door sends from
+        // its page (the web entry, or the door `--wait-list-mail` names).
+        let settings = door::WaitListSettings::from_env(
+            persistent.wait_list_max,
+            persistent
+                .wait_list_mail
+                .clone()
+                .or_else(|| args.web.web_entry.clone()),
+            std::env::var_os("TILO_ROOMS_LOCAL").is_some(),
+        )
+        .context("read the door's mail settings")?;
+        let wait_list = door::WaitListDoor::open(&workspaces, &workspace, &state, &settings)
+            .context("open the door's wait list")?;
+        let door = wait_list.map(std::sync::Arc::new);
+        if let Some(door) = &door {
+            let _ = workspaces.offer_wait_list(door.offered());
+            tracing::info!(
+                workspace = %workspace,
+                max = door.max(),
+                mail = door.mails(),
+                "the door keeps a wait list"
+            );
+        }
+        let mut config = web_config(&args.web, listen, &state);
+        config.door.clone_from(&door);
         let web = hosted
             .relay
-            .serve_web(web_config(&args.web, listen, &state))
+            .serve_web(config)
             .await
             .context("start the browser listener")?;
         println!(
@@ -1654,9 +1647,8 @@ pub(crate) async fn run(
             roles_file: persistent.roles_file.clone(),
             inactive_after_mins: persistent.inactive_after_days.saturating_mul(24 * 60),
             state: state.clone(),
-            members_only: persistent.members_only,
+            invitation_only: persistent.invitation_only,
             wait_list_max: persistent.wait_list_max,
-            wait_list_mail: persistent.wait_list_mail.clone(),
         };
         Ok::<Serving, anyhow::Error>(Serving {
             moderator,
@@ -1666,6 +1658,7 @@ pub(crate) async fn run(
             governance,
             context,
             management,
+            wait_list: door,
         })
     }
     .await;
@@ -1677,6 +1670,7 @@ pub(crate) async fn run(
         governance,
         context,
         management: _management,
+        wait_list,
     } = match serving {
         Ok(serving) => serving,
         Err(error) => {
@@ -1687,8 +1681,11 @@ pub(crate) async fn run(
             return Err(error);
         }
     };
+    let invitations = wait_list
+        .as_ref()
+        .and_then(|door| door.invitations(&context.workspaces));
     let result = tokio::select! {
-        result = serve_operator(&context, &governance, &mut operator) => result,
+        result = serve_operator(&context, &governance, &mut operator, invitations) => result,
         result = shutdown => result,
     };
     for runner in moderator
@@ -1720,6 +1717,9 @@ struct Serving {
     context: PersistentRoom,
     /// The deployment's own routes, which stop when dropped.
     management: Option<http::Handle>,
+    /// The wait list the door keeps, when the workspace takes people by
+    /// invitation and keeps one.
+    wait_list: Option<std::sync::Arc<door::WaitListDoor>>,
 }
 
 /// The operator's declarations the workspace is kept in line with.
@@ -1730,12 +1730,11 @@ struct Governance {
     roles_file: Option<PathBuf>,
     inactive_after_mins: u64,
     state: PathBuf,
-    /// The workspace takes people by invitation (`--members-only`).
-    members_only: bool,
+    /// The door lists the workspace and takes only people invited or
+    /// pre-admitted (`--invitation-only`).
+    invitation_only: bool,
     /// Requests left at the door it keeps (`--wait-list-max`).
     wait_list_max: usize,
-    /// The door whoever runs it sends mail from (`--wait-list-mail`).
-    wait_list_mail: Option<String>,
 }
 
 #[derive(Default, serde::Serialize, serde::Deserialize)]
@@ -1984,6 +1983,7 @@ async fn serve_operator(
     context: &PersistentRoom,
     governance: &Governance,
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
+    mail: Option<door::InvitationMail>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
     let removals = Removals::load(&summary(context).await?.members);
@@ -2000,22 +2000,18 @@ async fn serve_operator(
     // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let mut mail_acks = MailAcks::new();
-    let mut mail = governance
-        .wait_list_mail
-        .as_ref()
-        .and_then(|door| context.workspaces.mail_wait_list(door));
+    let mail = mail.as_ref();
     // A deployment that runs the room without an operator leaves its input at
     // its end: the room then keeps serving, and only a command ends it.
     let mut operator_open = true;
     loop {
         tokio::select! {
-            Some(asked) = async {
-                match mail.as_mut() {
-                    Some(mail) => mail.recv().await,
+            _ = async {
+                match mail {
+                    Some(mail) => { mail.mail_next().await; }
                     None => std::future::pending().await,
                 }
-            } => publish_invite_mail(asked, &mut mail_acks),
+            } => {}
             _ = roles_tick.tick(), if governance.roles_file.is_some() => {
                 let changed_at = governance.roles_changed_at();
                 if changed_at != roles_seen {
@@ -2054,11 +2050,9 @@ async fn serve_operator(
                 | OperatorCommand::Standing { .. }))) => {
                     println!("{}", answer_wait_list_command(context, governance, command).await.to_line());
                 }
-                Some(Ok(OperatorCommand::InviteMailQueued { request, queued })) => {
-                    if let Some(sender) = mail_acks.remove(&request) {
-                        let _ = sender.send(queued);
-                    }
-                }
+                // An invitation the door mailed itself is acknowledged here:
+                // nothing else in the workspace hears of it.
+                Some(Ok(OperatorCommand::InviteMailQueued { .. })) => {}
                 Some(Ok(OperatorCommand::Admit { .. })) => bail!("a persistent workspace admits guests through its door"),
                 Some(Ok(OperatorCommand::Shutdown {})) => return Ok(()),
                 Some(Err(error)) => bail!("unreadable workspace operator line: {error}"),

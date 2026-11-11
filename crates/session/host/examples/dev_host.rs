@@ -99,6 +99,7 @@ async fn main() {
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
+            door: None,
         })
         .await
         .expect("serve browsers");

@@ -62,6 +62,10 @@ pub struct WebConfig {
     /// The fetch proxy this host serves its members' pages at
     /// [`protocol::FETCH_PATH`], if any.
     pub fetch_proxy: Option<FetchProxySetup>,
+    /// The wait list this host keeps for a workspace that takes people by
+    /// invitation, when whoever runs it keeps one
+    /// ([`crate::door::WaitListDoor`]).
+    pub door: Option<Arc<crate::door::WaitListDoor>>,
 }
 
 /// A running browser listener. Dropping it stops serving.
@@ -138,6 +142,9 @@ struct Web {
     login_codes: Arc<login_codes::LoginCodes>,
     /// The stand-in approvers this host keeps for people.
     stand_ins: Arc<stand_in::StandIns>,
+    /// The wait list the door keeps for a workspace taking people by
+    /// invitation, when whoever runs this host keeps one.
+    door: Option<Arc<crate::door::WaitListDoor>>,
 }
 
 /// Checks the published origins against the listeners they front.
@@ -302,6 +309,7 @@ impl Relay {
             ),
             login_codes: Arc::new(login_codes::LoginCodes::new(public_origin.clone())),
             stand_ins: Arc::new(stand_in::StandIns::new(self.state_root().join("stand-ins"))),
+            door: config.door.clone(),
         });
         web.serve_stand_ins();
         // A page's fetch proxy token is minted on the session it fetched from.
@@ -485,12 +493,43 @@ async fn directory_door(
     web: &Web,
     route: &str,
     bytes: &[u8],
+    client: std::net::IpAddr,
 ) -> Result<Response<Body>, Response<Body>> {
-    use tilo_relay_protocol::directory::{DoorAnswer, DoorJoin, DoorReport, door_route};
+    use tilo_relay_protocol::directory::{
+        DoorAnswer, DoorJoin, DoorReport, WAIT_LIST, WAIT_LIST_CONFIRM, WAIT_LIST_REMOVE,
+        WAIT_LIST_STANDING, door_route,
+    };
     let (workspace, step) =
         door_route(route).ok_or_else(|| status(StatusCode::NOT_FOUND, "not found"))?;
     // A relay that governs no workspaces refuses before the request is parsed.
-    governed_workspaces(web)?;
+    let workspaces = governed_workspaces(web)?;
+    // The wait list a workspace taking people by invitation keeps: an address
+    // left, confirmed, taken off, and where it stands.
+    if matches!(
+        step,
+        WAIT_LIST | WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STANDING
+    ) {
+        let Some(door) = &web.door else {
+            return Err(refused(
+                StatusCode::NOT_FOUND,
+                "this workspace keeps no wait list",
+            ));
+        };
+        if door.workspace() != workspace {
+            return Err(refused(
+                StatusCode::NOT_FOUND,
+                "this workspace keeps no wait list",
+            ));
+        }
+        let answered = crate::door::route(door, workspaces, client, step, bytes).await;
+        let mut response = json_status(answered.status, &answered.body);
+        if let Some(seconds) = answered.retry_after_secs
+            && let Ok(value) = header::HeaderValue::from_str(&seconds.to_string())
+        {
+            response.headers_mut().insert(header::RETRY_AFTER, value);
+        }
+        return Ok(response);
+    }
     let refused = |error: crate::workspaces::CollaborationError| {
         json_status(
             StatusCode::FORBIDDEN,
@@ -505,7 +544,7 @@ async fn directory_door(
             | crate::workspaces::DoorRefusal::Removed
             | crate::workspaces::DoorRefusal::InvitationOnly => StatusCode::FORBIDDEN,
         };
-        let mut response = json_status(full, &error.answer());
+        let mut response = json_status(full, &error.answer_with(workspaces.wait_list_door()));
         if let crate::workspaces::DoorRefusal::Full { retry_after_secs } = error
             && let Ok(seconds) = header::HeaderValue::from_str(&retry_after_secs.to_string())
         {
@@ -517,7 +556,7 @@ async fn directory_door(
         "join" => {
             let join: DoorJoin = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a join request"))?;
-            let (issued, token) = governed_workspaces(web)?
+            let (issued, token) = workspaces
                 .admit_listed(workspace, &join)
                 .await
                 .map_err(door_refused)?;
@@ -533,7 +572,7 @@ async fn directory_door(
         "report" => {
             let report: DoorReport = serde_json::from_slice(bytes)
                 .map_err(|_| status(StatusCode::BAD_REQUEST, "not a report"))?;
-            governed_workspaces(web)?
+            workspaces
                 .report_listed(workspace, &report)
                 .await
                 .map_err(refused)?;
@@ -875,7 +914,8 @@ async fn route(
             }))
         }
         _ if tilo_relay_protocol::directory::door_route(route).is_some() => {
-            directory_door(web, route, &bytes).await
+            let client = client.unwrap_or(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST));
+            directory_door(web, route, &bytes, client).await
         }
         "/envelope" | "/profile" => {
             let now_ms = tilo_clock::unix_now_ms();

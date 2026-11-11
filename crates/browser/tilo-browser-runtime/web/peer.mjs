@@ -1421,13 +1421,15 @@ const DOOR_CODES = new Set(['banned', 'removed', 'invitation-only', 'full', 'ref
  * holds an entry for at most 30 seconds (`ENTERING_DEADLINE`), and a connection takes some. */
 const ENTRY_TIMEOUT_MS = 45_000;
 
-/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, and the wait the door
- * asked for in seconds. */
-function hostRefusal(code, message, retryAfter = null) {
+/** A refusal as the shared entry reads it (`HostRefusal`): its `code`, the wait the door
+ * asked for in seconds, and, when a workspace's door turned the person away, the door's own
+ * answer (`door`: whether it keeps a wait list, and where its contact is). */
+function hostRefusal(code, message, retryAfter = null, door = null) {
   const error = new Error(message);
   error.name = 'HostRefusal';
   error.code = code;
   if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfter = retryAfter;
+  if (door) error.door = door;
   return error;
 }
 
@@ -1452,7 +1454,7 @@ function entryAnswered(peer, timeoutMs = ENTRY_TIMEOUT_MS) {
     const check = snapshot => {
       const entry = snapshot?.entry;
       if (entry?.outcome === 'admitted') finish(undefined, entry);
-      else if (entry?.outcome === 'refused') finish(hostRefusal(entry.code, entry.message, entry.retryAfterSecs));
+      else if (entry?.outcome === 'refused') finish(hostRefusal(entry.code, entry.message, entry.retryAfterSecs, entry.door ?? null));
       else if (snapshot?.phase === 'failed') finish(hostRefusal(snapshot.errorCode ?? 'refused', snapshot.error ?? 'The host refused this device.'));
     };
     stop = peer.onStatus(check);

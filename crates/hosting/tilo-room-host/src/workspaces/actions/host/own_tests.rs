@@ -29,7 +29,7 @@ use tilo_user_identity::{
 use super::super::HostWorkspaceActions;
 use super::super::tests::{caller, settled};
 use crate::workspaces::tests::{governor, guest_device, test_host};
-use crate::workspaces::{OwnWorkspaceOffer, Workspaces};
+use crate::workspaces::{OwnWorkspaceOffer, WaitListSecrets, Workspaces};
 
 fn own_request(argument: Value) -> InvokeRequest {
     let mut request = super::super::tests::request("", CREATE_OWN_ROOM, argument);
@@ -1257,4 +1257,133 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
             .await
             .is_err()
     );
+}
+
+/// The wait list gates getting in, nothing else: a person an invitation (or
+/// their own device) let in makes as many workspaces of their own as they
+/// like, while someone who only left an address at the door is let into
+/// nothing and so makes none.
+#[tokio::test]
+async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() {
+    use tilo_relay_protocol::directory::DoorJoin;
+    use tilo_relay_protocol::workspaces::WorkspaceRole;
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = governor();
+    let relay = test_host(dir.path(), &key, &owner).await;
+    let workspaces = relay.workspaces().clone();
+    workspaces
+        .offer_own_workspaces(OwnWorkspaceOffer::free("tilo.test"))
+        .unwrap();
+    let host = HostWorkspaceActions::new();
+    host.attach(workspaces.clone());
+
+    // The workspace people are let into: listed, taking people by invitation
+    // only, with a wait list of one address at its door.
+    let lounge = workspaces.create("Lounge").await.unwrap().workspace;
+    workspaces
+        .publish(
+            &lounge,
+            &owner,
+            tilo_relay_protocol::directory::Listing {
+                description: "Coffee and tea".into(),
+                default_role: WorkspaceRole::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    workspaces
+        .list_invitation_only(&lounge, &owner, true)
+        .await
+        .unwrap();
+    assert!(
+        workspaces.offer_wait_list(tilo_relay_protocol::directory::DoorWaitList {
+            contact: Some("hello@tilo.example".into()),
+            mail: true,
+        })
+    );
+
+    // A stranger leaves their address there: the door keeps it and lets
+    // nobody in on that account.
+    let (_, stranger) = guest_device();
+    assert!(
+        workspaces
+            .wait(
+                &lounge,
+                "stranger@example.org",
+                WaitListSecrets {
+                    removal: [1; 32],
+                    confirm: Some([2; 32]),
+                },
+                "en",
+                1,
+            )
+            .await
+            .is_ok()
+    );
+    let refused = workspaces
+        .admit_listed(
+            &lounge,
+            &DoorJoin {
+                user_public_key: hex::encode(stranger.user_public_key),
+                display_name: "Stranger".into(),
+            },
+        )
+        .await
+        .expect_err("an invitation-only door admits nobody who left an address");
+    assert!(
+        matches!(refused, crate::workspaces::DoorRefusal::InvitationOnly),
+        "{refused:?}"
+    );
+    let said = refused.answer_with(workspaces.wait_list_door());
+    assert!(
+        said.wait_list && said.mail && said.contact.as_deref() == Some("hello@tilo.example"),
+        "the refusal offers the wait list: {said:?}"
+    );
+    // Not a member of anything here, so no session of theirs is admitted to
+    // run a host action: the wait list is the only way they were let near.
+    assert!(
+        workspaces
+            .own()
+            .expect("this host keeps workspaces of people's own")
+            .of(&stranger.user_public_key)
+            .is_empty(),
+        "a stranger at the wait list keeps nothing here"
+    );
+
+    // Someone let in makes their own workspace, joins it, and then makes a
+    // second and a third: no wait list, no invitation, no bound.
+    let (guest_key, guest) = guest_device();
+    let first = create_own(&host, &guest, json!({"name": "Work"}))
+        .await
+        .unwrap();
+    join(&workspaces, &first, &guest_key, &guest).await;
+    assert_eq!(
+        workspaces
+            .own()
+            .expect("this host keeps workspaces of people's own")
+            .of(&guest.user_public_key)
+            .len(),
+        1,
+        "a person let in has a workspace here"
+    );
+    for name in ["Side project", "Third"] {
+        create_own(&host, &guest, json!({"name": name}))
+            .await
+            .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+    }
+    let mine = workspaces
+        .own()
+        .expect("this host keeps workspaces of people's own")
+        .of(&guest.user_public_key);
+    assert_eq!(mine.len(), 3, "three workspaces of their own: {mine:?}");
+    assert!(
+        workspaces
+            .own()
+            .expect("this host keeps workspaces of people's own")
+            .of(&stranger.user_public_key)
+            .is_empty(),
+        "the stranger who only left an address keeps nothing here"
+    );
+    relay.shutdown().await;
 }

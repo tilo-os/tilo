@@ -49,7 +49,7 @@ impl Doorway for Workspaces {
                         }
                         _ => None,
                     },
-                    refused: refusal.answer(),
+                    refused: refusal.answer_with(self.wait_list_door()),
                 })?;
             match self
                 .page_join(JoinStep::Ask {

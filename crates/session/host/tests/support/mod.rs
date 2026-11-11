@@ -222,6 +222,7 @@ pub async fn start_host_limiting(
             guests,
             limits,
             fetch_proxy: None,
+            door: None,
             ..HostSettings::default()
         },
     )
@@ -412,6 +413,7 @@ pub async fn start_workspace_host_relaying(
             plain_listen: None,
             public_origin: None,
             fetch_proxy: None,
+            door: None,
         })
         .await
         .unwrap();

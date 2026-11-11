@@ -60,6 +60,7 @@ async fn host_routes_answer_over_loopback_plain_http_only() {
             plain_listen: Some("0.0.0.0:0".parse().unwrap()),
             public_origin: None,
             fetch_proxy: None,
+            door: None,
         })
         .await
         .is_err();

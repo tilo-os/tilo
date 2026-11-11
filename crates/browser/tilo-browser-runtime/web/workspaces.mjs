@@ -310,7 +310,12 @@ function admissionDoor(workspace) {
 function doorRefused(error) {
   if (error?.name !== 'HostRefusal') return error;
   const code = {banned: 'removed', removed: 'removed', 'invitation-only': 'invitation-only', full: 'full', unanswered: 'unavailable'}[error.code] ?? 'refused';
-  return new HostAdmissionError(code, error.message, Number.isFinite(error.retryAfter) && error.retryAfter > 0 ? error.retryAfter : null);
+  // A workspace taking people by invitation may keep a wait list, and name
+  // where to ask to be taken off it: the door's own words, as the shared
+  // entry read them (`HostRefusal.door`).
+  const door = code === 'invitation-only' && error.door?.waitList === true
+    ? {waitList: true, contact: typeof error.door.contact === 'string' && error.door.contact ? error.door.contact : null, mail: error.door.mail === true} : null;
+  return new HostAdmissionError(code, error.message, Number.isFinite(error.retryAfter) && error.retryAfter > 0 ? error.retryAfter : null, door);
 }
 
 /** Why the door kept no address, by its `code`: the cases a door page says. */

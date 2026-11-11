@@ -49,12 +49,31 @@ pub fn door_path(workspace: &str) -> String {
 
 /// The workspace a relay door route below the API prefix names, and what is
 /// asked of it there: `/directory/<workspace>/join` is `(workspace, "join")`.
+/// The wait list's acts are the one step of two words:
+/// `…/wait-list/remove` is `(workspace, "wait-list/remove")`.
 #[must_use]
 pub fn door_route(route: &str) -> Option<(&str, &str)> {
     let rest = route.strip_prefix(DIRECTORY_PATH)?.strip_prefix('/')?;
     let (workspace, step) = rest.split_once('/')?;
-    (!workspace.is_empty() && !step.contains('/')).then_some((workspace, step))
+    let two_words = matches!(
+        step,
+        WAIT_LIST_REMOVE | WAIT_LIST_CONFIRM | WAIT_LIST_STANDING
+    );
+    (!workspace.is_empty() && (two_words || !step.contains('/'))).then_some((workspace, step))
 }
+
+/// The door's wait list: the acts a person who asked without an invitation
+/// leaves an address with, confirms it, takes it off and asks where it
+/// stands, each a step after its door (`<door>wait-list`, below the API
+/// prefix for a relay).
+pub const WAIT_LIST: &str = "wait-list";
+/// The step taking an address off the list with the secret it was handed or
+/// mailed.
+pub const WAIT_LIST_REMOVE: &str = "wait-list/remove";
+/// The step opening the link a confirmation mail carried.
+pub const WAIT_LIST_CONFIRM: &str = "wait-list/confirm";
+/// The step asking where the address a removal secret belongs to stands.
+pub const WAIT_LIST_STANDING: &str = "wait-list/standing";
 
 /// What the owner decided when they made the workspace public.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -174,7 +193,7 @@ pub struct DoorAnswer {
 
 /// Why a door did not let a person in, as it says it: what every caller reads, never a sentence
 /// to match.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DoorRefusalCode {
     /// The workspace's people banned them.
@@ -187,18 +206,58 @@ pub enum DoorRefusalCode {
     /// `Retry-After` the answer carries.
     Full,
     /// Anything else; the sentence says what.
+    #[default]
     Refused,
 }
 
 /// What a door answers a person it does not let in (HTTP 403, or 503 with `Retry-After` when
 /// [`DoorRefusalCode::Full`]).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoorRefused {
     /// What kind of refusal it is.
     pub code: DoorRefusalCode,
     /// What happened, in plain words.
     pub error: String,
+    /// The workspace takes people by invitation and keeps a wait list
+    /// ([`DoorWaitList`]): the person may leave an address to be invited at.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wait_list: bool,
+    /// Where the person asks to be taken off that list, when whoever runs the
+    /// door named a contact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact: Option<String>,
+    /// The door mails the address a link that confirms it: without, it lists
+    /// an address at once.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mail: bool,
+}
+
+impl DoorRefused {
+    /// The refusal, naming the wait list `door` keeps for a workspace taking
+    /// people by invitation.
+    #[must_use]
+    pub fn with_wait_list(mut self, door: Option<&DoorWaitList>) -> Self {
+        if self.code == DoorRefusalCode::InvitationOnly
+            && let Some(door) = door
+        {
+            self.wait_list = true;
+            self.contact = door.contact.clone();
+            self.mail = door.mail;
+        }
+        self
+    }
+}
+
+/// The wait list a door keeps for a workspace that takes people by
+/// invitation: what its page offers someone it turns away, in the refusal's
+/// [`DoorRefused::wait_list`] (`workspaces::Workspaces::offer_wait_list`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DoorWaitList {
+    /// Where someone asks to be taken off the list (`TILO_ROOMS_CONTACT`).
+    pub contact: Option<String>,
+    /// The door mails the address a link that confirms it.
+    pub mail: bool,
 }
 
 /// A report of a public workspace to the people who run it.

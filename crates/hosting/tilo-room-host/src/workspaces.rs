@@ -99,6 +99,7 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::replica::PeerGuard;
+use tilo_relay_protocol::directory::DoorWaitList;
 
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{GovernedAccess, StatePeer};
@@ -841,6 +842,9 @@ struct WorkspacesInner {
     /// Where invitations to mail to wait-list addresses go, once whoever
     /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
     wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
+    /// What the door says about the wait list to someone it turns away,
+    /// once whoever runs the relay keeps one ([`Workspaces::offer_wait_list`]).
+    wait_list_door: std::sync::OnceLock<DoorWaitList>,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -1040,6 +1044,7 @@ impl Workspaces {
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
                 wait_list_mail: std::sync::OnceLock::new(),
+                wait_list_door: std::sync::OnceLock::new(),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 agent_door: agent_door::AgentDoor::default(),

@@ -101,6 +101,10 @@ pub enum Entry {
         code: &'static str,
         message: String,
         retry_after_secs: Option<u64>,
+        /// The door's own refusal as it answered it: its code, and what it
+        /// says about a wait list the workspace keeps, so the page offers to
+        /// leave an address there.
+        door: Option<tilo_relay_protocol::directory::DoorRefused>,
     },
 }
 
@@ -114,6 +118,10 @@ impl Entry {
                 EnterRefusal::Door {
                     retry_after_secs, ..
                 } => *retry_after_secs,
+                EnterRefusal::Workspace(_) => None,
+            },
+            door: match refusal {
+                EnterRefusal::Door { refused, .. } => Some(refused.clone()),
                 EnterRefusal::Workspace(_) => None,
             },
         }

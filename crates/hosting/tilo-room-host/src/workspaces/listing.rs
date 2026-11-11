@@ -74,6 +74,16 @@ impl DoorRefusal {
         Self::Refused(reason.into())
     }
 
+    /// The refusal as the door answers it, naming the wait list `door` keeps
+    /// for a workspace taking people by invitation.
+    #[must_use]
+    pub fn answer_with(
+        &self,
+        door: Option<&tilo_relay_protocol::directory::DoorWaitList>,
+    ) -> tilo_relay_protocol::directory::DoorRefused {
+        self.answer().with_wait_list(door)
+    }
+
     /// The refusal as the door answers it.
     #[must_use]
     pub fn answer(&self) -> tilo_relay_protocol::directory::DoorRefused {
@@ -87,6 +97,7 @@ impl DoorRefusal {
                 Self::Full { .. } => DoorRefusalCode::Full,
             },
             error: self.to_string(),
+            ..Default::default()
         }
     }
 }

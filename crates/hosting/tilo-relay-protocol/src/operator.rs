@@ -14,7 +14,11 @@
 use serde::{Deserialize, Serialize};
 
 /// Version of this protocol, announced in [`OperatorEvent::Started`].
-pub const VERSION: u16 = 5;
+///
+/// 7 is the wait list's commands and events beside the door's answers to
+/// them: 6 was read by builds whose wait list was gone, so a reader of that
+/// one decodes no line of these.
+pub const VERSION: u16 = 7;
 
 /// The child reports [`OperatorEvent::Online`] at most this often, and only
 /// when the numbers changed, so a busy workspace does not flood the service.

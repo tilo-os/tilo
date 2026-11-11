@@ -608,6 +608,21 @@ pub struct WaitListMail {
 }
 
 impl super::Workspaces {
+    /// The wait list the door keeps, as whoever runs the relay configured it:
+    /// what a person the door turns away is told about leaving an address
+    /// there ([`DoorRefused::wait_list`](tilo_relay_protocol::directory::DoorRefused)).
+    /// `false` once called before.
+    #[must_use]
+    pub fn offer_wait_list(&self, door: tilo_relay_protocol::directory::DoorWaitList) -> bool {
+        self.inner.wait_list_door.set(door).is_ok()
+    }
+
+    /// The wait list the door keeps, when whoever runs the relay offered one.
+    #[must_use]
+    pub fn wait_list_door(&self) -> Option<&tilo_relay_protocol::directory::DoorWaitList> {
+        self.inner.wait_list_door.get()
+    }
+
     /// The invitations members ask to mail to addresses on a wait list,
     /// for whoever runs the relay to send from the web entry `door`: until
     /// this is called, the workspaces send no mail and refuse to, and they mail
@@ -631,7 +646,7 @@ impl super::Workspaces {
 impl super::GovernedWorkspace {
     /// Take off the wait list everyone who joined with an invitation sent
     /// for their entry. A failed write leaves them for the next time.
-    fn forget_joined_wait_list(&mut self) {
+    pub(super) fn forget_joined_wait_list(&mut self) {
         let ledger = &self.record.collaboration;
         match self
             .wait_list

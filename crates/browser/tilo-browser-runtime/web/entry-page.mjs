@@ -1619,6 +1619,15 @@ const DOOR_SIGNED_IN = 'tilo-door-signed-in';
  */
 function offerDoor({messages, named, error, workspace}) {
   const door = document.getElementById('arrival-door');
+  // The first screen of a first visit is not for someone the door turns
+  // away: it asks them to set an agent up in a workspace they are not in.
+  // It leaves now, and this browser remembers the door, so a reload or a
+  // second tab opens on it again rather than on the setup screen.
+  if (firstRun) {
+    try { globalThis.localStorage?.setItem(SEEN, '1'); } catch { /* No storage: the door shows again either way. */ }
+    document.documentElement.removeAttribute('data-first-run');
+    document.getElementById('first-run')?.remove();
+  }
   const form = document.getElementById('arrival-invite');
   const toggle = document.getElementById('arrival-invite-toggle');
   const field = document.getElementById('arrival-invite-link');
