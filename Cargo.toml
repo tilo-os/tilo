@@ -64,6 +64,7 @@ default-members = [
 members = [
     "crates/session/client",
     "crates/lang/tilolang",
+    "crates/lang/tilolang-lex",
     "crates/lang/tilolang-cli",
     "apps/poker",
     "crates/browser/browser-continuity",

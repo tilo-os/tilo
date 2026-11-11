@@ -244,6 +244,7 @@ url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
+wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }
@@ -498,6 +499,7 @@ url = { version = "2", features = ["serde"] }
 usvg = { version = "0.47" }
 uuid = { version = "1", features = ["serde", "v4", "v5"] }
 vte = { version = "0.15", features = ["ansi", "serde"] }
+wasm-encoder = { version = "0.252" }
 wasmi = { version = "1", default-features = false, features = ["simd", "std"] }
 wasmi_collections = { version = "1", default-features = false, features = ["std"] }
 wasmi_core = { version = "1", default-features = false, features = ["simd", "std"] }

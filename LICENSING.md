@@ -3,8 +3,9 @@
 - **Tilo shell, OS and host runtime etc.: [AGPL-3.0-only](LICENSE).**
 - **The SDK for developing and distributing your own apps: [MIT](LICENSE-MIT).**
   This includes `tilo-app`, its app-facing clients and required support
-  libraries. Your own standalone Windows/macOS app can be open source or
-  nonfree.
+  libraries, and the lexer of the app language (`tilolang-lex`), which the
+  toolkit's editor colours a program with exactly as the compiler reads it.
+  Your own standalone Windows/macOS app can be open source or nonfree.
 - **The client side you reach a workspace by: [MIT](LICENSE-MIT).** A program
   that acts on a person's workspaces from outside Tilo — entering one over iroh
   as one of their devices, with their key, and asking its host for records and

@@ -22238,7 +22238,7 @@ dependencies = [
  "tilo-vello-encoding",
  "tilo-winit",
  "tilo-winit-x11",
- "tilolang",
+ "tilolang-lex",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -22887,6 +22887,7 @@ dependencies = [
  "serde_json",
  "tilo-clock",
  "tilo-ui-graph",
+ "tilolang-lex",
  "unicode-segmentation",
  "wasm-encoder 0.252.0",
  "wasmparser 0.252.0",
@@ -22995,6 +22996,15 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilolang-lex"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
  "workspace-hack",
 ]
 
@@ -27092,6 +27102,7 @@ dependencies = [
  "usvg",
  "uuid",
  "vte",
+ "wasm-encoder 0.252.0",
  "wasmi",
  "wasmi_collections",
  "wasmi_core",
@@ -28585,6 +28596,7 @@ dependencies = [
  "tilolang-app",
  "tilolang-cli",
  "tilolang-host",
+ "tilolang-lex",
  "tilolang-mail",
  "tilolang-runtime",
  "tilolang-tilo",

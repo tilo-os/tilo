@@ -23,6 +23,8 @@ name = "tlc"
 path = "src/main.rs"
 
 [dependencies]
+# The tokens, spans and reference literals its parser reads, which the toolkit's editor shares.
+tilolang-lex = { version = "0.1.0", path = "../tilolang-lex" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 # A text counts, cuts and matches in graphemes: one reading for the runtime's `Text` methods,

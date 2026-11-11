@@ -1362,6 +1362,7 @@ doc = false
 "tilolang-app" = { path = "../../../apps/tilolang", default-features = false, features = [] }
 "tilolang-cli" = { path = "../../../crates/lang/tilolang-cli", default-features = false, features = [] }
 "tilolang-host" = { path = "../../../crates/platform/tilolang-host", default-features = false, features = [] }
+"tilolang-lex" = { path = "../../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "tilolang-mail" = { path = "../../../crates/platform/tilolang-mail", default-features = false, features = ["default", "engine"] }
 "tilolang-runtime" = { path = "../../../crates/lang/tilolang-runtime", default-features = false, features = ["default", "wasmtime"] }
 "tilolang-tilo" = { path = "../../../crates/platform/tilolang-tilo", default-features = false, features = ["record"] }
@@ -2456,7 +2457,7 @@ doc = false
 "tilo-workspace-directory" = { path = "../../../crates/session/workspace-directory", default-features = false, features = [] }
 "tilo-workspace-emoji" = { path = "../../../crates/platform/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../../crates/collab/workspace-join", default-features = false, features = [] }
-"tilolang" = { path = "../../../crates/lang/tilolang", default-features = false, features = [] }
+"tilolang-lex" = { path = "../../../crates/lang/tilolang-lex", default-features = false, features = [] }
 "time-0_3_47" = { package = "time", version = "^0.3.47", default-features = false, features = ["alloc", "default", "formatting", "local-offset", "macros", "parsing", "serde", "serde-well-known", "std"] }
 "time-core-0_1_8" = { package = "time-core", version = "^0.1.8", default-features = false, features = [] }
 "time-macros-0_2_27" = { package = "time-macros", version = "^0.2.27", default-features = false, features = ["formatting", "parsing", "serde"] }

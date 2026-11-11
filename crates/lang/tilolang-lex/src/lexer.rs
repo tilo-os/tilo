@@ -1,8 +1,9 @@
 //! The lexer. Newlines are tokens because they separate statements; the lexer drops the ones
 //! that cannot end a statement (inside brackets, before a leading `.`).
 
-use crate::ast::RefLit;
+use crate::calendar::{check_date, check_time, check_wall_clock};
 use crate::diag::{Diagnostic, Span};
+use crate::duration::UNITS;
 
 /// Words that cannot be used as names.
 pub const KEYWORDS: &[&str] = &[
@@ -29,6 +30,17 @@ pub const CONTEXTUAL: &[&str] = &[
     "destructive",
     "migration",
 ];
+
+/// `@app.Type:id@version`: a reference literal, the one piece of syntax a token carries whole
+/// for the parser and everything after it to read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RefLit {
+    /// The app part as written (an app id or an alias); empty for `@kind:id`.
+    pub app: String,
+    pub ty: String,
+    pub id: String,
+    pub version: Option<String>,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum StrPiece {
@@ -472,7 +484,7 @@ impl Lexer<'_> {
             }
             return;
         }
-        let duration = crate::duration::UNITS
+        let duration = UNITS
             .iter()
             .map(|(u, _)| *u)
             .find(|u| *u == self.slice(suffix_start, self.pos));
@@ -568,11 +580,11 @@ impl Lexer<'_> {
             _ => (written.clone(), true),
         };
         let checked = if len <= 10 {
-            crate::types::check_date(&text)
+            check_date(&text)
         } else if zone {
-            crate::types::check_time(&text)
+            check_time(&text)
         } else {
-            crate::types::check_wall_clock(&text)
+            check_wall_clock(&text)
         };
         if let Err(e) = checked {
             self.error("E004", start, self.pos, e);
