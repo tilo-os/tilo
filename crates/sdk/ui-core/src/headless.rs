@@ -8406,8 +8406,8 @@ impl FrameHarness {
     }
 
     /// Admit an agent task participant into the hosted component under
-    /// `label`, its display name, as a host worker does before the task's
-    /// first invocation (`HostWorker::join_participant`). A host whose own author
+    /// `label`, its display name, as a host does before the task's first
+    /// invocation (`App::join_participant`). A host whose own author
     /// is that participant makes the component act as the agent. Idempotent.
     pub fn join_participant(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
         self.invalidate_local();

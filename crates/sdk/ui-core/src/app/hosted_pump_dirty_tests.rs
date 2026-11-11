@@ -490,7 +490,7 @@ fn hosted_pump_host_owner_permission_replacement_refreshes() {
         model_lifecycle::HostedPumpReport::default()
     );
     assert_eq!(app.actions.resource_generation.get(), generation);
-    // What HostWorker::pump does with the host's recomputed authority.
+    // What a host does with its recomputed authority before a pump.
     permissions.set(crate::permissions::PermissionContext::stranger(
         "fixture-user",
     ));

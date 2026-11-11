@@ -47,8 +47,6 @@ mod handoff;
 mod held_answers;
 mod host_commands;
 
-#[cfg(test)]
-mod host_worker_pump_tests;
 mod model_lifecycle;
 mod participants;
 mod published_invocations;

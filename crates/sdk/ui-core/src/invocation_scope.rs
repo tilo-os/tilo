@@ -996,6 +996,7 @@ impl InvocationProvenance {
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn require(
         &mut self,
         route: RouteSpec,

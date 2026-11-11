@@ -1006,7 +1006,7 @@ impl BrokerHandle {
     ) -> Result<
         (
             std::os::unix::net::UnixStream,
-            ui::host_worker::PublishedInvocationAuthorizer,
+            ui::invocation_scope::PublishedInvocationAuthorizer,
         ),
         String,
     > {

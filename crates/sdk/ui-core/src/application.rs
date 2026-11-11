@@ -527,6 +527,7 @@ impl HostContext {
             retirement.retire();
         }
     }
+    #[cfg(test)]
     pub(crate) fn bind_retirement(
         &mut self,
         retirement: crate::semantic_document_read::retirement::MountRetirement,
@@ -536,11 +537,6 @@ impl HostContext {
         }
         self.retirement = Some(retirement);
         Ok(())
-    }
-    pub(crate) fn require_invocation_provenance(&self) -> Result<(), crate::launch::LaunchError> {
-        self.records
-            .require_invocation_provenance(&self.record)
-            .map_err(crate::launch::LaunchError::Operation)
     }
     /// Reserve New or open Existing before the factory, using only supplied identities.
     ///
