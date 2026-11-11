@@ -28,6 +28,8 @@ pub(crate) const HELD_WAIT: std::time::Duration = std::time::Duration::from_secs
 /// The most held requests one window waits on at once: a page that posts in a
 /// loop meets the same bound as one that opens tabs.
 const MAX_HELD: usize = 8;
+/// The most of a download's file name the person's question shows.
+const MAX_SHOWN_FILE: usize = 120;
 /// What a page action answers when what its run reached waits for the person:
 /// the code [`DoorError::ConfirmationRequired`] carries, so the caller's
 /// invocation is refused for want of their answer and their allow runs it
@@ -37,8 +39,12 @@ const MAX_HELD: usize = 8;
 pub(crate) const NEEDS_PERSON: &str = ui::tilo_actions::remote::CONFIRMATION_REQUIRED_CODE;
 
 /// One request the page is not allowed to send yet.
+#[derive(Clone)]
 pub(crate) struct Held {
     pub(crate) request: HeldRequest,
+    /// The file a download would save, when the engine named it: the person
+    /// is told which one they allow.
+    file: Option<String>,
     /// The page action whose run reached it, if one was in flight: that same
     /// invocation, run again with the person's answer, releases it.
     asked: Option<InvocationId>,
@@ -51,9 +57,12 @@ pub(crate) struct Held {
 }
 
 impl Held {
-    /// What a person is told is waiting: what leaves, and where.
+    /// What a person is told is waiting: what leaves, where, and which file.
     pub(crate) fn describing(&self) -> String {
-        self.request.describing()
+        match &self.file {
+            Some(file) => format!("{} ({file})", self.request.describing()),
+            None => self.request.describing(),
+        }
     }
 
     /// Whether the person answered, rather than it waiting.
@@ -71,7 +80,7 @@ pub(crate) struct Holds {
 impl Holds {
     /// Hold `request`, or say it is already held: the engine reports one
     /// request once.
-    pub(crate) fn hold(&mut self, request: HeldRequest) -> Option<u32> {
+    pub(crate) fn hold(&mut self, request: HeldRequest, file: Option<String>) -> Option<u32> {
         if !request.valid() || self.held.iter().any(|held| held.request.id == request.id) {
             return None;
         }
@@ -81,6 +90,7 @@ impl Holds {
         let id = request.id;
         self.held.push(Held {
             request,
+            file,
             asked: None,
             releasing: None,
             until: std::time::Instant::now() + HELD_WAIT,
@@ -127,17 +137,11 @@ impl Holds {
             .position(|held| held.request.id == id && !held.answered())?;
         let held = self.held.get_mut(found)?;
         held.allowed = allow;
-        if held.request.kind == ui::webview::HeldKind::Download {
-            return Some(self.held.remove(found));
+        let answer = held.clone();
+        if answer.request.kind == ui::webview::HeldKind::Download {
+            self.held.remove(found);
         }
-        let held = &*held;
-        Some(Held {
-            request: held.request.clone(),
-            asked: held.asked,
-            releasing: held.releasing,
-            until: held.until,
-            allowed: allow,
-        })
+        Some(answer)
     }
 
     /// The engine says `id` is over: released, dropped, or its page went.
@@ -178,7 +182,7 @@ impl BrowserWidget {
     /// What the person is asked about `request`, whose run reached it: the
     /// action answers that it needs them, and their allow releases it.
     pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
-        if self.holds.hold(request.clone()).is_none() {
+        if self.holds.hold(request.clone(), None).is_none() {
             return;
         }
         self.structure_dirty = true;
@@ -289,13 +293,22 @@ impl BrowserWidget {
         let mut request = HeldRequest::new(id, ui::webview::HeldKind::Download);
         request.method = "GET".into();
         request.origin = origin_of(url);
-        if self.holds.hold(request).is_none() {
+        if self.holds.hold(request, shown_file(name)).is_none() {
             return false;
         }
-        let _ = name;
         self.structure_dirty = true;
         true
     }
+}
+
+/// The engine's name for what a download would save, as the question shows
+/// it: `None` when it named none, and cut to what the question can show.
+fn shown_file(name: &str) -> Option<String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return None;
+    }
+    Some(name.chars().take(MAX_SHOWN_FILE).collect())
 }
 
 /// The origin of `url`, as a person reads it: its scheme and host, and the

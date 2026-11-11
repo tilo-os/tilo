@@ -405,11 +405,16 @@ fn a_download_is_held_like_every_other_departure_the_page_starts() {
     });
     widget.sync(&doc, &root);
     let resource = page_resource(&widget);
-    let send = resource
+    let mut send = resource
         .actions
         .into_iter()
         .find(|action| action.id == "send-held-request")
         .expect("the download waits on the person");
+    let label = send.type_mut().label.clone();
+    assert!(
+        label.contains("return.pdf"),
+        "the question names the file the person would keep: {label}"
+    );
     let encoded = send
         .build_json(serde_json::json!({"id": "9"}).as_object().expect("an id"))
         .expect("the answer names the download");
