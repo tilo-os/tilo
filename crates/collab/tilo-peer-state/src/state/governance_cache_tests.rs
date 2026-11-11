@@ -353,3 +353,74 @@ fn a_channels_readers_cost_no_more_with_the_workspaces_people_and_named_records(
         "each member's certificate is verified once for the governance state"
     );
 }
+
+/// What a newcomer's page does with a workspace's governance before it shows
+/// the desktop: take in the governance its host replays, list the members and
+/// their devices, decide who reads the workspace's channels, and keep the
+/// replica with its security basis. Each row is decoded and its certificate
+/// checked once for all of these, and the whole-governance reads and replays
+/// are as many among 300 people as among 30.
+#[test]
+fn a_newcomer_reads_each_members_identity_once_however_many_people() {
+    let work = |people: usize| {
+        let now = SystemTime::UNIX_EPOCH
+            .checked_add(Duration::from_secs(2000))
+            .unwrap();
+        let (governor, _) = crowded_workspace(people, 0, now);
+        let owner = governor
+            .core
+            .certificates
+            .values()
+            .find(|cert| cert.user_public_key == governor.core.owner)
+            .unwrap()
+            .as_ref()
+            .clone();
+        let (_, newcomer) = person_device(people + 1);
+        let mut page = StatePeer::from_join(
+            WORKSPACE,
+            owner.clone(),
+            vec![owner.clone(), newcomer],
+            &[],
+            now,
+        )
+        .unwrap();
+        let message = governor.workspace_message();
+        let _ = crate::governance_work::take();
+        page.receive_from_report(
+            TransportOrigin::RelayDelta(owner.device_public_key),
+            message,
+            now,
+        )
+        .unwrap();
+        page.governance().governed_members(now).unwrap();
+        let access = page.governance().governed_access(now).unwrap();
+        assert_eq!(
+            access.member_devices.len(),
+            people + 1,
+            "every member's device"
+        );
+        page.governance()
+            .channel_readers(now, collab_types::workspace_scope(WORKSPACE), None)
+            .unwrap();
+        page.security_basis().unwrap().unwrap();
+        page.durable().unwrap();
+        crate::governance_work::take()
+    };
+    let (few, many) = (work(30), work(300));
+    for (people, work) in [(30_u64, few), (300, many)] {
+        assert_eq!(
+            work.identities_decoded,
+            people + 1,
+            "{people} people: each identity row is decoded once: {work:?}"
+        );
+        assert!(
+            work.signatures_verified <= people + 2,
+            "{people} people: each member's certificate is checked once: {work:?}"
+        );
+    }
+    assert_eq!(
+        (few.governance_reads, few.replays),
+        (many.governance_reads, many.replays),
+        "the governance is read as often among 300 people as among 30"
+    );
+}

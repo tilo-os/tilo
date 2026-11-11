@@ -115,6 +115,15 @@ pub fn security_basis(
     basis::legacy(doc, extra_revocations)
 }
 
+/// [`security_basis`] of a governance state, reading the identity rows it
+/// decoded once rather than decoding each again.
+pub(crate) fn security_basis_of(
+    doc: &crate::cached_document::CachedDocument,
+    extra_revocations: &[tilo_user_identity::RevocationEntry],
+) -> Result<[u8; 32], MediaPolicyError> {
+    basis::decoded(doc, extra_revocations)
+}
+
 /// Strict governed-document validation. Missing policy remains disabled. This
 /// checks consistency only; callers must independently authenticate the writer.
 pub fn validate_transition(

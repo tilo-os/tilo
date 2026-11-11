@@ -40,8 +40,16 @@ fn revocation(root: &SigningKey, time: u64) -> RevocationEntry {
     tilo_user_identity::sign_revocation_entry(&mut entry, root).unwrap();
     entry
 }
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "test helper: asserts the two readings agree before returning the basis"
+)]
 fn basis(doc: &AutoCommit, extra: &[RevocationEntry]) -> Result<[u8; 32], MediaPolicyError> {
-    legacy(doc, extra)
+    let basis = legacy(doc, extra);
+    // A governance state reading its once-decoded rows has the same basis.
+    let state = crate::cached_document::CachedDocument::from(doc.clone());
+    assert_eq!(super::decoded(&state, extra), basis);
+    basis
 }
 #[test]
 fn media_basis_matches_original_signed_workspace() {

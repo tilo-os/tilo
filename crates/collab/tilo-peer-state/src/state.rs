@@ -1046,6 +1046,18 @@ impl StatePeer {
         }
     }
 
+    /// The admitted workspace's security basis
+    /// ([`workspace::media::security_basis`]) under this replica's
+    /// revocations, reading the identity rows its governance state decoded
+    /// once; `None` while no workspace is admitted.
+    pub fn security_basis(&self) -> Option<Result<[u8; 32], workspace::media::MediaPolicyError>> {
+        let doc = self.core.workspace_doc.as_ref()?;
+        Some(workspace::media::security_basis_of(
+            doc,
+            &self.revocations(),
+        ))
+    }
+
     /// Committed, admitted workspace only. Callers cannot mutate the admission owner.
     pub fn admitted_workspace(&self) -> Option<&AutoCommit> {
         self.core.workspace_doc.as_deref()
@@ -1141,14 +1153,9 @@ impl StatePeer {
                 policy,
                 |app, record| backend::media::legacy_binding(self, policy, app, record),
                 || {
-                    workspace::media::security_basis(
-                        self.core
-                            .workspace_doc
-                            .as_deref()
-                            .ok_or("missing workspace")?,
-                        &self.revocations(),
-                    )
-                    .map_err(err)
+                    self.security_basis()
+                        .ok_or("missing workspace")?
+                        .map_err(err)
                 },
             )
             .map_err(backend::media::ReadinessError::legacy)?;

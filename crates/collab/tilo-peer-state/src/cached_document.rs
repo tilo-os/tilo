@@ -234,6 +234,20 @@ impl CachedDocument {
                 .collect()
         })
     }
+    /// The identity row `key` as [`Self::identities`] decoded it, when
+    /// `bytes` are the row it decoded: a reader walking the document its own
+    /// way takes the row from here instead of decoding it again, and decodes
+    /// it itself whenever this answers `None`.
+    pub(crate) fn decoded_identity(
+        &self,
+        key: &str,
+        bytes: &[u8],
+    ) -> Option<&crate::state::GovernedIdentity> {
+        if self.policy().identities.get(key).map(Vec::as_slice) != Some(bytes) {
+            return None;
+        }
+        self.identities().get(key)?.as_ref().ok()
+    }
     /// The signature-verified device certificates of [`Self::identities`],
     /// each verified once per document state rather than whenever the
     /// workspace's member devices are listed. Validity at an instant,
