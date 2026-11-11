@@ -43,12 +43,7 @@ impl Chat {
             .channels
             .iter()
             .filter(|(_, channel)| channel.is_channel())
-            .map(|(id, channel)| {
-                SearchEntry::new(channel.name.clone(), channel.topic.clone())
-                    .anchored(anchor("channels", id))
-                    .of_kind(IndexKind::Conversation)
-                    .with_icon(CONVERSATION_ICON)
-            });
+            .map(|(id, channel)| conversation_entry(id, &channel.name, &channel.topic));
         // A conversation the record holds as an item: a group of people, or a person and an
         // agent. What it is called is its own name, which a kept one is made with, else what its
         // participants are called; the row shows those participants beside it.
@@ -57,13 +52,11 @@ impl Chat {
             .iter()
             .filter(|(_, conversation)| !conversation.is_channel())
             .map(|(id, _)| {
-                SearchEntry::new(
-                    self.display_names(id, None, &crate::projection::AgentNames::new()),
+                conversation_entry(
+                    id,
+                    &self.display_names(id, None, &crate::projection::AgentNames::new()),
                     "",
                 )
-                .anchored(anchor("channels", id))
-                .of_kind(IndexKind::Conversation)
-                .with_icon(CONVERSATION_ICON)
                 .showing(self.participant_rows(id))
             });
         let categories = self.categories.iter().map(|(id, category)| {
@@ -156,6 +149,16 @@ pub struct ChatShell;
 
 /// The glyph a conversation leads with when the row has no face of its own.
 const CONVERSATION_ICON: &str = "message-circle";
+
+/// The row that opens conversation `id`, as the window names it: its name and topic, among the
+/// record's conversations. The record's own search and the window's entries (a direct conversation
+/// the record keeps no row for) are one row, so a hit opens the conversation by one anchor.
+pub(crate) fn conversation_entry(id: &Id, name: &str, topic: &str) -> SearchEntry {
+    SearchEntry::new(name.to_owned(), topic.to_owned())
+        .anchored(item_resource_id::<Chat>("channels", id))
+        .of_kind(IndexKind::Conversation)
+        .with_icon(CONVERSATION_ICON)
+}
 
 /// Every named scenario `--shots --scenario NAME` captures.
 #[cfg(feature = "samples")]
@@ -303,13 +306,19 @@ impl ResourceApp for ChatShell {
             .status(move || statuses.borrow().effect_statuses());
         let rows = Rc::clone(&chat);
         let row = Rc::clone(&chat);
+        // What the window lists that the record keeps no row for: a direct conversation a send
+        // opened, an agent's among them, named by what the workspace calls its agents. The
+        // sidebar lists the same conversations, so search and the sidebar never name one
+        // differently.
+        let unrecorded = Rc::clone(&chat);
         let window = cx.publishing(
             Publishes::new()
                 // The effects offered on the channels, categories, messages,
                 // reports and people the window shows: merged into the item
                 // resources the record publishes.
                 .live_rows(move || rows.borrow().published_rows())
-                .live_row(move |id| row.borrow().published_row(id)),
+                .live_row(move |id| row.borrow().published_row(id))
+                .search_entries(move || unrecorded.borrow().unrecorded_conversation_entries()),
             Box::new(window),
         );
         Box::new(

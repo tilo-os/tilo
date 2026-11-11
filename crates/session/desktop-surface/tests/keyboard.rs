@@ -1118,8 +1118,9 @@ fn an_apps_action_chosen_in_search_over_everything_runs_in_its_window() {
     );
 }
 
-/// Search over one app's window asks that window's app and nothing else: not the desk's host, and
-/// not the desk's own commands; the hit it offers opens inside the app.
+/// Search over one app's window asks that window's app, and its host for the entries the app
+/// published for that window alone: not the desk's own commands, and never another app's rows. The
+/// hit the app offers opens inside it.
 #[test]
 fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
     SEARCH.with_borrow_mut(|search| search.answered = true);
@@ -1129,8 +1130,8 @@ fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
     desk.settle();
     assert!(desk.handle.search_open());
     assert!(
-        host.scopes.borrow().is_empty(),
-        "an app's search is its window's: the host was asked {:?}",
+        matches!(host.scopes.borrow().as_slice(), [Scope::InApp(_)]),
+        "an app's search asks the host for that app's window: {:?}",
         host.scopes.borrow()
     );
     desk.type_search("lofi");
@@ -1154,6 +1155,30 @@ fn search_over_an_apps_window_asks_that_app_and_not_the_desk() {
         desk.driver.control_failures().is_empty(),
         "{:?}",
         desk.driver.control_failures()
+    );
+}
+
+/// An app that runs in a process of its own publishes its entries into the session's index and
+/// gives the desk no tree to read: what its window holds is found there, and the row opens the
+/// thing it names.
+#[test]
+fn a_windows_search_finds_what_the_session_holds_for_its_app() {
+    SEARCH.with_borrow_mut(|search| search.answered = true);
+    let mut desk = Desk::new(2, 450);
+    let host = desk.with_host();
+    desk.driver.click_named("search-open").unwrap();
+    desk.settle();
+    assert!(desk.handle.search_open());
+    assert!(
+        matches!(host.scopes.borrow().as_slice(), [Scope::InApp(_)]),
+        "the host is asked for the app the window shows: {:?}",
+        host.scopes.borrow()
+    );
+    desk.type_search("quarterly");
+    let (_, rows) = desk.handle.search_rows();
+    assert!(
+        rows.iter().any(|row| row.title == "Quarterly plan"),
+        "what the app published for its window is found: {rows:?}"
     );
 }
 

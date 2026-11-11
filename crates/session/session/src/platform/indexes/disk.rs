@@ -58,6 +58,10 @@ impl Index for SessionIndex {
         Held::from(Arc::clone(&self.content))
     }
 
+    fn content_for(&self, app: &str) -> Option<Held> {
+        Some(Held::new(self.content.for_app(app)))
+    }
+
     fn files(&self) -> Option<Held> {
         let (home, names, index) = self.files.as_ref()?;
         Some(Held::new(Files::new(

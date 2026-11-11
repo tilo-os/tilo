@@ -18,6 +18,25 @@ fn read_record(doc: &AutoCommit) -> Option<crate::record::Chat> {
 }
 
 impl ChatApp {
+    /// The conversations this window lists that the record keeps no row for — a direct
+    /// conversation a send opened, an agent's among them — as search finds them, named as the
+    /// sidebar names them: by what the workspace's own record of its agents calls them
+    /// ([`ChatApp::follow_agents`]). A conversation the record keeps is the record's own to
+    /// publish, and is left out here.
+    pub(crate) fn unrecorded_conversation_entries(&self) -> Vec<ui::tilo_resource::SearchEntry> {
+        self.channels
+            .iter()
+            .filter(|row| row.direct && !self.recorded_channels.contains(row.id.as_str()))
+            .map(|row| {
+                crate::resource::conversation_entry(
+                    &ui::tilo_resource::Id::from_raw(row.id.clone()),
+                    &row.name,
+                    &row.topic,
+                )
+            })
+            .collect()
+    }
+
     /// Rebuild the snapshot from the CRDT. Called at the tail of `sync` and
     /// after every mutation so `draw` always reflects the latest document.
     /// Count each channel's unread mentions of this peer, the badge that

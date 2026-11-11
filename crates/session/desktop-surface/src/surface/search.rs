@@ -695,6 +695,15 @@ fn windows(
     out
 }
 
+/// The workspace that holds `strip`, as search names it: where a window's search reads what its
+/// app published.
+fn workspace_holding(tree: &DesktopTree, strip: StripId) -> Option<String> {
+    tree.workspaces
+        .iter()
+        .find(|workspace| workspace.strips.iter().any(|held| held.id == strip))
+        .map(|workspace| workspace.id().to_string())
+}
+
 /// The people in the active workspace, as search finds them, and its workspace.
 fn people(
     tree: &DesktopTree,
@@ -941,15 +950,32 @@ impl DesktopSurface {
             Scope::InApp(app) => app.part.clone(),
             _ => None,
         };
-        let searched = part
-            .as_ref()
-            .map(|part| part.label.clone())
-            .or_else(|| window_app(&self.shared.borrow().tree, group))
-            .filter(|name| !name.is_empty());
+        let (searched, feed) = {
+            let shared = self.shared.borrow();
+            let searched = part
+                .as_ref()
+                .map(|part| part.label.clone())
+                .or_else(|| window_app(&shared.tree, group))
+                .filter(|name| !name.is_empty());
+            // What the app's window holds beyond the desk's own reading of it: an app that runs
+            // in a process of its own publishes its entries into this session's index, and the
+            // actions it offers, which is what its search finds.
+            let feed = shared
+                .search_host
+                .clone()
+                .map(|host| {
+                    let workspace = workspace_holding(&shared.tree, strip).unwrap_or_default();
+                    host.feed(&workspace, scope)
+                })
+                .unwrap_or_default();
+            (searched, feed)
+        };
         let published = host.window_search(doc);
         Some(SearchData {
             resources: published.resources,
             providers: published.providers,
+            published: feed.published,
+            sources: feed.sources,
             scope: scope.clone(),
             placeholder: searched.map(|name| {
                 crate::i18n::t_args("search-window-placeholder", &[("searched", name.into())])

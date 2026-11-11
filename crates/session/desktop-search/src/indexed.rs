@@ -330,10 +330,13 @@ pub struct IndexedContent {
     /// held by one thread.
     snapshot: Mutex<Option<Arc<Snapshot>>>,
     /// An app's name as the person knows it.
-    app_name: Box<dyn Fn(&str) -> String + Send + Sync>,
+    app_name: Arc<dyn Fn(&str) -> String + Send + Sync>,
     /// The person searching, by their id: a row of what they keep says
     /// "you" rather than their name.
     person: String,
+    /// The one app whose entries this source is over, when it is a window's
+    /// search: what that app holds, and nothing of another's.
+    app: Option<String>,
 }
 
 impl IndexedContent {
@@ -347,8 +350,35 @@ impl IndexedContent {
         Self {
             index,
             snapshot: Mutex::new(None),
-            app_name: Box::new(app_name),
+            app_name: Arc::new(app_name),
             person: person.into(),
+            app: None,
+        }
+    }
+
+    /// This source over what `app` alone published: what a window's search
+    /// finds in the app it shows, whether or not the app is running.
+    #[must_use]
+    pub fn for_app(&self, app: &str) -> Self {
+        Self {
+            index: Arc::clone(&self.index),
+            snapshot: Mutex::new(None),
+            app_name: Arc::clone(&self.app_name),
+            person: self.person.clone(),
+            app: Some(app.to_owned()),
+        }
+    }
+
+    /// What this source searches: every app's entries, or the one app's.
+    fn contents(&self) -> Contents {
+        let contents = self.index.contents();
+        let Some(app) = self.app.as_deref() else {
+            return contents;
+        };
+        let mine = |indexed: &&IndexedEntry| indexed.slot.app == app;
+        Contents {
+            visible: contents.visible.iter().filter(mine).cloned().collect(),
+            locked: contents.locked.iter().filter(mine).cloned().collect(),
         }
     }
 
@@ -368,7 +398,7 @@ impl IndexedContent {
                 // Read the generation before the contents: a change landing
                 // between them leaves this snapshot stale, never stamped
                 // current.
-                let snapshot = Arc::new(Snapshot::new(generation, self.index.contents()));
+                let snapshot = Arc::new(Snapshot::new(generation, self.contents()));
                 *slot = Some(Arc::clone(&snapshot));
                 snapshot
             }
@@ -862,6 +892,36 @@ mod tests {
                 )
                 .expect("the index takes the delta");
         }
+    }
+
+    /// A window's search is over the one app it shows: what that app published, never another's.
+    #[test]
+    fn a_window_reads_only_its_own_apps_entries() {
+        let index = Arc::new(AppContentIndex::in_memory());
+        publish(
+            &index,
+            "so.tilo.chat",
+            None,
+            vec![note("c_voice", "voice", false)],
+        );
+        publish(
+            &index,
+            "so.tilo.mail",
+            None,
+            vec![note("inbox", "Inbox", false)],
+        );
+        let content = IndexedContent::new(Arc::clone(&index), str::to_owned, "");
+        let window = content.for_app("so.tilo.chat");
+        assert_eq!(window.query("voice").len(), 1);
+        assert!(
+            window.query("inbox").is_empty(),
+            "another app's entry is not the window's"
+        );
+        assert_eq!(
+            content.query("inbox").len(),
+            1,
+            "the whole index still finds it"
+        );
     }
 
     #[test]
