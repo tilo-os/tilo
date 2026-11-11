@@ -672,6 +672,11 @@ impl Compositor {
         self.data.state.idle.session.is_locked()
     }
 
+    /// Whether the lock screen's own client has drawn on every output it stands on.
+    pub fn lock_client_drawn(&self) -> bool {
+        self.data.state.lock_drawn_everywhere()
+    }
+
     /// Whether the lock is what the outputs show: the lock client's own frame is on one of them, or
     /// the session draws the lock itself because the lock screen's app could not show it.
     pub fn lock_drawn(&self) -> bool {

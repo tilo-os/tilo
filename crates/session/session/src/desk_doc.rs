@@ -353,7 +353,12 @@ impl crate::Shared {
     /// and displays they are laid out on, so the next session starts here. The change of the desk's
     /// document is written away from the frame, and a drag or a rename is one change however many
     /// frames it takes.
+    /// A session asked to end keeps the desk it had when it was asked: ending a login ends its apps
+    /// with it, and their windows going is not the person closing them.
     pub(crate) fn keep_desk(&self) {
+        if crate::termination::asked() {
+            return;
+        }
         let tree = self.handle.read(Clone::clone);
         let shows = self.notes.records().into_iter().collect::<Vec<_>>();
         self.activity
@@ -364,6 +369,10 @@ impl crate::Shared {
     /// once a drag is over, then wait for the write: what ends the session,
     /// and anything that reads the desk's document after it.
     pub(crate) fn keep_desk_now(&self) {
+        if crate::termination::asked() {
+            tilo_durable_writer::global().flush();
+            return;
+        }
         let tree = self.handle.read(Clone::clone);
         let shows = self.notes.records().into_iter().collect::<Vec<_>>();
         self.activity

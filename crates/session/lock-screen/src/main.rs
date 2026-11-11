@@ -12,7 +12,7 @@ mod lock_session;
 
 use std::cell::RefCell;
 
-use tilo_sheets::lock::{self, LockSeat, Shown, Status};
+use tilo_sheets::lock::{self, LockSeat, Shown};
 use ui::application::{
     ApplicationDefinition, ComponentRunnerInputs, NativeProcessHost, PreparedComponentInputs,
 };
@@ -49,22 +49,12 @@ fn prepared(
     Ok(prepared)
 }
 
-/// What the lock screen shows when it opens: the time, and whose session
-/// this is, as the session that started it said.
+/// What the lock screen shows when it opens: the time. Whose session this is, and everything else
+/// it says, arrives with the session's first reading.
 fn shown() -> Shown {
     Shown {
         clock: ui::clock::time_of_day(&ui::clock::local_now()),
         date: ui::format::day_heading(ui::clock::today(), false),
-        person: std::env::var("TILO_SURFACE_PERSON").unwrap_or_default(),
-        error: None,
-        checking: false,
-        caps_lock: false,
-        // The session publishes what it shows of the lock, and the screen
-        // draws it as it arrives; what it says before the first reading is
-        // only the time and whose session this is.
-        status: Status::default(),
-        media: None,
-        keyboard: false,
-        unlocking: false,
+        ..Shown::default()
     }
 }

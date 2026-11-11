@@ -541,10 +541,13 @@ impl DesktopHandle {
     /// Replace the tree with one changed elsewhere. The next update pass reconciles the live rows
     /// with it: tabs still present keep their running content, new tabs get content from the host's
     /// [`TileSource`], and removed tabs' applications close. Queued commands stay queued and are
-    /// re-checked against the new tree when applied.
+    /// re-checked against the new tree when applied. A tree changed elsewhere is a desk that moved
+    /// ([`DesktopTree::external_revision`]): a window filling the tab held for it, or a window's new
+    /// title, reaches the workspace's shared desktop as any other change does.
     pub fn replace_tree(&self, mut tree: DesktopTree) {
         let mut shared = self.shared.borrow_mut();
         observe_ids(&mut shared.minter, &tree);
+        tree.external_revision = shared.tree.external_revision.wrapping_add(1);
         // A tree kept beside the state file carries no range of its own: it writes where this
         // desk's ids were minted.
         tree.salt = shared.minter.salt();

@@ -1077,7 +1077,7 @@ fn surfaces() -> Vec<tilo_session::surfaces::Surface> {
         Err(error) => eprintln!("tilo-session: no on-screen keyboard: {error}"),
     }
     match tilo_session::quick_settings::surface() {
-        Ok(panel) => surfaces.push(panel.person(tilo_session::unlock::login_user())),
+        Ok(panel) => surfaces.push(panel),
         Err(error) => eprintln!("tilo-session: no quick settings: {error}"),
     }
     surfaces
@@ -1094,11 +1094,7 @@ fn lock_screen() -> Vec<tilo_session::surfaces::Surface> {
             return Vec::new();
         }
     };
-    vec![
-        tilo_session::surfaces::Surface::new("lock", program)
-            .person(tilo_session::unlock::login_user())
-            .lock(),
-    ]
+    vec![tilo_session::surfaces::Surface::new("lock", program).lock()]
 }
 
 /// `program` started with `rest` on `environment` 's displays and, when a flag named the session

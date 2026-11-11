@@ -16,6 +16,10 @@ impl Shared {
         let Some(engine) = &self.engine else {
             return;
         };
+        // The apps a login's end takes with it leave the workspaces' desks as they were.
+        if crate::termination::asked() {
+            return;
+        }
         // Every workspace this device holds has had its record read, and
         // nothing of the workspaces moved since: there is nothing to read,
         // lay out or write.

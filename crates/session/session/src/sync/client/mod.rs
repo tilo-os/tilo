@@ -1725,7 +1725,9 @@ fn host_addr(value: &str) -> Option<EndpointAddr> {
 }
 
 /// Who this device's certificate says its person is, and what the device calls itself: the id that
-/// stays the person's, and the name its other devices are told apart by.
+/// stays the person's, and the name its other devices are told apart by. A device the person never
+/// named says no name: the stand-in its certificate carries is no word of theirs, and every reader
+/// says which device it is in its own language.
 #[cfg(target_os = "linux")]
 fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
     identity.map_or_else(
@@ -1733,7 +1735,9 @@ fn certified_as(identity: Option<&HostIdentity>) -> (Option<[u8; 32]>, String) {
         |identity| {
             (
                 Some(identity.device_cert.user_public_key),
-                identity.device_cert.device_label.trim().to_owned(),
+                tilo_user_identity::device_name(&identity.device_cert.device_label)
+                    .unwrap_or_default()
+                    .to_owned(),
             )
         },
     )

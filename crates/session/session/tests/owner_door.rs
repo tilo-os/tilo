@@ -141,7 +141,7 @@ fn session(root: &Path) -> Session {
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: false,
-        surfaces: vec![Surface::new("lock", lock_screen()).person(PERSON).lock()],
+        surfaces: vec![Surface::new("lock", lock_screen()).lock()],
         test_control: Some(root.join("test-control.sock")),
         admin_control: Some(root.join("admin-control.sock")),
         ..Options::default()

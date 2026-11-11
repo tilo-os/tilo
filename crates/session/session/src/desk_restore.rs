@@ -157,7 +157,7 @@ impl Restore {
             // (`docs/designs/app-language/one-app-model.md` §3). The tab the saved window was
             // held in goes with it: the place stands in its workspace.
             if apps.serves(&saved.app) {
-                if let Some(slot) = slot_of(desktop, saved.tab) {
+                if let Some(slot) = workspace_holding(desktop, saved.tab, |held| held.slot.0) {
                     apps.restore_served(&saved.app, slot);
                 }
                 desktop.with_policy(|policy| policy.release_tab(saved.tab));
@@ -186,7 +186,8 @@ impl Restore {
             desktop.with_policy(|policy| policy.note_in_tab(saved.tab, &note));
             return false;
         };
-        let Some(workspace) = workspace_of(desktop, saved.tab) else {
+        let Some(workspace) = workspace_holding(desktop, saved.tab, |held| held.id().to_string())
+        else {
             // The tab went with the workspace it was in.
             return false;
         };
@@ -251,41 +252,25 @@ pub(crate) fn without_unfilled(tree: &mut DesktopTree) {
     }
 }
 
-/// The workspace the tab `tab` stands in, which its app is started into: the app runs where the
-/// person opened it, with that workspace's grants.
-/// The desk slot of the workspace that holds the tab `tab` : where a place stands for it.
-fn slot_of(desktop: &DesktopHost, tab: TabId) -> Option<u64> {
+/// The workspace the tab `tab` stands in, as `of` reads it: its desk slot, where a place stands
+/// for the tab, or its id, which the tab's app is started into with that workspace's grants.
+fn workspace_holding<T>(
+    desktop: &DesktopHost,
+    tab: TabId,
+    of: impl Fn(&tilo_desktop_model::Workspace) -> T,
+) -> Option<T> {
     desktop.with_policy(|policy| {
         policy.handle().read(|tree| {
             tree.workspaces
                 .iter()
                 .find(|workspace| {
-                    workspace.strips.iter().any(|strip| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
-                    })
+                    workspace
+                        .strips
+                        .iter()
+                        .flat_map(|strip| &strip.window_groups)
+                        .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
                 })
-                .map(|workspace| workspace.slot.0)
-        })
-    })
-}
-
-fn workspace_of(desktop: &DesktopHost, tab: TabId) -> Option<String> {
-    desktop.with_policy(|policy| {
-        policy.handle().read(|tree| {
-            tree.workspaces
-                .iter()
-                .find(|workspace| {
-                    workspace.strips.iter().any(|strip| {
-                        strip
-                            .window_groups
-                            .iter()
-                            .any(|group| group.tabs.iter().any(|candidate| candidate.id == tab))
-                    })
-                })
-                .map(|workspace| workspace.id().to_string())
+                .map(of)
         })
     })
 }

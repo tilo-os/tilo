@@ -442,7 +442,7 @@ fn the_lock_tile_locks_the_screens() {
             options.verifier = Arc::new(Sesame);
             options
                 .surfaces
-                .push(Surface::new("lock", &lock_screen).person("ada").lock());
+                .push(Surface::new("lock", &lock_screen).lock());
         },
     );
     let session = &mut laptop.session;

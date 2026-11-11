@@ -71,12 +71,16 @@ pub enum PeopleAsk {
 /// identity derives, so their face is the same on every surface and on every device that paints
 /// them.
 pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
-    let chosen = settings_store::identity::COLOUR
+    ui::presence::identity_rgb(own_hue(identity))
+}
+
+/// The hue of [`own_rgb`].
+pub(crate) fn own_hue(identity: &str) -> ui::tokens::PresenceHue {
+    settings_store::identity::COLOUR
         .get()
         .as_deref()
-        .and_then(ui::tokens::PresenceHue::from_id);
-    let hue = chosen.unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity));
-    ui::presence::identity_rgb(hue)
+        .and_then(ui::tokens::PresenceHue::from_id)
+        .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity))
 }
 
 /// The colour this person's own avatar and card wear: in a live room, the one everyone here draws

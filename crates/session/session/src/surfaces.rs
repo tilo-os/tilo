@@ -157,8 +157,6 @@ pub struct Surface {
     pub exclusive: i32,
     /// How it takes the keyboard.
     pub keyboard: Keyboard,
-    /// The person the app shows (its own name, its own avatar).
-    pub person: String,
     /// Whether its window becomes the session's lock screen instead of a layer surface.
     pub lock: bool,
     /// The output it stands on when its window names none of its own: the display its client is
@@ -182,7 +180,6 @@ impl Surface {
             margin: (0, 0, 0, 0),
             exclusive: 0,
             keyboard: Keyboard::None,
-            person: String::new(),
             lock: false,
             output: None,
         }
@@ -253,13 +250,6 @@ impl Surface {
         self
     }
 
-    /// Show `person` in the app.
-    #[must_use]
-    pub fn person(mut self, person: impl Into<String>) -> Self {
-        self.person = person.into();
-        self
-    }
-
     /// Make the window the session's lock screen.
     #[must_use]
     pub fn lock(mut self) -> Self {
@@ -309,9 +299,6 @@ impl Surface {
                 self.keyboard.name().to_owned(),
             ),
         ];
-        if !self.person.is_empty() {
-            environment.push((String::from("TILO_SURFACE_PERSON"), self.person.clone()));
-        }
         if self.lock {
             environment.push((String::from("TILO_SURFACE_LOCK"), String::from("1")));
         }
@@ -1214,8 +1201,7 @@ mod tests {
             .anchor(Anchor::TOP | Anchor::LEFT | Anchor::RIGHT)
             .size((0, 32))
             .exclusive(32)
-            .keyboard(Keyboard::None)
-            .person("Ada");
+            .keyboard(Keyboard::None);
         let environment: std::collections::BTreeMap<String, String> =
             bar.environment().into_iter().collect();
         let expected = [
@@ -1226,7 +1212,6 @@ mod tests {
             ("TILO_SURFACE_MARGIN", "0,0,0,0"),
             ("TILO_SURFACE_EXCLUSIVE", "32"),
             ("TILO_SURFACE_KEYBOARD", "none"),
-            ("TILO_SURFACE_PERSON", "Ada"),
         ];
         for (name, value) in expected {
             assert_eq!(

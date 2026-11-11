@@ -489,7 +489,6 @@ fn session_with(
                     "lock",
                     tilo_test_env::sibling_binary("tilo-lock-screen", "tilo-lock-screen"),
                 )
-                .person("ada")
                 .lock(),
             ],
             ..Options::default()
