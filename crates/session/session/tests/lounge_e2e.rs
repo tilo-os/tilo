@@ -133,7 +133,6 @@ impl Room {
             .env("TILO_ROOMS_SITE_ORIGINS", "https://tilo.sh,https://tilo.so")
             .env("TILO_ROOMS_ROOT_FILE", &root_file)
             .env("TILO_ROOMS_FEEDBACK_CHANNEL", "feedback")
-            .env("TILO_ROOMS_WAIT_LIST_MAX", "16")
             // The listeners, on loopback, each on a port the kernel picks as it binds: two rooms on
             // one machine take the ports they are given, and the room announces the ones it bound.
             .env("TILO_ROOMS_STATE", state.path().join("tilo-rooms"))
@@ -151,6 +150,11 @@ impl Room {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
+        // eu1 keeps a wait list at its door. The list is what a door taking people by invitation
+        // offers those it turns away: the image refuses to start an open door with one.
+        if admission == "invite" {
+            command.env("TILO_ROOMS_WAIT_LIST_MAX", "16");
+        }
         let mut child = command.spawn_locked().expect("the room service starts");
         let stdin = Some(child.stdin.take().expect("the room's operator input"));
         let stdout = child.stdout.take().expect("the room's operator output");
@@ -903,14 +907,13 @@ fn a_computer_joins_the_lounge_through_its_room_services_own_door() {
         &mut session,
         "the refusal is said where the person is",
         |session| {
-            session
-                .notifications()
-                .log()
-                .history()
-                .iter()
-                .any(|notice| {
-                    notice.body.contains("Lounge") && notice.body.contains("joined by invitation")
-                })
+            // A refusal is a banner that stays until the person acts on it, and is kept behind it
+            // in the centre once it left: either is where the person reads it.
+            let desk = session.notifications();
+            let log = desk.log();
+            log.active().iter().chain(log.history()).any(|notice| {
+                notice.body.contains("Lounge") && notice.body.contains("joined by invitation")
+            })
         },
     );
     assert!(
