@@ -11,6 +11,8 @@ pub enum Encoding {
     Png,
     /// Lossy at `quality` (1-100), alpha dropped.
     Jpeg { quality: u8 },
+    /// Lossless, alpha kept.
+    WebP,
 }
 
 impl Encoding {
@@ -20,6 +22,7 @@ impl Encoding {
         match self {
             Self::Png => "image/png",
             Self::Jpeg { .. } => "image/jpeg",
+            Self::WebP => "image/webp",
         }
     }
 }
@@ -75,6 +78,34 @@ pub async fn decode(bytes: &[u8], max_dimension: Option<u32>) -> Result<DecodedI
     Ok(decoded)
 }
 
+/// `bytes` decoded at once on the calling thread, with the codec's own Rust
+/// decoders on every target, as [`decode`] would decode them. For the few
+/// callers that still decode inside a frame; [`decode`] is the one to use,
+/// which on the web takes the browser's codecs and never blocks.
+///
+/// # Errors
+///
+/// As [`decode`].
+pub fn decode_now(bytes: &[u8], max_dimension: Option<u32>) -> Result<DecodedImage, DecodeError> {
+    crate::format::sniff(bytes).ok_or(DecodeError::InvalidImage)?;
+    let rgba = image::load_from_memory(bytes)
+        .map_err(|_| DecodeError::InvalidImage)?
+        .to_rgba8();
+    let (width, height) = rgba.dimensions();
+    if width == 0 || height == 0 {
+        return Err(DecodeError::InvalidDimensions);
+    }
+    let decoded = DecodedImage {
+        rgba: rgba.into_raw(),
+        width,
+        height,
+    };
+    Ok(match max_dimension {
+        Some(max) => decoded.fitted(max),
+        None => decoded,
+    })
+}
+
 /// `image` written as `encoding`.
 ///
 /// # Errors
@@ -89,4 +120,52 @@ pub async fn encode(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>,
         return Err(EncodeError::Malformed);
     }
     crate::backend::encode(image, encoding).await
+}
+
+/// `image` written as `encoding` at once on the calling thread, with the
+/// codec's own Rust encoders on every target. For the few callers that
+/// still encode inside a frame; [`encode`] is the one to use.
+///
+/// # Errors
+///
+/// As [`encode`].
+pub fn encode_now(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>, EncodeError> {
+    use image::{ExtendedColorType, ImageEncoder};
+    let expected = (image.width as usize)
+        .checked_mul(image.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4));
+    if image.width == 0 || image.height == 0 || expected != Some(image.rgba.len()) {
+        return Err(EncodeError::Malformed);
+    }
+    let failed = |error: image::ImageError| EncodeError::Failed(error.to_string());
+    let mut bytes = Vec::new();
+    match encoding {
+        Encoding::Png => image::codecs::png::PngEncoder::new(&mut bytes)
+            .write_image(
+                &image.rgba,
+                image.width,
+                image.height,
+                ExtendedColorType::Rgba8,
+            )
+            .map_err(failed)?,
+        Encoding::Jpeg { quality } => {
+            let rgb: Vec<u8> = image
+                .rgba
+                .chunks_exact(4)
+                .flat_map(|pixel| pixel.iter().take(3).copied())
+                .collect();
+            image::codecs::jpeg::JpegEncoder::new_with_quality(&mut bytes, quality.clamp(1, 100))
+                .write_image(&rgb, image.width, image.height, ExtendedColorType::Rgb8)
+                .map_err(failed)?;
+        }
+        Encoding::WebP => image::codecs::webp::WebPEncoder::new_lossless(&mut bytes)
+            .encode(
+                &image.rgba,
+                image.width,
+                image.height,
+                ExtendedColorType::Rgba8,
+            )
+            .map_err(failed)?,
+    }
+    Ok(bytes)
 }

@@ -126,6 +126,11 @@ async fn encode_here(image: &DecodedImage, encoding: Encoding) -> Result<Vec<u8>
     .await
     .map_err(failed)?
     .unchecked_into();
+    // A browser that cannot write the format (Safari has no WebP encoder)
+    // writes PNG instead; the codec's own encoder writes what was asked.
+    if blob.type_() != encoding.mime() {
+        return crate::codec::encode_now(image, encoding);
+    }
     let buffer = JsFuture::from(blob.array_buffer()).await.map_err(failed)?;
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }

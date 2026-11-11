@@ -25,7 +25,7 @@ mod backend;
 #[path = "web.rs"]
 mod backend;
 
-pub use codec::{EncodeError, Encoding, decode, encode};
+pub use codec::{EncodeError, Encoding, decode, decode_now, encode, encode_now};
 pub use format::{Format, dimensions, sniff};
 
 /// Encoded input and the existing store's output resize preference.

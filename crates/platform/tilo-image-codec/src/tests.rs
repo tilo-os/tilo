@@ -242,4 +242,13 @@ fn pixels_crop_turn_scale_and_grey() {
         vec![255]
     );
     assert_eq!(DecodedImage::from_rgba(2, 2, vec![0; 15]), None);
+    let mut painted = DecodedImage::filled(2, 2, [0; 4]);
+    painted.set_pixel(1, 1, [9, 9, 9, 9]);
+    painted.set_pixel(2, 0, [7; 4]);
+    assert_eq!(painted.pixel(1, 1), Some([9, 9, 9, 9]));
+    assert_eq!(
+        painted.pixels().filter(|p| *p == [7; 4]).count(),
+        0,
+        "outside paints nothing"
+    );
 }

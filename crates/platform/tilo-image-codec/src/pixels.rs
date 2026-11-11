@@ -53,6 +53,23 @@ impl DecodedImage {
         <Rgba>::try_from(pixel).ok()
     }
 
+    /// Paint the pixel at `x`, `y`; nothing outside the image.
+    pub fn set_pixel(&mut self, x: u32, y: u32, rgba: Rgba) {
+        if x >= self.width {
+            return;
+        }
+        let start = (y as usize)
+            .checked_mul(self.width as usize)
+            .and_then(|row| row.checked_add(x as usize))
+            .and_then(|at| at.checked_mul(4));
+        if let Some(pixel) = start
+            .and_then(|start| Some(start..start.checked_add(4)?))
+            .and_then(|range| self.rgba.get_mut(range))
+        {
+            pixel.copy_from_slice(&rgba);
+        }
+    }
+
     /// Whether any pixel is not fully opaque.
     #[must_use]
     pub fn has_alpha(&self) -> bool {
