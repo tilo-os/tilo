@@ -23,6 +23,8 @@
 mod common;
 
 use serde_json::{Map, Value, json};
+use std::time::Duration;
+use tilo_compositor::InputEvent;
 use tilo_session::Session;
 
 use common::{CANVAS_ENTRY, on_screen, until};
@@ -256,6 +258,165 @@ fn root_of(session: &Session, suffix: &str) -> String {
     }
     find(&session.resources(), suffix).unwrap_or_else(|| panic!("the seed holds a {suffix} root"))
 }
+
+/// The middleware's own identifier for the wheel's middle button.
+const BTN_MIDDLE: u32 = 0x112;
+
+/// Every pan gesture pans, every time: a middle drag over empty canvas moves the camera the same
+/// distance on the first drag as on the fifth, Ctrl and a wheel notch zooms, and the arrow keys
+/// pan. The camera is the map's, so the test reads it where the person sees it — the frame the
+/// place stands at on the screen.
+#[test]
+fn every_pan_gesture_pans_every_time() {
+    let _settled = ui::motion::testing::settled();
+    let root = common::private_home();
+    let (mut session, notes) = session(root.path());
+    until(&mut session, "the bar", |session| {
+        on_screen(session, BELL).is_some()
+    });
+    show(&mut session, root.path(), "Frames");
+    place(&mut session, &notes[0], 40, 40, 480, 360);
+    let titled = common::window_name_of(&session, &notes[0]);
+    until(&mut session, "the frame", |session| {
+        on_screen(session, &titled).is_some()
+    });
+
+    // Where the frame stands on the screen: the camera on the place.
+    let frame_on_screen = |session: &Session| {
+        session
+            .shell_controls(&titled)
+            .into_iter()
+            .next()
+            .map(|(x, y, w, h)| (x, y, w, h))
+    };
+    let start = frame_on_screen(&session).expect("the frame stands on the canvas");
+    let mut seen = start;
+
+    // Five middle drags of the same shape, 120 px left and 90 px up: every one moves the frame
+    // that far on the screen, and the fifth no less than the first. The pointer starts over empty
+    // canvas beside the place, so the press is the map's own and never a place's.
+    for round in 1..=5 {
+        let (from_x, from_y) = (f64::from(common::WIDTH) - 60.0, 700.0);
+        session
+            .compositor()
+            .input(InputEvent::PointerMotion {
+                x: from_x,
+                y: from_y,
+            })
+            .expect("the pointer moves");
+        session.step(Duration::from_millis(1)).expect("a frame");
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_MIDDLE,
+                pressed: true,
+            })
+            .expect("the button");
+        session.step(Duration::from_millis(1)).expect("a frame");
+        for step in 1..=4 {
+            let fraction = f64::from(step) / 4.0;
+            session
+                .compositor()
+                .input(InputEvent::PointerMotion {
+                    x: from_x - 120.0 * fraction,
+                    y: from_y - 90.0 * fraction,
+                })
+                .expect("the pointer moves");
+            session.step(Duration::from_millis(1)).expect("a frame");
+        }
+        session
+            .compositor()
+            .input(InputEvent::PointerButton {
+                button: BTN_MIDDLE,
+                pressed: false,
+            })
+            .expect("the button");
+        session.step(Duration::from_millis(1)).expect("a frame");
+        common::wait_for(&mut session, "the pan", |session| {
+            (frame_on_screen(session) != Some(seen)).then_some(())
+        });
+        let now = frame_on_screen(&session).expect("the frame still stands");
+        assert!(
+            (now.0 - seen.0 + 120.0).abs() <= 2.0 && (now.1 - seen.1 + 90.0).abs() <= 2.0,
+            "round {round}: the drag moved the frame by (-120, -90) as it did the first time: \
+             {seen:?} became {now:?}"
+        );
+        seen = now;
+    }
+
+    // The arrow keys pan, a line a press, every press: the frame moves the same way each time.
+    for round in 1..=3 {
+        let before = frame_on_screen(&session).expect("the frame still stands");
+        press_key(&mut session, KEY_ARROW_RIGHT);
+        common::wait_for(&mut session, "the arrow key's pan", |session| {
+            (frame_on_screen(session) != Some(before)).then_some(())
+        });
+        let now = frame_on_screen(&session).expect("the frame still stands");
+        assert!(
+            now.0 < before.0 - 1.0 && (now.1 - before.1).abs() <= 1.0,
+            "round {round}: the right arrow pans the canvas right, as it did the first time: \
+             {before:?} became {now:?}"
+        );
+    }
+
+    // Ctrl and a wheel notch zooms about the pointer: the frame grows, at the same middle. Ctrl
+    // is held as the person holds it, a key down until it is let go.
+    let before = frame_on_screen(&session).expect("the frame still stands");
+    session
+        .compositor()
+        .input(InputEvent::PointerMotion { x: 640.0, y: 400.0 })
+        .expect("the pointer moves");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    session
+        .compositor()
+        .input(InputEvent::Key {
+            keycode: KEY_CTRL,
+            pressed: true,
+        })
+        .expect("Ctrl is held");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    for _ in 0..3 {
+        session
+            .compositor()
+            .input(InputEvent::PointerAxis {
+                horizontal: 0.0,
+                vertical: -1.0,
+            })
+            .expect("a notch");
+        session.step(Duration::from_millis(1)).expect("a frame");
+    }
+    session
+        .compositor()
+        .input(InputEvent::Key {
+            keycode: KEY_CTRL,
+            pressed: false,
+        })
+        .expect("Ctrl is let go");
+    session.step(Duration::from_millis(1)).expect("a frame");
+    common::wait_for(&mut session, "the zoom", |session| {
+        (frame_on_screen(session).is_some_and(|now| now.2 > before.2 + 1.0)).then_some(())
+    });
+}
+
+/// The evdev code of the left Ctrl.
+const KEY_CTRL: u32 = 29;
+
+/// Press and release the named key `code` on the keyboard, as the person does.
+fn press_key(session: &mut Session, code: u32) {
+    for pressed in [true, false] {
+        session
+            .compositor()
+            .input(InputEvent::Key {
+                keycode: code,
+                pressed,
+            })
+            .expect("the key");
+        session.step(Duration::from_millis(1)).expect("a frame");
+    }
+}
+
+/// The evdev code of the right arrow.
+const KEY_ARROW_RIGHT: u32 = 106;
 
 /// The top bar lists the focused window's actions, and pressing one runs it: the window in front
 /// keeps one list of what it can do now, in the resource's own words (shell.md §4). The bar's

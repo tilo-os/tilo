@@ -214,10 +214,16 @@ pub struct Map {
     /// Where the region laid each pin out last, by key, written by its own solve: the rectangle a
     /// pin's pose is taken about.
     laid: Rc<std::cell::RefCell<HashMap<String, Rect>>>,
+    /// The camera the region that places the pins reads, shared with its policy: the policy is
+    /// built once and re-solved whenever the camera moves, so the map writes the camera here
+    /// and the solve lays the pins out at it. `None` before the region is built.
+    camera_cell: Option<Rc<std::cell::Cell<MapCamera>>>,
 
     /// Input or a new document value changed what this widget paints: it
     /// repaints once, and rests after the frame draws it.
     dirty: bool,
+    /// The person put the keyboard in the canvas: its arrow keys pan it.
+    focused: bool,
     /// What a resource dragged onto the map and let go does: the map reports it with where it
     /// was dropped, and the view places it.
     drop: Event,
@@ -242,6 +248,7 @@ impl Map {
     pub fn new() -> Self {
         Self {
             dirty: true,
+            focused: false,
             pins: Vec::new(),
             parts: Parts::default(),
             camera: MapCamera::default(),
@@ -255,6 +262,7 @@ impl Map {
             key_pan: f64::from(crate::tokens::Metrics::BASE.wheel_line),
             placed: HashMap::new(),
             laid: Rc::default(),
+            camera_cell: None,
             drop: Event::None,
             key: String::new(),
             arrived: std::collections::HashSet::new(),
@@ -286,6 +294,9 @@ impl Map {
         self.dirty = true;
         if !self.camera.same(camera) {
             self.camera = camera;
+            if let Some(cell) = &self.camera_cell {
+                cell.set(camera);
+            }
             self.invalidation.invalidate();
         }
     }
@@ -399,12 +410,18 @@ impl Map {
         views.truncate(self.pins.len());
         let places: Vec<PinPlace> = self.pins.iter().map(|(_, place, _)| *place).collect();
         let keys: Vec<String> = self.pins.iter().map(|(key, _, _)| key.clone()).collect();
-        let camera = self.camera;
+        // The region's policy is built once and re-solved whenever the camera moves, so it reads
+        // the camera from this shared cell rather than from a copy taken here: a copy would lay
+        // every pin out at the camera the region was built with, and panning, zooming and the
+        // arrow keys would change the lens the map draws from and nothing where its pins stand.
+        let camera: Rc<std::cell::Cell<MapCamera>> = Rc::new(std::cell::Cell::new(self.camera));
+        self.camera_cell = Some(Rc::clone(&camera));
         // Where the region lays each pin out, by its key: what `Map` poses the pin about this
         // frame, written by the region's own solve.
         let laid: Rc<std::cell::RefCell<HashMap<String, Rect>>> = Rc::clone(&self.laid);
         let mut region = Manual::new(move |cx| -> Result<Size<f32>, WidgetLayoutError> {
             let available = cx.available();
+            let camera = camera.get();
             let mut out: HashMap<String, Rect> = HashMap::with_capacity(places.len());
             for index in 0..cx.len() {
                 let Some(place) = places.get(index) else {
@@ -721,6 +738,9 @@ impl Map {
                     camera: self.camera,
                     active: true,
                 });
+                // A press on the canvas puts the keyboard in it, so the arrow keys pan it from
+                // there without the person looking for a field to reach them from.
+                *ctx.focus_target = Some(ctx.node_id);
                 *ctx.handled = true;
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -750,7 +770,8 @@ impl Map {
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
-                if event.state == ElementState::Pressed
+                if self.focused
+                    && event.state == ElementState::Pressed
                     && !ctx.modifiers.state().control_key()
                     && !ctx.modifiers.state().super_key() =>
             {
@@ -817,6 +838,24 @@ impl Widget for Map {
 
     fn name(&self) -> &'static str {
         "Map"
+    }
+
+    /// A canvas takes the keyboard, so its own presses can pan it: a middle press puts the
+    /// caret in it (`shell.md` §3, and `canvas.tl`'s "a middle drag, Ctrl and a wheel, the arrow
+    /// keys"), and the arrow keys then pan it a line a press.
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        if self.focused != focused {
+            self.focused = focused;
+            self.dirty = true;
+        }
+    }
+
+    fn is_focused(&self) -> bool {
+        self.focused
     }
 
     fn build_layout(

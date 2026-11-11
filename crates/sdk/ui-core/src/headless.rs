@@ -1723,6 +1723,12 @@ impl FrameHarness {
         } else {
             self.root.handle_event(event, &mut ctx);
         }
+        // The widget a control pressed named as the keyboard's answers its own keys from then
+        // on, as the window's dispatch does after every event: a canvas a press put the caret in
+        // pans with the arrow keys without a second press to reach them.
+        if let Some(target) = focus_target {
+            self.set_focused(Some(target));
+        }
         RootDispatch {
             handled,
             focus_target,

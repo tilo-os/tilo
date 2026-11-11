@@ -242,3 +242,131 @@ fn a_place_already_in_view_moves_no_camera() {
         map.camera()
     );
 }
+
+/// `map` mounted as a window's whole root, laid out at `viewport`, so its presses and keys go
+/// through the same dispatch a window's do.
+fn mounted(map: Map) -> crate::headless::FrameHarness {
+    let mut harness =
+        crate::headless::FrameHarness::for_root(crate::State::new(), map, (800, 600), theme());
+    harness.relayout();
+    harness
+}
+
+/// A middle drag from `(from_x, from_y)` by `(dx, dy)` in four motions, the press first and the
+/// release last, a frame between — the gesture a person makes with the wheel's button.
+fn middle_drag(
+    harness: &mut crate::headless::FrameHarness,
+    (from_x, from_y): (f64, f64),
+    (dx, dy): (f64, f64),
+) {
+    let _ = harness.dispatch_to_root(&crate::synthetic_input::cursor_moved(from_x, from_y));
+    let _ = harness.dispatch_to_root(&crate::synthetic_input::mouse_input(
+        ElementState::Pressed,
+        MouseButton::Middle,
+    ));
+    for step in 1..=4 {
+        let fraction = f64::from(step) / 4.0;
+        let _ = harness.dispatch_to_root(&crate::synthetic_input::cursor_moved(
+            from_x + dx * fraction,
+            from_y + dy * fraction,
+        ));
+    }
+    let _ = harness.dispatch_to_root(&crate::synthetic_input::mouse_input(
+        ElementState::Released,
+        MouseButton::Middle,
+    ));
+}
+
+/// A pin's rectangle on the screen as the region laid it out: what the person sees move.
+fn laid(harness: &crate::headless::FrameHarness, key: &str) -> Rect {
+    harness
+        .root::<Map>()
+        .laid
+        .borrow()
+        .get(key)
+        .copied()
+        .unwrap_or_else(|| panic!("the pin {key:?} is laid out"))
+}
+
+#[test]
+fn every_middle_drag_pans_the_pins_the_same_distance() {
+    // The live run's failure: a middle drag over the canvas panned once, and identical drags after
+    // it did nothing. The camera moved each time, but the region that lays the pins out held the
+    // camera it was built with, so the pins never moved again.
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
+    let start = laid(&harness, "one");
+    let mut seen = start;
+    for round in 1..=5 {
+        middle_drag(&mut harness, (700.0, 500.0), (-120.0, -90.0));
+        harness.relayout();
+        let now = laid(&harness, "one");
+        assert!(
+            (now.x0 - (seen.x0 - 120.0)).abs() <= 1.0 && (now.y0 - (seen.y0 - 90.0)).abs() <= 1.0,
+            "round {round}: the drag moved the pin (-120, -90) as the first one did: \
+             {seen:?} became {now:?}"
+        );
+        seen = now;
+    }
+}
+
+#[test]
+fn the_arrow_keys_pan_a_canvas_whose_press_put_the_keyboard_in_it() {
+    // The arrows pan the canvas from the keyboard a press gave it: without the press the keys are
+    // some other surface's, and pan nothing.
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
+    let before = laid(&harness, "one");
+    let _ = harness.dispatch_to_root(&crate::synthetic_input::named_key(
+        winit::keyboard::NamedKey::ArrowRight,
+    ));
+    harness.relayout();
+    assert_eq!(
+        laid(&harness, "one"),
+        before,
+        "no press put the keyboard in the canvas: the arrow panned nothing"
+    );
+    middle_drag(&mut harness, (700.0, 500.0), (4.0, 4.0));
+    harness.relayout();
+    assert!(
+        harness.focused().is_some(),
+        "the press put the keyboard in the canvas"
+    );
+    let mut before = laid(&harness, "one");
+    for round in 1..=3 {
+        let _ = harness.dispatch_to_root(&crate::synthetic_input::named_key(
+            winit::keyboard::NamedKey::ArrowRight,
+        ));
+        harness.relayout();
+        let now = laid(&harness, "one");
+        assert!(
+            now.x0 < before.x0 - 1.0,
+            "round {round}: the right arrow panned the canvas right as the first one did: \
+             {before:?} became {now:?}"
+        );
+        before = now;
+    }
+}
+
+#[test]
+fn ctrl_and_a_wheel_notch_zooms_the_pins() {
+    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
+    let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
+    let before = laid(&harness, "one");
+    let _ = harness.dispatch_to_root(&crate::synthetic_input::cursor_moved(400.0, 300.0));
+    let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
+    // Zooming in a notch at a time: the pin widens with each, so the third is wider than the
+    // first, and the lens stays what the person set — no gesture's zoom is undone by the next.
+    let mut seen = before.width();
+    for round in 1..=3 {
+        let _ =
+            harness.dispatch_to_root_with(&crate::synthetic_input::mouse_wheel(0.0, 1.0), &ctrl);
+        harness.relayout();
+        let now = laid(&harness, "one").width();
+        assert!(
+            now > seen + 1.0,
+            "round {round}: Ctrl and a notch zoomed the canvas in: {seen} became {now}"
+        );
+        seen = now;
+    }
+}
