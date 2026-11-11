@@ -376,6 +376,7 @@ impl HostSessions {
         self.access_writer()
             .replace(workspace_id, pinned, access)
             .await
+            .map(drop)
     }
 
     /// Whether the host counts `device` as subscribed to `workspace_id`.
@@ -852,7 +853,7 @@ impl GovernedAccessWriter {
         workspace_id: u64,
         pinned: bool,
         access: tilo_peer_state::GovernedAccess,
-    ) -> Result<(), HostError> {
+    ) -> Result<Vec<[u8; 32]>, HostError> {
         if self.handshake_trust.allow_any {
             return Err(HostError::GovernedAccess(
                 "allow_any cannot host governed workspace admission".into(),
@@ -887,8 +888,7 @@ impl GovernedAccessWriter {
         // requested removal narrowed in memory, and the handshake union must
         // reflect that fail-closed ceiling.
         self.handshake_trust.refresh(&self.workspaces).await;
-        result?;
-        Ok(())
+        Ok(result?)
     }
 }
 

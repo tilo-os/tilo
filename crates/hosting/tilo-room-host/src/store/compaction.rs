@@ -207,6 +207,46 @@ impl WorkspaceStore {
     }
 }
 
+/// The retained channel a device's identity hello is kept under.
+pub(crate) fn hello_channel(device: &[u8; 32]) -> [u8; 32] {
+    *blake3::hash(&[b"identity-hello\0".as_slice(), device].concat()).as_bytes()
+}
+
+impl WorkspaceStore {
+    /// Forget the identity hello each of `devices` retained here: devices
+    /// the workspace no longer admits, whose hello a replay no longer sends
+    /// anyone. A workspace many people pass through would otherwise keep one
+    /// for every device that ever came. Must run on the persistence owner.
+    /// Returns how many entries it forgot.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a lineage's new, empty generation cannot be
+    /// written.
+    pub(crate) fn forget_hellos(&self, devices: &[[u8; 32]]) -> Result<usize, StoreError> {
+        let mut forgotten = 0_usize;
+        for device in devices {
+            let channel = hello_channel(device);
+            let lineage = self
+                .root
+                .join(RETAINED_DIR)
+                .join("v2")
+                .join(lineage_name(device, &channel));
+            let Some(active) = current(&lineage)? else {
+                continue;
+            };
+            let names = record_names(&active)?;
+            if names.is_empty() {
+                continue;
+            }
+            self.forget_channel_listing(&channel);
+            rewrite(self, &lineage, &[], &[], 0)?;
+            forgotten = forgotten.saturating_add(names.len());
+        }
+        Ok(forgotten)
+    }
+}
+
 /// Where [`WorkspaceStore::archive_channel`] keeps what it takes out of
 /// replay, under the retained directory, beside the `v2` replay reads.
 pub(crate) const ARCHIVE_DIR: &str = "archive-v1";

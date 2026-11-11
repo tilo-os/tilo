@@ -69,9 +69,7 @@ impl ShellPayloads for NeighbourPayloads {
             revocations: Vec::new(),
         };
         // Persisted: retained identity frames are keyed by this channel.
-        let channel =
-            *blake3::hash(&[b"identity-hello\0".as_slice(), &cert.device_public_key].concat())
-                .as_bytes();
+        let channel = crate::store::compaction::hello_channel(&cert.device_public_key);
         let body = postcard::to_stdvec(&hello).map_err(|error| error.to_string())?;
         Ok((channel, body))
     }

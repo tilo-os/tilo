@@ -449,6 +449,7 @@ async fn admit(
         .access
         .replace(workspace_id, true, access)
         .await
+        .map(drop)
         .map_err(|error| error.to_string())
 }
 
