@@ -75,53 +75,9 @@ impl ChatApp {
             *self.last_read.borrow_mut() = std::rc::Rc::new(chat.clone());
         }
         let held = self.held_messages();
-        // A deletion the person confirmed has gone: offer its Undo.
-        if let Some((message, part, channel)) = self.asked_delete.take() {
-            if held.contains(&message) {
-                self.asked_delete = Some((message, part, channel));
-            } else if let Some(part) = part {
-                *self.deleted.get_mut() = Some((part, channel));
-            }
-        }
+        self.offer_the_confirmed_deletion(&held);
         self.chain_seen = self.chain.as_ref().map(ui::framework::Chain::revision);
-        self.channels = chat.conversation_rows(&self.me.id, &held, &self.workspace_agent_names);
-        self.recorded_channels = chat.channels.iter().map(|(id, _)| id.to_string()).collect();
-        self.categories = chat.category_rows();
-        for category in &mut self.categories {
-            category.collapsed = self.collapsed.contains(&category.id);
-        }
-        // Open a conversation: the one already open while it exists, and the
-        // workspace's first otherwise — a deleted channel, and a window that
-        // has not opened one yet, which a recorded view leaves empty on a
-        // device that has not chosen. A conversation the record need not list
-        // as a channel — any direct one, with a person or with an agent — is
-        // valid by its id.
-        if (self.active_channel.is_empty() || !self.is_conversation(&self.active_channel))
-            && let Some(first) = self
-                .ws_channels()
-                .into_iter()
-                .find(|c| c.kind == model::ChannelKind::Text)
-                .map(|c| c.id.clone())
-        {
-            self.active_channel = first;
-        }
-        // Unread is per-peer derived state, not stored: the channel in view is
-        // always read (0); every other channel shows its top-level messages
-        // beyond this peer's read watermark. The watermark itself is advanced
-        // by `mark_active_read` while a channel is viewed / on open.
-        for c in &mut self.channels {
-            c.unread = if c.id == self.active_channel {
-                0
-            } else {
-                let mark = chat.read_mark(&c.id, &self.me.id);
-                let unread = held.unread_counted(
-                    &ui::tilo_resource::Id::from_raw(c.id.clone()),
-                    mark,
-                    &self.counts_by_part,
-                );
-                u32::try_from(unread).unwrap_or(u32::MAX)
-            };
-        }
+        self.sync_conversations(&chat, &held);
         // The parts that changed are read, and the parts that did not keep the
         // rows they were read as: a chat of ten thousand messages costs a
         // reload what the one part it posted to holds, not all of it.
@@ -162,6 +118,85 @@ impl ChatApp {
                     .any(|channel| channel.direct && channel.id == *id)
             })
             .collect();
+        self.read_feedback(&chat);
+        self.read_scrollback(&chat, &held);
+        // Drop the body views of messages no longer loaded.
+        let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
+        self.body_views
+            .borrow_mut()
+            .retain(|(_, id), _| shown.contains(id.as_str()));
+        self.agent_authors = chat.agent_authors();
+        self.workspace_files = chat.files;
+        // Who is in a call is projected only from the authenticated local
+        // voice service's response.
+        self.refresh_native_streams();
+        self.users = self.workspace_people_from(&chat, &per_channel);
+        self.sync_reload_composers(doc);
+        // A share started, switched or ended reaches the workspace as soon as
+        // the record says so, not at the window's next settled frame,
+        // which an idle window may not have for a long while.
+        self.follow_share_grants();
+    }
+
+    /// A deletion the person confirmed has gone from the record: offer its
+    /// Undo. One still held was not confirmed after all, and keeps waiting.
+    fn offer_the_confirmed_deletion(&mut self, held: &crate::messages::Messages) {
+        let Some((message, part, channel)) = self.asked_delete.take() else {
+            return;
+        };
+        if held.contains(&message) {
+            self.asked_delete = Some((message, part, channel));
+        } else if let Some(part) = part {
+            *self.deleted.get_mut() = Some((part, channel));
+        }
+    }
+
+    /// The conversations and categories the record keeps, the one open, and
+    /// how much each of the others holds unread.
+    fn sync_conversations(&mut self, chat: &crate::record::Chat, held: &crate::messages::Messages) {
+        self.channels = chat.conversation_rows(&self.me.id, held, &self.workspace_agent_names);
+        self.recorded_channels = chat.channels.iter().map(|(id, _)| id.to_string()).collect();
+        self.categories = chat.category_rows();
+        for category in &mut self.categories {
+            category.collapsed = self.collapsed.contains(&category.id);
+        }
+        // Open a conversation: the one already open while it exists, and the
+        // workspace's first otherwise — a deleted channel, and a window that
+        // has not opened one yet, which a recorded view leaves empty on a
+        // device that has not chosen. A conversation the record need not list
+        // as a channel — any direct one, with a person or with an agent — is
+        // valid by its id.
+        if (self.active_channel.is_empty() || !self.is_conversation(&self.active_channel))
+            && let Some(first) = self
+                .ws_channels()
+                .into_iter()
+                .find(|c| c.kind == model::ChannelKind::Text)
+                .map(|c| c.id.clone())
+        {
+            self.active_channel = first;
+        }
+        // Unread is per-peer derived state, not stored: the channel in view is
+        // always read (0); every other channel shows its top-level messages
+        // beyond this peer's read watermark. The watermark itself is advanced
+        // by `mark_active_read` while a channel is viewed / on open.
+        for c in &mut self.channels {
+            c.unread = if c.id == self.active_channel {
+                0
+            } else {
+                let mark = chat.read_mark(&c.id, &self.me.id);
+                let unread = held.unread_counted(
+                    &ui::tilo_resource::Id::from_raw(c.id.clone()),
+                    mark,
+                    &self.counts_by_part,
+                );
+                u32::try_from(unread).unwrap_or(u32::MAX)
+            };
+        }
+    }
+
+    /// What people sent this workspace as feedback: each message's words, and
+    /// the recording the report carries beside it.
+    fn read_feedback(&mut self, chat: &crate::record::Chat) {
         self.reports = chat
             .feedback
             .iter()
@@ -180,23 +215,6 @@ impl ChatApp {
                 Some((crate::feedback::message_id(id.as_str()), recording))
             })
             .collect();
-        self.read_scrollback(&chat, &held);
-        // Drop the body views of messages no longer loaded.
-        let shown: HashSet<&str> = self.messages.iter().map(|m| m.id.as_str()).collect();
-        self.body_views
-            .borrow_mut()
-            .retain(|(_, id), _| shown.contains(id.as_str()));
-        self.agent_authors = chat.agent_authors();
-        self.workspace_files = chat.files;
-        // Who is in a call is projected only from the authenticated local
-        // voice service's response.
-        self.refresh_native_streams();
-        self.users = self.workspace_people_from(&chat, &per_channel);
-        self.sync_reload_composers(doc);
-        // A share started, switched or ended reaches the workspace as soon as
-        // the record says so, not at the window's next settled frame,
-        // which an idle window may not have for a long while.
-        self.follow_share_grants();
     }
 
     /// Each held part of the messages chain as its rows, oldest first,
@@ -243,23 +261,15 @@ impl ChatApp {
     }
 
     fn sync_reload_composers(&mut self, doc: &AutoCommit) {
-        // Point each composer at its surface's draft; the editors read it on
-        // their next sync (`sync_composers`), keeping the caret while typing.
+        // Point each composer at its surface's draft; the editors read it in
+        // [`Self::sync_composers`], keeping the caret while typing.
         self.composer_main.set_key(&self.active_channel);
-        self.composer_main.sync(doc);
-        self.draft_main = self.composer_main.value();
         self.composer_main
             .set_placeholder(&self.conversation_placeholder(&self.active_channel));
         self.composer_main
             .set_local_author(Some(self.me.id.clone()));
         let thread_key = self.thread_draft_key().unwrap_or_default();
         self.composer_thread.set_key(&thread_key);
-        self.composer_thread.sync(doc);
-        self.draft_thread = if thread_key.is_empty() {
-            String::new()
-        } else {
-            self.composer_thread.value()
-        };
         self.composer_thread
             .set_placeholder(&crate::i18n::t("chat-thread-reply-placeholder"));
         self.composer_thread
@@ -267,6 +277,10 @@ impl ChatApp {
         self.composer_main
             .set_read_only(!self.main_composer_can_edit());
         self.composer_thread.set_read_only(!self.can_participate());
+        self.sync_composers(doc);
+        if thread_key.is_empty() {
+            self.draft_thread = String::new();
+        }
         self.set_composer_focus();
     }
 
