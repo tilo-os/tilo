@@ -17,14 +17,16 @@
 //! the engine answers it at once whatever is running, and it goes to the
 //! engine at once: whoever reviews a tab is never queued behind the actors
 //! they are watching.
+//!
+//! The tab's one page action is started, driven and answered here too.
 
 use std::time::{Duration, Instant};
 
-use ui::webview::{PageActor, PageRequest};
+use ui::webview::{PageActor, PageFailure, PageReply, PageRequest, WebViewCommand};
 
 use super::{
-    BrowserWidget, PAGE_LOAD_WAIT, PAGE_OPERATION_TIMEOUT, PageOperation, PagePhase, action_failed,
-    dialog,
+    BrowserWidget, PAGE_LOAD_WAIT, PAGE_NAVIGATION_WAIT, PAGE_OPERATION_TIMEOUT, PageOperation,
+    PagePhase, SettledLoad, action_failed, dialog,
 };
 
 /// How many page actions may wait their turn in one tab: room for a few
@@ -385,5 +387,170 @@ impl BrowserWidget {
             }
             None => "nothing".to_owned(),
         }
+    }
+}
+
+impl BrowserWidget {
+    /// Read and operate the page's content without its pixels: an outline
+    /// whose interactive elements carry refs, and actions on those refs.
+    /// `actor` is who asks, as the engine is told. An action admitted while
+    /// another holds the tab waits its turn ([`page_turns`]).
+    pub(super) fn start_page_operation(
+        &mut self,
+        invocation: ui::tilo_actions::InvocationId,
+        actor: Option<ui::webview::PageActor>,
+        request: PageRequest,
+    ) -> Result<(), String> {
+        let request = match request {
+            PageRequest::FillFiles {
+                element,
+                paths,
+                frame,
+            } => PageRequest::FillFiles {
+                element,
+                paths: Self::checked_page_files(&paths)?,
+                frame,
+            },
+            other => other,
+        };
+        if let PageRequest::Press { key, .. } = &request
+            && let Err(why) = ui::webview::PageKey::parse_detailed(&key.chord())
+        {
+            return Err(why);
+        }
+        if !request.valid() {
+            return Err(Self::refused_page_request(&request));
+        }
+        if matches!(request, PageRequest::Ledger { .. }) {
+            return self.read_page_record(invocation, actor, request);
+        }
+        self.take_page_turn(invocation, actor, request)?;
+        self.drive_page_operation();
+        Ok(())
+    }
+
+    /// Send a request once its page has settled, and bound every phase. The
+    /// action that waited longest takes the tab first, when nothing holds it.
+    pub(super) fn drive_page_operation(&mut self) {
+        self.run_waiting_page_actions();
+        let now = std::time::Instant::now();
+        let loading = self.page_loading();
+        let Some(operation) = self.page_operation.as_mut() else {
+            return;
+        };
+        if let PagePhase::Queued { until, .. } = &operation.phase
+            && (!loading || now >= *until)
+            && let PagePhase::Queued { request, .. } =
+                std::mem::replace(&mut operation.phase, PagePhase::Sent)
+        {
+            self.engine.send(WebViewCommand::Page {
+                request_id: operation.request_id,
+                actor: operation.actor.clone(),
+                request,
+            });
+            return;
+        }
+        if now < operation.deadline {
+            return;
+        }
+        let Some(operation) = self.page_operation.take() else {
+            return;
+        };
+        self.note_text_entered(&operation.acted);
+        self.page_operation_result = Some(match operation.phase {
+            PagePhase::Navigating { reply } => self.page_success(
+                operation.invocation,
+                &reply,
+                &operation.acted,
+                Some("the page it opened is still loading"),
+            ),
+            PagePhase::Queued { .. } | PagePhase::Sent => {
+                Self::answer_a_timed_out_page_operation(&operation)
+            }
+        });
+    }
+
+    /// What the engine answered a request: the tab's record takes it, a read
+    /// of the record, the review or the forms is answered, and the page action
+    /// that held the tab settles or waits for the page it opened.
+    pub(super) fn accept_page_result(
+        &mut self,
+        request_id: u32,
+        result: Result<PageReply, PageFailure>,
+    ) {
+        // What the engine set down is written into the tab's record, which
+        // is Browser's resource, and every place is named as it counts them.
+        let Some(result) = self.record_page_result(request_id, result) else {
+            return;
+        };
+        if self.reads_page_record(request_id) {
+            self.accept_page_record(request_id, result);
+            return;
+        }
+        if self.reads_page_review(request_id) {
+            self.accept_page_review(request_id, result);
+            return;
+        }
+        let Some(result) = self.take_forms_read(request_id, result) else {
+            return;
+        };
+        // Another request answered: the tab's record may have moved.
+        self.page_review_moved();
+        let Some(operation) = self.page_operation.take_if(|operation| {
+            operation.request_id == request_id && matches!(operation.phase, PagePhase::Sent)
+        }) else {
+            return;
+        };
+        self.note_text_entered(&operation.acted);
+        let result = self.hear_forms(&operation, result);
+        // The reader view follows the request the page answered, whichever
+        // actor's it was and however long it waited its turn.
+        if let PageRequest::Reader { enabled } = operation.acted
+            && result.is_ok()
+        {
+            self.reader_view = enabled;
+            self.structure_dirty = true;
+        }
+        if let (Ok(reply), Some(settled)) = (&result, &operation.settled_while_sent)
+            && reply.loading
+        {
+            let note = match settled {
+                SettledLoad::Loaded => None,
+                SettledLoad::Failed(error) => {
+                    Some(format!("the page it opened failed to load: {error}"))
+                }
+            };
+            self.page_operation_result = Some(self.page_success(
+                operation.invocation,
+                reply,
+                &operation.acted,
+                note.as_deref(),
+            ));
+            return;
+        }
+        self.page_operation_result = Some(match result {
+            Ok(reply) if reply.loading => {
+                self.page_operation = Some(PageOperation {
+                    phase: PagePhase::Navigating { reply },
+                    deadline: std::time::Instant::now() + PAGE_NAVIGATION_WAIT,
+                    ..operation
+                });
+                return;
+            }
+            Ok(reply) => self.page_success(operation.invocation, &reply, &operation.acted, None),
+            // A page that refused the action because it was busy, or never
+            // answered, is reported as what it is.  Calling it retryable here
+            // would contradict the at-most-once contract this app publishes
+            // and the broker would refuse the answer, taking the whole
+            // session's page actions down with it.
+            // What the tab's other actors did meanwhile is often why: it
+            // travels with the refusal as it does with an answer.
+            Err(failure) => action_failed(
+                operation.invocation,
+                format!("browser.page.{}", failure.code),
+                failure.message,
+                Self::page_record_details(&failure.record),
+            ),
+        });
     }
 }

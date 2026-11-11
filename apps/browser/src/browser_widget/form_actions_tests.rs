@@ -14,7 +14,7 @@ use ui::tilo_actions::{
     ActionFailure, ActionInvoker, ActionSpec, ActorKind, DoorError, InvocationUpdate, ParamType,
 };
 use ui::tilo_resource::Replica;
-use ui::webview::{FormSubmit, PageNavigation, PageRecordNote, WebViewEngine as _};
+use ui::webview::{FormSubmit, PageFailure, PageNavigation, PageRecordNote, WebViewEngine as _};
 
 use super::*;
 use crate::effects::BrowserEffect;

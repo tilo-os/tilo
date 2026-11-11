@@ -6,7 +6,9 @@
 use std::sync::Arc;
 
 use ui::tilo_actions::{ActionInvoker, ActionSpec, InvocationId, InvocationUpdate};
-use ui::webview::{FrameId, PageKey, PageNavigation, PageRecordNote, WebViewEngine as _};
+use ui::webview::{
+    FrameId, PageFailure, PageKey, PageNavigation, PageRecordNote, WebViewEngine as _,
+};
 
 use super::page_turns::{MAX_WAITING_PAGE_ACTIONS, PAGE_TURN_WAIT};
 use super::tests::{effect_operation, synced};
