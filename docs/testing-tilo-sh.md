@@ -164,6 +164,9 @@ The check brings the stack up and uses it as people and backends do:
 
 1. A fresh startup identity, in its own headless Chromium, approves the
    server key that `tilo keys create` asks for on the local `/sign-in` page.
+   What it reads there is kept as pictures in `startup/`: the sign-in card
+   (the "In Browser" row included), the door's grants page, and the key that
+   page makes, each light and dark.
 2. With that key, the visa run (`sdk/python/examples/visa_proof.py`) creates
    applicant workspaces (25 by default, set with `VISA_APPLICANTS`).
 3. It mints a one-workspace key and its MCP URL.

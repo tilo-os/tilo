@@ -3,7 +3,9 @@
 #
 #   1. a fresh startup identity, in its own headless Chromium on the local
 #      site, approves a server key `tilo keys create` asks for, on the site's
-#      own /sign-in page;
+#      own /sign-in page; the pictures of what it reads there (the sign-in
+#      card, the door's grants page, and the key that page makes) are kept in
+#      WORK/startup, light and dark;
 #   2-6. with that key, the visa run (sdk/python/examples/visa_proof.py): it
 #      makes applicant workspaces, mints a one-workspace key and MCP, the
 #      agent fills the form and writes the letter, a reviewer (another real

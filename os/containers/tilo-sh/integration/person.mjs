@@ -14,7 +14,9 @@
 // `arrivedMs` is a fresh visitor's entry: from navigating to the site to the
 // page done arriving and a member of the Lounge, which the entry-speed work
 // measures. Saves the page's console and a screenshot in OUT_DIR, and exits
-// non-zero, saying what never happened, when a step did not.
+// non-zero, saying what never happened, when a step did not. With `--key` it
+// also keeps what the person reads there, in both appearances: the sign-in
+// card they allow, the door's grants page, and the key that page makes.
 import {spawn} from 'node:child_process';
 import {mkdirSync, writeFileSync} from 'node:fs';
 import {join} from 'node:path';
@@ -72,6 +74,21 @@ const until = async (expression, what, timeout = 180_000) => {
     if (Date.now() > deadline) await finish(1, `${what} never happened: ${await text()}`);
     await sleep(100);
   }
+};
+// The page as a person would look at it, kept in OUT_DIR as `name-light.png`
+// and `name-dark.png`: what each surface the check visits says, in the two
+// appearances it has.
+const capture = async name => {
+  for (const theme of ['light', 'dark']) {
+    await tab.send('Emulation.setEmulatedMedia', {
+      media: 'screen',
+      features: [{name: 'prefers-color-scheme', value: theme}],
+    }).catch(() => {});
+    await sleep(150);
+    const shot = await tab.screenshot().catch(() => null);
+    if (shot) writeFileSync(join(out, `${name}-${theme}.png`), shot);
+  }
+  await tab.send('Emulation.setEmulatedMedia', {features: []}).catch(() => {});
 };
 const memberships = `JSON.parse(globalThis.localStorage.getItem('tilo-host-memberships') ?? '{}')`;
 const entered = `JSON.parse(globalThis.localStorage.getItem('tilo-entered-workspaces') ?? '[]')`;
@@ -141,6 +158,9 @@ if (keyName) {
     await finish(1, `the sign-in page stopped: ${await text()}`);
   }
   report.asked = await text();
+  // The card the person reads before they allow: what the key reaches, and
+  // what it may do in Browser.
+  await capture('sign-in');
   await tab.evaluate(`document.getElementById('sign-in-allow').click()`);
   const code = await Promise.race([ended, sleep(120_000).then(() => 'timeout')]);
   if (code !== 0) {
@@ -150,5 +170,30 @@ if (keyName) {
   report.key = printed.match(/TILO_API_KEY=(\S+)/)?.[1] ?? null;
   if (!report.key) await finish(1, `tilo keys create printed no key: ${printed}`);
   console.error(`ok: they approved "${keyName}" on the site's sign-in page and the terminal got its key`);
+
+  // The grants page the same browser is now signed in to: the keys, each
+  // saying whether it operates web pages in Browser, and the way to revoke
+  // one; and the page that shows the key it makes once.
+  await tab.navigate(`${door}/grants`);
+  await until(`document.querySelector('ul.grants, form.new') !== null`, 'the grants page');
+  await capture('grants');
+  await tab.evaluate(`(() => {
+    document.querySelector('form.new input[name="name"]').value = 'Pages backend';
+    document.querySelector('form.new').requestSubmit();
+    return true;
+  })()`);
+  // The door asks the person to allow the key it would make (the same card
+  // the site showed for the terminal's key); allowing it answers with the
+  // key, which that page shows once.
+  const making = await until(`document.querySelector('code.key') ? 'made'
+    : (['asked', 'stopped'].includes(document.documentElement.dataset.signIn) ? 'asked' : '')`,
+  'the card asking for the key or the key itself');
+  if (making === 'asked') {
+    await capture('key-ask');
+    await tab.evaluate(`document.getElementById('sign-in-allow').click()`);
+  }
+  await until(`document.querySelector('code.key') !== null`, 'the key the grants page made');
+  report.madeOnPage = await text();
+  await capture('key');
 }
 await finish(0);
