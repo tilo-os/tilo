@@ -86,4 +86,3 @@ sheets-open-comment-anchor = Kommentarstelle öffnen
 sheets-actions = Tabellenaktionen
 sheets-window-name = Sheets
 sheets-window-detail = Bearbeitbare Arbeitsmappe mit Formelleiste und Blattregistern
-sheets-window-detail = Bearbeitbare Arbeitsmappe mit Formelleiste und Blattregistern

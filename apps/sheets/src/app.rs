@@ -1263,7 +1263,7 @@ impl Widget for SheetsApp {
         ];
         Some(
             AccessNode::new(Role::Document)
-                .with_name(crate::resource::CATALOG.t("sheets-window-detail"))
+                .with_name(crate::resource::CATALOG.t("sheets-window-name"))
                 .with_description(crate::resource::CATALOG.t("sheets-window-detail"))
                 .with_state(AccessState::new().focusable(true))
                 .with_children(children),

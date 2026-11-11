@@ -330,5 +330,4 @@ browser-filters-failed = Aktualisierung fehlgeschlagen: { $detail }. Die bisheri
 browser-filters-failed-worker = Aktualisierung fehlgeschlagen: Hilfsprozess nicht verfügbar. Die bisherigen Regeln bleiben erhalten.
 browser-address-suggestions = Adressvorschläge
 browser-window-name = Browser
-browser-window-name = Browser
 browser-page-menu-name = Seitenmenü

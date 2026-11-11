@@ -37,6 +37,12 @@ def missing(files: dict[str, str]) -> list[tuple[str, str, str]]:
                 for unit, locale, _, key, _ in coverage.untranslated(Path(root))]
 
 
+def twice(files: dict[str, str]) -> list[tuple[str, str, int, int]]:
+    with tree(files) as root:
+        return [(catalogue.relative_to(root).as_posix(), key, first, line)
+                for catalogue, key, first, line in coverage.duplicated(Path(root))]
+
+
 def run(files: dict[str, str], *arguments: str) -> tuple[int, str, str]:
     with tree(files) as root:
         original = coverage.ROOT
@@ -94,6 +100,36 @@ class CatalogueCoverageTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(out, "app/locales/en-US.ftl:4: b has no de-DE text\n")
         self.assertIn("1 keys are untranslated", err)
+
+    def test_a_key_defined_twice_is_reported_with_both_lines(self):
+        self.assertEqual(twice({
+            "app/locales/en-US.ftl": SOURCE + "\nb = Settings\n",
+        }), [("app/locales/en-US.ftl", "b", 4, 6)])
+
+    def test_a_translation_defining_a_key_twice_names_its_own_lines(self):
+        self.assertEqual(twice({
+            "app/locales/en-US.ftl": SOURCE,
+            "app/locales/de-DE.ftl": "a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n"
+                                    "\n\nb = Optionen\n",
+        }), [("app/locales/de-DE.ftl", "b", 4, 7)])
+
+    def test_a_repeated_key_fails_even_when_the_translation_is_whole(self):
+        code, out, err = run({
+            "app/locales/en-US.ftl": SOURCE + "\nb = Settings\n",
+            "app/locales/de-DE.ftl": "a = Titel\n    .doc = Was es ist.\n\nb = Einstellungen\n"
+                                     "\nb = Optionen\n",
+        })
+        self.assertEqual(code, 1)
+        self.assertEqual(out, "")
+        self.assertIn("app/locales/en-US.ftl:6: b is defined again; line 4 already defines it", err)
+        self.assertIn("2 keys are defined twice", err)
+
+    def test_the_listing_still_fails_on_a_repeated_key(self):
+        code, _, err = run({
+            "app/locales/en-US.ftl": SOURCE + "\nb = Settings\n",
+        }, "--list")
+        self.assertEqual(code, 1)
+        self.assertIn("b is defined again", err)
 
 
 if __name__ == "__main__":

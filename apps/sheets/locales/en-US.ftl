@@ -85,5 +85,4 @@ sheets-reply-comment = Reply to comment
 sheets-open-comment-anchor = Open comment anchor
 sheets-actions = Spreadsheet actions
 sheets-window-name = Sheets
-sheets-window-detail = Spreadsheet
 sheets-window-detail = Editable workbook with formula bar and sheet tabs
