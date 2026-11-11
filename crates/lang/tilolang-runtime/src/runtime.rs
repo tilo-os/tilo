@@ -406,6 +406,21 @@ impl Runtime {
         self.core.foreign.borrow_mut().whole(target)
     }
 
+    /// The reference `target` names, with its type filled in when it came in by its id alone: a
+    /// resource another view dragged onto this one (a chip on a composer, a place's handle on
+    /// the canvas) is carried as its published address and nothing more, so the type is read
+    /// from the record this runtime holds, else from the reading its app published of it.
+    ///
+    /// `None` for an address no record holds and no reading names yet — a resource that is
+    /// gone, or not synced here. A target that already names its type is returned as it is.
+    #[must_use]
+    pub fn resolve_ref(&self, target: &ResourceRef) -> Option<ResourceRef> {
+        if !target.ty.is_empty() {
+            return Some(target.clone());
+        }
+        self.core.resolve_ref(target)
+    }
+
     /// Tell the runtime the views of a Rust app: its registry, so a `show` of a resource of one of
     /// its types draws that app's view inline, as it draws a tilolang package's view
     /// ([`crate::rust_views`]). The host that runs the app calls this once.
