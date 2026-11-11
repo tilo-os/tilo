@@ -774,7 +774,7 @@ impl Workspaces {
         link: String,
         now: u64,
     ) -> Result<(), CollaborationError> {
-        let Some((door, mail)) = self.inner.wait_list_mail.get() else {
+        let Some((door, mail)) = self.inner.door.mail.get() else {
             return Err(CollaborationError::new("this door sends no mail"));
         };
         if !tilo_relay_protocol::workspaces::invitation_on_door(door, &link) {

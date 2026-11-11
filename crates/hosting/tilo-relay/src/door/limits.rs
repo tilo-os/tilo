@@ -206,8 +206,11 @@ mod tests {
         assert_eq!(limits.check_and_record("h", 30_000).unwrap_err(), 570);
         let mut day = JoinLimits::new(JoinRates::WAIT_LIST_LOOKUPS);
         for index in 0..300 {
-            day.check_and_record("h", index * 11 * 60_000).unwrap();
+            day.check_and_record("h", index * 130_000).unwrap();
         }
-        assert!(day.check_and_record("h", 300 * 11 * 60_000).is_err());
+        assert!(
+            day.check_and_record("h", 300 * 130_000).is_err(),
+            "the three hundredth of the day is the last"
+        );
     }
 }

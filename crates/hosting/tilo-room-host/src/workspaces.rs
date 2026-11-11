@@ -99,7 +99,6 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::Retention;
 use serde::{Deserialize, Serialize};
 use tilo_peer_state::replica::PeerGuard;
-use tilo_relay_protocol::directory::DoorWaitList;
 
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::{GovernedAccess, StatePeer};
@@ -839,12 +838,9 @@ struct WorkspacesInner {
     /// The workspaces this host serves for the device of its person that governs
     /// them ([`crate::hosted`]).
     hosting: crate::hosted::Hosting,
-    /// Where invitations to mail to wait-list addresses go, once whoever
-    /// runs the relay sends mail ([`Workspaces::mail_wait_list`]).
-    wait_list_mail: std::sync::OnceLock<(String, tokio::sync::mpsc::UnboundedSender<WaitListMail>)>,
-    /// What the door says about the wait list to someone it turns away,
-    /// once whoever runs the relay keeps one ([`Workspaces::offer_wait_list`]).
-    wait_list_door: std::sync::OnceLock<DoorWaitList>,
+    /// The door's wait list, once whoever runs the relay offers one
+    /// ([`Workspaces::offer_wait_list`], [`Workspaces::mail_wait_list`]).
+    door: wait_list::DoorSettings,
     /// The workspaces of people's own, once the host's operator offers them
     /// ([`Workspaces::offer_own_workspaces`]).
     own: std::sync::OnceLock<own::OwnWorkspaces>,
@@ -996,19 +992,15 @@ impl Workspaces {
         WeakWorkspaces(Arc::downgrade(&self.inner))
     }
 
-    /// Open every workspace recorded under `dir` and bind each to the relay:
-    /// its workspace pinned and admitting only governed members, its
-    /// unpublished governance retained, its members' new records created.
+    /// Open every workspace recorded under `dir` and bind each to the relay, pinned.
     pub(crate) async fn open(
         host: WorkspaceServices,
         dir: PathBuf,
         store: PathBuf,
     ) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-        // A workspace a host made keeps the certificate it made it with:
-        // everything done for it compares that certificate exactly, so a host
-        // whose own was renamed serves with the record's own (the same key
-        // and validity, verified), rather than refusing the workspace.
+        // A workspace a host made keeps the certificate it made it with: a host
+        // renamed since serves with the record's own, verified.
         let host = host_serving(host, &dir);
         let listings = listing::Listings::open(&dir);
         let workspaces = Arc::new(device_plane::WorkspacesMap::default());
@@ -1043,15 +1035,13 @@ impl Workspaces {
                 resealing: std::sync::atomic::AtomicBool::new(false),
                 hosting: crate::hosted::Hosting::new(host.clone()),
                 host,
-                wait_list_mail: std::sync::OnceLock::new(),
-                wait_list_door: std::sync::OnceLock::new(),
+                door: wait_list::DoorSettings::default(),
                 own: std::sync::OnceLock::new(),
                 memberships: memberships::Memberships::default(),
                 agent_door: agent_door::AgentDoor::default(),
             }),
         };
-        let device = this.device_keys();
-        let mut workspaces = BTreeMap::new();
+        let (device, mut workspaces) = (this.device_keys(), BTreeMap::new());
         let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
         for entry in entries {
             let path = entry.map_err(|error| error.to_string())?.path();

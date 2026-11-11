@@ -831,9 +831,6 @@ pub(crate) fn preview(dir: &Path, templates: &Templates) -> Result<Vec<PathBuf>>
 
 /// A mailer that keeps what it is asked to send, for tests.
 #[cfg(test)]
-
-/// A mailer that keeps what it is asked to send, for tests.
-#[cfg(test)]
 #[derive(Default)]
 pub struct FakeMailer {
     pub sent: std::sync::Mutex<Vec<Mail>>,

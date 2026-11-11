@@ -427,10 +427,7 @@ impl WaitListDoor {
         let mail = Arc::clone(self.mail.as_ref()?);
         let door = mail.on_door_url().to_owned();
         let asked = workspaces.mail_wait_list(&door)?;
-        Some(InvitationMail {
-            mail,
-            asked: std::sync::Mutex::new(asked),
-        })
+        Some(InvitationMail { mail, asked })
     }
 
     fn ip_hash(&self, ip: std::net::IpAddr) -> String {
@@ -525,7 +522,7 @@ impl WaitListDoor {
         ip: std::net::IpAddr,
         request: UnlistRequest,
     ) -> Result<(), Refusal> {
-        let secret = self.secret(&request.secret)?;
+        let secret = Self::secret(&request.secret)?;
         let window = self.open_window(&self.unlists, ip)?;
         let removed = workspaces
             .leave_wait_list_for_operator(&self.workspace, sha256(&secret))
@@ -534,7 +531,7 @@ impl WaitListDoor {
             Ok(removed) => removed,
             Err(error) => {
                 tracing::warn!(%error, "the wait list could not be asked");
-                self.close_window(&self.unlists, &window);
+                Self::close_window(&self.unlists, &window);
                 return Err(Refusal::Unavailable);
             }
         };
@@ -580,7 +577,7 @@ impl WaitListDoor {
         ip: std::net::IpAddr,
         request: ConfirmRequest,
     ) -> Result<bool, Refusal> {
-        let token = self.secret(&request.token)?;
+        let token = Self::secret(&request.token)?;
         let window = self.open_window(&self.lookups, ip)?;
         match workspaces
             .confirm_wait_list(&self.workspace, sha256(&token))
@@ -589,7 +586,7 @@ impl WaitListDoor {
             Ok(confirmed) => Ok(confirmed),
             Err(error) => {
                 tracing::warn!(%error, "the wait list could not be asked");
-                self.close_window(&self.lookups, &window);
+                Self::close_window(&self.lookups, &window);
                 Err(Refusal::Unavailable)
             }
         }
@@ -607,7 +604,7 @@ impl WaitListDoor {
         ip: std::net::IpAddr,
         request: UnlistRequest,
     ) -> Result<WaitListStanding, Refusal> {
-        let secret = self.secret(&request.secret)?;
+        let secret = Self::secret(&request.secret)?;
         let window = self.open_window(&self.lookups, ip)?;
         match workspaces
             .wait_list_standing(&self.workspace, sha256(&secret))
@@ -616,14 +613,14 @@ impl WaitListDoor {
             Ok(standing) => Ok(standing),
             Err(error) => {
                 tracing::warn!(%error, "the wait list could not be asked");
-                self.close_window(&self.lookups, &window);
+                Self::close_window(&self.lookups, &window);
                 Err(Refusal::Unavailable)
             }
         }
     }
 
     /// `text` as a wait-list secret.
-    fn secret(&self, text: &str) -> Result<[u8; 32], Refusal> {
+    fn secret(text: &str) -> Result<[u8; 32], Refusal> {
         hex_32(text).ok_or(Refusal::NotASecret)
     }
 
@@ -645,7 +642,7 @@ impl WaitListDoor {
 
     /// Give back the ask [`Self::open_window`] recorded, for one that got no
     /// answer.
-    fn close_window(&self, limits: &std::sync::Mutex<JoinLimits>, window: &(String, u64)) {
+    fn close_window(limits: &std::sync::Mutex<JoinLimits>, window: &(String, u64)) {
         limits.lock_recover().forget(&window.0, window.1);
     }
 }
@@ -654,19 +651,16 @@ impl WaitListDoor {
 /// whoever sends mail takes each, and mailed here.
 pub struct InvitationMail {
     mail: Arc<DoorMail>,
-    asked: std::sync::Mutex<tokio::sync::mpsc::UnboundedReceiver<crate::workspaces::WaitListMail>>,
+    asked: tokio::sync::mpsc::UnboundedReceiver<crate::workspaces::WaitListMail>,
 }
 
 impl InvitationMail {
     /// Take the next invitation a member asked the door to mail, and mail
     /// it: `true` once the outbox keeps it.
-    pub async fn mail_next(&self) -> bool {
-        let asked = match self.asked.lock_recover().recv().await {
-            Some(asked) => asked,
-            None => {
-                std::future::pending::<()>().await;
-                return false;
-            }
+    pub async fn mail_next(&mut self) -> bool {
+        let Some(asked) = self.asked.recv().await else {
+            std::future::pending::<()>().await;
+            return false;
         };
         let to = tilo_relay_protocol::operator::WaitListMailbox {
             contact: asked.to.contact,

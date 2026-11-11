@@ -1453,7 +1453,7 @@ fn link_secret(mail: &crate::door::mail::Mail, parameter: &str) -> String {
         .text
         .find(&format!("{parameter}="))
         .unwrap_or_else(|| panic!("no {parameter} in the mail: {}", mail.text));
-    let rest = &mail.text[at + parameter.len() + 1..];
+    let rest = &mail.text[at.saturating_add(parameter.len()).saturating_add(1)..];
     let end = rest
         .find(|character: char| !character.is_ascii_hexdigit())
         .unwrap_or(rest.len());

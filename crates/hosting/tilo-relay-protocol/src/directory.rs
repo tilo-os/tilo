@@ -242,7 +242,7 @@ impl DoorRefused {
             && let Some(door) = door
         {
             self.wait_list = true;
-            self.contact = door.contact.clone();
+            self.contact.clone_from(&door.contact);
             self.mail = door.mail;
         }
         self

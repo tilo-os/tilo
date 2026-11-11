@@ -607,6 +607,22 @@ pub struct WaitListMail {
     pub removal: [u8; 32],
 }
 
+/// What whoever runs the relay decided about the door's wait list, set once
+/// at its start: where an invitation a member asks for is mailed, and what the
+/// door says to someone it turns away.
+#[derive(Default)]
+pub(super) struct DoorSettings {
+    /// Where invitations to mail to wait-list addresses go
+    /// ([`super::Workspaces::mail_wait_list`]).
+    pub(super) mail: std::sync::OnceLock<(
+        String,
+        tokio::sync::mpsc::UnboundedSender<super::WaitListMail>,
+    )>,
+    /// What the door says about the wait list
+    /// ([`super::Workspaces::offer_wait_list`]).
+    pub(super) wait_list: std::sync::OnceLock<tilo_relay_protocol::directory::DoorWaitList>,
+}
+
 impl super::Workspaces {
     /// The wait list the door keeps, as whoever runs the relay configured it:
     /// what a person the door turns away is told about leaving an address
@@ -614,13 +630,13 @@ impl super::Workspaces {
     /// `false` once called before.
     #[must_use]
     pub fn offer_wait_list(&self, door: tilo_relay_protocol::directory::DoorWaitList) -> bool {
-        self.inner.wait_list_door.set(door).is_ok()
+        self.inner.door.wait_list.set(door).is_ok()
     }
 
     /// The wait list the door keeps, when whoever runs the relay offered one.
     #[must_use]
     pub fn wait_list_door(&self) -> Option<&tilo_relay_protocol::directory::DoorWaitList> {
-        self.inner.wait_list_door.get()
+        self.inner.door.wait_list.get()
     }
 
     /// The invitations members ask to mail to addresses on a wait list,
@@ -635,10 +651,7 @@ impl super::Workspaces {
         door: &str,
     ) -> Option<tokio::sync::mpsc::UnboundedReceiver<WaitListMail>> {
         let (sender, receiver) = tokio::sync::mpsc::unbounded_channel();
-        self.inner
-            .wait_list_mail
-            .set((door.to_owned(), sender))
-            .ok()?;
+        self.inner.door.mail.set((door.to_owned(), sender)).ok()?;
         Some(receiver)
     }
 }

@@ -1259,13 +1259,16 @@ async fn only_its_owner_deletes_a_workspace_and_everything_it_kept_goes_with_it(
     );
 }
 
-/// The wait list gates getting in, nothing else: a person an invitation (or
-/// their own device) let in makes as many workspaces of their own as they
-/// like, while someone who only left an address at the door is let into
-/// nothing and so makes none.
-#[tokio::test]
-async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() {
-    use tilo_relay_protocol::directory::DoorJoin;
+/// A host keeping workspaces of people's own, with one listed workspace its
+/// door takes people into by invitation only and keeps a wait list for: the
+/// setup the two checks below share. Returns the host's actions, its
+/// workspaces, the listed workspace, and a stranger who left an address there.
+async fn gated_host() -> (
+    HostWorkspaceActions,
+    Workspaces,
+    String,
+    tilo_user_identity::DeviceCert,
+) {
     use tilo_relay_protocol::workspaces::WorkspaceRole;
 
     let dir = tempfile::tempdir().unwrap();
@@ -1277,9 +1280,6 @@ async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() 
         .unwrap();
     let host = HostWorkspaceActions::new();
     host.attach(workspaces.clone());
-
-    // The workspace people are let into: listed, taking people by invitation
-    // only, with a wait list of one address at its door.
     let lounge = workspaces.create("Lounge").await.unwrap().workspace;
     workspaces
         .publish(
@@ -1302,9 +1302,6 @@ async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() 
             mail: true,
         })
     );
-
-    // A stranger leaves their address there: the door keeps it and lets
-    // nobody in on that account.
     let (_, stranger) = guest_device();
     assert!(
         workspaces
@@ -1321,6 +1318,16 @@ async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() 
             .await
             .is_ok()
     );
+    (host, workspaces, lounge, stranger)
+}
+
+/// The wait list gates the door: the invitation-only door lets nobody in on
+/// the strength of an address, and says it keeps one.
+#[tokio::test]
+async fn the_wait_list_gates_the_door_and_lets_nobody_in_on_an_address() {
+    use tilo_relay_protocol::directory::DoorJoin;
+
+    let (_, workspaces, lounge, stranger) = gated_host().await;
     let refused = workspaces
         .admit_listed(
             &lounge,
@@ -1340,8 +1347,6 @@ async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() 
         said.wait_list && said.mail && said.contact.as_deref() == Some("hello@tilo.example"),
         "the refusal offers the wait list: {said:?}"
     );
-    // Not a member of anything here, so no session of theirs is admitted to
-    // run a host action: the wait list is the only way they were let near.
     assert!(
         workspaces
             .own()
@@ -1350,23 +1355,18 @@ async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() 
             .is_empty(),
         "a stranger at the wait list keeps nothing here"
     );
+}
 
-    // Someone let in makes their own workspace, joins it, and then makes a
-    // second and a third: no wait list, no invitation, no bound.
+/// A person let in makes a second and a third workspace of their own: the
+/// wait list is at the door, never in the way of someone already admitted.
+#[tokio::test]
+async fn a_person_let_in_makes_as_many_workspaces_as_they_like() {
+    let (host, workspaces, _, stranger) = gated_host().await;
     let (guest_key, guest) = guest_device();
     let first = create_own(&host, &guest, json!({"name": "Work"}))
         .await
         .unwrap();
     join(&workspaces, &first, &guest_key, &guest).await;
-    assert_eq!(
-        workspaces
-            .own()
-            .expect("this host keeps workspaces of people's own")
-            .of(&guest.user_public_key)
-            .len(),
-        1,
-        "a person let in has a workspace here"
-    );
     for name in ["Side project", "Third"] {
         create_own(&host, &guest, json!({"name": name}))
             .await
@@ -1385,5 +1385,4 @@ async fn the_wait_list_gates_the_door_and_never_the_workspaces_a_person_makes() 
             .is_empty(),
         "the stranger who only left an address keeps nothing here"
     );
-    relay.shutdown().await;
 }

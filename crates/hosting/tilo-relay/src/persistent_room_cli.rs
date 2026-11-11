@@ -1681,11 +1681,11 @@ pub(crate) async fn run(
             return Err(error);
         }
     };
-    let invitations = wait_list
+    let mut invitations = wait_list
         .as_ref()
         .and_then(|door| door.invitations(&context.workspaces));
     let result = tokio::select! {
-        result = serve_operator(&context, &governance, &mut operator, invitations) => result,
+        result = serve_operator(&context, &governance, &mut operator, invitations.as_mut()) => result,
         result = shutdown => result,
     };
     for runner in moderator
@@ -1983,7 +1983,7 @@ async fn serve_operator(
     context: &PersistentRoom,
     governance: &Governance,
     operator: &mut tokio::sync::mpsc::Receiver<Result<OperatorCommand, String>>,
-    mail: Option<door::InvitationMail>,
+    mail: Option<&mut door::InvitationMail>,
 ) -> anyhow::Result<()> {
     let mut changes = context.workspaces.governance_changes();
     let removals = Removals::load(&summary(context).await?.members);
@@ -2000,14 +2000,14 @@ async fn serve_operator(
     // grants or takes back reaches the workspace without a restart.
     let mut roles_tick = tokio::time::interval(Duration::from_secs(ROLES_FILE_EVERY_SECS));
     let mut roles_seen = governance.roles_changed_at();
-    let mail = mail.as_ref();
+    let mut mail = mail;
     // A deployment that runs the room without an operator leaves its input at
     // its end: the room then keeps serving, and only a command ends it.
     let mut operator_open = true;
     loop {
         tokio::select! {
-            _ = async {
-                match mail {
+            () = async {
+                match mail.as_mut() {
                     Some(mail) => { mail.mail_next().await; }
                     None => std::future::pending().await,
                 }
