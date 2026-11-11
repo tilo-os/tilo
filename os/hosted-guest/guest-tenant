@@ -1,0 +1,30 @@
+#!/bin/bash
+# The tenant every hosted guest has, and the two files that start it: the
+# account tilo (uid 1000, a real shell, a home at the paths a program starts in),
+# hosted-init as PID 1, and the guest agent the init hands over to.
+#
+# Each guest's base stage runs it once (os/Containerfile.hosted-guest): the
+# workspace guest on Debian and the browser guest on the OS's own Fedora base
+# carry the same tenant, the same init and the same agent, so a difference
+# between the two guests is not something this file can grow.
+set -eu
+
+# The account keeps the home its distribution gives it — a bootc base places it
+# under /var/home, beside the /home link the boot makes — and everything that
+# reads a home (the agent, the session, a login) reads it from here.
+useradd --create-home --uid 1000 --user-group --shell /bin/bash tilo
+home=$(getent passwd tilo | cut -d: -f6)
+# The directories a device keeps its own files in. Made from the home passwd
+# names, not through it: `mkdir -p` refuses to traverse the /home link.
+mkdir -p "$home/.local/bin" "$home/.local/share"
+chown -R tilo:tilo "$home"
+
+chmod 0755 /usr/libexec/tilo/hosted-init /usr/libexec/tilo/tilo-legacy-agent
+bash -n /usr/libexec/tilo/hosted-init
+# The agent is this build's binary, not the distribution's: ask it something only
+# a working one answers, on this root filesystem and as this init runs it.
+agent_says=$(/usr/libexec/tilo/tilo-legacy-agent --user no-such-user 2>&1 || true)
+case $agent_says in
+  *"no ordinary user"*) echo 'agent: runs on this root filesystem' ;;
+  *) echo "agent: $agent_says"; exit 1 ;;
+esac

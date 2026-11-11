@@ -68,10 +68,12 @@ inputs_digest() {
 }
 
 # Everything that ends up in the browser guest image: the recipe it shares with
-# the workspace guest, what arranges a session and an app store, the sources of
-# the components it builds and the engine version its Browser requires.
+# the workspace guest, the OS base its root filesystem is built from, what
+# arranges a session and an app store, the sources of the components it builds
+# and the engine version its Browser requires.
 browser_inputs_digest() {
   find os/Containerfile.hosted-guest os/hosted-guest os/hosted-browser-guest \
+    os/base-snapshot.env \
     crates/session crates/packaging os/components.toml \
     os/scripts/install-components.py os/scripts/pack-apps.sh \
     os/scripts/signed-records.py os/scripts/collect-runtime-dependencies.py \
@@ -252,11 +254,15 @@ case ${1:-} in
     out=${8:?}
     [[ $(uname -m) == x86_64 ]] || die 'the browser guest is built on x86_64'
     container_build_setup
-    . os/hosted-guest/base.env
+    # The browser guest's root filesystem is the OS's own Fedora base, whose pin
+    # is os/base-snapshot.env's (the OS image is built from it too, so the guest's
+    # libm and libc are the ones its components were compiled against). The
+    # workspace guest's Debian base is not in this target's stages at all.
+    . os/base-snapshot.env
     guest=localhost/tilo-hosted-browser-guest:ci
     podman build --pull=always -f os/Containerfile.hosted-guest . \
       --target browser \
-      --build-arg "BASE_REF=$HOSTED_GUEST_BASE_REF" \
+      --build-arg "OS_BASE_REF=$BASE_REF" \
       --build-arg "CHROMIUM_RUNTIME_VERSION=$(chromium_runtime_version)" \
       --build-arg "SOURCE_DATE_EPOCH=$(git show -s --format=%ct "${T_COMMIT:-HEAD}")" \
       --build-context "session=$session" \
