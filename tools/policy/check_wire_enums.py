@@ -171,10 +171,6 @@ def _revision_text(root: Path, spec: str) -> str | None:
     return shown.stdout if shown.returncode == 0 else None
 
 
-def _show(root: Path, revision: str, path: str) -> str | None:
-    return _revision_text(root, f"{revision}:{path}")
-
-
 def _diff_changes(root: Path, span: list[str]) -> tuple[list[str], dict[str, str]]:
     """The in-scope paths the diff `span` touches, and its renames (old: new)."""
     changed = [
@@ -277,16 +273,18 @@ def diff_problems(
 
 
 def against(base: str, root: Path = ROOT, head: str | None = None) -> list[str]:
-    """What the enums of `head`'s tree (or this working tree) break of `base`."""
+    """What the enums of `head`'s tree (or this working tree) break of `base`, from where
+    the two meet: a variant `base` gained after `head` branched is no removal."""
+    base = _git(root, "merge-base", base, head or "HEAD").strip()
     span = [base, head] if head else [base]
     changed, renamed = _diff_changes(root, span)
     before, now = {}, {}
     for path in changed:
-        if (text := _show(root, base, path)) is not None:
+        if (text := _revision_text(root, f"{base}:{path}")) is not None:
             before[path] = wire_enums(text)
         target = renamed.get(path, path)
         if head:
-            text = _show(root, head, target)
+            text = _revision_text(root, f"{head}:{target}")
         else:
             current = root / target
             text = current.read_text(errors="replace") if current.is_file() else None
@@ -300,7 +298,7 @@ def staged(root: Path = ROOT) -> list[str]:
     changed, renamed = _diff_changes(root, ["--cached"])
     before, now = {}, {}
     for path in changed:
-        if (text := _show(root, "HEAD", path)) is not None:
+        if (text := _revision_text(root, f"HEAD:{path}")) is not None:
             before[path] = wire_enums(text)
         target = renamed.get(path, path)
         if (text := _revision_text(root, f":{target}")) is not None:
