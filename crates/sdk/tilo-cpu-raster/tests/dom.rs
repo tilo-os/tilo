@@ -86,3 +86,77 @@ fn an_image_is_handed_over_once_and_named_by_its_id() {
     assert!(again.images.is_empty(), "the page has it already");
     assert!(again.ops.contains(&format!(",{},", given.id)));
 }
+
+/// A picture, or a widget of many draws, is one image of what it drew; drawn
+/// the same again, the page's image stands, and drawn anew it replaces it.
+#[test]
+fn a_picture_is_one_image_until_it_changes() {
+    use std::collections::HashSet;
+    use tilo_cpu_raster::dom::{ISLAND_DRAWS, Islands};
+    let chart = |shift: f64| {
+        let mut scene = Scene::new();
+        square(&mut scene, 0.0);
+        begin(&mut scene, 0xc4, 0.0);
+        square(&mut scene, 20.0 + shift);
+        square(&mut scene, 40.0);
+        scene.encoding_mut().encode_mark(MarkKind::End);
+        scene
+    };
+    let pictures: HashSet<u64> = [0xc4].into();
+    let islands = Islands {
+        pictures: Some(&pictures),
+        keep: None,
+        viewport: Rect::new(0.0, 0.0, 100.0, 100.0),
+    };
+    let mut encoder = DomEncoder::new();
+    let kinds = |ops: &str| -> Vec<String> {
+        let ops: Vec<serde_json::Value> = serde_json::from_str(ops).unwrap();
+        ops.iter()
+            .map(|op| op[0].as_str().unwrap().to_owned())
+            .collect()
+    };
+    let first = encoder.encode_with(chart(0.0).encoding(), &islands);
+    assert_eq!(kinds(&first.ops), ["r", "k", "i", "ke"]);
+    assert_eq!(first.images.len(), 1);
+    let image = &first.images[0];
+    assert_eq!((image.width, image.height), (30, 10), "cut to what it drew");
+    assert_eq!(&image.rgba[..4], [200, 0, 0, 255]);
+    assert!(image.replaces.is_none());
+    let again = encoder.encode_with(chart(0.0).encoding(), &islands);
+    assert!(
+        again.images.is_empty(),
+        "drawn the same: the page's image stands"
+    );
+    let moved = encoder.encode_with(chart(5.0).encoding(), &islands);
+    assert_eq!(moved.images.len(), 1);
+    assert_eq!(moved.images[0].replaces, Some(image.id));
+
+    // Without a picture's say-so, a widget of many draws of its own.
+    let mut heavy = Scene::new();
+    begin(&mut heavy, 0xd5, 0.0);
+    let mut x = 0.0;
+    for _ in 0..ISLAND_DRAWS {
+        square(&mut heavy, x % 9.0);
+        x += 1.0;
+    }
+    heavy.encoding_mut().encode_mark(MarkKind::End);
+    let frame = DomEncoder::new().encode_with(
+        heavy.encoding(),
+        &Islands {
+            viewport: Rect::new(0.0, 0.0, 100.0, 100.0),
+            ..Islands::default()
+        },
+    );
+    assert_eq!(kinds(&frame.ops), ["k", "i", "ke"]);
+    // One that must stay elements (it scrolls natively) stays.
+    let keep: HashSet<u64> = [0xd5].into();
+    let frame = DomEncoder::new().encode_with(
+        heavy.encoding(),
+        &Islands {
+            keep: Some(&keep),
+            viewport: Rect::new(0.0, 0.0, 100.0, 100.0),
+            ..Islands::default()
+        },
+    );
+    assert_eq!(kinds(&frame.ops).len(), ISLAND_DRAWS + 2);
+}

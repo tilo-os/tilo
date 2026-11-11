@@ -123,6 +123,14 @@ transparent, as the input surface. Nothing changes for a mount without
    drawn at the root of another scene (a measuring pass) no longer
    renumbers the frame's own: on a press that blurred the editor, every
    root key changed and the note's panel was rebuilt under the selection.
+10. **Canvas islands.** A widget that says it is a picture
+    (`scene_parts::picture`: charts, plots, maps) or that makes
+    `ISLAND_DRAWS` (400) draws of its own is shown as one image of what it
+    drew, cut to the viewport, with its text still text over it. The
+    encoder rasterizes it with the CPU rasterizer the canvas path already
+    has, hashes what it drew, and hands the page a new image only when that
+    changed, naming the one it replaces. A widget that scrolls natively or
+    never becomes an image unasked.
 
 Everything that only an HTML mount runs is reached through `DOM_CODE`
 (`ui::lazy_code!`): drawing the frame, the toolkit's keying code (the
@@ -254,11 +262,11 @@ Against the targets:
   a move takes the selection out of what it holds; and every root key
   changed on the press that blurred the editor, so the note's panel was
   rebuilt under the selection. Both are fixed (above, 9).
-- **Canvas islands.** Images and box gradients are done (above). A
-  widget that declares itself a picture, or a subtree with too many ops,
-  should still become one `<canvas>` rasterized by `tilo-cpu-raster` (or
-  WebGPU when present); gradients on paths and text still show their first
-  stop.
+- **Canvas islands: done** (above, 10). Pictures are named by the widgets
+  that are pictures (charts, plots, maps); any other widget becomes one by
+  its draw count alone. An island is rasterized at one image pixel per CSS
+  pixel, so on a screen of more pixels per CSS pixel it is softer than the
+  canvas; gradients on paths and text still show their first stop.
 - **Real `<input>` with autofill and passkeys.** With painted and semantic
   elements now one node per widget, a single-line field's semantic element
   can become the visible field at the widget's rect. It needs an autofill

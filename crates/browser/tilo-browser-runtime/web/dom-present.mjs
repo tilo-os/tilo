@@ -77,7 +77,9 @@ export function createDomPresenter(layer, {onFrame, onScroll} = {}) {
   // every element showing it draws from.
   const images = new Map();
   function registerImages(list) {
-    for (const [image, width, height, rgba] of list) {
+    for (const [image, width, height, rgba, replaces] of list) {
+      // A picture drawn again: its last image goes.
+      if (replaces !== null && replaces !== undefined) images.delete(replaces);
       const source = document.createElement('canvas');
       source.width = width; source.height = height;
       source.getContext('2d').putImageData(new ImageData(rgba, width, height), 0, 0);

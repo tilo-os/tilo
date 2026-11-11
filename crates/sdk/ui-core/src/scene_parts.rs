@@ -27,9 +27,9 @@ use vello_encoding::{Encoding, Patch};
 
 mod widget_keys;
 pub use widget_keys::{
-    Begun, DrawnScroll, Keyer, begin_frame, begin_item, begin_widget, drawn_scrolls, end_widget,
-    item_key, key_widgets, keyed, keyer, keys_widgets, painted_key, retain_shown, scroll_widget,
-    skip_widget,
+    Begun, DrawnScroll, Keyer, begin_frame, begin_item, begin_widget, drawn_pictures,
+    drawn_scrolls, end_widget, item_key, key_widgets, keyed, keyer, keys_widgets, painted_key,
+    picture, retain_shown, scroll_widget, skip_widget,
 };
 
 /// Bounds what a section draws outside its parts ([`damage_with_copies`],

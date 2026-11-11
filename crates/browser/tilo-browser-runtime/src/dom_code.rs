@@ -45,7 +45,24 @@ impl DomPresent for Presenter {
         let started = web_time::Instant::now();
         ui::scene_parts::retain_shown(frame.scene);
         self.scrolls = ui::scene_parts::drawn_scrolls();
-        let encoded = self.encoder.encode(frame.scene.encoding());
+        // A widget that scrolls natively stays elements; pictures and
+        // widgets of many draws become images.
+        let keep: std::collections::HashSet<u64> =
+            self.scrolls.iter().map(|scroll| scroll.key).collect();
+        let pictures = ui::scene_parts::drawn_pictures();
+        let encoded = self.encoder.encode_with(
+            frame.scene.encoding(),
+            &tilo_cpu_raster::dom::Islands {
+                pictures: Some(&pictures),
+                keep: Some(&keep),
+                viewport: ui::kurbo::Rect::new(
+                    0.0,
+                    0.0,
+                    f64::from(frame.viewport.0),
+                    f64::from(frame.viewport.1),
+                ),
+            },
+        );
         let theme = frame.theme.map(|theme| {
             crate::page_theme::css_variables(theme)
                 .into_iter()
@@ -109,7 +126,8 @@ fn new_fonts(fonts: &[tilo_cpu_raster::dom::NewFont]) -> js_sys::Array {
 }
 
 /// The images a frame names for the first time, as the page keeps them:
-/// `[id, width, height, straight RGBA bytes]` each.
+/// `[id, width, height, straight RGBA bytes, the id it replaces or null]`
+/// each.
 fn new_images(images: &[tilo_cpu_raster::dom::NewImage]) -> js_sys::Array {
     let list = js_sys::Array::new();
     for image in images {
@@ -118,6 +136,7 @@ fn new_images(images: &[tilo_cpu_raster::dom::NewImage]) -> js_sys::Array {
         entry.push(&JsValue::from(image.width));
         entry.push(&JsValue::from(image.height));
         entry.push(&js_sys::Uint8ClampedArray::from(image.rgba.as_slice()).into());
+        entry.push(&image.replaces.map_or(JsValue::NULL, JsValue::from));
         list.push(&entry);
     }
     list

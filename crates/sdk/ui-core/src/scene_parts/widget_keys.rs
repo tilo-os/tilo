@@ -39,6 +39,7 @@ pub struct Keyer {
     end: fn(&mut Scene),
     skip: fn(),
     painted: fn((usize, &'static str)) -> Option<u64>,
+    picture: fn(),
 }
 
 /// The keying code: the one way to it.
@@ -52,6 +53,7 @@ pub fn keyer() -> Keyer {
         end: end_keys,
         skip: skip_keys,
         painted: painted_of,
+        picture: picture_keys,
     }
 }
 
@@ -124,6 +126,31 @@ thread_local! {
     /// The key each widget drew under, by address and type, kept the same
     /// way.
     static DRAWN: RefCell<HashMap<(usize, &'static str), u64>> = RefCell::new(HashMap::new());
+    /// The keys of the widgets that drew themselves as pictures, kept the
+    /// same way.
+    static PICTURES: RefCell<HashSet<u64>> = RefCell::new(HashSet::new());
+}
+
+/// Say that the widget being drawn is a picture: a chart, a drawing, a map,
+/// a video frame. A host that shows the scene as elements shows it as one
+/// image rather than an element per shape; its text stays text over it.
+pub fn picture() {
+    if let Some(keyer) = installed() {
+        (keyer.picture)();
+    }
+}
+
+fn picture_keys() {
+    if let Some(key) = OPEN.with_borrow(|open| open.last().map(|open| open.key)) {
+        PICTURES.with_borrow_mut(|pictures| pictures.insert(key));
+    }
+}
+
+/// The keys of the widgets the last frame showed that drew themselves as
+/// pictures ([`picture`], [`retain_shown`]).
+#[must_use]
+pub fn drawn_pictures() -> HashSet<u64> {
+    PICTURES.with_borrow(Clone::clone)
 }
 
 /// Start keying a frame: root widgets count from the first again. A host
@@ -154,6 +181,7 @@ pub fn retain_shown(scene: &Scene) {
         .collect();
     SCROLLS.with_borrow_mut(|scrolls| scrolls.retain(|key, _| shown.contains(key)));
     DRAWN.with_borrow_mut(|drawn| drawn.retain(|_, key| shown.contains(key)));
+    PICTURES.with_borrow_mut(|pictures| pictures.retain(|key| shown.contains(key)));
 }
 
 /// The key `widget`'s draws carried in the frame keyed last, as the page
@@ -283,6 +311,8 @@ fn begin_described(
     DRAWN.with_borrow_mut(|drawn| {
         drawn.insert(widget.identity, key);
     });
+    // A picture drawn again says again that it is one.
+    PICTURES.with_borrow_mut(|pictures| pictures.remove(&key));
     let rect = widget.rect;
     let origin = transform * Affine::translate((rect.x0, rect.y0));
     if let Some(region) = &widget.region {

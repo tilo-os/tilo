@@ -379,6 +379,8 @@ impl<M: PlotMarks> Widget for Plot<M> {
         theme: &Theme,
         _presence: &PresenceCtx,
     ) {
+        // A page shown as HTML shows it as one image.
+        crate::scene_parts::picture();
         self.marks.paint(scene, transform, tr, theme);
     }
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
