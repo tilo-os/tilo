@@ -504,9 +504,13 @@ const ROUND_TRIP: Duration = Duration::from_millis(400);
 /// the session's handshake through the packet relay, which carries the entry
 /// through the door with it, and the replay of the workspace's governance and
 /// desktop, which a new connection's congestion window takes several round
-/// trips to carry. It waits about 7; the host's own work for each entry varies
-/// between the two guests and moves the count by about one.
-const MAX_ROUND_TRIPS: f64 = 8.5;
+/// trips to carry. The count is the slow entry's time less the quick one's,
+/// so host work that overlaps the slow entry's waits makes it read low: it
+/// read about 7 while the quick entry spent three seconds sending the
+/// members' records, which a public workspace now keeps for whoever opens
+/// them. Without that work it reads 12 to 14, though the slow entry's desktop
+/// shows sooner than before (about 6 s, from 6.5 s).
+const MAX_ROUND_TRIPS: f64 = 15.0;
 
 /// The HTTPS requests a fresh guest makes to enter: the host's certificate.
 /// The door, the workspace's challenge and the admission ride the session.
@@ -518,7 +522,7 @@ const MAX_REQUESTS: usize = 1;
 /// members' records (3.5 MB here) come only when the guest opens them;
 /// governance sent twice or uncompressed, or any of those records sent with
 /// the desktop, crosses this.
-const MAX_BYTES: u64 = 1_800_000;
+const MAX_BYTES: u64 = 700_000;
 
 /// One guest's entry, as it went.
 struct Entry {
