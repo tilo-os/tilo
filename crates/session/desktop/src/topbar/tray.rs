@@ -98,22 +98,23 @@ impl TopBarChrome {
         let tray_w = face.width(text_renderer, theme);
         self.tray_pill_rect =
             StatusClusterFace::place_at(rx - tray_w, center_y, tray_w, BAR_CONTROL_PX);
-        self.tray_hit_rect = Rect::new(
-            self.tray_pill_rect.x0,
-            self.rect.y0,
-            self.rect.x1,
-            self.rect.y1,
-        );
         let layout = face.paint(
             &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             self.tray_pill_rect,
             tokens.colors.surfaces.base,
         );
         self.bell_badge_rect = layout.badge;
+        self.tray_hit_rect = Rect::new(
+            self.tray_pill_rect.x0,
+            self.rect.y0,
+            self.rect.x1,
+            self.rect.y1,
+        );
         // The bell's slot is the cluster's first; a press there opens the notification centre, and
         // a press on the readings beside it opens quick settings. The bell's target takes the
-        // pill's leading padding and stops halfway to the next slot, so the two targets meet
-        // without overlapping. A host with no quick settings has one target: the whole pill.
+        // pill's leading padding and stops halfway to the next slot, and the readings' target
+        // starts where it ends, so the two meet without overlapping. A host with no quick settings
+        // has one target: the whole pill.
         let bell = layout.slots.first().copied().unwrap_or(Rect::ZERO);
         self.bell_hit_rect = if self.bell.only {
             self.tray_hit_rect
@@ -145,6 +146,10 @@ impl TopBarChrome {
                 self.tray_pill_rect.y1,
             )
         };
+        // The readings' target begins where the bell's ends.
+        if !self.bell_hit_rect.is_zero_area() && self.bell_hit_rect != self.tray_hit_rect {
+            self.tray_hit_rect.x0 = self.bell_hit_rect.x1;
+        }
         tray_w
     }
 

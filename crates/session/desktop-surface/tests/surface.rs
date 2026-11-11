@@ -2171,8 +2171,8 @@ fn an_answer_asks_for_the_frame_that_shows_it() {
 }
 
 /// Search over everything answers what is not a name, as the native shell's does: a sum and a unit
-/// conversion lead and are copied, and any query can be searched on the web, which opens where the
-/// host opens addresses (a new tab of the browser the web desktop runs in).
+/// conversion lead and are copied, and the web search offered beside a match opens where the host
+/// opens addresses (a new tab of the browser the web desktop runs in).
 #[test]
 fn search_works_out_sums_and_conversions_and_searches_the_web() {
     let (services, recorder) = ui::host::HostServices::recording();
@@ -2198,13 +2198,15 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
         settle_search(&mut driver, &mut chrome, &handle);
         choose_row(&mut driver, &mut chrome, &handle, "3.1069 mi");
 
-        handle.open_search(Scope::Workspace, Some("tilo desktop".into()));
+        // The web search is offered beside what matched, never alone: a query that names
+        // nothing says so instead. So the query names the window on the desk.
+        handle.open_search(Scope::Workspace, Some("notes".into()));
         settle_search(&mut driver, &mut chrome, &handle);
         choose_row(
             &mut driver,
             &mut chrome,
             &handle,
-            "Search the web for tilo desktop",
+            "Search the web for notes",
         );
         assert!(!handle.search_open());
     });
@@ -2223,7 +2225,7 @@ fn search_works_out_sums_and_conversions_and_searches_the_web() {
     while recorder.opened_uris().is_empty() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert_eq!(recorder.opened_uris(), ["web+search:tilo%20desktop"]);
+    assert_eq!(recorder.opened_uris(), ["web+search:notes"]);
 }
 
 #[test]

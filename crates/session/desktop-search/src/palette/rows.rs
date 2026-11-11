@@ -17,7 +17,7 @@ const KIND_FACET: &str = "kind";
 pub(super) fn kind_facets(groups: &[KindGroup<Hit>]) -> Vec<ui::search::Facet> {
     let mut facet = ui::search::Facet::new(KIND_FACET, "Kind");
     for group in groups {
-        facet = facet.value(group.kind.id(), &group.kind.display_label());
+        facet = facet.value(group.kind.id(), group.kind.display_label());
     }
     vec![facet]
 }
