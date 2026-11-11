@@ -872,58 +872,67 @@ impl WindowShares {
                 self.changed();
                 continue;
             }
-            let picture = match compositor.read_back(&Target::window(start.window.clone())) {
-                Ok(picture) => picture,
-                Err(error) => {
-                    start.waiting_for = error.to_string();
-                    self.starting.push(start);
-                    continue;
+            match self.begin_share(compositor, sync, &start, ws, now) {
+                Ok(hosted) => {
+                    self.hosted.insert(start.tab, hosted);
+                    self.changed();
                 }
-            };
-            let receivers = self.receivers_for(start.tab);
-            let share = match SharedFlatpakSession::start_negotiated(
-                sync.peer(),
-                start.app_id.clone(),
-                start.tab,
-                picture.width,
-                picture.height,
-                &FlatpakShareConfig::default(),
-                &receivers,
-            ) {
-                Ok(share) => Arc::new(share.with_tab(start.tab)),
-                Err(error) => {
-                    tracing::warn!(
-                        window = %start.window,
-                        %error,
-                        "a window cannot be shared"
-                    );
-                    start.waiting_for = error.to_string();
+                Err(waiting_for) => {
+                    start.waiting_for = waiting_for;
                     self.starting.push(start);
-                    continue;
                 }
-            };
-            if let Some(wake) = &self.wake
-                && let Err(error) = share.encode_in_background(Arc::clone(wake))
-            {
-                tracing::warn!(%error, "a share encodes on the session's loop");
             }
-            share.deposit_captured_rgba(picture.rgba);
-            self.hosted.insert(
-                start.tab,
-                Hosted {
-                    window: start.window,
-                    app_id: start.app_id,
-                    workspace: start.workspace,
-                    ws,
-                    share,
-                    announced: BTreeSet::new(),
-                    captured_at: Some(now),
-                    receivers,
-                    controlled: start.controlled,
-                },
-            );
-            self.changed();
         }
+    }
+
+    /// Capture and start the stream of one waiting window, or say why it must keep waiting.
+    fn begin_share(
+        &self,
+        compositor: &mut Compositor,
+        sync: &Client,
+        start: &Starting,
+        ws: WorkspaceId,
+        now: Instant,
+    ) -> Result<Hosted, String> {
+        let picture = compositor
+            .read_back(&Target::window(start.window.clone()))
+            .map_err(|error| error.to_string())?;
+        let receivers = self.receivers_for(start.tab);
+        let share = SharedFlatpakSession::start_negotiated(
+            sync.peer(),
+            start.app_id.clone(),
+            start.tab,
+            picture.width,
+            picture.height,
+            &FlatpakShareConfig::default(),
+            &receivers,
+        )
+        .map(|share| Arc::new(share.with_tab(start.tab)))
+        .inspect_err(|error| {
+            tracing::warn!(
+                window = %start.window,
+                %error,
+                "a window cannot be shared"
+            );
+        })
+        .map_err(|error| error.to_string())?;
+        if let Some(wake) = &self.wake
+            && let Err(error) = share.encode_in_background(Arc::clone(wake))
+        {
+            tracing::warn!(%error, "a share encodes on the session's loop");
+        }
+        share.deposit_captured_rgba(picture.rgba);
+        Ok(Hosted {
+            window: start.window.clone(),
+            app_id: start.app_id.clone(),
+            workspace: start.workspace.clone(),
+            ws,
+            share,
+            announced: BTreeSet::new(),
+            captured_at: Some(now),
+            receivers,
+            controlled: start.controlled.clone(),
+        })
     }
 
     /// What the members viewing `tab` decode: a stream is encoded in a codec every one of them

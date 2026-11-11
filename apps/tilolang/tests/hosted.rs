@@ -871,8 +871,7 @@ impl Session {
         let root = view.root_tree().expect("the window's view");
         let mut page = Vec::new();
         content_nodes(&root, &mut page);
-        let key = page
-            .iter()
+        page.iter()
             .find_map(|node| {
                 find(node, &|node| {
                     matches!(node.props.get("placeholder"), Some(tilo_ui_host::Value::Text(p)) if p == placeholder)
@@ -880,8 +879,7 @@ impl Session {
             })
             .unwrap_or_else(|| panic!("the open note has a field {placeholder:?}"))
             .key
-            .clone();
-        key
+            .clone()
     }
 
     /// The centre of the open note's field whose placeholder is `placeholder`.
