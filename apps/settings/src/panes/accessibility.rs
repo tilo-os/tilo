@@ -360,14 +360,7 @@ fn shared_card(cx: &ViewCx<AccessibilitySettings>) -> SettingsSection {
             .id("a11y.apply_to_sign_in")
             .toggle(AccessibilityDevicePrefs::paths().apply_to_sign_in)
     });
-    section(
-        &t("a11y-shared-title"),
-        rows(
-            std::iter::once(note(&t("a11y-shared-caption")))
-                .chain(sign_in)
-                .collect(),
-        ),
-    )
+    section(&t("a11y-shared-title"), rows(sign_in.into_iter().collect()))
 }
 
 /// The dictation language, by its stable code, among every language

@@ -561,7 +561,7 @@ impl PrintersModel {
             self.refresh_rx = None;
 
             self.error = Some(t_args(
-                "settings-printers-worker-failed",
+                "settings-printers-read-error",
                 &[("error", ArgValue::Text(error.to_string()))],
             ));
         }
@@ -884,10 +884,6 @@ impl PrintersModel {
                 &[
                     ("done", ArgValue::Number(f64::from(done))),
                     ("total", ArgValue::Number(f64::from(total))),
-                    (
-                        "percent",
-                        ArgValue::Number(f64::from(job.progress_percent().unwrap_or(0))),
-                    ),
                 ],
             ),
             (Some(done), _) => t_args(

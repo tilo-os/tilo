@@ -1614,7 +1614,6 @@ impl UpdatesModel {
             rows(vec![
                 value_row(&t("upd-current-version"), &self.status.current_version),
                 value_row(&t("upd-last-checked"), &self.prefs.last_checked),
-                value_row(&t("upd-release-channel"), &t("upd-release-channel-value")),
                 match self.timer_enabled {
                     Some(_) => cx.setting(automatic).id("updates.auto").toggle_effect(
                         &LocalState::new(self.prefs.auto),
@@ -1659,7 +1658,6 @@ impl UpdatesModel {
 
     fn lifecycle_card(&self) -> SettingsSection {
         let not_reported = t("upd-not-reported");
-        let no_doc = t("upd-no-doc-url");
         let mut lifecycle_rows = vec![value_row(
             &t("upd-rollback-health"),
             self.details
@@ -1669,7 +1667,10 @@ impl UpdatesModel {
         )];
         lifecycle_rows.push(value_row(
             &t("upd-release-notes"),
-            self.details.release_notes.as_deref().unwrap_or(&no_doc),
+            self.details
+                .release_notes
+                .as_deref()
+                .unwrap_or(&not_reported),
         ));
         if self.details.history.is_empty() {
             lifecycle_rows.push(note(&t("upd-no-bootc-history")));
@@ -1799,7 +1800,6 @@ impl UpdatesModel {
                 }
             }
         }
-        items.push(note(&t("upd-fw-caption")));
         rows(items)
     }
 

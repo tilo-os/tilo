@@ -10,7 +10,9 @@ use crate::effects::SettingsEffect;
 use crate::i18n::{t, t_args};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
-use provider_settings_ui::widgets::{El, SettingsSection, caption, note, row, rows, section_with};
+use provider_settings_ui::widgets::{
+    El, SettingsSection, caption, note, row, rows, section_with, thing_row,
+};
 
 pub(super) fn discover(
     app: &SettingsApp,
@@ -189,45 +191,55 @@ impl AccountsPane {
         cx: &ViewCx<Settings>,
         choice: &super::import_review::Choice,
     ) -> Vec<El> {
-        let mut body = Vec::new();
+        let mut body: Vec<El> = Vec::new();
         let candidate = &choice.candidate;
+        let source = super::import_review::identity(candidate);
+        let name = candidate.display_name.trim();
+        let title = if name.is_empty() {
+            candidate.email.clone()
+        } else {
+            name.to_owned()
+        };
+        let details: Vec<String> = if name.is_empty() {
+            Vec::new()
+        } else {
+            vec![candidate.email.clone()]
+        };
+        body.push(Box::new(thing_row(
+            &format!("settings.thunderbird-account:{source}"),
+            &title,
+            &details,
+            None,
+        )));
         body.push(caption(&t_args(
-            "accounts-import-identity",
+            "accounts-import-incoming",
             &[
-                ("name", candidate.display_name.as_str().into()),
-                ("email", candidate.email.as_str().into()),
+                ("host", candidate.incoming.host.as_str().into()),
+                ("port", u32::from(candidate.incoming.port).into()),
+                ("transport", transport(candidate.incoming.transport).into()),
             ],
         )));
         body.push(caption(&t_args(
-            "accounts-import-endpoints",
+            "accounts-import-outgoing",
             &[
-                ("imap", candidate.incoming.host.as_str().into()),
-                ("imap-port", u32::from(candidate.incoming.port).into()),
-                ("smtp", candidate.outgoing.host.as_str().into()),
-                ("smtp-port", u32::from(candidate.outgoing.port).into()),
-                (
-                    "incoming-transport",
-                    transport(candidate.incoming.transport).into(),
-                ),
-                (
-                    "outgoing-transport",
-                    transport(candidate.outgoing.transport).into(),
-                ),
+                ("host", candidate.outgoing.host.as_str().into()),
+                ("port", u32::from(candidate.outgoing.port).into()),
+                ("transport", transport(candidate.outgoing.transport).into()),
             ],
         )));
         body.push(caption(&t_args(
-            "accounts-import-logins",
-            &[
-                ("imap-user", candidate.incoming.username.as_str().into()),
-                ("smtp-user", candidate.outgoing.username.as_str().into()),
-            ],
+            "accounts-import-incoming-login",
+            &[("user", candidate.incoming.username.as_str().into())],
+        )));
+        body.push(caption(&t_args(
+            "accounts-import-outgoing-login",
+            &[("user", candidate.outgoing.username.as_str().into())],
         )));
         if candidate.incoming.authentication.is_none()
             || candidate.outgoing.authentication.is_none()
         {
             body.push(caption(&t("accounts-import-auth-unspecified")));
         }
-        let source = super::import_review::identity(candidate);
         for (auth, key, method) in [
             (
                 "password",

@@ -160,7 +160,6 @@ fn night_light_card(cx: &ViewCx<NightLightPrefs>) -> SettingsSection {
                     |kelvin: &u32| temperature_label(*kelvin),
                     |kelvin: &u32| ui::widget::Picture::Warmth(*kelvin),
                 ),
-            note(&t("display-night-light-caption")),
         ]),
     )
 }

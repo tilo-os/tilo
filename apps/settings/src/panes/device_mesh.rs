@@ -1714,7 +1714,6 @@ fn activity_section(continuity: &ContinuityPrivacy) -> SettingsSection {
                 let change = t("mesh-audit-change");
                 value_row(&change, &crate::continuity::summary(entry))
             })
-            .chain(std::iter::once(note(&t("mesh-audit-caption"))))
             .collect()
     };
     section(&t("mesh-activity-title"), rows(audit_rows))

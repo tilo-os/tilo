@@ -46,7 +46,7 @@ use crate::prefs::{PowerActionPref, PowerPrefs};
 use crate::resource::Settings;
 use crate::settings_app::SettingsApp;
 use provider_settings_ui::widgets::{
-    Item, SettingsSection, block, error_caption, note, row, rows, section, value_row,
+    Item, SettingsSection, block, error_caption, note, row, rows, section, thing_row, value_row,
 };
 use ui::i18n::ArgValue;
 use ui::lock::MutexRecover as _;
@@ -1104,7 +1104,6 @@ fn profile_card(
             ),
         );
     }
-    profile_rows.push(note(&t("power-profile-caption")));
     if let Some(notice) = &notices.profile {
         profile_rows.push(note(notice));
     } else if let Some(unavailable) = &state.profiles_unavailable {
@@ -1210,7 +1209,6 @@ fn idle_card(cx: &ViewCx<PowerPrefs>, prefs: &PowerPrefs, has_battery: bool) -> 
             paths.lock_minutes,
         ),
         lock_on_sleep(cx),
-        note(&t("power-idle-caption")),
     ]);
     section(&t("power-idle-title"), rows(body))
 }
@@ -1269,15 +1267,21 @@ fn devices_card(state: &PowerState) -> Option<SettingsSection> {
             os_actions::PowerSupplyKind::Battery => "power-device-battery",
             os_actions::PowerSupplyKind::Ups => "power-device-ups",
         });
-        let line = t_args(
-            "power-device-line",
-            &[
-                ("kind", ArgValue::from(kind.as_str())),
-                ("capacity", ArgValue::from(i64::from(d.capacity))),
-                ("status", ArgValue::from(d.status.as_str())),
-            ],
-        );
-        entries.push(value_row(d.model.as_deref().unwrap_or(&d.id), &line));
+        let name = d.model.as_deref().unwrap_or(&d.id);
+        let details = vec![
+            kind,
+            t_args(
+                "power-device-charge",
+                &[("capacity", ArgValue::from(i64::from(d.capacity)))],
+            ),
+            d.status.clone(),
+        ];
+        entries.push(row(Box::new(thing_row(
+            &format!("power.device.{name}"),
+            name,
+            &details,
+            None,
+        ))));
     }
     Some(section(&t("power-devices-title"), rows(entries)))
 }

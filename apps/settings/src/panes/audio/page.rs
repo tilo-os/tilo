@@ -645,6 +645,5 @@ fn system_sounds_card(
                 .toggle(event_sound(event)),
         );
     }
-    sound_rows.push(note(&t("sound-system-caption")));
     section(&t("sound-system"), rows(sound_rows))
 }
