@@ -15,7 +15,8 @@
 #      --seed` when TILO_SH_SEED=1.
 #
 # usage: check.sh [WORK]
-# WORK keeps what it found (pages' consoles and screenshots, the visa run's
+# The stack runs this checkout's programs natively, or the images with
+# TILO_SH_IMAGES=1 (stack.sh check --images; t's tilo-sh-local check). WORK keeps what it found (pages' consoles and screenshots, the visa run's
 # log, report.json); default $TILO_SH_STATE/check. The stack is left up; it
 # is stopped first when TILO_SH_FRESH=1 (a new Lounge and door). The tilo
 # command is TILO_SH_TILO_BIN, else this checkout's release build the stack
@@ -43,6 +44,7 @@ trap 'for pid in "${pids[@]}"; do kill "$pid" 2>/dev/null || true; done' EXIT
 
 step 'bring the stack up'
 up_args=()
+[[ ${TILO_SH_IMAGES:-} == 1 ]] && up_args+=(--images)
 [[ ${TILO_SH_FRESH:-} == 1 ]] && up_args+=(--fresh)
 [[ ${TILO_SH_SEED:-} == 1 ]] && up_args+=(--seed)
 bash "$here/stack.sh" up "${up_args[@]}" || fail 'the stack did not come up'

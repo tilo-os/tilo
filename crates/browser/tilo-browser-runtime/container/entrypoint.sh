@@ -41,13 +41,26 @@
 # machine's loopback for a mirror beside it.
 #   TILO_RELEASES_ORIGIN  (unset: the Tilo package registry,
 #                       https://code.tilo.so/api/packages/tilo/generic/tilo-cli)
+# Where this server's files are and where it listens: the image's own paths
+# and port, which a deployment leaves alone. A run of the same entrypoint
+# outside the image (os/containers/tilo-sh/stack.sh) names its own:
+#   TILO_WEB_SITE       the laid-out site (/srv/tilo-web)
+#   TILO_WEB_INSTALL    the directory holding install.sh (/srv/tilo-install)
+#   TILO_WEB_RUN        where entry.json is written (/tmp/tilo-web)
+#   TILO_WEB_CADDYFILE  the Caddyfile (/etc/caddy/Caddyfile)
+#   TILO_WEB_PORT       the port (8080), on every address unless
+#   TILO_WEB_BIND       names one
 set -eu
 host=${TILO_WEB_HOME_HOST:-}
 name=${TILO_WEB_HOME_NAME:-}
 app=${TILO_WEB_HOME_APP:-}
 feedback=${TILO_WEB_HOME_FEEDBACK:-}
 door=${TILO_WEB_HOME_DOOR:-}
-mkdir -p /tmp/tilo-web
+export TILO_WEB_SITE="${TILO_WEB_SITE:-/srv/tilo-web}"
+export TILO_WEB_INSTALL="${TILO_WEB_INSTALL:-/srv/tilo-install}"
+export TILO_WEB_RUN="${TILO_WEB_RUN:-/tmp/tilo-web}"
+caddyfile=${TILO_WEB_CADDYFILE:-/etc/caddy/Caddyfile}
+mkdir -p "$TILO_WEB_RUN"
 fields=
 if [ -z "$host" ]; then
   [ -z "$name$app$feedback$door" ] || { echo "TILO_WEB_HOME_NAME, TILO_WEB_HOME_APP, TILO_WEB_HOME_FEEDBACK and TILO_WEB_HOME_DOOR need TILO_WEB_HOME_HOST" >&2; exit 2; }
@@ -144,5 +157,5 @@ rest=${releases#*://}
 export TILO_RELEASES_UPSTREAM="${releases%%://*}://${rest%%/*}"
 export TILO_RELEASES_PATH="/${rest#*/}"
 export TILO_WEB_FRAME_ANCESTORS="$ancestors"
-printf '{%s}\n' "$fields" > /tmp/tilo-web/entry.json
-exec caddy run --config /etc/caddy/Caddyfile --adapter caddyfile
+printf '{%s}\n' "$fields" > "$TILO_WEB_RUN/entry.json"
+exec caddy run --config "$caddyfile" --adapter caddyfile

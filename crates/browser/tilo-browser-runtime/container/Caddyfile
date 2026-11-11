@@ -5,13 +5,16 @@
 	admin off
 	auto_https off
 	persist_config off
+	# The image listens on every address; a run outside it names one
+	# (TILO_WEB_BIND, entrypoint.sh).
+	default_bind {$TILO_WEB_BIND}
 	log {
 		format console
 		level WARN
 	}
 }
 
-:8080 {
+:{$TILO_WEB_PORT:8080} {
 	header {
 		# The page holds the visitor's identity, so a first visit typed as
 		# http:// must never be answerable by whoever sits on the path:
@@ -48,14 +51,14 @@
 	}
 	handle @fetcher {
 		rewrite * /install.sh
-		root * /srv/tilo-install
+		root * {$TILO_WEB_INSTALL:/srv/tilo-install}
 		header Content-Type "text/x-shellscript; charset=utf-8"
 		header Cache-Control "no-cache"
 		header Vary User-Agent
 		file_server
 	}
 	handle @installer {
-		root * /srv/tilo-install
+		root * {$TILO_WEB_INSTALL:/srv/tilo-install}
 		header Content-Type "text/x-shellscript; charset=utf-8"
 		header Cache-Control "no-cache"
 		file_server
@@ -99,13 +102,13 @@
 
 	# Written at start from the environment (entrypoint.sh).
 	handle /entry.json {
-		root * /tmp/tilo-web
+		root * {$TILO_WEB_RUN:/tmp/tilo-web}
 		header Cache-Control "no-cache"
 		file_server
 	}
 
 	handle /v/* {
-		root * /srv/tilo-web
+		root * {$TILO_WEB_SITE:/srv/tilo-web}
 		header Cache-Control "public, max-age=31536000, immutable"
 		# Brotli before zstd: browsers accept both, and at the image's
 		# settings brotli is 7% smaller (the start module is 5,715,416
@@ -142,7 +145,7 @@
 		# prefix came off, leaving a path no file has.
 		route {
 			uri strip_prefix /i
-			root * /srv/tilo-web
+			root * {$TILO_WEB_SITE:/srv/tilo-web}
 			header Cache-Control "no-cache"
 			@page not file {path}
 			rewrite @page /index.html
@@ -159,7 +162,7 @@
 	# can be handed a person's answer. Its policy is the whole of the page's,
 	# so it names the site-wide frame-ancestors too.
 	handle /sign-in {
-		root * /srv/tilo-web
+		root * {$TILO_WEB_SITE:/srv/tilo-web}
 		header {
 			Cache-Control "no-cache"
 			Content-Security-Policy "frame-ancestors {$TILO_WEB_FRAME_ANCESTORS:'self'}; form-action https: http://localhost:* http://127.0.0.1:*"
@@ -173,7 +176,7 @@
 	# The entry pages and what they name by relative path, revalidated on
 	# every visit by the ETag of the encoding served (test-image.sh).
 	handle {
-		root * /srv/tilo-web
+		root * {$TILO_WEB_SITE:/srv/tilo-web}
 		header Cache-Control "no-cache"
 		file_server {
 			precompressed br zstd

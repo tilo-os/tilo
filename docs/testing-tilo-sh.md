@@ -2,16 +2,39 @@
 
 tilo.sh is tested on a developer's machine (or the rcargo builder) before any
 release. It is never tested on the deployed site. One command starts the
-whole product from your checkout. It uses the same images, entrypoints and
-environment variables as production:
+whole product from your checkout. It uses the same entrypoints, Caddyfiles
+and environment variables as production:
 
 ```sh
 os/containers/tilo-sh/stack.sh up
 ```
 
-The first run waits for `t` to build this checkout's images (`image-lounge`,
-`image-front-door` and `image-web-entry`) and downloads them. Later runs
-start in seconds. `stack.sh help` lists every command.
+By default the stack runs this checkout's programs as plain processes.
+`t build` compiles them on the build server's warm, incremental build and
+puts them in `./target`, so only what a change touches compiles. Each
+service gets its own state and runtime directory under the stack's state.
+The first run also builds the web bundle and fetches the font catalog; after
+that, `up` takes as long as the programs take to build. `stack.sh help`
+lists every command.
+
+`stack.sh up --images` runs the release images instead: `image-lounge`,
+`image-front-door` and `image-web-entry`, built by `t` for this commit,
+under rootless podman. That is the rehearsal of what ships, and it is what
+`t test tilo-sh-local` runs. The first run on a commit waits for the image
+builds (about 40 minutes).
+
+## Changing code
+
+```sh
+os/containers/tilo-sh/stack.sh restart relay   # or door, web, tls, discord, releases
+```
+
+`restart` rebuilds the one service and starts it again, and leaves the rest
+running with their state. For the relay, the door and the fake Discord it
+runs the same `t build` as `up` (the same feature set each time, so a change
+relinks only what it touches). For the web entry it rebuilds the desktop
+bundle. A one-line change in the relay is running again in about two
+minutes.
 
 ## What runs
 
@@ -20,18 +43,24 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 
 | Service | Production | Locally |
 | --- | --- | --- |
-| Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | the same image, behind production's Caddy at `https://127.0.0.1:24100` and `https://127.0.0.1:24106` |
-| Front door (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `front-door` | the same image at `http://localhost:24110` |
-| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the same image at `http://localhost:24120`; `/releases/latest` serves this checkout's `tilo` command |
-| Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | **not yet**: skipped, with the reason (see below) |
+| Lounge relay (room host and relay) | `eu1.tilo.sh` and `live-eu1.tilo.sh`, image `lounge` | `tilo-relay` through the image's entrypoint (`os/containers/tilo-lounge/entrypoint.sh`), laid out by the image's own context script, behind production's Caddy and Caddyfile at `https://127.0.0.1:24100` and `https://127.0.0.1:24106` |
+| Front door (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `front-door` | `tilo-front-door` at `http://localhost:24110` |
+| Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, at `http://localhost:24120`; `/releases/latest` serves this checkout's `tilo` command |
+| Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | with `--images`, the image as root (through `sudo`) where the machine has `/dev/kvm`; otherwise, and always natively, skipped with the reason |
 | Hosted browser pool | runs on the VM host | arrives with the VM host (docs/hosted-browser.md) |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
 
-Each container gets the environment its manifest sets in tilo/infra
-(`apps/tilo-sh-relay`, `apps/tilo-front-door` and `apps/tilo-web`). Only the public names change to loopback ports, and
-the secrets become throwaway local ones. `stack.sh` lists the variables per
-service in `relay_env`, `door_env` and `web_env`. A change to
-a production manifest belongs there too.
+With `--images`, the first three are the images themselves.
+
+Each service gets the environment its manifest sets in tilo/infra
+(`apps/tilo-sh-relay`, `apps/tilo-front-door` and `apps/tilo-web`). Only the
+public names change to loopback ports, and the secrets become throwaway
+local ones. `stack.sh` lists the variables per service in `relay_env`,
+`door_env` and `web_env`, and both modes use them. A change to a production
+manifest belongs there too. Natively, each service also gets the `ENV` its
+image's Containerfile sets, read from the Containerfile. Only the paths that
+live in the image move under the stack's state, and an image path the stack
+does not know how to move stops the start.
 
 ### What differs from production, and why
 
@@ -45,6 +74,22 @@ a production manifest belongs there too.
   (production: `live-eu1.tilo.sh`). The relay's own endpoint uses it as its
   home relay. That endpoint trusts the local CA through the bundle, as every
   Tilo client does, iroh's packet-relay client included.
+- **Natively, the build profile.** The programs are `lounge-gate` builds:
+  the release's code and opt-level without the whole-program link, which
+  is what the Lounge's own browser checks run. The image carries the
+  release build. `--images` runs that.
+- **Natively, the trust bundle.** Tilo's programs read one fixed bundle
+  path, and no variable can redirect it. `bwrap` mounts the stack's bundle
+  over that path for the relay and the door alone, as the containers mount
+  it. Nothing else of the machine changes, and nothing runs as root.
+- **Natively, Caddy's version.** The relay's TLS and the web entry use the
+  `caddy` on your `PATH`, else Caddy 2.11.7 (the web entry image's version),
+  fetched once and checked against its release checksum. Production's tls
+  container pins its own Caddy image.
+- **Natively, compression.** The site is precompressed with the image's own
+  script (`compress.sh`) when `brotli` and `zstd` are installed. Without
+  them it is served uncompressed, and entry times are not comparable with
+  production's.
 - **No model keys.** The moderation agent and the "who is here" summaries do
   not run.
 - **No VM host yet.** In production it is a privileged pod: it formats a
@@ -87,19 +132,29 @@ After that, everything points at the local stack:
   routes are documented in `crates/dev/fake-discord/src/main.rs`.
 
 `stack.sh status` shows what answers. `stack.sh logs relay` (or `tls`,
-`door`, `web`, `discord`, `releases`) shows a service's log.
+`door`, `web`, `discord`, `releases`, and `bundle` for the web bundle's
+build) shows a service's log.
 `stack.sh down` stops the stack, and `down --wipe` also deletes its state.
 
-## Images other than this checkout's
+## Other builds
 
-`TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_DOOR` and `TILO_SH_IMAGE_WEB` each take an OCI archive or a registry reference.
+`TILO_SH_CARGO=rcargo` builds the programs and the bundle's WebAssembly on
+rcargo's builder instead of with `t build`, for when `t` cannot bring a
+build back to your machine.
+
+`TILO_SH_BUNDLE` names a desktop bundle built elsewhere
+(`build.sh OUT --bundle desktop`) for the native stack to serve instead of
+building one.
+
+With `--images`, `TILO_SH_IMAGE_LOUNGE`, `TILO_SH_IMAGE_DOOR` and `TILO_SH_IMAGE_WEB` each take an OCI archive or a registry reference.
 To reproduce what is deployed, give the digests infra pins. To try a
 release candidate, give its `sha-<commit>` images.
 
 ## The end-to-end check
 
 ```sh
-os/containers/tilo-sh/stack.sh check     # or: t test tilo-sh-local
+os/containers/tilo-sh/stack.sh check            # this checkout's programs
+os/containers/tilo-sh/stack.sh check --images   # the images, as t test tilo-sh-local runs it
 ```
 
 The check brings the stack up and uses it as people and backends do:
