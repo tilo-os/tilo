@@ -205,6 +205,17 @@ impl Apps {
         self.state.borrow_mut().render_node = node;
     }
 
+    /// Take the compositor's render node once it has one: its backend names the GPU clients
+    /// import on when it starts importing dma-bufs, which can be after the session first hands
+    /// the launcher its node. Until then a launch had none, and an app that opens the GPU itself
+    /// got no pin at all (on a machine without a GPU, every installed driver in its loader).
+    pub fn follow_render_node(&self, node: impl FnOnce() -> Option<PathBuf>) {
+        let mut state = self.state.borrow_mut();
+        if state.render_node.is_none() {
+            state.render_node = node();
+        }
+    }
+
     /// The person at this device, by the id the workspaces' governance names them by: whose
     /// authority in a workspace each app started from here on is handed, so it decides their
     /// actions as the workspace's policy says.
@@ -1594,6 +1605,27 @@ mod tests {
 
     fn apps() -> Apps {
         Apps::with_launcher(SessionEnvironment::default(), None, None)
+    }
+
+    /// A launch takes the compositor's render node once the compositor has one, though the session
+    /// asked before its backend named it; the node it took then stays.
+    #[test]
+    fn a_launch_follows_the_render_node_the_compositor_names_later() {
+        let apps = apps();
+        apps.set_render_node(None);
+        apps.follow_render_node(|| None);
+        assert_eq!(apps.state.borrow().render_node, None);
+        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/card1")));
+        assert_eq!(
+            apps.state.borrow().render_node.as_deref(),
+            Some(Path::new("/dev/dri/card1"))
+        );
+        apps.follow_render_node(|| Some(PathBuf::from("/dev/dri/renderD128")));
+        assert_eq!(
+            apps.state.borrow().render_node.as_deref(),
+            Some(Path::new("/dev/dri/card1")),
+            "the node it took stays"
+        );
     }
 
     /// An agent is a service the launcher runs, and the agent's own options follow the entrypoint:
