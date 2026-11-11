@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use tilo_desktop_model::{CanvasPlace, DesktopTree, FloatPlace, StripId, Workspace, WorkspaceSlot};
 use ui::kurbo::{Point, Rect};
 use ui::num::{f64_of_i64, i32_of_f64, u32_of_f64};
-use ui::widget::{FLOAT_CARD_ROOM, FLOAT_SIZE, FloatAsk, GroupRow, Widget};
+use ui::widget::{FLOAT_CARD_ROOM, FLOAT_SIZE, FloatAsk, GroupRow, HANDLE_SLOT_PX, Widget};
 
 use super::Shared;
 
@@ -112,47 +112,96 @@ pub(super) fn set(
     workspace.arrangement.set_float(group, float)
 }
 
-/// Stand the window `group` of the strip `strip` over the desk beside the
-/// window it opened next to: the place the strip's share gives it, hung from
-/// the top of the windows standing beside it, so the card it draws at stands
-/// beside what the person was reading instead of over it. The share makes room
-/// for the card — the window's band and focus ring round it — so the window
-/// itself stands the room inside the place, leaving the neighbour the strip's
-/// own gap clear of the card. Returns whether the tree changed.
+/// The window a floating window opened beside: the one before it in its strip, else the one
+/// after it, as the strip shares its room with ([`GroupRow::share_with_floating_neighbour`]).
+pub(super) fn opened_beside(row: &GroupRow, group: u64) -> Option<u64> {
+    let index = row.groups.iter().position(|held| held.id == group)?;
+    let standing = |at: usize| {
+        row.groups
+            .get(at)
+            .filter(|held| !row.is_floating(held.id))
+            .map(|held| held.id)
+    };
+    index
+        .checked_sub(1)
+        .and_then(standing)
+        .or_else(|| standing(index.saturating_add(1)))
+}
+
+/// Stand the window `group` of the strip `strip` over the desk beside the window `sender` it
+/// opened next to, where that window stands on screen now: after it where the card fits on the
+/// desk, else before it, over a window the person was not using, whichever covers less of the one
+/// they were reading. The strip shares its room with the card ([`GroupRow::share_with_floating_neighbour`]),
+/// so a window that has the desk to itself leaves the card room after it. Returns whether the tree
+/// changed.
 pub(super) fn stand_beside(
     shared: &mut Shared,
     strip: StripId,
     row: &GroupRow,
-    group: u64,
+    (group, sender): (u64, u64),
     area: CanvasPlace,
 ) -> bool {
-    let Some((_, x0, _)) = row
-        .group_canvas_spans()
-        .into_iter()
-        .find(|(id, ..)| *id == group)
+    let Some(beside) = row
+        .groups
+        .iter()
+        .find(|held| held.id == sender)
+        .map(Widget::get_rect)
+        .filter(|rect| rect.width() > 0.0)
     else {
         return false;
     };
-    // The windows the strip stands in give the height a float hangs from: one
-    // that has not been laid out yet gives none, and the strip's own top stands.
-    let top = row
-        .groups
-        .iter()
-        .filter(|held| held.id != group && !row.is_floating(held.id))
-        .map(Widget::get_rect)
-        .find(|rect| rect.height() > 0.0)
-        .map(|rect| rect.y0);
-    let top = top.unwrap_or_else(|| row.get_rect().y0);
-    let at = Rect::from_origin_size(Point::new(x0 + FLOAT_CARD_ROOM, top), FLOAT_SIZE);
-    // The card the window draws — its band and its focus ring — stands on the
-    // desk whole, which at the desk's own top is not the window's own top.
-    let at = row.keep_float_inside(at);
+    let gap = HANDLE_SLOT_PX + FLOAT_CARD_ROOM;
+    let card = |x: f64| {
+        row.keep_float_inside(Rect::from_origin_size(Point::new(x, beside.y0), FLOAT_SIZE))
+    };
+    let after = card(beside.x1 + gap);
+    let before = card(beside.x0 - gap - FLOAT_SIZE.0);
+    let covered = |card: Rect| (card.x1.min(beside.x1) - card.x0.max(beside.x0)).max(0.0);
+    let at = if covered(before) < covered(after) {
+        before
+    } else {
+        after
+    };
     set(
         shared,
         strip,
         group,
         Some(FloatPlace::of_rect(area, place_of(at))),
     )
+}
+
+impl super::DesktopSurface {
+    /// Stand the float `group` beside the window it opened next to, as the strip has it now, and
+    /// again once the reveal brings that window into view whole. Returns that window.
+    pub(super) fn open_beside(&mut self, strip: StripId, group: u64) -> Option<u64> {
+        let row = self.rows.get(&strip)?;
+        let sender = opened_beside(row, group)?;
+        let area = area_of(row.get_rect());
+        stand_beside(
+            &mut self.shared.borrow_mut(),
+            strip,
+            row,
+            (group, sender),
+            area,
+        );
+        self.standing = Some((strip, group, sender));
+        Some(sender)
+    }
+}
+
+/// The float `standing` waits for, beside the window the reveal just brought into view on `row`:
+/// it stands beside it where it is on screen now. Returns whether the tree changed.
+pub(super) fn stand_revealed(
+    standing: &mut Option<(StripId, u64, u64)>,
+    shared: &std::cell::RefCell<Shared>,
+    strip: StripId,
+    row: &GroupRow,
+) -> bool {
+    let Some((_, float, sender)) = standing.take_if(|(waits, ..)| *waits == strip) else {
+        return false;
+    };
+    let area = area_of(row.get_rect());
+    stand_beside(&mut shared.borrow_mut(), strip, row, (float, sender), area)
 }
 
 /// Lift the window `group` above the desk where it stands: a chord or a

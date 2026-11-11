@@ -17,8 +17,8 @@ use std::rc::Rc;
 use shown::ShownTabs;
 
 use tilo_desktop_model::{
-    CanvasPlace, DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent,
-    WindowWidth, Workspace, WorkspaceSlot,
+    DesktopTree, GroupId, GroupShape, IdMinter, StripId, Tab, TabId, TileContent, WindowWidth,
+    Workspace, WorkspaceSlot,
 };
 use ui::automerge::ObjId;
 use ui::collaboration::PresencePayload;
@@ -818,6 +818,9 @@ pub struct DesktopSurface {
     close_reports: Vec<ui::application::ComponentCloseReport>,
     /// A launched window to pan into view once it has been laid out.
     reveal: Option<(StripId, GroupId)>,
+    /// A window opened floating, and the one it opened beside: it stands beside that window where
+    /// the reveal has it on screen.
+    standing: Option<(StripId, GroupId, GroupId)>,
     /// Tabs of a shown strip whose content is not built yet, in build order. Only the focused
     /// window is built before the strip's first frame; the rest follow within a per-frame budget.
     unbuilt: Vec<(StripId, TabId)>,
@@ -958,6 +961,7 @@ impl DesktopSurface {
             relayout: false,
             close_reports: Vec::new(),
             reveal: None,
+            standing: None,
             unbuilt: Vec::new(),
             swipe: None,
             pan_follow: None,
@@ -1608,14 +1612,6 @@ impl DesktopSurface {
         }
     }
 
-    /// The work area the shown strip stands on, as of this surface's last
-    /// layout: where a window opened over the desk floats.
-    fn shown_area(&self, shared: &Shared) -> Option<CanvasPlace> {
-        let workspace = shared.tree.active_workspace()?;
-        let strip = navigation::active_strip(&shared.tree, workspace)?;
-        Some(floats::area_of(self.rows.get(&strip)?.get_rect()))
-    }
-
     /// Record what the shown strip and focused window present beside the tree, for the navigation
     /// snapshot.
     fn refresh_presentation(&self) {
@@ -1738,17 +1734,8 @@ impl DesktopSurface {
                 row.share_with_neighbour(group);
             }
         }
-        if float
-            && let Some(area) = {
-                let shared = self.shared.borrow();
-                self.shown_area(&shared)
-            }
-            && let Some(row) = self.rows.get(&strip)
-        {
-            let mut shared = self.shared.borrow_mut();
-            floats::stand_beside(&mut shared, strip, row, group, area);
-        }
-        self.reveal = Some((strip, group));
+        let beside = float.then(|| self.open_beside(strip, group)).flatten();
+        self.reveal = Some((strip, beside.unwrap_or(group)));
         self.structure_dirty = true;
     }
 
@@ -2026,6 +2013,7 @@ impl Widget for DesktopSurface {
                 // their new window must show it.
                 row.apply_layout(taffy, child, inner);
             }
+            self.relayout |= floats::stand_revealed(&mut self.standing, &self.shared, *strip, row);
         }
         self.reveal = pending;
         self.note_laid_strip();

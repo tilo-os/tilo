@@ -159,6 +159,24 @@ fn a_refused_launch_leaves_no_tab() {
 #[test]
 fn a_window_an_app_opens_floating_stands_beside_the_window_it_opened_next_to() {
     let (mut frame, handle) = mount();
+    floats_beside(&mut frame, &handle);
+}
+
+/// The window in use is the last of a strip whose windows fill the display: there is no room after
+/// it, so the card stands before it, over the window the person was not using.
+#[test]
+fn a_float_opened_beside_the_last_window_of_a_full_strip_stands_before_it() {
+    let (mut frame, handle) = mount();
+    let last = handle.snapshot("g", vec![]).entries[1].route.clone();
+    handle
+        .dispatch(crate::navigation::DeskEffect::Focus { tab: last.tab })
+        .unwrap();
+    frame.relayout();
+    floats_beside(&mut frame, &handle);
+}
+
+/// Open a window floating beside the one in front, and check it stands beside it, never over it.
+fn floats_beside(frame: &mut ui::headless::FrameHarness, handle: &DesktopHandle) {
     let beside = handle
         .snapshot("g", vec![])
         .active
