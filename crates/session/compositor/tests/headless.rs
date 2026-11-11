@@ -2218,6 +2218,29 @@ fn dictation_writes_once_into_the_field_it_bound() {
     );
 }
 
+/// A field reports its caret on a machine with no input method running: the compositor enters it
+/// on the keyboard's focus alone, so what opens at the caret finds it.
+#[test]
+fn a_field_reports_its_caret_without_an_input_method() {
+    let mut compositor = headless(Box::new(StackPolicy));
+    let mut client = mapped_client(&mut compositor, "form", (200, 100), [0, 255, 0, 255]);
+    click(&mut compositor, 320.0, 240.0);
+    client.own_text_field();
+    pump(&mut compositor, &mut [&mut client], |_, clients| {
+        clients[0].seen.keyboard_focused && clients[0].seen.field_entered
+    });
+    client.move_caret(7);
+    pump(&mut compositor, &mut [&mut client], |compositor, _| {
+        compositor.text_caret().is_some()
+    });
+    let (_, (x, y, ..)) = compositor.windows()[0];
+    let caret = compositor.text_caret().expect("a caret");
+    assert_eq!(
+        (caret.x, caret.y, caret.width, caret.height),
+        (f64::from(x + 7), f64::from(y), 1.0, 20.0)
+    );
+}
+
 /// The emoji picker goes where the person types: the caret its card opens at is the one the field
 /// reports on the window it is in, and a pick reaches the field even when the field keeps its
 /// content secret — it is only not remembered then.

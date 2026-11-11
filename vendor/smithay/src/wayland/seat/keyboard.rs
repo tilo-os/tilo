@@ -186,10 +186,9 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
         // text-input global bound due to clients doing lazy global binding.
         text_input.set_focus(Some(self.clone()));
 
-        // Only notify on `enter` once we have an actual IME.
-        if input_method.has_instance() {
-            text_input.enter();
-        }
+        // The field is entered whether or not an input method runs: the
+        // client reports its caret and content type to the compositor too.
+        text_input.enter();
     }
 
     fn leave(&self, seat: &Seat<D>, state: &mut D, serial: Serial) {
@@ -200,8 +199,8 @@ impl<D: SeatHandler + 'static> KeyboardTarget<D> for WlSurface {
 
         if input_method.has_instance() {
             input_method.deactivate_input_method(state);
-            text_input.leave();
         }
+        text_input.leave();
 
         text_input.set_focus(None);
     }

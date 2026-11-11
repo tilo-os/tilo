@@ -109,6 +109,24 @@ Remove this once a smithay release keeps committed text-input state,
 including the cursor rectangle, or exposes what the focused field declared
 and where its caret is.
 
+## A focused field is entered without an input method (`text-input-v3`)
+
+smithay entered a client's text-input only while an input method ran and
+discarded every text-input request otherwise, so on a machine with no IME or
+on-screen keyboard no field ever reported its caret or content type, and
+nothing the compositor places at the caret could find it.
+
+- `src/wayland/seat/keyboard.rs`: keyboard `enter`/`leave` always send
+  `enter`/`leave` to the surface's text-inputs.
+- `src/wayland/text_input/mod.rs`: a text-input made while its client has the
+  keyboard is entered on its own, not by re-entering the client's others.
+- `src/wayland/text_input/text_input_handle.rs`: requests are tracked whether
+  or not an input method runs; what goes to the method still needs one.
+- `src/wayland/input_method/input_method_handle.rs`: an input method that
+  goes away leaves the focused field entered.
+
+Remove this once smithay enters text-inputs on keyboard focus alone.
+
 ## A toplevel icon outlives the objects that carried it (`xdg_toplevel_icon_v1`)
 
 The protocol says a client may destroy its `xdg_toplevel_icon_v1` right after

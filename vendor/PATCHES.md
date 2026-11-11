@@ -764,6 +764,14 @@ that `ImePurpose` stands for. It replaces the earlier multiline-only setter:
 multiline is one of the hints. Other platforms keep `set_ime_purpose`, and
 `None` returns Wayland to the purpose's own mapping.
 
+## `vendor/winit`: every enable states the caret
+
+Enabling a `zwp_text_input_v3` resets what it was told, and winit sent the
+IME cursor area only to text inputs already entered. A window keeps the last
+area it was given and every enable (on `enter`, or when IME is allowed) sends
+the content type and that area before its commit, so the compositor knows
+where a field's caret stands as soon as the field has the keyboard.
+
 ## `vendor/winit`: buffers another process drew
 
 A Tilo app's frames are drawn by its room's render service
