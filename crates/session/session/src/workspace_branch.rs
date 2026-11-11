@@ -175,6 +175,10 @@ impl Places {
 /// The source's records, read here, by app and record.
 type Sources = BTreeMap<(String, String), AutoCommit>;
 
+/// Where in the branch each app on this device keeps its copy of a record, by app and record: the
+/// app that owns it, and every app that keeps it beside its own.
+type Local = BTreeMap<(String, String), Vec<PathBuf>>;
+
 /// Where a branch reads the source's records and writes the branch's: this device's engine.
 pub(crate) trait Held: Sync {
     /// Whether `workspace` is held here.
@@ -268,7 +272,7 @@ pub(crate) fn copy(
         }
         _ => Sources::new(),
     };
-    let mut local: BTreeMap<(String, String), PathBuf> = BTreeMap::new();
+    let mut local: Local = BTreeMap::new();
     if let Some(data_home) = &places.data_home {
         match copy_app_data(data_home, from, to, &mut sources, &mut local) {
             Ok(copied) => branched.app_data = copied,
@@ -279,10 +283,10 @@ pub(crate) fn copy(
         write_records(engine, to, sources, &local, &mut branched);
     } else {
         for ((app, record), doc) in sources {
-            if let Some(path) = local.get(&(app, record))
-                && let Err(error) = write_local(&doc, path, to)
-            {
-                branched.missing.push(error);
+            for path in local.get(&(app, record)).into_iter().flatten() {
+                if let Err(error) = write_local(&doc, path, to) {
+                    branched.missing.push(error);
+                }
             }
         }
     }
@@ -344,7 +348,7 @@ fn write_records(
     engine: &dyn Held,
     to: WorkspaceId,
     sources: Sources,
-    local: &BTreeMap<(String, String), PathBuf>,
+    local: &Local,
     branched: &mut Branched,
 ) {
     let workspace = to.to_string();
@@ -362,8 +366,20 @@ fn write_records(
             continue;
         }
         branched.records = branched.records.saturating_add(1);
-        if let Some(path) = local.get(&(app.clone(), record.clone())) {
-            let written = std::fs::write(path, doc.save())
+        // Every app's copy of it on this device: the app that keeps it, and each app that keeps
+        // it beside its own records (the workspace's emoji, in every app's store). A copy left
+        // out would be made again by its app, as a genesis of its own the branch's record does
+        // not share.
+        let bytes = doc.save();
+        for path in local
+            .get(&(app.clone(), record.clone()))
+            .into_iter()
+            .flatten()
+        {
+            let written = path
+                .parent()
+                .map_or(Ok(()), std::fs::create_dir_all)
+                .and_then(|()| std::fs::write(path, &bytes))
                 .map_err(|error| format!("{record} of {app} on this device: {error}"));
             if let Err(error) = written {
                 branched.missing.push(error);
@@ -400,7 +416,12 @@ fn seal_keys(
 fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
     let parts: Vec<&str> = path.iter().filter_map(|part| part.to_str()).collect();
     match parts.first() {
-        Some(&(CHAT | tilo_desktop_model::ownership::DESKTOP_APP)) => return None,
+        // Chat's directory stays behind but for the workspace's own records Chat keeps (its emoji,
+        // its agents), which come along in the branch's engine and so in Chat's store too.
+        Some(&CHAT) if record_of(&parts, from).is_none_or(|(app, record)| stays(&app, &record)) => {
+            return None;
+        }
+        Some(&tilo_desktop_model::ownership::DESKTOP_APP) => return None,
         Some(&TERMINAL) if environment_records(&parts, from) => return None,
         _ => {}
     }
@@ -426,11 +447,19 @@ fn placed(path: &Path, from: &str, to: &str) -> Option<PathBuf> {
 }
 
 /// Whether `parts` are in Terminal's environment records of the workspace `from`
-/// (`…/rooms/<from>/records`), which the runtime branches.
+/// (`…/so.tilo.terminal/rooms/<from>/records`), which the runtime branches. Another app's records
+/// Terminal keeps beside its own (the workspace's emoji) are not: they come along as every copy of
+/// them does.
 fn environment_records(parts: &[&str], from: &str) -> bool {
-    parts
-        .windows(3)
-        .any(|window| window == [app_state::WORKSPACES_DIR, from, app_state::RECORDS_DIR])
+    parts.windows(4).any(|window| {
+        window
+            == [
+                TERMINAL,
+                app_state::WORKSPACES_DIR,
+                from,
+                app_state::RECORDS_DIR,
+            ]
+    })
 }
 
 /// The app and record a document at `path` (relative to the workspace's app directories) is,
@@ -452,7 +481,7 @@ fn copy_app_data(
     from: WorkspaceId,
     to: WorkspaceId,
     sources: &mut Sources,
-    local: &mut BTreeMap<(String, String), PathBuf>,
+    local: &mut Local,
 ) -> Result<Copied, String> {
     let rooms = data_home.join(launcher::appdir::WORKSPACES_DIR);
     let (from_id, to_id) = (from.to_string(), to.to_string());
@@ -496,7 +525,7 @@ fn copy_app_data(
             // workspace's too.
             tilo_automerge::ApplyIncoming::merge_incoming(source, &mut held)
                 .map_err(|error| format!("{}: {error}", relative.display()))?;
-            local.insert(route, into);
+            local.entry(route).or_default().push(into);
         } else {
             write_local(&held, &into, to)?;
         }
@@ -1227,6 +1256,90 @@ mod tests {
     ) {
         held.found(workspace, app, record, &doc.save_after(&[]))
             .expect("the workspace takes the record");
+    }
+
+    /// A record that comes along is one document wherever this device keeps it: the engine's copy,
+    /// Chat's own copy of the workspace's emoji and the copy another app keeps beside its own records
+    /// are the branch's same document, so no app of the branch makes the record again as a genesis
+    /// the branch's record does not share (which left Chat's committed history blocked on a
+    /// restart); the conversation Chat keeps stays behind.
+    #[test]
+    fn every_copy_of_a_record_that_comes_along_is_the_branchs_one_document() {
+        let state = tempfile::tempdir().unwrap();
+        let identity = identity();
+        let engine = reopened(&state, &identity);
+        let (from, to) = ids();
+        engine.found(WorkspaceSlot(1), from, "Research", None);
+        engine.found(WorkspaceSlot(2), to, "Research branch", None);
+        let keys = channel_crypto::ChannelGroup::create(
+            collab_types::workspace_scope(&to.to_string()),
+            channel_crypto::MemberKey::generate("owner").unwrap(),
+        )
+        .unwrap()
+        .content_keys()
+        .unwrap();
+        let held = Keyed {
+            engine: &engine,
+            keys,
+        };
+        let emoji = collab_types::workspace_record_id("tilo.workspace.emoji");
+        let mut party = record(FROM, "party-parrot");
+        write(&held, from, (CHAT, &emoji), &mut party);
+        let home = tempfile::tempdir().unwrap();
+        let rooms = home.path().join("data/tilo-rooms");
+        // Where an app directory `app` keeps `owner`'s record `record` of `workspace`.
+        let kept = |workspace: &str, app: &str, owner: &str, record: &str| {
+            rooms
+                .join(workspace)
+                .join(app)
+                .join(".local/share")
+                .join(owner)
+                .join("rooms")
+                .join(workspace)
+                .join("records")
+                .join(record)
+                .join("state.automerge")
+        };
+        for app in [CHAT, TERMINAL] {
+            let path = kept(FROM, app, CHAT, &emoji);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, party.save()).unwrap();
+        }
+        let conversation = kept(FROM, CHAT, CHAT, "messages");
+        std::fs::create_dir_all(conversation.parent().unwrap()).unwrap();
+        std::fs::write(&conversation, record(FROM, "see you at nine").save()).unwrap();
+
+        let places = Places {
+            data_home: Some(home.path().join("data")),
+            files: None,
+            runtime: None,
+        };
+        let branched = copy(Some(&held), &places, from, to);
+        assert!(branched.missing.is_empty(), "{:?}", branched.missing);
+
+        let mut engines = AutoCommit::load(
+            &held
+                .read(to, CHAT, &emoji)
+                .unwrap()
+                .expect("the branch holds the emoji"),
+        )
+        .unwrap();
+        for app in [CHAT, TERMINAL] {
+            let path = kept(TO, app, CHAT, &emoji);
+            assert!(path.exists(), "{app}'s copy of the emoji came along");
+            let mut copy = load(&path);
+            assert_eq!(body(&copy), "party-parrot");
+            assert_eq!(ui::record::workspace_scope(&copy).as_deref(), Some(TO));
+            assert_eq!(
+                copy.get_heads(),
+                engines.get_heads(),
+                "{app}'s copy is the branch's document, not a fork of its own"
+            );
+        }
+        assert!(
+            !kept(TO, CHAT, CHAT, "messages").exists(),
+            "the conversation stays behind"
+        );
     }
 
     /// A workspace with notes, the workspace's emoji and a conversation, branched: the branch
