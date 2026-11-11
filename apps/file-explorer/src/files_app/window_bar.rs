@@ -143,6 +143,7 @@ impl FilesState {
                 go_name: String::new(),
                 segments,
                 image: None,
+                avatar: None,
                 suggestions: self.bar_suggestions(),
                 choices: Vec::new(),
                 anchor: None,
@@ -371,14 +372,16 @@ impl FilesState {
                 None => None,
             },
             // The bar's own search and History control are run by the
-            // framework on the app's widgets, never handed to its slots.
+            // framework on the app's widgets, and whether the window floats
+            // is the framework's to keep: neither is handed to its slots.
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
             | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
-            | ToolbarEvent::History => return,
+            | ToolbarEvent::History
+            | ToolbarEvent::Floating { .. } => return,
         };
         if let Some(command) = command {
             self.apply_command(command);

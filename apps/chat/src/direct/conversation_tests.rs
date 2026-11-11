@@ -311,6 +311,15 @@ fn a_box_send_to_an_agent_opens_its_conversation() {
     let rows = crate::testing::mounted_rows(&mut bob_window, &conversation.to_string());
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].text, "please look");
+    bob_window.harness().relayout();
+    bob_window.with_chat(|chat| {
+        assert!(
+            chat.direct_contacts()
+                .iter()
+                .any(|row| row.id == conversation.to_string()),
+            "the conversation is listed with the person's others, though the record keeps no row for it"
+        );
+    });
 }
 
 /// The window a box's send floats over the desk opens on the item the send answered, as a

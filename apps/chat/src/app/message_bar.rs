@@ -175,7 +175,7 @@ impl ChatApp {
         };
         let mine = self.is_me(&message.author);
         let author = message.author.clone();
-        let items = if mine {
+        let mut items = if mine {
             let mut items = MenuAction::for_message().to_vec();
             if self.is_my_live_share(message) {
                 items.insert(0, MenuAction::StopSharing);
@@ -190,6 +190,18 @@ impl ChatApp {
             }
             items
         };
+        // The link of what the message's chip shows, as the chip's own menu offers it.
+        if message
+            .attachments
+            .iter()
+            .any(|attached| attached.at().is_some())
+        {
+            let at = items
+                .iter()
+                .position(|action| *action == MenuAction::CopyText)
+                .map_or(items.len(), |at| at + 1);
+            items.insert(at, MenuAction::CopyLink);
+        }
         // The menu is about the message, so a box it opens sends the message itself: the item of
         // Chat's record, as its row publishes it.
         let label = match message.text.trim() {

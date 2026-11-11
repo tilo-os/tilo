@@ -899,47 +899,18 @@ impl ChatApp {
                     attachment: index,
                 },
             );
-            *y += gap;
-            let caption = self.resource_navigation.label(&m.id, index, false);
-            let button_w = ButtonFace::new(Rect::ZERO, &caption)
-                .intrinsic_width(tr, theme)
-                .min(width);
-            let rect = Rect::new(column.text_x, *y, column.text_x + button_w, *y + height);
-            Button::paint(
-                scene,
-                tf,
-                tr,
-                theme,
-                &ButtonFace::new(rect, &caption).hovered(self.hovered(rect)),
-            );
-            ChatApp::push_hit(
-                hits,
-                rect,
-                Hit::CopyResourceLink {
-                    msg: m.id.clone(),
-                    attachment: index,
-                },
-            );
-            *y += height;
         }
     }
 
-    /// The height of the chip and "Copy link" a message's resource
-    /// attachments take: a control's row each, with their gaps.
+    /// The height a message's resource chips take: a control's row each, with its gap. Copying a
+    /// chip's link is in the message's menu, which a right-click on the chip opens.
     fn resource_controls_height(m: &Message, theme: &Theme) -> f64 {
         let height = ButtonFace::height(ControlSize::Regular, theme);
         let gap = f64::from(theme.tokens.spacing.s2);
         m.attachments
             .iter()
             .filter(|attached| attached.is_chip())
-            .map(|attached| {
-                if attached.at().is_some() {
-                    gap + height + gap + height
-                } else {
-                    gap + height
-                }
-            })
-            .fold(0.0, |total, row| total + row)
+            .fold(0.0, |total, _| total + gap + height)
     }
 
     /// A message group's header: avatar, author and time. Advances `*y`

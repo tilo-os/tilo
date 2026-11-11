@@ -153,7 +153,7 @@ chat-header-call-open = Open call
 chat-identity-available = Available
 chat-identity-in-voice = In voice
 
-chat-resource-copy-link = Copy resource link
+chat-resource-copy-link = Copy link
 chat-resource-not-opened = Could not open
 chat-agent-kind = Agent
 chat-channel-empty-message = Say hello. Everyone in #{ $channel } sees it.

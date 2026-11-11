@@ -151,7 +151,7 @@ chat-header-call-open = Anruf öffnen
 chat-identity-available = Verfügbar
 chat-identity-in-voice = Im Sprachraum
 
-chat-resource-copy-link = Link zum Objekt kopieren
+chat-resource-copy-link = Link kopieren
 chat-resource-not-opened = Konnte nicht geöffnet werden
 chat-agent-kind = Agent
 chat-channel-empty-message = Sag Hallo. Alle in #{ $channel } sehen es.

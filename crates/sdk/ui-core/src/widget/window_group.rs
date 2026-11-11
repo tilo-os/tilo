@@ -233,6 +233,9 @@ pub struct WindowGroup {
     pub maximized: bool,
     /// Floating over the desk: the maximize control snaps it back ([`Self::take_pending_snap`]).
     floating: bool,
+    /// The desktop opens new tabs in the window ([`Self::set_new_tab`]); a floating one shows no
+    /// door to them all the same.
+    opens_tabs: bool,
     pending_snap: bool,
     pub search_active: bool,
     /// The active group of the active strip, set by the shell each frame.
@@ -477,6 +480,7 @@ impl WindowGroup {
             grip_dirty: false,
             maximized: false,
             floating: false,
+            opens_tabs: true,
             pending_snap: false,
             search_active: false,
             focused: false,
@@ -2174,7 +2178,8 @@ impl WindowGroup {
     /// Offer the new-tab control, or not, for someone who opens nothing
     /// here. `true` when that changed what the window offers.
     pub fn set_new_tab(&mut self, on: bool) -> bool {
-        self.bar.set_new_tab(on)
+        self.opens_tabs = on;
+        self.bar.set_new_tab(on && !self.floating)
     }
 
     /// Whether someone else holds any of the window's tabs, so it does not

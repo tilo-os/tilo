@@ -574,6 +574,11 @@ impl ChatApp {
         self.revealed_person = None;
         self.reset_timeline_to_latest();
         self.focus = Focus::Main;
+        // The conversation is what this window shows now: a sidebar floating over it as a drawer
+        // (a narrow window, a card a send floated) goes away rather than covering it.
+        if let Some(bar) = &self.bar {
+            bar.put_drawer_away();
+        }
         self.reselect();
         Ok(())
     }

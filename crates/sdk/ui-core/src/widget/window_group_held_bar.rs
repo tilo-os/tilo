@@ -172,11 +172,19 @@ impl WindowGroup {
     }
 
     /// The window floats over the desk, or stands in its strip: its row says so as it lays it out.
+    /// A floating window is a card: it keeps no door to a new tab.
     pub fn set_floating(&mut self, floating: bool) {
         if self.floating != floating {
             self.floating = floating;
             self.held_dirty = true;
+            self.bar.set_new_tab(self.opens_tabs && !floating);
         }
+    }
+
+    /// Whether the window floats over the desk ([`Self::set_floating`]).
+    #[must_use]
+    pub fn is_floating(&self) -> bool {
+        self.floating
     }
 
     /// The person asked the floating window back into its strip, once.

@@ -434,9 +434,6 @@ impl ChatApp {
             if !matches!(attached, tilo_reference::Attached::Resource { .. }) {
                 continue;
             }
-            self.resource_navigation
-                .label(&m.id, index, false)
-                .hash(&mut hasher);
             match self.resource_navigation.status(&m.id, index) {
                 None => 0.hash(&mut hasher),
                 Some(Ok(())) => 1.hash(&mut hasher),

@@ -2957,3 +2957,38 @@ fn the_attach_action_refuses_a_relative_path() {
         "{refused}"
     );
 }
+
+/// The bar names the conversation with who or what it is: the face of the agent a direct
+/// conversation is with, the channel's mark for a channel.
+#[test]
+fn the_bar_leads_the_conversation_with_who_it_is_with() {
+    let (mut app, _doc) = app_with_doc();
+    app.active_channel = crate::record::Chat::direct_id([
+        crate::record::Participant::person(app.me.id.clone()),
+        crate::record::Participant::agent("assistant"),
+    ])
+    .to_string();
+    render_frame(&mut app, 360.0, 520.0);
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the conversation is the window's location");
+    let avatar = location.avatar.expect("the agent's face leads it");
+    assert!(avatar.agent);
+    assert_eq!(avatar.identity, "assistant");
+    assert_eq!(location.icon, None);
+
+    let channel = app
+        .channels
+        .iter()
+        .find(|channel| !channel.direct && channel.kind == crate::model::ChannelKind::Text)
+        .expect("a text channel")
+        .id
+        .clone();
+    app.active_channel = channel;
+    render_frame(&mut app, 360.0, 520.0);
+    let location = ui::window_toolbar::declared()
+        .and_then(|toolbar| toolbar.location)
+        .expect("the channel is the window's location");
+    assert_eq!(location.icon.as_deref(), Some("hash"));
+    assert!(location.avatar.is_none());
+}

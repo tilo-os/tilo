@@ -427,6 +427,7 @@ impl BrowserWidget {
             go_name: t("browser-go"),
             segments: Vec::new(),
             image: self.favicon_png.clone().map(|png| ToolbarImage { png }),
+            avatar: None,
             suggestions: self.bar_suggestions(),
             choices: Vec::new(),
             anchor: None,
@@ -525,14 +526,16 @@ impl BrowserWidget {
                 }
             },
             // The bar's own search and History control are run by the
-            // framework on the app's widgets, never handed to its slots.
+            // framework on the app's widgets, and whether the window floats
+            // is the framework's to keep: neither is handed to its slots.
             ToolbarEvent::Search { .. }
             | ToolbarEvent::SearchStep { .. }
             | ToolbarEvent::SearchClose
             | ToolbarEvent::SearchOptions { .. }
             | ToolbarEvent::SearchCover { .. }
             | ToolbarEvent::SearchReplace { .. }
-            | ToolbarEvent::History => return,
+            | ToolbarEvent::History
+            | ToolbarEvent::Floating { .. } => return,
         }
         self.structure_dirty = true;
     }

@@ -8,7 +8,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::tilo_resource::{Id, Identified, Resource};
 
 use crate::model::{AgentStep, AgentWork, Category, Channel, EditRecord, Message, User};
-use crate::record::Chat;
+use crate::record::{Chat, Conversation};
 
 /// The published id of the item `id` of the record's `field`
 /// (`channels`, `messages`, …): what a caller addresses its actions to.
@@ -81,14 +81,15 @@ impl Chat {
     /// the participants ([`Chat::direct_id`]) — with the conversations the
     /// record keeps for an agent among them.
     #[must_use]
-    pub fn conversation_rows(&self, me: &str) -> Vec<Channel> {
+    pub fn conversation_rows(
+        &self,
+        me: &str,
+        messages: &crate::messages::Messages,
+    ) -> Vec<Channel> {
         use crate::record::Participant;
         let mut rows = self.channel_rows();
         let mut direct: Vec<(String, Channel)> = Vec::new();
-        for (id, channel) in self.channels.iter() {
-            if channel.is_channel() {
-                continue;
-            }
+        let mut push = |id: &Id, participants: Vec<String>, recorded: Option<&Conversation>| {
             let name = self.display_names(id, Some(me));
             direct.push((
                 name.clone(),
@@ -96,52 +97,58 @@ impl Chat {
                     id: id.to_string(),
                     category: String::new(),
                     name,
-                    topic: channel.topic.clone(),
-                    kind: channel.kind,
+                    topic: recorded.map(|row| row.topic.clone()).unwrap_or_default(),
+                    kind: recorded.map_or(crate::model::ChannelKind::Text, |row| row.kind),
                     order: 0,
                     unread: 0,
                     mentions: 0,
-                    archived: channel.archived,
+                    archived: recorded.is_some_and(|row| row.archived),
                     direct: true,
-                    participants: channel
-                        .participants
-                        .iter()
-                        .map(|key| key.0.clone())
-                        .collect(),
+                    participants,
                 },
             ));
+        };
+        for (id, channel) in self.channels.iter() {
+            if !channel.is_channel() {
+                let keys = channel.participants.iter().map(|key| key.0.clone());
+                push(id, keys.collect(), Some(channel));
+            }
         }
+        let mut listed: std::collections::HashSet<Id> = std::collections::HashSet::new();
         for person in &self.people {
             if person.agent || person.id.0 == me {
                 continue;
             }
-            let id = Chat::direct_id([
+            let pair = [
                 Participant::person(me.to_owned()),
                 Participant::person(person.id.0.clone()),
-            ]);
-            if self.channels.contains(&id) {
+            ];
+            let id = Chat::direct_id(pair.clone());
+            if !self.channels.contains(&id) && listed.insert(id.clone()) {
+                push(&id, pair.iter().map(Participant::key).collect(), None);
+            }
+        }
+        // A conversation written to by its id alone (one with an agent that a send opened) is
+        // listed once it holds a message, though the record keeps no row for it.
+        for (_, message) in messages.iter().chain(messages.sending()) {
+            let id = &message.channel;
+            if self.channels.contains(id) || listed.contains(id) {
                 continue;
             }
-            let name = self.display_names(&id, Some(me));
-            direct.push((
-                name.clone(),
-                Channel {
-                    id: id.to_string(),
-                    category: String::new(),
-                    name,
-                    topic: String::new(),
-                    kind: crate::model::ChannelKind::Text,
-                    order: 0,
-                    unread: 0,
-                    mentions: 0,
-                    archived: false,
-                    direct: true,
-                    participants: [me, person.id.0.as_str()]
-                        .into_iter()
-                        .map(|id| Participant::person(id.to_owned()).key())
-                        .collect(),
-                },
-            ));
+            let Some(participants) = Chat::direct_participants(id) else {
+                continue;
+            };
+            if participants
+                .iter()
+                .any(|participant| participant.id() == me)
+            {
+                listed.insert(id.clone());
+                push(
+                    id,
+                    participants.iter().map(Participant::key).collect(),
+                    None,
+                );
+            }
         }
         direct.sort_by(|left, right| {
             left.0

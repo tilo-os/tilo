@@ -167,18 +167,20 @@ impl Navigation {
             .map(|status| &status.outcome)
     }
 
-    /// The caption of the slot's copy control: what it does, or what it
-    /// last came to. `reason` adds why a request failed, for assistive
-    /// technology.
-    pub(crate) fn label(&self, message: &str, attachment: usize, reason: bool) -> String {
-        match self.outcome(message, attachment, false) {
-            Some(Ok(())) => crate::i18n::t("chat-resource-link-copied"),
-            Some(Err(why)) if reason => format!(
-                "{}: {why}",
-                crate::i18n::t("chat-resource-link-unavailable")
+    /// What copying a link came to, as the window's bar says it.
+    fn copied_notice(outcome: &Result<(), String>) -> (String, ui::widget::toast::ToastKind) {
+        match outcome {
+            Ok(()) => (
+                crate::i18n::t("chat-resource-link-copied"),
+                ui::widget::toast::ToastKind::Success,
             ),
-            Some(Err(_)) => crate::i18n::t("chat-resource-link-unavailable"),
-            None => crate::i18n::t("chat-resource-copy-link"),
+            Err(why) => (
+                format!(
+                    "{}: {why}",
+                    crate::i18n::t("chat-resource-link-unavailable")
+                ),
+                ui::widget::toast::ToastKind::Error,
+            ),
         }
     }
 
@@ -199,12 +201,6 @@ impl Navigation {
     /// a failure's own words.
     pub(crate) fn replay_label_is_copy(&self, message: &str) -> bool {
         !matches!(self.replay_outcome(message, true), Some(Err(_)))
-    }
-
-    /// Whether [`Self::label`] is the catalogue's copy alone, without a
-    /// failure's own words.
-    pub(crate) fn label_is_copy(&self, message: &str, attachment: usize) -> bool {
-        !matches!(self.outcome(message, attachment, false), Some(Err(_)))
     }
 
     /// The name the reference chip, which reads `label`, is announced by:
@@ -258,6 +254,18 @@ impl ChatApp {
     pub(crate) fn begin_resource_navigation(&mut self, message: &str, attachment: usize) {
         let started = self.request_resource_link(message, attachment);
         self.finish_starting(message, attachment, false, started);
+    }
+
+    /// Copy the link of the resource `message` shares, as its menu offers it.
+    pub(crate) fn copy_shared_link(&mut self, message: &str) {
+        let shared = self.message(message).and_then(|m| {
+            m.attachments
+                .iter()
+                .position(|attached| attached.at().is_some())
+        });
+        if let Some(attachment) = shared {
+            self.begin_resource_navigation(message, attachment);
+        }
     }
 
     /// Open the resource a message shares where it lives: its own app
@@ -433,10 +441,12 @@ impl ChatApp {
         if self.resource_navigation.copy.failed()
             && let Some(slot) = self.resource_navigation.copied_for.take()
         {
+            let outcome = Err(CLIPBOARD_REFUSED.to_owned());
+            self.tell_copied(&outcome);
             self.resource_navigation.status = Some(Status {
                 slot,
                 open: false,
-                outcome: Err(CLIPBOARD_REFUSED.to_owned()),
+                outcome,
             });
             self.request_relayout();
         }
@@ -482,12 +492,21 @@ impl ChatApp {
                 .prefetched
                 .insert(pending.slot.clone(), pending.asked);
         }
+        self.tell_copied(&outcome);
         self.resource_navigation.status = Some(Status {
             slot: pending.slot,
             open: false,
             outcome,
         });
         self.request_relayout();
+    }
+
+    /// Say in the window's bar what copying a link came to.
+    fn tell_copied(&self, outcome: &Result<(), String>) {
+        if let Some(bar) = &self.bar {
+            let (text, kind) = Navigation::copied_notice(outcome);
+            bar.toast(text, kind);
+        }
     }
 }
 
@@ -595,26 +614,19 @@ mod tests {
             // Narrowed, the conversation stays in front; its slide lands.
             app.with_widget::<ui::widget::NavShell, _>(ui::widget::NavShell::snap);
             app.settle();
-            assert!(
-                app.harness()
-                    .a11y_node_named("Copy resource link")
-                    .is_some()
-            );
             assert!(app.harness().a11y_node_named("Open Plan").is_some());
             let controls: Vec<_> = app
                 .chat()
                 .hits
                 .iter()
-                .filter(|(_, hit)| {
-                    matches!(
-                        hit,
-                        crate::app::Hit::CopyResourceLink { .. }
-                            | crate::app::Hit::OpenResource { .. }
-                    )
-                })
+                .filter(|(_, hit)| matches!(hit, crate::app::Hit::OpenResource { .. }))
                 .map(|(rect, _)| *rect)
                 .collect();
-            assert_eq!(controls.len(), 2);
+            assert_eq!(
+                controls.len(),
+                1,
+                "the chip alone: its link is in the message's menu"
+            );
             assert!(controls.iter().all(|rect| rect.width() > 0.0
                 && rect.height() > 0.0
                 && rect.x0 >= 0.0
@@ -635,15 +647,33 @@ mod tests {
         let id = shared(&mut app);
         assert_native_resource_controls(&mut app);
 
+        // The chip's menu, the message's own, offers its link.
+        app.chat()
+            .open_message_menu(id.clone(), vello::kurbo::Point::new(40.0, 40.0));
+        assert!(
+            app.chat()
+                .menu
+                .as_ref()
+                .is_some_and(|menu| menu.items.contains(&crate::app::MenuAction::CopyLink))
+        );
+        app.chat().menu = None;
         app.chat().begin_resource_navigation(&id, 0);
         assert_eq!(ui::clipboard_paste().as_deref(), Some(URL));
-        let surface = app.chat();
-        assert_eq!(surface.resource_navigation.status(&id, 0), Some(&Ok(())));
+        {
+            let surface = app.chat();
+            assert_eq!(surface.resource_navigation.status(&id, 0), Some(&Ok(())));
+            assert!(!surface.resource_navigation.pending());
+        }
+        app.settle();
         assert_eq!(
-            surface.resource_navigation.label(&id, 0, false),
-            "Link copied"
+            app.with_widget::<ui::widget::NavShell, _>(|shell| shell
+                .toast_text()
+                .map(str::to_owned))
+                .flatten()
+                .as_deref(),
+            Some("Link copied"),
+            "the window's bar says so"
         );
-        assert!(!surface.resource_navigation.pending());
         let asked = door.asked();
         let request = asked.last().unwrap();
         assert_eq!(request.target.provider, "record:so.tilo.notes:plan");
@@ -783,14 +813,20 @@ mod tests {
             None
         );
         assert_eq!(
-            surface.resource_navigation.label(&id, 0, true),
-            "Link unavailable: This workspace's host serves no web page"
-        );
-        assert_eq!(
             surface.resource_navigation.open_label(&id, 0, "Plan"),
             "Open Plan"
         );
+        drop(surface);
         assert_eq!(ui::clipboard_paste().as_deref(), Some("sentinel"));
+        app.settle();
+        assert_eq!(
+            app.with_widget::<ui::widget::NavShell, _>(|shell| shell
+                .toast_text()
+                .map(str::to_owned))
+                .flatten()
+                .as_deref(),
+            Some("Link unavailable: This workspace's host serves no web page")
+        );
     }
     /// The chip opens the shared resource where it lives, through the one
     /// action that opens any reference: the resource's `open` in the app and
@@ -842,11 +878,6 @@ mod tests {
         assert_eq!(
             surface.resource_navigation.open_label(&id, 0, "Plan"),
             "Could not open: You may not open this"
-        );
-        assert_eq!(
-            surface.resource_navigation.label(&id, 0, false),
-            "Copy resource link",
-            "the copy control says nothing of the open"
         );
     }
 

@@ -542,3 +542,43 @@ fn a_hosted_shell_keeps_every_columns_header_in_its_own_row() {
     h.click_at(compose.center().x, compose.center().y);
     assert_eq!(pressed.get(), 1, "the press in the row runs the button");
 }
+
+/// A conversation floated as a card beside the window it was sent from shows only itself: no
+/// list stands over it and the bar offers no toggle for one, whatever the app last remembered of
+/// its sidebar. Snapped into its strip, still narrow, the window keeps the conversation in front.
+#[test]
+fn a_narrow_window_floating_as_a_card_shows_its_content_alone() {
+    let shell = NavShell::new()
+        .with_window_toolbar()
+        .content_kind(ContentKind::Reading);
+    let link = shell.window_bar_link();
+    let shell = shell
+        .sidebar(Probe::boxed("sidebar").0)
+        .content(Probe::boxed("content").0);
+    let mut h = harness(shell, 360, 520, Theme::dark());
+    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: true });
+    // What the app remembered: its list shown. What it opened: a conversation.
+    link.stage_sidebar(true);
+    link.put_drawer_away();
+    settle(&mut h, 360, 520);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::None);
+    assert_eq!(
+        link.slots().sidebar,
+        None,
+        "no toggle for a sidebar it does not show"
+    );
+    assert!(child_rect(&h, "content").is_some_and(|r| r.width() >= 359.0));
+    assert!(
+        child_rect(&h, "sidebar").is_none_or(|r| r.area() <= 0.0),
+        "no list over the card"
+    );
+
+    crate::window_toolbar::deliver(ToolbarEvent::Floating { floating: false });
+    settle(&mut h, 376, 520);
+    assert_eq!(geometry(&h).sidebar, SidebarPlacement::Screen);
+    assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
+    assert!(
+        link.slots().sidebar.is_some(),
+        "in the strip its list is a press away"
+    );
+}

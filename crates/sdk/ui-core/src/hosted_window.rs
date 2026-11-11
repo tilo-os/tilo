@@ -62,6 +62,8 @@ struct State {
     /// The workspace the window is in, as its host knows it: an app that
     /// shares its process with other windows has no workspace of its own.
     workspace: Option<String>,
+    /// The window floats over the desk ([`crate::window_toolbar::floats`]).
+    floats: bool,
     /// The app asked to edit its location (its Ctrl+L).
     edit: bool,
     /// The app asked to open the window's search (its Ctrl+F, or Ctrl+H
@@ -393,9 +395,19 @@ impl HostedWindow {
         (seen != Some(revision)).then(|| (revision, self.shown()))
     }
 
+    /// Whether the window floats over the desk as a card ([`ToolbarEvent::Floating`]).
+    #[must_use]
+    pub fn floats(&self) -> bool {
+        self.state().floats
+    }
+
     /// Hand the app what the person did with its slots.
     pub fn deliver(&self, event: ToolbarEvent) {
         let mut state = self.state();
+        if let ToolbarEvent::Floating { floating } = event {
+            state.floats = floating;
+            return;
+        }
         if let Some(id) = crate::window_toolbar::notice_press(state.notice.as_ref(), &event) {
             if state.notice_presses.len() < MAX_PENDING {
                 state.notice_presses.push(id);

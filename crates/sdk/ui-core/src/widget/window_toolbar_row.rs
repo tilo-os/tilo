@@ -59,7 +59,9 @@ mod paint;
 mod reactions;
 mod slot_change;
 mod strip;
-use layout::{LocationForms, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome};
+use layout::{
+    LocationForms, LocationLead, MeasureKey, Measured, Slot, Slots, ViewsMeasure, location_chrome,
+};
 #[cfg(test)]
 use location_label::edited_word;
 use location_label::{LocationLabel, trailing_word};
@@ -581,9 +583,7 @@ impl ToolbarRow {
             editable: location.is_some_and(|location| location.editable),
             picker: location
                 .is_some_and(|location| !location.editable && !location.choices.is_empty()),
-            icon: location.is_some_and(|location| {
-                location.icon.as_deref().and_then(Icon::from_name).is_some()
-            }),
+            lead: location.map_or(LocationLead::None, LocationLead::of),
             notice: self
                 .toolbar()
                 .and_then(|toolbar| toolbar.notice.as_ref())
@@ -628,7 +628,7 @@ impl ToolbarRow {
             let mut width = |label: &str| f64::from(text.measure_style(label, None, &style).0);
             let forms = LocationForms {
                 text: key.forms.iter().map(|form| width(form)).collect(),
-                chrome: location_chrome((key.editable, key.picker, key.icon), theme),
+                chrome: location_chrome((key.editable, key.picker, key.lead), theme),
                 actions,
             };
             let widest = labels.iter().map(|label| width(label)).fold(0.0, f64::max);

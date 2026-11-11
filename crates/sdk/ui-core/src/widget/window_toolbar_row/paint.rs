@@ -572,7 +572,23 @@ pub(super) fn paint_location(
         face.paint_chrome(scene, transform, theme);
         text_rect = face.text_rect(theme);
     }
-    if let Some(icon) = location.icon.as_deref().and_then(Icon::from_name) {
+    if let Some(avatar) = &location.avatar {
+        // Who the location is: their face, and whether they are here, in place of an icon.
+        let side = crate::widget::AvatarSize::Small.side(theme);
+        let mut face = crate::widget::AvatarFace::new(&avatar.name, &avatar.identity);
+        if avatar.agent {
+            face = face.agent();
+        }
+        if let Some(presence) = avatar.presence {
+            face = face.status(presence.status());
+        }
+        let c = Point::new(text_rect.x0 + side / 2.0, rect.center().y);
+        face.paint(
+            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+            Rect::from_center_size(c, (side, side)),
+        );
+        text_rect.x0 += side + f64::from(theme.tokens.spacing.s2);
+    } else if let Some(icon) = location.icon.as_deref().and_then(Icon::from_name) {
         let c = Point::new(text_rect.x0 + LOCATION_ICON_PX / 2.0, rect.center().y);
         crate::icons::draw_icon(
             scene,

@@ -488,6 +488,9 @@ struct Inputs {
     page_lines: Option<f64>,
     metrics: Metrics,
     has_sidebar: bool,
+    /// The window floats over the desk as a card ([`crate::window_toolbar::floats`]): too narrow
+    /// to dock its sidebar, it shows its content alone.
+    floats: bool,
     has_overview: bool,
     /// The window shows a content column. A shell with nothing to show beside its overview gives
     /// the window to the overview until something is shown ([`NavShell::content_shown`]).
@@ -582,6 +585,7 @@ impl Default for Inputs {
             page_lines: None,
             metrics: Metrics::default(),
             has_sidebar: false,
+            floats: false,
             has_overview: false,
             has_content: true,
             has_rail: false,
@@ -1655,6 +1659,12 @@ impl NavShell {
         self.inputs.borrow().has_overview
     }
 
+    /// Whether the window has a sidebar but shows its content alone: a card floating over the
+    /// desk, too narrow to dock it. It offers no toggle for it.
+    fn sidebar_folded(&self) -> bool {
+        self.built && self.has_sidebar() && self.geometry.sidebar == SidebarPlacement::None
+    }
+
     /// Whether the window shows a content column ([`Self::content_shown`]).
     pub fn has_content(&self) -> bool {
         self.content_shown || self.nothing_listed_shown()
@@ -1695,7 +1705,7 @@ impl NavShell {
     /// it goes back to it, and hiding it goes on to the screen the person
     /// left for it.
     pub fn toggle_sidebar(&mut self) {
-        if !self.has_sidebar() {
+        if !self.has_sidebar() || self.sidebar_folded() {
             return;
         }
         if self.geometry.sidebar == SidebarPlacement::Screen {

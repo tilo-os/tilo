@@ -92,10 +92,6 @@ pub(crate) enum Hit {
     AttachDevice,
     StartCall,
     StopSharingLiveContext,
-    CopyResourceLink {
-        msg: Id,
-        attachment: usize,
-    },
     /// Replay the recording the report a message shows carries.
     ReplayRecording(Id),
     OpenResource {
@@ -181,9 +177,6 @@ impl Hit {
             Self::AttachDevice => "chat.attach-device".into(),
             Self::StartCall => "chat.start-call".into(),
             Self::StopSharingLiveContext => "chat.stop-sharing-live-context".into(),
-            Self::CopyResourceLink { msg, attachment } => {
-                format!("chat.copy-resource-link:{msg}:{attachment}")
-            }
             Self::ReplayRecording(id) => format!("chat.replay-recording:{id}"),
             Self::OpenResource { msg, attachment } => {
                 format!("chat.open-resource:{msg}:{attachment}")
@@ -439,14 +432,6 @@ impl ChatApp {
                         ControlName {
                             text: self.resource_navigation.replay_label(message, true),
                             interface: self.resource_navigation.replay_label_is_copy(message),
-                        },
-                        Role::Button,
-                        false,
-                    ),
-                    Hit::CopyResourceLink { msg, attachment } => (
-                        ControlName {
-                            text: self.resource_navigation.label(msg, *attachment, true),
-                            interface: self.resource_navigation.label_is_copy(msg, *attachment),
                         },
                         Role::Button,
                         false,

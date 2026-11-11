@@ -374,9 +374,12 @@ pub(super) fn plan_columns(inputs: &Inputs, w: f64, h: f64) -> NavGeometry {
     } else {
         0.0
     };
-    g.sidebar = if !inputs.has_sidebar {
+    let docks = rail_sidebar || reaches(w, g.breakpoint, held.sidebar_docked, band);
+    // A card floating over the desk shows its point alone: no drawer or screen of the sidebar
+    // stands over what it was floated to show.
+    g.sidebar = if !inputs.has_sidebar || (inputs.floats && !docks) {
         SidebarPlacement::None
-    } else if rail_sidebar || reaches(w, g.breakpoint, held.sidebar_docked, band) {
+    } else if docks {
         SidebarPlacement::Docked
     } else if inputs.kind.is_content_primary() {
         SidebarPlacement::Drawer

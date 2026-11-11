@@ -22,6 +22,8 @@ pub(super) struct Requests {
     pub(super) staged_pane: Cell<Option<NavPane>>,
     /// Put a floating sidebar away ([`WindowBarLink::put_drawer_away`]).
     pub(super) put_drawer_away: Cell<bool>,
+    /// A notice the app asked the window's bar to show ([`WindowBarLink::toast`]).
+    pub(super) toast: RefCell<Option<(String, crate::widget::toast::ToastKind)>>,
     /// The shell's own slots for the window's bar as of its last layout.
     slots: RefCell<WindowToolbar>,
     /// The inspector's frame as of the last layout, and what an
@@ -67,11 +69,16 @@ impl WindowBarLink {
         self.0.staged_pane.set(Some(pane));
     }
 
-    /// Put the sidebar away if it floats as a drawer over the content (the
-    /// app opened something the drawer would cover); a docked sidebar
-    /// stays.
+    /// Put the sidebar away if it stands over the content, as a drawer or as the narrow window's
+    /// first screen (the app opened something it would cover); a docked sidebar stays.
     pub fn put_drawer_away(&self) {
         self.0.put_drawer_away.set(true);
+    }
+
+    /// Show a transient notice in the window's bar, as [`NavShell::toast`] does: what an
+    /// operation the app ran came to.
+    pub fn toast(&self, text: impl Into<String>, kind: crate::widget::toast::ToastKind) {
+        *self.0.toast.borrow_mut() = Some((text.into(), kind));
     }
 
     /// Run what the person did in the window's bar on the shell's own
@@ -98,7 +105,19 @@ impl NavShell {
     /// Run what the shell's buttons and a linked app asked for since the
     /// last pass. Returns whether anything changed.
     pub(super) fn take_requests(&mut self) -> bool {
-        let mut acted = self.requests.toggle.replace(false);
+        let floats = crate::window_toolbar::floats();
+        let floats_changed =
+            std::mem::replace(&mut self.inputs.borrow_mut().floats, floats) != floats;
+        if floats_changed {
+            self.structure_dirty = true;
+            self.invalidate();
+        }
+        let mut acted = floats_changed | self.requests.toggle.replace(false);
+        let toast = self.requests.toast.borrow_mut().take();
+        if let Some((text, kind)) = toast {
+            self.toast(text, kind);
+            acted = true;
+        }
         if acted {
             self.toggle_sidebar();
         }
@@ -135,12 +154,21 @@ impl NavShell {
             self.snap();
             acted = true;
         }
-        if self.requests.put_drawer_away.take()
-            && self.geometry.sidebar == SidebarPlacement::Drawer
-            && self.is_sidebar_open()
-        {
-            self.toggle_sidebar();
-            acted = true;
+        // Asked before the window shows its sidebar (before its first layout, or while it floats
+        // as a card), the ask waits for it: a window that opens or snaps narrow on what the app
+        // opened never shows its sidebar over it.
+        if self.geometry.sidebar != SidebarPlacement::None && self.requests.put_drawer_away.take() {
+            match self.geometry.sidebar {
+                SidebarPlacement::Drawer if self.is_sidebar_open() => {
+                    self.toggle_sidebar();
+                    acted = true;
+                }
+                SidebarPlacement::Screen if self.is_sidebar_open() => {
+                    self.show(self.content_pane());
+                    acted = true;
+                }
+                _ => {}
+            }
         }
         acted
     }
@@ -204,7 +232,8 @@ impl NavShell {
         let toggle_yields =
             back && self.geometry.sidebar != SidebarPlacement::Docked && !self.is_sidebar_open();
         let mut toolbar = WindowToolbar {
-            sidebar: (self.has_sidebar() && !toggle_yields).then(|| self.is_sidebar_open()),
+            sidebar: (self.has_sidebar() && !self.sidebar_folded() && !toggle_yields)
+                .then(|| self.is_sidebar_open()),
             ..WindowToolbar::default()
         };
         if back {

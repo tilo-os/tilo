@@ -5,8 +5,8 @@
 use vello::kurbo::Vec2;
 
 use super::{
-    COMFORTABLE_LOCATION_PX, CONTROL_GAP, CONTROL_PX, FieldFace, LOCATION_ICON_PX, MIN_LOCATION_PX,
-    Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
+    COMFORTABLE_LOCATION_PX, CONTROL_GAP, CONTROL_PX, FieldFace, Icon, LOCATION_ICON_PX,
+    MIN_LOCATION_PX, Point, Rect, SECTION_GAP, Theme, WindowToolbar, picker_width,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -223,7 +223,7 @@ pub(super) struct MeasureKey {
     pub(super) forms: Vec<String>,
     pub(super) editable: bool,
     pub(super) picker: bool,
-    pub(super) icon: bool,
+    pub(super) lead: LocationLead,
     /// The notice's buttons' names.
     pub(super) notice: Vec<String>,
     pub(super) text_scale: u32,
@@ -232,7 +232,10 @@ pub(super) struct MeasureKey {
 /// What stands beside the label's text in the location at rest
 /// ([`paint_location`]): a picker's face and chevron where it chooses
 /// among places, a field's frame where it is edited, its icon.
-pub(super) fn location_chrome((editable, picker, icon): (bool, bool, bool), theme: &Theme) -> f64 {
+pub(super) fn location_chrome(
+    (editable, picker, lead): (bool, bool, LocationLead),
+    theme: &Theme,
+) -> f64 {
     if picker {
         return picker_width(0.0, theme);
     }
@@ -241,10 +244,32 @@ pub(super) fn location_chrome((editable, picker, icon): (bool, bool, bool), them
         let rect = Rect::new(0.0, 0.0, COMFORTABLE_LOCATION_PX, CONTROL_PX);
         chrome += rect.width() - FieldFace::new(rect, "").text_rect(theme).width();
     }
-    if icon {
-        chrome += LOCATION_ICON_PX + f64::from(theme.tokens.spacing.s2);
-    }
+    chrome += match lead {
+        LocationLead::None => return chrome,
+        LocationLead::Icon => LOCATION_ICON_PX,
+        LocationLead::Avatar => crate::widget::AvatarSize::Small.side(theme),
+    } + f64::from(theme.tokens.spacing.s2);
     chrome
+}
+
+/// What leads a location's label: nothing, its icon, or the face of who it is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LocationLead {
+    None,
+    Icon,
+    Avatar,
+}
+
+impl LocationLead {
+    pub(super) fn of(location: &crate::window_toolbar::ToolbarLocation) -> Self {
+        if location.avatar.is_some() {
+            Self::Avatar
+        } else if location.icon.as_deref().and_then(Icon::from_name).is_some() {
+            Self::Icon
+        } else {
+            Self::None
+        }
+    }
 }
 
 /// Where the views stand in one layout of the row.

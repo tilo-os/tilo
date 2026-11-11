@@ -694,8 +694,11 @@ impl ChatApp {
                 self.open_participant_menu(id);
                 return;
             }
-            // A message, or its bar: the message's whole menu.
-            Hit::MessageMenu { msg } | Hit::MessageBar { msg, .. } | Hit::MessageMore { msg } => {
+            // A message, its bar or the chip of what it shares: the message's whole menu.
+            Hit::MessageMenu { msg }
+            | Hit::MessageBar { msg, .. }
+            | Hit::MessageMore { msg }
+            | Hit::OpenResource { msg, .. } => {
                 self.open_message_menu(msg, self.last_mouse);
                 return;
             }
@@ -866,9 +869,6 @@ impl ChatApp {
             Hit::StopSharingLiveContext => {
                 // The same device-local handler the public effect reaches.
                 let _ = self.answer_effect(crate::effects::ChatEffect::StopSharingLiveContext);
-            }
-            Hit::CopyResourceLink { msg, attachment } => {
-                self.begin_resource_navigation(&msg, attachment);
             }
             Hit::OpenResource { msg, attachment } => self.open_shared_resource(&msg, attachment),
             Hit::ReplayRecording(message) => self.replay_recording(&message),
@@ -1335,6 +1335,7 @@ impl ChatApp {
                         );
                     }
                 }
+                MenuAction::CopyLink => self.copy_shared_link(&id),
                 MenuAction::CopyText => {
                     if let Some(text) = self.message(&id).map(|m| m.text.clone()) {
                         // A clipboard that refuses says so where it can;
