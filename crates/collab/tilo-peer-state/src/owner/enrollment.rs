@@ -536,6 +536,8 @@ impl NativeWorkspaceOwner {
                 aggregate_hash: *blake3::hash(&candidate.record.peer).as_bytes(),
             });
         }
+        let kept_here = candidate.record.device == candidate.record.workspace_host;
+        let carried = kept_here.then(|| outgoing.clone());
         let (receipt, stored) = candidate.change(|live, stored| {
             live.admit_new_local_document(&app, &document, *envelope, now)?;
             publication::append_local(stored, outgoing)?;
@@ -550,6 +552,14 @@ impl NativeWorkspaceOwner {
             })
         })?;
         self.publish_record(workspace, &candidate, stored, None)?;
+        // A workspace this device hosts queues nothing for a host to take
+        // (62b849bdb3d): its members linked here hear the commit now, and one
+        // linked later catches up on it as the link starts.
+        if let Some(bytes) = carried
+            && let Ok(message) = postcard::from_bytes::<NeighbourMsg>(&bytes)
+        {
+            self.0.kept_here(workspace, &message);
+        }
         Ok(receipt)
     }
 }

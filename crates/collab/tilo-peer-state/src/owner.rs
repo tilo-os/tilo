@@ -172,6 +172,9 @@ struct SharedOwner {
     mutation: Mutex<()>,
     current: RwLock<Current>,
     listeners: Mutex<Vec<Weak<dyn NativeFenceObserver>>>,
+    /// Who hands on what this device commits to a workspace it hosts itself
+    /// ([`NativeWorkspaceOwner::observe_kept_here`]).
+    kept_here: Mutex<Vec<Weak<dyn NativeKeptHereObserver>>>,
 }
 #[derive(Default)]
 struct Current {
@@ -412,7 +415,38 @@ impl<F: Fn(WorkspaceId, u64) + Send + Sync> NativeFenceObserver for F {
 pub struct NativeFenceSubscription {
     _observer: Arc<dyn NativeFenceObserver>,
 }
+
+/// Told what this device committed to a workspace it hosts itself, once per
+/// commit, after it is durable: such a workspace keeps no outgoing custody
+/// (its own device is its keeper) and holds no link to a host, so what its
+/// device writes reaches the members linked to it only through whoever is
+/// told here.
+pub trait NativeKeptHereObserver: Send + Sync {
+    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg);
+}
+impl<F: Fn(WorkspaceId, &NeighbourMsg) + Send + Sync> NativeKeptHereObserver for F {
+    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
+        self(workspace, message);
+    }
+}
+/// Retaining this token retains the observer; owner stores only a weak reference.
+pub struct NativeKeptHereSubscription {
+    _observer: Arc<dyn NativeKeptHereObserver>,
+}
 impl SharedOwner {
+    /// Tell [`NativeKeptHereObserver`]s what this device committed to
+    /// `workspace`, which it hosts itself.
+    fn kept_here(&self, workspace: WorkspaceId, message: &NeighbourMsg) {
+        let observers: Vec<_> = {
+            let mut observers = self.kept_here.lock();
+            let live = observers.iter().filter_map(Weak::upgrade).collect();
+            observers.retain(|observer| observer.strong_count() != 0);
+            live
+        };
+        for observer in observers {
+            observer.kept_here(workspace, message);
+        }
+    }
     fn notify(&self, workspace: WorkspaceId, continuity: u64) {
         let observers: Vec<_> = {
             let mut listeners = self.listeners.lock();
@@ -478,6 +512,7 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(Current::default()),
             listeners: Mutex::new(Vec::new()),
+            kept_here: Mutex::new(Vec::new()),
         }))
     }
     /// Restore every enrolled workspace of `authority`, the record `store` last
@@ -518,6 +553,7 @@ impl NativeWorkspaceOwner {
             mutation: Mutex::new(()),
             current: RwLock::new(current),
             listeners: Mutex::new(Vec::new()),
+            kept_here: Mutex::new(Vec::new()),
         })))
     }
     #[must_use]
@@ -706,6 +742,17 @@ impl NativeWorkspaceOwner {
         .unwrap_or_default()
     }
 
+    /// Be told what this device commits to a workspace it hosts itself, for as long as the
+    /// returned token is kept.
+    pub fn observe_kept_here(
+        &self,
+        observer: Arc<dyn NativeKeptHereObserver>,
+    ) -> NativeKeptHereSubscription {
+        self.0.kept_here.lock().push(Arc::downgrade(&observer));
+        NativeKeptHereSubscription {
+            _observer: observer,
+        }
+    }
     pub fn observe_fences(
         &self,
         observer: Arc<dyn NativeFenceObserver>,

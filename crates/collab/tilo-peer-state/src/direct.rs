@@ -1644,6 +1644,9 @@ pub struct Owning {
     serving: Serving,
     /// Who takes what the members' links bring ([`Self::hear`]).
     sinks: Arc<RwLock<Vec<MemberSink>>>,
+    /// Hands what this device commits to a workspace it hosts itself to the
+    /// members linked here, for as long as this is kept.
+    _kept_here: Arc<crate::owner::NativeKeptHereSubscription>,
 }
 
 impl std::fmt::Debug for Owning {
@@ -1665,12 +1668,26 @@ impl Owning {
         key: SigningKey,
         store: Arc<Store>,
     ) -> Self {
+        let serving = Serving::new();
+        // What this device commits to a workspace it hosts itself reaches the
+        // members linked to it now, as this device's frame; the workspace keeps
+        // no custody for it and holds no link to a host. Nothing is kept for a
+        // member linked later: the workspace's own state is what its link's
+        // catch-up hands it.
+        let device = key.verifying_key().to_bytes();
+        let linked = serving.clone();
+        let kept_here = owner.observe_kept_here(Arc::new(
+            move |workspace: tilo_desktop_model::WorkspaceId, message: &NeighbourMsg| {
+                send_to_members(&linked, workspace, device, message.clone());
+            },
+        ));
         Self {
             owner,
             key,
             store,
-            serving: Serving::new(),
+            serving,
             sinks: Arc::default(),
+            _kept_here: Arc::new(kept_here),
         }
     }
 
@@ -1696,22 +1713,7 @@ impl Owning {
         from: [u8; 32],
         message: NeighbourMsg,
     ) {
-        let Ok(number) = crate::join::room_workspace_id(&workspace.to_string()) else {
-            return;
-        };
-        if let Ok(frame) = Frame::of(&message)
-            && let Err(error) = self.store.retain(number, &frame)
-        {
-            tracing::warn!(%error, "a frame was not kept for the workspace's members");
-        }
-        let Some(link) = self.serving.link(number) else {
-            return;
-        };
-        link.outgoing(Authored {
-            from,
-            message,
-            published: false,
-        });
+        carry_to(&self.store, &self.serving, workspace, from, message);
     }
 
     /// Send `message`, channel governance of a workspace this device serves,
@@ -1831,6 +1833,48 @@ fn channel_governance(message: &NeighbourMsg) -> bool {
 /// that member's replica lacks, so whose name a frame bears says nothing there.
 fn already_theirs(authored: &Authored, remote: [u8; 32], own: [u8; 32]) -> bool {
     !authored.published && remote != own && from_device(&authored.message, remote)
+}
+
+/// [`Owning::carry`]: keep `message`, `from`'s frame of `workspace`, at
+/// `store` when it is a sealed write, and send it to the members `serving`
+/// links there.
+fn carry_to(
+    store: &Store,
+    serving: &Serving,
+    workspace: tilo_desktop_model::WorkspaceId,
+    from: [u8; 32],
+    message: NeighbourMsg,
+) {
+    let Ok(number) = crate::join::room_workspace_id(&workspace.to_string()) else {
+        return;
+    };
+    if let Ok(frame) = Frame::of(&message)
+        && let Err(error) = store.retain(number, &frame)
+    {
+        tracing::warn!(%error, "a frame was not kept for the workspace's members");
+    }
+    send_to_members(serving, workspace, from, message);
+}
+
+/// Send `message`, `from`'s frame of `workspace`, to the members `serving`
+/// links there now; nothing when none is linked.
+fn send_to_members(
+    serving: &Serving,
+    workspace: tilo_desktop_model::WorkspaceId,
+    from: [u8; 32],
+    message: NeighbourMsg,
+) {
+    let Ok(number) = crate::join::room_workspace_id(&workspace.to_string()) else {
+        return;
+    };
+    let Some(link) = serving.link(number) else {
+        return;
+    };
+    link.outgoing(Authored {
+        from,
+        message,
+        published: false,
+    });
 }
 
 /// What one link's live stream sends besides the frames published live.
