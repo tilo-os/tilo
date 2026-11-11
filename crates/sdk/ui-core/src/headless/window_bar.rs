@@ -98,14 +98,13 @@ impl FrameHarness {
     /// while the harness lives: the app declares its slots on it and asks it for what its bar
     /// does, so windows a process lays out beside each other keep their bars apart.
     pub(super) fn host_bar_window(&mut self) {
-        // The app declared its slots on the thread's own bar before this harness hosted a window
-        // for it, and may show a notice or reactions there: they are this window's from here on,
-        // so a read that comes before the next frame sees what the app already said.
-        let declared = crate::window_toolbar::declared();
+        // The app may show a notice or reactions on the thread's own bar before this harness hosts
+        // a window for it: they are this window's from here on, so a read that comes before the
+        // next frame sees what the app already said. Its slots are this window's by the frame
+        // that declares them, declared on the window the shell reads them from then on.
         let notice = crate::window_toolbar::notice();
         let reactions = crate::window_toolbar::reactions();
         let window = crate::hosted_window::HostedWindow::new();
-        window.declare(declared);
         window.notify(notice);
         window.show_reactions(reactions);
         self.window_scope = Some(crate::window_toolbar::enter(Some(&window)));
