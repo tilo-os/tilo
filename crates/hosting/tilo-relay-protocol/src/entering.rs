@@ -147,3 +147,38 @@ pub enum Entered {
     /// The workspace did not admit the device. The host closes the session.
     Refused(EnterRefusal),
 }
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, reason = "in a test this is the assertion")]
+mod tests {
+    use super::{EnterRefusal, EnterStep};
+    use crate::directory::{DoorRefusalCode, DoorRefused};
+
+    /// A door's refusal reaches the device whatever it names: an empty one, and
+    /// one offering a wait list with a contact and mail, both read back as sent.
+    #[test]
+    fn a_door_refusal_reads_back_whatever_it_names() {
+        let plain = DoorRefused {
+            code: DoorRefusalCode::Refused,
+            error: "no".into(),
+            ..DoorRefused::default()
+        };
+        let waiting = DoorRefused {
+            code: DoorRefusalCode::InvitationOnly,
+            error: "by invitation".into(),
+            wait_list: true,
+            contact: Some("door@example.org".into()),
+            mail: true,
+        };
+        for refused in [plain, waiting] {
+            for retry_after_secs in [None, Some(30)] {
+                let step = EnterStep::Refused(EnterRefusal::Door {
+                    refused: refused.clone(),
+                    retry_after_secs,
+                });
+                let bytes = postcard::to_allocvec(&step).unwrap();
+                assert_eq!(postcard::from_bytes::<EnterStep>(&bytes).unwrap(), step);
+            }
+        }
+    }
+}

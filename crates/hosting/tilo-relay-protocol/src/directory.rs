@@ -221,6 +221,10 @@ pub enum DoorRefusalCode {
 
 /// What a door answers a person it does not let in (HTTP 403, or 503 with `Retry-After` when
 /// [`DoorRefusalCode::Full`]).
+///
+/// It also travels in a session's entry ([`crate::entering::EnterRefusal::Door`]), whose frames
+/// are postcard: a format that names no fields, so every field is written whatever its value. A
+/// field left out when empty shifts the rest, and the device can read no refusal at all.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DoorRefused {
@@ -230,15 +234,15 @@ pub struct DoorRefused {
     pub error: String,
     /// The workspace takes people by invitation and keeps a wait list
     /// ([`DoorWaitList`]): the person may leave an address to be invited at.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub wait_list: bool,
     /// Where the person asks to be taken off that list, when whoever runs the
     /// door named a contact.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub contact: Option<String>,
     /// The door mails the address a link that confirms it: without, it lists
     /// an address at once.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    #[serde(default)]
     pub mail: bool,
 }
 
