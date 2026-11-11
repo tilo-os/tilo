@@ -133,7 +133,8 @@ fn notify(question: &PendingConfirmation) {
         return;
     }
     let asked = dialog(question);
-    let notice = ui::notify::Notification::new(tag(&question.id), asked.title, asked.words());
+    let words = asked.words();
+    let notice = ui::notify::Notification::new(tag(&question.id), asked.title, words);
     if let Err(error) = ui::host::current().notifications.show(&notice) {
         tracing::debug!(%error, "agent questions: no notification");
     }
