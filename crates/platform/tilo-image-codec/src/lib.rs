@@ -6,8 +6,27 @@
 //! Admission does not enforce allocator, codec-intermediate, RSS or private
 //! linear-memory limits. A future worker must enforce its own 256 MiB linear
 //! memory maximum and refuse formats without enforceable decoder limits.
+//!
+//! It is also the one image codec seam a program uses: [`sniff`] and
+//! [`dimensions`] read a header, [`decode`] and [`encode`] turn bytes into
+//! pixels and back (the browser's own codecs on the web), and
+//! [`DecodedImage`]'s methods crop, turn, scale and grey pixels. Apps never
+//! decode for themselves.
+mod codec;
+mod format;
+mod pixels;
 #[cfg(test)]
 mod tests;
+
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+#[path = "native.rs"]
+mod backend;
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+#[path = "web.rs"]
+mod backend;
+
+pub use codec::{EncodeError, Encoding, decode, encode};
+pub use format::{Format, dimensions, sniff};
 
 /// Encoded input and the existing store's output resize preference.
 pub struct DecodeImage<'a> {
@@ -15,14 +34,14 @@ pub struct DecodeImage<'a> {
     pub max_dimension: u32,
 }
 /// Straight-alpha, eight-bit RGBA pixels, ready for host validation.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedImage {
     pub rgba: Vec<u8>,
     pub width: u32,
     pub height: u32,
 }
 /// Decode or admission refusal.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DecodeError {
     InvalidImage,
     InvalidDimensions,

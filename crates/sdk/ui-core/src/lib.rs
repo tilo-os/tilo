@@ -443,6 +443,9 @@ pub use local_state::{
 pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
 pub use paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
+/// The one image codec: sniff, decode, encode and transform pixels, with the
+/// browser's own codecs on the web. Apps decode and encode only through it.
+pub use tilo_image_codec as image_codec;
 // What a session lends the windows it draws its content addresses with: a process that draws no
 // native window (`native` off) holds none.
 #[cfg(feature = "native")]

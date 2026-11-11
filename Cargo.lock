@@ -19415,6 +19415,12 @@ name = "tilo-image-codec"
 version = "0.1.0"
 dependencies = [
  "image",
+ "imagesize",
+ "js-sys",
+ "send_wrapper 0.6.0",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "workspace-hack",
 ]
 
@@ -27001,6 +27007,7 @@ dependencies = [
  "icu_segmenter",
  "idna",
  "image",
+ "imagesize",
  "indexmap",
  "ipnet",
  "itertools 0.13.0",

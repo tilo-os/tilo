@@ -6,13 +6,39 @@ publish = true
 license = "MIT"
 repository.workspace = true
 homepage.workspace = true
-description = "Portable image decode and explicit image admission limits."
+description = "The one image codec seam: format sniffing, decode, encode and pixel operations, with the browser's own codecs on the web."
 
 [dependencies]
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
+# Format and size from an image's header alone, on every target.
+imagesize = { version = "0.14", default-features = false, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 workspace-hack = { version = "0.1" }
+
+# The browser decodes and encodes with its own codecs: createImageBitmap and
+# OffscreenCanvas, pinned to the versions the browser runtime links.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+# The page has one thread: a browser future stays where it was made, which
+# lets the codec's futures be `Send` on every target.
+send_wrapper = { version = "0.6", features = ["futures"] }
+web-sys = { version = "=0.3.85", features = [
+    "Blob",
+    "BlobPropertyBag",
+    "ImageBitmap",
+    "ImageBitmapOptions",
+    "ImageData",
+    "ImageEncodeOptions",
+    "OffscreenCanvas",
+    "OffscreenCanvasRenderingContext2d",
+    "PremultiplyAlpha",
+    "ResizeQuality",
+    "WorkerGlobalScope",
+    "Window",
+] }
 
 [lints]
 workspace = true

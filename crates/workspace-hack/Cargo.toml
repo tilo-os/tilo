@@ -122,6 +122,7 @@ icu_provider = { version = "2", default-features = false, features = ["alloc", "
 icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+imagesize = { version = "0.14" }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
@@ -375,6 +376,7 @@ icu_provider = { version = "2", default-features = false, features = ["alloc", "
 icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
 image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
+imagesize = { version = "0.14" }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 ipnet = { version = "2", features = ["serde"] }
 itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
