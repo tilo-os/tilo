@@ -47,7 +47,7 @@
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::rc::Rc;
 
 use tilo_actions::{ActionContext, ActionError, ActionInvoker, OperationKind};
@@ -209,7 +209,30 @@ pub(crate) struct ChainState<P: Chained> {
     /// looked for a newer head and at the parts it waits for.
     looked: Cell<Option<u64>>,
     published: RefCell<Option<((u64, u64), tilo_actions::ResourceSpec)>>,
+    /// Actions asked for while the part they change was on its way from the
+    /// workspace ([`ChainState::apply_then`]), applied in order once it is here.
+    pending: RefCell<VecDeque<PendingWrite<P>>>,
 }
+
+/// An action that waits for the part it changes to arrive, with what to do
+/// once it was applied (the part's number) or refused.
+struct PendingWrite<P: Chained> {
+    action: P::Action,
+    invoker: ActionInvoker,
+    then: Box<dyn FnOnce(Result<u64, ActionError>)>,
+}
+
+/// What became of an action applied to the part it changes.
+enum Write {
+    /// Written into the part numbered first, creating the item resources
+    /// listed second.
+    Done(u64, Vec<String>),
+    /// The part is on its way from the workspace; nothing was written.
+    Arriving,
+}
+
+/// Why an action on a part still on its way is refused where it cannot wait.
+const PART_ARRIVING: &str = "the part is on its way from the workspace";
 
 impl<P: Chained> ChainState<P> {
     /// Hold the chain in `workspace`, with its head when this device has one.
@@ -247,6 +270,7 @@ impl<P: Chained> ChainState<P> {
             revision: Cell::new(0),
             looked: Cell::new(None),
             published: RefCell::new(None),
+            pending: RefCell::default(),
         };
         state.look();
         Some(state)
@@ -324,10 +348,63 @@ impl<P: Chained> ChainState<P> {
             moved |= self.look();
             moved |= self.follow_waiting();
         }
+        if self.workspace.store.takes_writes() {
+            self.apply_pending();
+        }
         if moved {
             self.moved();
         }
         moved
+    }
+
+    /// Apply the actions that wait for their part, in order, while their part
+    /// is here: what is still on its way waits on, and the ones after it too.
+    fn apply_pending(&self) {
+        let queue = match self.pending.try_borrow_mut() {
+            Ok(mut pending) if !pending.is_empty() => std::mem::take(&mut *pending),
+            _ => return,
+        };
+        let mut left = VecDeque::new();
+        for entry in queue {
+            if !left.is_empty() {
+                left.push_back(entry);
+                continue;
+            }
+            match self.try_apply(&entry.action, &entry.invoker) {
+                Ok(Write::Arriving) => left.push_back(entry),
+                Ok(Write::Done(index, _)) => (entry.then)(Ok(index)),
+                Err(error) => (entry.then)(Err(error)),
+            }
+        }
+        // Asked for while these were applied: after them.
+        let mut pending = self.pending.borrow_mut();
+        left.append(&mut pending);
+        *pending = left;
+    }
+
+    /// Apply `action`, invoked by `invoker`, as [`Self::apply_as`]; when the
+    /// part it changes is still on its way from the workspace (a device back
+    /// from away opening a conversation it holds), once that part is here.
+    /// `then` is told the part it was applied to, or why it was refused.
+    pub(crate) fn apply_then(
+        &self,
+        action: P::Action,
+        invoker: ActionInvoker,
+        then: impl FnOnce(Result<u64, ActionError>) + 'static,
+    ) {
+        // Behind the ones already waiting: actions are applied in the order asked.
+        if self.pending.borrow().is_empty() {
+            match self.try_apply(&action, &invoker) {
+                Ok(Write::Arriving) => {}
+                Ok(Write::Done(index, _)) => return then(Ok(index)),
+                Err(error) => return then(Err(error)),
+            }
+        }
+        self.pending.borrow_mut().push_back(PendingWrite {
+            action,
+            invoker,
+            then: Box::new(then),
+        });
     }
 
     /// Whether to look for a newer head and at the parts waited for now:
@@ -434,7 +511,7 @@ impl<P: Chained> ChainState<P> {
                     Ok(())
                 }
                 Opened::Asked => Err(Unopened {
-                    reason: "the part is on its way from the workspace".into(),
+                    reason: PART_ARRIVING.into(),
                     retry: false,
                 }),
             })
@@ -544,7 +621,7 @@ impl<P: Chained> ChainState<P> {
     fn start(&self, index: u64) -> Result<(), String> {
         match self.open_or_start(index) {
             Ok(Opened::Held | Opened::Started) => Ok(()),
-            Ok(Opened::Asked) => Err("the part is on its way from the workspace".into()),
+            Ok(Opened::Asked) => Err(PART_ARRIVING.into()),
             Err(error) => {
                 if error.retry {
                     // Another writer's write is done by the next refresh,
@@ -666,6 +743,15 @@ impl<P: Chained> ChainState<P> {
         action: &P::Action,
         invoker: &ActionInvoker,
     ) -> Result<(u64, Vec<String>), ActionError> {
+        match self.try_apply(action, invoker)? {
+            Write::Done(index, created) => Ok((index, created)),
+            Write::Arriving => Err(ActionError::Refused(PART_ARRIVING.into())),
+        }
+    }
+
+    /// [`Self::apply_answering`], telling a part on its way from the
+    /// workspace apart from a refusal.
+    fn try_apply(&self, action: &P::Action, invoker: &ActionInvoker) -> Result<Write, ActionError> {
         let mut action = action.clone();
         let base = (self.base)();
         P::prepare(&mut action, &base).map_err(ActionError::Refused)?;
@@ -717,15 +803,11 @@ impl<P: Chained> ChainState<P> {
                     self.carry(previous, index, invoker)?;
                 }
             }
-            Opened::Asked => {
-                return Err(ActionError::Refused(
-                    "the part is on its way from the workspace".into(),
-                ));
-            }
+            Opened::Asked => return Ok(Write::Arriving),
         }
         let encoded = tilo_resource::encode::<P>(&action)?;
         let created = self.write(index, &action, encoded, invoker, place)?;
-        Ok((index, created))
+        Ok(Write::Done(index, created))
     }
 
     /// Write into part `index`, just started after part `previous`, what it
@@ -1111,6 +1193,24 @@ impl<P: Chained> Chain<P> {
             .build(tilo_resource::origin_now_ms())
             .map_err(ActionError::Refused)?;
         self.apply(&action)
+    }
+
+    /// Apply what `invoke` names as the window's person, as [`Self::invoke`],
+    /// and tell `then` the part's number or why it was refused: at once, or,
+    /// while the part it changes is on its way from the workspace, once it
+    /// arrived. Actions are applied in the order they were asked for.
+    pub fn invoke_then(
+        &self,
+        invoke: &Invoke<P>,
+        then: impl FnOnce(Result<u64, ActionError>) + 'static,
+    ) {
+        let action = match invoke.build(tilo_resource::origin_now_ms()) {
+            Ok(action) => action,
+            Err(reason) => return then(Err(ActionError::Refused(reason))),
+        };
+        let me = self.dispatch.me().unwrap_or(&self.state.workspace.me);
+        self.state
+            .apply_then(action, ActionInvoker::actor(me), then);
     }
 
     /// Take back the window's person's last step in part `index`, through

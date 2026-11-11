@@ -720,7 +720,17 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
             if text.trim().is_empty() {
                 return Err(crate::i18n::t("chat-person-chat-empty"));
             }
-            chat.borrow().post_to_conversation(&id, text, Vec::new())?;
+            // Answered once the message is written: at once, or on a device back
+            // from away once the conversation it holds reached the app.
+            let reply = cx.reply();
+            let accepted = serde_json::json!({"peer": peer, "accepted": true});
+            chat.borrow()
+                .post_to_conversation_then(&id, text, move |posted| {
+                    reply.finish(posted.map(|()| tilo_actions::ActionOutput {
+                        value: Some(accepted),
+                        resources: Vec::new(),
+                    }));
+                });
             let mut chat = chat.borrow_mut();
             if chat.active_channel == id.as_str() {
                 let held = chat.held_messages();
@@ -728,9 +738,7 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
                 chat.scroll = 0.0;
                 chat.request_relayout();
             }
-            return Ok(ui::framework::Effected::value(
-                serde_json::json!({"peer": peer, "accepted": true}),
-            ));
+            return Ok(ui::framework::Effected::Pending);
         }
         ChatEffect::Send { to, attached, text } => {
             let state = cx.live().get();

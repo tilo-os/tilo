@@ -70,7 +70,12 @@ impl Chained for LogPart {
 
 /// One device's records of the log in its workspace.
 fn device() -> RecordStore {
-    RecordOwners::with_store(Rc::new(durable_store::MemoryStore::new()))
+    device_keeping(&Rc::new(durable_store::MemoryStore::new()))
+}
+
+/// [`device`], keeping its records in `memory`.
+fn device_keeping(memory: &Rc<durable_store::MemoryStore>) -> RecordStore {
+    RecordOwners::with_store(Rc::clone(memory) as Rc<dyn durable_store::DurableStore>)
         .open("so.tilo.test-chain-log", "workspace")
         .unwrap()
 }
@@ -283,4 +288,59 @@ fn an_item_looked_for_past_an_unavailable_part_is_not_found() {
         .reader
         .note_workspace_answered(LogPart::chain().part(1));
     assert_eq!(pager.settle(), Paged::NotFound);
+}
+
+/// A device back from away, its workspace still sending the head it holds: a
+/// line written meanwhile is not refused, it waits for the head and lands
+/// after what was written there while the device was away, answered then.
+/// (Three lines fill a part: all of these land in the head.)
+#[test]
+fn a_write_while_its_part_is_on_its_way_lands_once_the_part_arrived() {
+    use durable_store::{DurableStore as _, MemoryStore, StorageKey};
+    use std::cell::RefCell;
+
+    const APP: &str = "so.tilo.test-chain-log";
+    let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
+    let theirs = Rc::new(MemoryStore::new());
+    let writer = device_keeping(&theirs);
+    let writing = chain_in(&writer, "ada");
+    writing.invoke(&written("one")).unwrap();
+    let ours = Rc::new(MemoryStore::new());
+    let reader = device_keeping(&ours);
+    reader.ask_workspace_for_missing();
+    let chain = chain_in(&reader, "bo");
+    let answers: Rc<RefCell<Vec<Result<u64, String>>>> = Rc::default();
+    for text in ["two", "three"] {
+        let answers = Rc::clone(&answers);
+        chain.invoke_then(&written(text), move |answer| {
+            answers
+                .borrow_mut()
+                .push(answer.map_err(|error| error.to_string()));
+        });
+    }
+    assert!(answers.borrow().is_empty(), "both wait for the head");
+    assert!(chain.parts().is_empty(), "nothing was started in its place");
+    assert!(
+        chain.invoke(&written("now")).is_err(),
+        "a write that cannot wait is refused, not written into a part of its own"
+    );
+
+    // The workspace's part reaches the device's own copy of its records.
+    let key = StorageKey::record(APP, "workspace", LogPart::chain().part(0).storage_key());
+    let kept = theirs
+        .read(&key)
+        .unwrap()
+        .expect("the writer kept the part");
+    ours.hydrate(key, kept).unwrap();
+    reader.note_kept();
+    let lines: Vec<String> = texts(&chain.parts())
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(
+        *answers.borrow(),
+        [Ok(0), Ok(0)],
+        "each answered once written"
+    );
+    assert_eq!(lines, ["one", "two", "three"]);
 }

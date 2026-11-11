@@ -11,7 +11,7 @@
 
 use ui::framework::{Effected, LiveRow};
 use ui::tilo_resource::Effect as _;
-use ui::tilo_resource::Id;
+use ui::tilo_resource::{Id, Invoke};
 
 use crate::app::{ChatApp, Focus};
 use crate::effects::{ChatEffect, item_row_id};
@@ -119,23 +119,34 @@ impl ChatApp {
         text: &str,
         attachments: Vec<tilo_reference::Attached>,
     ) -> Result<(), String> {
-        let Some(chain) = &self.chain else {
-            return Err(crate::i18n::t("chat-direct-unavailable"));
-        };
-        chain
-            .invoke(&ChatPart::POST.with(chat_part::Post {
-                message: crate::messages::NewMessage {
-                    channel: id.clone(),
-                    text: text.to_owned(),
-                    parent: None,
-                    body: None,
-                    attachments,
-                    mentions: None,
-                    written: None,
-                },
-            }))
+        self.messages_chain()?
+            .invoke(&post(id, text, attachments))
             .map(drop)
             .map_err(|error| error.to_string())
+    }
+
+    /// Post `text` to the conversation `id`, as [`Self::post_to_conversation`],
+    /// and tell `then` whether it was taken: at once, or, on a device whose
+    /// messages are still on their way from the workspace (back from away),
+    /// once they are here and it was written after them.
+    pub(crate) fn post_to_conversation_then(
+        &self,
+        id: &Id,
+        text: &str,
+        then: impl FnOnce(Result<(), String>) + 'static,
+    ) {
+        match self.messages_chain() {
+            Ok(chain) => chain.invoke_then(&post(id, text, Vec::new()), move |posted| {
+                then(posted.map(drop).map_err(|error| error.to_string()));
+            }),
+            Err(unavailable) => then(Err(unavailable)),
+        }
+    }
+
+    fn messages_chain(&self) -> Result<&ui::framework::Chain<ChatPart>, String> {
+        self.chain
+            .as_ref()
+            .ok_or_else(|| crate::i18n::t("chat-direct-unavailable"))
     }
 
     /// Send what a window's box held: the words and everything they carry go
@@ -293,6 +304,21 @@ impl ChatApp {
             })
             .collect()
     }
+}
+
+/// The record's `post` of `text`, with what it carries, to the conversation `id`.
+fn post(id: &Id, text: &str, attachments: Vec<tilo_reference::Attached>) -> Invoke<ChatPart> {
+    ChatPart::POST.with(chat_part::Post {
+        message: crate::messages::NewMessage {
+            channel: id.clone(),
+            text: text.to_owned(),
+            parent: None,
+            body: None,
+            attachments,
+            mentions: None,
+            written: None,
+        },
+    })
 }
 
 #[cfg(test)]
