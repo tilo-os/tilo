@@ -1,9 +1,31 @@
 //! A fresh guest entering a crowded workspace through its door, as a new
 //! visitor's page enters the Lounge: the workspace has hundreds of members whose
-//! devices are in its channel group and megabytes of records, and the guest's
-//! page reaches the host only through its packet relay. What a person waits for
-//! is the desktop: the page is in when the host admitted it, its governance is
-//! here and the shared desktop record opened.
+//! devices are in its channel group and megabytes of records. What a person
+//! waits for is the desktop: the page is in when the host admitted it, its
+//! governance is here and the shared desktop record opened.
+//!
+//! A page reaches its host over the browser's WebTransport, so that is the
+//! way measured first: the native client opens its session as a browser's
+//! does, over a network that delays every datagram. A native device reaches
+//! its host over iroh, through the host's packet relay whenever no direct
+//! path opens; that way is measured beside it, with its own budget.
+//!
+//! What a browser does beyond the native client, and why the round trips
+//! counted here are still a browser's:
+//!
+//! - the QUIC handshake, its TLS inside it (one round trip): the same, the
+//!   native client verifies the host's certificate by its hash as a page's
+//!   `serverCertificateHashes` does;
+//! - HTTP/3's SETTINGS: a browser, like the native client, waits for the
+//!   host's before it asks for a WebTransport session, since they say
+//!   whether the host takes one. The host sends them with its handshake, so
+//!   that wait costs no round trip of its own;
+//! - the extended CONNECT that opens the session at its path (one round
+//!   trip): the same request, and the host writes the entry's binding as it
+//!   answers it, so the hello waits for nothing more;
+//! - a browser resolves the host's name first, and loaded the page over
+//!   HTTPS before any of this. Neither is the session's, and neither is
+//!   counted, as the iroh path counts neither.
 
 #![allow(
     clippy::unwrap_used,
@@ -108,10 +130,148 @@ impl tilo_session_host::HttpClient for Network<'_> {
     }
 }
 
-/// A network between the page and the host's packet relay: every byte each way
-/// arrives `round_trip / 2` after it was sent, in order, and the bytes that
-/// reach the page are counted. A page holds no UDP socket, so this is all of
-/// its session's path to the host.
+/// The network between a guest and its host, by the way the guest reaches
+/// it, counting what crosses it.
+enum Wire {
+    Datagrams(Datagrams),
+    Stream(Link),
+}
+
+impl Wire {
+    /// What reached the guest, and what it sent.
+    fn bytes(&self) -> (u64, u64) {
+        match self {
+            Self::Datagrams(datagrams) => datagrams.bytes(),
+            Self::Stream(link) => link.bytes(),
+        }
+    }
+}
+
+/// Print one chunk the wire carried, with when it was sent, when traced.
+fn trace_wire(way: &str, bytes: usize) {
+    if wire_traced() {
+        eprintln!(
+            "WIRE {:>9.1} {way:>4} {bytes}",
+            origin().elapsed().as_secs_f64() * 1000.0
+        );
+    }
+}
+
+/// A network between a page and the host's WebTransport listener: every
+/// datagram each way arrives `round_trip / 2` after it was sent, in order,
+/// and the bytes of those that reach the page are counted, as [`Link`] counts
+/// a stream's. One page's session crosses it: the first address to send is
+/// the page's.
+struct Datagrams {
+    addr: std::net::SocketAddr,
+    received: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+impl Datagrams {
+    async fn start(upstream: std::net::SocketAddr, round_trip: Duration) -> Self {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let page_side = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        let host_side = Arc::new(tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap());
+        host_side.connect(upstream).await.unwrap();
+        let addr = page_side.local_addr().unwrap();
+        let received = Arc::new(AtomicU64::new(0));
+        let sent = Arc::new(AtomicU64::new(0));
+        let page = Arc::new(std::sync::OnceLock::<std::net::SocketAddr>::new());
+        let delay = round_trip / 2;
+        // Up: from the page to the host, each datagram `delay` later.
+        let up = Self::delayed({
+            let host_side = host_side.clone();
+            move |datagram: Vec<u8>| {
+                let host_side = host_side.clone();
+                async move {
+                    let _ = host_side.send(&datagram).await;
+                }
+            }
+        });
+        {
+            let (page_side, page, sent) = (page_side.clone(), page.clone(), sent.clone());
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 64 * 1024];
+                while let Ok((read, from)) = page_side.recv_from(&mut buffer).await {
+                    if *page.get_or_init(|| from) != from {
+                        continue;
+                    }
+                    sent.fetch_add(read as u64, Ordering::Relaxed);
+                    trace_wire("up", read);
+                    let at = tokio::time::Instant::now() + delay;
+                    if up.send((at, buffer[..read].to_vec())).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        // Down: from the host to the page.
+        let down = Self::delayed({
+            move |datagram: Vec<u8>| {
+                let (page_side, page) = (page_side.clone(), page.get().copied());
+                async move {
+                    if let Some(page) = page {
+                        let _ = page_side.send_to(&datagram, page).await;
+                    }
+                }
+            }
+        });
+        {
+            let received = received.clone();
+            tokio::spawn(async move {
+                let mut buffer = vec![0u8; 64 * 1024];
+                while let Ok(read) = host_side.recv(&mut buffer).await {
+                    received.fetch_add(read as u64, Ordering::Relaxed);
+                    trace_wire("down", read);
+                    let at = tokio::time::Instant::now() + delay;
+                    if down.send((at, buffer[..read].to_vec())).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        Self {
+            addr,
+            received,
+            sent,
+        }
+    }
+
+    /// A queue whose datagrams `deliver` takes each at its time, in order.
+    fn delayed<F, Fut>(
+        deliver: F,
+    ) -> tokio::sync::mpsc::UnboundedSender<(tokio::time::Instant, Vec<u8>)>
+    where
+        F: Fn(Vec<u8>) -> Fut + Send + 'static,
+        Fut: Future<Output = ()> + Send,
+    {
+        let (queue, mut due) =
+            tokio::sync::mpsc::unbounded_channel::<(tokio::time::Instant, Vec<u8>)>();
+        tokio::spawn(async move {
+            while let Some((at, datagram)) = due.recv().await {
+                tokio::time::sleep_until(at).await;
+                deliver(datagram).await;
+            }
+        });
+        queue
+    }
+
+    fn bytes(&self) -> (u64, u64) {
+        use std::sync::atomic::Ordering;
+        (
+            self.received.load(Ordering::Relaxed),
+            self.sent.load(Ordering::Relaxed),
+        )
+    }
+}
+
+/// A network between a device and the host's packet relay: every byte each
+/// way arrives `round_trip / 2` after it was sent, in order, and the bytes
+/// that reach the device are counted. A device reaching its host only
+/// through the relay sends nothing else, so this is all of its session's
+/// path to the host.
 struct Link {
     addr: std::net::SocketAddr,
     received: std::sync::Arc<std::sync::atomic::AtomicU64>,
@@ -184,12 +344,7 @@ impl Link {
                 Ok(0) | Err(_) => break,
                 Ok(read) => {
                     counted.fetch_add(read as u64, std::sync::atomic::Ordering::Relaxed);
-                    if wire_traced() {
-                        eprintln!(
-                            "WIRE {:>9.1} {way:>4} {read}",
-                            origin().elapsed().as_secs_f64() * 1000.0
-                        );
-                    }
+                    trace_wire(way, read);
                     let at = tokio::time::Instant::now() + delay;
                     if queue.send((at, buffer[..read].to_vec())).is_err() {
                         break;
@@ -390,10 +545,6 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         seeded.elapsed()
     );
 
-    // A fresh guest, first over a network that costs nothing, then over one
-    // whose every round trip takes `ROUND_TRIP`: the first is what the host and
-    // the page spend, the second adds every round trip the guest waits through
-    // one after another.
     // What the site hands its page about the host, which its deployment asked
     // once, as `tilo-relay page-host` does: no guest asks it again.
     let site = tilo_relay_client::https::host_info(&*https)
@@ -416,63 +567,11 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         },
         chat: &chat_part(&lounge.workspace),
     };
-    let quick = guest_enters(&place, Duration::ZERO).await;
-    quick.report("no delay");
-    let slow = guest_enters(&place, ROUND_TRIP).await;
-    slow.report("round trip");
-    let round_trips = slow.shown.saturating_sub(COMPUTE).as_secs_f64() / ROUND_TRIP.as_secs_f64();
-    eprintln!(
-        "ENTRY shown at {:.0} ms with no delay, {:.0} ms at a {ROUND_TRIP:?} round trip: \
-         {round_trips:.1} round trips beside the compute allowance \
-         ({:.1} beside this run's own); {} HTTP requests; page received {} B, sent {} B",
-        quick.shown.as_secs_f64() * 1000.0,
-        slow.shown.as_secs_f64() * 1000.0,
-        slow.shown.saturating_sub(quick.shown).as_secs_f64() / ROUND_TRIP.as_secs_f64(),
-        slow.http.len(),
-        slow.received,
-        slow.sent
-    );
-    // The budget: what the host and the page spend, and the round trips the
-    // guest waits through one after another. A regression that adds a step in
-    // sequence, sends the whole workspace before the desktop, asks the host
-    // again or makes either side slower fails here.
-    assert!(
-        quick.shown <= COMPUTE,
-        "a fresh guest's desktop showed after {:?} on a network that costs nothing, more than \
-         {COMPUTE:?}",
-        quick.shown
-    );
-    let allowed = COMPUTE + ROUND_TRIP.mul_f64(MAX_ROUND_TRIPS);
-    assert!(
-        slow.shown <= allowed,
-        "a fresh guest's desktop showed after {:?} at a {ROUND_TRIP:?} round trip, more than \
-         {MAX_ROUND_TRIPS} round trips beside {COMPUTE:?} of compute ({allowed:?})",
-        slow.shown
-    );
-    // The entry carried the guest's request for the workspace's keys, so its
-    // Welcome is the first thing it downloads: the keys never wait behind the
-    // desktop they open.
-    assert!(
-        slow.keyed < slow.record && slow.keyed < slow.ready,
-        "the guest held the desktop's keys at {:?}, after its record at {:?} or the end of \
-         its replay at {:?}",
-        slow.keyed,
-        slow.record,
-        slow.ready
-    );
-    // Its site says who the host is, and the door and the admission ride
-    // the session: a fresh guest asks the host nothing over HTTPS.
-    assert!(
-        slow.http.is_empty(),
-        "a fresh guest asked the host over HTTPS: {:?}",
-        slow.http
-    );
-    for entry in [&quick, &slow] {
-        assert!(
-            entry.received <= MAX_BYTES,
-            "a fresh guest received {} B before its desktop showed, more than {MAX_BYTES} B",
-            entry.received
-        );
+    // A fresh guest each way a device reaches the host, at each of
+    // `ROUND_TRIPS`: with no delay, what the host and the page spend; with
+    // one, every round trip the guest waits through one after another.
+    for way in [Way::WebTransport, Way::PacketRelay] {
+        way.measure(&place).await;
     }
     for member in staying {
         member.close();
@@ -637,8 +736,127 @@ fn chat_part(workspace: &str) -> DocumentRoute {
     }
 }
 
-/// The network's round trip for the guest that counts them.
-const ROUND_TRIP: Duration = Duration::from_millis(400);
+/// The round trips a guest's entry is measured at: none, which is what the
+/// host and the page spend; a nearby visitor's; and a far one's, which
+/// counts the round trips the guest waits through one after another.
+const ROUND_TRIPS: [Duration; 3] = [
+    Duration::ZERO,
+    Duration::from_millis(70),
+    Duration::from_millis(400),
+];
+
+/// How a guest's device reaches the host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Way {
+    /// A page's way: the browser's WebTransport, to the host's listener.
+    WebTransport,
+    /// iroh through the host's packet relay alone: a native device's when
+    /// no direct path to the host opens.
+    PacketRelay,
+}
+
+impl Way {
+    /// How many round trips a fresh guest may wait this way, one after
+    /// another, beside [`COMPUTE`]: at every round trip of [`ROUND_TRIPS`]
+    /// the desktop shows within this many of it plus that allowance.
+    const fn round_trips(self) -> f64 {
+        match self {
+            Self::WebTransport => WEB_ROUND_TRIPS,
+            Self::PacketRelay => RELAYED_ROUND_TRIPS,
+        }
+    }
+
+    /// A fresh guest entering `place` this way at each of [`ROUND_TRIPS`],
+    /// held to [`COMPUTE`], this way's round trips beside it and
+    /// [`MAX_BYTES`]. A regression that adds a step in
+    /// sequence, sends the whole workspace before the desktop, asks the host
+    /// again or makes either side slower fails here.
+    async fn measure(self, place: &Place<'_>) {
+        let round_trips = self.round_trips();
+        let mut entries = Vec::new();
+        for round_trip in ROUND_TRIPS {
+            let entry = guest_enters(place, self, round_trip).await;
+            entry.report(&format!("{self:?}, {} ms", round_trip.as_millis()));
+            entries.push((round_trip, entry));
+        }
+        let far = ROUND_TRIPS[ROUND_TRIPS.len() - 1];
+        let (_, slow) = entries.last().unwrap();
+        eprintln!(
+            "ENTRY {self:?}: shown at {}; {:.1} round trips beside the compute allowance \
+             at {far:?}; page received {} B, sent {} B",
+            entries
+                .iter()
+                .map(|(round_trip, entry)| format!(
+                    "{:.0} ms at {} ms",
+                    entry.shown.as_secs_f64() * 1000.0,
+                    round_trip.as_millis()
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+            slow.shown.saturating_sub(COMPUTE).as_secs_f64() / far.as_secs_f64(),
+            slow.received,
+            slow.sent
+        );
+        for (round_trip, entry) in &entries {
+            let allowed = COMPUTE + round_trip.mul_f64(round_trips);
+            assert!(
+                entry.shown <= allowed,
+                "over {self:?}, a fresh guest's desktop showed after {:?} at a {round_trip:?} \
+                 round trip, more than {round_trips} round trips beside {COMPUTE:?} of compute \
+                 ({allowed:?})",
+                entry.shown
+            );
+            // Its site says who the host is, and the door and the admission
+            // ride the session: a fresh guest asks the host nothing over
+            // HTTPS.
+            assert!(
+                entry.http.is_empty(),
+                "over {self:?}, a fresh guest asked the host over HTTPS: {:?}",
+                entry.http
+            );
+            assert!(
+                entry.received <= MAX_BYTES,
+                "over {self:?}, a fresh guest received {} B before its desktop showed, more \
+                 than {MAX_BYTES} B",
+                entry.received
+            );
+        }
+        // The entry carried the guest's request for the workspace's keys, so
+        // its Welcome is the first thing it downloads: the keys never wait
+        // behind the desktop they open.
+        assert!(
+            slow.keyed < slow.record && slow.keyed < slow.ready,
+            "over {self:?}, the guest held the desktop's keys at {:?}, after its record at {:?} \
+             or the end of its replay at {:?}",
+            slow.keyed,
+            slow.record,
+            slow.ready
+        );
+    }
+}
+
+/// How many round trips a fresh guest's page may wait over WebTransport,
+/// one after another, beside [`COMPUTE`]. The slow entry is held to a fixed
+/// allowance rather than measured against the quick one (see
+/// [`RELAYED_ROUND_TRIPS`]). It counts:
+///
+/// - the QUIC handshake, with TLS inside it: 1. The host's HTTP/3 SETTINGS
+///   go out with its handshake, so the page asks for its session as the
+///   handshake completes;
+/// - the extended CONNECT that opens the session: 1. The host writes the
+///   entry's binding as it answers, so the hello waits for nothing more;
+/// - the hello, which carries the entry with its proof and the guest's first
+///   requests, and the host's answer with the Welcome first: 1;
+/// - the replay of governance and the desktop, about 0.75 MB for a crowd of
+///   300 that all hold the keys (see [`MAX_BYTES`]), from a 256 KiB initial
+///   window, paced over the round trip: 1.5 to 2.
+///
+/// Four and a half to five in all, of which the fixed allowance reads about
+/// three: the host and the page compute while the replay travels. At 400 ms
+/// the desktop shows in about 2.6 s, at 70 ms in about 1.55 s. Before the
+/// host sent its SETTINGS with its handshake and started from that window,
+/// the same entry took 4.1 s at 400 ms.
+const WEB_ROUND_TRIPS: f64 = 3.25;
 
 /// What the host and the page may spend on a fresh guest's entry, from its
 /// first request until its desktop shows: the session and the door (about
@@ -657,9 +875,9 @@ const ROUND_TRIP: Duration = Duration::from_millis(400);
 /// with its round trips beside it.
 const COMPUTE: Duration = Duration::from_millis(1_500);
 
-/// How many round trips a fresh guest may wait, one after another, beside
-/// [`COMPUTE`]: the slow entry's desktop shows within this many of
-/// [`ROUND_TRIP`] plus that allowance.
+/// How many round trips a fresh guest may wait over iroh through the packet
+/// relay, one after another, beside [`COMPUTE`]: the slow entry's desktop
+/// shows within this many of the round trip plus that allowance.
 ///
 /// The slow entry is not measured against the quick one, as it once was:
 /// host work that overlaps the slow entry's waits made the difference read
@@ -685,7 +903,7 @@ const COMPUTE: Duration = Duration::from_millis(1_500);
 /// The host's certificate takes none either: the page's site hands it over
 /// with the page. Four and a half in all, which the fixed allowance reads as
 /// about three and a half; at 400 ms the desktop shows in about 2.7 s.
-const MAX_ROUND_TRIPS: f64 = 3.5;
+const RELAYED_ROUND_TRIPS: f64 = 3.5;
 
 /// What a fresh guest may receive before its desktop shows, 0.75 to 0.84 MB
 /// for 300 members who all hold the keys: its Welcome first, once (about
@@ -746,36 +964,12 @@ impl Entry {
     }
 }
 
-/// A new visitor's page entering `place` through its door, over a network
-/// whose round trip is `round_trip`, until it shows the desktop.
-async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
-    let upstream = place
-        .relay
-        .socket_addrs(|| None)
-        .unwrap()
-        .into_iter()
-        .next()
-        .expect("the packet relay's address");
-    let link = Link::start(upstream, round_trip).await;
-    let mut relay: url::Url = (*place.relay).clone();
-    relay.set_port(Some(link.addr.port())).unwrap();
-    let network = Network {
-        inner: place.https,
-        round_trip,
-        asked: std::sync::Mutex::default(),
-    };
-    let started = Instant::now();
-    if wire_traced() {
-        eprintln!(
-            "WIRE {:>9.1} guest begins, round trip {round_trip:?}",
-            origin().elapsed().as_secs_f64() * 1000.0
-        );
-    }
-    let mut marks: Vec<(&'static str, Duration)> = Vec::new();
-    let root = new_key();
-    let key = new_key();
-    // The page's site says who the host is, so the page asks it nothing over HTTPS: its session
-    // enters through the door as it opens.
+/// A new visitor's page entering `place` through its door, the `way` it
+/// reaches the host, over a network whose round trip is `round_trip`, until
+/// it shows the desktop.
+async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entry {
+    // The page's site says who the host is, so the page asks it nothing over
+    // HTTPS: its session enters through the door as it opens.
     let named = place
         .site
         .address
@@ -785,8 +979,67 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     assert_eq!(
         named.relay_url.as_deref(),
         Some(place.relay.as_str()),
-        "the site names the packet relay pages reach the host through"
+        "the site names the packet relay a device reaches the host through"
     );
+    let (wire, host) = match way {
+        Way::WebTransport => {
+            // As a page reaches its host: the browser's WebTransport, to the
+            // listener the site names, verified by the certificate it names.
+            let web = named
+                .web
+                .clone()
+                .expect("the site names the host's WebTransport listener");
+            let mut origin: url::Url = web.origin.parse().unwrap();
+            let listener = origin
+                .socket_addrs(|| None)
+                .unwrap()
+                .into_iter()
+                .next()
+                .expect("the WebTransport listener's address");
+            let datagrams = Datagrams::start(listener, round_trip).await;
+            origin.set_port(Some(datagrams.addr.port())).unwrap();
+            let proxied = tilo_relay_protocol::web::WebLink {
+                origin: origin.as_str().trim_end_matches('/').to_owned(),
+                ..web
+            };
+            let host = Host::published(&named.clone().into())
+                .over(tilo_session_host::Carrier::WebTransport)
+                .with_web(Some(proxied));
+            (Wire::Datagrams(datagrams), host)
+        }
+        Way::PacketRelay => {
+            // Only through the relay, as a native device goes when no
+            // direct path to the host opens.
+            let upstream = place
+                .relay
+                .socket_addrs(|| None)
+                .unwrap()
+                .into_iter()
+                .next()
+                .expect("the packet relay's address");
+            let link = Link::start(upstream, round_trip).await;
+            let mut relay: url::Url = (*place.relay).clone();
+            relay.set_port(Some(link.addr.port())).unwrap();
+            let host = Host::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
+                .over(tilo_session_host::Carrier::Relay);
+            (Wire::Stream(link), host)
+        }
+    };
+    let network = Network {
+        inner: place.https,
+        round_trip,
+        asked: std::sync::Mutex::default(),
+    };
+    let started = Instant::now();
+    if wire_traced() {
+        eprintln!(
+            "WIRE {:>9.1} guest begins over {way:?}, round trip {round_trip:?}",
+            origin().elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    let mut marks: Vec<(&'static str, Duration)> = Vec::new();
+    let root = new_key();
+    let key = new_key();
     let (cert, entry) = door_entry(
         &place.site.host_cert,
         place.workspace,
@@ -803,10 +1056,7 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
     .unwrap();
     marks.push(("certificate made", started.elapsed()));
     let page = enter_page(
-        // Only through the relay, as a page reaches its host: it holds no UDP
-        // socket, so its session never takes a direct path.
-        Host::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
-            .over(tilo_session_host::Carrier::Relay),
+        host,
         cert,
         place.site.host_cert.clone(),
         key,
@@ -871,7 +1121,7 @@ async fn guest_enters(place: &Place<'_>, round_trip: Duration) -> Entry {
         tokio::time::sleep(Duration::from_millis(2)).await;
     }
     let shown = started.elapsed();
-    let (received, sent) = link.bytes();
+    let (received, sent) = wire.bytes();
     marks.push(("session connected", connected.unwrap_or_default()));
     marks.push(("door admitted the guest", admitted.unwrap_or_default()));
     marks.push(("host admitted the subscription", ready.unwrap_or(shown)));
