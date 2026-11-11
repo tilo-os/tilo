@@ -843,3 +843,111 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
         );
     }
 }
+
+// (8) The live run's failure: an agent asked to show the person their mails stood one Mail place of
+// the mailbox (the `Inbox` tab) and a second of a thread in it (the `sam@rivera.example` tab), so
+// the person had two windows of one mailbox. Opening a resource of a root already standing — the
+// root itself, or a view inside it — brings what stands forward, as activating what is shown does
+// (`shell.md` §3): one mailbox is open, whether opened by its root or by a message in it.
+#[test]
+fn the_open_brings_a_place_of_the_same_root_forward_rather_than_standing_a_second() {
+    let _settled = ui::motion::testing::settled();
+    let mut session = session();
+    step(&mut session);
+    // The app: a mailbox root and a thread inside it, as an app publishes its record.
+    struct Mail;
+    impl Published for Mail {
+        fn resources(&mut self) -> Vec<ResourceSpec> {
+            let mut root =
+                ResourceSpec::new("tl:so.tilo.lang.mail:root-a1b2c3", "mail.mail", "Mail")
+                    .with_action(view_action("open-mailbox"))
+                    .with_view(
+                        ResourceViewSpec::new("mailbox", "Mailbox", "open-mailbox")
+                            .with_primary(true),
+                    );
+            root.app_id = Some("so.tilo.lang.mail".to_owned());
+            let mut thread = ResourceSpec::new(
+                "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
+                "mail.thread",
+                "sam@rivera.example",
+            )
+            .with_action(view_action("open-thread"))
+            .with_view(ResourceViewSpec::new("thread", "Thread", "open-thread").with_primary(true));
+            thread.app_id = Some("so.tilo.lang.mail".to_owned());
+            let mut other = ResourceSpec::new(
+                "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01",
+                "mail.thread",
+                "news@example",
+            )
+            .with_action(view_action("open-news"))
+            .with_view(ResourceViewSpec::new("thread", "Thread", "open-news").with_primary(true));
+            other.app_id = Some("so.tilo.lang.mail".to_owned());
+            vec![root.with_child(thread), other]
+        }
+
+        fn invoke(
+            &mut self,
+            _: &ActionAddress,
+            _: &serde_json::Map<String, serde_json::Value>,
+            _: &mut tilo_surface_host::Look<'_>,
+        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::DoorError> {
+            Ok(ui::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ))
+        }
+
+        fn accessible_labels(&mut self) -> Vec<String> {
+            Vec::new()
+        }
+    }
+    session.publish(Rc::new(std::cell::RefCell::new(Mail)));
+    step(&mut session);
+    step(&mut session);
+    let open = |session: &mut Session, resource: &str| {
+        session
+            .invoke(
+                "shell:arrangement",
+                "open",
+                serde_json::json!({ "resource": resource })
+                    .as_object()
+                    .expect("arguments"),
+            )
+            .expect("the open runs");
+    };
+    let places_of = |session: &Session, prefix: &str| {
+        arrangement(session)
+            .places
+            .into_iter()
+            .filter(|held| held.record.starts_with(prefix))
+            .count()
+    };
+
+    // The mailbox opens once, and a thread in it brings that place forward rather than a second.
+    open(&mut session, "tl:so.tilo.lang.mail:root-a1b2c3");
+    settle(&mut session, |session| {
+        places_of(session, "tl:so.tilo.lang.mail:root-a1b2c3") == 1
+    });
+    open(
+        &mut session,
+        "tl:so.tilo.lang.mail:root-a1b2c3/ie99c2c19-72",
+    );
+    step(&mut session);
+    step(&mut session);
+    assert_eq!(
+        places_of(&session, "tl:so.tilo.lang.mail:root-a1b2c3"),
+        1,
+        "one mailbox is open: {:?}",
+        arrangement(&session).places
+    );
+
+    // A thread of another root of the same app is the other mailbox, and opens in its own place.
+    open(&mut session, "tl:so.tilo.lang.mail:root-z9y8x7/ie77ac1f-01");
+    settle(&mut session, |session| {
+        places_of(session, "tl:so.tilo.lang.mail:root-z9y8x7") == 1
+    });
+    assert_eq!(
+        places_of(&session, "tl:so.tilo.lang.mail:root-a1b2c3"),
+        1,
+        "the other root's thread stands beside the first mailbox, not over it"
+    );
+}

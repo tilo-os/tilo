@@ -502,7 +502,6 @@ impl Arrangement {
             .max()
             .unwrap_or(0)
             .saturating_add(gap);
-        let rows = foot.saturating_sub(below).saturating_div(step_y.max(1));
         // The trailing side at the anchor's own line first: what a person opening something
         // beside where they are expects to see.
         for (x, y) in [
@@ -515,8 +514,10 @@ impl Arrangement {
                 return place;
             }
         }
-        for row in 1..=rows.try_into().unwrap_or(u32::MAX) {
-            let drop = i64::from(row).saturating_mul(step_y);
+        // One row down at a time, along the two columns the anchor starts, until both stand past
+        // every obstacle's foot: `step_y` is at least the gap, so the walk always ends.
+        let mut drop = step_y;
+        while drop <= foot.saturating_sub(below) {
             for (x, y) in [
                 (right, i64::from(subject.y).saturating_add(drop)),
                 (i64::from(subject.x), below.saturating_add(drop)),
@@ -526,6 +527,7 @@ impl Arrangement {
                     return place;
                 }
             }
+            drop = drop.saturating_add(step_y);
         }
         // Every row the obstacles reach is taken: continue down the trailing column.
         let mut y = below;

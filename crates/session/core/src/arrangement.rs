@@ -445,6 +445,28 @@ fn inside(resource: &str, other: &str) -> bool {
             .is_some_and(|rest| rest.starts_with('/'))
 }
 
+/// The root a resource of an app belongs to, when it is one the app publishes a root for:
+/// `root-<type>` after the app's own id, so `tl:so.tilo.lang.mail:root-su4h67i5/ie99c2c19-72`
+/// has the root `tl:so.tilo.lang.mail:root-su4h67i5`. `None` for a resource with no app id or no
+/// `root-` segment, and for a root itself.
+fn root_of(resource: &str) -> Option<&str> {
+    let rest = resource.strip_prefix("tl:")?;
+    let (app, doc) = rest.split_once(':')?;
+    if app.is_empty() {
+        return None;
+    }
+    // The root is the `root-<type>` segment at the front of the document's path: everything from
+    // the app's id through that segment, and no further. A split of the resource at the segment's
+    // end names it whole, so no length is added up.
+    let head = doc.split('/').next()?;
+    if !head.starts_with("root-") {
+        return None;
+    }
+    let (prefix, _) = resource.split_once(head)?;
+    let end = prefix.len().checked_add(head.len())?;
+    resource.get(..end)
+}
+
 /// A resource as the arrangement makes a place of it: the app publishing it, its views (the primary
 /// first when it declares one), and what it is called. What `place` resolves a resource id against,
 /// from what the session publishes now.
@@ -813,6 +835,29 @@ impl Arrangement {
         })
     }
 
+    /// The place already showing `resource` or anything of its root, if one stands: what opening a
+    /// mailbox, a conversation, a notebook or one of its entries brings forward rather than standing
+    /// a second place of the same app's record (`shell.md` §3, "Activating something already shown
+    /// goes to it"). Opening the root and then one view inside it is one thing open, not two.
+    #[must_use]
+    pub fn place_of_root(&self, resource: &str) -> Option<u64> {
+        let records = self.records();
+        let root = root_of(resource);
+        self.handle.read(|tree| {
+            tree.workspaces
+                .iter()
+                .flat_map(|workspace| workspace.strips.iter())
+                .flat_map(|row| row.window_groups.iter())
+                .flat_map(|group| group.tabs.iter())
+                .find(|tab| {
+                    records.get(&tab.id).is_some_and(|held| {
+                        held == resource || (root.is_some() && root_of(held) == root)
+                    })
+                })
+                .map(|tab| tab.id)
+        })
+    }
+
     /// Show the resource `resource` as the app the session itself runs shows it
     /// (`docs/designs/app-language/one-app-model.md` §3): a place of the person's arrangement in
     /// `workspace`, drawn by the shell from what the session publishes, exactly as a place made by
@@ -891,9 +936,10 @@ impl Arrangement {
         view: &str,
         beside: &str,
     ) -> Result<Option<u64>, String> {
-        if let Some(held) = self.place_of(resource) {
-            // Opening what is open brings it forward; one already in front is where it should be,
-            // and asking to activate it again would refuse ("that place is in front already").
+        if let Some(held) = self.place_of_root(resource) {
+            // Opening what is open, or a view of what is open, brings that place forward; one
+            // already in front is where it should be, and asking to activate it again would refuse
+            // ("that place is in front already").
             self.bring_forward(asked, held, Busy::default())?;
             return Ok(None);
         }
@@ -1359,25 +1405,7 @@ fn change(
             Ok(changed)
         }
         ArrangementAction::Position { place, x, y } => {
-            let Some((workspace, row, group, _)) = locate(tree, *place) else {
-                return Err("that place is not in the arrangement".into());
-            };
-            let Some(id) = tree
-                .workspaces
-                .get(workspace)
-                .and_then(|held| held.strips.get(row))
-                .and_then(|row| row.window_groups.get(group))
-                .map(|group| group.id)
-            else {
-                return Err("that place is not in the arrangement".into());
-            };
-            let Some(held) = tree.workspaces.get_mut(workspace) else {
-                return Err("that place is not in the arrangement".into());
-            };
-            let changed = held
-                .arrangement
-                .set_position(id, clamp_coord(*x), clamp_coord(*y));
-            Ok(changed)
+            position(tree, *place, clamp_coord(*x), clamp_coord(*y))
         }
         // Resolved into a `Place` at invocation, where the system's search and what is published
         // now are; the record never holds the words.
@@ -1423,6 +1451,26 @@ fn change(
             snap_back(tree, *place, *row, *before, by_the_person)
         }
     }
+}
+
+/// Move the place `place` to `(x, y)` on its workspace's canvas. Whether the desk changed.
+fn position(tree: &mut DesktopTree, place: u64, x: i32, y: i32) -> Result<bool, String> {
+    let Some((workspace, row, group, _)) = locate(tree, place) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(id) = tree
+        .workspaces
+        .get(workspace)
+        .and_then(|held| held.strips.get(row))
+        .and_then(|row| row.window_groups.get(group))
+        .map(|group| group.id)
+    else {
+        return Err("that place is not in the arrangement".into());
+    };
+    let Some(held) = tree.workspaces.get_mut(workspace) else {
+        return Err("that place is not in the arrangement".into());
+    };
+    Ok(held.arrangement.set_position(id, x, y))
 }
 
 /// Float the place `place` above its workspace's windows at `float` .
