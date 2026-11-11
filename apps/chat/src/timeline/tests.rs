@@ -312,3 +312,77 @@ fn a_received_message_lays_out_and_draws_only_its_row() {
     }
     eprintln!("{report}received message (sync, draw): {took:?}");
 }
+
+#[test]
+fn a_channel_keeps_its_answers_in_a_thread_and_a_direct_conversation_shows_them_inline() {
+    use crate::record::{Chat, Participant};
+    use ui::tilo_resource::Id;
+
+    let doc = crate::testing::demo_doc();
+    let mut app = ChatApp::new_ephemeral();
+    app.attach_workspace(&doc);
+    app.reload(&doc);
+    let mut frames = Frames::new();
+
+    // `#design-crit` holds the three answers to one message as a thread: the
+    // timeline shows the message they answer, and the link into them.
+    let chat = crate::projection::read(&doc.chat);
+    app.open_conversation(&Id::from_raw("c_crit"), &chat);
+    assert!(app.keeps_threads(), "a channel keeps its threads");
+    let (_, shown) = frames.draw(&mut app);
+    assert!(shown.contains(&"m_concept".to_owned()), "{shown:?}");
+    assert!(
+        !shown.iter().any(|id| id.starts_with("m_thread_")),
+        "the channel's answers stay behind their thread: {shown:?}"
+    );
+
+    // The same workspace, spoken into a conversation with an agent: the
+    // person's message and the agent's answer to it stand in the timeline,
+    // in the order they were written.
+    let mut doc = doc;
+    let dm = Chat::direct_id([
+        Participant::person(crate::model::ME),
+        Participant::agent("notes"),
+    ]);
+    let asked = crate::testing::say(
+        &mut doc,
+        crate::model::ME,
+        dm.as_str(),
+        "Fasse die Besprechungsnotizen zusammen.",
+    );
+    crate::testing::apply_part_as(
+        &mut doc,
+        "agent:notes",
+        crate::demo::post(
+            dm.as_str(),
+            "Drei Punkte: Budget steht, Termin am Freitag, Ada schreibt das Protokoll.",
+            Some(&asked),
+        ),
+    )
+    .expect("the agent answers");
+    app.reload(&doc);
+    let chat = crate::projection::read(&doc.chat);
+    app.open_agent("notes", &chat);
+    assert!(
+        !app.keeps_threads(),
+        "a direct conversation has no threads to fold its answers into"
+    );
+    let answered = app
+        .messages
+        .iter()
+        .find(|message| message.author.as_str() == "agent:notes")
+        .map(|message| message.id.clone())
+        .expect("the conversation holds the agent's answer");
+    let (_, shown) = frames.draw(&mut app);
+    let asked_at = shown.iter().position(|id| *id == asked);
+    let answered_at = shown.iter().position(|id| *id == answered);
+    assert!(
+        asked_at.is_some() && answered_at > asked_at,
+        "the answer shows under the message it answers: {shown:?}"
+    );
+    assert!(
+        !app.bar_actions(&asked)
+            .contains(&crate::app::MenuAction::ReplyInThread),
+        "an answer is not hidden behind a thread the conversation does not have"
+    );
+}

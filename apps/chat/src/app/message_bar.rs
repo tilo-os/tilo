@@ -137,6 +137,9 @@ impl ChatApp {
         };
         let mine = self.is_me(&message.author);
         let mut actions = vec![MenuAction::AddReaction, MenuAction::ReplyInThread];
+        if !self.keeps_threads() {
+            actions.retain(|action| *action != MenuAction::ReplyInThread);
+        }
         if mine {
             actions.push(MenuAction::EditMessage);
         }
@@ -201,6 +204,11 @@ impl ChatApp {
                 .position(|action| *action == MenuAction::CopyText)
                 .map_or(items.len(), |at| at + 1);
             items.insert(at, MenuAction::CopyLink);
+        }
+        // A direct conversation has no thread to reply in: its answers stand
+        // where they were written.
+        if !self.keeps_threads() {
+            items.retain(|action| *action != MenuAction::ReplyInThread);
         }
         // The menu is about the message, so a box it opens sends the message itself: the item of
         // Chat's record, as its row publishes it.

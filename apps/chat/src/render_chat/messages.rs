@@ -583,7 +583,9 @@ impl ChatApp {
         } else {
             0.0
         };
-        let thread_h = if model::reply_count(&self.messages, &m.id) > 0 {
+        // A channel's thread link; a direct conversation shows the answers
+        // themselves, so it has no thread to open.
+        let thread_h = if self.keeps_threads() && model::reply_count(&self.messages, &m.id) > 0 {
             thread_bar_h(theme) + f64::from(sp.s2)
         } else {
             0.0

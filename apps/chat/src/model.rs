@@ -658,7 +658,7 @@ pub enum AgentWorkState {
     Refused,
 }
 
-/// A run of consecutive top-level messages by one author shown as a single
+/// A run of consecutive messages by one author shown as a single
 /// avatar + name header followed by stacked bodies.
 #[derive(Clone, Debug)]
 pub struct MessageGroup {
@@ -667,16 +667,19 @@ pub struct MessageGroup {
     pub message_indices: Vec<usize>,
 }
 
-/// Group consecutive **top-level** messages (parent == None) by the same
-/// author, shown the same way, within [`GROUP_WINDOW_SECS`]. A bridge's
-/// lines are all its own but each shows the outside person who wrote it,
-/// so a line in another appearance starts a group of its own. Threaded
-/// replies are excluded — they render inside the thread panel, not the
-/// main timeline.
-pub fn group_messages(messages: &[Message]) -> Vec<MessageGroup> {
+/// Group consecutive messages by the same author, shown the same way, within
+/// [`GROUP_WINDOW_SECS`]. A bridge's lines are all its own but each shows the
+/// outside person who wrote it, so a line in another appearance starts a
+/// group of its own.
+///
+/// With `threads`, a channel's replies (parent != None) are left out: they
+/// render inside the thread panel. Without it, as a direct conversation shows
+/// them, a reply stands where it was written, in time order among the
+/// messages around it, and groups like any other message.
+pub fn group_messages(messages: &[Message], threads: bool) -> Vec<MessageGroup> {
     let mut groups: Vec<MessageGroup> = Vec::new();
     for (i, m) in messages.iter().enumerate() {
-        if !m.is_top_level() {
+        if threads && !m.is_top_level() {
             continue;
         }
         let extend = groups.last().is_some_and(|g| {
@@ -779,7 +782,7 @@ mod tests {
                 msg("b", "u1", 60, None),
                 msg("c", "u1", 120, None),
             ];
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].message_indices, vec![0, 1, 2]);
         }
@@ -790,7 +793,7 @@ mod tests {
                 msg("b", "u2", 30, None),       // author change
                 msg("c", "u2", 30 + 999, None), // gap > window
             ];
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 3);
         }
         // A bridge's lines split by the outside person each shows.
@@ -810,7 +813,7 @@ mod tests {
             msgs[0].appearance = shown("kim");
             msgs[1].appearance = shown("kim");
             msgs[2].appearance = shown("rae");
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 2);
             assert_eq!(groups[0].message_indices, vec![0, 1]);
             assert_eq!(groups[1].message_indices, vec![2]);
@@ -821,9 +824,21 @@ mod tests {
                 msg("a", "u1", 0, None),
                 msg("r", "u1", 10, Some("a")), // reply — not in the timeline
             ];
-            let groups = group_messages(&msgs);
+            let groups = group_messages(&msgs, true);
             assert_eq!(groups.len(), 1);
             assert_eq!(groups[0].message_indices, vec![0]);
+        }
+        // A direct conversation shows its replies among the messages they
+        // answer, in time order, whoever wrote them.
+        {
+            let msgs = vec![
+                msg("a", "u1", 0, None),
+                msg("r", "u2", 10, Some("a")),
+                msg("b", "u1", 20, None),
+            ];
+            let groups = group_messages(&msgs, false);
+            assert_eq!(groups.len(), 3);
+            assert_eq!(groups[1].message_indices, vec![1]);
         }
         // Phase: reply_count_and_participants.
         {

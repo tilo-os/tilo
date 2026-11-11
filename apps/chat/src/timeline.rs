@@ -152,9 +152,10 @@ impl Timeline {
         &self.shown
     }
 
-    /// Fingerprint the messages again when they changed.
-    fn refresh(&mut self, revision: u64, messages: &[Message]) {
-        let seen = (revision, messages.as_ptr().addr(), messages.len());
+    /// Fingerprint the messages again when they changed, or when the open
+    /// conversation shows them another way (its replies in threads or inline).
+    fn refresh(&mut self, revision: u64, messages: &[Message], threads: bool) {
+        let seen = (revision, messages.as_ptr().addr(), messages.len(), threads);
         if self.seen == Some(seen) {
             return;
         }
@@ -176,7 +177,7 @@ impl Timeline {
             }
             self.fingerprints.insert(m.id.clone(), (kept, fingerprint));
         }
-        self.groups = model::group_messages(messages);
+        self.groups = model::group_messages(messages, threads);
         let fingerprints = &self.fingerprints;
         self.rows.retain(|id, _| fingerprints.contains_key(id));
     }
@@ -197,7 +198,7 @@ impl ChatApp {
     /// its messages, and the timeline's counts restarted for a frame.
     pub(crate) fn timeline_groups(&self) -> Vec<model::MessageGroup> {
         let mut timeline = self.timeline.borrow_mut();
-        timeline.refresh(self.messages_revision, &self.messages);
+        timeline.refresh(self.messages_revision, &self.messages, self.keeps_threads());
         timeline.frame += 1;
         timeline.counts = TimelineCounts::default();
         timeline.shown.clear();
@@ -220,7 +221,7 @@ impl ChatApp {
         }
         let key = {
             let mut timeline = self.timeline.borrow_mut();
-            timeline.refresh(self.messages_revision, &self.messages);
+            timeline.refresh(self.messages_revision, &self.messages, self.keeps_threads());
             let checked = (
                 timeline.frame,
                 text_w.to_bits(),

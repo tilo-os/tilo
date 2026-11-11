@@ -901,7 +901,7 @@ mod tests {
             line("b", start.saturating_add(3_600)),
             line("c", start.saturating_add(4 * 86_400)),
         ];
-        let groups = crate::model::group_messages(&app.messages);
+        let groups = crate::model::group_messages(&app.messages, true);
         let clock = ui::widget::ConversationClock::at(0, start);
         let (items, _) = app.measure_message_rows(&mut text, &theme, &groups, 400.0, clock);
         let dividers = items

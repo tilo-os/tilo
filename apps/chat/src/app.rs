@@ -1337,6 +1337,15 @@ impl ChatApp {
         self.messages.iter().find(|m| m.id == id)
     }
 
+    /// Whether the open conversation keeps its replies in threads: the
+    /// workspace's channels do, and a direct conversation shows every answer
+    /// where it was written instead, among the messages around it.
+    pub(crate) fn keeps_threads(&self) -> bool {
+        !self
+            .channel(&self.active_channel)
+            .is_some_and(|conversation| conversation.direct)
+    }
+
     /// The workspace's channels, ordered. Archived channels are hidden from the
     /// sidebar (they stay in the document and are reachable via Ctrl+K).
     pub(crate) fn ws_channels(&self) -> Vec<&Channel> {
