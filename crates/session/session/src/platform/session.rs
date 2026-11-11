@@ -1586,7 +1586,7 @@ impl Session {
             keyboard_starts: 0,
             quick_settings_run: crate::quick_settings::Run::Down,
             quick_settings_starts: 0,
-            quick_settings_keyboard: false,
+            quick_settings_keyboard: crate::quick_settings::PanelKeys::Settled,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             action_plane,

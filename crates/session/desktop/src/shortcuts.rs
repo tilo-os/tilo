@@ -87,7 +87,8 @@ fn readings(logical_key: &Key, modifiers: Modifiers) -> impl Iterator<Item = Mod
     let typed_mark = matches!(logical_key, Key::Character(text)
         if text.chars().count() == 1
             && text.chars().all(|ch| ch.is_ascii_punctuation()));
-    let layouts = (typed_mark && state.shift_key()).then(|| (state - ModifiersState::SHIFT).into());
+    let layouts =
+        (typed_mark && state.shift_key()).then(|| state.difference(ModifiersState::SHIFT).into());
     layouts.into_iter().chain(std::iter::once(modifiers))
 }
 

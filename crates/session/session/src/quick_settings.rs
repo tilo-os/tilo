@@ -90,6 +90,14 @@ pub enum Run {
     },
 }
 
+/// Whether the panel, opened for its controls, is still to take the keyboard once its surface
+/// stands, or that is settled: it took it, or the field the person types in keeps it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PanelKeys {
+    Wanted,
+    Settled,
+}
+
 /// The panel's own coming and going, which the compositor draws for it: its app is another
 /// process's layer surface, hidden here between openings, so it cannot tell an opening from a
 /// hiding and draws as it stands. The session poses it on the toolkit's [`Appear`] motion instead,
@@ -187,7 +195,7 @@ impl crate::Session {
             // Asked again when the panel opens again, a panel that would not stay up is tried
             // afresh.
             self.quick_settings_starts = 0;
-            self.quick_settings_keyboard = false;
+            self.quick_settings_keyboard = PanelKeys::Settled;
             self.shared.panel_asks.borrow_mut().clear();
             self.shared.panel_back.set(None);
             return;
@@ -269,11 +277,22 @@ impl crate::Session {
         // section. Opened to paste, the field the person types in keeps it, so the copy they
         // choose lands there.
         if opening {
-            self.quick_settings_keyboard = !asked.contains(&"paste");
+            self.quick_settings_keyboard = if asked.contains(&"paste") {
+                PanelKeys::Settled
+            } else {
+                PanelKeys::Wanted
+            };
         }
-        if self.quick_settings_keyboard && self.compositor.lend_layer_keyboard(SURFACE_NAMESPACE) {
-            self.quick_settings_keyboard = false;
+        if self.quick_settings_keyboard == PanelKeys::Wanted
+            && self.compositor.lend_layer_keyboard(SURFACE_NAMESPACE)
+        {
+            self.quick_settings_keyboard = PanelKeys::Settled;
         }
+        self.ask_panel(asked);
+    }
+
+    /// Tell the running panel what the keys asked of it, in order.
+    fn ask_panel(&mut self, asked: Vec<&'static str>) {
         for action in asked {
             let id = self.ask_surface(
                 SURFACE,
