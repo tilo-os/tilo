@@ -34,8 +34,8 @@ use ui::theme::Theme;
 use ui::tokens::TextRole;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ContextMenu, ControlSize, EditOutcome, EditableLabel,
-    FlapState, MenuItem, ModalAction, ModalHit, ModalLayout, ModalSpec, SplitLayout, Widget,
-    modal_dialog,
+    FlapState, InputHint, MenuItem, ModalAction, ModalHit, ModalLayout, ModalSpec, SplitLayout,
+    Widget, modal_dialog,
 };
 
 use crate::actions::VideoResourceCtx;
@@ -2453,10 +2453,10 @@ impl VideoEditorApp {
         }
         match self.mix.hold_db() {
             Some(db) => Some(format!("Mix peak {db:.1} dB")),
-            // Silence and "nobody has listened" look identical on a meter,
-            // and telling someone their levels are fine when nothing has been
-            // measured would be the same silent failure in a nicer voice.
-            None => Some("Levels not measured — play the timeline to check".into()),
+            // Silence and "nobody has listened" look identical on a meter.
+            // A meter with no reading is why the line is here at all, so it
+            // says the one thing that changes it.
+            None => Some("Play the timeline to measure levels".into()),
         }
     }
 
@@ -5913,8 +5913,8 @@ struct HelpLayout {
     /// One entry per group, in [`shortcuts`] order.
     groups: Vec<HelpGroupLayout>,
     /// Where a row's description starts, measured from its column's left
-    /// edge: the widest key combination in the table plus one spacing step,
-    /// so no description ever starts inside a combination.
+    /// edge: the widest row of keycaps in the table plus one spacing step,
+    /// so no description ever starts inside a key.
     what_dx: f64,
     /// How far the body can scroll: the table's height past the body, or 0
     /// when the window holds the whole sheet.
@@ -5946,7 +5946,7 @@ struct GotoLayout {
 struct HelpMetrics {
     /// A group heading's line and the step down to its first row.
     header_h: f64,
-    /// One shortcut row: its line and the step to the next.
+    /// One shortcut row: its line or its keycaps, and the step to the next.
     row_h: f64,
     /// The gap after a group's last row.
     group_gap: f64,
@@ -7362,6 +7362,16 @@ impl VideoEditorApp {
     }
 }
 
+/// One row of the shortcut sheet: the keys that run it and what it does.
+pub(crate) struct ShortcutRow {
+    /// The key or chord templates that run it, spelled for this platform and
+    /// the person's keyboard. Two or more are alternatives, which the sheet
+    /// paints as separate keycaps — never as one string joined by a separator.
+    pub keys: &'static [&'static str],
+    /// What pressing them does.
+    pub what: String,
+}
+
 /// The keyboard shortcuts the editor answers to, grouped as the sheet shows
 /// them. Fifteen shortcuts existed and none of them were written down anywhere
 /// in the product; a sheet is also how a reader user learns they exist at all,
@@ -7370,69 +7380,82 @@ impl VideoEditorApp {
     clippy::literal_string_with_formatting_args,
     reason = "the braces spell a key as the keyboard prints it, not format arguments"
 )]
-pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, String)>)> {
+pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<ShortcutRow>)> {
     let t = |key: &str| crate::resource::CATALOG.t(key);
+    let row = |keys: &'static [&'static str], what: String| ShortcutRow { keys, what };
     vec![
         (
             "video-editor-shortcut-project",
             vec![
-                ("{cmd:O}", t("video-editor-shortcut-open-project")),
-                ("{cmd+shift:S}", t("video-editor-shortcut-export-project")),
-                ("{cmd+shift:O}", t("video-editor-shortcut-import-media")),
-                ("{cmd:E}", t("video-editor-shortcut-export-video")),
+                row(&["{cmd:O}"], t("video-editor-shortcut-open-project")),
+                row(
+                    &["{cmd+shift:S}"],
+                    t("video-editor-shortcut-export-project"),
+                ),
+                row(&["{cmd+shift:O}"], t("video-editor-shortcut-import-media")),
+                row(&["{cmd:E}"], t("video-editor-shortcut-export-video")),
             ],
         ),
         (
             "video-editor-shortcut-playback",
             vec![
-                ("Space", t("video-editor-shortcut-play-pause")),
-                ("J / K / L", t("video-editor-shortcut-shuttle")),
-                ("Home / End", t("video-editor-shortcut-jump-start-end")),
-                (", / .", t("video-editor-shortcut-marker-step")),
-                ("C", t("video-editor-shortcut-clipped")),
-                ("G", t("video-editor-shortcut-timecode")),
+                row(&["Space"], t("video-editor-shortcut-play-pause")),
+                row(&["J", "K", "L"], t("video-editor-shortcut-shuttle")),
+                row(&["Home", "End"], t("video-editor-shortcut-jump-start-end")),
+                row(&[",", "."], t("video-editor-shortcut-marker-step")),
+                row(&["C"], t("video-editor-shortcut-clipped")),
+                row(&["G"], t("video-editor-shortcut-timecode")),
             ],
         ),
         (
             "video-editor-shortcut-editing",
             vec![
-                ("I / O", t("video-editor-shortcut-trim")),
-                ("Shift+I / O", t("video-editor-shortcut-mark-range")),
-                ("Shift+X", t("video-editor-shortcut-clear-range")),
-                ("S", t("video-editor-shortcut-split")),
-                ("M", t("video-editor-shortcut-add-marker")),
-                ("T", t("video-editor-shortcut-add-title")),
-                ("Delete", t("video-editor-shortcut-delete-clip")),
-                ("Shift+Delete", t("video-editor-shortcut-ripple-delete")),
-                ("Arrows", t("video-editor-shortcut-nudge")),
+                row(&["I", "O"], t("video-editor-shortcut-trim")),
+                row(
+                    &["{shift:I}", "{shift:O}"],
+                    t("video-editor-shortcut-mark-range"),
+                ),
+                row(&["{shift:X}"], t("video-editor-shortcut-clear-range")),
+                row(&["S"], t("video-editor-shortcut-split")),
+                row(&["M"], t("video-editor-shortcut-add-marker")),
+                row(&["T"], t("video-editor-shortcut-add-title")),
+                row(&["Delete"], t("video-editor-shortcut-delete-clip")),
+                row(
+                    &["{shift:Delete}"],
+                    t("video-editor-shortcut-ripple-delete"),
+                ),
+                row(&["Arrows"], t("video-editor-shortcut-nudge")),
             ],
         ),
         (
             "video-editor-shortcut-clipboard",
             vec![
-                (
-                    "{cmd:X} / {cmd:C} / {cmd:V}",
+                row(
+                    &["{cmd:X}", "{cmd:C}", "{cmd:V}"],
                     t("video-editor-shortcut-cut-copy-paste"),
                 ),
-                ("{cmd:D}", t("video-editor-shortcut-duplicate")),
-                ("{cmd:A}", t("video-editor-shortcut-select-all")),
-                ("{cmd:Z}", t("video-editor-shortcut-undo")),
+                row(&["{cmd:D}"], t("video-editor-shortcut-duplicate")),
+                row(&["{cmd:A}"], t("video-editor-shortcut-select-all")),
+                row(&["{cmd:Z}"], t("video-editor-shortcut-undo")),
                 // Both spellings work and neither was written down, so the sheet
                 // claimed the editor had undo and no redo.
-                ("{cmd+shift:Z}", t("video-editor-shortcut-redo")),
-                ("{cmd:Y}", t("video-editor-shortcut-redo")),
+                row(&["{cmd+shift:Z}"], t("video-editor-shortcut-redo")),
+                row(&["{cmd:Y}"], t("video-editor-shortcut-redo")),
             ],
         ),
         (
             "video-editor-shortcut-view",
             vec![
-                ("Tab / Shift+Tab", t("video-editor-shortcut-pane")),
-                ("Page Up / Down", t("video-editor-shortcut-scroll-timeline")),
-                ("Z", t("video-editor-shortcut-zoom-fit")),
-                ("+ / -", t("video-editor-shortcut-zoom")),
-                ("B", t("video-editor-shortcut-bin")),
-                ("{cmd:I}", t("video-editor-shortcut-inspector")),
-                ("?", t("video-editor-shortcut-sheet")),
+                row(&["Tab", "{shift:Tab}"], t("video-editor-shortcut-pane")),
+                row(
+                    &["Page Up", "Page Down"],
+                    t("video-editor-shortcut-scroll-timeline"),
+                ),
+                row(&["Z"], t("video-editor-shortcut-zoom-fit")),
+                row(&["+", "-"], t("video-editor-shortcut-zoom")),
+                row(&["B"], t("video-editor-shortcut-bin")),
+                row(&["{cmd:I}"], t("video-editor-shortcut-inspector")),
+                row(&["?"], t("video-editor-shortcut-sheet")),
             ],
         ),
     ]
@@ -7441,6 +7464,21 @@ pub(crate) fn shortcuts() -> Vec<(&'static str, Vec<(&'static str, String)>)> {
 /// How tall each shortcut group draws.
 fn help_group_h(rows: usize, m: HelpMetrics) -> f64 {
     m.header_h + rows as f64 * m.row_h + m.group_gap
+}
+
+/// How wide one row's keys draw: its alternatives side by side, the shared
+/// sibling gap between them, the caps of one alternative touching as a chord
+/// does.
+fn shortcut_keys_width(keys: &[&str], tr: &mut TextRenderer, theme: &Theme) -> f64 {
+    let gap = f64::from(theme.tokens.spacing.rhythm.sibling);
+    let mut width = 0.0;
+    for (i, template) in keys.iter().enumerate() {
+        if i > 0 {
+            width += gap;
+        }
+        width += InputHint::measure_keycap_labels(&ui::spell_shortcut_keycaps(template), tr, theme);
+    }
+    width
 }
 
 /// Which group starts the second column, and how tall the taller column is.
@@ -8117,6 +8155,8 @@ impl VideoEditorApp {
             );
         }
         let shortcuts = shortcuts();
+        let line = line_height(tr, &ty.sm);
+        let cap_h = InputHint::keycap_height(theme);
         for ((group, rows), g) in shortcuts.iter().zip(&l.groups) {
             if whole(g.heading.y0, g.heading.height()) {
                 text(
@@ -8130,23 +8170,29 @@ impl VideoEditorApp {
                     g.heading.y0,
                 );
             }
-            for ((combo, what), row) in rows.iter().zip(&g.rows) {
+            for (shortcut, row) in rows.iter().zip(&g.rows) {
                 if !whole(row.y0, row.height()) {
                     continue;
                 }
-                // Spelled for this platform: a sheet that prints `Ctrl+S`
-                // teaches a Mac user the wrong modifier (`APP-video-editor-01`).
-                text(
-                    scene,
-                    tr,
-                    tf,
-                    &ui::spell_shortcut(combo),
-                    &ty.sm.clone().strong(),
-                    ink,
-                    row.x0,
-                    row.y0,
-                );
-                let shown = elide_at(what, (row.width() - l.what_dx) as f32, &ty.sm, tr);
+                // Drawn keycaps, spelled for this platform and the person's
+                // keyboard — a sheet that prints `Ctrl+S` teaches a Mac user
+                // the wrong modifier (`APP-video-editor-01`). A row whose
+                // keys are alternatives draws them as separate caps.
+                let mut x = row.x0;
+                for (i, template) in shortcut.keys.iter().enumerate() {
+                    if i > 0 {
+                        x += f64::from(theme.tokens.spacing.rhythm.sibling);
+                    }
+                    x += InputHint::paint_keycap_labels_at(
+                        scene,
+                        tf,
+                        Point::new(x, row.center().y - cap_h / 2.0),
+                        &ui::spell_shortcut_keycaps(template),
+                        tr,
+                        theme,
+                    );
+                }
+                let shown = elide_at(&shortcut.what, (row.width() - l.what_dx) as f32, &ty.sm, tr);
                 text(
                     scene,
                     tr,
@@ -8155,7 +8201,7 @@ impl VideoEditorApp {
                     &ty.sm,
                     ink,
                     row.x0 + l.what_dx,
-                    row.y0,
+                    row.y0 + (row.height() - line) / 2.0,
                 );
             }
         }
@@ -8487,16 +8533,7 @@ impl VideoEditorApp {
         let what_dx = shortcuts
             .iter()
             .flat_map(|(_, rows)| rows.iter())
-            .map(|(combo, _)| {
-                f64::from(
-                    tr.measure_style(
-                        &ui::spell_shortcut(combo),
-                        None,
-                        &type_sizes.sm.clone().strong(),
-                    )
-                    .0,
-                )
-            })
+            .map(|row| shortcut_keys_width(row.keys, tr, theme))
             .fold(0.0, f64::max)
             + s3;
         let mut groups = Vec::with_capacity(shortcuts.len());
@@ -8537,7 +8574,9 @@ impl HelpMetrics {
         let s1 = f64::from(theme.tokens.spacing.s1);
         Self {
             header_h: line_height(tr, &type_sizes.xs) + s1,
-            row_h: line_height(tr, &type_sizes.sm) + s1,
+            // A row holds drawn keycaps: taller than its line whenever the
+            // caps are, as in every other shortcut legend in the fleet.
+            row_h: line_height(tr, &type_sizes.sm).max(InputHint::keycap_height(theme)) + s1,
             group_gap: f64::from(theme.tokens.spacing.s2),
         }
     }

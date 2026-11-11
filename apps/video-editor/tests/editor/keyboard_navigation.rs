@@ -200,40 +200,40 @@ fn the_shortcut_sheet_lists_every_binding_and_closes_on_escape() {
         .filter(|(_, n)| n.role() == Role::Label)
         .map(|(_, n)| {
             (
-                ui::spell_shortcut(n.value().unwrap_or_default()),
+                n.value().unwrap_or_default().to_string(),
                 n.label().unwrap_or_default().to_string(),
             )
         })
         .collect();
-    for combo in [
-        "Space",
-        "J / K / L",
-        "I / O",
-        "S",
-        "M",
-        "T",
-        ", / .",
-        "Z",
-        "+ / -",
-        "B",
-        "Ctrl+I",
-        "Ctrl+D",
-        "Ctrl+A",
-        "Ctrl+Z",
-        "Tab / Shift+Tab",
-        "G",
-        "?",
-        "Shift+I / O",
-        "Shift+X",
+    for keys in [
+        &["Space"][..],
+        &["J", "K", "L"],
+        &["I", "O"],
+        &["S"],
+        &["M"],
+        &["T"],
+        &[",", "."],
+        &["Z"],
+        &["+", "-"],
+        &["B"],
+        &["{cmd:I}"],
+        &["{cmd:D}"],
+        &["{cmd:A}"],
+        &["{cmd:Z}"],
+        &["Tab", "{shift:Tab}"],
+        &["G"],
+        &["?"],
+        &["{shift:I}", "{shift:O}"],
+        &["{shift:X}"],
     ] {
-        let spelled = ui::spell_shortcut(combo);
+        let spelled = keys_as_read(keys);
         assert!(
             rows.iter().any(|(k, _)| *k == spelled),
             "{spelled}: {rows:?}"
         );
     }
-    for redo in ["Ctrl+Shift+Z", "Ctrl+Y"] {
-        let spelled = ui::spell_shortcut(redo);
+    for redo in [&["{cmd+shift:Z}"][..], &["{cmd:Y}"]] {
+        let spelled = keys_as_read(redo);
         assert!(
             rows.iter().any(|(k, what)| *k == spelled && what == "Redo"),
             "{rows:?}"
@@ -279,4 +279,19 @@ fn the_go_to_field_jumps_explains_and_owns_the_keyboard() {
     app.harness().key("Escape");
     assert_eq!(app.state().clips.len(), clips, "no clip was split");
     assert_eq!(app.state().markers.len(), markers, "no marker was dropped");
+}
+
+/// One row's keys as the sheet says them to a reader: each spelled for this
+/// platform and the keyboard, alternatives listed rather than joined by a
+/// separator glyph.
+fn keys_as_read(keys: &[&str]) -> String {
+    let spelled: Vec<String> = keys
+        .iter()
+        .map(|template| ui::spell_shortcut(template))
+        .collect();
+    match spelled.split_last() {
+        None => String::new(),
+        Some((last, [])) => last.clone(),
+        Some((last, rest)) => format!("{} or {last}", rest.join(", ")),
+    }
 }

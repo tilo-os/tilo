@@ -117,6 +117,10 @@ const DEFAULT_TIMEZONE: &str = "UTC";
 /// Default keyboard-layout display name seeded into the CRDT.
 const DEFAULT_KEYMAP_NAME: &str = layouts::DEFAULT_DISPLAY_NAME;
 
+/// The filesystem this installer suggests: index into [`FILESYSTEMS`], the
+/// one that gives snapshots and rollback.
+const RECOMMENDED_FS: usize = 0;
+
 pub const INSTALL_METHOD_LABELS: [&str; 2] = ["Erase disk", "Install alongside"];
 const WINDOWS_ALONGSIDE_PREPARATION: &str = "installer-storage-windows-preparation";
 
@@ -126,9 +130,7 @@ const ALONGSIDE_BOOT_GUIDANCE: &str = "installer-storage-boot-guidance";
 const ALONGSIDE_FILES_GUIDANCE: &str = "installer-storage-files-guidance";
 
 fn connect_power_message(percent: u8) -> String {
-    format!(
-        "Connect this computer to power before installing — the battery is at {percent}%. Installation has not started."
-    )
+    format!("The battery is at {percent}%. Connect this computer to power before installing.")
 }
 
 fn alongside_install_impact(guided: bool, dev: &str) -> String {
@@ -234,12 +236,14 @@ impl ProfileCompletion {
     }
 }
 
-/// One-line explanation for each filesystem, shown under the chooser.
+/// One-line explanation for each filesystem, shown under the chooser. It says
+/// what the filesystem gives; the recommendation is its own line below, so a
+/// case is never one sentence carrying two facts.
 fn fs_description(i: usize) -> &'static str {
     match i {
-        0 => "Btrfs: snapshots, compression and rollback — recommended for Tilo.",
-        1 => "Ext4: simple and battle-tested; no snapshot support.",
-        2 => "XFS: high throughput for large files; no snapshot support.",
+        0 => "Snapshots, compression and rollback.",
+        1 => "Simple and battle-tested, with no snapshot support.",
+        2 => "High throughput for large files, with no snapshot support.",
         _ => "",
     }
 }
@@ -1396,10 +1400,11 @@ impl InstallerApp {
             .is_some_and(|device| self.erase_confirmation.with(|typed| typed.trim() == device))
     }
 
-    /// Human-readable summary of the encryption factors for the Review step.
-    fn encryption_summary(&self) -> String {
-        // Recovery is always present; the primary startup factor reflects the
-        // same verified-target decision used by validation and the backend.
+    /// The factors that unlock the new disk encryption, as the Review step
+    /// lists them. Recovery is always present; the primary startup factor
+    /// reflects the same verified-target decision used by validation and the
+    /// backend.
+    fn encryption_factors(&self) -> Vec<String> {
         let mut factors = vec!["recovery key".to_string()];
         if !self.startup_secret().trim().is_empty() {
             factors.push(
@@ -1414,7 +1419,7 @@ impl InstallerApp {
         if self.fido2 {
             factors.push("FIDO2".to_string());
         }
-        format!("On (LUKS — {})", factors.join(", "))
+        factors
     }
 
     fn install_options(&self) -> InstallOptions {
@@ -2049,7 +2054,14 @@ impl InstallerApp {
         if matches!(self.backend.run_power(action), Ok(true)) {
             true
         } else {
-            self.set_status("Could not run power action — remove the medium and reboot manually.");
+            self.set_status(match action {
+                PowerAction::Reboot => {
+                    "This computer did not restart. Remove the installer medium and restart it by hand."
+                }
+                PowerAction::PowerOff => {
+                    "This computer did not power off. Remove the installer medium and switch it off by hand."
+                }
+            });
             false
         }
     }
@@ -3057,6 +3069,14 @@ impl InstallerApp {
                 .with_role(TextRole::Caption)
                 .with_color(theme.text_dim),
         ));
+        if self.selected_fs == RECOMMENDED_FS {
+            children.push(Box::new(
+                Text::new(&crate::setup::strings::t(
+                    "installer-filesystem-recommended",
+                ))
+                .with_role(TextRole::Caption),
+            ));
+        }
     }
 
     /// The compatibility report, drawn as one row per component class with
@@ -3152,7 +3172,7 @@ impl InstallerApp {
         summary.push(Property::new(
             CATALOG.t("installer-property-method"),
             if self.install_method == InstallMethod::Alongside {
-                "Alongside — preserve existing partitions"
+                "Alongside"
             } else {
                 "Erase the entire disk"
             },
@@ -3208,6 +3228,10 @@ impl InstallerApp {
                     disk.efi_partition()
                         .map_or("<missing>", |p| p.name.as_str()),
                 ));
+                summary.push(Property::new(
+                    CATALOG.t("installer-property-existing-partitions"),
+                    "Preserved byte-for-byte; none resized, moved, or deleted",
+                ));
                 summary.push(Property::new(CATALOG.t("installer-property-choose-os"),
                     "Tilo adds safe menu shortcuts for unambiguous Windows/Linux loaders on this shared EFI partition",
                 ));
@@ -3227,9 +3251,10 @@ impl InstallerApp {
             CATALOG.t("installer-property-filesystem"),
             self.filesystem(),
         ));
+        summary.push(Property::new(CATALOG.t("installer-property-encryption"), "LUKS"));
         summary.push(Property::new(
-            CATALOG.t("installer-property-encryption"),
-            self.encryption_summary(),
+            CATALOG.t("installer-property-unlocks-with"),
+            self.encryption_factors().join(", "),
         ));
         summary.push(Property::new(
             CATALOG.t("installer-property-hostname"),
@@ -5235,7 +5260,7 @@ mod tests {
     }
 
     #[test]
-    fn encryption_summary_names_the_enrolled_factors() {
+    fn encryption_factors_name_every_enrolled_unlock() {
         {
             let mut app = InstallerApp::with_disks(sample());
             // Pin the hardware so the Review copy must describe measured-boot PIN
@@ -5244,18 +5269,18 @@ mod tests {
             app.secure_boot = true;
             app.kernel_lockdown = true;
             app.target_verified_boot = true;
-            assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
+            assert_eq!(app.encryption_factors(), ["recovery key"]);
 
             *app.password.lock().unwrap() = "804927".to_string();
             assert_eq!(
-                app.encryption_summary(),
-                "On (LUKS — recovery key, TPM-protected startup PIN)"
+                app.encryption_factors(),
+                ["recovery key", "TPM-protected startup PIN"]
             );
 
             app.fido2 = true;
             assert_eq!(
-                app.encryption_summary(),
-                "On (LUKS — recovery key, TPM-protected startup PIN, FIDO2)"
+                app.encryption_factors(),
+                ["recovery key", "TPM-protected startup PIN", "FIDO2"]
             );
         }
         {
@@ -5263,13 +5288,13 @@ mod tests {
             app.tpm2 = false;
             *app.password.lock().unwrap() = "correct horse battery".to_string();
             assert_eq!(
-                app.encryption_summary(),
-                "On (LUKS — recovery key, boot passphrase)",
+                app.encryption_factors(),
+                ["recovery key", "boot passphrase"],
                 "the review step must not claim a TPM factor this machine cannot provide"
             );
 
             clear_secret_buffer(&app.password);
-            assert_eq!(app.encryption_summary(), "On (LUKS — recovery key)");
+            assert_eq!(app.encryption_factors(), ["recovery key"]);
 
             assert!(
                 encrypt_description(VerifiedBootState::NoTpm).contains("no TPM2 chip"),

@@ -454,6 +454,7 @@ pub use tilo_image_codec as image_codec;
 pub use pictures::lend_content;
 pub use platform::{
     DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
+    spell_shortcut_keycaps,
 };
 pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 pub use profiling::{
