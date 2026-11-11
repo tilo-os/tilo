@@ -710,13 +710,10 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
     match outcome {
         Outcome::Applied { receipt } => I18nManager::format(
             "history-files-outcome-applied",
-            &[
-                (
-                    "revision",
-                    receipt.restored_revision.version_id.0.to_string().into(),
-                ),
-                ("intent", receipt.intent_id.to_string().into()),
-            ],
+            &[(
+                "revision",
+                receipt.restored_revision.version_id.0.to_string().into(),
+            )],
         ),
         Outcome::Unchanged { .. } => I18nManager::lookup_plain("history-files-outcome-unchanged"),
         Outcome::RecoveryPending { .. } => {
@@ -726,10 +723,9 @@ pub(super) fn outcome_message(outcome: &Outcome) -> String {
         Outcome::NotVisible => I18nManager::lookup_plain("history-files-not-visible"),
         Outcome::ReadOnly => I18nManager::lookup_plain("history-files-outcome-read-only"),
         Outcome::PendingWrites => I18nManager::lookup_plain("history-files-outcome-pending-writes"),
-        Outcome::UnsupportedOwner { mapping } => I18nManager::format(
-            "history-files-outcome-unsupported-owner",
-            &[("mapping", mapping.clone().into())],
-        ),
+        Outcome::UnsupportedOwner { .. } => {
+            I18nManager::lookup_plain("history-files-outcome-unsupported-owner")
+        }
         Outcome::Unavailable => I18nManager::lookup_plain("history-files-outcome-unavailable"),
         Outcome::InvalidRequest => I18nManager::lookup_plain("history-files-outcome-invalid"),
     }
