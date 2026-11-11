@@ -917,3 +917,27 @@ test('a node that only moved keeps its attributes and its key',()=>{
     assert.equal(items[2].getAttribute('aria-label'),'Block two');
   }finally{Element.prototype.setAttribute=set;Element.prototype.removeAttribute=unset;}
 });
+
+test('a protected field keeps what the person typed, and empties when the app lets it go',()=>{
+  const calls=[];const root=new Element('div');
+  const bridge=semanticBridge(root,(...args)=>{calls.push(args);return true;},()=>{});
+  const field=length=>({role:'TextInput',name:'Password',action_target:'signin.password',state:{focusable:true,protected:true},value_length:length});
+  bridge.update(snapshot(field(0)));
+  const editor=root.children[0];document.activeElement=editor;
+  editor.value='secret';
+  editor.dispatchEvent(event('input',{inputType:'insertText',data:'t',isComposing:false}));
+  assert.equal(calls.filter(call=>call[2]==='value').at(-1)[3],'secret','the app is given the characters as they are typed');
+  // The app answers with how many it holds. A snapshot taken before the last
+  // change reached it reports one less; it must not empty the field.
+  bridge.update(snapshot(field(5)));
+  bridge.update(snapshot(field(6)));
+  assert.equal(editor.value,'secret','what the person typed stays');
+  bridge.update(snapshot(field(6)));
+  assert.equal(editor.value,'secret','an app that holds the same text changes nothing');
+  // It cleared the field: two answers agree, so this is its own text, not one
+  // taken before the last keystroke arrived.
+  bridge.update(snapshot(field(0)));
+  assert.equal(editor.value,'secret','one answer alone is not evidence the app dropped the text');
+  bridge.update(snapshot(field(0)));
+  assert.equal(editor.value,'','the app cleared the field, so the page does too');
+});

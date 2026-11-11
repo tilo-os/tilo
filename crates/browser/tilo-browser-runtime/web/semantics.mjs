@@ -198,10 +198,28 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     if(!authorized(element)||!currentComposition(element)){restoreCanonical(element);return false;}
     if(!act(element,'value',element.value)){restoreCanonical(element);return false;}
     element.tiloState.canonicalValue=element.value;
+    // A protected field's characters live only here: the app answers with
+    // how many of them it holds (`protectedValueCleared`).
+    element.tiloState.sentLength=element.value.length;
     // The selection counted was counted in the value before this edit.
     element.tiloState.selectionBytes=undefined;
     element.tiloState.lastSelection=null;
     dispatchSelection(element);return true;
+  }
+  // A protected (password or key) field: the app never sends the characters
+  // back, so the page's field keeps what the person typed. The count it
+  // reports tells when the app dropped them — it cleared the field, or
+  // replaced its text — and the page's field, which cannot show characters it
+  // does not have, is emptied with it. One snapshot can be taken before the
+  // last change reached the app, so only an answer two in a row agree on
+  // counts; while the person is composing, nothing does.
+  function protectedValueCleared(state,node){
+    const reported=node.value_length;
+    if(!Number.isSafeInteger(reported)||state.composing){state.pendingLength=undefined;return false;}
+    const sent=state.sentLength??0;
+    const cleared=reported<sent&&state.pendingLength===reported;
+    state.pendingLength=reported<sent?reported:undefined;
+    return cleared;
   }
   function retainedComposition(base,current,data){
     if(typeof data==='string'&&data.length)return data;
@@ -277,7 +295,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // element geometry find it there; never painted and never hit by the
     // pointer, which belongs to the canvas underneath.
     element.style.cssText=MIRROR_STYLE;
-    element.tiloState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false};
+    element.tiloState={key,active:true,disabled:false,readOnly:false,composing:false,canonicalValue:'',compositionBase:null,suppressInput:null,canonicalSelection:null,lastSelection:null,reconcilingFocus:false,sentLength:0,pendingLength:undefined};
     element.addEventListener('focus',()=>{
       if(!element.tiloState.reconcilingFocus&&act(element,'focus')){inputScope?.capture();pendingFocus={key,remainingSnapshots:1};}
     });
@@ -495,7 +513,17 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       // moved since it was set; reading another field's selection forced
       // a layout of the page for every field in the tree on each status.
       const shown=state=>!state.canonicalSelection||(element!==document.activeElement&&state.domSelection)||state.domSelection?.[0]===element.selectionStart&&state.domSelection?.[1]===element.selectionEnd;
-      if(editable&&!changed&&!element.tiloState.composing&&element.value===value&&shown(element.tiloState)){
+      if(editable&&node.state?.protected){
+        // The field holds the person's own text; the page empties it when the
+        // app let the text go.
+        if(protectedValueCleared(element.tiloState,node)){
+          const state=element.tiloState;
+          if(state.canonicalSelection)state.domSelection=null;
+          element.value='';
+          state.canonicalValue='';state.sentLength=0;
+          state.canonicalSelection=null;state.selectionBytes=undefined;state.lastSelection=null;
+        }
+      }else if(editable&&!changed&&!element.tiloState.composing&&element.value===value&&shown(element.tiloState)){
         // Already shown.
       }else if(editable){
         const state=element.tiloState;
