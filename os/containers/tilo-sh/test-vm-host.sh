@@ -26,6 +26,8 @@ die() { say "$*"; exit 1; }
 [ -e /dev/kvm ] || die '/dev/kvm is not there: this host cannot run the VMs a hosted workspace needs'
 command -v podman >/dev/null || die 'no podman: this check needs the container runtime the stack runs'
 command -v losetup >/dev/null || die 'no losetup: the state disk is a loop device'
+python3 os/dev/probe-kvm.py "$(uname -m)" \
+  || die 'this machine offers /dev/kvm but cannot create a VM with it: a VM host needs nested virtualization'
 [ -x "$enroll" ] || command -v "$enroll" >/dev/null || die "$enroll is not a tilo-enroll"
 
 state=$(mktemp -d /var/lib/tilo-sh-check.XXXXXX)
@@ -60,13 +62,29 @@ say 'the host is up'
 podman logs tilo-sh-vm-host-0 > "$state/host.log" 2>&1 || true
 sed -n '1,30p' "$state/host.log" >&2
 
+# What the host and its VMs said when one would not run: the console log is
+# where Firecracker and the jail helper write why they stopped.
+vm_failure() {
+  say "$1"
+  podman logs --tail 100 tilo-sh-vm-host-0 >&2 || true
+  podman exec tilo-sh-vm-host-0 sh -c 'for log in /var/lib/tilo-hosted/state/vms/*/*/console.log; do
+      [ -f "$log" ] || continue
+      echo "== $log"
+      cat "$log"
+    done' >&2 || true
+  podman exec tilo-sh-vm-host-0 sh -c 'ls -la /var/lib/tilo-hosted /var/lib/tilo-hosted/jails 2>&1
+    ls -la /sys/fs/cgroup 2>&1 | head -n 20
+    cat /sys/fs/cgroup/cgroup.controllers 2>&1' >&2 || true
+  die "$1"
+}
+
 # A workspace's VM wakes from the guest this checkout built and runs a program
 # in it: Firecracker boots it in its jail, its agent answers, and the program's
-# output comes back. Its address is the one the relay's member serves.
+# output comes back.
 ran=$(podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups \
   --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
   --workspace ws-local --account acct-with-card --size small -- /bin/sh -c 'echo hello-from-the-guest' 2>&1) \
-  || { printf '%s\n' "$ran" >&2; podman logs --tail 200 tilo-sh-vm-host-0 >&2 || true; die 'the workspace VM did not run a program'; }
+  || vm_failure 'the workspace VM did not run a program'
 printf '%s\n' "$ran" >&2
 grep -qx 'hello-from-the-guest' <<<"$ran" \
   || die 'the program in the workspace VM printed something else'
