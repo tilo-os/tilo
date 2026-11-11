@@ -14,6 +14,23 @@
 #      default), against the Lounge as it is — seeded with `stack.sh up
 #      --seed` when TILO_SH_SEED=1.
 #
+# With TILO_SH_VM_HOST=1 it is the same stack with its VM host in it, and the
+# end of the check is the Browser of a hosted workspace (docs/hosted-browser.md),
+# in the workspace's own VM:
+#
+#   8. the visa test page (apps/browser/test-pages/visa-form.html), served
+#      where a VM's network may reach it: the relay endpoint's own address and
+#      port, the one destination besides the internet a VM is given;
+#   9. a one-workspace key opens Browser (`integration/hosted-visa.py`): the
+#      open answers once the VM's window is live, timed; the agent fills the
+#      form with page actions, captures it, and stops before submitting; a
+#      reviewer who joined by invitation reads its run in History, and the
+#      page actions past the plans file's free ones are refused until the
+#      provider adds the account there;
+#  10. the VM it all ran in: every renderer sandboxed, the session running as
+#      the image's browser user, its device key, and what the page costs in
+#      memory (integration/vm-proofs.py).
+#
 # usage: check.sh [WORK]
 # The stack runs this checkout's programs natively, or the images with
 # TILO_SH_IMAGES=1 (stack.sh check --images; t's tilo-sh-local check). WORK keeps what it found (pages' consoles and screenshots, the visa run's
@@ -23,7 +40,9 @@
 # serves at /releases, else target/{debug,release}/tilo. VISA_APPLICANTS
 # sets how many workspaces the run makes (25 here).
 # Needs what stack.sh needs, node, a headless Chromium (CHROME or
-# Playwright's), and uv (or python3 with httpx) for the Python SDK.
+# Playwright's), and uv (or python3 with httpx) for the Python SDK. With
+# TILO_SH_VM_HOST=1 it also needs /dev/kvm and root through sudo, and the
+# workspace guest image must carry the headless browser session.
 set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(cd -- "$here/../../.." && pwd)
@@ -63,13 +82,89 @@ node "$here/integration/person.mjs" "$site" "$relay" "$work/startup" \
 key=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["key"])' "$work/startup.json")
 echo "ok: the startup holds its server key"
 
-step '2-6. the visa run against the local door'
+# The reviewer's helper, up for every run that invites someone: each
+# invitation posted to it is another person in their own headless Chromium.
 reviewer_port=$((base + 50))
 sdk_python "$here/integration/reviewer.py" \
   "$reviewer_port" "$site" "$relay" "$door" "$tilo" "$work" > "$work/reviewer.out" 2> "$work/reviewer.log" &
 pids+=($!)
 for _ in $(seq 100); do grep -q invitee "$work/reviewer.out" 2>/dev/null && break; sleep 0.2; done
 grep -q invitee "$work/reviewer.out" || fail "the reviewer did not start: $(cat "$work/reviewer.log")"
+
+# The hosted Browser's checks (8-11) run here, on that key: the visa run below
+# ends by revoking it.
+hosted=${TILO_SH_VM_HOST:-0}
+hosted_report=$work/hosted/report.json
+if [[ $hosted == 1 ]]; then
+  [[ ${TILO_SH_IMAGES:-} == 1 ]] || fail 'TILO_SH_VM_HOST=1 runs the stack as its images: the VM host is one'
+  [[ -e /dev/kvm ]] || fail '/dev/kvm: the hosted Browser runs in a VM, and this machine has none'
+  vm_account=$(vm_host env 2>/dev/null | sed -n 's/^TILO_HOSTED_ACCOUNT=//p')
+  [[ -n $vm_account ]] || fail 'the VM host is not up, so the relay places no Browser: stack.sh status says why'
+  plans=$state/secrets/vm-host-plans.json
+  # The plans file the provider would edit is the VM host's, made as root: the
+  # check plays the provider, adding the account to it mid-run.
+  [[ -w $plans ]] || sudo -n chown "$(id -u):$(id -g)" "$plans" 2>/dev/null \
+    || fail "the plans file $plans is not the check's to edit"
+  # A Linux program in a VM is admitted for an account with a card on file,
+  # which is what the proofs and the guest check below run as.
+  vm_run_account=$(python3 -c 'import json,sys; print(next(iter(json.load(open(sys.argv[1])).get("accounts") or {})))' "$plans") \
+    || fail "the plans file $plans names no account with a card"
+
+  step '8. the visa test page, where a VM may reach it'
+  form_dir=$work/form
+  mkdir -p "$form_dir"
+  cp "$repo/apps/browser/test-pages/visa-form.html" "$form_dir/visa-form.html"
+  # A VM reaches the public internet and one address of this machine: the
+  # relay's own endpoint, as the VM dials it (10.0.2.4, which pasta maps to
+  # this machine's loopback). The relay's endpoint is UDP; its port's TCP side
+  # is the stack's to serve, and this is the page it serves.
+  form_port=$iroh_port
+  python3 -m http.server --bind 127.0.0.1 --directory "$form_dir" "$form_port" \
+    > "$work/form.log" 2>&1 &
+  pids+=($!)
+  form_url=http://10.0.2.4:$form_port/visa-form.html
+  for _ in $(seq 100); do
+    curl -fsS --max-time 1 "http://127.0.0.1:$form_port/visa-form.html" >/dev/null 2>&1 && break
+    sleep 0.1
+  done
+  curl -fsS --max-time 2 "http://127.0.0.1:$form_port/visa-form.html" >/dev/null \
+    || fail "the page server did not answer on 127.0.0.1:$form_port (see $work/form.log); a VM reaches it at 10.0.2.4:$form_port"
+  echo "ok: the test page is at $form_url, the one address besides the internet a VM reaches"
+
+  step '9. does the guest this stack boots carry the Browser?'
+  guest_says=$(sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 \
+      --init-groups --inh-caps=-all tilo-legacy hosted run --run /run/tilo-hosted \
+      --workspace ws-browser-guest --account "$vm_run_account" -- /bin/sh -c \
+      'test -x /usr/libexec/tilo/browser-session && getent passwd tilo-browser >/dev/null && echo browser-in-vm' 2>&1) \
+    || fail "the workspace guest ran no browser check: $guest_says"
+  grep -qx 'browser-in-vm' <<<"$guest_says" || fail "the workspace guest this stack boots carries no hosted Browser: /usr/libexec/tilo/browser-session runs a headless session as the image's tilo-browser user, and this guest has no such thing (os/Containerfile.hosted-guest). The Browser of a hosted workspace runs in the workspace's own VM, so the check can go no further until the guest that carries it is in this tree."
+  echo "ok: the guest carries the headless Browser session"
+
+  step '10. a hosted workspace fills the visa form in its VM'
+  launch=$SECONDS
+  set +e
+  TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
+    HOSTED_VISA_PLANS=$plans HOSTED_VISA_ACCOUNT=$vm_account \
+    sdk_python "$here/integration/hosted-visa.py" "$door" "$key" "$work/hosted" "$form_url" \
+    2>&1 | tee "$work/hosted.log"
+  hosted_status=${PIPESTATUS[0]}
+  set -e
+  hosted_seconds=$((SECONDS - launch))
+  if [[ $hosted_status != 0 ]]; then
+    echo '--- the VM host said:' >&2
+    sudo -n podman logs --tail 80 tilo-sh-vm-host-0 >&2 2>/dev/null || true
+    fail "the hosted Browser run failed (see $work/hosted.log)"
+  fi
+  hosted_workspace=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["workspace"])' "$hosted_report")
+
+  step '11. the VM the Browser ran in: its sandbox, its user, its memory'
+  VM_HOST_RUN="sudo -n podman exec tilo-sh-vm-host-0 setpriv --reuid=10001 --regid=10001 --init-groups --inh-caps=-all tilo-legacy" \
+    VM_HOST_CONTAINER=tilo-sh-vm-host-0 \
+    python3 "$here/integration/vm-proofs.py" "$hosted_workspace" "$vm_run_account" "$work/vm" \
+    || fail 'the VM is not what a hosted Browser needs (see above, and vm-proofs.json)'
+fi
+
+step '2-6. the visa run against the local door'
 visa_began=$SECONDS
 set +e
 TILO_DOOR=$door TILO_API_KEY=$key TILO_INVITEE=http://127.0.0.1:$reviewer_port/accept \
@@ -100,7 +195,7 @@ for visit in $(seq "$visits"); do
 done
 
 python3 - "$report" "$bring_up" "$visa_seconds" "${TILO_SH_SEED:-0}" "${entries[@]}" <<'EOF'
-import json, statistics, sys
+import json, os, statistics, sys
 path, bring_up, visa, seeded, *entries = sys.argv[1:]
 entries = [int(ms) for ms in entries]
 report = {
@@ -110,6 +205,12 @@ report = {
     "entry_ms": entries,
     "entry_ms_median": statistics.median(entries),
 }
+work = os.path.dirname(path)
+# The hosted Browser's own numbers, when this stack ran with its VM host.
+for name, key in (("hosted/report.json", "hosted"), ("vm/vm-proofs.json", "vm")):
+    where = os.path.join(work, name)
+    if os.path.isfile(where):
+        report[key] = json.load(open(where))
 json.dump(report, open(path, "w"), indent=2)
 print(json.dumps(report))
 EOF

@@ -4905,6 +4905,26 @@ outputs = ["/target/tilo-sh-local/**"]
 timeout_secs = 3600
 default = false
 
+# The same stack with the VM hosts' own machines in it: tilo.sh's VM host (privileged, with its
+# loop-backed state disk and Firecracker) runs here, so a hosted workspace's Browser runs in the
+# workspace's VM, on the guest image this checkout built. A one-workspace key opens Browser and the
+# open is timed; the agent fills the visa test page with page actions and captures it; a reviewer
+# joins by invitation and reads its run in History; the page actions past the plans file's free
+# ones are refused until the account is added to it; and the VM is held to its proofs - every
+# renderer sandboxed, the session as the image's unprivileged browser user, its device key, and
+# what the page costs in memory. What it found stays in /target/tilo-sh-local-vm.
+[[check]]
+name = "tilo-sh-local-vm"
+run = "bash os/containers/tilo-sh/check-in-vm.sh /target/tilo-sh-local-vm"
+setup = { run = "dnf install -y --setopt=install_weak_deps=False podman passt shadow-utils util-linux e2fsprogs xfsprogs python3-httpx && dnf clean all\nmkdir -p /etc/containers/containers.conf.d\nprintf '[engine]\\ncgroup_manager = \"cgroupfs\"\\nevents_logger = \"file\"\\n' > /etc/containers/containers.conf.d/tilo-sh-local.conf" }
+needs = ["image-lounge", "image-front-door", "image-web-entry", "cli-x86_64", "image-vm-host", "image-hosted-guest"]
+env = { TILO_SH_IMAGE_LOUNGE = "/target/publish/lounge/image.oci.tar", TILO_SH_IMAGE_DOOR = "/target/images/image-front-door/image.oci.tar", TILO_SH_IMAGE_WEB = "/target/publish/web-entry/image.oci.tar", TILO_SH_IMAGE_VM_HOST = "/target/publish/vm-host/image.oci.tar", TILO_SH_HOSTED_GUEST = "/target/publish/hosted-guest/image", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_STATE = "/target/tilo-sh-local-vm-state", TILO_SH_FRESH = "1", TILO_SH_IMAGES = "1", TILO_SH_VM_HOST = "1", TILO_SH_BROWSER_FREE_ACTIONS = "8" }
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/tilo-sh-local-vm/**"]
+timeout_secs = 5400
+default = false
+
 # Releasing the Lounge: t's own image-lounge build of the released commit (the same cached build
 # the gate runs), with the entrypoint and image tests its check runs, signed with the release key
 # and published as `sha-<commit>` for cloud-deploy, on stable and on a release tag. Published on

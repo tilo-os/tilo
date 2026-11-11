@@ -207,12 +207,17 @@ member_identity() {
 # The plans file the relay and the host admit by (docs/hosted-browser.md,
 # "Metering"): five free Browser page actions, so the card prompt comes after
 # them, and one account with a card on file for the Linux VMs and for what
-# follows the card.
+# follows the card. TILO_SH_BROWSER_FREE_ACTIONS sets another allowance: a
+# check that counts page actions gives itself few of them. The file lives in
+# the secrets the stack mounts for the relay, which reads it again for every
+# page action: an account added to it mid-run is served from the next one.
+plans_file=$secrets/vm-host-plans.json
+free_actions=${TILO_SH_BROWSER_FREE_ACTIONS:-5}
 plans() {
-  local file=$secrets/vm-host-plans.json
+  local file=$plans_file
   [ -f "$file" ] && return 0
-  mkdir -p "$secrets"
-  cat > "$file" <<'JSON'
+  mkdir -p "$(dirname "$file")"
+  cat > "$file" <<JSON
 {
   "sells": {
     "host": "Tilo local",
@@ -224,7 +229,7 @@ plans() {
         "limits": { "max_running": 2, "max_vms": 5, "sizes": ["small", "default"] }
       }
     ],
-    "browser_free_actions": 5,
+    "browser_free_actions": $free_actions,
     "add_payment_method": "http://localhost:24110/billing/card?account={account}",
     "manage_billing": "http://localhost:24110/billing?account={account}",
     "raise_limit": "http://localhost:24110/billing/plan?account={account}"
@@ -298,7 +303,7 @@ up() {
     --log-driver k8s-file \
     --device "$loop:$state_device" \
     -v "$vm/member-identities:/etc/tilo/member:ro" \
-    -v "$secrets/vm-host-plans.json:/etc/tilo/plans/plans.json:ro" \
+    -v "$plans_file:/etc/tilo/plans/plans.json:ro" \
     -e TILO_VM_STATE_DEVICE="$state_device" \
     -e TILO_VM_PLANS=/etc/tilo/plans/plans.json \
     -e TILO_VM_MEMBER_IDENTITIES=/etc/tilo/member \

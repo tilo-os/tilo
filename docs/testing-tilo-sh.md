@@ -47,7 +47,7 @@ Everything listens on `127.0.0.1`. Ports start at `TILO_SH_PORT_BASE`
 | Front door (MCP, `/v1`, keys, OAuth) | `mcp.tilo.sh`, image `front-door` | `tilo-front-door` at `http://localhost:24110` |
 | Web entry (site, `/sign-in`, `/install.sh`, `/releases`) | `tilo.sh`, image `web-entry` | the image's entrypoint and Caddyfile serving this checkout's desktop bundle, laid out and precompressed as the image does it, at `http://localhost:24120`; `/releases/latest` serves this checkout's `tilo` command |
 | Linux VM host (Firecracker) | `tilo-sh-vm-host`, image `vm-host` | with `--images`, the image as root (through `sudo`) where the machine has `/dev/kvm`; otherwise, and always natively, skipped with the reason |
-| Hosted browser pool | runs on the VM host | arrives with the VM host (docs/hosted-browser.md) |
+| Hosted browser | in the workspace's own VM, on the VM host | with the VM host: the relay places it there (docs/hosted-browser.md), and `t test tilo-sh-local-vm` holds it to what it must be |
 | Discord | discord.com | `stack.sh up --discord` starts `crates/dev/fake-discord` and points the Lounge's Discord sign-in and bridge at it |
 
 With `--images`, the first three are the images themselves.
@@ -92,16 +92,17 @@ does not know how to move stops the start.
   production's.
 - **No model keys.** The moderation agent and the "who is here" summaries do
   not run.
-- **No VM host yet.** In production it is a privileged pod: it formats a
-  raw block device for its state, delegates cgroups and gives its jail
-  helper capabilities. Rootless podman can do none of that. Even as root,
-  the stack would also need a member identity the relay operator certifies,
-  a state device and the placer, and it does not set those up yet.
-  `stack.sh` says it skipped the VM host and why. Workspaces, keys, the MCP
-  and the visa flow work without it. Shell commands (`terminal#run`) and the
-  hosted browser pool that runs on it do not. Testing those locally is the
-  next step for this stack: as root with `/dev/kvm`, on the rcargo builder
-  or in a VM.
+- **The VM host is root.** In production it is a privileged pod: it formats a
+  raw block device for its state, delegates cgroups and gives its jail helper
+  capabilities. Rootless podman can do none of that, so `up --images` starts
+  it as root over its own state (through `sudo`, where that needs no
+  password), and only where the machine has `/dev/kvm`. The stack also needs
+  a member identity the relay operator certifies, which `vm-host.sh` makes
+  from the relay's own root. Without `/dev/kvm` or root, `stack.sh` says it
+  skipped the VM host and why; workspaces, keys, the MCP and the visa flow
+  work without it, and Terminal's shell commands and a hosted workspace's
+  Browser do not. `t test tilo-sh-local-vm` is that part: it runs on a node
+  with KVM.
 
 ## Using it
 
@@ -172,8 +173,41 @@ The check brings the stack up and uses it as people and backends do:
 7. Three fresh visitors enter the Lounge, timed.
 
 The report (`report.json` in the work directory) holds the bring-up time,
-the visa run's duration and each visitor's entry time. When the hosted
-browser pool lands, its steps join this check.
+the visa run's duration and each visitor's entry time.
+
+### The Browser of a hosted workspace
+
+`TILO_SH_VM_HOST=1 stack.sh check --images` adds the part that needs a
+machine with `/dev/kvm`: the stack's VM host runs, so a workspace's Browser
+runs in that workspace's VM, on the guest image this checkout built.
+(`t test tilo-sh-local-vm` is exactly this.) After the startup's key it holds:
+
+8. the visa test page (`apps/browser/test-pages/visa-form.html`), served
+   where a VM's network may reach it: a VM reaches the public internet and
+   one address of the machine it runs on, the relay's own endpoint at
+   `10.0.2.4`, so the page is served on that endpoint's port.
+9. the guest the VM host boots carries the Browser: the headless session
+   (`/usr/libexec/tilo/browser-session`) and the image's unprivileged
+   `tilo-browser` user. A guest without them fails here, saying so.
+10. a one-workspace key opens Browser (`integration/hosted-visa.py`): the
+    open answers once the VM's window is live, and the time it took is
+    printed with a second open's attach time; the agent fills the form
+    through page actions, captures it as a PNG, and stops before submitting;
+    a reviewer who joined by invitation reads the agent's run in History; and
+    page actions past the plans file's free ones (`TILO_SH_BROWSER_FREE_ACTIONS`,
+    8 here) are refused until the account is added to it, which the check does
+    as the provider would.
+11. the VM's own proofs (`integration/vm-proofs.py`): every renderer of the
+    engine host has a seccomp filter and no new privileges, and network, pid
+    and user namespaces of its own; nothing runs the engine `--no-sandbox`;
+    the session and the engine run as the image's browser user, whose device
+    key no one else may read; the image's launcher entitlement lists name
+    Browser; and what the session and its Chromium hold in memory, beside the
+    VM's own, are printed and saved.
+
+The page shows only what it must: the capture, the page as the agent read it
+back, the reviewer's History and `vm-proofs.json` are in the work directory,
+and all of it is in the report.
 
 ## Entry-speed work
 

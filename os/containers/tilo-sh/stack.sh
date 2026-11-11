@@ -379,18 +379,21 @@ vm_host_blocker() {
 # vm-host RUN…: os/containers/tilo-sh/vm-host.sh, as root when this stack is
 # not, over the VM host's own state; the images t built for this checkout, and
 # the relay this stack runs (its device, its root, the secrets it mounts).
+# A caller that names the images itself (t's checks hand them their outputs)
+# has them used as named, archive or directory.
 vm_host() {
   local sudo=()
   [[ $EUID == 0 ]] || sudo=(sudo -n)
   "${sudo[@]}" env \
     TILO_SH_STATE="$vm_state" \
-    "TILO_SH_IMAGE_VM_HOST=$state/images/$commit/image-vm-host/image.oci.tar" \
-    "TILO_SH_HOSTED_GUEST=$state/images/$commit/image-hosted-guest" \
+    "TILO_SH_IMAGE_VM_HOST=${TILO_SH_IMAGE_VM_HOST:-$state/images/$commit/image-vm-host/image.oci.tar}" \
+    "TILO_SH_HOSTED_GUEST=${TILO_SH_HOSTED_GUEST:-$state/images/$commit/image-hosted-guest}" \
     "TILO_SH_TILO_ENROLL=${enroll:-}" \
     "TILO_SH_RELAY_SECRETS=$state/secrets" \
     "TILO_SH_RELAY_ROOT=$state/secrets/room-root-lounge" \
     "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
     "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \
+    "TILO_SH_BROWSER_FREE_ACTIONS=${TILO_SH_BROWSER_FREE_ACTIONS:-}" \
     bash "$here/vm-host.sh" "$@"
 }
 
@@ -930,10 +933,11 @@ up_images() {
   # place a workspace from the start.
   vm_skipped=$(vm_host_blocker)
   if [[ -z $vm_skipped ]]; then
-    image VM_HOST image-vm-host image.oci.tar >/dev/null
-    # The guest is read from the outputs `t outputs` left, not from podman:
+    # The images are fetched (or loaded) here unless the caller named them:
+    # the guest is read from the outputs `t outputs` left, not from podman, so
     # the host unpacks it onto its own state disk.
-    image HOSTED_GUEST image-hosted-guest image.oci.tar >/dev/null
+    [[ -n ${TILO_SH_IMAGE_VM_HOST:-} ]] || image VM_HOST image-vm-host image.oci.tar >/dev/null
+    [[ -n ${TILO_SH_HOSTED_GUEST:-} ]] || image HOSTED_GUEST image-hosted-guest image.oci.tar >/dev/null
     enroll=$(find_enroll)  # read by relay_env, so the stack's own is used
     say 'starting the VM host (Firecracker, as root)'
     vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
