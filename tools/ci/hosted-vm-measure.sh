@@ -55,7 +55,25 @@ podman run -d --name vm-host --privileged --cgroupns=private \
   -e TILO_VM_GUEST_REF="registry.tilo.so/tilo/hosted-guest@$digest" \
   -e TILO_VM_PLANS=/etc/tilo/plans.json \
   "$image" >/dev/null
-trap 'podman logs vm-host > "$out/vm-host.log" 2>&1 || true; podman rm -f vm-host >/dev/null 2>&1 || true; losetup -d "$device" || true' EXIT
+# A failed check keeps no outputs, so what the host and its VMs said goes to
+# the log: the console log is where Firecracker and the jail helper write why
+# a VM stopped.
+finish() {
+  local status=$?
+  if [[ $status != 0 ]]; then
+    podman logs --tail 100 vm-host >&2 || true
+    podman exec vm-host sh -c 'for log in /var/lib/tilo-hosted/state/vms/*/*/console.log; do
+        [ -f "$log" ] || continue
+        echo "== $log"
+        tail -n 80 "$log"
+      done
+      cat /sys/fs/cgroup/cgroup.controllers' >&2 || true
+  fi
+  podman rm -f vm-host >/dev/null 2>&1 || true
+  losetup -d "$device" || true
+  return "$status"
+}
+trap finish EXIT
 
 inside() { podman exec vm-host "$@"; }
 as_service() {
