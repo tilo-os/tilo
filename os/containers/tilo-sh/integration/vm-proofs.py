@@ -140,7 +140,7 @@ def main() -> int:
     )
     for renderer in renderers:
         parts = renderer.split(" ")
-        if len(parts) < 6:
+        if len(parts) < 7:
             problems.append(f"a renderer's line is not readable: {renderer}")
             continue
         pid, _user, seccomp, nonewprivs, net, pidns, userns = parts[:7]
