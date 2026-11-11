@@ -38,6 +38,8 @@ pub(super) struct AppPage {
     /// The app's store, kept with what the workspace replicates into it: the
     /// same store a waiting window comes back to.
     stores: Rc<RefCell<Vec<RecordStore>>>,
+    /// The content store the page lends the app's window.
+    content: tilo_content::ContentStore,
 }
 
 impl AppPage {
@@ -49,6 +51,7 @@ impl AppPage {
     ) -> Self {
         Self {
             definition,
+            content: super::prepare::content(&config),
             config,
             owners: RefCell::new(RecordOwners::with_store(Rc::clone(&dyn_store))),
             dyn_store,
@@ -144,7 +147,7 @@ impl AppPage {
             prepared => prepared.map_err(error)?,
         };
         context.provide_models(config.models()?);
-        context.provide_content(crate::page_content());
+        context.provide_content(self.content.clone());
         context.provide_workspace_records(in_page(
             &self.owners.borrow(),
             &self.stores,

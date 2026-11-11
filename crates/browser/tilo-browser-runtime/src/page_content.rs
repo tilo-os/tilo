@@ -1,6 +1,6 @@
 //! The content the page's windows hold: the pictures and attachments their
-//! records reference, by hash, in the profile's app files. Every window of the
-//! page shares it, so content one fetched is there for the others; the
+//! records reference, by hash, in the profile's app files. Every window of a
+//! workspace shares its store ([`crate::replication::content`]); the
 //! framework joins it to each window's record route, so content a record
 //! references and the page lacks is asked of the workspace, and its pieces are
 //! verified before they are kept here.
@@ -25,14 +25,9 @@ const BLOB_SCHEME: &str = "tilo-blob://";
 /// Most the page keeps in memory when its app files are not loaded.
 const MAX_MEMORY_BYTES: usize = 256 * 1024 * 1024;
 
-thread_local! {
-    static PAGE_CONTENT: ContentStore = page_store();
-}
-
-/// The store the page, as its windows' host, lends each of them: the
-/// profile's app files, which outlive the page ([`ContentStore::page_files`]),
-/// or memory when the host loaded none.
-fn page_store() -> ContentStore {
+/// A store the page lends windows: the profile's app files, which outlive the
+/// page ([`ContentStore::page_files`]), or memory when the host loaded none.
+pub(crate) fn store() -> ContentStore {
     if tilo_files::web::is_mirrored(&tilo_paths::default_profile()) {
         return ContentStore::page_files();
     }
@@ -40,11 +35,6 @@ fn page_store() -> ContentStore {
         max_total_bytes: MAX_MEMORY_BYTES,
         ..ContentLimits::default()
     }))
-}
-
-/// The page's content store, lent to each window it opens.
-pub(crate) fn page_content() -> ContentStore {
-    PAGE_CONTENT.with(Clone::clone)
 }
 
 /// The window each image loader of a mount draws for, by the loader's place

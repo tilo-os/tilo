@@ -438,7 +438,7 @@ fn renew_admission(connection: &mut Connection) {
 /// the reports filed in its Chat and keeps its own copy, which its receipt
 /// waits for. The page captures nothing itself; the picker's masked crops
 /// are the only picture a report carries.
-struct PageContent;
+struct PageContent(u32);
 impl Capture for PageContent {
     fn offers_screenshots(&self) -> bool {
         NoCapture.offers_screenshots()
@@ -450,7 +450,7 @@ impl Capture for PageContent {
         NoCapture.capture()
     }
     fn persist(&mut self, image: &MaskedScreenshot) -> Result<(), Error> {
-        keep_picture(&crate::page_content::page_content(), image)
+        keep_picture(&content_of(self.0)?, image)
     }
 }
 
@@ -465,14 +465,20 @@ fn page_recorder(id: u32) -> tilo_desktop::feedback::recorder::WindowRecorder {
             crate::replication::committed_record(desktop, workspace, app, record)
         }),
         protected: Box::new(crate::capture_declarations::declared),
-        keep: Box::new(|bytes| {
-            crate::page_content::page_content()
+        keep: Box::new(move |bytes| {
+            content_of(id)
+                .map_err(|error| error.to_string())?
                 .put(bytes)
                 .map_err(|error| error.to_string())
         }),
         now_ms: Box::new(|| i64::try_from(ui::time::unix_now_ms()).unwrap_or(i64::MAX)),
-        pictures: Box::new(PageContent),
+        pictures: Box::new(PageContent(id)),
     }
+}
+
+fn content_of(id: u32) -> Result<tilo_content::ContentStore, Error> {
+    crate::replication::content(crate::feedback_route::desktop_of(id))
+        .ok_or(Error::Invalid("the page has no workspace for the picture"))
 }
 
 /// Keep `image` in `content`, refusing a store that keeps other bytes.

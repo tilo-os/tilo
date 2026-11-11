@@ -105,6 +105,8 @@ pub(crate) struct Joined {
     store: Rc<MemoryStore>,
     /// Where `store` lives.
     kept: Kept,
+    /// The content its mounts' windows keep, which members are answered from.
+    content_store: tilo_content::ContentStore,
     ready: bool,
     /// The workspace sends this page a record only once it is opened (a
     /// public workspace): every record a mount opens is asked for, the
@@ -204,6 +206,7 @@ pub(crate) fn open(
         workspace: workspace_id,
         store,
         kept,
+        content_store: crate::page_content::store(),
         ready: false,
         when_opened: false,
         asked: HashSet::new(),
@@ -243,13 +246,10 @@ fn kept_content(
             return None;
         }
         tilo_session_host::surfaces::read(app, hash).or_else(|| {
-            let open = replica_of(id)?
-                .try_borrow()
-                .ok()?
-                .open_records()
-                .any(|(open, _)| open == app);
-            open.then(|| crate::page_content::page_content().read(hash))
-                .flatten()
+            let joined = replica_of(id)?;
+            let joined = joined.try_borrow().ok()?;
+            let open = joined.open_records().any(|(open, _)| open == app);
+            open.then(|| joined.content_store.read(hash)).flatten()
         })
     }
 }
@@ -380,6 +380,11 @@ pub(crate) fn page_store(id: u32) -> Option<Rc<MemoryStore>> {
     let joined = replica_of(id)?;
     let joined = joined.borrow();
     (joined.kept == Kept::InPage).then(|| Rc::clone(&joined.store))
+}
+
+/// The content store every mount of peer `id`'s workspace lends its windows.
+pub(crate) fn content(id: u32) -> Option<tilo_content::ContentStore> {
+    replica_of(id).map(|joined| joined.borrow().content_store.clone())
 }
 
 /// Where a peer keeps the workspace's documents.
@@ -1212,7 +1217,7 @@ impl Joined {
     /// is kept as it came: opening the record loads and checks it once. A document with no
     /// change in it is no record yet and is not kept.
     fn store_unopened(
-        &mut self,
+        &self,
         app: &str,
         record: &str,
         bytes: Vec<u8>,

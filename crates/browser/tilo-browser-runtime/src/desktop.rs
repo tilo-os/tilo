@@ -147,6 +147,8 @@ pub(crate) struct Inputs {
     pub provider_admin: ui::models::ProviderAdministration,
     /// The peer whose workspace this desktop shows, when it has one.
     pub peer: Option<u32>,
+    /// The content store the desktop lends every window it opens.
+    pub content: tilo_content::ContentStore,
 }
 
 /// The person who made each strip or opened each window, by its id. Kept
@@ -934,12 +936,12 @@ impl Tiles {
         }
         .map_err(|error| error.to_string())?;
         context.provide_models(self.inputs.models.clone());
-        context.provide_content(crate::page_content());
-        // What another window handed this one to open, from the page's
+        context.provide_content(self.inputs.content.clone());
+        // What another window handed this one to open, from the desktop's
         // content, where that window keeps it.
         let handed = self.shared.opened_content.borrow_mut().remove(&instance);
         if let Some(hash) = handed {
-            let (file, _) = crate::content_open::opened_file(&hash, &crate::page_content())?;
+            let (file, _) = crate::content_open::opened_file(&hash, &self.inputs.content)?;
             context.provide_open_file(file);
         }
         context.provide_workspace_records(crate::workspace_records::in_page(

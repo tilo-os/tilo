@@ -44,7 +44,16 @@ pub(super) fn desktop_inputs(
             .unwrap_or_default(),
         provider_admin: config.provider_admin()?,
         peer: config.peer,
+        content: content(config),
     })
+}
+
+/// The content store a mount lends its windows: its workspace's, or one of its own outside any.
+pub(super) fn content(config: &Config) -> tilo_content::ContentStore {
+    config
+        .peer
+        .and_then(crate::replication::content)
+        .unwrap_or_else(crate::page_content::store)
 }
 
 /// What the page offers its desktop beyond the workspace: inviting, its host and build, the About

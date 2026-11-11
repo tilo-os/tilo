@@ -1,6 +1,6 @@
 //! Content one window hands another app to open (the camera's capture for
 //! Photos, a report's recording for the app that replays it), opened as the
-//! file it is. The page's windows share one content store, so what the
+//! file it is. A desktop's windows share one content store, so what the
 //! handing window kept there is what the opened window reads, by hash, as
 //! the workspace broker stages it for an app it launches.
 

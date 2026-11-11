@@ -58,14 +58,12 @@ mod capture_declarations;
 )]
 mod console_hold;
 // Content handed to an app, opened as its file: its tests run on the host too.
+#[cfg(target_arch = "wasm32")]
+mod browser;
 #[cfg(any(target_arch = "wasm32", test))]
 mod content_open;
 #[cfg(target_arch = "wasm32")]
 pub(crate) mod page_content;
-#[cfg(target_arch = "wasm32")]
-pub(crate) use page_content::page_content;
-#[cfg(target_arch = "wasm32")]
-mod browser;
 /// Install an already-admitted feedback transport before mounting its desktop.
 /// This Rust host hook is intentionally absent from URL/JSON launch options.
 /// # Errors
