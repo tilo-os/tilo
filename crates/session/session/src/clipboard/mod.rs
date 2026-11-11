@@ -404,6 +404,14 @@ impl Clipboard {
         self.asks.borrow_mut().push(ask);
     }
 
+    /// Whether a copy is to be pasted on the next [`Self::serve_asks`].
+    pub(crate) fn pasting(&self) -> bool {
+        self.asks
+            .borrow()
+            .iter()
+            .any(|ask| matches!(ask, Ask::Paste(_)))
+    }
+
     /// Carry out what quick settings asked: put a copy back on the clipboard and paste it into the
     /// app in front, or put what a surface hands the person on it.
     pub(crate) fn serve_asks(&self, compositor: &mut Compositor) {
@@ -527,14 +535,19 @@ impl Clipboard {
             .set(compositor.selection_changes(Selection::Clipboard));
     }
 
-    /// Make the app in front paste, with the chord it pastes with. A hosted surface holding the
-    /// keyboard takes the chord as it is: the app in front is a window, and the session's own
-    /// surfaces are closed by then.
+    /// Make the field that holds the keyboard paste: the app in front with the chord it pastes
+    /// with, or a field of the session's own (the desk's search) with Ctrl+V.
     fn paste_into_focus(compositor: &mut Compositor) {
-        let Some(window) = compositor.focused_window() else {
-            return;
+        let window = if compositor.host_takes_keys() {
+            None
+        } else {
+            compositor.focused_window()
         };
-        let ids: Vec<&str> = window.app_id.as_deref().into_iter().collect();
+        let ids: Vec<&str> = window
+            .as_ref()
+            .and_then(|window| window.app_id.as_deref())
+            .into_iter()
+            .collect();
         let section = settings_store::load_section(paste_shortcut::SECTION);
         let overrides = paste_shortcut::overrides_from_section(&section);
         let chord = if ids.is_empty() {

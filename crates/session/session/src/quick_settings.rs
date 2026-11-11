@@ -90,8 +90,7 @@ pub enum Run {
     GivenUp,
 }
 
-/// Whether the panel, opened for its controls, is still to take the keyboard once its surface
-/// stands, or that is settled: it took it, or the field the person types in keeps it.
+/// Whether the panel is still to take the keyboard once the person sees it, or it took it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PanelKeys {
     Wanted,
@@ -228,6 +227,10 @@ impl crate::Session {
         if !open || place.is_none() {
             // Down, or up where the stack cannot say: nothing shows, and its app runs on hidden, so
             // the next opening only shows it.
+            // The keyboard goes back to where the person was typing as soon as it is down, not
+            // once it has finished leaving: what they type next is theirs, and a copy chosen in it
+            // is pasted there.
+            self.compositor.return_layer_keyboard(SURFACE_NAMESPACE);
             self.hide_quick_settings();
             self.quick_settings_keyboard = PanelKeys::Settled;
             self.shared.panel_asks.borrow_mut().clear();
@@ -241,28 +244,21 @@ impl crate::Session {
         // Up, where it stands: the surface is shown rather than started, so an opening the panel
         // already stands for costs nothing.
         let opening = self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(true);
-        if opening && self.shared.panel_asks.borrow().is_empty() {
-            // An opening nobody asked a page of shows the controls, not the page the panel was left
-            // on.
-            self.shared.panel_asks.borrow_mut().push("show-controls");
-        }
         // What the keys asked the panel to show, which it can only be told while it runs. It is
         // told before it shows, so the first frame it commits is that page, fitted, rather than
         // the page it was left on.
         let asked = std::mem::take(&mut *self.shared.panel_asks.borrow_mut());
         self.ask_panel(&asked);
         self.show_quick_settings();
-        // Opened for its controls, the panel takes the keyboard: Tab walks them, Enter opens a
-        // section. Opened to paste, the field the person types in keeps it, so the copy they
-        // choose lands there.
+        // The panel takes the keyboard once the person sees it: Tab walks its controls and Enter
+        // opens a section; opened to paste, the person types to find a copy and Enter pastes it.
+        // Until then the keys and what they asked (a copy made just before) stay with the field
+        // the person types in, which has the keyboard back when the panel goes.
         if opening {
-            self.quick_settings_keyboard = if asked.contains(&"paste") {
-                PanelKeys::Settled
-            } else {
-                PanelKeys::Wanted
-            };
+            self.quick_settings_keyboard = PanelKeys::Wanted;
         }
         if self.quick_settings_keyboard == PanelKeys::Wanted
+            && visible
             && self.compositor.lend_layer_keyboard(SURFACE_NAMESPACE)
         {
             self.quick_settings_keyboard = PanelKeys::Settled;
@@ -319,6 +315,17 @@ impl crate::Session {
         tracing::debug!(open, "quick settings started");
         self.quick_settings_run = Run::Started;
         true
+    }
+
+    /// Carry out what the clipboard was asked. A copy chosen in the panel is pasted where the
+    /// person was typing: the panel goes down first, and that field has the keyboard back before
+    /// the paste reaches it.
+    pub(crate) fn serve_clipboard_asks(&mut self) {
+        if self.shared.clipboard.pasting() {
+            self.shared.overlays.close(Slot::QuickSettings);
+            self.compositor.return_layer_keyboard(SURFACE_NAMESPACE);
+        }
+        self.shared.clipboard.serve_asks(&mut self.compositor);
     }
 
     /// Stop trying to run the panel's app until the panel is opened anew; an open panel closes.
@@ -405,6 +412,9 @@ impl crate::Session {
         self.compositor.set_layer_pose(SURFACE_NAMESPACE, None);
         if self.compositor.layer_shown(SURFACE_NAMESPACE) != Some(false) {
             self.compositor.show_layer(SURFACE_NAMESPACE, false);
+            // Gone from sight, it goes back to its controls: the next opening shows them, or the
+            // page it is asked for built afresh, its field taking the keys.
+            self.ask_panel(&["show-controls"]);
         }
     }
 }

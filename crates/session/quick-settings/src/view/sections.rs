@@ -10,8 +10,8 @@ use ui::framework::{ActionControl as _, Actions, ViewCx};
 use ui::icons::Icon;
 use ui::tokens::Rhythm;
 use ui::widget::{
-    Button, ButtonRole, Column, Container, Element, ListRow, ProgressBar, Row, Scrollable, Section,
-    Segment, SignalLevel, Slider, Spacer, Text, TextInput, Toggle, ToggleGroup,
+    Button, ButtonRole, Column, Container, Element, ListRow, ProgressBar, Row, Section, Segment,
+    SignalLevel, Slider, Spacer, Text, TextInput, Toggle, ToggleGroup,
 };
 
 use super::Parts;
@@ -743,19 +743,32 @@ fn device_row(cx: &ViewCx<QuickSettings>, face: &HostedRow) -> Element {
     Box::new(actions.bind_effect_invocation(row, &press(crate::RowPart::Row)))
 }
 
-/// How many copies the clipboard section shows before it scrolls.
-const COPIES_SHOWN: f32 = 6.0;
-
 /// The clipboard history: a search field, the copies that match it (each
 /// pasted when chosen, with its pin and remove), and Clear history. Opened
 /// to paste, it is the whole panel.
 pub(super) fn clipboard(cx: &ViewCx<QuickSettings>, parts: &Parts, pasting: bool) -> Element {
     let query = parts.query.clone();
-    let field = TextInput::from_state(&query)
+    let copies = parts.section(QsSection::Clipboard);
+    let mut field = TextInput::from_state(&query)
         .with_id("qs-clipboard-search")
         .with_placeholder(t("qs-clipboard-search"))
         .with_accessible_name(t("qs-clipboard-search"));
-    let copies = parts.section(QsSection::Clipboard);
+    // Opened to paste, the person types to find the copy and Enter pastes the first that matches;
+    // Tab and the arrows reach the copies themselves.
+    if pasting {
+        let shown = copies.clone();
+        let first = QsEffect::PASTE_COPY.try_map(move |typed: String| {
+            shown.with(|items| {
+                crate::faces::matching(copy_rows(items), &typed)
+                    .first()
+                    .map(|copy| copy.key.clone())
+            })
+        });
+        field = field.wants_focus();
+        if let Some(binding) = cx.actions().effect_binding(first) {
+            field = field.on_submit_action(binding);
+        }
+    }
     let list = cx.switch(&copies, move |cx, items| {
         let query = query.clone();
         let items = items.clone();
@@ -778,13 +791,7 @@ pub(super) fn clipboard(cx: &ViewCx<QuickSettings>, parts: &Parts, pasting: bool
 
 fn copies_list(cx: &ViewCx<QuickSettings>, items: &[Item], typed: &str) -> Element {
     let actions = cx.actions();
-    let copies: &[HostedRow] = items
-        .iter()
-        .find_map(|item| match item {
-            Item::Copies(copies) => Some(copies.as_slice()),
-            _ => None,
-        })
-        .unwrap_or_default();
+    let copies = copy_rows(items);
     let shown = crate::faces::matching(copies, typed);
     let mut column = Column::new()
         .with_intrinsic_height()
@@ -808,21 +815,28 @@ fn copies_list(cx: &ViewCx<QuickSettings>, items: &[Item], typed: &str) -> Eleme
                 .with_live(ui::a11y::Politeness::Polite),
         ));
     }
+    // The copies stand in the page, which the panel's body scrolls once they reach past the
+    // room the panel has: a list scrolling on its own inside the panel would be shrunk to the
+    // window the panel is fitting, and the panel would never grow to show it.
     let rows: Vec<Element> = shown.into_iter().map(|copy| copy_row(cx, copy)).collect();
-    let row_height = ui::tokens::Metrics::BASE.row_double;
-    column = column.push(Box::new(
-        Scrollable::new_vertical()
-            .with_max_height(row_height * COPIES_SHOWN)
-            .fit_content_height()
-            .with_label(t("qs-clipboard"))
-            .with_child(Box::new(Section::new(rows))),
-    ));
+    column = column.push(Box::new(Section::new(rows)));
     column
         .push(Box::new(actions.bind_effect_invocation(
             ListRow::new("qs-clipboard-clear", t("qs-clipboard-clear-history")).icon(Icon::Trash2),
             &QsEffect::ClearClipboard,
         )))
         .into_widget()
+}
+
+/// The copies the clipboard section lists.
+fn copy_rows(items: &[Item]) -> &[HostedRow] {
+    items
+        .iter()
+        .find_map(|item| match item {
+            Item::Copies(copies) => Some(copies.as_slice()),
+            _ => None,
+        })
+        .unwrap_or_default()
 }
 
 /// One copy: pasted when chosen, with its pin and its remove.

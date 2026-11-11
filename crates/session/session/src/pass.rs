@@ -644,7 +644,7 @@ impl Session {
         self.follow_window_menu();
         // Each open window takes the temperature of the workspace it is in, as this pass left it.
         self.follow_window_warmth();
-        self.shared.clipboard.serve_asks(&mut self.compositor);
+        self.serve_clipboard_asks();
         // A paste of files runs on its own thread; the loop only asks whether it is over and tells
         // the person how it went.
         for notice in self.shared.clipboard.step_files() {

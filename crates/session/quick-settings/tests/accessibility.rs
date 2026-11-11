@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 use atspi_proxies::accessible::AccessibleProxy;
 use atspi_proxies::bus::StatusProxy;
 use tilo_compositor::OutputConfig;
-use tilo_session::surfaces::{Anchor, Keyboard, Layer, Surface};
+use tilo_session::surfaces::Surface;
 use tilo_session::{Options, Session};
 use tilo_test_env::{PrivateBus, ScopedEnv};
 use zbus::zvariant::{ObjectPath, OwnedObjectPath};
@@ -45,17 +45,9 @@ const ROOT: &str = "/org/a11y/atspi/accessible/root";
 /// of hanging the test.
 const WALK_LIMIT: usize = 256;
 
-/// The panel, as the session starts it: below the bar's right end.
+/// The panel, as the session starts it.
 fn panel() -> Surface {
-    Surface::new("quick-settings", panel_binary())
-        .layer(Layer::Top)
-        .namespace("tilo-quick-settings")
-        .anchor(Anchor::TOP | Anchor::RIGHT)
-        .size((
-            tilo_quick_settings::resource::PANEL_WIDTH,
-            tilo_quick_settings::resource::PANEL_HEIGHT,
-        ))
-        .keyboard(Keyboard::OnDemand)
+    tilo_session::quick_settings::surface_of(panel_binary())
 }
 
 /// The panel's own binary: this is the package Cargo builds it for, so it is

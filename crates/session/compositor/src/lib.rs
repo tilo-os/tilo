@@ -2221,6 +2221,12 @@ impl Compositor {
         self.data.state.lend_layer_keyboard(namespace)
     }
 
+    /// Give the keyboard the session's layer surface `namespace` was lent back to where it was,
+    /// as the surface is put away and before it has finished leaving.
+    pub fn return_layer_keyboard(&mut self, namespace: &str) {
+        self.data.state.return_layer_keyboard(namespace);
+    }
+
     /// Whether the session shows its layer surface `namespace` , hid it, or never said (shown).
     #[must_use]
     pub fn layer_shown(&self, namespace: &str) -> Option<bool> {

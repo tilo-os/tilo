@@ -423,20 +423,35 @@ impl State {
         else {
             return false;
         };
+        self.lend_keyboard_to(namespace, focus)
+    }
+
+    /// Give the keyboard to the layer surface `focus` of `namespace` , remembering where it was:
+    /// whether the panel was opened from the keyboard or pressed, the field the person was typing
+    /// in has it back when the panel goes. A surface lent it already keeps where it came from.
+    fn lend_keyboard_to(&mut self, namespace: &str, focus: WlSurface) -> bool {
         let Some(keyboard) = self.seat.get_keyboard() else {
             return false;
         };
         let before = keyboard.current_focus();
-        if before.as_ref() != Some(&focus) {
-            self.layers.lent = Some((namespace.to_owned(), before));
-            keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
+        if before.as_ref() == Some(&focus) {
+            return true;
         }
+        if self
+            .layers
+            .lent
+            .as_ref()
+            .is_none_or(|(lent_to, _)| lent_to != namespace)
+        {
+            self.layers.lent = Some((namespace.to_owned(), before));
+        }
+        keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
         true
     }
 
-    /// The layer surface `namespace` is hidden: the keyboard it was lent goes back where it was,
+    /// The layer surface `namespace` is put away: the keyboard it was lent goes back where it was,
     /// when it still holds it and that is still there.
-    fn return_layer_keyboard(&mut self, namespace: &str) {
+    pub(crate) fn return_layer_keyboard(&mut self, namespace: &str) {
         let Some((lent_to, before)) = self.layers.lent.take() else {
             return;
         };
@@ -650,10 +665,11 @@ impl State {
         if placed.request().keyboard_interactivity != KeyboardInteractivity::OnDemand {
             return;
         }
-        let focus = placed.surface.wl_surface().clone();
-        if let Some(keyboard) = self.seat.get_keyboard() {
-            keyboard.set_focus(self, Some(focus), SERIAL_COUNTER.next_serial());
-        }
+        let (namespace, focus) = (
+            placed.namespace.clone(),
+            placed.surface.wl_surface().clone(),
+        );
+        self.lend_keyboard_to(&namespace, focus);
     }
 
     /// The output whose rectangle holds `point` .

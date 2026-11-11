@@ -226,8 +226,10 @@ impl State {
         self.text_input.entry(typing)
     }
 
-    /// The hosted surface whose field the person types into now: the topmost one that has a field
-    /// with the focus, while the session is not locked.
+    /// The hosted surface whose field the person types into now: the topmost one that holds the
+    /// keyboard and has a field with the focus, while the session is not locked. A surface that
+    /// keeps its field focused under another that took the keys (the desk's search under the
+    /// clipboard opened over it) is not typed into until it has them back.
     fn host_text_input(&self) -> Option<(usize, HostTextInput)> {
         if self.locked() {
             return None;
@@ -236,6 +238,7 @@ impl State {
             .iter()
             .enumerate()
             .rev()
+            .filter(|(_, host)| host.wants_keyboard())
             .find_map(|(index, host)| host.text_input().map(|input| (index, input)))
     }
 

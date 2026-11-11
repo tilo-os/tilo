@@ -15,6 +15,9 @@ the desk's own state, as the paste pane and the presence carets read it:
   copy     what Ctrl+A, Ctrl+C took in the page is in the pane, pastes into the
            desk's search with Ctrl+V, and a copy the session's own action makes
            joins it in the same history
+  choose   a copy clicked in the pane is pasted at the page's caret and the pane
+           goes; opened over the desk's search, the pane leaves the search up,
+           takes the keys typed to find a copy, and Enter pastes it there
 
 It needs the session and the tree's apps built (dist/dev/nested-session-build.sh,
 or `TILO_NESTED_SESSION_BUILD` naming where they were).
@@ -103,6 +106,23 @@ def searching(session) -> bool:
                if "search" in slot)
 
 
+# Where the pane's copies stand in it: under its search field and the line counting them, one
+# row each, and Clear history under the last.
+FIRST_COPY, COPY_ROW, CLEAR_ROW = 76, 52, 36
+
+
+def copy_at(session, index: int) -> tuple[float, float]:
+    """A point on the text of the pane's `index`th copy, clear of its pin and remove."""
+    at = pane(session)
+    return at[0] + 120, at[1] + FIRST_COPY + COPY_ROW * index + COPY_ROW / 2
+
+
+def page_holds(text: str) -> bool:
+    """Whether the page's record, as the session keeps it on disk, holds `text`."""
+    return any(text.encode() in path.read_bytes()
+               for path in STATE.rglob("*.automerge") if NOTES in str(path))
+
+
 def notes_window(session) -> dict | None:
     return next((window for window in session.windows()
                  if window.get("app_id") == NOTES and window.get("active")), None)
@@ -163,10 +183,20 @@ def main() -> int:
         # The first frame the person sees is the size the panel fits, never the room it was
         # given: the desk holds the pane back until its app has drawn that frame.
         opened = wait_for("the clipboard pane, drawn", lambda: pane(session))
-        end = wait_for("the caret at rest", lambda: settled(lambda: caret(session))) or at
+        span = room(session) or opened
         shot = session.snapshot(SHOTS / "02-super-v-at-caret.png")
+        print(f"  shot {shot}")
+        session.key("Escape")
+        closed = wait_for("the pane closing", lambda: pane(session) is None)
+        check("Escape closes the pane", closed is not None)
+        # The pane holds the keyboard while it is up, so the page's caret is read once it has it
+        # back: the caret the pane was placed at.
+        end = wait_for("the caret at rest", lambda: settled(lambda: caret(session)))
+        check("the caret is reported again after the pane closes", end is not None,
+              json.dumps(caret(session)))
+        end = end or at
         if check("Super+V opens the clipboard pane", opened is not None):
-            span = room(session) or opened
+            span = span or opened
             check("the pane's first frame is as tall as its page, not its room",
                   40 <= opened[3] - opened[1] <= 0.55 * (span[3] - span[1]),
                   f"pane {json.dumps(opened)}, room {json.dumps(span)}")
@@ -177,13 +207,6 @@ def main() -> int:
             check("the pane starts at the caret's column, inside its room",
                   span[0] - 1 <= opened[0] <= end[0] + 24,
                   f"caret {json.dumps(end)}, pane {json.dumps(opened)}, room {json.dumps(span)}")
-        print(f"  shot {shot}")
-
-        session.key("Escape")
-        closed = wait_for("the pane closing", lambda: pane(session) is None)
-        check("Escape closes the pane", closed is not None)
-        check("the caret is still reported after the pane closes", caret(session) is not None,
-              json.dumps(caret(session)))
 
         # What was copied in the page pastes into another app's field: the desk's search.
         session.chord("Super", "Space")
@@ -213,9 +236,53 @@ def main() -> int:
         wait_for("the search closing", lambda: not searching(session))
         session.chord("Super", "v")
         wait_for("the clipboard pane", lambda: settled(lambda: pane(session)))
-        # The pane draws its rows once the history's reading reaches it.
-        time.sleep(1)
+        # The pane grows as the history's reading brings its rows: two copies and Clear history.
+        tall = FIRST_COPY + 2 * COPY_ROW + CLEAR_ROW
+        grown = wait_for("the pane grown to both copies",
+                         lambda: (now := pane(session)) and now[3] - now[1] >= tall and now)
         print(f"  shot {session.snapshot(SHOTS / '04-both-copies.png')}")
+        if not check("the pane is tall enough for both copies and Clear history",
+                     grown is not None, json.dumps(pane(session))):
+            return 1
+
+        # A copy clicked in the pane is pasted where the caret was, and the pane goes.
+        session.click_at(*copy_at(session, 0))
+        check("a click on a copy closes the pane",
+              wait_for("the pane closing", lambda: pane(session) is None) is not None)
+        # The page draws the paste, its caret past the text it took, and keeps it in its record.
+        check("the page's caret moves past the pasted copy",
+              wait_for("the paste landing", lambda: (now := caret(session)) and
+                       now[0] > end[0] + 40 and now) is not None, json.dumps(caret(session)))
+        session.snapshot(SHOTS / "05-clicked-into-page.png")
+        check("the clicked copy is pasted into the page",
+              wait_for("the paste in the page's record",
+                       lambda: page_holds("the autumn release") or None) is not None)
+
+        # Opened over the desk's search, the pane leaves it up, and Enter pastes the copy that
+        # matches what was typed into it.
+        session.chord("Super", "Space")
+        wait_for("the search open", lambda: searching(session) or None)
+        session.chord("Super", "v")
+        wait_for("the clipboard pane over the search", lambda: settled(lambda: pane(session)))
+        check("the search stays open under the pane", searching(session),
+              json.dumps(chrome(session).get("overlays")))
+        # What is typed now searches the pane's copies: the pane has the keyboard, not the search.
+        session.type("beds")
+        check("the search under the pane keeps what it held", query(session) == "",
+              repr(query(session)))
+        session.snapshot(SHOTS / "06-pane-over-search.png")
+        session.key("Enter")
+        check("Enter closes the pane",
+              wait_for("the pane closing", lambda: pane(session) is None) is not None)
+        pasted = wait_for("the paste in the search", lambda: query(session) or None)
+        session.snapshot(SHOTS / "07-entered-into-search.png")
+        check("Enter pastes the copy that matches what was typed, not the newest",
+              pasted == "Water the beds before noon", repr(pasted))
+        session.type("!")
+        check("the search has the keyboard back",
+              wait_for("the search typed into", lambda: query(session).endswith("!") or None)
+              is not None, repr(query(session)))
+        session.key("Escape")
         session.key("Escape")
     finally:
         session.stop()

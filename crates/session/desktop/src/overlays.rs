@@ -106,20 +106,6 @@ impl Slot {
         }
     }
 
-    /// Who may work the surface while it is open: a surface that takes the keyboard holds it
-    /// against everything behind it, and a press outside it closes it rather than reaching what it
-    /// covers.
-    #[must_use]
-    pub const fn modality(self) -> Modality {
-        Modality::WindowModal
-    }
-
-    /// Whose surface this is.
-    #[must_use]
-    pub const fn owner(self) -> Owner {
-        Owner::Shell
-    }
-
     /// Whether the surface stands over the desk beside others: a menu, a popover, the strip labels,
     /// the search, quick settings — one at a time. The overview is the desk itself, the surface
     /// everything else stands over, so it is not one of them.
@@ -206,13 +192,6 @@ pub enum Role {
     Overlay,
     /// A sheet a person asked for and works in.
     Dialog,
-    /// A picker on another process's behalf, asked through the portal; the app that asked is
-    /// waiting on the answer.
-    Picker,
-    /// A question that *is* the grant: it asks the person, who alone may answer it.
-    Consent,
-    /// A short, self-dismissing message. It takes no input.
-    Toast,
 }
 
 impl Role {
@@ -223,22 +202,18 @@ impl Role {
             Self::Popup => "popup",
             Self::Overlay => "overlay",
             Self::Dialog => "dialog",
-            Self::Picker => "picker",
-            Self::Consent => "consent",
-            Self::Toast => "toast",
         }
     }
 
-    /// Whether Escape closes a surface of this kind: a menu, a sheet and a
-    /// picker do. An overlay answers Escape only if its own model says so,
-    /// and a consent question never closes as a side effect — it answers.
+    /// Whether Escape closes a surface of this kind: a menu and a sheet do. An overlay answers
+    /// Escape only if its own model says so.
     #[must_use]
     pub const fn closes_on_escape(self) -> bool {
-        matches!(self, Self::Popup | Self::Dialog | Self::Picker)
+        matches!(self, Self::Popup | Self::Dialog)
     }
 
-    /// Whether a press outside a surface of this kind closes it. A popup does; an overlay, a sheet,
-    /// a picker and a consent question stay until they are answered.
+    /// Whether a press outside a surface of this kind closes it. A popup does; an overlay and a
+    /// sheet stay until they are answered.
     #[must_use]
     pub const fn closes_on_press_outside(self) -> bool {
         matches!(self, Self::Popup)
@@ -335,95 +310,6 @@ impl Anchor {
     }
 }
 
-/// Who may work a surface while it is open.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Modality {
-    /// Shares the desktop with everything else; what it does not use goes on to what is below. It
-    /// never takes the keyboard.
-    Passive,
-    /// Everything behind it is inert while it is up, and it takes the keyboard: a menu, a picker, a
-    /// panel a press outside closes.
-    WindowModal,
-    /// Nothing behind it is reachable at all, and the person cannot leave the surface by accident:
-    /// a consent question, first-use setup.
-    SystemModal,
-}
-
-impl Modality {
-    /// The modality's name, as a reading spells it.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Passive => "passive",
-            Self::WindowModal => "window-modal",
-            Self::SystemModal => "system-modal",
-        }
-    }
-
-    /// Whether a surface this modal takes the keyboard from what is behind it. A passive surface
-    /// never does.
-    #[must_use]
-    pub const fn takes_keyboard(self) -> bool {
-        !matches!(self, Self::Passive)
-    }
-}
-
-/// Whose surface it is: who is told about its outcome, and whose frame it is counted in.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Owner {
-    /// The compositor's own chrome: its menus, quick settings.
-    Shell,
-    /// One app's surface, which is that app's public way of asking.
-    App(String),
-    /// A portal request from `caller` , which waits for the answer.
-    Portal(String),
-}
-
-impl Owner {
-    /// The owner's name, as a reading spells it.
-    #[must_use]
-    pub fn as_str(&self) -> String {
-        match self {
-            Self::Shell => "shell".into(),
-            Self::App(app) => format!("app:{app}"),
-            Self::Portal(caller) => format!("portal:{caller}"),
-        }
-    }
-}
-
-/// Where a surface is in its life.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Lifecycle {
-    /// Asked for, and not yet on screen.
-    Requested,
-    /// On screen, and taking input.
-    Shown,
-    /// On its way out; it takes no input.
-    Closing,
-    /// Closed. What opened it holds the keyboard again.
-    Closed,
-}
-
-impl Lifecycle {
-    /// The state of a surface that is open or not; the stack keeps no exit motion and no consent
-    /// that waits to be told.
-    #[must_use]
-    pub const fn of(open: bool) -> Self {
-        if open { Self::Shown } else { Self::Closed }
-    }
-
-    /// The state's name, as a reading spells it.
-    #[must_use]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Requested => "requested",
-            Self::Shown => "shown",
-            Self::Closing => "closing",
-            Self::Closed => "closed",
-        }
-    }
-}
-
 /// What holds the keyboard: the desk's windows, or a surface over them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -460,9 +346,6 @@ pub struct Entry {
     pub role: Role,
     pub anchor: Anchor,
     pub size: Size,
-    pub modality: Modality,
-    pub owner: Owner,
-    pub lifecycle: Lifecycle,
     /// The room the host places it in, when the anchor and its size settle one. A surface its own
     /// view places has none.
     pub place: Option<Standing>,
@@ -665,11 +548,25 @@ impl Overlays {
     /// go down with it. Their widgets follow the stack ([`Self::is_open`]), which is how the chrome
     /// learns to close them.
     pub fn open(&self, slot: Slot, anchor: Option<Anchor>) {
+        self.raise(slot, anchor, false);
+    }
+
+    /// Put `slot` up over the surface the person types in, standing at `anchor`: what is opened
+    /// for that field (the clipboard, to paste into it) leaves the field's surface up under it,
+    /// takes the keyboard from it while it stands, and gives it back as it goes. Every other
+    /// anchored surface goes down, as [`Self::open`] takes them.
+    pub fn open_over(&self, slot: Slot, anchor: Option<Anchor>) {
+        self.raise(slot, anchor, true);
+    }
+
+    fn raise(&self, slot: Slot, anchor: Option<Anchor>, over: bool) {
         {
             let mut stack = self.0.borrow_mut();
+            let typed_in = over.then(|| stack.target()).flatten();
             if slot.stands_beside() {
                 for other in Slot::ALL {
                     if other != slot
+                        && Some(other) != typed_in
                         && other.stands_beside()
                         && let Some(state) = stack.slots.get_mut(&other)
                         && state.open
@@ -684,6 +581,11 @@ impl Overlays {
             state.anchor = Some(anchor.unwrap_or_else(|| slot.anchor()));
             state.dismissed = false;
             state.awaiting_close = false;
+            if over {
+                stack.over = Some(slot);
+            } else if stack.over == Some(slot) {
+                stack.over = None;
+            }
         }
         self.woke();
     }
@@ -788,11 +690,17 @@ impl Overlays {
     /// back.
     #[must_use]
     pub fn target(&self) -> Target {
-        let stack = self.0.borrow();
-        Slot::ALL
-            .into_iter()
-            .find(|slot| stack.is_shown(*slot) && slot.modality().takes_keyboard())
+        self.0
+            .borrow()
+            .target()
             .map_or(Target::Window, Target::Surface)
+    }
+
+    /// The surface opened over the one the person types in ([`Self::open_over`]), while it stands:
+    /// it holds the keyboard whatever stands under it.
+    #[must_use]
+    pub fn over(&self) -> Option<Slot> {
+        self.0.borrow().over()
     }
 
     /// Where `slot` stands now, if its anchor and size settle a room the host can place it in.
@@ -853,6 +761,9 @@ impl Overlays {
 struct Stack {
     slots: BTreeMap<Slot, SlotState>,
     displays: Displays,
+    /// The surface last opened over the one the person types in ([`Overlays::open_over`]): while
+    /// it is up it holds the keyboard over that surface, which stays up under it.
+    over: Option<Slot>,
     /// Whether the button of the press that dismissed something has come up,
     /// and what it asked is yet to be carried out.
     press_over: bool,
@@ -862,6 +773,18 @@ struct Stack {
 }
 
 impl Stack {
+    /// The surface that holds the keyboard: one opened over the field the person types in, else
+    /// the topmost open one that takes it.
+    fn target(&self) -> Option<Slot> {
+        self.over()
+            .or_else(|| Slot::ALL.into_iter().find(|slot| self.is_shown(*slot)))
+    }
+
+    /// The open surface opened over the one the person types in.
+    fn over(&self) -> Option<Slot> {
+        self.over.filter(|slot| self.is_shown(*slot))
+    }
+
     /// Whether `slot` is up and taking input.
     fn is_shown(&self, slot: Slot) -> bool {
         self.slots.get(&slot).is_some_and(|state| state.open)
@@ -884,9 +807,6 @@ impl Stack {
             role: slot.role(),
             anchor,
             size,
-            modality: slot.modality(),
-            owner: slot.owner(),
-            lifecycle: Lifecycle::of(true),
             place,
         })
     }
@@ -912,27 +832,14 @@ mod tests {
                 !role.as_str().is_empty() && !slot.as_str().is_empty(),
                 "{slot:?} is named"
             );
-            assert_eq!(slot.owner(), Owner::Shell, "{slot:?}");
             assert_eq!(Slot::named(slot.as_str()), Some(slot), "{slot:?}");
-            // A surface that takes the keyboard is one a press outside may close; one that never
-            // takes it is not.
-            assert!(
-                !role.closes_on_press_outside() || slot.modality().takes_keyboard(),
-                "{slot:?}: a flyout takes the keyboard while it stands"
-            );
         }
     }
 
     #[test]
     fn only_a_menu_closes_on_a_press_outside_and_escape_answers_by_kind() {
         assert!(Role::Popup.closes_on_press_outside());
-        for role in [
-            Role::Overlay,
-            Role::Dialog,
-            Role::Picker,
-            Role::Consent,
-            Role::Toast,
-        ] {
+        for role in [Role::Overlay, Role::Dialog] {
             assert!(!role.closes_on_press_outside(), "{role:?} stays");
         }
         assert!(Role::Popup.closes_on_escape() && Role::Dialog.closes_on_escape());
@@ -940,7 +847,6 @@ mod tests {
             !Role::Overlay.closes_on_escape(),
             "an overlay answers Escape only if its own model says so"
         );
-        assert!(!Role::Consent.closes_on_escape(), "a question never does");
     }
 
     #[test]
@@ -1151,6 +1057,37 @@ mod tests {
     }
 
     #[test]
+    fn a_surface_opened_over_the_field_typed_in_leaves_it_up_and_gives_the_keys_back() {
+        let overlays = overlays();
+        overlays.open(Slot::Search, None);
+        overlays.open_over(Slot::QuickSettings, None);
+        assert!(
+            overlays.is_open(Slot::Search),
+            "the search the clipboard was opened for stays up under it"
+        );
+        assert_eq!(overlays.target(), Target::Surface(Slot::QuickSettings));
+        assert_eq!(overlays.over(), Some(Slot::QuickSettings));
+        assert_eq!(
+            overlays.escape(),
+            Some(Slot::QuickSettings),
+            "Escape puts the clipboard away, not the search"
+        );
+        overlays.close(Slot::QuickSettings);
+        assert_eq!(overlays.over(), None);
+        assert_eq!(
+            overlays.target(),
+            Target::Surface(Slot::Search),
+            "the search has the keys back"
+        );
+
+        // Opened plainly, it stands alone.
+        overlays.open_over(Slot::QuickSettings, None);
+        overlays.open(Slot::QuickSettings, None);
+        assert!(!overlays.is_open(Slot::Search));
+        assert_eq!(overlays.over(), None);
+    }
+
+    #[test]
     fn escape_and_a_press_outside_close_the_top_menu_that_stands_where_it_is_not() {
         let overlays = overlays();
         overlays.open(Slot::QuickSettings, None);
@@ -1318,9 +1255,6 @@ mod tests {
         );
         let overview = &entries[0];
         assert_eq!(overview.role, Role::Overlay);
-        assert_eq!(overview.modality, Modality::WindowModal);
-        assert_eq!(overview.lifecycle, Lifecycle::Shown);
-        assert_eq!(overview.owner, Owner::Shell);
         assert_eq!(overlays.target().as_str(), "overlay:overview");
     }
 }

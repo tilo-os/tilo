@@ -57,9 +57,6 @@ pub use status::SystemStatus;
 pub struct ClipboardView {
     /// Every copy in the history: the row's count.
     pub total: usize,
-    /// The line over the copies: how many there are, or what is being
-    /// searched for (typing while the section is open searches).
-    pub caption: String,
     /// The copies the section lists (the latest, or the matches).
     pub rows: Vec<hosted::HostedRow>,
 }

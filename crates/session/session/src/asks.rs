@@ -679,7 +679,9 @@ impl Shared {
             .overlays
             .caret()
             .map(|at| Anchor::Beside { at, gap: CARET_GAP });
-        self.overlays.open(Slot::QuickSettings, anchor);
+        // The surface the field stands in (the desk's search) stays up under it, and has the
+        // keyboard back for the paste.
+        self.overlays.open_over(Slot::QuickSettings, anchor);
         self.panel_asks.borrow_mut().push("paste");
     }
 
