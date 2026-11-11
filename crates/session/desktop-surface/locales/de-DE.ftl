@@ -220,9 +220,6 @@ activity-receipt-failed = Fehlgeschlagen
 activity-receipt-cancelled = Abgebrochen
 activity-receipt-ended = { $status }: { $what }
 activity-replay-layout-not-recorded = Fenstergrößen und ausgewählte Tabs wurden nicht aufgezeichnet
-}
-}
-}
 # Ereignisse im Arbeitsbereich-Verlauf
 activity-event-removed-workspaces = { $count } { $count ->
         [one] Arbeitsbereich
@@ -470,7 +467,6 @@ workspace-settings-scope-screencast = Bildschirmaufnahme
 workspace-settings-scope-remote-desktop = Fernsteuerung von Zeiger und Tastatur
 workspace-settings-scope-any-host = ein beliebiger Netzwerkhost
 workspace-settings-scope-host = Netzwerkhost { $host }
-}
 workspace-settings-scope-workspace-object = Diesen Arbeitsbereich
 workspace-settings-scope-app-object = Die App { $app }
 workspace-settings-scope-workspace-files-object = Dateien des Arbeitsbereichs

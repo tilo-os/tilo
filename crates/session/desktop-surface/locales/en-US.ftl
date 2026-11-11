@@ -208,9 +208,6 @@ activity-receipt-failed = Failed
 activity-receipt-cancelled = Cancelled
 activity-receipt-ended = { $status }: { $what }
 activity-replay-layout-not-recorded = Window sizes and selected tabs were not recorded
-}
-}
-}
 # Workspace history events
 activity-event-removed-workspaces = Removed { $count } { $count ->
         [one] workspace
@@ -451,7 +448,6 @@ workspace-settings-scope-screencast = screen capture
 workspace-settings-scope-remote-desktop = remote pointer + keyboard
 workspace-settings-scope-any-host = any network host
 workspace-settings-scope-host = network host { $host }
-}
 workspace-settings-scope-workspace-object = this workspace
 workspace-settings-scope-app-object = the { $app } app
 workspace-settings-scope-workspace-files-object = workspace files
