@@ -595,14 +595,16 @@ const ROUND_TRIP: Duration = Duration::from_millis(400);
 
 /// What the host and the page may spend on a fresh guest's entry, from its
 /// first request until its desktop shows: the session and the door (about
-/// 0.1 s), the workspace admitting the guest (about 0.1 s for 300 members),
-/// the replay written, the page taking it in (0.25 to 0.45 s), the desktop's
-/// keys, which the host's participants commit while the admission's answer
-/// travels. The quick entry shows in 0.5 to 0.8 s on the builder.
+/// 0.1 s), the workspace admitting the guest (about 50 ms for 300 members), the
+/// replay written, the page taking it in (0.2 to 0.45 s), the desktop's keys,
+/// which the host's participants commit while the admission's answer travels.
+/// The quick entry shows in 0.3 to 0.8 s on the builder.
 ///
 /// Nothing here waits on a clock: a guest whose certificate was issued a
 /// moment before its entry is in the workspace's channel group at once, so
-/// the quick entry is held to this allowance alone.
+/// the quick entry is held to this allowance alone. The allowance is kept
+/// wider than the quick entry needs because the slow entry is held to it too,
+/// with its round trips beside it.
 const COMPUTE: Duration = Duration::from_millis(1_300);
 
 /// How many round trips a fresh guest may wait, one after another, beside
