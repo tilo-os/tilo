@@ -11,7 +11,6 @@
 
 use std::collections::{HashMap, HashSet};
 use ui::chrome::{NavCount, NavRowFace};
-use ui::i18n::ArgValue;
 use ui::icons::Icon;
 use ui::tokens::TextRole;
 use ui::widget::DrawChild;
@@ -28,7 +27,6 @@ use vello::peniko::{BlendMode, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::CATALOG;
 use crate::actions::PdfEffect;
 use std::path::Path;
 use ui::Widget;
@@ -122,32 +120,42 @@ struct StagedScenario {
 }
 
 fn pdf_filter() -> FileFilter {
-    FileFilter::new("PDF documents").mimetype("application/pdf")
+    FileFilter::new(&crate::t("pdf-chooser-filter-pdf")).mimetype("application/pdf")
 }
 
 fn pdf_open_request() -> PickRequest {
-    PickRequest::open("Open a PDF", "Open")
-        .thread_name("pdf-portal-open")
-        .filter(pdf_filter())
-        .all_files()
+    PickRequest::open(
+        &crate::t("pdf-chooser-open"),
+        &crate::t("pdf-chooser-open-accept"),
+    )
+    .thread_name("pdf-portal-open")
+    .filter(pdf_filter())
+    .all_files()
 }
 
 fn pdf_import_request() -> PickRequest {
-    PickRequest::open("Import pages from a PDF or image", "Import")
-        .thread_name("pdf-portal-import")
-        .filter(
-            FileFilter::new("PDF or image")
-                .mimetype("application/pdf")
-                .mimetype("image/png")
-                .mimetype("image/jpeg"),
-        )
-        .all_files()
+    PickRequest::open(
+        &crate::t("pdf-chooser-import"),
+        &crate::t("pdf-chooser-import-accept"),
+    )
+    .thread_name("pdf-portal-import")
+    .filter(
+        FileFilter::new(&crate::t("pdf-chooser-filter-import"))
+            .mimetype("application/pdf")
+            .mimetype("image/png")
+            .mimetype("image/jpeg"),
+    )
+    .all_files()
 }
 
 fn pdf_save_request(suggested_name: &str) -> PickRequest {
-    PickRequest::save("Save annotated PDF", "Save", suggested_name)
-        .thread_name("pdf-portal-save")
-        .filter(pdf_filter())
+    PickRequest::save(
+        &crate::t("pdf-bar-save"),
+        &crate::t("pdf-chooser-save-accept"),
+        suggested_name,
+    )
+    .thread_name("pdf-portal-save")
+    .filter(pdf_filter())
 }
 /// Same budget for rail thumbnails, which are also full engine page renders (a
 /// scanned page's thumbnail can cost 15-30ms). A couple per frame keeps the
@@ -196,7 +204,7 @@ impl SidebarTab {
         match self {
             Self::Comments => "pdf-tab-comments",
             Self::Outline => "pdf-tab-contents",
-            Self::Signatures => "pdf-tab-signatures",
+            Self::Signatures => "pdf-tab-signing",
         }
     }
 
@@ -270,7 +278,10 @@ impl ContextMenu {
     /// on screen) inside `viewport`.
     fn delete(target: DeleteTarget, anchor: Rect, viewport: Rect) -> Self {
         let mut widget = SharedContextMenu::new();
-        widget.push(MenuItem::destructive_selection("Delete").with_icon(ui::icons::Icon::Trash));
+        widget.push(
+            MenuItem::destructive_selection(crate::t("pdf-delete"))
+                .with_icon(ui::icons::Icon::Trash),
+        );
         widget.open_anchored(anchor, viewport);
         Self { target, widget }
     }
@@ -721,9 +732,9 @@ pub struct PdfApp {
     /// paint, hit-testing and the accessibility tree read their tokens from
     /// it, so geometry and paint agree.
     layout_theme: Theme,
-    /// The review panel's tab widths as their labels need them, full and
-    /// short, measured in the draw pass (`None` until then).
-    tab_widths: Option<[[f64; 3]; 2]>,
+    /// The review panel's tab widths as their labels need them, measured in
+    /// the draw pass (`None` until then).
+    tab_widths: Option<[f64; 3]>,
     /// The empty state's "Open a PDF…" pill as last painted (see
     /// `empty_open_button_rect`).
     empty_open_button: std::cell::Cell<Rect>,
@@ -1185,7 +1196,7 @@ impl PdfApp {
             show_rail: true,
             // A preview rail, not a text sidebar: 168 px at 1.5× UI scale.
             rail_w: 112.0,
-            page_sidebar: PageSidebar::new(PAGE_H / PAGE_W).with_add("Import…"),
+            page_sidebar: PageSidebar::new(PAGE_H / PAGE_W).with_add(crate::t("pdf-rail-import")),
             pages_dirty: false,
             portal_import_rx: None,
             selected_anno: None,
@@ -1390,9 +1401,9 @@ impl PdfApp {
             .as_ref()
             .map_or(self.author == id, |people| people.is_me(id))
         {
-            "You".to_owned()
+            crate::t("pdf-author-you")
         } else {
-            "Someone".to_owned()
+            crate::t("pdf-author-someone")
         }
     }
 
@@ -3104,9 +3115,9 @@ impl PdfApp {
     /// sends, Shift+Enter breaks the line.
     fn comment_field(&self, blocks: &[ui::widget::BlockContent], reply: bool) -> CommentField {
         let hint = if reply {
-            "Reply…"
+            crate::t("pdf-comment-reply-placeholder")
         } else {
-            "Write a comment…"
+            crate::t("pdf-viewer-comment-placeholder")
         };
         let mut surface = RichTextSurface::over(Draft::with_blocks(blocks))
             .with_editor(
@@ -3116,7 +3127,7 @@ impl PdfApp {
                     .with_block_handles(false)
                     .with_body_size(Self::comment_body_size(&self.layout_theme)),
             )
-            .with_placeholder(hint)
+            .with_placeholder(&hint)
             .with_submit(SubmitKey::Enter);
         surface.present_now();
         surface.set_focus(true);
@@ -5010,7 +5021,7 @@ impl Widget for PdfApp {
         if !self.has_document {
             return Some(
                 AccessNode::new(Role::Window)
-                    .with_name(crate::t("pdf-title"))
+                    .with_name(ui::i18n::I18nManager::lookup_plain("pdf-title"))
                     .with_bounds(self.rect)
                     .with_children(self.empty_state_nodes()),
             );
@@ -5035,9 +5046,9 @@ impl Widget for PdfApp {
                     .cloned()
                     .unwrap_or_else(|| format!("page-{}", index + 1));
                 let mut node = AccessNode::new(Role::ListItem)
-                    .with_name(CATALOG.t_args(
+                    .with_name(crate::t_args(
                         "pdf-a11y-page",
-                        &[("page", ArgValue::Text((index + 1).to_string()))],
+                        &[("page", (index + 1).to_string().into())],
                     ))
                     .with_action_target(format!("pdf.page:{page_id}"))
                     .with_bounds(bounds)
@@ -5050,26 +5061,29 @@ impl Widget for PdfApp {
             })
             .collect();
         let page_list = AccessNode::new(Role::List)
-            .with_name(crate::t("pdf-a11y-pages"))
+            .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-pages"))
             .with_hashed_key("pdf.pages")
             .with_children(page_nodes);
 
         let mut content_children = vec![
             AccessNode::new(Role::Heading { level: 1 }).with_name(if self.doc_name.is_empty() {
-                "PDF document".to_string()
+                crate::t("pdf-empty-the-document")
             } else {
                 self.doc_name.clone()
             }),
             AccessNode::new(Role::Document)
-                .with_name(CATALOG.t_args(
+                .with_name(crate::t_args(
                     "pdf-a11y-page-of",
                     &[
-                        ("current", ArgValue::Text(current.to_string())),
-                        ("pages", ArgValue::Text(pages.to_string())),
+                        ("current", current.to_string().into()),
+                        ("pages", pages.to_string().into()),
                     ],
                 ))
-                .with_description(crate::t("pdf-a11y-canvas"))
-                .with_value(format!("Zoom {:.0}%", self.zoom() * 100.0))
+                .with_description(ui::i18n::I18nManager::lookup_plain("pdf-a11y-canvas"))
+                .with_value(crate::t_args(
+                    "pdf-a11y-zoom",
+                    &[("zoom", ((self.zoom() * 100.0).round() as u32).into())],
+                ))
                 .with_bounds(self.canvas_rect)
                 .with_state(focusable()),
         ];
@@ -5082,11 +5096,11 @@ impl Widget for PdfApp {
                 .map(|index| {
                     let page = self.raster_matches.get(index).map_or(1, |m| m.page);
                     AccessNode::new(Role::ListItem)
-                        .with_name(CATALOG.t_args(
+                        .with_name(crate::t_args(
                             "pdf-a11y-match",
                             &[
-                                ("match", ArgValue::Text((index + 1).to_string())),
-                                ("page", ArgValue::Text(page.to_string())),
+                                ("match", (index + 1).to_string().into()),
+                                ("page", page.to_string().into()),
                             ],
                         ))
                         .with_action_target(format!("pdf.match:{index}"))
@@ -5096,7 +5110,9 @@ impl Widget for PdfApp {
                 .collect();
             content_children.push(
                 AccessNode::new(Role::List)
-                    .with_name(crate::t("pdf-a11y-search-results"))
+                    .with_name(ui::i18n::I18nManager::lookup_plain(
+                        "pdf-a11y-search-results",
+                    ))
                     .with_hashed_key("pdf.search.results")
                     .with_children(result_nodes),
             );
@@ -5123,7 +5139,10 @@ impl Widget for PdfApp {
                     .map(|(index, item)| {
                         AccessNode::new(Role::TreeItem)
                             .with_name(item.title.clone())
-                            .with_value(format!("Page {}", item.page))
+                            .with_value(crate::t_args(
+                                "pdf-a11y-page",
+                                &[("page", item.page.to_string().into())],
+                            ))
                             .with_level(usize::from(item.level) + 1)
                             .with_action_target(format!("pdf.outline:{index}"))
                             .with_state(focusable().selected(item.page == current))
@@ -5134,27 +5153,18 @@ impl Widget for PdfApp {
                     .iter()
                     .map(|comment| {
                         let text = &comment.comment.text;
-                        #[allow(
-                            clippy::cast_precision_loss,
-                            reason = "a count only selects a plural form; exactness past 2^52 is \
-irrelevant"
-                        )]
-                        let replies = comment.comment.replies.len() as f64;
                         AccessNode::new(Role::ListItem)
                             .with_name(if text.trim().is_empty() {
-                                "Empty comment".into()
+                                crate::t("pdf-comment-empty")
                             } else {
                                 text.clone()
                             })
-                            .with_description(CATALOG.t_args(
+                            .with_description(crate::t_args(
                                 "pdf-a11y-comment",
                                 &[
-                                    (
-                                        "author",
-                                        ArgValue::Text(self.author_name(&comment.comment.author)),
-                                    ),
-                                    ("page", ArgValue::Text(comment.page.to_string())),
-                                    ("replies", ArgValue::Number(replies)),
+                                    ("author", self.author_name(&comment.comment.author).into()),
+                                    ("page", comment.page.into()),
+                                    ("replies", comment.comment.replies.len().into()),
                                 ],
                             ))
                             .with_action_target(format!("pdf.comment:{}.open", comment.id))
@@ -5164,20 +5174,20 @@ irrelevant"
                             )
                             .with_children(vec![
                                 button(
-                                    "Edit comment",
+                                    &crate::t("pdf-comment-edit"),
                                     &format!("pdf.comment:{}.edit", comment.id),
                                     Rect::ZERO,
                                 ),
                                 button(
-                                    "Reply",
+                                    &crate::t("pdf-comment-reply"),
                                     &format!("pdf.comment:{}.reply", comment.id),
                                     Rect::ZERO,
                                 ),
                                 AccessNode::new(Role::ToggleButton)
                                     .with_name(if comment.comment.resolved {
-                                        crate::t("pdf-a11y-reopen-comment")
+                                        crate::t("pdf-comment-reopen")
                                     } else {
-                                        crate::t("pdf-a11y-resolve-comment")
+                                        crate::t("pdf-comment-resolve")
                                     })
                                     .with_action_target(format!(
                                         "pdf.comment:{}.resolve",
@@ -5185,7 +5195,7 @@ irrelevant"
                                     ))
                                     .with_state(focusable().checked(comment.comment.resolved)),
                                 button(
-                                    "Delete comment",
+                                    &crate::t("pdf-comment-delete"),
                                     &format!("pdf.comment:{}.delete", comment.id),
                                     Rect::ZERO,
                                 ),
@@ -5195,31 +5205,35 @@ irrelevant"
                 SidebarTab::Signatures => {
                     let mut nodes: Vec<AccessNode> = vec![
                         AccessNode::new(Role::TextInput)
-                            .with_name(crate::t("pdf-a11y-signer-name"))
+                            .with_name(crate::t("pdf-viewer-signing-as"))
                             .with_value(self.signer())
                             .with_action_target("pdf.signer")
                             .with_state(focusable()),
                         AccessNode::new(Role::RadioButton)
-                            .with_name(crate::t("pdf-a11y-type-signature"))
+                            .with_name(crate::t("pdf-signature-type"))
                             .with_action_target("pdf.signature-mode:type")
                             .with_state(focusable().checked(self.sig_mode == SigMode::Type)),
                         AccessNode::new(Role::RadioButton)
-                            .with_name(crate::t("pdf-a11y-draw-signature"))
+                            .with_name(crate::t("pdf-signature-draw"))
                             .with_action_target("pdf.signature-mode:draw")
                             .with_state(focusable().checked(self.sig_mode == SigMode::Draw)),
-                        button("Use signature on page", "pdf.signature.use", Rect::ZERO),
+                        button(
+                            &crate::t("pdf-signature-place"),
+                            "pdf.signature.use",
+                            Rect::ZERO,
+                        ),
                     ];
                     nodes.extend(self.signatures.iter().map(|signature| {
                         AccessNode::new(Role::ListItem)
-                            .with_name(CATALOG.t_args(
+                            .with_name(crate::t_args(
                                 "pdf-a11y-signature-by",
-                                &[("signer", ArgValue::Text(signature.signer.clone()))],
+                                &[("signer", signature.signer.clone().into())],
                             ))
-                            .with_description(CATALOG.t_args(
+                            .with_description(crate::t_args(
                                 "pdf-a11y-signed",
                                 &[
-                                    ("date", ArgValue::Text(signature.date.clone())),
-                                    ("page", ArgValue::Text(signature.page.to_string())),
+                                    ("date", signature.date.clone().into()),
+                                    ("page", signature.page.to_string().into()),
                                 ],
                             ))
                             .with_action_target(format!("pdf.signature:{}.open", signature.id))
@@ -5227,7 +5241,7 @@ irrelevant"
                                 self.selected_sig.as_deref() == Some(signature.id.as_str()),
                             ))
                             .with_children(vec![button(
-                                "Delete signature",
+                                &crate::t("pdf-signature-delete"),
                                 &format!("pdf.signature:{}.delete", signature.id),
                                 Rect::ZERO,
                             )])
@@ -5237,10 +5251,12 @@ irrelevant"
             };
             content_children.push(
                 AccessNode::new(Role::Group)
-                    .with_name(crate::t("pdf-a11y-review-sidebar"))
+                    .with_name(ui::i18n::I18nManager::lookup_plain(
+                        "pdf-a11y-review-sidebar",
+                    ))
                     .with_children(vec![
                         AccessNode::new(Role::TabBar)
-                            .with_name(crate::t("pdf-a11y-review-panels"))
+                            .with_name(crate::t("pdf-a11y-tabs"))
                             .with_children(tabs),
                         AccessNode::new(Role::TabPanel)
                             .with_name(crate::t(self.sidebar_tab.name_key()))
@@ -5257,12 +5273,12 @@ irrelevant"
         }
         let mut window_children = vec![
             AccessNode::new(Role::Group)
-                .with_name(crate::t("pdf-a11y-page-controls"))
+                .with_name(crate::t("pdf-a11y-panel-resize"))
                 .with_hashed_key("pdf.page-controls")
                 .with_children(controls),
             page_list,
             AccessNode::new(Role::Group)
-                .with_name(crate::t("pdf-a11y-document"))
+                .with_name(ui::i18n::I18nManager::lookup_plain("pdf-a11y-document"))
                 .with_hashed_key("pdf.content")
                 .with_children(content_children),
         ];
@@ -5273,7 +5289,7 @@ irrelevant"
         }
         Some(
             AccessNode::new(Role::Window)
-                .with_name(crate::t("pdf-title"))
+                .with_name(ui::i18n::I18nManager::lookup_plain("pdf-title"))
                 .with_bounds(self.rect)
                 .with_children(window_children),
         )
@@ -6753,7 +6769,10 @@ pub(crate) mod tests {
             let markup_hit = |needle: &str| {
                 entries
                     .iter()
-                    .find(|entry| entry.title.contains(needle) || entry.text.contains(needle))
+                    .find(|entry| {
+                        let line = format!("{} {}", entry.title, entry.text).to_lowercase();
+                        line.contains(&needle.to_lowercase())
+                    })
                     .and_then(|entry| entry.anchor.clone())
                     .unwrap_or_else(|| panic!("{needle:?} should produce a search hit at its item"))
             };

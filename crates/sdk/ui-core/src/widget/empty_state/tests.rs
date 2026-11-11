@@ -45,6 +45,7 @@ fn metrics() -> Metrics {
     Metrics {
         title_h: 24.0,
         msg_h: 18.0,
+        hint_h: 0.0,
         documents_h: 0.0,
         action_w: 0.0,
 
@@ -68,6 +69,7 @@ fn short_and_narrow_panes_shed_decoration_but_keep_the_action() {
             message: true,
             documents: false,
             action: false,
+            hint: false,
         };
         let m = metrics();
 
@@ -105,6 +107,7 @@ fn short_and_narrow_panes_shed_decoration_but_keep_the_action() {
             message: true,
             documents: false,
             action: true,
+            hint: false,
         };
         let fit = Fit::choose(120.0, with_action, m);
         assert!(!fit.icon, "the disc gives way to the action");
@@ -193,6 +196,7 @@ fn short_and_narrow_panes_shed_decoration_but_keep_the_action() {
                         action_label: Some(
                     "Verbindungseinstellungen jetzt vollständig überprüfen und sichere Wiederherstellung vorbereiten",
                 ),
+                        hint: None,
                     },
                     Point::new(-1.0, -1.0),
                 )
@@ -239,6 +243,7 @@ fn short_and_narrow_panes_shed_decoration_but_keep_the_action() {
                 title: "No messages are available",
                 message: Some("Reconnect to load messages."),
                 action_label: Some("Review connection settings"),
+                hint: None,
             },
             Point::new(-1.0, -1.0),
         );
@@ -523,6 +528,7 @@ fn empty_state_paints_scrolls_and_centres_its_essential_content() {
                 title: "No mail",
                 message: Some("You're all caught up"),
                 action_label: Some("Compose"),
+                hint: None,
             },
             Point::new(-1.0, -1.0),
         );
@@ -540,6 +546,7 @@ fn empty_state_paints_scrolls_and_centres_its_essential_content() {
                 title: "Empty",
                 message: None,
                 action_label: None,
+                hint: None,
             },
             Point::new(-1.0, -1.0),
         );
@@ -667,6 +674,7 @@ fn empty_state_paints_scrolls_and_centres_its_essential_content() {
                 title: "No messages",
                 message: None,
                 action_label: Some("Compose"),
+                hint: None,
             },
             Point::new(-1.0, -1.0),
         )

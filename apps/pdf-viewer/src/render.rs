@@ -20,8 +20,6 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Compose, Fill, ImageData as PenikoImage, Mix};
 
-use crate::CATALOG;
-use ui::i18n::ArgValue;
 use ui::paint::{PaintCtx, with_alpha};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -435,12 +433,10 @@ fn draw_signature(
         &name,
     );
     let date = TextStyle::content(7.5 * scale as f32);
+    let stamp = crate::t_args("pdf-drawn-signed", &[("date", s.date.clone().into())]);
     tr.draw_style(
         scene,
-        &CATALOG.t_args(
-            "pdf-drawn-signed",
-            &[("date", ArgValue::Text(s.date.clone()))],
-        ),
+        &stamp,
         ink_faint(),
         base * Affine::translate((r.x0 + inset, name_y + f64::from(name.line_height_px()))),
         width,
@@ -466,8 +462,9 @@ pub fn draw_signature_ink(
     }
     match ink {
         SignatureInk::Typed => {
+            let unnamed = crate::t("pdf-signature-unnamed");
             let name = if signer.trim().is_empty() {
-                "Signature"
+                unnamed.as_str()
             } else {
                 signer.trim()
             };

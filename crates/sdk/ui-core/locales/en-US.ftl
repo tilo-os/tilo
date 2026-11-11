@@ -760,6 +760,8 @@ empty-state-details = Details
 file-open-drop-hint = Or drop a file here
 # The empty state while a file is dragged over the window.
 file-open-release = Release to open
+# The page rail's title, above its thumbnails, unless the app names it.
+page-sidebar-title = Pages
 # Above the documents an open-a-file empty state lists: the ones the
 # workspace already holds, whatever made them.
 widget-documents-in-workspace = In this workspace

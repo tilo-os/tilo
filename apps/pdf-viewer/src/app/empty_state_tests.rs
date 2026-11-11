@@ -80,9 +80,9 @@ fn a_failed_open_says_the_cause_the_engine_reported() {
     }
 }
 
-/// The review panel's tabs are painted from the catalogue, and the names
-/// that end up painted fit the strip: the full names in a wide window,
-/// and the short forms where the panel floats over a narrow one.
+/// The review panel's tabs are painted from the catalogue, and every name
+/// that ends up painted fits the strip: one name per tab, the same whether
+/// the panel is docked or floats over a narrow window.
 #[test]
 fn the_review_tabs_fit_their_strip_in_every_language() {
     let catalog = &crate::CATALOG;
@@ -101,21 +101,30 @@ fn the_review_tabs_fit_their_strip_in_every_language() {
             assert!(app.show_sidebar, "{locale} at {w}: the panel is on screen");
             let widths = app.tab_widths.expect("the tabs are measured");
             let strip = app.sidebar_tab_strip().width();
-            let short = app.sidebar_tabs_short();
-            let used: f64 = if short { widths[1] } else { widths[0] }.iter().sum();
-            measured.push((locale, w, short, used, strip));
+            let used: f64 = widths.iter().sum();
+            measured.push((locale, w, used, strip));
         }
     }
     catalog.set_locale("en-US");
-    for (locale, w, short, used, strip) in measured {
+    for (locale, w, used, strip) in measured {
         assert!(
             used <= strip + 0.5,
             "{locale} at {w}: the painted tab names take {used}px of the {strip}px strip"
         );
-        assert_eq!(
-            short,
-            w < 1000.0,
-            "{locale} at {w}: the tab names the strip can hold are painted"
-        );
     }
+}
+
+/// The comments list says how many threads there are and how many are open,
+/// in the window's language, with a singular where there is one.
+#[test]
+fn the_comment_summary_counts_in_the_window_language() {
+    let catalog = &crate::CATALOG;
+    catalog.set_locale("de-DE");
+    assert_eq!(super::comments_summary(1, 1), "1 Kommentar, offen");
+    assert_eq!(super::comments_summary(1, 0), "1 Kommentar, erledigt");
+    assert_eq!(super::comments_summary(3, 0), "3 Kommentare, alle erledigt");
+    assert_eq!(super::comments_summary(3, 2), "3 Kommentare, 2 offen");
+    catalog.set_locale("en-US");
+    assert_eq!(super::comments_summary(3, 2), "3 comments, 2 open");
+    assert_eq!(super::comments_summary(1, 0), "1 comment, resolved");
 }

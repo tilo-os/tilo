@@ -129,48 +129,180 @@ pdf-empty-arriving-title = Das Dokument wird geholt …
 pdf-empty-arriving = { $name } kommt von einem Gerät in diesem Arbeitsbereich, das die Datei hat.
 pdf-empty-the-document = Das Dokument
 
-## Die Tabs der Prüf-Seitenleiste: der Name jedes Tabs und die kürzere Form,
-## die er zeigt, wenn die Leiste zu schmal für alle Namen ist.
+## Die Tabs der Prüf-Seitenleiste: ein Name pro Tab, bei jeder Breite
+## derselbe.
 
 pdf-tab-comments = Kommentare
-pdf-tab-comments-short = Notizen
 pdf-tab-contents = Inhalt
-pdf-tab-contents-short = Inhalt
-pdf-tab-signatures = Unterschrift
-pdf-tab-signatures-short = Signieren
+pdf-tab-signing = Signieren
+
+## Die Prüf-Seitenleiste: die Kommentare der Lesenden und die platzierten
+## Unterschriften.
+
+pdf-comments-empty-title = Noch keine Kommentare
+pdf-comments-empty-message = Markiere Text, um ihn zu kommentieren, oder füge mit dem Notiz-Werkzeug eine Notiz hinzu.
+pdf-comments-one-open = 1 Kommentar, offen
+pdf-comments-one-resolved = 1 Kommentar, erledigt
+pdf-comments-all-resolved = { $total } Kommentare, alle erledigt
+pdf-comments-open = { $total } Kommentare, { $open } offen
+pdf-comment-reply = Antworten
+pdf-comment-reply-placeholder = Antworten …
+pdf-comment-resolve = Erledigen
+pdf-comment-reopen = Wieder öffnen
+pdf-comment-edit = Kommentar bearbeiten
+pdf-comment-delete = Kommentar löschen
+pdf-comment-empty = Leerer Kommentar
+pdf-author-you = Du
+pdf-author-someone = Jemand
+pdf-contents-empty = Dieses Dokument hat keinen Inhalt
+
+pdf-signature-heading = Deine Unterschrift
+pdf-signature-type = Tippen
+pdf-signature-draw = Zeichnen
+pdf-signature-draw-hint = Zeichne deine Unterschrift hier
+pdf-signature-clear = Leeren
+pdf-signature-place = Auf der Seite platzieren
+pdf-signature-cancel = Abbrechen
+pdf-signature-place-hint = Klicke auf eine Seite, um deine Unterschrift zu platzieren.
+pdf-signature-delete = Unterschrift löschen
+pdf-signature-annotation = Unterschrieben von { $signer } am { $date }
+pdf-signature-unnamed = Unterschrift
+
+## Importierte Seiten: eine Seite, die noch unterwegs ist, auf der Seite
+## selbst gesagt.
+
+pdf-imported-page-loading = Importierte Seite wird geladen …
+pdf-imported-page-waiting = Die importierte Seite kommt an, sobald jemand, der sie hat, online ist.
+pdf-imported-page-unavailable = Importierte Seite ist nicht verfügbar
+
+## Die Prüf-Seitenleiste: die Kommentare der Lesenden und die platzierten
+## Unterschriften.
+
+pdf-comments-empty-title = Noch keine Kommentare
+pdf-comments-empty-message = Markiere Text, um ihn zu kommentieren, oder füge mit dem Notiz-Werkzeug eine Notiz hinzu.
+pdf-comments-one-open = 1 Kommentar, offen
+pdf-comments-one-resolved = 1 Kommentar, erledigt
+pdf-comments-all-resolved = { $total } Kommentare, alle erledigt
+pdf-comments-open = { $total } Kommentare, { $open } offen
+pdf-viewer-comment-placeholder = Kommentar schreiben …
+pdf-comment-reply = Antworten
+pdf-comment-reply-placeholder = Antworten …
+pdf-comment-resolve = Erledigen
+pdf-comment-reopen = Wieder öffnen
+pdf-comment-edit = Kommentar bearbeiten
+pdf-comment-delete = Kommentar löschen
+pdf-comment-empty = Leerer Kommentar
+pdf-author-you = Du
+pdf-author-someone = Jemand
+pdf-contents-empty = Dieses Dokument hat keinen Inhalt
+
+pdf-viewer-signature-your = Deine Unterschrift
+pdf-signature-type = Tippen
+pdf-signature-draw = Zeichnen
+pdf-viewer-signing-as = Du unterschreibst als
+pdf-signature-your-name = Dein Name
+pdf-signature-draw-hint = Zeichne deine Unterschrift hier
+pdf-signature-clear = Leeren
+pdf-signature-place = Auf der Seite platzieren
+pdf-signature-cancel = Abbrechen
+pdf-signature-place-hint = Klicke auf eine Seite, um deine Unterschrift zu platzieren.
+pdf-viewer-signature-placed = Platziert
+pdf-viewer-signature-placed-note = Noch keine Unterschrift platziert.
+pdf-signature-delete = Unterschrift löschen
+pdf-signature-annotation = Unterschrieben von { $signer } am { $date }
+pdf-signature-unnamed = Unterschrift
+
+## Die Seite und der Zoom
+
+pdf-page-line = Seite { $page } von { $pages }, { $zoom } %
+pdf-rail-import = Importieren …
+
+## Die Leiste des Fensters, ihre Werkzeug- und Farbmenüs
+
+pdf-bar-hide-review = Seitenleiste ausblenden
+pdf-bar-show-review = Seitenleiste einblenden
+pdf-bar-zoom-in = Vergrößern
+pdf-bar-zoom-out = Verkleinern
+pdf-bar-fit-page = Ganze Seite einpassen
+pdf-bar-fit-width = Breite einpassen
+pdf-bar-tools = Werkzeuge
+pdf-bar-marker-colour = Markierfarbe
+pdf-bar-zoom = Zoom
+pdf-bar-previous-page = Vorherige Seite
+pdf-bar-next-page = Nächste Seite
+pdf-bar-save = PDF mit Markierungen speichern
+pdf-tool-select = Auswählen
+pdf-tool-highlight = Markieren
+pdf-tool-draw = Zeichnen
+pdf-tool-note = Notiz
+pdf-tool-text = Text
+pdf-tool-sign = Unterschreiben
+pdf-colour-yellow = Gelb
+pdf-colour-green = Grün
+pdf-colour-pink = Pink
+pdf-colour-blue = Blau
+pdf-colour-purple = Violett
+
+## Die Dateifenster, die das System zum Öffnen, Importieren und Speichern
+## zeigt
+
+pdf-chooser-open = PDF öffnen
+pdf-chooser-open-accept = Öffnen
+pdf-chooser-filter-pdf = PDF-Dokumente
+pdf-chooser-import = Seiten aus PDF oder Bild importieren
+pdf-chooser-import-accept = Importieren
+pdf-chooser-filter-import = PDF oder Bild
+pdf-chooser-save-accept = Speichern
+
+## Weitere Befehle und Ergebnisse
+
+pdf-delete = Löschen
+pdf-try-again = Erneut versuchen
+
+## Was die App der Suche des Schreibtischs anbietet
+
+pdf-search-open = PDF-Dokument öffnen
+pdf-search-bookmark = Lesezeichen: { $title }
+pdf-search-contents = Inhalt auf Seite { $page }
+pdf-search-result = Treffer für „{ $query }“
+pdf-search-annotation = { $kind } auf Seite { $page }
+pdf-search-comment = Kommentar von { $author }
+pdf-search-signed = Seite { $page } unterschrieben am { $date }
+pdf-search-pages = { $count ->
+    [one] 1 Seite
+   *[other] { $count } Seiten
+}
+pdf-search-no-pages = Noch keine Seiten
+
+## Wie eine Markierung auf einer Seite heißt
+
+pdf-annotation-highlight = Markierung
+pdf-annotation-underline = Unterstreichung
+pdf-annotation-strikeout = Durchstreichung
+pdf-annotation-squiggly = Wellenlinie
+pdf-annotation-drawing = Zeichnung
+pdf-annotation-note = Notiz
+pdf-annotation-text = Textfeld
 
 ## Wie das Fenster und seine Teile für assistive Technik heißen
 
 pdf-title = PDF-Viewer
 pdf-a11y-pages = Seiten
 pdf-a11y-page-markup = Enthält Markierungen
-pdf-a11y-resolve-comment = Kommentar erledigen
-pdf-a11y-reopen-comment = Kommentar wieder öffnen
 pdf-a11y-canvas = Zeichenfläche der PDF-Seite. Pfeiltasten scrollen; Bild auf und Bild ab wechseln die Seite.
 pdf-a11y-search-results = Suchergebnisse
-pdf-a11y-signer-name = Name der unterzeichnenden Person
-pdf-a11y-type-signature = Unterschrift tippen
-pdf-a11y-draw-signature = Unterschrift zeichnen
-pdf-a11y-review-sidebar = Seitenleiste zum Prüfen
-pdf-a11y-review-panels = Panels zum Prüfen
-pdf-a11y-page-controls = Seitensteuerung
+pdf-a11y-tabs = Registerkarten
+pdf-a11y-review-sidebar = Seitenleiste
+pdf-a11y-panel-resize = Größe der Seitenleiste
 pdf-a11y-document = Dokument
-
-## Fenster- und Barrierefreiheits-Texte
-pdf-viewer-signature-placed-note = Noch keine Unterschrift platziert.
-pdf-viewer-signature-placed = Platziert
-pdf-viewer-signing-as = Unterschrieben als
-pdf-viewer-signature-your = Deine Unterschrift
-pdf-viewer-comment-placeholder = Kommentar schreiben…
-
-## Fakten, Eigenschaftsnamen und Bereichstitel
-pdf-a11y-signed = Signiert am { $date } auf Seite { $page }
-pdf-a11y-signature-by = Signatur von { $signer }
+pdf-a11y-zoom = Zoom { $zoom } %
+pdf-a11y-page = Seite { $page }
+pdf-a11y-page-of = Seite { $current } von { $pages }
+pdf-a11y-match = Treffer { $match } auf Seite { $page }
 pdf-a11y-comment = { $author } auf Seite { $page }; { $replies ->
     [one] eine Antwort
    *[other] { $replies } Antworten
 }
-pdf-a11y-match = Treffer { $match } auf Seite { $page }
-pdf-a11y-page-of = Seite { $current } von { $pages }
-pdf-a11y-page = Seite { $page }
+pdf-a11y-signature-by = Signatur von { $signer }
+pdf-a11y-signed = Signiert am { $date } auf Seite { $page }
 pdf-drawn-signed = Signiert am { $date }

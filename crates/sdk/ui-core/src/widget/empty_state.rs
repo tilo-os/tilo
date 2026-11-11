@@ -44,6 +44,7 @@ struct Parts {
     message: bool,
     documents: bool,
     action: bool,
+    hint: bool,
 }
 
 /// Measured heights the stack is built from.
@@ -51,6 +52,7 @@ struct Parts {
 struct Metrics {
     title_h: f64,
     msg_h: f64,
+    hint_h: f64,
     documents_h: f64,
     action_w: f64,
     inner_width: f32,
@@ -67,6 +69,7 @@ struct Fit {
     icon: bool,
     message: bool,
     documents: bool,
+    hint: bool,
     total: f64,
 }
 
@@ -87,6 +90,9 @@ pub struct EmptyStateContent<'a> {
     /// their own offers. Empty for every other state.
     pub documents: &'a [crate::widget::DocumentOffer<'a>],
     pub action_label: Option<&'a str>,
+    /// A quiet line under the action: the other way in ("Or drop a file
+    /// here"), never a step of its own.
+    pub hint: Option<&'a str>,
     /// Something failed: the icon takes the danger colour.
     pub error: bool,
 }
@@ -100,6 +106,7 @@ impl std::fmt::Debug for EmptyStateContent<'_> {
             .field("message", &self.message)
             .field("documents", &self.documents.len())
             .field("action_label", &self.action_label)
+            .field("hint", &self.hint)
             .field("error", &self.error)
             .finish()
     }
@@ -115,6 +122,7 @@ impl<'a> EmptyStateContent<'a> {
             message: None,
             documents: &[],
             action_label: None,
+            hint: None,
             error: false,
         }
     }
@@ -138,6 +146,9 @@ impl<'a> EmptyStateContent<'a> {
         if let Some(message) = self.message {
             node = node.with_description(message);
         }
+        if let Some(hint) = self.hint {
+            node = node.with_description(hint);
+        }
         if let (Some(label), Some(action)) = (self.action_label, action) {
             node = node.with_children(vec![
                 AccessNode::new(Role::Button)
@@ -156,6 +167,7 @@ impl<'a> EmptyStateContent<'a> {
             message: self.message.is_some(),
             documents: !self.documents.is_empty(),
             action: self.action_label.is_some(),
+            hint: self.hint.is_some(),
         }
     }
 }
@@ -166,6 +178,7 @@ struct StackStyle {
     title: TextStyle,
     message: TextStyle,
     action: TextStyle,
+    hint: TextStyle,
     gap: f64,
     text_gap: f64,
     /// The longest line the title and message run to.
@@ -194,6 +207,7 @@ impl StackStyle {
             }),
             message: wrapped(TextRole::Body),
             action: wrapped(TextRole::Label),
+            hint: wrapped(TextRole::Caption),
             gap: f64::from(theme.tokens.spacing.s4),
             text_gap: f64::from(theme.tokens.spacing.s3),
             measure: f64::from(theme.tokens.metrics.message_measure),
@@ -242,6 +256,7 @@ impl StackStyle {
             title: centered(layout.title),
             message: centered(layout.message),
             action: centered(layout.action),
+            hint: centered(layout.hint),
             details: centered(layout.details),
             ..layout
         }
@@ -272,9 +287,13 @@ impl StackStyle {
         let (action_w, action_h) = content.action_label.map_or((0.0, 0.0), |value| {
             text_renderer.measure_style(value, Some(inner_width), &self.action)
         });
+        let (_, hint_h) = content.hint.map_or((0.0, 0.0), |value| {
+            text_renderer.measure_style(value, Some(inner_width), &self.hint)
+        });
         Metrics {
             title_h: f64::from(title_h),
             msg_h: f64::from(msg_h),
+            hint_h: f64::from(hint_h),
             documents_h,
             action_w: f64::from(action_w),
 
@@ -335,7 +354,7 @@ impl Fit {
     /// and the action are never dropped — the first is the whole point and
     /// the second is the only thing the person can do here.
     fn choose(height: f64, parts: Parts, m: Metrics) -> Fit {
-        let stack = |icon: bool, message: bool, documents: bool| {
+        let stack = |icon: bool, message: bool, documents: bool, hint: bool| {
             let mut t = m.title_h;
             if icon {
                 t += m.hero + m.gap;
@@ -349,25 +368,33 @@ impl Fit {
             if parts.action {
                 t += m.gap + m.btn_h;
             }
+            if hint {
+                t += m.text_gap + m.hint_h;
+            }
             t
         };
         let mut icon = parts.icon;
         let mut message = parts.message;
         let mut documents = parts.documents;
-        if icon && stack(true, message, documents) > height {
+        let mut hint = parts.hint;
+        if icon && stack(true, message, documents, hint) > height {
             icon = false;
         }
-        if message && stack(icon, true, documents) > height {
+        if message && stack(icon, true, documents, hint) > height {
             message = false;
         }
-        if documents && stack(icon, message, true) > height {
+        if documents && stack(icon, message, true, hint) > height {
             documents = false;
+        }
+        if hint && stack(icon, message, documents, true) > height {
+            hint = false;
         }
         Fit {
             icon,
             message,
             documents,
-            total: stack(icon, message, documents),
+            hint,
+            total: stack(icon, message, documents, hint),
         }
     }
 }
@@ -395,6 +422,8 @@ struct Placed {
     /// The column the documents' rows stand in, when the state lists any.
     documents: Option<Rect>,
     action: Option<Rect>,
+    /// The quiet line under the action, when the state has one.
+    hint: Option<Rect>,
     natural: f64,
     /// Where the stack ends: under the action, else under the text.
     bottom: f64,
@@ -489,6 +518,15 @@ fn place(
     } else {
         y
     };
+    let hint = (fit.hint && content.hint.is_some()).then(|| {
+        y = bottom + metrics.text_gap;
+        Rect::new(
+            cx - f64::from(metrics.inner_width) / 2.0,
+            y,
+            cx + f64::from(metrics.inner_width) / 2.0,
+            y + metrics.hint_h,
+        )
+    });
     Placed {
         style,
         metrics,
@@ -497,6 +535,7 @@ fn place(
         message_y,
         documents,
         action,
+        hint,
         natural,
         bottom,
     }
@@ -548,6 +587,9 @@ fn paint_empty_state(
                 // here, stay.
                 documents: content.documents,
                 action_label: content.action_label.filter(|_| waiting.keeps_action()),
+                // The other way in stays while the host is out of reach: it
+                // goes to this device's files.
+                hint: content.hint,
                 error: false,
             };
             if let Some(since) = waiting.spinner_since {
@@ -579,6 +621,7 @@ fn paint_empty_state(
         message_y,
         documents,
         action,
+        hint,
         ..
     } = placed;
 
@@ -653,6 +696,15 @@ fn paint_empty_state(
                 theme,
             );
         }
+    }
+    if let (Some(line), Some(rect)) = (content.hint, hint) {
+        ctx.text(
+            line,
+            &style.hint,
+            theme.text_tertiary,
+            Point::new(rect.x0, rect.y0),
+            Some(metrics.inner_width),
+        );
     }
     painted.action = action;
     painted
@@ -1480,6 +1532,7 @@ impl EmptyState {
             // a retained empty state offers none of its own.
             documents: &[],
             action_label: self.resolved.2.as_deref(),
+            hint: None,
             error: self.error,
         }
     }

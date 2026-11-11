@@ -28,7 +28,8 @@ pub struct PageSidebarProps {
     /// Which page is open, counted from 0.
     #[component(required)]
     pub current: i64,
-    /// The rail's title above the thumbnails: "Pages".
+    /// The rail's title above the thumbnails; "Pages" in the window's language when
+    /// unset.
     pub header: Option<String>,
     /// The label of the button that adds a page at the foot ("Import…"). Without it there is
     /// no add button.

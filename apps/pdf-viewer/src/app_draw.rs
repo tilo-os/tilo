@@ -64,19 +64,10 @@ fn tool_icon(tool: Tool) -> Icon {
     }
 }
 
-/// The review panel's tab labels: the names the panel's tabs carry, or the
-/// shorter forms they fall back to when the strip cannot hold them all.
-fn tab_labels(short: bool) -> [String; 3] {
-    let keys: [&str; 3] = if short {
-        [
-            "pdf-tab-comments-short",
-            "pdf-tab-contents-short",
-            "pdf-tab-signatures-short",
-        ]
-    } else {
-        ["pdf-tab-comments", "pdf-tab-contents", "pdf-tab-signatures"]
-    };
-    keys.map(crate::t)
+/// The review panel's tab names. One set, painted at every window width: a
+/// tab is not renamed because the panel got narrower.
+fn tab_labels() -> [String; 3] {
+    ["pdf-tab-comments", "pdf-tab-contents", "pdf-tab-signing"].map(crate::t)
 }
 
 impl PdfApp {
@@ -86,20 +77,17 @@ impl PdfApp {
     /// places them at the width they paint at.
     fn measure_tabs(&mut self, tr: &mut TextRenderer, theme: &Theme) {
         // Tabs pack from the leading edge, each as wide as its label.
-        let tab_widths = [false, true].map(|short| {
-            let labels = tab_labels(short);
-            let segments = labels.each_ref().map(Segment::new);
-            let rects = SegmentedFace::partition_segments(
-                Rect::new(0.0, 0.0, f64::MAX / 4.0, 1.0),
-                &segments,
-                SegmentedStyle::Tabs,
-                ControlSize::Regular,
-                tr,
-                theme,
-            );
-            [0, 1, 2].map(|i| rects.get(i).map_or(0.0, Rect::width))
-        });
-        self.tab_widths = Some(tab_widths);
+        let labels = tab_labels();
+        let segments = labels.each_ref().map(Segment::new);
+        let rects = SegmentedFace::partition_segments(
+            Rect::new(0.0, 0.0, f64::MAX / 4.0, 1.0),
+            &segments,
+            SegmentedStyle::Tabs,
+            ControlSize::Regular,
+            tr,
+            theme,
+        );
+        self.tab_widths = Some([0, 1, 2].map(|i| rects.get(i).map_or(0.0, Rect::width)));
     }
 
     /// The review panel's tab strip: across the top of the panel, one
@@ -113,24 +101,13 @@ impl PdfApp {
         Rect::new(sb.x0 + inset, top, sb.x1 - inset, top + h)
     }
 
-    /// Whether the tabs use their short labels: the full ones do not fit.
-    fn sidebar_tabs_short(&self) -> bool {
-        self.tab_widths
-            .is_some_and(|[full, _]| full.iter().sum::<f64>() > self.sidebar_tab_strip().width())
-    }
-
     /// The tabs packed from the strip's leading edge, each as wide as its
     /// label (equal thirds until the labels are measured).
     fn sidebar_tab_rects(&self) -> [(SidebarTab, Rect); 3] {
         let strip = self.sidebar_tab_strip();
         let widths = match self.tab_widths {
-            Some([full, short]) => {
-                if self.sidebar_tabs_short() {
-                    short
-                } else {
-                    full
-                }
-            }
+            Some(widths) => widths,
+            // Equal thirds until the labels are measured.
             None => [strip.width() / 3.0; 3],
         };
         let mut x = strip.x0;
@@ -976,11 +953,9 @@ impl PdfApp {
         };
         let label = match self.content.state(&imported.hash) {
             ContentState::Resolved => return,
-            ContentState::Pending => "Imported page is loading…",
-            ContentState::Waiting => {
-                "Imported page arrives once a collaborator who has it is online"
-            }
-            ContentState::Unavailable => "Imported page is unavailable",
+            ContentState::Pending => crate::t("pdf-imported-page-loading"),
+            ContentState::Waiting => crate::t("pdf-imported-page-waiting"),
+            ContentState::Unavailable => crate::t("pdf-imported-page-unavailable"),
         };
         let page_rect = Rect::new(
             origin.x,
@@ -993,7 +968,7 @@ impl PdfApp {
             page_rect,
             &EmptyStateContent {
                 icon: Some(Icon::Image),
-                ..EmptyStateContent::new(label)
+                ..EmptyStateContent::new(&label)
             },
             Point::new(f64::NEG_INFINITY, f64::NEG_INFINITY),
         );
@@ -1335,7 +1310,7 @@ impl PdfApp {
         // Tabs.
         let tab_rects = self.sidebar_tab_rects();
         let rects: Vec<Rect> = tab_rects.iter().map(|(_, r)| *r).collect();
-        let labels = tab_labels(self.sidebar_tabs_short());
+        let labels = tab_labels();
         let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
         let selected = tab_rects
             .iter()
@@ -1442,15 +1417,18 @@ impl PdfApp {
 
     /// The width the Resolve button needs for its widest label.
     fn resolve_button_w(tr: &mut TextRenderer, theme: &Theme) -> f64 {
-        ["Resolve", "Reopen"]
-            .iter()
-            .map(|label| {
-                ButtonFace::new(Rect::ZERO, label)
-                    .role(ButtonRole::Plain)
-                    .control_size(ControlSize::Small)
-                    .intrinsic_width(tr, theme)
-            })
-            .fold(0.0, f64::max)
+        [
+            crate::t("pdf-comment-resolve"),
+            crate::t("pdf-comment-reopen"),
+        ]
+        .iter()
+        .map(|label| {
+            ButtonFace::new(Rect::ZERO, label)
+                .role(ButtonRole::Plain)
+                .control_size(ControlSize::Small)
+                .intrinsic_width(tr, theme)
+        })
+        .fold(0.0, f64::max)
     }
 
     /// Lay out a comment card's header row in the card's body rect so the
@@ -1741,24 +1719,21 @@ impl PdfApp {
         let total = comments.len();
         let open = comments.iter().filter(|c| !c.comment.resolved).count();
         if total == 0 {
+            let title = crate::t("pdf-comments-empty-title");
+            let message = crate::t("pdf-comments-empty-message");
             EmptyState::paint(
                 &mut PaintCtx::new(scene, base, tr, theme),
                 body.inset(-inset),
                 &EmptyStateContent {
                     icon: Some(Icon::Pencil),
-                    message: Some("Select text or use the Note tool to add one."),
-                    ..EmptyStateContent::new("No comments yet")
+                    message: Some(&message),
+                    ..EmptyStateContent::new(&title)
                 },
                 self.last_mouse,
             );
             return;
         }
-        let summary = match (total, open) {
-            (1, 1) => "1 comment, open".to_string(),
-            (1, _) => "1 comment, resolved".to_string(),
-            (_, 0) => format!("{total} comments, all resolved"),
-            _ => format!("{total} comments, {open} open"),
-        };
+        let summary = comments_summary(total, open);
         let caption = theme.text(TextRole::Caption);
         tr.draw_style(
             scene,
@@ -1841,22 +1816,21 @@ impl PdfApp {
             None,
         );
 
-        let resolve = ButtonFace::new(
-            hdr.resolve,
-            if cm.comment.resolved {
-                "Reopen"
-            } else {
-                "Resolve"
-            },
-        )
-        .role(ButtonRole::Plain)
-        .control_size(ControlSize::Small)
-        .hovered(hdr.resolve.contains(self.last_mouse));
+        let resolve_label = if cm.comment.resolved {
+            crate::t("pdf-comment-reopen")
+        } else {
+            crate::t("pdf-comment-resolve")
+        };
+        let resolve = ButtonFace::new(hdr.resolve, &resolve_label)
+            .role(ButtonRole::Plain)
+            .control_size(ControlSize::Small)
+            .hovered(hdr.resolve.contains(self.last_mouse));
         Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &resolve);
         out.hits
             .push((SidebarHit::Resolve(cm.id.clone()), hdr.resolve));
 
-        let delete = ButtonFace::icon_only(hdr.delete, Icon::X, "Delete comment")
+        let delete_label = crate::t("pdf-comment-delete");
+        let delete = ButtonFace::icon_only(hdr.delete, Icon::X, &delete_label)
             .control_size(ControlSize::Small)
             .hovered(hdr.delete.contains(self.last_mouse));
         Button::paint(ctx.scene, ctx.transform, ctx.text, theme, &delete);
@@ -1918,9 +1892,10 @@ impl PdfApp {
                 field.draw(scene, base, tr, theme, &PresenceCtx::empty());
             }
         } else if cm.comment.text.is_empty() {
+            let placeholder = crate::t("pdf-viewer-comment-placeholder");
             tr.draw_style(
                 scene,
-                &crate::t("pdf-viewer-comment-placeholder"),
+                &placeholder,
                 theme.text_tertiary,
                 base * Affine::translate((body_x, body_top)),
                 Some(text_w as f32),
@@ -2042,7 +2017,8 @@ impl PdfApp {
             out.hits
                 .push((SidebarHit::ReplyField(cm.id.clone()), field));
         } else {
-            let face = ButtonFace::new(Rect::ZERO, "Reply")
+            let label = crate::t("pdf-comment-reply");
+            let face = ButtonFace::new(Rect::ZERO, &label)
                 .icon(Icon::Reply)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small);
@@ -2056,7 +2032,7 @@ impl PdfApp {
                 hdr.text_x - pad + w,
                 top + ButtonFace::height(ControlSize::Small, theme),
             );
-            let face = ButtonFace::new(rect, "Reply")
+            let face = ButtonFace::new(rect, &label)
                 .icon(Icon::Reply)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
@@ -2076,12 +2052,13 @@ impl PdfApp {
         hits: &mut Vec<(SidebarHit, Rect)>,
     ) {
         if self.doc.outline.is_empty() {
+            let empty = crate::t("pdf-contents-empty");
             EmptyState::paint(
                 &mut PaintCtx::new(scene, base, tr, theme),
                 body.inset(-self.panel_inset()),
                 &EmptyStateContent {
                     icon: Some(Icon::List),
-                    ..EmptyStateContent::new("This document has no contents")
+                    ..EmptyStateContent::new(&empty)
                 },
                 self.last_mouse,
             );
@@ -2127,10 +2104,11 @@ impl PdfApp {
         }
     }
 
-    /// One placed-signature row.
+    /// One placed-signature row: as tall as the name and page line it
+    /// carries.
     fn sig_row_h(&self, tr: &mut TextRenderer) -> f64 {
-        ListRowFace::new("Signer")
-            .secondary("Page 1")
+        ListRowFace::new(&crate::t("pdf-viewer-signing-as"))
+            .secondary(&crate::t_args("pdf-a11y-page", &[("page", "1".into())]))
             .height(tr, &self.layout_theme)
     }
 
@@ -2164,9 +2142,10 @@ impl PdfApp {
         y = compose.y1 + f64::from(rhythm.sibling);
         let hint_y = y;
         if self.tool == Tool::Sign {
+            let hint = signature_place_hint();
             let (_, height) = ui::text_render::with_layout_renderer(theme.text_scale, |tr| {
                 tr.measure_style(
-                    SIGNATURE_PLACE_HINT,
+                    &hint,
                     Some((x1 - x0).max(1.0) as f32),
                     &theme.text(TextRole::Caption),
                 )
@@ -2199,9 +2178,10 @@ impl PdfApp {
     ) {
         let geo = self.signature_geometry(body);
         let heading = theme.text(TextRole::Subheading);
+        let heading_text = crate::t("pdf-viewer-signature-your");
         tr.draw_style(
             scene,
-            &crate::t("pdf-viewer-signature-your"),
+            &heading_text,
             theme.text_primary,
             base * Affine::translate((geo.mode.x0, geo.heading_y)),
             None,
@@ -2209,16 +2189,20 @@ impl PdfApp {
         );
 
         // Type / Draw: a segmented control.
-        let seg_labels = ["Type", "Draw"];
+        let seg_labels = [
+            crate::t("pdf-signature-type"),
+            crate::t("pdf-signature-draw"),
+        ];
+        let seg_refs = [seg_labels[0].as_str(), seg_labels[1].as_str()];
         let seg_rects =
-            SegmentedFace::partition(geo.mode, &seg_labels, ControlSize::Regular, tr, theme);
+            SegmentedFace::partition(geo.mode, &seg_refs, ControlSize::Regular, tr, theme);
         let sel = usize::from(self.sig_mode == SigMode::Draw);
         ToggleGroup::paint(
             scene,
             base,
             tr,
             theme,
-            &SegmentedFace::new(&seg_rects, &seg_labels, sel)
+            &SegmentedFace::new(&seg_rects, &seg_refs, sel)
                 .hovered(seg_rects.iter().position(|r| r.contains(self.last_mouse))),
         );
         for (mode, rect) in [SigMode::Type, SigMode::Draw].into_iter().zip(&seg_rects) {
@@ -2279,9 +2263,10 @@ impl PdfApp {
         let pad = f64::from(theme.tokens.spacing.s3);
         let caption = theme.text(TextRole::Caption);
         let caption_h = f64::from(caption.line_height_px());
+        let signing_as = crate::t("pdf-viewer-signing-as");
         tr.draw_style(
             scene,
-            &crate::t("pdf-viewer-signing-as"),
+            &signing_as,
             theme.text_dim,
             base * Affine::translate((card.x0 + pad, card.y0 + f64::from(theme.tokens.spacing.s2))),
             None,
@@ -2312,7 +2297,7 @@ impl PdfApp {
         } else {
             let body = theme.text(TextRole::Body).strong();
             let (shown, ink) = if name_shown.is_empty() {
-                ("Your name".to_string(), theme.text_tertiary)
+                (crate::t("pdf-signature-your-name"), theme.text_tertiary)
             } else {
                 (
                     tr.elide_to_width_style(&name_shown, name_rect.width() as f32, &body),
@@ -2358,12 +2343,12 @@ impl PdfApp {
         Self::paint_compose_well(scene, base, theme, card, self.sig_stroke.is_some());
         self.sig_pad_rect = card;
         if self.sig_strokes.is_empty() && self.sig_stroke.is_none() {
-            let hint = "Draw your signature here";
+            let hint = crate::t("pdf-signature-draw-hint");
             let style = theme.text(TextRole::Body);
-            let (hw, hh) = tr.measure_style(hint, None, &style);
+            let (hw, hh) = tr.measure_style(&hint, None, &style);
             tr.draw_style(
                 scene,
-                hint,
+                &hint,
                 theme.text_tertiary,
                 base * Affine::translate((
                     card.center().x - f64::from(hw) / 2.0,
@@ -2390,7 +2375,8 @@ impl PdfApp {
         }
         // Clear, at the pad's top trailing corner, once there is ink.
         if !self.sig_strokes.is_empty() {
-            let probe = ButtonFace::new(Rect::ZERO, "Clear")
+            let clear = crate::t("pdf-signature-clear");
+            let probe = ButtonFace::new(Rect::ZERO, &clear)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small);
             let w = probe.intrinsic_width(tr, theme);
@@ -2401,7 +2387,7 @@ impl PdfApp {
                 card.x1 - inset,
                 card.y0 + inset + ButtonFace::height(ControlSize::Small, theme),
             );
-            let face = ButtonFace::new(clr, "Clear")
+            let face = ButtonFace::new(clr, &clear)
                 .role(ButtonRole::Plain)
                 .control_size(ControlSize::Small)
                 .hovered(clr.contains(self.last_mouse));
@@ -2422,17 +2408,22 @@ impl PdfApp {
         let arming = self.tool == Tool::Sign;
         let ready = self.composed_ink().is_some();
         if arming {
+            let hint = signature_place_hint();
             tr.draw_style(
                 scene,
-                SIGNATURE_PLACE_HINT,
+                &hint,
                 theme.text_dim,
                 base * Affine::translate((geo.place.x0, geo.hint_y)),
                 Some(geo.place.width() as f32),
                 &theme.text(TextRole::Caption),
             );
         }
-        let label = if arming { "Cancel" } else { "Place on page" };
-        let face = ButtonFace::new(geo.place, label)
+        let label = if arming {
+            crate::t("pdf-signature-cancel")
+        } else {
+            crate::t("pdf-signature-place")
+        };
+        let face = ButtonFace::new(geo.place, &label)
             .hovered(geo.place.contains(self.last_mouse))
             .disabled(!arming && !ready);
         Button::paint(scene, base, tr, theme, &face);
@@ -2450,8 +2441,9 @@ impl PdfApp {
     ) {
         let theme = ctx.theme;
         let heading = theme.text(TextRole::Subheading);
+        let placed = crate::t("pdf-viewer-signature-placed");
         ctx.text(
-            &crate::t("pdf-viewer-signature-placed"),
+            &placed,
             &heading,
             theme.text_primary,
             Point::new(geo.place.x0, geo.placed_y),
@@ -2493,9 +2485,10 @@ impl PdfApp {
         );
         let row_h = self.sig_row_h(ctx.text);
         let mut y = geo.list_top - self.sidebar_scroll;
+        let delete_label = crate::t("pdf-signature-delete");
         let delete = [RowAction {
             icon: Icon::Trash2,
-            label: "Delete signature",
+            label: &delete_label,
         }];
         let n = self.signatures.len();
         for (i, s) in self.signatures.iter().enumerate() {
@@ -2509,7 +2502,7 @@ impl PdfApp {
                 .signatures
                 .get(i + 1)
                 .is_some_and(|next| self.selected_sig.as_deref() == Some(next.id.as_str()));
-            let page = format!("Page {}", s.page);
+            let page = crate::t_args("pdf-a11y-page", &[("page", s.page.to_string().into())]);
             let hovered = row.contains(self.last_mouse);
             let face = ListRowFace::new(&s.signer)
                 .leading(RowLeading::Icon(Icon::PenTool))
@@ -2554,11 +2547,13 @@ impl PdfApp {
     /// What the window's bar says on a page or zoom change: the page, and
     /// the zoom.
     pub(crate) fn page_line(&self) -> String {
-        format!(
-            "Page {} of {}, {:.0}%",
-            self.current_page,
-            self.doc.page_count(),
-            self.shown_zoom_percent()
+        crate::t_args(
+            "pdf-page-line",
+            &[
+                ("page", self.current_page.into()),
+                ("pages", self.doc.page_count().into()),
+                ("zoom", (self.shown_zoom_percent() as i64).into()),
+            ],
         )
     }
 
@@ -2589,7 +2584,24 @@ impl PdfApp {
     }
 }
 
-const SIGNATURE_PLACE_HINT: &str = "Click on a page to place your signature.";
+/// The caption over the comments list: how many there are, and how many are
+/// still open, in the window's language.
+pub(crate) fn comments_summary(total: usize, open: usize) -> String {
+    match (total, open) {
+        (1, 1) => crate::t("pdf-comments-one-open"),
+        (1, _) => crate::t("pdf-comments-one-resolved"),
+        (_, 0) => crate::t_args("pdf-comments-all-resolved", &[("total", total.into())]),
+        _ => crate::t_args(
+            "pdf-comments-open",
+            &[("total", total.into()), ("open", open.into())],
+        ),
+    }
+}
+
+/// The line under the place button while the sign tool is armed.
+fn signature_place_hint() -> String {
+    crate::t("pdf-signature-place-hint")
+}
 
 /// Where the fixed parts of the Signatures panel sit.
 struct SignatureGeometry {

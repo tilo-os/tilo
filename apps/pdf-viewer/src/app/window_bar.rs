@@ -12,7 +12,7 @@ use ui::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToo
 
 use super::{FitMode, PdfApp, tool_icon};
 use crate::actions::PdfEffect;
-use crate::model::{HighlightColor, Tool};
+use crate::model::{HighlightColor, Tool, colour_label};
 
 impl PdfApp {
     /// The window bar's slots for what the reader shows now. Open stands in
@@ -23,7 +23,7 @@ impl PdfApp {
         let open = bar
             .entry(
                 Icon::FolderOpen.name(),
-                "Open PDF",
+                crate::t("pdf-empty-open"),
                 PdfEffect::OpenPdf { path: None },
             )
             .enabled(!self.opening())
@@ -49,23 +49,16 @@ impl PdfApp {
             .into_iter()
             .map(|colour| {
                 let effect = PdfEffect::SetMarkerColour { colour };
-                bar.entry(Icon::Highlighter.name(), colour.name(), effect)
+                bar.entry(Icon::Highlighter.name(), colour_label(colour), effect)
                     .on(colour == self.swatch)
             })
             .collect();
         let review = if self.show_sidebar {
-            "Hide review panel"
+            crate::t("pdf-bar-hide-review")
         } else {
-            "Show review panel"
+            crate::t("pdf-bar-show-review")
         };
-        let zoom = vec![
-            bar.entry(Icon::Plus.name(), "Zoom in", PdfEffect::ZoomIn),
-            bar.entry(Icon::Minus.name(), "Zoom out", PdfEffect::ZoomOut),
-            bar.entry(Icon::File.name(), "Fit page", PdfEffect::FitPage)
-                .on(self.fit == FitMode::Page),
-            bar.entry(Icon::Columns2.name(), "Fit width", PdfEffect::FitWidth)
-                .on(self.fit == FitMode::Width),
-        ];
+        let zoom = self.zoom_entries();
         // A menu button's own id is never sent: its items are.
         WindowToolbar {
             sidebar: Some(self.show_rail),
@@ -74,29 +67,41 @@ impl PdfApp {
                 ..ToolbarLocation::default()
             }),
             actions: vec![
-                ToolbarAction::new("pdf.tools", tool_icon(self.tool).name(), "Tools")
-                    .with_items(tools),
-                ToolbarAction::new("pdf.marker-colour", Icon::Palette.name(), "Marker colour")
-                    .with_items(colours),
+                ToolbarAction::new(
+                    "pdf.tools",
+                    tool_icon(self.tool).name(),
+                    crate::t("pdf-bar-tools"),
+                )
+                .with_items(tools),
+                ToolbarAction::new(
+                    "pdf.marker-colour",
+                    Icon::Palette.name(),
+                    crate::t("pdf-bar-marker-colour"),
+                )
+                .with_items(colours),
                 bar.entry(Icon::PanelRight.name(), review, PdfEffect::ToggleSidebar)
                     .on(self.show_sidebar),
-                ToolbarAction::new("pdf.zoom", Icon::Plus.name(), "Zoom")
+                ToolbarAction::new("pdf.zoom", Icon::Plus.name(), crate::t("pdf-bar-zoom"))
                     .with_items(zoom)
                     .in_menu(),
                 bar.entry(
                     Icon::ChevronLeft.name(),
-                    "Previous page",
+                    crate::t("pdf-bar-previous-page"),
                     PdfEffect::PreviousPage,
                 )
                 .enabled(self.current_page > 1)
                 .in_menu(),
-                bar.entry(Icon::ChevronRight.name(), "Next page", PdfEffect::NextPage)
-                    .enabled(self.current_page < self.doc.page_count())
-                    .in_menu(),
+                bar.entry(
+                    Icon::ChevronRight.name(),
+                    crate::t("pdf-bar-next-page"),
+                    PdfEffect::NextPage,
+                )
+                .enabled(self.current_page < self.doc.page_count())
+                .in_menu(),
                 open,
                 bar.entry(
                     Icon::Download.name(),
-                    "Save annotated PDF",
+                    crate::t("pdf-bar-save"),
                     PdfEffect::SaveAs { path: None },
                 )
                 .enabled(self.raster_active())
@@ -104,6 +109,36 @@ impl PdfApp {
             ],
             ..WindowToolbar::default()
         }
+    }
+
+    /// The zoom menu's entries: in and out, and the two fits, each showing
+    /// whether it is the one in force.
+    fn zoom_entries(&self) -> Vec<ui::window_toolbar::ToolbarAction> {
+        let bar = &self.bar;
+        vec![
+            bar.entry(
+                Icon::Plus.name(),
+                crate::t("pdf-bar-zoom-in"),
+                PdfEffect::ZoomIn,
+            ),
+            bar.entry(
+                Icon::Minus.name(),
+                crate::t("pdf-bar-zoom-out"),
+                PdfEffect::ZoomOut,
+            ),
+            bar.entry(
+                Icon::File.name(),
+                crate::t("pdf-bar-fit-page"),
+                PdfEffect::FitPage,
+            )
+            .on(self.fit == FitMode::Page),
+            bar.entry(
+                Icon::Columns2.name(),
+                crate::t("pdf-bar-fit-width"),
+                PdfEffect::FitWidth,
+            )
+            .on(self.fit == FitMode::Width),
+        ]
     }
 
     /// Run what the person did in the window's bar, then declare the slots

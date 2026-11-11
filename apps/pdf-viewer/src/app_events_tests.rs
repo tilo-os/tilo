@@ -118,7 +118,7 @@ impl Rig {
     /// Arm `tool` from its item in the window bar's Tools menu, and assert
     /// it is armed.
     fn arm_via_window_bar(&mut self, tool: Tool, why: &str) {
-        self.app.press_bar(tool.label());
+        self.app.press_bar(&tool.label());
         assert_eq!(self.app.tool, tool, "{why}");
     }
 
@@ -218,7 +218,7 @@ fn signature_pad_controls_and_ink_follow_the_scaled_pointer() {
         rig.app.sidebar_hits = rig.draw_sidebar(&mut text);
         let geo = rig.app.signature_geometry(rig.app.sidebar_body());
         let (_, hint_h) = text.measure_style(
-            SIGNATURE_PLACE_HINT,
+            &signature_place_hint(),
             Some(geo.place.width() as f32),
             &rig.app.layout_theme.text(TextRole::Caption),
         );
@@ -1200,7 +1200,7 @@ fn the_reader_names_its_review_panel_from_the_catalogue() {
         [
             crate::t("pdf-tab-comments"),
             crate::t("pdf-tab-contents"),
-            crate::t("pdf-tab-signatures"),
+            crate::t("pdf-tab-signing"),
         ],
         "each tab is named by its catalogue message"
     );
@@ -1212,8 +1212,8 @@ fn the_reader_names_its_review_panel_from_the_catalogue() {
     let mut toggles = Vec::new();
     collect(&tree, Role::ToggleButton, &mut toggles);
     assert!(
-        toggles.contains(&crate::t("pdf-a11y-resolve-comment"))
-            && toggles.contains(&crate::t("pdf-a11y-reopen-comment")),
+        toggles.contains(&crate::t("pdf-comment-resolve"))
+            && toggles.contains(&crate::t("pdf-comment-reopen")),
         "an open comment offers Resolve and a resolved one Reopen: {toggles:?}"
     );
 

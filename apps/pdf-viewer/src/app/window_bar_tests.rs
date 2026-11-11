@@ -95,22 +95,22 @@ fn the_bar_holds_the_readers_controls() {
         Some("text.pdf"),
         "the bar names the document"
     );
-    let names: Vec<&str> = toolbar
+    let names: Vec<String> = toolbar
         .actions
         .iter()
-        .map(|action| action.name.as_str())
+        .map(|action| action.name.clone())
         .collect();
     assert_eq!(
         names,
         [
-            "Tools",
-            "Marker colour",
-            "Hide review panel",
-            "Zoom",
-            "Previous page",
-            "Next page",
-            "Open PDF",
-            "Save annotated PDF"
+            crate::t("pdf-bar-tools"),
+            crate::t("pdf-bar-marker-colour"),
+            crate::t("pdf-bar-hide-review"),
+            crate::t("pdf-bar-zoom"),
+            crate::t("pdf-bar-previous-page"),
+            crate::t("pdf-bar-next-page"),
+            crate::t("pdf-empty-open"),
+            crate::t("pdf-bar-save"),
         ]
     );
     assert_eq!(
@@ -119,15 +119,26 @@ fn the_bar_holds_the_readers_controls() {
         "zoom, page stepping, Open and Save are in the menu"
     );
     let all = |_: &ToolbarAction| true;
-    assert_eq!(items(&toolbar, "Tools", all), Tool::ALL.map(Tool::label));
-    assert_eq!(chosen(&toolbar, "Tools"), [Tool::Select.label()]);
     assert_eq!(
-        items(&toolbar, "Marker colour", all),
-        HighlightColor::ALL.map(HighlightColor::name)
+        items(&toolbar, &crate::t("pdf-bar-tools"), all),
+        Tool::ALL.map(Tool::label)
     );
     assert_eq!(
-        items(&toolbar, "Zoom", all),
-        ["Zoom in", "Zoom out", "Fit page", "Fit width"]
+        chosen(&toolbar, &crate::t("pdf-bar-tools")),
+        [Tool::Select.label()]
+    );
+    assert_eq!(
+        items(&toolbar, &crate::t("pdf-bar-marker-colour"), all),
+        HighlightColor::ALL.map(crate::model::colour_label)
+    );
+    assert_eq!(
+        items(&toolbar, &crate::t("pdf-bar-zoom"), all),
+        [
+            crate::t("pdf-bar-zoom-in"),
+            crate::t("pdf-bar-zoom-out"),
+            crate::t("pdf-bar-fit-page"),
+            crate::t("pdf-bar-fit-width"),
+        ]
     );
     assert!(
         toolbar == toolbar.clone().bounded(),
@@ -139,9 +150,9 @@ fn the_bar_holds_the_readers_controls() {
         empty
             .actions
             .iter()
-            .map(|action| (action.name.as_str(), action.menu))
+            .map(|action| (action.name.clone(), action.menu))
             .collect::<Vec<_>>(),
-        [("Open PDF", true)],
+        [(crate::t("pdf-empty-open"), true)],
         "with no document open the bar's menu offers Open, where it always is"
     );
     assert_eq!(empty.sidebar, None, "and nothing to show beside a document");
@@ -171,11 +182,17 @@ fn the_bar_runs_the_same_actions_as_the_published_ones() {
     assert_eq!(reader_state(&mut app, |pdf| pdf.show_sidebar), shown);
 
     // The tools: an item of the bar's Tools menu, and Use tool.
-    press_named(&mut app, Tool::Ink.label());
+    press_named(&mut app, &Tool::Ink.label());
     assert_eq!(reader_state(&mut app, |pdf| pdf.tool), Tool::Ink);
     let toolbar = bar(&mut app);
-    assert_eq!(chosen(&toolbar, "Tools"), [Tool::Ink.label()]);
-    assert_eq!(slot(&toolbar, "Tools").icon, ui::icons::Icon::Pencil.name());
+    assert_eq!(
+        chosen(&toolbar, &crate::t("pdf-bar-tools")),
+        [Tool::Ink.label()]
+    );
+    assert_eq!(
+        slot(&toolbar, &crate::t("pdf-bar-tools")).icon,
+        ui::icons::Icon::Pencil.name()
+    );
     app.effect(&PdfEffect::UseTool { tool: Tool::Note })
         .expect("the note tool arms");
     assert_eq!(reader_state(&mut app, |pdf| pdf.tool), Tool::Note);
