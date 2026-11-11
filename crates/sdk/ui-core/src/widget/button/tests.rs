@@ -1888,3 +1888,36 @@ fn a_button_named_beyond_its_label_is_announced_with_that_name() {
         "an icon-only button keeps the name its label only states"
     );
 }
+
+/// A control the solver has placed answers its measure there, not in a draw: a control that is
+/// laid out and never drawn (a shut overflow door's button among a row's controls) finds no draw
+/// to answer it, so one switch of input would keep it — and its path to the root — asking to be
+/// measured on every frame after.
+#[test]
+fn a_button_the_solver_placed_answers_its_measure() {
+    let mut harness = crate::headless::FrameHarness::new(
+        crate::State::new(),
+        Box::new(crate::widget::Row::new().push(Box::new(Button::icon_only(
+            "pin",
+            crate::icons::Icon::Pin,
+            "Pin",
+        )))),
+        (400, 100),
+    );
+    harness.relayout();
+    // The person reaches for the mouse, then for the keyboard: the face is the same size.
+    let keyboard = harness.interaction_environment().with_keyboard_modality();
+    harness.set_interaction_environment(keyboard);
+    assert!(
+        harness.last_relayout().measured,
+        "the switch lays the window out once: {:?}",
+        harness.last_relayout()
+    );
+    harness.relayout();
+    assert_eq!(
+        harness.last_relayout().marked_leaves,
+        0,
+        "a control the solver placed asks for no second measure: {:?}",
+        harness.last_relayout()
+    );
+}

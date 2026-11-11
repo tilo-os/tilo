@@ -2396,6 +2396,12 @@ impl Widget for Button {
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.rect = crate::widget::layout_rect(taffy, node, origin);
         self.solver_placed = true;
+        // The solver has just placed it: whatever asked for a measure is answered by this
+        // geometry, as `apply_layout_external` answers a host-placed control's. A control that
+        // is laid out but never drawn — a shut overflow door's button, a slot its row hides —
+        // finds no draw to answer it, so it would ask again on every frame and re-measure its
+        // path to the root for a control nobody sees.
+        self.layout_dirty = false;
         if self.face.resized(self.rect) {
             self.dirty = true;
         }
