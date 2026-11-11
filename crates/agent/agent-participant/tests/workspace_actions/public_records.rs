@@ -20,12 +20,16 @@
 //! of the workspace's records whether or not the service's own session was ever
 //! sent it, and a post goes into the channel it opens with.
 
+use super::own_agent::{listed_resources, page_paragraphs};
 use super::resource_support::{admit_person, open_admitted_peer};
 use super::*;
+use serde_json::{Value, json};
 use tilo_actions::remote::{CataloguePage, ReceiptStatus};
 use tilo_peer_state::join::MemberRole;
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
+use tilo_runtime::mcp::{McpServer, Surface};
+use tilo_session_core::remote::SessionActions;
 use tilo_user_identity::DeviceCapabilities;
 
 const NOTES: &str = "so.tilo.notes";
@@ -463,4 +467,169 @@ async fn an_agent_opening_chat_in_a_public_workspace_opens_the_chat_it_has() {
     hosted.agents.shutdown();
     drop(hosted.web);
     hosted.relay.shutdown().await;
+}
+
+/// A visitor's agent writing in the public workspace's Notes, which the
+/// visitor already has open, as `tilo mcp` runs it: after every call the
+/// records it changed are shown as windows on the person's desk while its
+/// next call runs. Every paragraph the host answered `ok` for is in the note
+/// the person's page holds, in order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn every_paragraph_a_visitors_agent_was_told_it_wrote_reaches_their_open_notes() {
+    // A public workspace, as a hosted Tilo runs one: anyone may walk in, and
+    // its host sends a device a record once it opens it.
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Owner", 1);
+    let host = enrol(
+        &owner,
+        "lounge-host",
+        tilo_user_identity::cloud_enrollment::host_capabilities(),
+    );
+    let state = support::scratch_dir();
+    let hosted = start(&owner, &host, state.path()).await;
+    let workspaces = hosted.relay.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &host.cert,
+            Listing {
+                description: "Everyone".into(),
+                default_role: WorkspaceRole::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let workspace = lounge.workspace.clone();
+    // A visitor, their page and the computer their agent runs on.
+    let (root, _) = tilo_user_identity::UserIdentity::generate("Visitor", 2);
+    let browser_device = enrol(&root, "browser", DeviceCapabilities::member());
+    let computer = enrol(
+        &root,
+        "Claude Code on build-box",
+        DeviceCapabilities::member(),
+    );
+    admit_person(
+        &hosted,
+        &host,
+        &workspace,
+        &browser_device,
+        MemberRole::Editor,
+    )
+    .await;
+    let mut browser = open_admitted_peer(&hosted, &browser_device, &host, &workspace).await;
+    // They opened Notes before their agent came: their page founded it.
+    let mut founded =
+        common::open_in(&workspace, NOTES, "visitor", ReplicaActor::Owner, Seed::New).unwrap();
+    let notes_route = DocumentRoute {
+        app_id: NOTES.into(),
+        cluster_id: workspace.clone(),
+        record: founded.wire_record().to_owned(),
+    };
+    support::written(
+        &browser.peer,
+        &notes_route,
+        &founded.take_mutation().unwrap(),
+    )
+    .await;
+    admit_person(&hosted, &host, &workspace, &computer, MemberRole::Editor).await;
+    let agent = open_admitted_peer(&hosted, &computer, &host, &workspace).await;
+    let _ = tilo_session_client::device::run_as_agent(&agent.peer, "Claude Code").await;
+    let collab_types::Principal::Person(person) = collab_types::Principal::person_from_key(
+        collab_types::Ed25519PublicKey::from_bytes(root.verifying_key().to_bytes()),
+    ) else {
+        panic!("a key names a person")
+    };
+    let actions = SessionActions::new(&agent.peer, agent.workspace, host.cert.device_public_key);
+    let windows = std::sync::Arc::new(tilo_runtime::mcp_windows::AgentWindows::new(
+        actions.clone(),
+        person.clone(),
+        workspace.clone(),
+    ));
+    let server = McpServer::new(actions, workspace.clone(), person)
+        .with_surface(Surface::Agent)
+        .with_agent_run("run-9", "Claude Code");
+    // One call as `tilo mcp` serves it: answered, then its records shown on
+    // the desk beside the calls that follow.
+    let call = async |name: &str, arguments: Value| {
+        let request = json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                             "params": {"name": name, "arguments": arguments}});
+        let answer = server.handle(request.clone()).await.expect("answered");
+        let (changed, run) = (server.take_changed(), server.run_of(&request));
+        let windows = std::sync::Arc::clone(&windows);
+        tokio::spawn(async move { windows.changed(changed, run).await });
+        let text = answer["result"]["content"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|block| block["text"].as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        let failed = answer["result"]["isError"] == true || answer.get("error").is_some();
+        assert!(!failed, "{name} {arguments}: {text} {answer}");
+        text
+    };
+
+    call("tilo_ls", json!({"path": "notes"})).await;
+    call(
+        "tilo_do",
+        json!({"path": "notes#new-note", "args": {"title": "Launch notes"}}),
+    )
+    .await;
+    let listing = call("tilo_ls", json!({"path": "notes"})).await;
+    let notebook = listed_resources(&listing)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| panic!("notes lists a notebook: {listing}"));
+    let pages = call("tilo_ls", json!({"path": format!("notes/{notebook}")})).await;
+    let page = listed_resources(&pages)
+        .into_iter()
+        .find(|page| page.contains("Launch notes"))
+        .unwrap_or_else(|| panic!("the notebook lists the note: {pages}"));
+    let note = format!("notes/{notebook}/{page}");
+    let parts = call("tilo_ls", json!({"path": note})).await;
+    let body = listed_resources(&parts)
+        .into_iter()
+        .map(|part| format!("{note}/{part}"))
+        .next()
+        .unwrap_or_else(|| panic!("the note lists its body: {parts}"));
+    let write = format!("{body}#append-paragraph");
+    let batched = [
+        "Launch notes, from Claude Code.",
+        "Each line lands in the workspace as I write it.",
+        "Following me puts this window in front of you.",
+    ];
+    call(
+        "tilo_do",
+        json!({"calls": batched
+            .iter()
+            .map(|text| json!({"path": write, "args": {"text": text}}))
+            .collect::<Vec<_>>()}),
+    )
+    .await;
+    let single = [
+        "A second invocation, a moment later.",
+        "Ship the hosted page with the agent invite.",
+        "Check the phone layout once more.",
+        "Write the release note last.",
+    ];
+    for text in single {
+        call("tilo_do", json!({"path": write, "args": {"text": text}})).await;
+    }
+    let sent: Vec<&str> = batched.iter().chain(single.iter()).copied().collect();
+    let read = call("tilo_read", json!({"path": note})).await;
+    for line in &sent {
+        assert!(read.contains(line), "the host reads {line:?}: {read}");
+    }
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let seen = page_paragraphs(&mut browser, "Launch notes");
+        if seen.iter().any(|texts| texts == &sent) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the page never read the note as written ({sent:?}): {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

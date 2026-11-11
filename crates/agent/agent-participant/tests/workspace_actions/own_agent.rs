@@ -311,7 +311,7 @@ async fn a_persons_own_agent_runs_what_it_lists_as_an_agent_and_asks_them_first(
 /// The resources a `tilo_ls` listing names, by the name a path takes: a row
 /// is `Notebook  notes.notebook  [26 actions]`; the app's own head row
 /// (`notes  (so.tilo.notes)`) and its actions name none.
-fn listed_resources(listing: &str) -> Vec<String> {
+pub(super) fn listed_resources(listing: &str) -> Vec<String> {
     listing
         .lines()
         .map(str::trim)
@@ -323,6 +323,35 @@ fn listed_resources(listing: &str) -> Vec<String> {
                 .collect();
             (columns.len() >= 2 && !columns[1].trim().starts_with('('))
                 .then(|| columns[0].trim().trim_end_matches('/').to_owned())
+        })
+        .collect()
+}
+
+/// The note as the page holds it: the text of every paragraph of the note
+/// titled `title`, in order, in each Notes record the page received.
+pub(super) fn page_paragraphs(browser: &mut Browser, title: &str) -> Vec<Vec<String>> {
+    browser.pump();
+    let routes: Vec<DocumentRoute> = browser
+        .documents
+        .keys()
+        .filter(|route| route.app_id == NOTES)
+        .cloned()
+        .collect();
+    routes
+        .iter()
+        .map(|route| {
+            browser
+                .mount(route)
+                .read(|doc| {
+                    notes::read::list_pages(doc)
+                        .into_iter()
+                        .filter(|page| page.title == title)
+                        .flat_map(|page| notes::read::page_block_snapshots(doc, page.id))
+                        .map(|(_, text)| text)
+                        .filter(|text| !text.is_empty())
+                        .collect()
+                })
+                .unwrap()
         })
         .collect()
 }
@@ -477,6 +506,26 @@ async fn a_persons_own_agent_starts_a_stopped_app_writes_and_reads_as_one_run() 
         .chain(["A second invocation, a moment later."])
     {
         assert!(read.contains(line), "the note reads {line:?}: {read}");
+    }
+    // What the host answered `ok` reaches the person's page too, every line
+    // in the order it was written: an answer is a promise about the record,
+    // not about the host's own copy of it.
+    let sent: Vec<&str> = lines
+        .iter()
+        .copied()
+        .chain(["A second invocation, a moment later."])
+        .collect();
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
+        let seen = page_paragraphs(&mut browser, "Launch notes");
+        if seen.iter().any(|texts| texts == &sent) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "the page never read the note as written ({sent:?}): {seen:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     // Every change it made is the connection's run, as History groups an
