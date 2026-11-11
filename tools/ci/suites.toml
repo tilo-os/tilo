@@ -1647,6 +1647,10 @@ suite = "os/containers/tilo-lounge/test-wait-list-door.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, and a mail sink it runs itself; the wait-list-door check runs it in its image"
 
 [[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-tour.sh"
+reason = "a newcomer's tour kept as pictures for a person to review, judging nothing on looks; needs the built web desktop bundle, headless Chromium and the built relay, CLI and crypto programs; the page-tour check runs it on request"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-page-two-people.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, in two browsers at once; the page-two-people check runs it in its image"
 

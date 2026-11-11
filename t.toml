@@ -4870,6 +4870,18 @@ outputs = ["/target/wait-list-door/**"]
 timeout_secs = 1200
 default = false
 
+# A newcomer's tour of the page for a person to review: every screen a first-time visitor meets,
+# light, dark and at a phone's width, kept as pictures. It judges nothing on looks.
+[[check]]
+name = "page-tour"
+run = "mkdir -p /target/page-tour-cli\ntar -xzf /target/publish/cli/linux-x86_64/tilo-linux-x86_64.tar.gz -C /target/page-tour-cli tilo\nTILO_TOUR_IN_LOG=1 bash os/containers/tilo-lounge/test-page-tour.sh /target/publish/web-desktop/bundle /target/page-tour"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle", "cli-x86_64"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto", TILO_CLI_BIN = "/target/page-tour-cli/tilo" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-tour/tour/**", "/target/page-tour/*.log"]
+timeout_secs = 1800
+default = false
+
 # Two people on the page, each in their own browser, against the Lounge's relay run directly as
 # page-boot runs it: the gate's people step, brief (chat, presence, a call and the names on its
 # card, the strip panned and a sideways swipe over Sheets among a few apps), so what broke between
