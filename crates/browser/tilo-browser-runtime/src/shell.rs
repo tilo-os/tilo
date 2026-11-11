@@ -501,7 +501,7 @@ pub(crate) struct BrowserShell {
     /// waits: the session's own question sheet, made once its code is in.
     questions: crate::over_page::OverPage<crate::over_page::LazyQuestions>,
     /// The window menu a secondary click on a window's bar opens, over everything.
-    window_menu: crate::window_menu::PageWindowMenu,
+    window_menu: tilo_desktop_surface::surface::window_menu::popup::WindowMenuPopup,
     /// The linked accounts' revision the card last showed.
     linked_seen: Cell<u64>,
     /// Asks again while the card shows a code, until the account links.
@@ -679,6 +679,9 @@ impl BrowserShell {
         );
         let walk = tilo_session::switcher::WindowWalk::new(handle.clone());
         top.set_switcher(walk.panel());
+        // What a secondary click on a window's bar offers, over everything.
+        let window_menu =
+            tilo_desktop_surface::surface::window_menu::popup::WindowMenuPopup::new(handle.clone());
         // The page's directory: over the desk, from this page's own site,
         // person and workspaces (`mountDesktop({directory})`).
         let directory = crate::over_page::OverPage::new(crate::over_page::LazySheet::directory(
@@ -728,7 +731,7 @@ impl BrowserShell {
             invite,
             guide,
             questions: crate::over_page::OverPage::new(crate::over_page::LazyQuestions::new()),
-            window_menu: crate::window_menu::PageWindowMenu::new(),
+            window_menu,
             linked_seen: Cell::new(0),
             linking: tilo_app::linked_accounts::LinkingRecheck::default(),
             profile_links: None,
@@ -792,6 +795,16 @@ impl BrowserShell {
         self.window_menu
             .handle_event(event, &mut ctx.reborrow(ctx.path, node));
         *ctx.handled
+    }
+
+    /// Open the menu a window's bar asked for, and do the row the person chose in it. Whether
+    /// anything changed.
+    fn follow_window_menu(&mut self) -> bool {
+        let followed = self.window_menu.follow();
+        if let (Some(row), Some(error)) = (&followed.chosen, &followed.refused) {
+            tracing::warn!(%error, row, "the window menu's row was refused");
+        }
+        followed.changed
     }
 
     /// Whose view this page follows, as the person's own presence says it: the roster's banner
@@ -1671,7 +1684,7 @@ impl Widget for BrowserShell {
         changed |= self.follow_people();
         changed |= self.follow_arrived_agents();
         // A window's bar asked for its menu, or the person chose one of its rows.
-        changed |= self.window_menu.follow(&self.handle);
+        changed |= self.follow_window_menu();
         changed |= self.follow_followed();
         // Whether the person may invite someone here, as the roster's footer offers it, and whom
         // they follow, which the windows they are in come forward with.

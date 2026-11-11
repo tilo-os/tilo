@@ -1011,6 +1011,9 @@ fn detach(shared: &mut super::Shared, ids: RouteIds, at_end: bool) -> bool {
 #[path = "window_menu_tests.rs"]
 mod tests;
 
+#[path = "window_menu_popup.rs"]
+pub mod popup;
+
 impl crate::surface::DesktopHandle {
     /// Who holds tab `tab` on a shared desktop, when someone else does: the menu offers that
     /// person's window only what a viewer may do to it.

@@ -1,26 +1,38 @@
-//! The window menu on the page: what the desktop can do to one window, opened by a secondary click
-//! on that window's bar.
+//! The window menu as a menu of its own, for a host with no session around its desk: what the
+//! desktop can do to one window, opened where a secondary click on that window's bar landed.
 //!
-//! The rows and what choosing one does are the desk's own ([`DesktopHandle::window_menu`],
+//! The rows and what choosing one does are the desk's ([`DesktopHandle::window_menu`],
 //! [`DesktopHandle::choose_window_menu`]): a native session shows them through its window-menu
-//! view, and the page, which has no session around its desk, shows them here, in the toolkit's
-//! menu, where the click was.
+//! view, and a host without one (the web page) mounts this beside its desk, in the toolkit's menu.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
 use tilo_desktop_model::TabId;
-use tilo_desktop_surface::DesktopHandle;
-use tilo_desktop_surface::surface::WindowMenuRow;
 use ui::Theme;
 use ui::kurbo::{Point, Rect};
 use ui::taffy::{self, NodeId, Style, TaffyTree};
 use ui::widget::{ContextMenu, MenuItem, TaffyTreeExt as _, Widget};
 use ui::winit::event::WindowEvent;
 
-/// The window menu the page shows: the desk's rows for the window whose bar was clicked.
-pub(crate) struct PageWindowMenu {
+use super::Row;
+use crate::DesktopHandle;
+
+/// What [`WindowMenuPopup::follow`] did.
+#[derive(Debug, Default)]
+pub struct Followed {
+    /// The menu opened, closed or did a row: the host draws again.
+    pub changed: bool,
+    /// The row the person chose, by its id.
+    pub chosen: Option<String>,
+    /// Why the desk refused that row, as the menu says beside it.
+    pub refused: Option<String>,
+}
+
+/// The window menu a host mounts over its desk: the desk's rows for the window whose bar asked.
+pub struct WindowMenuPopup {
+    handle: DesktopHandle,
     menu: ContextMenu,
     /// The window the open menu is for.
     tab: Option<TabId>,
@@ -29,9 +41,11 @@ pub(crate) struct PageWindowMenu {
     rect: Rect,
 }
 
-impl PageWindowMenu {
-    pub(crate) fn new() -> Self {
+impl WindowMenuPopup {
+    #[must_use]
+    pub fn new(handle: DesktopHandle) -> Self {
         Self {
+            handle,
             menu: ContextMenu::new(),
             tab: None,
             chosen: Rc::new(RefCell::new(None)),
@@ -39,32 +53,32 @@ impl PageWindowMenu {
         }
     }
 
-    pub(crate) fn is_open(&self) -> bool {
+    #[must_use]
+    pub fn is_open(&self) -> bool {
         self.menu.is_open()
     }
 
-    /// Open the menu a window's bar asked for since the last pass, where it was pressed, and do
-    /// the row the person chose. Whether anything changed.
-    pub(crate) fn follow(&mut self, handle: &DesktopHandle) -> bool {
-        let mut changed = false;
-        if let Some((tab, at)) = handle.take_tab_menus().pop() {
-            changed |= self.open(handle, tab, at);
+    /// Open the menu a window's bar asked for since the last call, where it was pressed, and do
+    /// the row the person chose: what happened, for the host to redraw and to say.
+    pub fn follow(&mut self) -> Followed {
+        let mut followed = Followed::default();
+        if let Some((tab, at)) = self.handle.take_tab_menus().pop() {
+            followed.changed |= self.open(tab, at);
         }
         let chosen = self.chosen.borrow_mut().take();
         if let (Some(id), Some(tab)) = (chosen, self.tab) {
-            self.menu.close();
             self.tab = None;
-            if let Err(error) = handle.choose_window_menu(tab, &id, None) {
-                tracing::warn!(%error, row = id, "the window menu's row was refused");
-            }
-            changed = true;
+            self.menu.close();
+            followed.refused = self.handle.choose_window_menu(tab, &id, None).err();
+            followed.chosen = Some(id);
+            followed.changed = true;
         }
-        changed
+        followed
     }
 
     /// Show the desk's rows for the window showing `tab`, at `at` on the desk.
-    fn open(&mut self, handle: &DesktopHandle, tab: TabId, at: Point) -> bool {
-        let rows = handle.window_menu(tab);
+    fn open(&mut self, tab: TabId, at: Point) -> bool {
+        let rows = self.handle.window_menu(tab);
         if rows.is_empty() {
             return false;
         }
@@ -80,8 +94,8 @@ impl PageWindowMenu {
     }
 
     /// `row` as the toolkit's menu draws it: a rule, a submenu of the places it offers, or a row
-    /// that, chosen, is remembered by its id. A row the window cannot take now is shown with why.
-    fn item(&self, row: &WindowMenuRow) -> MenuItem {
+    /// that, chosen, is remembered by its id. A row the window cannot take now says why.
+    fn item(&self, row: &Row) -> MenuItem {
         if row.separator {
             return MenuItem::separator();
         }
@@ -109,7 +123,13 @@ impl PageWindowMenu {
     }
 }
 
-impl Widget for PageWindowMenu {
+impl Widget for WindowMenuPopup {
+    /// A bar that asked for its menu, or a row the person chose, is taken up between frames.
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+        let followed = self.follow().changed;
+        self.menu.update(state, path) | followed
+    }
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -117,7 +137,7 @@ impl Widget for PageWindowMenu {
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let menu = self.menu.build_layout(taffy, theme, map);
-        // Over the whole page, out of its flow: the menu stands where the click was.
+        // Over the whole desk, out of its flow: the menu stands where the click was.
         let style = Style {
             position: taffy::Position::Absolute,
             inset: taffy::Rect {
@@ -162,10 +182,14 @@ impl Widget for PageWindowMenu {
     }
 
     fn name(&self) -> &'static str {
-        "PageWindowMenu"
+        "WindowMenuPopup"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
     }
 }
+
+#[cfg(test)]
+#[path = "window_menu_popup_tests.rs"]
+mod tests;

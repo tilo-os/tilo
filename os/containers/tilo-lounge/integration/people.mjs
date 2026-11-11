@@ -1093,16 +1093,19 @@ try {
       failed(`${what}: a secondary click in the window bar opens no window menu: at ${JSON.stringify(bar)} over ${JSON.stringify(await namesAt(a.tab, bar.x, bar.y))}; shown: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
     }
     await settle(a.tab, 1);
-    return row;
+    // A row the click took closes the menu: still listed, the click never reached it.
+    const open = (await namesOf(a.tab)).some(name => /^(Fill the strip|Give the strip back)$/.test(name));
+    return {row, open};
   };
   const desk = await centreOf(a.tab);
   const barRow = await shownRow('Maximize') ?? await shownRow('Close');
   if (!barRow) failed(`no window bar on screen to open the window menu from: ${JSON.stringify((await namesOf(a.tab)).slice(0, 40))}`);
   const [bx0, by0, bx1, by1] = barRow.bounds;
   const bar = {x: desk.corner.x + (bx0 + bx1) / 2, y: desk.corner.y + (by0 + by1) / 2};
-  const filled = await stripRow('the window menu', bar);
-  const given = await stripRow('the window menu again', bar);
-  if (given === filled) failed(`the window menu's "${filled}" changed nothing: the menu offered it again ${JSON.stringify({bar})}`);
+  const first = await stripRow('the window menu', bar);
+  const second = await stripRow('the window menu again', bar);
+  const [filled, given] = [first.row, second.row];
+  if (given === filled) failed(`the window menu's "${filled}" changed nothing: the menu offered it again ${JSON.stringify({bar, openAfterClick: first.open})}`);
   report.windowMenu = {filled, given};
   console.log(`ok: the window menu opens from the window bar, and its rows fill the strip and give it back (${filled}, then ${given})`);
 
