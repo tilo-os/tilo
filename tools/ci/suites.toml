@@ -1652,6 +1652,10 @@ suite = "os/containers/tilo-lounge/test-page-two-people.sh"
 reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, in two browsers at once; the page-two-people check runs it in its image"
 
 [[unrequired]]
+suite = "os/containers/tilo-lounge/test-page-share-link.sh"
+reason = "needs the built web desktop bundle, headless Chromium and the built relay and crypto programs, in three browsers at once; the page-share-link check runs it in its image"
+
+[[unrequired]]
 suite = "os/containers/tilo-lounge/test-image.sh"
 reason = "needs the built Lounge image"
 

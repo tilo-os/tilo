@@ -4896,6 +4896,20 @@ outputs = ["/target/page-two-people/**"]
 timeout_secs = 1200
 default = false
 
+# The gate's shared-link step on its own, in minutes: a document's link copied
+# from the bar's Share opens as that one document, live, on a phone-sized page,
+# and a run's link opens Console on that run. A step of the gate that fails
+# after it is chased here instead of by running the whole gate again.
+[[check]]
+name = "page-share-link"
+run = "bash os/containers/tilo-lounge/test-page-share-link.sh /target/publish/web-desktop/bundle /target/page-share-link"
+needs = ["lounge-gate-binaries", "lounge-fonts", "lounge-gate-tools", "web-desktop-bundle"]
+env = { TILO_RELAY_BIN = "/target/publish/lounge-gate/binaries/tilo-relay", TILO_FONTS_DIR = "/target/publish/lounge/fonts", TILO_CRYPTO_BIN = "/target/publish/lounge/gate-tools/tilo-crypto" }
+requires = ["arch=x86_64"]
+outputs = ["/target/page-share-link/**"]
+timeout_secs = 1200
+default = false
+
 # The two programs the tilo.sh stack's checks run as a release's: tilo-enroll makes the VM host's
 # member device, and tilo-approve answers for the person the startup page made. Built here, once,
 # and handed to the checks that use them, so the micro-VM that runs the stack only runs it: the
