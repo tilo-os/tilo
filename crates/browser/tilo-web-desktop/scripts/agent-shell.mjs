@@ -102,10 +102,65 @@ const withVideo = !flag('--no-video');
 
 const t0 = Date.now();
 const logLines = [];
+// The run's log is written line by line as it goes: a run that stops anywhere — a host that never
+// starts, a step that throws, a run killed from outside — still leaves what it did.
+const runLog = join(out, 'run.log');
+writeFileSync(runLog, '');
 const log = (...parts) => {
   const line = `+${((Date.now() - t0) / 1000).toFixed(1)}s ${parts.join(' ')}`;
   logLines.push(line);
   console.log(line);
+  try { appendFileSync(runLog, `${line}\n`); } catch { /* The console has it. */ }
+};
+
+const checks = [];
+const notes = [];
+/** Each agent call the run made, with every answer it got: the first (`ok`, `pending`, `failed`)
+ * and each `tilo_status` follow-up of one answered pending, by the step it was for. */
+const calls = [];
+/** What stopped the run before its end, when something did. */
+let stoppedBy = null;
+/** A value the run may not have reached yet: `null` until it did. */
+const known = get => { try { return get() ?? null; } catch { return null; } };
+/** `summary.json`, as the run stands: written after every check and once more as it ends, so it is
+ * there however the run ends. */
+const writeSummary = () => {
+  try {
+    writeFileSync(join(out, 'summary.json'), JSON.stringify({started: new Date(t0).toISOString(), out,
+      bundle: known(() => bundle), relay: known(() => relayBin), tilo: known(() => tiloBin),
+      site: known(() => siteOrigin), host: known(() => hostOrigin), workspace: known(() => roomId),
+      stoppedBy, checks, notes, calls}, null, 2));
+  } catch { /* The log has it. */ }
+};
+process.on('uncaughtExceptionMonitor', error => {
+  stoppedBy = String(error?.stack ?? error);
+  log('stopped:', String(error?.message ?? error));
+});
+process.on('exit', () => {
+  writeSummary();
+  // A run stopped before its own clean-up leaves no host or browser behind.
+  for (const entry of known(() => children) ?? []) {
+    if (!entry.exited) try { process.kill(-entry.child.pid, 'SIGKILL'); } catch {}
+  }
+});
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    stoppedBy = signal;
+    log(`stopped by ${signal}`);
+    process.exit(1);
+  });
+}
+const check = (id, pass, detail = '') => {
+  checks.push({id, pass: !!pass, detail: String(detail).slice(0, 1200)});
+  log(`${pass ? 'PASS' : 'FAIL'} ${id}${detail ? ` - ${String(detail).slice(0, 300)}` : ''}`);
+  writeSummary();
+};
+/** Something the product does not do today: the run goes on, and the report
+ * says it. */
+const note = (id, pass, detail = '') => {
+  notes.push({id, pass: !!pass, detail: String(detail).slice(0, 1200)});
+  log(`${pass ? 'NOTE ok' : 'NOTE'} ${id}${detail ? ` - ${String(detail).slice(0, 300)}` : ''}`);
+  writeSummary();
 };
 
 // ---------------------------------------------------------------------------
@@ -700,7 +755,7 @@ const verdict = answer => answer.failed ? 'failed' : /^pending\b/i.test(answer.t
 /** What the agent learns of an action the host answered as pending: a host that took longer than
  * its admission wait says so with the invocation's id, and the agent asks `tilo_status` with it
  * until it says how it went, as the answer tells it to. */
-async function settled(agent, answer) {
+async function settled(agent, answer, followed = () => {}) {
   const deadline = Date.now() + 120000;
   // The host marks a pending answer an error, as it is no outcome yet: its words say pending.
   const pending = said => /^pending \S+:/i.test(said.text);
@@ -709,6 +764,7 @@ async function settled(agent, answer) {
     if (!id) break;
     await sleep(1000);
     answer = await agent.call('tilo_status', {invocation_id: id});
+    followed(answer);
   }
   return answer;
 }
@@ -731,6 +787,8 @@ async function planActions(agent, apps) {
       answer = await agent.call(tool, args);
     }
     log(`agent ${tool} ${JSON.stringify(args)} -> ${verdict(answer)} ${answer.text.slice(0, 600)}`);
+    calls.push({step: 'planning', tool, args, answers: [verdict(answer)], answer: verdict(answer),
+      said: answer.text.slice(0, 300)});
     return answer;
   };
   const steps = [];
@@ -1347,18 +1405,6 @@ async function record(browser, tab, name, {width, height}, body) {
 
 // ---------------------------------------------------------------------------
 
-const checks = [];
-const notes = [];
-const check = (id, pass, detail = '') => {
-  checks.push({id, pass: !!pass, detail: String(detail).slice(0, 1200)});
-  log(`${pass ? 'PASS' : 'FAIL'} ${id}${detail ? ` - ${String(detail).slice(0, 300)}` : ''}`);
-};
-/** Something the product does not do today: the run goes on, and the report
- * says it. */
-const note = (id, pass, detail = '') => {
-  notes.push({id, pass: !!pass, detail: String(detail).slice(0, 1200)});
-  log(`${pass ? 'NOTE ok' : 'NOTE'} ${id}${detail ? ` - ${String(detail).slice(0, 300)}` : ''}`);
-};
 
 // ---------------------------------------------------------------------------
 // The page's memory, sampled across the run. A page that allocates without
@@ -1685,6 +1731,7 @@ try {
           for (const [index, step] of steps.entries()) {
             if (index < from || index >= to) continue;
             if (index === steps.shootAt) await watchAgentCursor(tab);
+            const sentAt = Date.now();
             const sending = agent.call(step.tool, step.args);
             if (index === steps.shootAt) {
               // The edit is in flight. Following brings the note's window forward, and the frame
@@ -1710,9 +1757,14 @@ try {
               await shot(tab, combo, 'following-mid-edit', {read: showing,
                 expect: [new RegExp(`^${(steps.noteTitle ?? 'launch notes').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i')]});
             }
-            const answer = await settled(agent, await sending);
+            const first = await sending;
+            const answers = [verdict(first)];
+            const answer = await settled(agent, first, said => answers.push(verdict(said)));
             step.answer = answer;
-            log(`${combo}: agent ${step.label} -> ${verdict(answer)} ${answer.text.slice(0, 300)}`);
+            calls.push({combo, step: step.label, tool: step.tool, args: step.args, answers,
+              answer: verdict(answer), ms: Date.now() - sentAt, said: answer.text.slice(0, 300)});
+            writeSummary();
+            log(`${combo}: agent ${step.label} -> ${answers.join(' -> ')} ${answer.text.slice(0, 300)}`);
             // The person sees each change land before the agent makes the next: the page draws it
             // on its next frame, which on a software-drawn page is seconds away, and a call sent
             // sooner lands in the same frame as this one, so the follow shows two lines at once.
@@ -1944,12 +1996,12 @@ try {
     }
   }
 } finally {
+  // Written before the clean-up, which waits on processes, and again after it.
+  writeSummary();
   for (const entry of [...children].reverse()) await stop(entry);
   site.close();
   await browser.close().catch(() => {});
-  writeFileSync(join(out, 'summary.json'), JSON.stringify({started: new Date(t0).toISOString(), out, bundle,
-    relay: relayBin, tilo: tiloBin, site: siteOrigin, host: hostOrigin, workspace: roomId, checks, notes}, null, 2));
-  writeFileSync(join(out, 'run.log'), logLines.join('\n'));
+  writeSummary();
 }
 const failures = checks.filter(entry => !entry.pass);
 console.log(`\n${checks.length - failures.length}/${checks.length} checks passed; shots under ${shotsDir}`);
