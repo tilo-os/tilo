@@ -153,7 +153,23 @@ const click = async (tab, id) => {
   }
   return true;
 };
-const clipboard = tab => until(tab, `navigator.clipboard.readText().then(text => text.includes('tilo login') ? text : '', () => '')`, 10_000);
+// The clipboard's text as this page can read it: nothing where it may not.
+const clipboardText = tab => tab.evaluate(
+  `navigator.clipboard.readText().then(text => text, () => '')`).catch(() => '');
+// What a click on Copy wrote: the prompt the clipboard holds once it no longer
+// holds what it held before the click. The page writes the clipboard inside
+// the click and the browser takes a moment to land it, so a read that only
+// asks for a prompt returns the one an earlier copy left there; this copy's is
+// the one that is not that text.
+const copy = async (tab, id) => {
+  // The clipboard answers only the tab in front, so read it there, as the
+  // click's press needs it in front too.
+  await tab.send('Page.bringToFront').catch(() => {});
+  const before = await clipboardText(tab);
+  await click(tab, id);
+  return until(tab, `navigator.clipboard.readText().then(text =>
+    text.includes('tilo login') && text !== ${JSON.stringify(before)} ? text : '', () => '')`, 15_000);
+};
 const codeOf = prompt => prompt?.match(/tilo login ([2-9A-HJKMNP-TV-Z]{3}-[2-9A-HJKMNP-TV-Z]{4})/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-run-steps')?.innerText ?? ''`).catch(() => '');
 
@@ -223,8 +239,7 @@ await shot(tab, 'resume-1-before-copy');
 // 2. After copy.
 await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
 const shown = await tab.evaluate(`document.getElementById('first-run-offer').textContent`);
-await click(tab, 'first-run-agent');
-const prompt = await clipboard(tab);
+const prompt = await copy(tab, 'first-run-agent');
 check(prompt && prompt === shown, '2. the click copies the prompt shown', `${prompt} / ${shown}`);
 await reload(tab);
 frame = await firstFrame(tab);
@@ -250,13 +265,13 @@ check(await until(tab, `document.documentElement.dataset.firstRun === ''`, 10_00
 await second.close();
 // Copy again in the first tab (a fresh code), then close it and reopen.
 await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
-await click(tab, 'first-run-agent');
 // What the person pastes: the clipboard, or (where this browser will not
 // read it back to the harness in a tab that was behind another) the prompt
 // the page shows once it says it copied it; case 2 proved those are one.
-const promptB = await clipboard(tab) ?? await until(tab, `document.getElementById('first-run')?.dataset.copied === 'true'
+const readB = await copy(tab, 'first-run-agent');
+const promptB = readB ?? await until(tab, `document.getElementById('first-run')?.dataset.copied === 'true'
   && document.getElementById('first-run-prompt').textContent`, 10_000);
-report.promptBFrom = (await clipboard(tab)) === promptB ? 'clipboard' : 'screen';
+report.promptBFrom = readB ? 'clipboard' : 'screen';
 check(codeOf(promptB) && promptB !== prompt, '2. a new copy after Back is a fresh code');
 await tab.close();
 
@@ -308,8 +323,7 @@ const later = await browser.context();
 tab = await tabIn(later, 'closed-mid-way');
 await tab.navigate(site);
 await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
-await click(tab, 'first-run-agent');
-const promptC = await clipboard(tab);
+const promptC = await copy(tab, 'first-run-agent');
 const agentC = login(codeOf(promptC), computer('two'));
 check(await until(tab, `(document.getElementById('first-run-steps')?.innerText ?? '').includes('logged in as you')`, 120_000),
   '6. the agent logged in', await pageText(tab));
@@ -332,8 +346,7 @@ const third = await browser.context();
 tab = await tabIn(third, 'expiry');
 await tab.navigate(site);
 await until(tab, `document.getElementById('first-run')?.dataset.setup === 'ready'`);
-await click(tab, 'first-run-agent');
-const promptD = await clipboard(tab);
+const promptD = await copy(tab, 'first-run-agent');
 // The code's ten minutes pass while the tab is closed: kept as having run out.
 await tab.evaluate(`(() => { const s = JSON.parse(localStorage.getItem('tilo-setup')); s.code.expiresAt = Date.now() - 1000; localStorage.setItem('tilo-setup', JSON.stringify(s)); })()`);
 await reload(tab);
@@ -342,8 +355,7 @@ check(frame.step === 'expired' && frame.expired, '7. a code that ran out: said a
 const fresh = await until(tab, `document.documentElement.dataset.firstRun === 'expired' && document.getElementById('first-run-prompt').textContent`, 30_000);
 check(fresh && codeOf(fresh) && fresh !== promptD, '7. a fresh prompt shows beside the note', `${fresh}`);
 await shot(tab, 'resume-7-expired');
-await click(tab, 'first-run-retry');
-const copiedFresh = await clipboard(tab);
+const copiedFresh = await copy(tab, 'first-run-retry');
 check(copiedFresh === fresh, '7. copying it copies the fresh prompt shown', `${copiedFresh} / ${fresh}`);
 check(await until(tab, `document.documentElement.dataset.firstRun === 'waiting'`, 10_000) && (await setup(tab))?.code?.code === codeOf(fresh),
   '7. and follows the fresh code');
