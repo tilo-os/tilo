@@ -14,7 +14,7 @@
 #   - what the session and its Chromium processes hold in memory, and the
 #     VM's own.
 #
-# It runs in the guest as the tenant (`tilo-legacy hosted run -- /bin/sh -s`),
+# It runs in the guest as the tenant (`tilo-legacy hosted run -- /bin/sh -c`),
 # and takes root there with sudo where it has it: reading another user's
 # /proc/<pid>/ns asks for it.
 set -u
