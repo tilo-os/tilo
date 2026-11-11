@@ -1127,6 +1127,16 @@ opt-level = 3
 opt-level = 3
 [profile.test.package.chacha20poly1305]
 opt-level = 3
+# The sealing those ciphers are generic over is compiled where it is used, so
+# it runs at this crate's level, not theirs. Every device seals its channel
+# state, about a megabyte in a group of hundreds, with each frame it takes in:
+# unoptimised that took 35 ms per seal of 330 KB, 0.35 ms optimised, and made
+# a crowd's channel work in one process (the crowded entry) a tenth MLS and the
+# rest sealing.
+[profile.dev.package.tilo-seal]
+opt-level = 3
+[profile.test.package.tilo-seal]
+opt-level = 3
 [profile.dev.package.poly1305]
 opt-level = 3
 [profile.test.package.poly1305]
