@@ -260,3 +260,25 @@ fn a_change_made_elsewhere_is_published_on_the_next_poll() {
         .unwrap();
     assert!(service.poll(), "the settings document moved");
 }
+
+#[test]
+fn the_rotation_lock_is_an_action_of_the_display_section() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
+    let mut services = services();
+    services
+        .invoke(
+            "settings:settings.display",
+            "set-rotation-lock",
+            &arguments(json!({ "locked": true })),
+        )
+        .expect("published")
+        .expect("locked");
+    assert_eq!(
+        services.read("settings:settings.display").unwrap()["rotation_lock"],
+        json!(true)
+    );
+    assert!(
+        settings_store::hardware::ROTATION_LOCK.get(),
+        "the session's rotation reads the same setting"
+    );
+}

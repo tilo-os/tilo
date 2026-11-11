@@ -16,8 +16,8 @@ use ui::serde_json::{self, Map, Value};
 use crate::QuickSettingsState;
 use crate::effect::QsEffect;
 use crate::session::{
-    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAYS, MEDIA, NETWORK, NIGHT_LIGHT,
-    NOTIFICATIONS, SCREEN, SLEEP, SOUND, VPN,
+    BLUETOOTH, CHROME, CLIPBOARD, DESK, DEVICES, DISPLAY_SETTINGS, DISPLAYS, MEDIA, NETWORK,
+    NIGHT_LIGHT, NOTIFICATIONS, SCREEN, SLEEP, SOUND, VPN,
 };
 
 /// What an effect asks of the session: the resource, its action and the
@@ -250,6 +250,10 @@ pub(crate) fn of(state: &QuickSettingsState, effect: &QsEffect) -> Option<Verb> 
         // The session itself.
         QsEffect::LockScreen => (SCREEN, "lock"),
         QsEffect::PowerMenu => (SCREEN, "power-menu"),
+        QsEffect::SetRotationLock { locked } => {
+            put(&mut arguments, "locked", locked);
+            (DISPLAY_SETTINGS, "set-rotation-lock")
+        }
         QsEffect::SetNightLight { on } => {
             put(&mut arguments, "on", on);
             (NIGHT_LIGHT, "toggle")
@@ -341,6 +345,11 @@ mod tests {
             said(&QsEffect::LockScreen).as_deref(),
             Some("session:screen lock"),
             "the session itself locks"
+        );
+        assert_eq!(
+            said(&QsEffect::SetRotationLock { locked: true }).as_deref(),
+            Some("settings:settings.display set-rotation-lock locked=true"),
+            "the lock is the person's display setting, kept by the settings service"
         );
     }
 

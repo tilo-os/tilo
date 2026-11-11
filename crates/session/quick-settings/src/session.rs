@@ -38,6 +38,8 @@ pub(crate) const SLEEP: &str = "power:sleep";
 pub(crate) const SYSTEM_UPDATE: &str = "system-update";
 /// The session's reading of its displays and how bright each is.
 pub(crate) const DISPLAYS: &str = "session:displays";
+/// The person's display settings on this device, as the settings service publishes them.
+pub(crate) const DISPLAY_SETTINGS: &str = "settings:settings.display";
 /// The notification centre's reading of what it keeps.
 pub(crate) const NOTIFICATIONS: &str = "session:notifications";
 /// The session's reading of the clipboard history.

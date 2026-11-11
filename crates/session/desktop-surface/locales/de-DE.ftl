@@ -62,21 +62,6 @@ topbar-arrived-more = { $name } und { $count ->
     [one] eine weitere Person
    *[other] { $count } weitere
 } sind da
-topbar-clock-resume = Fortsetzen
-topbar-clock-pause = Pausieren
-topbar-clock-lap = Runde
-topbar-clock-add-minute = +1 Min.
-topbar-clock-close-stopwatch = Schwebende Stoppuhr schließen
-topbar-clock-close-timer = Schwebenden Timer schließen
-topbar-clock-floating-stopwatch = Schwebende Stoppuhr
-topbar-clock-floating-timer = Schwebender Timer
-topbar-clock-floating-description = Zum Verschieben ziehen. Mit der Tastatur Alt gedrückt halten und die Pfeiltasten verwenden; zusätzlich Umschalt für größere Schritte.
-topbar-clock-stopwatch = Stoppuhr
-topbar-clock-timer = Timer
-topbar-clock-paused = Pausiert
-topbar-clock-running = Läuft
-topbar-clock-record-lap = Runde erfassen
-topbar-clock-add-one-minute = Eine Minute hinzufügen
 topbar-workspace-position = Arbeitsbereich { $position } von { $total }
 topbar-desktop-navigation = Desktop-Navigation
 topbar-display-navigation = Bildschirmnavigation

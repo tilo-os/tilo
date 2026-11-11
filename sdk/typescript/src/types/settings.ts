@@ -581,9 +581,13 @@ export function audioDevice(ws: tilo.Workspace, path: string): AudioDevice {
 /** Displays — `settings.display`. */
 export interface Display extends tilo.Resource {
   readonly auto_brightness: boolean;
+  readonly rotation_lock: boolean;
   scale: number;
   setAutomaticBrightness(args: {
     on: boolean;
+  }): Promise<tilo.Run | void>;
+  setRotationLock(args: {
+    locked: boolean;
   }): Promise<tilo.Run | void>;
 }
 

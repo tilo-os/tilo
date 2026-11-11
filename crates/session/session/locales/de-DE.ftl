@@ -91,8 +91,6 @@ desk-window-did-not-open = { $app } wurde gestartet, hat aber kein Fenster geöf
 ## Ein Fenster, das die Aufzeichnung der Person aufbewahrt hat und dessen
 ## gespeicherter Zustand sich in dieser Version nicht lesen lässt: sein Tab
 ## sagt, warum das Fenster nicht hier ist, statt dass der Platz verschwindet.
-desk-place-not-read = Sein gespeichertes Fenster ließ sich nicht lesen, deshalb ist es nicht hier. Schließe diesen Tab, wenn du damit fertig bist; bei der nächsten Anmeldung öffnet sich die App wieder.
-
 ## Die „Immer erlauben“-Antworten, die dieser Rechner für die Agenten an seiner
 ## Tür aufbewahrt hat und nicht lesen konnte: jeder Agent, dessen Antwort es
 ## war, wird erneut gefragt.
@@ -221,7 +219,6 @@ session-notifications-act = Die Aktion der Benachrichtigung ausführen
 session-notifications-clear = Das Benachrichtigungszentrum leeren
 session-notifications-undo-clear = Die verworfenen Benachrichtigungen zurückholen
 session-notifications-open = Die Benachrichtigung öffnen
-session-notifications-hand-to-agent = Die Benachrichtigung an einen Agenten übergeben
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } von { $device }
@@ -321,9 +318,6 @@ session-desk-stop-agent = Stoppen
 session-people = Personen
 
 ## Wie die privaten Unterhaltungen einer Person heißen und was sie anbieten.
-session-messages = Private Nachrichten
-session-messages-send = Private Nachricht senden
-
 ## Wie der Sperrbildschirm heißt, solange er oben ist.
 session-lock-screen = Sperrbildschirm
 

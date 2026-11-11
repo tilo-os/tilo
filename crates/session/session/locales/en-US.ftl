@@ -89,8 +89,6 @@ desk-window-did-not-open = { $app } started but did not open a window
 ## A window the person's record kept whose saved state this version cannot
 ## read: its tab says why the window is not here instead of the place being
 ## dropped.
-desk-place-not-read = Its saved window could not be read, so it is not here. Close this tab when you are done with it; the app opens again next time you sign in.
-
 ## The "Always allow" answers this computer kept for the agents at its door,
 ## which could not be read: each agent whose answer it was is asked again.
 agent-bindings-app-name = Agents
@@ -217,7 +215,6 @@ session-notifications-act = Run the notification's action
 session-notifications-clear = Clear the notification centre
 session-notifications-undo-clear = Bring back the cleared notifications
 session-notifications-open = Open the notification
-session-notifications-hand-to-agent = Hand the notification to an agent
 ## A notification another of the person's devices projected here: the app it
 ## came from and the device that showed it first.
 notification-from-device = { $app } from { $device }
@@ -316,9 +313,6 @@ session-desk-stop-agent = Stop
 session-people = People
 
 ## What a person's private conversations are called, and the one action they offer.
-session-messages = Private messages
-session-messages-send = Send a private message
-
 ## What the lock screen is called while it is up.
 session-lock-screen = Lock screen
 

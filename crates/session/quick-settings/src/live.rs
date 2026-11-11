@@ -158,11 +158,6 @@ impl Live {
             }
             QsEffect::SetRotationLock { locked } => {
                 readings.update(|state| state.rotation_lock = *locked);
-                let origin = settings_store::ChangeOrigin::local("qs.rotation-lock");
-                if let Err(error) = settings_store::hardware::ROTATION_LOCK.set_by(*locked, &origin)
-                {
-                    tracing::warn!(%error, "rotation lock preference save failed");
-                }
             }
             QsEffect::SetDoNotDisturb { on } => {
                 readings.update(|state| state.do_not_disturb = *on);

@@ -50,21 +50,6 @@ topbar-arrived-more = { $name } and { $count ->
     [one] one other
    *[other] { $count } others
 } are here
-topbar-clock-resume = Resume
-topbar-clock-pause = Pause
-topbar-clock-lap = Lap
-topbar-clock-add-minute = +1 min
-topbar-clock-close-stopwatch = Close floating stopwatch
-topbar-clock-close-timer = Close floating timer
-topbar-clock-floating-stopwatch = Floating stopwatch
-topbar-clock-floating-timer = Floating timer
-topbar-clock-floating-description = Drag to reposition. With a keyboard, hold Alt and use the arrow keys; hold Shift for larger steps.
-topbar-clock-stopwatch = Stopwatch
-topbar-clock-timer = Timer
-topbar-clock-paused = Paused
-topbar-clock-running = Running
-topbar-clock-record-lap = Record lap
-topbar-clock-add-one-minute = Add one minute
 topbar-workspace-position = Workspace { $position } of { $total }
 topbar-desktop-navigation = Desktop navigation
 topbar-display-navigation = Display navigation

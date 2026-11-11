@@ -18,7 +18,7 @@ use crate::host::FixtureHost;
 #[derive(
     Model, Clone, Copy, Debug, Default, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize,
 )]
-#[serde(rename_all = "kebab-case", from = "StoredPage", into = "StoredPage")]
+#[serde(rename_all = "kebab-case")]
 pub enum Page {
     /// The controls, or the page of the section opened from them.
     #[default]
@@ -27,40 +27,8 @@ pub enum Page {
     Accessory,
 }
 
-/// What a stored panel state may name: its pages, and the notifications page
-/// it had. The kept notifications are the shell's centre now, so a panel
-/// left on that page opens on its controls.
-#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "kebab-case")]
-enum StoredPage {
-    Root,
-    Accessory,
-    Notifications,
-    Notification,
-}
-
-impl From<StoredPage> for Page {
-    fn from(stored: StoredPage) -> Self {
-        match stored {
-            StoredPage::Accessory => Self::Accessory,
-            StoredPage::Root | StoredPage::Notifications | StoredPage::Notification => Self::Root,
-        }
-    }
-}
-
-impl From<Page> for StoredPage {
-    fn from(page: Page) -> Self {
-        match page {
-            Page::Root => Self::Root,
-            Page::Accessory => Self::Accessory,
-        }
-    }
-}
-
 impl ui::tilo_resource::JsonSchema for Page {
-    /// The pages the panel writes. The notifications page it had is still
-    /// read from a state stored before the centre moved to the shell, and is
-    /// not offered: nothing writes it now.
+    /// The pages the panel has.
     fn json_schema() -> ui::serde_json::Value {
         ui::serde_json::json!({ "type": "string", "enum": ["root", "accessory"] })
     }
