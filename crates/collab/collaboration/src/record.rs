@@ -660,14 +660,15 @@ impl RecordCheckout {
 
 impl RecordId {
     /// Whether a workspace's hosts send this record to a device only once it
-    /// asks for it: a [`Self::part`] of a chain (the head too, which a
-    /// device that joined before it started asks for) or an
+    /// asks for it: a [`Self::part`] of a chain, whose [`Self::chain_head`] a
+    /// device that holds no part asks for to be sent the newest one, or an
     /// [`Self::on_demand`] record. Opening one reads what this device holds
     /// or asks for it, and never waits for it to arrive
     /// (`ui::record::RecordOpenError::Arriving`).
     #[must_use]
     pub fn arrives_on_demand(&self) -> bool {
         self.chain_part().is_some()
+            || self.is_chain_head()
             || self
                 .0
                 .strip_prefix("derived:on-demand@")

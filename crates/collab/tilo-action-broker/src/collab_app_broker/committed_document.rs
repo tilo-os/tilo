@@ -135,6 +135,17 @@ pub enum RecordRead {
     /// policy, plus the launcher's custody whenever the app has one.
     Sealed,
 }
+/// What a workspace's hosts answered about the head of a chain: the record that
+/// names whichever part of the chain is its newest, and holds nothing of its own
+/// ([`NativeDocumentReads::chain_head_answer`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ChainHeadAnswer {
+    /// The workspace has no part of the chain at all, so the chain starts its first.
+    NoPart,
+    /// A part, or the host's word about it, is still on its way: it arrives on the
+    /// part's own route, and the chain waits for it there.
+    NewestPartOnItsWay,
+}
 pub trait NativeDocumentReads: Send + Sync {
     /// Durable native installation obligation, independent of runtime health.
     fn requires_workspace(&self, workspace: &str) -> bool;
@@ -171,6 +182,15 @@ pub trait NativeDocumentReads: Send + Sync {
     /// awaits it without blocking the channel, then decides. `None` when
     /// nothing is awaited.
     fn await_arriving_record(&self, context: &NativeDocumentReadContext) -> Option<AwaitingRecord> {
+        let _ = context;
+        None
+    }
+    /// What the workspace's hosts answered about the chain's head at `context`'s route
+    /// ([`ChainHeadAnswer`]), which they were asked for
+    /// ([`Self::await_arriving_record`]) and which names the chain's newest part without holding a
+    /// document of its own. `None` when nothing here answers chain heads, which then reads as any
+    /// record the app's own channel serves.
+    fn chain_head_answer(&self, context: &NativeDocumentReadContext) -> Option<ChainHeadAnswer> {
         let _ = context;
         None
     }
@@ -617,6 +637,28 @@ impl JoinedChannel {
         service.await_arriving_record(&context)
     }
 
+    /// The answer to an Open of a chain's head (`neighbour_wire::chain_head`), which
+    /// names the chain's newest part and holds no document of its own: the workspace
+    /// was asked which part that is, and answered with a part on its own route or with
+    /// nothing at all. `None` for every other request and record, which read as they
+    /// always have.
+    pub(super) fn chain_head_answered(&self, request: &Request) -> Option<Reply> {
+        if !matches!(request, Request::Open { .. })
+            || !matches!(
+                neighbour_wire::record_sync(&self.record_route().record_id),
+                neighbour_wire::RecordSync::ChainHead { .. }
+            )
+        {
+            return None;
+        }
+        let service = self.state.services.committed_documents.clone()?;
+        let context = self.document_read_context().ok()?;
+        Some(match service.chain_head_answer(&context)? {
+            ChainHeadAnswer::NoPart => Reply::Absent,
+            ChainHeadAnswer::NewestPartOnItsWay => Reply::Unavailable,
+        })
+    }
+
     /// Answer a committed-document request.
     pub(super) fn committed_document_dispatch(&self, request: &Request) -> Result<Reply, String> {
         if matches!(request, Request::ConnectionSnapshot) {
@@ -647,6 +689,14 @@ impl JoinedChannel {
             return Ok(Reply::Writes {
                 sealed: self.seals_records(),
             });
+        }
+        // A chain's head is a name for whichever of the chain's parts is the newest,
+        // not a document: opening it asks the workspace for that part, and is answered
+        // with it on the part's own route, or with nothing when the chain has none.
+        if matches!(request, Request::Open { .. })
+            && let Some(answered) = self.chain_head_answered(request)
+        {
+            return Ok(answered);
         }
         if self.record_read() == RecordRead::Own {
             return Ok(Reply::Legacy);

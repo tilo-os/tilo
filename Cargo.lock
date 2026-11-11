@@ -17275,6 +17275,7 @@ dependencies = [
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tracing",
+ "uuid",
  "workspace-hack",
 ]
 

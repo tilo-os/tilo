@@ -454,3 +454,105 @@ fn a_write_waiting_for_its_part_outlives_a_restart() {
     assert_eq!(lines, ["one", "two"]);
     assert!(sending(&window).is_empty());
 }
+
+/// A native window of a workspace that sends a device its records only once it
+/// opens them holds no part of the chain when it opens: it asks the workspace for
+/// the chain's head — the name of whichever part is the newest — and writes
+/// nothing until the answer comes. Writing into the part it would otherwise have
+/// started, the chain's first, put the line beside everything everyone wrote in
+/// the workspace's own first part, which is still there and still everyone's.
+#[test]
+fn a_native_window_waits_for_the_workspaces_newest_part_and_founds_no_part_of_its_own() {
+    use durable_store::{DurableStore as _, MemoryStore, StorageKey};
+    use tilo_app::collaboration::CollaborationManager;
+    use tilo_app::collaboration::native_initial::NativeConstruction;
+
+    const APP: &str = "so.tilo.test-chain-log";
+    let written = |text: &str| LogPart::WRITE.with(log_part::Write { text: text.into() });
+    let workspace = uuid::Uuid::new_v4().to_string();
+
+    // The workspace's newest part, as a member's device wrote it: one line in part 1, after a
+    // full part 0 that everyone's earlier lines are in.
+    let theirs = Rc::new(MemoryStore::new());
+    let writer =
+        RecordOwners::with_store(Rc::clone(&theirs) as Rc<dyn durable_store::DurableStore>)
+            .open(APP, &workspace)
+            .unwrap();
+    let writing = chain_in(&writer, "ada");
+    for n in 0..=PART_LINES {
+        writing.invoke(&written(&format!("line {n}"))).unwrap();
+    }
+    assert_eq!(
+        writing.head(),
+        Some(1),
+        "the workspace's log is in two parts"
+    );
+    let newest = LogPart::chain().part(1);
+    let kept = theirs
+        .read(&StorageKey::record(APP, &workspace, newest.storage_key()))
+        .unwrap()
+        .expect("the writer kept part 1")
+        .bytes;
+
+    // This device's window, reading its records through its broker: the workspace sends a device
+    // that opens a record what it holds of it, here the chain's newest part.
+    let (broker, _joins) = CollaborationManager::native_initial_fixture_for_test(
+        APP,
+        uuid::Uuid::parse_str(&workspace).unwrap(),
+        kept,
+    );
+    let _construction = NativeConstruction::enter(broker).expect("the app's construction");
+    let ours = Rc::new(MemoryStore::new());
+    let reader = RecordOwners::with_store(Rc::clone(&ours) as Rc<dyn durable_store::DurableStore>)
+        .open(APP, &workspace)
+        .unwrap();
+    let chain = chain_in(&reader, "bo");
+    assert!(chain.parts().is_empty(), "no part of it is here");
+    assert!(
+        chain.head_arriving(),
+        "the window asks the workspace which part is the newest"
+    );
+    let refused = chain.stage_as(&written("two"), "bo");
+    assert!(
+        refused.is_err(),
+        "the line waits for the answer rather than starting a part: {refused:?}"
+    );
+    assert!(chain.parts().is_empty(), "no part was started in its place");
+
+    // The host sends the part that is the chain's newest, which reaches this device's records: the
+    // read it asked for is announced as an app is told of a record no window holds.
+    reader.announce([newest.clone()]);
+    let deadline = tilo_test_env::hang_deadline();
+    while chain.parts().is_empty() {
+        assert!(
+            tilo_app::time::now() < deadline,
+            "the newest part never arrived"
+        );
+        reader.note_kept();
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        chain.head(),
+        Some(1),
+        "the window's head is the workspace's newest part"
+    );
+    assert!(!chain.head_arriving());
+    assert_eq!(
+        chain.stage_as(&written("two"), "bo").unwrap(),
+        Some(1),
+        "the line is written into the workspace's newest part"
+    );
+    let lines: Vec<String> = texts(&chain.parts())
+        .into_iter()
+        .map(|(_, text)| text)
+        .collect();
+    assert_eq!(
+        lines,
+        ["line 3", "two"],
+        "after what was written there, and nothing else"
+    );
+    assert!(
+        !reader.is_ready(&LogPart::chain().part(0)),
+        "the chain's first part was never founded, or opened, here"
+    );
+}

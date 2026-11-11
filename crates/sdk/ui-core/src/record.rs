@@ -4223,6 +4223,9 @@ pub use opening::RecordOpening;
 #[cfg(feature = "broker-transport")]
 mod named_creation_tests;
 #[cfg(test)]
+#[cfg(feature = "broker-transport")]
+mod native_head_tests;
+#[cfg(test)]
 mod replica_merge_tests;
 #[cfg(test)]
 mod workspace_answer_tests;

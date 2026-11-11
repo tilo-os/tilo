@@ -47,6 +47,11 @@ struct Progress {
 enum Gate {
     Joining,
     Legacy,
+    /// The route of a chain's head (`RecordId::chain_head`), which names whichever
+    /// part of the chain is the newest and holds nothing of its own: it was asked
+    /// for, and no document is ever read or staged here. The part arrives on its
+    /// own route.
+    ChainHead,
     Required(Arc<AtomicBool>, Arc<std::sync::atomic::AtomicU64>),
     /// The route's join or its first read failed: no read will be staged
     /// for it. The next read of the route joins it again.
@@ -259,7 +264,7 @@ impl Reads {
             .get(key)
             .cloned()
             .is_some_and(|gate| match gate {
-                Gate::Joining | Gate::Failed(_) => false,
+                Gate::Joining | Gate::Failed(_) | Gate::ChainHead => false,
                 Gate::Legacy => true,
                 Gate::Required(ready, _) => ready.load(Ordering::Acquire),
             })
@@ -329,6 +334,9 @@ impl Reads {
         let rows = self.0.lock_recover();
         match rows.get(key) {
             Some(Gate::Failed(error)) => Some(error.clone()),
+            Some(Gate::ChainHead) => {
+                Some("a chain's head names its newest part and holds no document".into())
+            }
             None => Some("committed document route capacity".into()),
             Some(_) => None,
         }
@@ -438,6 +446,19 @@ impl Reads {
             return Err("committed document reader closed".into());
         }
         rows.insert(key.into(), Gate::Legacy);
+        drop(rows);
+        self.progressed();
+        Ok(())
+    }
+    /// The route of `key` is a chain's head, asked for and answered: it names the
+    /// chain's newest part and holds nothing of its own, so no document is read or
+    /// staged for it.
+    fn chain_head(&self, key: &str) -> Result<(), String> {
+        let mut rows = self.0.lock_recover();
+        if self.closed() {
+            return Err("committed document reader closed".into());
+        }
+        rows.insert(key.into(), Gate::ChainHead);
         drop(rows);
         self.progressed();
         Ok(())
@@ -1496,6 +1517,50 @@ async fn capture_using(
         },
         assembly.revision,
     ))
+}
+/// Ask the workspace, through the broker, for a chain's head (`RecordId::chain_head`): a name for
+/// whichever part of the chain is the newest, which holds nothing of its own and so is neither read
+/// nor followed here. The host sends that part on the part's own route, and the app holds it from
+/// there. Answered with nothing, the chain has no part at all, which the app is told
+/// ([`CollabEvent::RecordUnavailable`]) so that it starts the first.
+pub(super) async fn ask_chain_head(
+    channel: &runtime_collab::ChannelHandle,
+    spec: &RouteSpec,
+    inbound: &InboundBridge,
+) -> Result<(), String> {
+    inbound
+        .state
+        .document_reads
+        .chain_head(&spec.channel_id())?;
+    loop {
+        match channel
+            .committed_document(&Request::Open {
+                known_revision: None,
+            })
+            .await
+        {
+            // The broker's byte budget is held by other reads: asking again shortly asks
+            // for no bytes.
+            Ok(Reply::Busy) => tokio::time::sleep(READ_RECHECK).await,
+            // The workspace has no part of this chain, or nothing here holds a document of
+            // the head at all: the chain starts its first part.
+            Ok(Reply::Absent | Reply::Legacy) => {
+                if !inbound
+                    .send_durable(CollabEvent::RecordUnavailable {
+                        route: spec.clone(),
+                    })
+                    .await
+                {
+                    return Err("committed read event queue closed".into());
+                }
+                return Ok(());
+            }
+            // The newest part, or the host's word about it, is on its way: the part arrives
+            // on its own route, and the chain follows it from there.
+            Ok(_) => return Ok(()),
+            Err(error) => return Err(format!("{}: {error}", crate::ROUTE_JOIN_FAILED)),
+        }
+    }
 }
 /// The route of `key` is served by the app's own channel: it is open for
 /// documents now, and the owner hears so, as it does a committed read's

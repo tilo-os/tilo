@@ -45,12 +45,13 @@
 //! attached view, one this device asked the workspace for — is held from the
 //! next read on.
 //!
-//! Where the store's records come from the workspace's hosts (a page's), the
-//! chain asks them for its head as it opens ([`RecordId::chain_head`]): a
-//! public workspace sends a newcomer no part of it until then, and the head
-//! they send is held like any part that arrives. Until they answered, a
-//! window that holds no part does not know which part is the newest, and
-//! writes nothing ([`Chain::head_arriving`]).
+//! Where the store's records come from the workspace's hosts — a page's, and a
+//! native app's, which asks its session for them — the chain asks them for its
+//! head as it opens ([`RecordId::chain_head`]): a public workspace sends a
+//! newcomer no part of it until then, and the head they send is held like any
+//! part that arrives. Until they answered, a window that holds no part does
+//! not know which part is the newest, and writes nothing
+//! ([`Chain::head_arriving`]).
 
 use std::any::Any;
 use std::cell::{Cell, RefCell};
@@ -313,8 +314,11 @@ impl<P: Chained> ChainState<P> {
             workspace,
         };
         // Asked for as the chain opens, with the window's other records: the
-        // newest part arrives in the same round trip.
-        let _ = state.workspace.store.awaits_chain_head(&state.chain);
+        // newest part arrives in the same round trip. A chain with a part
+        // here already knows its newest one, and asks for nothing.
+        if state.head().is_none() {
+            let _ = state.head_on_its_way();
+        }
         state.look();
         Some(state)
     }
@@ -342,10 +346,32 @@ impl<P: Chained> ChainState<P> {
         self.parts.borrow().keys().next_back().copied()
     }
 
-    /// Whether no part is held here and the workspace's hosts have not yet
-    /// said which is the newest ([`RecordStore::awaits_chain_head`]).
+    /// Whether no part is held here and the workspace has not yet said which
+    /// one is the newest ([`Self::head_on_its_way`]).
     pub(crate) fn head_arriving(&self) -> bool {
-        self.head().is_none() && self.workspace.store.awaits_chain_head(&self.chain)
+        self.head().is_none() && self.head_on_its_way()
+    }
+
+    /// Whether the workspace may still send this chain's newest part: it has
+    /// not said it has no part at all, and opening the chain's head
+    /// ([`RecordId::chain_head`]) found none of it here. That open is what
+    /// asks the store's workspace for the head — a page's hosts, or a native
+    /// app's — and it answers `RecordOpenError::Arriving` until the part
+    /// arrives, or until the workspace answers it has none
+    /// ([`RecordStore::workspace_answered`]).
+    fn head_on_its_way(&self) -> bool {
+        let head = self.chain.chain_head();
+        if self.workspace.store.workspace_answered(&head) {
+            return false;
+        }
+        // A store written at this moment cannot say which part is the newest: the head is
+        // waited for rather than taken as the workspace's word that there is none.
+        matches!(
+            self.workspace
+                .store
+                .try_open_record(&RecordCheckout::new(head, self.kind.clone())),
+            Err(RecordOpenError::Arriving | RecordOpenError::Busy)
+        )
     }
 
     pub(crate) fn revision(&self) -> u64 {
@@ -732,7 +758,7 @@ impl<P: Chained> ChainState<P> {
         // Holding no part, the chain asks for its head, should its store have
         // come to read records through the workspace since it opened.
         if self.parts.borrow().is_empty() {
-            let _ = self.workspace.store.awaits_chain_head(&self.chain);
+            let _ = self.head_on_its_way();
         }
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when

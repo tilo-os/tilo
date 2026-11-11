@@ -20,9 +20,10 @@ use std::sync::Arc;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 
 pub use crate::collab_app_broker::{
-    AudioOutputFuture, AudioOutputServices, AwaitingRecord, CertifiedPersonContext, DocumentBytes,
-    HeldRevision, NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads,
-    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices, RecordRead,
+    AudioOutputFuture, AudioOutputServices, AwaitingRecord, CertifiedPersonContext,
+    ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
+    NativeDocumentReads, NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
+    RecordRead,
 };
 
 /// A workspace's status once it changed ([`WorkspaceMemberships::workspace_status_change`]).

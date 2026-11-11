@@ -174,6 +174,32 @@ pub(super) async fn join_route(
         // agent cannot start deciding against stale local fallback data.
         spawn_action_catalogue_stream(&channel, inbound_tx).await?;
     }
+    // A chain's head names whichever of the chain's parts is the newest and holds nothing of its
+    // own: opening it asks the workspace which part that is, and the part arrives on its own route.
+    // So this route keeps no document, no channel keys and no streams of its own, and the chain's
+    // later parts arrive on theirs.
+    if spec
+        .record
+        .as_deref()
+        .and_then(crate::record::RecordId::parse)
+        .is_some_and(|record| record.is_chain_head())
+    {
+        committed_document::ask_chain_head(&channel, spec, inbound_tx).await?;
+        tilo_startup_metrics::startup_mark("collab-join-chain-head");
+        return Ok(SdkRoute {
+            _checks: None,
+            _moderation: None,
+            _attribution: None,
+            spec: spec.clone(),
+            channel,
+            presence: None,
+            workspace_controls: std::collections::HashMap::new(),
+            committed: false,
+            encryption: std::sync::Arc::new(std::sync::Mutex::new(
+                super::super::route_keys::RouteKeys::plain(),
+            )),
+        });
+    }
     let committed = committed_document::install(
         &channel,
         spec,
