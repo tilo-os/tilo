@@ -18,15 +18,20 @@
 #
 # What a caller passes (each has the default shown):
 #
-#   TILO_SH_STATE=/var/lib/tilo-sh      the stack's state directory
-#   TILO_SH_IMAGE_VM_HOST               the vm-host image, loaded in podman
-#                                       (the image-vm-host check's archive)
+#   TILO_SH_STATE=/var/lib/tilo-sh      this host's own state directory
+#   TILO_SH_IMAGE_VM_HOST               the vm-host image: its OCI archive, or
+#                                       a reference podman already holds
 #   TILO_SH_HOSTED_GUEST=<dir>          the image-hosted-guest check's outputs:
 #                                       an image.oci.tar with the digest beside
 #                                       it
 #   TILO_SH_TILO_ENROLL                 the tilo-enroll this host's member
 #                                       device is made with, as a release
 #                                       ships it (default: on PATH)
+#   TILO_SH_RELAY_SECRETS=<state>/secrets
+#                                       where the relay's secrets are on this
+#                                       machine: the hosts' member devices and
+#                                       the plans file are written there, for
+#                                       the relay to read
 #   TILO_SH_RELAY_ROOT=<state>/secrets/room-root-lounge
 #                                       the relay's owner root, 64 hex
 #                                       characters: what certifies the member
@@ -41,7 +46,9 @@ set -euo pipefail
 
 state=${TILO_SH_STATE:-/var/lib/tilo-sh}
 vm=$state/vm
-secrets=$state/secrets
+# The relay's secrets: where it reads the member devices and the plans file
+# from, which may be a stack's directory rather than this host's.
+secrets=${TILO_SH_RELAY_SECRETS:-$state/secrets}
 pod=vm-host-0
 placer_container=tilo-sh-vm-placer
 host_container=tilo-sh-$pod
@@ -249,7 +256,11 @@ up() {
   [ -n "${TILO_SH_IMAGE_VM_HOST:-}" ] || fail 'TILO_SH_IMAGE_VM_HOST: the vm-host image is not named'
   [ -n "${TILO_SH_HOSTED_GUEST:-}" ] || fail 'TILO_SH_HOSTED_GUEST: the guest image is not named'
   command -v "$enroll" >/dev/null || fail "$enroll: not found: name the tilo-enroll a release ships (TILO_SH_TILO_ENROLL)"
-  local relay relay_key relay_endpoint device loop guest_ref
+  local relay relay_key relay_endpoint device loop guest_ref image=$TILO_SH_IMAGE_VM_HOST
+  if [ -f "$image" ]; then
+    image=$(podman load -q -i "$image" | sed -n 's/^Loaded image[s]*: *//p' | tail -n 1)
+    [ -n "$image" ] || fail "$TILO_SH_IMAGE_VM_HOST: podman loaded no image from it"
+  fi
   relay=$(relay_device)
   relay_key=$(printf '%s' "$relay" | json_field device_public_key)
   relay_endpoint=$(printf '%s' "$relay" | json_field relay_service_node_id)
@@ -272,7 +283,7 @@ up() {
     --user 10001:10001 --read-only --tmpfs /tmp \
     --security-opt no-new-privileges --cap-drop ALL \
     -v "$vm/placer:/var/lib/tilo-placer" \
-    --entrypoint tilo-legacy "$TILO_SH_IMAGE_VM_HOST" \
+    --entrypoint tilo-legacy "$image" \
     hosted place --listen "127.0.0.1:$place_port" \
     --record /var/lib/tilo-placer/placements.json \
     --hosts "$pod=127.0.0.1:$status_port" >/dev/null
@@ -298,7 +309,7 @@ up() {
     -e TILO_TAKE_WORK_RELAY="$relay_iroh" \
     -e TILO_TAKE_WORK_DEVICE="$relay_key" \
     -e TILO_TAKE_WORK_ENDPOINT="$relay_endpoint" \
-    "$TILO_SH_IMAGE_VM_HOST" >/dev/null
+    "$image" >/dev/null
   say "$pod and the placer are up: workspaces' VMs run here, joining the relay at $relay_iroh"
 }
 

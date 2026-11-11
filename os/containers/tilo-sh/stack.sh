@@ -46,9 +46,11 @@ What runs, all on 127.0.0.1 (ports from TILO_SH_PORT_BASE, default 24100):
             http://localhost:BASE+10 (mcp.tilo.sh)
   web       the web entry image: the site, /sign-in, /install.sh, /releases,
             http://localhost:BASE+20 (tilo.sh)
-  vm-host   the VM host image (Firecracker): skipped, with the reason. It
-            needs root and /dev/kvm, which rootless podman cannot give it,
-            and the stack has no root path for it yet
+  vm-host   the VM host image (Firecracker): a workspace's Linux programs and
+            its Browser run in its VM here, and the relay places it on this
+            host. It is privileged, so it runs as root over its own state
+            (TILO_SH_VM_HOST_STATE, /var/lib/tilo-sh-local-vm) through sudo;
+            skipped, with the reason, where /dev/kvm or root is missing
   discord   with --discord, the fake Discord (crates/dev/fake-discord)
 
 Images: TILO_SH_IMAGE_LOUNGE, TILO_SH_IMAGE_DOOR and TILO_SH_IMAGE_WEB name an
@@ -196,8 +198,18 @@ relay_env() {
       "TILO_ROOMS_BOTS=/usr/local/share/tilo/bots/discord-bridge.json guild=1000 server=Tilo mirror-channels=yes"
     )
   fi
+  # A workspace's programs and its Browser run in its VM on this stack's own
+  # VM host, when it is up: where to place a workspace, which device holds it,
+  # and the ledger its page actions are counted in.
+  if vm_host_running; then
+    local line
+    while IFS= read -r line; do env+=("$line"); done < <(vm_host env)
+  fi
   printf '%s\n' "${env[@]}"
 }
+
+# Whether this stack's VM host is up.
+vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
 
 # The front door's environment: apps/tilo-front-door/deployment.yaml.
 door_env() {
@@ -275,12 +287,51 @@ start_releases() {
   echo $! > "$state/releases.pid"
 }
 
+# The VM host's own state, which is root's (a raw block device it formats,
+# its jails and its VMs), apart from this stack's.
+vm_state=${TILO_SH_VM_HOST_STATE:-/var/lib/tilo-sh-local-vm}
+
 # Whether the VM host can run here, and if not why: it is privileged in
 # production (KVM, its own cgroup tree, a raw block device it formats, a jail
-# helper given capabilities), which rootless podman cannot give it.
+# helper given capabilities), which rootless podman cannot give it, so it runs
+# as root over its own state, through sudo.
 vm_host_blocker() {
   [[ -e /dev/kvm ]] || { echo 'this machine has no /dev/kvm'; return; }
-  echo 'it needs root (a raw block device for its state, cgroup delegation and setcap for its jail helper), which rootless podman cannot give it; shell commands and hosted browsers need it, workspaces do not'
+  if [[ $EUID != 0 ]] && ! sudo -n true 2>/dev/null; then
+    echo 'it needs root (a raw block device for its state, cgroup delegation and setcap for its jail helper) and sudo here asks for a password; run: sudo -E env TILO_SH_STATE=$vm_state bash os/containers/tilo-sh/vm-host.sh up'
+    return
+  fi
+  command -v t >/dev/null || { [[ -n ${TILO_SH_IMAGE_VM_HOST:-} && -n ${TILO_SH_HOSTED_GUEST:-} ]] || { echo 't is not here to build its images, and TILO_SH_IMAGE_VM_HOST and TILO_SH_HOSTED_GUEST name none'; return; }; }
+}
+
+# vm-host RUN…: os/containers/tilo-sh/vm-host.sh, as root when this stack is
+# not, over the VM host's own state; the images t built for this checkout, and
+# the relay this stack runs (its device, its root, the secrets it mounts).
+vm_host() {
+  local sudo=()
+  [[ $EUID == 0 ]] || sudo=(sudo -n)
+  "${sudo[@]}" env \
+    TILO_SH_STATE="$vm_state" \
+    "TILO_SH_IMAGE_VM_HOST=$state/images/$commit/image-vm-host/image.oci.tar" \
+    "TILO_SH_HOSTED_GUEST=$state/images/$commit/image-hosted-guest" \
+    "TILO_SH_TILO_ENROLL=${enroll:-}" \
+    "TILO_SH_RELAY_SECRETS=$state/secrets" \
+    "TILO_SH_RELAY_ROOT=$state/secrets/room-root-lounge" \
+    "TILO_SH_RELAY_STATE=$state/relay/lounge/relay" \
+    "TILO_SH_RELAY_IROH=127.0.0.1:$iroh_port" \
+    bash "$here/vm-host.sh" "$@"
+}
+
+# tilo-enroll, which makes the VM host's member device: this checkout's.
+find_enroll() {
+  if [[ -n ${TILO_SH_TILO_ENROLL:-} ]]; then printf '%s' "$TILO_SH_TILO_ENROLL"; return; fi
+  local candidate=${CARGO_TARGET_DIR:-$repo/target}/debug/tilo-enroll
+  if [[ ! -x $candidate ]]; then
+    say 'building tilo-enroll (rcargo build -p tilo-relay --bin tilo-enroll)'
+    (cd "$repo" && rcargo build -p tilo-relay --bin tilo-enroll >&2) \
+      || die 'could not build tilo-enroll; or set TILO_SH_TILO_ENROLL'
+  fi
+  printf '%s' "$candidate"
 }
 
 # The tilo command to drive the stack with: TILO_SH_TILO_BIN, else this
@@ -381,6 +432,30 @@ up() {
     printf 'local-fake-discord-secret' > "$state/secrets/discord-client-secret"
     chmod 0400 "$state/secrets"/*
   fi
+  # The relay's own device, which its VM host's member takes the workspaces'
+  # runs from: made here, before either starts, so the relay starts once with
+  # the host already placed.
+  if [[ ! -s $state/relay/lounge/relay/host-device.key ]]; then
+    mkdir -p "$state/relay/lounge/relay"
+    local seed
+    seed=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+    (umask 077 && printf "$(printf '%s' "$seed" | sed 's/../\\x&/g')" > "$state/relay/lounge/relay/host-device.key")
+  fi
+
+  # The VM host, when this machine can run it and the relay root is there: it
+  # is root's, and it starts before the relay so the relay reads where to
+  # place a workspace from the start.
+  local blocker
+  blocker=$(vm_host_blocker)
+  if [[ -z $blocker ]]; then
+    image VM_HOST image-vm-host image.oci.tar >/dev/null
+    # The guest is read from the outputs `t outputs` left, not from podman:
+    # the host unpacks it onto its own state disk.
+    image HOSTED_GUEST image-hosted-guest image.oci.tar >/dev/null
+    enroll=$(find_enroll)  # read by relay_env, so the stack's own is used
+    say 'starting the VM host (Firecracker, as root)'
+    vm_host up || die 'the VM host did not start; sudo -E bash '"$here"'/vm-host.sh status says why'
+  fi
 
   if [[ -n $discord ]]; then
     start_discord
@@ -443,9 +518,9 @@ up() {
     "${web_args[@]}" "$web"
   wait_for 'web (its health check)' "$site_origin/healthz" 60
 
-  local blocker
-  blocker=$(vm_host_blocker)
-  say "vm-host skipped: $blocker"
+  if [[ -n $blocker ]]; then
+    say "vm-host skipped: $blocker"
+  fi
 
   printf '%s\n' "$((SECONDS - began))" > "$state/bring-up-seconds"
   if [[ -n $seed ]]; then
@@ -485,6 +560,9 @@ down() {
   local wipe=
   [[ ${1:-} == --wipe ]] && wipe=1
   local name
+  local blocker
+  blocker=$(vm_host_blocker)
+  [[ -n $blocker ]] || vm_host down || say 'the VM host did not stop; sudo -E bash '"$here"'/vm-host.sh down'
   for name in web door relay tls; do
     podman_ rm -f -t 10 "$prefix-$name" >/dev/null 2>&1 || true
   done
@@ -519,7 +597,11 @@ status() {
     elif running "$name"; then answer=starting; else answer=down; fi
     printf '%-9s %-8s %s\n' "$name" "$answer" "$shown"
   done
-  printf '%-9s %-8s %s\n' vm-host skipped "$(vm_host_blocker)"
+  if [[ -z $(vm_host_blocker) ]]; then
+    printf '%-9s %-8s %s\n' vm-host up "workspaces' VMs; vm-host.sh status says which"
+  else
+    printf '%-9s %-8s %s\n' vm-host skipped "$(vm_host_blocker)"
+  fi
   if [[ -f $state/discord.pid ]] && kill -0 "$(cat "$state/discord.pid")" 2>/dev/null; then
     printf '%-9s %-8s %s\n' discord up "http://127.0.0.1:$discord_rest_port (control http://127.0.0.1:$discord_control_port)"
   fi
