@@ -34,6 +34,8 @@ mod answer;
 mod find;
 #[path = "mcp_agent_link.rs"]
 mod link;
+#[path = "mcp_agent_record.rs"]
+mod record;
 #[path = "mcp_render.rs"]
 mod render;
 #[path = "mcp_tilo.rs"]
@@ -114,8 +116,8 @@ fn tools() -> Vec<Value> {
         ),
         (
             "tilo_read",
-            "Read a resource as compact text. `notes/Todo` answers the note as markdown, each block ending in its id (`^c01e`; a document's `{#c01e}`); block actions take the id alone: `c01e`. A long read ends with a cursor line; pass it back as cursor for the rest. A typed read of an app alone (`notes`) answers what the app publishes: its surface.",
-            json!({"path":string,"cursor":string,"max_chars":integer}),
+            "Read a resource as compact text. `notes/Todo`: markdown, each block ending in its id (`^c01e`, `{#c01e}`) that block actions take alone. A long read ends with a cursor to pass back. `notes` alone: what the app publishes. `record:<app>:<id>`: the record as JSON and revision; after: a revision to wait past; parts: join its chain",
+            json!({"path":string,"cursor":string,"max_chars":integer,"parts":{"type":"boolean"},"after":string}),
             json!(["path"]),
             read.clone(),
         ),
@@ -194,6 +196,11 @@ struct ReadArgs {
     path: String,
     cursor: Option<String>,
     max_chars: Option<usize>,
+    /// A record read (`record:<app>:<id>`) joins the record's chain of parts.
+    #[serde(default)]
+    parts: bool,
+    /// A record read waits for the next write past this revision.
+    after: Option<String>,
 }
 
 #[derive(Deserialize, Clone)]
@@ -1906,7 +1913,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
                 Err(error) => Err(error),
             },
             "tilo_read" => match parse(args) {
-                Ok(args) => self.agent_read(args, structured).await,
+                Ok(args) => Box::pin(self.agent_read(args, structured)).await,
                 Err(error) => Err(error),
             },
             "tilo_do" => match parse(args) {
@@ -2203,6 +2210,10 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
     }
 
     async fn agent_read(&self, args: ReadArgs, structured: bool) -> Result<Reply, String> {
+        if let Some((app, record)) = tilo_actions::remote::record_parts(&args.path) {
+            // Boxed: the wait it holds is no part of every agent call's future.
+            return Box::pin(self.agent_record((app, record), args.parts, args.after)).await;
+        }
         let parsed = parse_path(&args.path)?;
         if parsed.action.is_some() {
             return Err("tilo_read reads a resource; run an action with tilo_do".into());

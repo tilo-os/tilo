@@ -974,14 +974,24 @@ fn asked_here(
 /// one the workspace has none of, `null` for one still arriving. Each record is watched before
 /// it is read, so a reader holding a copy is woken by the next write to any of them.
 fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
-    use tilo_actions::remote::{RecordAddress, RecordCopy, RecordWake};
+    use tilo_actions::remote::{RecordAddress, RecordAsk, RecordCopy};
     let (Some(app), Some(records)) = (
         request.get("app").and_then(Json::as_str),
         request.get("records").and_then(Json::as_array),
     ) else {
         return refusal("parse_error", "`record_read` takes `app` and `records`");
     };
-    let records: Vec<&str> = records.iter().filter_map(Json::as_str).collect();
+    let asks: Vec<RecordAsk> = records
+        .iter()
+        .filter_map(Json::as_str)
+        .map(|record| RecordAsk {
+            address: RecordAddress {
+                app: app.to_owned(),
+                record: record.to_owned(),
+            },
+            joined: false,
+        })
+        .collect();
     let workspace = request
         .get("workspace")
         .and_then(Json::as_str)
@@ -995,37 +1005,22 @@ fn record_read(request: &Json, actions: &Actions, ctx: &Context) -> Json {
         );
     };
     let caller = actions.caller(ctx).in_workspace(workspace);
-    loop {
-        let (wake, woken) = RecordWake::new();
-        let mut revision = blake3::Hasher::new();
-        let mut copies = serde_json::Map::new();
-        for record in &records {
-            let address = RecordAddress {
-                app: app.to_owned(),
-                record: (*record).to_owned(),
-            };
-            let read = reads
-                .watch(&caller, &address, &wake)
-                .and_then(|()| reads.read(&caller, &address));
-            // A record still arriving is not held yet: its write wakes the reader.
-            let copy = match read {
-                Ok(RecordCopy::Document(bytes)) => Some(bytes),
-                Ok(RecordCopy::Absent) => Some(Vec::new()),
-                Err(ActionHostError::Unavailable { .. }) => None,
-                Err(error) => return action_refusal(&error),
-            };
-            for part in [record.as_bytes(), copy.as_deref().unwrap_or(b"unavailable")] {
-                revision.update(&(part.len() as u64).to_le_bytes());
-                revision.update(part);
-            }
-            copies.insert((*record).to_owned(), json!(copy.map(hex::encode)));
+    match tilo_actions::remote::read_records(reads.as_ref(), &caller, &asks, after, deadline) {
+        Ok(readings) => {
+            let copies: serde_json::Map<String, Json> = readings
+                .records
+                .into_iter()
+                .map(|(record, copy)| {
+                    let hex = copy.map(|copy| match copy {
+                        RecordCopy::Document(bytes) => hex::encode(bytes),
+                        RecordCopy::Absent => String::new(),
+                    });
+                    (record, json!(hex))
+                })
+                .collect();
+            json!({"answer": {"revision": readings.revision, "records": copies}})
         }
-        let revision = revision.finalize().to_hex().to_string();
-        let now = Instant::now();
-        if after != Some(revision.as_str()) || now >= deadline {
-            return json!({"answer": {"revision": revision, "records": copies}});
-        }
-        let _ = woken.wait_timeout(deadline.saturating_duration_since(now));
+        Err(error) => action_refusal(&error),
     }
 }
 

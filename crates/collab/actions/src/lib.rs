@@ -144,6 +144,7 @@ pub mod outcome;
 pub mod params;
 pub mod protocol;
 pub mod published;
+pub mod record_sync;
 pub mod registry;
 pub mod remote;
 pub mod resource;

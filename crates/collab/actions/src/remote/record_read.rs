@@ -70,6 +70,109 @@ pub trait RecordReads: Send + Sync {
     }
 }
 
+/// One record a reader asks for: alone, or `joined`, the chain of parts whose base it is
+/// ([`crate::record_sync`]): part `0`, `1`, … up to the first the workspace holds none of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordAsk {
+    pub address: RecordAddress,
+    pub joined: bool,
+}
+
+/// What a read of several records answered: each record read (a joined one as its parts), its
+/// copy or `None` while it is still arriving, and the revision of them all, which changes with
+/// any write to any of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordReadings {
+    pub revision: String,
+    pub records: Vec<(String, Option<RecordCopy>)>,
+}
+
+/// Read `asks` for `caller` once they differ from the revision `after` or `deadline` passed:
+/// each record is watched before it is read, so the next write to any of them wakes the wait.
+///
+/// # Errors
+///
+/// As [`RecordReads::read`], but a record still arriving answers `None` rather than failing.
+pub fn read_records(
+    reads: &dyn RecordReads,
+    caller: &Caller,
+    asks: &[RecordAsk],
+    after: Option<&str>,
+    deadline: tilo_clock::Instant,
+) -> Result<RecordReadings, ActionHostError> {
+    loop {
+        let (wake, woken) = RecordWake::new();
+        let mut revision = blake3::Hasher::new();
+        let mut records = Vec::new();
+        for ask in asks {
+            let mut part = 0;
+            loop {
+                let record = if ask.joined {
+                    crate::record_sync::record_part(&ask.address.record, part)
+                } else {
+                    ask.address.record.clone()
+                };
+                let address = RecordAddress {
+                    app: ask.address.app.clone(),
+                    record,
+                };
+                let copy = match reads
+                    .watch(caller, &address, &wake)
+                    .and_then(|()| reads.read(caller, &address))
+                {
+                    Ok(copy) => Some(copy),
+                    // A record still arriving is not held yet: its write wakes the reader.
+                    Err(ActionHostError::Unavailable { .. }) => None,
+                    Err(error) => return Err(error),
+                };
+                let held: &[u8] = match &copy {
+                    Some(RecordCopy::Document(bytes)) => bytes,
+                    Some(RecordCopy::Absent) => b"",
+                    None => b"unavailable",
+                };
+                for bytes in [address.record.as_bytes(), held] {
+                    revision.update(&(bytes.len() as u64).to_le_bytes());
+                    revision.update(bytes);
+                }
+                let last = !ask.joined || !matches!(copy, Some(RecordCopy::Document(_)));
+                // The part after a chain's last is watched, not answered: its first write wakes.
+                if !(ask.joined && part > 0 && matches!(copy, Some(RecordCopy::Absent))) {
+                    records.push((address.record, copy));
+                }
+                if last {
+                    break;
+                }
+                part = part.saturating_add(1);
+            }
+        }
+        let revision = revision.finalize().to_hex().to_string();
+        let now = tilo_clock::Instant::now();
+        if after != Some(revision.as_str()) || now >= deadline {
+            return Ok(RecordReadings { revision, records });
+        }
+        let _ = woken.wait_timeout(deadline.saturating_duration_since(now));
+    }
+}
+
+impl RecordCopy {
+    /// The record as any reader reads it, whatever app keeps it: its maps as objects, lists as
+    /// arrays, text as strings, counters and scalars as numbers, strings and booleans, bytes as
+    /// their count; `null` for a record the workspace holds none of.
+    ///
+    /// # Errors
+    ///
+    /// When the copy is no Automerge document.
+    pub fn readable(&self) -> Result<serde_json::Value, String> {
+        match self {
+            Self::Absent => Ok(serde_json::Value::Null),
+            Self::Document(bytes) => {
+                let doc = automerge::Automerge::load(bytes).map_err(|error| error.to_string())?;
+                tilo_automerge::json::read_document(&doc).map_err(|error| error.to_string())
+            }
+        }
+    }
+}
+
 /// Woken once, by the first write to any record it watches ([`RecordReads::watch`]).
 #[derive(Clone)]
 pub struct RecordWake(std::sync::Arc<std::sync::Mutex<Option<super::Completer<()>>>>);
@@ -132,4 +235,135 @@ pub trait RecordChanges: Send + Sync {
         caller: &Caller,
         change: &RecordChange,
     ) -> Result<serde_json::Value, ActionHostError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use automerge::transaction::Transactable as _;
+    use automerge::{AutoCommit, ObjType, ROOT};
+    use tilo_lock::MutexRecover as _;
+
+    use super::*;
+
+    /// Records held as documents, by id; any other is absent.
+    #[derive(Default)]
+    struct Held(std::sync::Mutex<HashMap<String, Vec<u8>>>);
+
+    impl RecordReads for Held {
+        fn read(&self, _: &Caller, address: &RecordAddress) -> Result<RecordCopy, ActionHostError> {
+            Ok(self
+                .0
+                .lock_recover()
+                .get(&address.record)
+                .map_or(RecordCopy::Absent, |bytes| {
+                    RecordCopy::Document(bytes.clone())
+                }))
+        }
+
+        fn watch(
+            &self,
+            _: &Caller,
+            _: &RecordAddress,
+            _: &RecordWake,
+        ) -> Result<(), ActionHostError> {
+            Ok(())
+        }
+    }
+
+    fn message(text: &str) -> Vec<u8> {
+        let mut doc = AutoCommit::new();
+        let messages = doc.put_object(ROOT, "messages", ObjType::List).unwrap();
+        let first = doc.insert_object(&messages, 0, ObjType::Map).unwrap();
+        let body = doc.put_object(&first, "text", ObjType::Text).unwrap();
+        doc.splice_text(&body, 0, 0, text).unwrap();
+        doc.put(&first, "likes", automerge::ScalarValue::counter(2))
+            .unwrap();
+        doc.put(&first, "avatar", vec![1u8, 2, 3]).unwrap();
+        doc.save()
+    }
+
+    fn ask(record: &str, joined: bool) -> RecordAsk {
+        RecordAsk {
+            address: RecordAddress {
+                app: "so.tilo.chat".into(),
+                record: record.into(),
+            },
+            joined,
+        }
+    }
+
+    fn values(readings: &RecordReadings) -> Vec<(String, serde_json::Value)> {
+        readings
+            .records
+            .iter()
+            .map(|(record, copy)| (record.clone(), copy.as_ref().unwrap().readable().unwrap()))
+            .collect()
+    }
+
+    #[test]
+    fn a_record_reads_as_plain_data_with_its_text_counters_and_bytes() {
+        let held = Held::default();
+        held.0
+            .lock_recover()
+            .insert("note".into(), message("hello"));
+        let caller = Caller::local_person("me");
+        let now = tilo_clock::Instant::now();
+        let read = read_records(
+            &held,
+            &caller,
+            &[ask("note", false), ask("gone", false)],
+            None,
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            values(&read),
+            [
+                (
+                    "note".to_owned(),
+                    serde_json::json!({"messages": [
+                        {"text": "hello", "likes": 2, "avatar": {"bytes": 3}}
+                    ]})
+                ),
+                ("gone".to_owned(), serde_json::Value::Null),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_chain_reads_joined_up_to_its_last_part_and_a_new_part_changes_its_revision() {
+        let held = Held::default();
+        let part = |index| crate::record_sync::record_part("chain", index);
+        held.0.lock_recover().insert(part(0), message("first"));
+        held.0.lock_recover().insert(part(1), message("second"));
+        let caller = Caller::local_person("me");
+        let now = tilo_clock::Instant::now();
+        let read = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
+        let texts: Vec<_> = values(&read)
+            .into_iter()
+            .map(|(record, value)| (record, value["messages"][0]["text"].clone()))
+            .collect();
+        assert_eq!(
+            texts,
+            [
+                (part(0), serde_json::json!("first")),
+                (part(1), serde_json::json!("second")),
+            ]
+        );
+        let same = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
+        assert_eq!(same.revision, read.revision);
+        held.0.lock_recover().insert(part(2), message("third"));
+        let grown = read_records(
+            &held,
+            &caller,
+            &[ask("chain", true)],
+            Some(&read.revision),
+            now,
+        )
+        .unwrap();
+        assert_ne!(grown.revision, read.revision);
+        assert_eq!(grown.records.len(), 3);
+    }
 }
