@@ -75,8 +75,6 @@ host-fs = { path = "../../crates/system/host-fs" }
 # Reading a PDF's text, through the portable engine. Document formats are
 # Writer's: it links the codecs and converts files.
 tilo-pdf = { path = "../../crates/platform/tilo-pdf" }
-# Used by `--shots` demo seeds to create sample images and an EPUB cover.
-image = { workspace = true, features = ["png", "jpeg"] }
 # Archives: browsing into, extracting and packing them. A thin release build
 # loads it from libtilo_archive_engine.so (`runtime-engine`).
 tilo-archive = { path = "../../crates/platform/tilo-archive" }
@@ -105,6 +103,8 @@ taffy.workspace = true
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
+# Tests build their image fixtures.
+image = { workspace = true, features = ["png", "jpeg"] }
 # Tests see this package's samples. The key must not be the package name:
 # a dependency named `file-explorer` claims `--features file-explorer/thin` in the
 # collection build, and the app then links the whole runtime statically.
