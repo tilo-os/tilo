@@ -916,6 +916,69 @@ fn a_configured_host_is_read_as_an_id_or_an_address() {
     assert!(host_addr("not an address").is_none());
 }
 
+/// The relay the tests' settings name, as the document a session reads it from: `None` leaves the
+/// setting unset.
+fn with_relay(stored: Option<&str>, check: impl FnOnce()) {
+    let mut document = serde_json::Map::new();
+    if let Some(stored) = stored {
+        document.insert("network".into(), serde_json::json!({ "relay": stored }));
+    }
+    let settings = settings_store::HostDocument::new(document, |_| Ok(()));
+    let _scoped = settings_store::scoped_source(Some(std::sync::Arc::new(settings)));
+    check();
+}
+
+fn held_back(relays: &iroh::RelayMap) -> Vec<String> {
+    relays
+        .urls::<Vec<_>>()
+        .iter()
+        .map(ToString::to_string)
+        .collect()
+}
+
+/// This device's endpoint relays through what its person chose: number 0's relays unless they
+/// named their own, or none.
+#[test]
+fn this_devices_endpoint_relays_as_its_person_chose() {
+    let (cert, key) = certified(1, 2, "here");
+    let identity = HostIdentity::kept(cert, key);
+
+    with_relay(None, || {
+        let default = endpoint_for(Some(&identity))
+            .expect("an endpoint to bind")
+            .1;
+        assert_eq!(
+            held_back(&default),
+            held_back(&iroh::endpoint::default_relay_mode().relay_map()),
+            "unset is number 0's relays, as before"
+        );
+        assert!(!default.is_empty(), "a device relays by default");
+    });
+
+    with_relay(Some("https://relay.example.com."), || {
+        let own = endpoint_for(Some(&identity))
+            .expect("an endpoint to bind")
+            .1;
+        assert_eq!(held_back(&own), ["https://relay.example.com./"]);
+    });
+
+    with_relay(Some("none"), || {
+        let none = endpoint_for(Some(&identity))
+            .expect("an endpoint to bind")
+            .1;
+        assert!(
+            none.is_empty(),
+            "no relay is held back for a device that relays through none"
+        );
+    });
+
+    let nobody = endpoint_for(None).expect("a loopback endpoint to bind").1;
+    assert!(
+        nobody.is_empty(),
+        "a session that takes part as nobody relays nowhere"
+    );
+}
+
 #[test]
 fn a_host_is_dialled_before_the_workspaces_it_carries() {
     let host = device(7);

@@ -621,7 +621,7 @@ async fn open_link(helper: &Path, link: &ClientLink) -> Result<TunDevice, Proble
 static RELAYS: Mutex<Vec<IpAddr>> = Mutex::new(Vec::new());
 
 async fn relay_addresses() -> Vec<IpAddr> {
-    let urls: Vec<iroh::RelayUrl> = iroh::endpoint::default_relay_mode().relay_map().urls();
+    let urls: Vec<iroh::RelayUrl> = tilo_endpoint_reachability::relays().relays.urls();
     let mut found = tokio::time::timeout(RELAY_LOOKUP, async move {
         let mut found = Vec::new();
         for url in urls {

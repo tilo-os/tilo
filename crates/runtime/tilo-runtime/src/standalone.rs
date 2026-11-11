@@ -1321,13 +1321,22 @@ fn joined_workspaces(
 
 /// This device's endpoint, keyed by its device key: bound to `listen` on
 /// every interface when a host names the port it is reached at, and to
-/// whatever port the machine gives it otherwise.
+/// whatever port the machine gives it otherwise. Its relays are the person's
+/// ([`tilo_endpoint_reachability::relays`]): a runtime on a machine of theirs
+/// relays and resolves as their other devices do.
 fn listen_endpoint(
     key: &ed25519_dalek::SigningKey,
     listen: Option<u16>,
 ) -> io::Result<iroh::Endpoint> {
-    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
+    let relays = tilo_endpoint_reachability::relays();
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .relay_mode(iroh::RelayMode::Custom(relays.relays))
         .secret_key(iroh::SecretKey::from_bytes(&key.to_bytes()));
+    if relays.n0_dns {
+        builder = builder
+            .address_lookup(tilo_endpoint_reachability::collaborating())
+            .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
+    }
     if let Some(port) = listen {
         // Every interface, on the port a relay reaches this member at: IPv4,
         // and IPv6 where the machine has it.

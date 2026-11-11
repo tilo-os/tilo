@@ -1773,8 +1773,8 @@ pub(crate) fn fabric_checkpoint(state: &std::path::Path, device: &DeviceId) -> s
 }
 
 /// The endpoint the peer actor binds, and the relays held back from it until something needs this
-/// device dialable: number 0's for a device with an identity, none for a session that takes part as
-/// nobody and stays on this machine's loopback.
+/// device dialable: the person's choice ([`tilo_endpoint_reachability::relays`]) for a device with
+/// an identity, none for a session that takes part as nobody and stays on this machine's loopback.
 #[cfg(target_os = "linux")]
 fn endpoint_for(
     identity: Option<&HostIdentity>,
@@ -1788,19 +1788,24 @@ fn endpoint_for(
         return Ok((builder, iroh::RelayMap::empty()));
     };
     let key = iroh::SecretKey::from_bytes(&identity.signing_key()?.to_bytes());
-    // What `presets::N0` builds, with its publisher behind number 0's directory gate and its public
-    // relays held back ([`tilo_endpoint_reachability`]): binding with an empty relay map keeps net
-    // report, address discovery and port mapping off the network until a workspace this session
-    // shows has someone else in it. A peer's key also resolves on the local network
+    // The relays are the person's ([`tilo_endpoint_reachability::relays`]) and held back
+    // ([`tilo_endpoint_reachability`]): binding with an empty relay map keeps net report, address
+    // discovery and port mapping off the network until a workspace this session shows has someone
+    // else in it. A peer's key also resolves on the local network
     // ([`tilo_endpoint_reachability::lan`]), so two of the person's devices that share one find
-    // each other while their relays rest.
-    let builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
+    // each other while their relays rest, and with their own relay (or none) that is what finds
+    // them.
+    let relays = tilo_endpoint_reachability::relays();
+    let mut builder = iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
         .secret_key(key)
-        .address_lookup(tilo_endpoint_reachability::collaborating())
         .address_lookup(tilo_endpoint_reachability::lan())
-        .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns())
         .relay_mode(iroh::RelayMode::Custom(iroh::RelayMap::empty()));
-    Ok((builder, iroh::endpoint::default_relay_mode().relay_map()))
+    if relays.n0_dns {
+        builder = builder
+            .address_lookup(tilo_endpoint_reachability::collaborating())
+            .address_lookup(iroh::address_lookup::DnsAddressLookup::n0_dns());
+    }
+    Ok((builder, relays.relays))
 }
 
 /// Where an admitted peer's app document goes so this device's apps see it as they see this
