@@ -696,7 +696,9 @@ const verdict = answer => answer.failed ? 'failed' : /^pending\b/i.test(answer.t
  * until it says how it went, as the answer tells it to. */
 async function settled(agent, answer) {
   const deadline = Date.now() + 120000;
-  while (verdict(answer) === 'pending' && Date.now() < deadline) {
+  // The host marks a pending answer an error, as it is no outcome yet: its words say pending.
+  const pending = said => /^pending \S+:/i.test(said.text);
+  while (pending(answer) && Date.now() < deadline) {
     const id = (answer.text.match(/^pending (\S+):/i) ?? [])[1];
     if (!id) break;
     await sleep(1000);
@@ -1724,10 +1726,12 @@ try {
           await press(tab, /^open card$/i, {what: "the agent's card"});
         };
         await openCard();
-        const card = await until(async () => {
+        // Console opens the card in a window of its own: on a page drawing a frame every few
+        // seconds, that is several frames, so the wait is counted in frames, not seconds.
+        const card = await untilDrawn(tab, async () => {
           const said = cardSays(await semantics(tab));
           return listsRun(said) ? said : undefined;
-        }, 20000, 500);
+        }, 20000);
         const cardNow = cardSays(await semantics(tab));
         check(`${combo}: the agent's card lists its run`, Boolean(card),
           card ? card.name : cardNow ? `the card says "${cardNow.name}"` : `no card: ${names(await semantics(tab))}`);
