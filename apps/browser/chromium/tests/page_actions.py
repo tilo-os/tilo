@@ -729,6 +729,42 @@ LAYOUT = b"""<!doctype html><title>The input element</title>
 <aside id="sidebar"><a href="/other">Another element</a></aside></div>
 <footer><p>About this site</p></footer>"""
 
+# An article whose code examples are components, as a documentation site
+# builds them: each keeps its code in a property and draws it, with a button
+# to copy it, in a shadow tree of its own.
+COMPONENT_CODE = 'input:invalid {\n  border: 2px dashed red;\n}'
+COMPONENT_ARTICLE = f'''<!doctype html><title>Styling inputs</title>
+<nav><a href="/pricing">Pricing</a></nav>
+<main><h1>Styling inputs</h1>
+<p>{PARAGRAPH}</p><p>{PARAGRAPH}</p>
+<code-example></code-example>
+<p>{PARAGRAPH}</p>
+<code-example hidden></code-example>
+</main>
+<script>
+customElements.define('code-example', class extends HTMLElement {{
+  connectedCallback() {{
+    if (this.shadowRoot) return;
+    this.attachShadow({{mode: 'open'}});
+    this.render();
+  }}
+  set code(text) {{
+    this.text = text;
+    if (this.shadowRoot) this.render();
+  }}
+  render() {{
+    this.shadowRoot.innerHTML = `<style>.copied {{ display: none }}</style>
+      <div class="example-header"><span class="language-name">${{this.text ? 'css' : ''}}</span>
+        <button type="button"></button><span class="copied">Copied to the clipboard</span></div>
+      <pre><code></code></pre>`;
+    this.shadowRoot.querySelector('code').textContent = this.text || '';
+  }}
+}});
+const [shown, unseen] = document.querySelectorAll('code-example');
+shown.code = {json.dumps(COMPONENT_CODE)};
+unseen.code = 'never.shown();';
+</script>'''.encode()
+
 # A page whose mark-up leaves more text nodes than a read looks at elements:
 # the spaces between a long page's elements, here set down by a script.
 SPACED = b"""<!doctype html><title>Spaced</title>
@@ -738,7 +774,8 @@ const gaps = document.getElementById('gaps');
 for (let number = 0; number < 45000; number++) gaps.append(' ');
 </script>"""
 
-READS = {'/shadow': SHADOW, '/code': CODE, '/layout': LAYOUT, '/spaced': SPACED}
+READS = {'/shadow': SHADOW, '/code': CODE, '/layout': LAYOUT, '/component-article': COMPONENT_ARTICLE,
+         '/spaced': SPACED}
 
 
 # A shop, from its search to an order's confirmation: the stand-in for a real
@@ -3403,6 +3440,32 @@ class PageActions(unittest.TestCase):
         self.assertEqual(found['data']['total'], 1, found)
         around = self.ok('outline', **{'from': found['data']['matches'][0]['line']})
         self.assertTrue(around['outline'].splitlines()[0].startswith('- code "/* matches a password input */'), around)
+
+    def test_code_a_component_draws_is_read_in_the_page_and_in_reader_view(self):
+        self.h.navigate(self.url + '/component-article')
+        code = '- code ' + json.dumps(COMPONENT_CODE)
+        outline = self.outline()
+        self.assertEqual(outline.count(code), 1, outline)
+        self.assertIn('text "css"', outline)
+        # What the component hides, and a component the page hides, are not read.
+        for unseen in ('Copied to the clipboard', 'never.shown'):
+            self.assertNotIn(unseen, outline)
+        # Reader view shows the code the component drew: a copy of the
+        # component itself would draw an empty one, with its button.
+        shown = self.ok('reader', enabled=True)
+        self.assertTrue(shown['data']['reader'], shown)
+        article = self.outline()
+        self.assertIn('heading "Styling inputs" level=1', article)
+        self.assertEqual(article.count(code), 1, article)
+        self.assertNotIn('button', article)
+        for unseen in ('Copied to the clipboard', 'never.shown', 'Pricing'):
+            self.assertNotIn(unseen, article)
+        self.assertEqual(self.ok('search', text='dashed red')['data']['total'], 1)
+        # The page comes back as it was, its components with their code.
+        self.assertFalse(self.ok('reader', enabled=False)['data']['reader'])
+        self.assertEqual(self.outline(), outline)
+        self.assertEqual(self.main_world('document.querySelector("code-example").shadowRoot.querySelector("code").textContent.length'),
+                         len(COMPONENT_CODE))
 
     def test_the_spaces_between_a_page_s_elements_do_not_end_its_read(self):
         # A read looks at so many elements and no more, so that it ends

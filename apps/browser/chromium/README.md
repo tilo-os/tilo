@@ -437,8 +437,8 @@ role or its lack of one: only what is not laid out is (`display: none`, the
 `details` or `content-visibility: hidden` folds away). An element whose
 display is `contents` has no box and is laid out as what it holds, so it is
 read through: a slot is one, and so is an article a page sets in a grid.
-`find`, `search` and `fields` read the same tree, and a ref inside a shadow
-tree acts like any other. A closed shadow tree is out of a
+`find`, `search`, `fields` and reader view read the same tree, and a ref
+inside a shadow tree acts like any other. A closed shadow tree is out of a
 page script's reach: a custom element that draws from one is listed in one
 line that says so and carries its ref, for a `capture` of it. A `pre` is a
 block of code, read as `code "…"` with its line breaks and indentation kept

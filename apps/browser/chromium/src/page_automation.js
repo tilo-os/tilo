@@ -2435,6 +2435,29 @@ globalThis.__tiloPage ||= (() => {
     }
     return bestText >= READER_MIN_TEXT ? best : runningArticle();
   }
+  // The article as the page shows it, copied along the flat tree. A clone
+  // carries an element's own children and nothing of its shadow tree, where
+  // a component keeps what it shows, and a cloned component draws itself
+  // anew with nothing to show. So what a shadow tree or a slot shows is
+  // copied in its place, without the parts its own styles hide, and a
+  // component is copied as a plain box.
+  function shownCopy(node, shadowed) {
+    if (node.nodeType === 3) return document.createTextNode(node.data);
+    if (node.nodeType !== 1 || (shadowed && !laidOut(node))) return null;
+    const tag = node.localName, custom = tag.includes('-'), root = node.shadowRoot;
+    const given = tag === 'slot' && node.assignedNodes ? node.assignedNodes() : [];
+    const display = tag === 'slot' ? 'contents' : custom ? getComputedStyle(node).display : '';
+    const copy = display === 'contents' ? document.createDocumentFragment()
+      : custom ? document.createElement(display.startsWith('inline') ? 'span' : 'div') : node.cloneNode(false);
+    // What says a component is not part of the article is kept on its box.
+    if (custom && copy.nodeType === 1)
+      for (const kept of ['hidden', 'aria-hidden', 'role']) if (node.hasAttribute(kept)) copy.setAttribute(kept, node.getAttribute(kept));
+    for (const child of root ? root.childNodes : given.length ? given : node.childNodes) {
+      const part = shownCopy(child, root ? true : given.length ? false : shadowed);
+      if (part) copy.appendChild(part);
+    }
+    return copy;
+  }
   function reader(enabled) {
     if (!enabled) {
       if (readerSaved) {
@@ -2447,10 +2470,11 @@ globalThis.__tiloPage ||= (() => {
     if (readerSaved && document.body === readerSaved.shown) return {ok: true, message: 'Reader view', data: {reader: true}};
     const root = articleRoot();
     if (!root) throw failure('no_article', 'This page has no article to read');
-    let article = root.cloneNode(true);
-    // A body or a table cell is the article's block only where it stood: in
-    // the reading layout what it held stands in a block of its own.
-    if (['body', 'td', 'th'].includes(root.localName)) {
+    let article = shownCopy(root, false);
+    // A body or a table cell is the article's block only where it stood, and
+    // an element with no box of its own was never one: in the reading layout
+    // what it held stands in a block of its own.
+    if (article.nodeType === 11 || ['body', 'td', 'th'].includes(root.localName)) {
       const block = document.createElement('div');
       block.append(...article.childNodes);
       article = block;
