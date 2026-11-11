@@ -415,11 +415,7 @@ impl NativeLaunch {
             return Ok(id);
         }
         let offered = state
-            .surfaces
-            .lock()
-            .map_err(|_| "fresh task surface unavailable")?
-            .get(&peer)
-            .and_then(|surface| surface.action_projection(&self.resource, &self.action))
+            .offered_by(peer, &self.resource, &self.action)
             .ok_or("fresh task action unavailable")?;
         if self.retained.as_ref().is_some_and(|retained| {
             retained.contract != offered.1.contract || retained.params != offered.1.params

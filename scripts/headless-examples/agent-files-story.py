@@ -152,9 +152,6 @@ def main() -> int:
         check("the agent names Files as the listing does", not failed
               and "installed but not running" in text, text.splitlines()[0] if text else "")
         text, failed = call(agent, "tilo_do", {"path": "files#read", "wait_ms": 30000}, session)
-        if failed and "has no actions" in text:
-            # The app runs, but has not published its actions yet.
-            text, failed = call(agent, "tilo_do", {"path": "files#read"}, session)
         check("Files' read answers its document", not failed and '"places"' in text, text[:120])
         try:
             check("Files runs with its window on the desk", session.answering("files", 30))
@@ -205,10 +202,6 @@ def main() -> int:
                           "size": len(BODY.encode())}],
             "text": "the renamed story"}}
         text, failed = call(agent, "tilo_do", send, session)
-        if failed and "no longer published" in text:
-            # Chat republished its actions between the agent's look and its
-            # send, as it does while the conversation it opened settles.
-            text, failed = call(agent, "tilo_do", send, session)
         check("Chat's send takes the file into the conversation", not failed
               and '"accepted":true' in text.replace(" ", ""), text[:200])
         session.snapshot(shots / "shared.png")

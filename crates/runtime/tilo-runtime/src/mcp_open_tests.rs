@@ -29,9 +29,6 @@ struct Writer {
     takes_path: Option<&'static str>,
     running: Arc<Mutex<bool>>,
     invoked: Arc<Mutex<Vec<InvokeRequest>>>,
-    /// For each of the app's next top-level listings, whether it is empty,
-    /// as while the app publishes again during its start.
-    blank_listings: Arc<Mutex<std::collections::VecDeque<bool>>>,
     /// One failed directory query, selected by its parent resource.
     query_failure: Arc<Mutex<Option<DirectoryFailure>>>,
     /// The text `read-text` answers; set, `read-text` declares itself the
@@ -80,7 +77,6 @@ impl Writer {
             takes_path: None,
             running: Arc::default(),
             invoked: Arc::default(),
-            blank_listings: Arc::default(),
             query_failure: Arc::default(),
             document: None,
             listing_page: None,
@@ -521,16 +517,6 @@ impl ActionHost for Writer {
             && query.needle.is_empty()
             && query.parent_resource.is_none()
             && query.resource_name.is_none();
-        if provider != WORKSPACE
-            && listing
-            && self.blank_listings.lock().unwrap().pop_front() == Some(true)
-        {
-            return Pending::ready(Ok(CataloguePage {
-                revision: "v5".into(),
-                exhausted: true,
-                ..CataloguePage::default()
-            }));
-        }
         let mut rows = self.listed_rows(&provider);
         if let Some(target) = &query.target {
             rows.retain(|row| row.action.as_ref().is_some_and(|a| a.address == *target));
@@ -1000,29 +986,6 @@ fn opening_a_file_an_instance_holds_returns_that_instance() {
         ["/data/in/Sales.csv", "/data/in/Costs.csv"],
         "each file was read once"
     );
-}
-
-/// computer (run 20260930-071012, doc-create-memo): opened without a file,
-/// the Word Processor's `open` answered `"resources": []`, and the agent
-/// spent two query turns on its directory.
-#[test]
-fn an_app_opened_empty_answers_once_its_directory_lists_a_resource() {
-    let host = Writer::new(None);
-    // The host answers once the app has published, but the app may publish
-    // again while it binds its document: the first listings read empty.
-    host.blank_listings.lock().unwrap().extend([true, true]);
-    let server = McpServer::new(host.clone(), "workspace".into(), "owner".into());
-    let reply = run(call(
-        &server,
-        "tilo_invoke",
-        json!({"workspace": true, "resource": "app.so.tilo.word-processor", "action": "open"}),
-    ))
-    .unwrap();
-    assert!(
-        resource(&reply["directory"], "word_processor.document")["children"] == true,
-        "{reply}"
-    );
-    assert!(host.blank_listings.lock().unwrap().is_empty());
 }
 
 #[test]

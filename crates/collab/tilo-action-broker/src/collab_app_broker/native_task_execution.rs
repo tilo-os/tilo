@@ -68,6 +68,7 @@ fn decision_watch() -> (
 
 /// A native task's request about its child: the run, the child's stable
 /// id, the action it names and the authenticated caller.
+#[derive(Clone, Copy)]
 pub(super) struct ChildReask<'a> {
     pub peer_id: u64,
     pub agent_id: &'a str,
@@ -187,6 +188,17 @@ impl AppBrokerState {
             && tilo_identity_host::policy_change::timers_reliable()
     }
 
+    /// The resource `target`'s action is published on now by its peer
+    /// ([`super::PublishedSurface::current_resource`]).
+    fn published_now(&self, target: runtime_collab::TaskAction<'_>) -> Option<String> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&target.peer_id)?
+            .current_resource(target.resource, target.action)
+            .map(str::to_owned)
+    }
+
     /// Start `reask`'s child, once its person answered where it asks first.
     async fn start_native_child(
         self: &std::sync::Arc<Self>,
@@ -205,6 +217,17 @@ impl AppBrokerState {
                 .await
                 .map_err(BrokerError::failed);
         }
+        // The action as its window publishes it now: one mounted anew as the
+        // window settled carries it under a new alias.
+        let current = self.published_now(reask.target);
+        let settled = current.as_deref().map(|resource| ChildReask {
+            target: runtime_collab::TaskAction {
+                resource,
+                ..reask.target
+            },
+            ..*reask
+        });
+        let reask = settled.as_ref().unwrap_or(reask);
         let gate = self
             .native_confirmation_gate(reask)
             .map_err(BrokerError::failed)?;
@@ -223,11 +246,7 @@ impl AppBrokerState {
             .task_run_for(reask.peer_id, reask.agent_id, reask.run_id, reask.lease)
             .map_err(BrokerError::failed)?;
         let offered = self
-            .surfaces
-            .lock()
-            .map_err(|_| BrokerError::failed("task surface unavailable".into()))?
-            .get(&target.peer_id)
-            .and_then(|surface| surface.action_projection(target.resource, target.action))
+            .offered_by(target.peer_id, target.resource, target.action)
             .ok_or_else(|| BrokerError::failed("task action unavailable".into()))?;
         let witness = self
             .native_store_witness(

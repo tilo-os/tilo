@@ -210,11 +210,7 @@ impl AppBrokerState {
         offered: &(super::PublishedSurface, super::PublishedAction),
     ) -> Result<(), String> {
         let current = self
-            .surfaces
-            .lock()
-            .map_err(|_| "task surface unavailable")?
-            .get(&offered.0.peer_id)
-            .and_then(|surface| surface.action_projection(&offered.1.resource, &offered.1.action))
+            .offered_by(offered.0.peer_id, &offered.1.resource, &offered.1.action)
             .ok_or("Store action retired while awaiting confirmation")?;
         if !current.0.live
             || current.0.route != offered.0.route

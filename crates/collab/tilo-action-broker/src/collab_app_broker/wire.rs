@@ -1522,7 +1522,6 @@ impl JoinedChannel {
                 )
             }
         };
-        let offers = !actions.is_empty();
         let surface = PublishedSurface {
             peer_id,
             app_id: route.app_id.clone(),
@@ -1559,9 +1558,9 @@ impl JoinedChannel {
             .advance_witness_publication(peer_id, WitnessPublicationKind::Surface);
         self.state
             .surface_republished(peer_id, &surface, previous.as_ref());
-        if offers {
-            self.state.launch_published(peer_id);
-        }
+        // Its catalogue, even an empty one, is what an `open` of it waits
+        // for: a directory alone is offered before the app is ready.
+        self.state.launch_published(peer_id);
         Ok(())
     }
 
@@ -1742,7 +1741,6 @@ impl JoinedChannel {
         // The directory can alter remote discoverability without an eager
         // action snapshot changing, so tell catalogue subscribers.
         self.state.publish_action_catalogue();
-        self.state.launch_published(self.peer_id);
         Ok(())
     }
 

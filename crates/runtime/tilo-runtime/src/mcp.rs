@@ -2398,7 +2398,7 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         // Best effort: the app is open whether or not its directory reads.
         let page = match peer {
             Some(peer) if self.detail() == Detail::Compact || file_open => {
-                self.first_directory(peer).await.ok()
+                self.directory_page(&peer.to_string()).await.ok()
             }
             _ => None,
         };
@@ -2769,22 +2769,6 @@ impl<H: ActionHost + Send + Sync + 'static> McpServer<H> {
         }
         Ok(any_file)
     }
-    /// A just-opened instance's [`Self::directory`] once it lists a
-    /// resource, or as it is after [`FIRST_DIRECTORY_WAIT`]. An app may
-    /// publish again while it starts (binding its document), and a page read
-    /// in between is empty, which leaves the caller to query again.
-    async fn first_directory(&self, peer: u64) -> Result<(CataloguePage, bool), String> {
-        let provider = peer.to_string();
-        let deadline = tokio::time::Instant::now().checked_add(FIRST_DIRECTORY_WAIT);
-        loop {
-            let (page, truncated) = self.directory_page(&provider).await?;
-            let listed = !page.rows.is_empty();
-            if listed || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
-                return Ok((page, truncated));
-            }
-            tokio::time::sleep(FIRST_DIRECTORY_POLL).await;
-        }
-    }
     async fn directory(&self, provider: &str) -> Result<Value, String> {
         let (page, truncated) = self.directory_page(provider).await?;
         Ok(self.directory_value(&page, truncated))
@@ -3095,15 +3079,10 @@ const HOST_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
 const QUERY_ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(15);
 /// How long a workspace `open` waits at least for the host to answer with
 /// the instance it started, which it does once that instance has connected
-/// and published what it offers.
+/// and published its catalogue.
 const LAUNCH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Where a workspace `open`'s answer names the instance it started.
 const OPENED_PEER: &str = "/update/output/value/peer_id";
-/// How long an `open` waits more for the new instance's directory to list a
-/// resource when it reads empty, as while the app publishes again binding
-/// its document, and how often it looks: two query turns cost more.
-const FIRST_DIRECTORY_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
-const FIRST_DIRECTORY_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 /// The experimental capability naming this surface's version. Version 2
 /// answers `tilo_query` with compact pages; version 3 names long resource
 /// ids by session handles in them and answers an `open` with the new

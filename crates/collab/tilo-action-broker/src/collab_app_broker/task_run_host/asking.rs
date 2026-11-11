@@ -153,22 +153,13 @@ impl TaskRunHost {
         let peer_id = request.target.provider.parse::<u64>().map_err(|_| {
             refused("only a running application's action is asked about here".into())
         })?;
-        let (app, offered) = self
+        let address = &request.target.address;
+        let (surface, offered) = self
             .0
             .state
-            .surfaces
-            .lock()
-            .map_err(|_| refused("task surface unavailable".into()))?
-            .get(&peer_id)
-            .and_then(|surface| {
-                surface
-                    .action_projection(
-                        &request.target.address.resource,
-                        &request.target.address.action,
-                    )
-                    .map(|(surface, offered)| (surface.app_id, offered))
-            })
+            .offered_by(peer_id, &address.resource, &address.action)
             .ok_or_else(|| refused("the action asked about is no longer published".into()))?;
+        let app = surface.app_id;
         let draft = tilo_actions::Draft::render(
             &offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal),
             &arguments,

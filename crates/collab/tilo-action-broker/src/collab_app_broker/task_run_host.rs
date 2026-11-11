@@ -804,22 +804,13 @@ impl TaskRunHost {
         request: &InvokeRequest,
         argument: Option<&str>,
     ) -> Result<(), String> {
-        let (app, offered) = self
+        let address = &request.target.address;
+        let (surface, offered) = self
             .0
             .state
-            .surfaces
-            .lock()
-            .map_err(|_| "task surface unavailable")?
-            .get(&peer_id)
-            .and_then(|surface| {
-                surface
-                    .action_projection(
-                        &request.target.address.resource,
-                        &request.target.address.action,
-                    )
-                    .map(|(surface, offered)| (surface.app_id, offered))
-            })
+            .offered_by(peer_id, &address.resource, &address.action)
             .ok_or("the action asked about is no longer published")?;
+        let app = surface.app_id;
         let arguments = arguments_of(argument)?;
         let draft = tilo_actions::Draft::render(
             &offered.descriptor(tilo_actions::ExecutionLocus::ClientLocal),

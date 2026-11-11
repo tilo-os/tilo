@@ -3718,6 +3718,20 @@ impl AppBrokerState {
         result
     }
 
+    /// `action` on `resource` as connection `peer` publishes it now.
+    pub(super) fn offered_by(
+        &self,
+        peer: u64,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&peer)?
+            .action_projection(resource, action)
+    }
+
     /// Resolve against the current selected source, independently of the
     /// asynchronous search snapshot. A live source shadows its retained
     /// launchable catalogue even when it no longer offers the selected action.
@@ -6178,12 +6192,8 @@ impl AppBrokerState {
             return Err("the task was cancelled; no further action may start".into());
         }
         let (surface, descriptor) = self
-            .surfaces
-            .lock()
-            .map_err(|_| "task action surface unavailable")?
-            .get(&target_peer)
-            .filter(|surface| surface.route.cluster_id == run.cluster_id)
-            .and_then(|surface| surface.action_projection(resource, action))
+            .offered_by(target_peer, resource, action)
+            .filter(|(surface, _)| surface.route.cluster_id == run.cluster_id)
             .ok_or("the task action is no longer published in this workspace")?;
         self.admit_task_action(
             &run,
@@ -13844,6 +13854,33 @@ pub mod tests {
             read(&tree);
             Ok(())
         }
+    }
+
+    /// A window mounting a component anew publishes its resource under a new
+    /// alias: an action named on the old one is found on the one it is on now,
+    /// unless it is withdrawn or two aliases of the resource carry it.
+    #[test]
+    fn a_task_action_is_found_under_the_alias_its_window_publishes_now() {
+        let alias = |component: &str| {
+            format!(
+                "{}host:{component}:{}",
+                tilo_actions::BOUND_RESOURCE_PREFIX,
+                hex::encode("composer")
+            )
+        };
+        let (before, now) = (alias("1"), alias("2"));
+        let mut surface = catalogue_surface(4, "workspace", &now);
+        assert_eq!(surface.current_resource(&now, "open"), Some(now.as_str()));
+        assert_eq!(
+            surface.current_resource(&before, "open"),
+            Some(now.as_str())
+        );
+        assert_eq!(surface.current_resource(&before, "close"), None);
+        assert_eq!(surface.current_resource("composer", "open"), None);
+        let mut twice = surface.actions[0].clone();
+        twice.resource = alias("3");
+        surface.actions.push(twice);
+        assert_eq!(surface.current_resource(&before, "open"), None);
     }
 
     #[cfg(test)]
