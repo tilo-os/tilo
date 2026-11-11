@@ -804,3 +804,75 @@ fn whoever_answers_a_held_download_is_named_with_the_answer() {
         "the download's decision says who discarded it"
     );
 }
+
+/// The window asks the person about so many departures at once and no more.
+/// One beyond them is answered all the same: the window turns it away at
+/// once, the engine drops it, and the action whose run reached it is told
+/// why. Nothing is left held with nobody ever asked about it.
+#[test]
+fn a_hold_beyond_those_the_window_asks_about_is_turned_away_at_once() {
+    let (engine, mut widget, doc, root) =
+        page_in(BrowsingMode::Visitor, "https://shop.example/order");
+    for id in 1..=8 {
+        let mut request = HeldRequest::new(id, HeldKind::Request);
+        request.method = "POST".into();
+        request.origin = "https://orders.example".into();
+        engine.hold(request);
+    }
+    widget.sync(&doc, &root);
+    assert_eq!(widget.holds.waiting().count(), 8);
+    assert!(
+        held_answers(&engine).is_empty(),
+        "eight wait for the person"
+    );
+    // A ninth, which an agent's click reaches.
+    engine.hold(held_submit(9));
+    let click = start(
+        &mut widget,
+        "click-page",
+        &serde_json::json!({"element": "d1e9"}),
+    );
+    widget.sync(&doc, &root);
+    assert_eq!(
+        held_answers(&engine),
+        vec![(9, false)],
+        "the ninth is dropped at once, not left held with nobody asked"
+    );
+    let update = answer(&mut widget, &doc, &root, click);
+    let ui::tilo_actions::InvocationUpdate::Failed { error, .. } = &update else {
+        panic!("the click is told that what it reached was dropped: {update:?}");
+    };
+    assert_eq!(error.code, "browser.page.too_many_held");
+    assert!(
+        error.message.contains("8 requests") && error.message.contains("https://visa.example"),
+        "it says why and what: {}",
+        error.message
+    );
+    assert_eq!(widget.holds.waiting().count(), 8, "the eight still wait");
+    // A download beyond them is discarded the same way.
+    engine.push_event(WebViewEvent::NativeDownloadRequested {
+        id: 30,
+        url: "https://files.example/return.pdf".into(),
+        name: "return.pdf".into(),
+    });
+    widget.sync(&doc, &root);
+    assert!(
+        engine.commands().into_iter().any(|command| matches!(
+            command,
+            WebViewCommand::DownloadDecision {
+                id: 30,
+                allow: false,
+                ..
+            }
+        )),
+        "the download is discarded at once"
+    );
+    assert_eq!(
+        answered_by(&engine),
+        vec![
+            (9, false, AnsweredBy::TooMany),
+            (30, false, AnsweredBy::TooMany)
+        ],
+        "each is answered as one too many, which the tab's record sets down"
+    );
+}

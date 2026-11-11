@@ -109,14 +109,21 @@ the actor whose action was running when the page reached it and under nobody
 when the page sent it on its own. The entry names the page, the origin it
 would go to and its method there, and of a download the file's name. When
 the hold ends the engine sets down how: `allow` when it was let leave, `keep`
-when the page was kept as it is, `drop` when nobody answered. Who answered
-the engine cannot know, so the window says it with its answer. It is the
+when the page was kept as it is, `drop` when nobody answered, `too_many` when
+it was turned away at once. Who answered the engine cannot know, so the
+window says it with its answer. It is the
 person when their allow ran again the invocation that reached the hold: that
 invocation is its actor's, whom the held entry already names, and only the
 person's own answer runs it a second time. It is whoever the action system
 admitted `send-held-request` or `keep-held-request` for, the person at the
 window when it names nobody. It is nobody when the window dropped the hold
-at its own deadline. An entry that comes while an action runs takes its
+at its own deadline, and when it turned it away at once. The window asks the
+person about eight departures at a time: one more is dropped at once, and
+the action whose run reached it is told why, so a page that posts in a loop
+never has more than those paused and no request waits on questions the
+person has not seen. Every hold ends: the engine drops one no app answers at
+a deadline of its own, a little after the window's, so nothing a page was
+about to send stays paused for good. An entry that comes while an action runs takes its
 place after that action's own, as typing does. Neither entry carries what
 was about to leave: no request's body, no field's value and no secret.
 
@@ -181,7 +188,7 @@ with who did each action; what a person typed stands there as typing, and
 what was written into a secret field as set, not shown. What the window held
 stands there in plain words: what waited for the person and whose action
 reached it, who let it leave, who kept the page as it is, and what was
-dropped with nobody answering. The Page menu, a key, the palette and an agent all
+dropped, with nobody answering or as one too many. The Page menu, a key, the palette and an agent all
 open it through that one action, and `show-page` closes it. The review keeps
 nothing: it is drawn from the forms, fields and record reads, made as the
 tab's unnamed actor, so they take no place in the record and tell no agent

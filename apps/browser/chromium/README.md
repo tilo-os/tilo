@@ -617,11 +617,18 @@ may act and passes the name of the invoker it admitted.
   origin it would go to, and `message` its method and that origin
   (`POST https://visa.example`), or of a download the file's name (at most
   120 bytes) and the origin. The second is set down when it ends, with the
-  same `to_url` and `message`: its `action` is `allow`, `keep` or `drop`. The
+  same `to_url` and `message`: its `action` is `allow`, `keep`, `drop` or
+  `too_many`. The
   host cannot know who answered, so `hold_answer` and `download_decision` may
   say: `actor`, a name as a page action carries one, and `reason`, which is
-  `expired` when nobody answered and the app dropped it at its own deadline.
-  A refusal with that reason is set down as `drop`. An answer that says
+  `expired` when nobody answered and the app dropped it at its own deadline,
+  and `full` when the app turned it away at once as one more than it asks the
+  person about. A refusal is set down as `drop` for the first and as
+  `too_many` for the second. No hold waits for good: one no app answers
+  within three minutes, or within the `wait_ms` (1000 to 600000) the app
+  names with `hold_departures`, the host drops itself as one nobody answered
+  (`drop`, then `held_closed`), and a held download it discards the same
+  way. An answer that says
   neither is the person's at the window, `allow` or `keep` with an empty
   `actor`, which is how an app that knows of neither field is read. Neither
   entry carries a request's body, a field's value or a secret. Each takes the

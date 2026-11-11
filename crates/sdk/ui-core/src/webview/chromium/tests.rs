@@ -2945,6 +2945,15 @@ fn an_answer_to_what_a_window_held_says_who_answered() {
         }),
         Some(json!({"op":"hold_answer","id":3,"allow":false,"reason":"expired"}))
     );
+    let turned_away = WebViewCommand::AnswerHeldRequest {
+        id: 3,
+        allow: false,
+        by: AnsweredBy::TooMany,
+    };
+    assert_eq!(
+        encode_command(turned_away),
+        Some(json!({"op":"hold_answer","id":3,"allow":false,"reason":"full"}))
+    );
     // A download a window held is answered by the download's own decision.
     assert_eq!(
         encode_command(WebViewCommand::DownloadDecision {

@@ -362,8 +362,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     output->SendAudio(CefWriteJSON(value,JSON_WRITER_DEFAULT).ToString(),packet);
   }
   CefRefPtr<CefRequestHandler> GetRequestHandler() override { return this; }
-  // Whether this window holds what its page sends (departures.h).
-  bool HoldsPage() const { return holds_; }
+  // How long this window holds what its page sends before the engine ends
+  // the hold itself, and 0 for a window that holds nothing (departures.h).
+  int64_t HoldWaitMs() const { return holds_?hold_wait_ms_.load():0; }
   // What this tab's record is told of something its page was held from
   // sending: that it waits for the person, or how that ended (departures.h).
   void NoteHold(const tilo::HoldNote& note) {
@@ -380,7 +381,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     if(!holds_ || navigation || !departures || transfer_owner_ || closing) return nullptr;
     if(!tilo::LeavesWithData(request->GetMethod().ToString()) ||
        !tilo::WebAddress(request->GetURL().ToString())) return nullptr;
-    return new tilo::HoldResourceHandler(id_,departures);
+    return new tilo::HoldResourceHandler(id_,departures,hold_wait_ms_);
   }
   // The page asks to go somewhere: a form leaving waits for the person, as a
   // request of the page's own does. Anything else goes as it always has.
@@ -395,7 +396,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     tilo::Departure departure;
     departure.tab=id_;departure.kind="submit";
     departure.method=method;departure.origin=tilo::Origin(url);
-    departure.frame=frame;departure.request=request;
+    departure.frame=frame;departure.request=request;departure.wait_ms=hold_wait_ms_;
     departures->Hold(std::move(departure));
     return true;
   }
@@ -1253,8 +1254,9 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
     }
     else if(op=="js_dialog_reply") AnswerDialog(d->GetInt("id"),d->GetBool("accept"),d->HasKey("text")?d->GetString("text"):CefString());
     // A window opened for an agent holds what its page sends: the app is
-    // told once, and answers each held request by its id.
-    else if(op=="hold_departures") holds_=true;
+    // told once, and answers each held request by its id. A hold nobody
+    // answers ends after `wait_ms`, when the app names a time of its own.
+    else if(op=="hold_departures") {holds_=true;if(d->GetType("wait_ms")==VTYPE_INT)hold_wait_ms_=d->GetInt("wait_ms");}
     else if(op=="context_action") {
       // Choosing an item is the person's own act, as a click is: a copy
       // from the menu reaches the clipboard.
@@ -2146,6 +2148,7 @@ class Client final : public CefClient, public CefRenderHandler, public CefLifeSp
   // changed by the app on the UI thread, and read where Chromium asks about a
   // request, on its IO thread.
   std::atomic<bool> holds_{false};
+  std::atomic<int64_t> hold_wait_ms_{tilo::kHoldWaitMs};
   // The extensions' items in the open menu, by command from kFirstMenuOffer,
   // and where it opened.
   static constexpr int kFirstMenuOffer=27000;static constexpr size_t kMaxMenuOffers=200;
@@ -2233,14 +2236,15 @@ void Dispatch(CefRefPtr<CefDictionaryValue> d) {
     return;
   }
   // Who answered what a window held for the person, as the app says: an
-  // actor by the name its page actions carry, and `expired` for why when
-  // nobody did and the app dropped it at its own deadline. An app that says
-  // neither answers as the person at the window. The tab's record keeps it.
+  // actor by the name its page actions carry, and the reason when nobody
+  // did, `expired` when the app dropped it at its own deadline and `full`
+  // when it turned it away at once. An app that says neither answers as the
+  // person at the window. The tab's record keeps it.
   const auto answerer=[&]{return d->GetType("actor")==VTYPE_STRING?d->GetString("actor").ToString():std::string();};
-  const auto unanswered=[&]{return d->GetType("reason")==VTYPE_STRING && d->GetString("reason")=="expired";};
-  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"),answerer(),unanswered());return; }
+  const auto reason=[&]{return d->GetType("reason")==VTYPE_STRING?d->GetString("reason").ToString():std::string();};
+  if(op=="download_decision") { downloads->DownloadDecision(d->GetInt("id"),d->GetBool("allow"),answerer(),reason());return; }
   // The app answered a request the page held: it leaves now, or not at all.
-  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow"),answerer(),unanswered()); return; }
+  if(op=="hold_answer") { if(departures) departures->Answer(d->GetInt("id"),d->GetBool("allow"),answerer(),reason()); return; }
   if(op=="download_cancel") { downloads->CancelDownload(d->GetInt("id"));return; }
   if(op=="download_cancel_all") {downloads->CancelAll();return;}
   if(op=="download_retry") {auto found=clients.find(id);if(found!=clients.end() && found->second->accepts_downloads())downloads->Retry(d->GetInt("id"),found->second->browser_);return;}
@@ -2380,7 +2384,7 @@ class App final : public CefApp,public CefBrowserProcessHandler {
       [](int id,bool busy){download_owners.SetBusy(id,busy);PublishDownloadRuntime();},
       [](int id){DownloadOwnerIdle(id);},
       []{PublishDownloadRuntime();},
-      [](int id){auto found=clients.find(id);return found!=clients.end() && found->second->HoldsPage();},note_hold);
+      [](int id){auto found=clients.find(id);return found!=clients.end()?found->second->HoldWaitMs():int64_t{0};},note_hold);
     CreateTab(1);PublishDownloadRuntime();if(clients.empty()) CefQuitMessageLoop();
   }
  private: IMPLEMENT_REFCOUNTING(App);
@@ -2534,7 +2538,12 @@ bool ValidCommand(CefRefPtr<CefDictionaryValue> d) {
   if(op=="permission_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL);
   if(op=="download_decision") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
   if(op=="js_dialogs") return type("enabled",VTYPE_BOOL);
-  if(op=="hold_departures") return no_payload();
+  // How long a hold may wait for its answer, when the app says.
+  if(op=="hold_departures") {
+    CefDictionaryValue::KeyList keys;d->GetKeys(keys);
+    return std::all_of(keys.begin(),keys.end(),[](const CefString& key){return key=="op" || key=="tab" || key=="wait_ms";}) &&
+      (!d->HasKey("wait_ms") || (type("wait_ms",VTYPE_INT) && d->GetInt("wait_ms")>=tilo::kMinHoldWaitMs && d->GetInt("wait_ms")<=tilo::kMaxHoldWaitMs));
+  }
   if(op=="hold_answer") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("allow",VTYPE_BOOL) && answered();
   if(op=="js_dialog_reply") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("accept",VTYPE_BOOL) && (!d->HasKey("text") || (type("text",VTYPE_STRING) && d->GetString("text").ToString().size()<=64*1024));
   if(op=="context_action") return type("id",VTYPE_INT) && d->GetInt("id")>0 && type("command",VTYPE_INT) && d->GetInt("command")>=0;

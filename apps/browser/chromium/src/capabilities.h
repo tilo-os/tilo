@@ -28,11 +28,11 @@ class Downloads final : public CefDownloadHandler {
   Downloads(std::string directory,Emit emit,std::function<int(CefRefPtr<CefBrowser>)> owner,
             std::function<bool(int)> eligible,std::function<bool(int)> can_reserve,
             std::function<void(int,bool)> owner_busy,std::function<void(int)> owner_idle,
-            std::function<void()> changed,std::function<bool(int)> holds_for_person,NoteHold note_hold=nullptr)
+            std::function<void()> changed,std::function<int64_t(int)> hold_wait_ms,NoteHold note_hold=nullptr)
       :downloads_(std::move(directory)),emit_(std::move(emit)),owner_(std::move(owner)),
        eligible_(std::move(eligible)),can_reserve_(std::move(can_reserve)),
        owner_busy_(std::move(owner_busy)),owner_idle_(std::move(owner_idle)),changed_(std::move(changed)),
-       holds_for_person_(std::move(holds_for_person)),note_hold_(std::move(note_hold)) {}
+       hold_wait_ms_(std::move(hold_wait_ms)),note_hold_(std::move(note_hold)) {}
   size_t Admitted() const {return slots_.Size();}
   bool Accepting() const {return accepting_;}
   bool OwnerBusy(int owner) const {
@@ -105,19 +105,21 @@ class Downloads final : public CefDownloadHandler {
     OwnerStateChanged(owner,was_busy);
     auto d=CefDictionaryValue::Create();d->SetInt("id",id);d->SetString("url",url);d->SetString("name",name);emit_("download_prompt",d);Changed();
     // A window an agent operates holds the download until the person answers
-    // it, as it holds every other departure: no deadline of the engine's own
-    // ends it, and the app drops the hold if nobody comes. The tab's record
-    // says that it waits.
-    if(holds_for_person_ && holds_for_person_(owner)) {transfers_[id].held=true;TellHold(transfers_[id],"download",true,{});}
-    else
-      CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id){self->DownloadDecision(id,false);},CefRefPtr<Downloads>(this),id),60000);
+    // it, as it holds every other departure, and the app drops the hold if
+    // nobody comes. The tab's record says that it waits. A hold no app
+    // answers ends at the time the owner's holds may wait, as one nobody
+    // answered; an offer of any other window ends after a minute.
+    const int64_t hold_wait=hold_wait_ms_?hold_wait_ms_(owner):0;
+    if(hold_wait>0) {transfers_[id].held=true;TellHold(transfers_[id],"download",true,{});}
+    CefPostDelayedTask(TID_UI,base::BindOnce([](CefRefPtr<Downloads> self,int id,bool held){self->DownloadDecision(id,false,{},held?"expired":"");},CefRefPtr<Downloads>(this),id,hold_wait>0),hold_wait>0?hold_wait:60000);
     return true;
   }
-  // `actor` is who answered, as the app says, and `expired` that nobody did:
-  // of a download a window held for the person, the tab's record says which.
-  void DownloadDecision(int id,bool allow,const std::string& actor={},bool expired=false) {
+  // `actor` is who answered, as the app says, and `reason` why nobody did
+  // (`expired`, `full`): of a download a window held for the person, the
+  // tab's record says which.
+  void DownloadDecision(int id,bool allow,const std::string& actor={},const std::string& reason={}) {
     auto it=transfers_.find(id);if(it==transfers_.end() || it->second.approved) return;
-    if(it->second.held) {it->second.held=false;TellHold(it->second,HoldEnding(allow,expired),false,actor);}
+    if(it->second.held) {it->second.held=false;TellHold(it->second,HoldEnding(allow,reason),false,actor);}
     if(!allow) { CancelDownload(id);return; }
     std::error_code ec;std::filesystem::create_directories(downloads_,ec);
     // A download must never fill the disk; refuse it before writing a byte.
@@ -306,7 +308,7 @@ class Downloads final : public CefDownloadHandler {
   std::string downloads_;Emit emit_;
   std::function<int(CefRefPtr<CefBrowser>)> owner_;
   std::function<bool(int)> eligible_,can_reserve_;
-  std::function<void(int,bool)> owner_busy_;std::function<void(int)> owner_idle_;std::function<void()> changed_;std::function<bool(int)> holds_for_person_;NoteHold note_hold_;
+  std::function<void(int,bool)> owner_busy_;std::function<void(int)> owner_idle_;std::function<void()> changed_;std::function<int64_t(int)> hold_wait_ms_;NoteHold note_hold_;
   bool accepting_=true;
   DownloadSlots slots_;std::map<int,Transfer> transfers_,early_;std::map<int,RetryRecord> history_;std::set<int> terminal_;std::deque<int> terminal_order_;
   DownloadProvenance provenance_;

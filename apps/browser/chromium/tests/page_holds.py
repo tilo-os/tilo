@@ -45,7 +45,8 @@ SCRIPT = b'''<!doctype html><title>Script departures</title>
 AUTO = b'''<!doctype html><title>Posts on its own</title>
 <p id="state">Ready</p>
 <script>
-addEventListener('load', () => setTimeout(() => fetch('/collect', {method: 'POST', body: 'card=4000056655665556'}), 400))
+const say = text => () => document.getElementById('state').textContent = text
+addEventListener('load', () => setTimeout(() => fetch('/collect', {method: 'POST', body: 'card=4000056655665556'}).then(say('sent'), say('not sent')), 400))
 </script>
 '''
 
@@ -101,11 +102,14 @@ class PageHolds(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
 
-    def open(self, path='/', hold=True):
+    def open(self, path='/', hold=True, wait_ms=None):
+        """A window on `path` that holds what its page sends, unless `hold`
+        says not. `wait_ms` is how long a hold waits for its answer, when the
+        app names a time of its own."""
         host = Host()
         self.addCleanup(host.close)
         if hold:
-            host.send(op='hold_departures', tab=1)
+            host.send(op='hold_departures', tab=1, **({} if wait_ms is None else {'wait_ms': wait_ms}))
         host.navigate(self.url + path)
         return host
 
@@ -300,6 +304,45 @@ class PageHolds(unittest.TestCase):
         told = self.told(host)
         for text in ('4000056655665556', 'card='):
             self.assertNotIn(text, told)
+
+    def test_a_hold_no_app_answers_ends_at_the_engines_own_deadline(self):
+        # Nothing a page was about to send stays paused for good. A hold no
+        # app answers in the time it may wait is dropped by the engine
+        # itself, as one nobody answered, and the page's request ends unsent.
+        host = self.open('/auto', wait_ms=1500)
+        held = self.heard(host, lambda e: e['event'] == 'held')
+        self.heard(host, lambda e: e['event'] == 'held_closed' and e['id'] == held['id'])
+        dropped = self.set_down(host, 'drop')
+        self.assertEqual((dropped['how'], dropped['actor'], dropped['message']),
+                         ('hold', '', 'POST ' + self.url), dropped)
+        self.shows(host, 'not sent')
+        # An answer that comes after it answers nothing: nothing leaves.
+        host.send(op='hold_answer', tab=held['tab'], id=held['id'], allow=True)
+        host.settle(1.0)
+        self.assertEqual([e['action'] for e in self.record(host)], ['request', 'drop'])
+        self.shows(host, 'not sent')
+
+    def test_a_hold_the_app_turns_away_as_one_too_many_is_set_down_as_such(self):
+        # The app asks the person about so many holds at once and no more.
+        # One beyond them it turns away at once and says why, and the record
+        # says so: nobody was asked, and nothing left.
+        host = self.open('/auto')
+        held = self.heard(host, lambda e: e['event'] == 'held')
+        self.answer(host, held, False, reason='full')
+        turned = self.set_down(host, 'too_many')
+        self.assertEqual((turned['how'], turned['actor'], turned['to_url'], turned['message']),
+                         ('hold', '', self.url, 'POST ' + self.url), turned)
+        self.assertEqual([e['action'] for e in self.record(host)], ['request', 'too_many'])
+        self.shows(host, 'not sent')
+
+    def test_a_held_download_no_app_answers_ends_at_the_engines_own_deadline(self):
+        host = self.open('/download.html', wait_ms=1500)
+        self.click(host, 'link "Receipt"')
+        prompt = self.heard(host, lambda e: e['event'] == 'download_prompt')
+        dropped = self.set_down(host, 'drop')
+        self.assertEqual((dropped['actor'], dropped['message']), ('', 'receipt.txt, ' + self.url), dropped)
+        self.heard(host, lambda e: e['event'] == 'download' and e['id'] == prompt['id']
+                   and e['state'] == 'cancelled')
 
     def test_a_held_download_is_set_down_with_its_file_and_who_answered(self):
         host = self.open('/download.html')

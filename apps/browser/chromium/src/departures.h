@@ -66,9 +66,21 @@ struct HoldNote {
   std::string method,origin,file;
 };
 using NoteHold=std::function<void(int,const HoldNote&)>;
+// How long a hold waits for its answer when the app names no time of its own,
+// and the least and the most an app may name. The app drops what nobody
+// answers sooner than this. This is the engine's own end for a hold no app
+// answers at all, so nothing a page was about to send stays paused for good.
+inline constexpr int64_t kHoldWaitMs=180000,kMinHoldWaitMs=1000,kMaxHoldWaitMs=600000;
 // How an answer ends a hold, as the record names it: let leave, kept by
-// whoever answered, or dropped because nobody did.
-inline const char* HoldEnding(bool allow,bool expired) { return allow?"allow":expired?"drop":"keep"; }
+// whoever answered, dropped because nobody did (the answer's reason is
+// `expired`), or turned away at once because as many as the app asks the
+// person about already wait (`full`).
+inline const char* HoldEnding(bool allow,const std::string& reason) {
+  if(allow) return "allow";
+  if(reason=="expired") return "drop";
+  if(reason=="full") return "too_many";
+  return "keep";
+}
 // One request held before it leaves.
 struct Departure {
   int tab=0;
@@ -82,12 +94,18 @@ struct Departure {
   // A navigation Chromium was told not to start: issued again on allow.
   CefRefPtr<CefFrame> frame;
   CefRefPtr<CefRequest> request;
+  // How long it waits for its answer before the engine ends it itself.
+  int64_t wait_ms=kHoldWaitMs;
 };
 
 // Every request this engine holds, by the id the app answers it with. Only
 // Chromium's UI thread touches it: the handlers that hold and every command
 // that answers run there.
-class Departures final {
+//
+// Every hold ends. The app answers it, or drops it when nobody comes; and a
+// hold no app answers in the time it may wait is dropped here, as one nobody
+// answered, so a page's request is never left paused for good.
+class Departures final : public std::enable_shared_from_this<Departures> {
  public:
   using Emit=std::function<void(const std::string&,CefRefPtr<CefDictionaryValue>)>;
   explicit Departures(Emit emit,NoteHold note=nullptr):emit_(std::move(emit)),note_(std::move(note)) {}
@@ -102,7 +120,11 @@ class Departures final {
     fields->SetString("origin",departure.origin);
     emit_("held",fields);
     Note(departure,departure.kind,true,{});
+    const int64_t wait=std::clamp(departure.wait_ms,kMinHoldWaitMs,kMaxHoldWaitMs);
     held_[id]=std::move(departure);
+    CefPostDelayedTask(TID_UI,base::BindOnce([](std::weak_ptr<Departures> self,int id) {
+      if(auto departures=self.lock()) departures->Answer(id,false,{},"expired");
+    },weak_from_this(),id),wait);
     return id;
   }
   // Whether a navigation about to start is one the person already allowed,
@@ -121,15 +143,16 @@ class Departures final {
   }
   // The app answered `id`: let it leave exactly once when `allow`, and drop
   // it otherwise. An id that is not held is a command that came too late.
-  // `actor` is who answered, as the app says, and `expired` that nobody did
-  // and the app dropped it at its own deadline: the tab's record says which.
-  // An app that says neither answers as the person at the window.
-  void Answer(int id,bool allow,const std::string& actor={},bool expired=false) {
+  // `actor` is who answered, as the app says, and `reason` why nobody did:
+  // `expired` when it was dropped at a deadline, the app's or the engine's
+  // own, and `full` when the app turned it away at once. The tab's record
+  // says which. An app that says neither answers as the person at the window.
+  void Answer(int id,bool allow,const std::string& actor={},const std::string& reason={}) {
     auto found=held_.find(id);
     if(found==held_.end()) return;
     Departure departure=std::move(found->second);
     held_.erase(found);
-    Note(departure,HoldEnding(allow,expired),false,actor);
+    Note(departure,HoldEnding(allow,reason),false,actor);
     Closed(departure.tab,id);
     // Not allowed: a paused load is cancelled, and a navigation never started.
     if(!allow) { if(departure.load) departure.load->Cancel(); return; }
@@ -151,7 +174,7 @@ class Departures final {
       if(found==held_.end()) continue;
       Departure departure=std::move(found->second);
       held_.erase(found);
-      Note(departure,HoldEnding(false,true),false,{});
+      Note(departure,HoldEnding(false,"expired"),false,{});
       Closed(tab,id);
       if(departure.load) departure.load->Cancel();
     }
@@ -180,25 +203,26 @@ class Departures final {
 // page's load go, until the person answers it.
 class HoldResourceHandler final : public CefResourceRequestHandler {
  public:
-  HoldResourceHandler(int tab,std::shared_ptr<Departures> departures):tab_(tab),departures_(std::move(departures)) {}
+  HoldResourceHandler(int tab,std::shared_ptr<Departures> departures,int64_t wait_ms):tab_(tab),departures_(std::move(departures)),wait_ms_(wait_ms) {}
   // Chromium calls this on its IO thread and the ledger is the UI thread's
   // (see Departures), so the hold is recorded there: the load stays paused
   // until that hold is answered.
   cef_return_value_t OnBeforeResourceLoad(CefRefPtr<CefBrowser>,CefRefPtr<CefFrame>,
       CefRefPtr<CefRequest> request,CefRefPtr<CefCallback> callback) override {
     if(!departures_) return RV_CONTINUE;
-    CefPostTask(TID_UI,base::BindOnce([](std::shared_ptr<Departures> departures,int tab,
+    CefPostTask(TID_UI,base::BindOnce([](std::shared_ptr<Departures> departures,int tab,int64_t wait_ms,
         std::string method,std::string url,CefRefPtr<CefCallback> load) {
       Departure departure;
       departure.tab=tab;departure.kind="request";departure.method=std::move(method);
-      departure.origin=Origin(url);departure.load=std::move(load);
+      departure.origin=Origin(url);departure.load=std::move(load);departure.wait_ms=wait_ms;
       departures->Hold(std::move(departure));
-    },departures_,tab_,request->GetMethod().ToString(),request->GetURL().ToString(),callback));
+    },departures_,tab_,wait_ms_,request->GetMethod().ToString(),request->GetURL().ToString(),callback));
     return RV_CONTINUE_ASYNC;
   }
   IMPLEMENT_REFCOUNTING(HoldResourceHandler);
  private:
   int tab_;
   std::shared_ptr<Departures> departures_;
+  int64_t wait_ms_;
 };
 }

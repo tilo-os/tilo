@@ -465,6 +465,9 @@ pub(crate) enum HoldStep {
     Kept,
     /// What waited was dropped with nobody answering.
     Dropped,
+    /// It never waited: as many as the window asks the person about already
+    /// did, and it was dropped at once.
+    TooMany,
 }
 
 impl HoldStep {
@@ -477,13 +480,17 @@ impl HoldStep {
             "allow" => Self::Allowed,
             "keep" => Self::Kept,
             "drop" => Self::Dropped,
+            "too_many" => Self::TooMany,
             _ => Self::Other,
         }
     }
 
     /// Whether it says how a hold ended, rather than that one began.
     pub(crate) const fn ended(self) -> bool {
-        matches!(self, Self::Allowed | Self::Kept | Self::Dropped)
+        matches!(
+            self,
+            Self::Allowed | Self::Kept | Self::Dropped | Self::TooMany
+        )
     }
 }
 
@@ -869,6 +876,27 @@ mod tests {
             (allowed.action.as_str(), allowed.actor.as_str()),
             ("allow", "")
         );
+    }
+
+    /// The record says why what waited was dropped, and the review reads
+    /// each reason as what it is.
+    #[test]
+    fn a_step_says_why_what_was_held_was_dropped() {
+        let mut record = Record::default();
+        let dropped = |seq: u64, action: &str| {
+            json!({"seq": seq, "actor": "", "how": "hold", "action": action, "ok": true,
+                "message": "POST https://visa.example", "to_url": "https://visa.example"})
+        };
+        record.take(
+            &json!({"entries": [dropped(1, "drop"), dropped(2, "too_many")],
+            "next": 2, "more": false}),
+        );
+        let said: Vec<String> = record
+            .steps
+            .iter()
+            .map(|step| format!("{:?}", step.kind))
+            .collect();
+        assert_eq!(said, ["Hold(Dropped)", "Hold(TooMany)"]);
     }
 
     #[test]

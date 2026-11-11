@@ -569,6 +569,36 @@ fn what_was_held_is_listed_with_who_let_it_leave() {
     );
 }
 
+/// What was dropped says why: nobody answered, or it was one more than the
+/// window asks the person about.
+#[test]
+fn what_was_dropped_is_listed_with_why() {
+    let (engine, mut app) = window();
+    let tracker = "POST https://tracker.example";
+    let dropped = |seq: u64, action: &str| {
+        json!({"seq": seq, "actor": "", "how": "hold", "action": action, "ok": true,
+            "message": tracker, "url": FORM})
+    };
+    let record = [dropped(1, "drop"), dropped(2, "too_many")];
+    page_holds(
+        &engine,
+        &[("Email", "email", "ada@example.org", json!({"how": "input"}))],
+        &record,
+    );
+    invoke(&mut app, None, &BrowserEffect::ReviewPage);
+    eventually(&mut app, "the review lists what was dropped", |app| {
+        row(app, "Dropped, nobody answered").is_some()
+    });
+    for why in ["Dropped, nobody answered", "Dropped, too many were waiting"] {
+        assert_eq!(
+            row(&mut app, why).as_deref(),
+            Some(tracker),
+            "{why}: {:?}",
+            app.texts()
+        );
+    }
+}
+
 /// A secret is reviewed as set or not set. Its text is in no part of the
 /// window's accessibility tree, whatever a read of the page carried.
 #[test]

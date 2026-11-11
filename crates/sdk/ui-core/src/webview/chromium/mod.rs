@@ -2664,15 +2664,16 @@ fn decode_base64_bounded(input: &str, limit: usize) -> Option<Vec<u8>> {
 }
 
 /// `wire`, the answer to something a window held for the person, saying who
-/// answered: an actor by the name its page actions carry, and `reason:
-/// "expired"` when nobody did. The person at the window is said by neither,
-/// which is also how a host that names no answerer is read.
+/// answered: an actor by the name its page actions carry, and the `reason`
+/// when nobody did (`expired`, or `full` for what the window turned away at
+/// once). The person at the window is said by neither, which is also how a
+/// host that names no answerer is read.
 fn answered_by(mut wire: Value, by: &super::hold::AnsweredBy) -> Value {
     if let Some(actor) = by.actor() {
         wire["actor"] = actor.as_str().into();
     }
-    if by.expired() {
-        wire["reason"] = "expired".into();
+    if let Some(reason) = by.reason() {
+        wire["reason"] = reason.into();
     }
     wire
 }

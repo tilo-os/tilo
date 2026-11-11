@@ -88,6 +88,9 @@ pub enum AnsweredBy {
     Actor(PageActor),
     /// Nobody: the window dropped what it held at its own deadline.
     Nobody,
+    /// Nobody: the window turned it away at once, because as many requests
+    /// as it asks the person about already wait.
+    TooMany,
 }
 
 impl AnsweredBy {
@@ -102,7 +105,18 @@ impl AnsweredBy {
     pub const fn actor(&self) -> Option<&PageActor> {
         match self {
             Self::Actor(actor) => Some(actor),
-            Self::Person | Self::Nobody => None,
+            Self::Person | Self::Nobody | Self::TooMany => None,
+        }
+    }
+
+    /// Why nobody answered, as the engine is told it: `expired` for what the
+    /// window dropped at its deadline, `full` for what it turned away at
+    /// once. Nothing for an answer somebody gave.
+    pub const fn reason(&self) -> Option<&'static str> {
+        match self {
+            Self::Nobody => Some("expired"),
+            Self::TooMany => Some("full"),
+            Self::Person | Self::Actor(_) => None,
         }
     }
 
@@ -214,5 +228,12 @@ mod tests {
             (None, true),
             "what nobody answered names nobody"
         );
+        assert_eq!(
+            (AnsweredBy::Nobody.reason(), AnsweredBy::TooMany.reason()),
+            (Some("expired"), Some("full")),
+            "and says why nobody did"
+        );
+        assert_eq!((person.reason(), by.reason()), (None, None));
+        assert_eq!(AnsweredBy::TooMany.actor(), None);
     }
 }

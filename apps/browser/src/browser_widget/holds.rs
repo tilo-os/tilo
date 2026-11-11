@@ -18,6 +18,15 @@
 //! A hold nobody answers is dropped after [`HELD_WAIT`]: the page is left as
 //! it was, and the window is never left waiting on a person who did not come.
 //!
+//! Every departure the engine reports is answered. The window asks the person
+//! about [`MAX_HELD`] at once and no more: one beyond them is turned away at
+//! once, the engine drops it, and the action whose run reached it is told why.
+//! Refusing it at once, and not making it wait its turn behind the others,
+//! keeps what is paused bounded for a page that posts in a loop, never has a
+//! request wait on questions the person has not even seen, and tells the
+//! caller the truth while it can still act on it. The engine ends a hold no
+//! app answers at a deadline of its own, a little after this window's.
+//!
 //! The tab's record says all of it ([`crate::page_record`]). The engine sets
 //! down that a departure was held, under the actor whose action reached it,
 //! and how it ended: let leave, kept, or dropped unanswered. It cannot know
@@ -39,9 +48,13 @@ use super::{BrowserWidget, WebViewCommand, action_failed};
 
 /// How long a held request waits for the person before the window drops it.
 pub(crate) const HELD_WAIT: std::time::Duration = std::time::Duration::from_secs(2 * 60);
-/// The most held requests one window waits on at once: a page that posts in a
-/// loop meets the same bound as one that opens tabs.
+/// The most held requests one window asks the person about at once: a page
+/// that posts in a loop meets the same bound as one that opens tabs. One
+/// more is turned away at once.
 const MAX_HELD: usize = 8;
+/// What a page action answers when what its run reached was turned away as
+/// one request too many.
+pub(crate) const TOO_MANY: &str = "browser.page.too_many_held";
 /// The most of a download's file name the person's question shows.
 const MAX_SHOWN_FILE: usize = 120;
 /// What a page action answers when what its run reached waits for the person:
@@ -85,6 +98,17 @@ impl Held {
     }
 }
 
+/// What the window did with a request the engine reported holding.
+pub(crate) enum Taken {
+    /// It waits for the person.
+    Held,
+    /// Nothing: the window holds it already, or it is no request the engine
+    /// could have reported.
+    Known,
+    /// It turns it away: as many as it asks the person about already wait.
+    TooMany,
+}
+
 /// The requests this window holds, oldest first.
 #[derive(Default)]
 pub(crate) struct Holds {
@@ -96,16 +120,16 @@ pub(crate) struct Holds {
 }
 
 impl Holds {
-    /// Hold `request`, or say it is already held: the engine reports one
-    /// request once.
-    pub(crate) fn hold(&mut self, request: HeldRequest, file: Option<String>) -> Option<u32> {
+    /// Hold `request`, or say why not: the engine reports one request once,
+    /// and the window asks the person about [`MAX_HELD`] at once.
+    pub(crate) fn hold(&mut self, request: HeldRequest, file: Option<String>) -> Taken {
         if !request.valid() || self.held.iter().any(|held| held.request.id == request.id) {
-            return None;
+            return Taken::Known;
         }
-        if self.held.len() >= MAX_HELD {
-            return None;
+        let waiting = self.held.iter().filter(|held| !held.answered()).count();
+        if waiting >= MAX_HELD {
+            return Taken::TooMany;
         }
-        let id = request.id;
         self.held.push(Held {
             request,
             file,
@@ -114,7 +138,7 @@ impl Holds {
             until: std::time::Instant::now() + HELD_WAIT,
             allowed: false,
         });
-        Some(id)
+        Taken::Held
     }
 
     /// The hold `invocation`'s run reached: its answer to its caller names it,
@@ -221,8 +245,10 @@ impl BrowserWidget {
     /// What the person is asked about `request`, whose run reached it: the
     /// action answers that it needs them, and their allow releases it.
     pub(crate) fn hold_asked(&mut self, request: &HeldRequest) {
-        if self.holds.hold(request.clone(), None).is_none() {
-            return;
+        match self.holds.hold(request.clone(), None) {
+            Taken::Held => {}
+            Taken::Known => return,
+            Taken::TooMany => return self.turn_away(request),
         }
         self.structure_dirty = true;
         let Some(operation) = self.page_operation.take() else {
@@ -244,6 +270,35 @@ impl BrowserWidget {
                 "kind": request.kind.as_str(),
                 "method": request.method,
                 "origin": request.origin,
+            })),
+        ));
+        self.structure_dirty = true;
+    }
+
+    /// Turn `request` away at once: as many requests as the window asks the
+    /// person about already wait. The engine drops it, so nothing of it
+    /// leaves and nothing stays paused, and the action whose run reached it
+    /// is told why, instead of being left to think the page took it.
+    fn turn_away(&mut self, request: &HeldRequest) {
+        self.release_held(request.id, request.kind, false, AnsweredBy::TooMany);
+        let Some(operation) = self.page_operation.take() else {
+            return;
+        };
+        self.note_text_entered(&operation.acted);
+        self.forms.take_run(operation.invocation);
+        self.page_operation_result = Some(action_failed(
+            operation.invocation,
+            TOO_MANY,
+            format!(
+                "{}: {MAX_HELD} requests of this page already wait for the person, so this one \
+                 was dropped and nothing left; answer those first",
+                request.describing()
+            ),
+            Some(serde_json::json!({
+                "kind": request.kind.as_str(),
+                "method": request.method,
+                "origin": request.origin,
+                "waiting": MAX_HELD,
             })),
         ));
         self.structure_dirty = true;
@@ -368,11 +423,19 @@ impl BrowserWidget {
         let mut request = HeldRequest::new(id, ui::webview::HeldKind::Download);
         request.method = "GET".into();
         request.origin = origin_of(url);
-        if self.holds.hold(request, shown_file(name)).is_none() {
-            return false;
+        match self.holds.hold(request, shown_file(name)) {
+            Taken::Held => {
+                self.structure_dirty = true;
+                true
+            }
+            Taken::Known => false,
+            Taken::TooMany => {
+                // One more than the person is asked about: discarded at once.
+                let kind = ui::webview::HeldKind::Download;
+                self.release_held(id, kind, false, AnsweredBy::TooMany);
+                false
+            }
         }
-        self.structure_dirty = true;
-        true
     }
 }
 
