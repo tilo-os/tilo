@@ -1267,15 +1267,36 @@ try {
       : [composer.bounds.x0 ?? composer.bounds.x, composer.bounds.y0 ?? composer.bounds.y,
          composer.bounds.x1 ?? composer.bounds.x + composer.bounds.width,
          composer.bounds.y1 ?? composer.bounds.y + composer.bounds.height];
+    // The menu's rows are the ones the right-click brought: a window's own
+    // control named like one (a calculator's "Copy expression") was there
+    // before it and is no text menu.
+    const shownBefore = new Set(await namesOf(a.tab));
     await rightClick(a.tab, centre.corner.x + (cx0 + cx1) / 2, centre.corner.y + (cy0 + cy1) / 2);
-    const textRow = (await namesOf(a.tab)).find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)/.test(name)) ?? null;
+    let textRow = null;
+    for (const deadline = Date.now() + 15_000; !textRow && Date.now() < deadline;) {
+      textRow = (await namesOf(a.tab))
+        .find(name => /^(Paste|Paste and match style|Copy|Cut|Select all)\b/.test(name) && !shownBefore.has(name)) ?? null;
+      if (!textRow) await sleep(250);
+    }
     if (!textRow) failed('a right-click in a text field offers no text menu');
     report.contextMenu = textRow;
     console.log(`ok: a right-click in a text field offers the text menu (${textRow})`);
     await key(a.tab, 'Escape');
 
-    // Report a problem: the bar's own avatar, then the card's row.
-    await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
+    // Report a problem: the bar's own avatar, then the card's row. After a
+    // while here the bar asks about the person beside their avatar, and while
+    // that question waits the avatar opens it rather than their card: a
+    // person puts it off, as the question offers, and opens their card then.
+    const avatar = async () => {
+      await press(a.tab, (await namesOf(a.tab)).find(name => /\(you\)/.test(name)) ?? 'Profile');
+      await settle(a.tab, 2);
+    };
+    await avatar();
+    if ((await namesOf(a.tab)).includes('Not now')) {
+      await press(a.tab, 'Not now');
+      await settle(a.tab, 2);
+      await avatar();
+    }
     const reportRow = await choose(a.tab, /^Report a problem/);
     if (!reportRow) {
       // The row is there once the page holds the Lounge's feedback channel:
