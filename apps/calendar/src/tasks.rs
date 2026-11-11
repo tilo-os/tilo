@@ -22,6 +22,7 @@ use crate::input_context::InputContext;
 use crate::model::{Calendar, Id, ListSel, Priority, Task};
 use ui::theme::Theme;
 use ui::tokens::TextRole;
+use ui::widget::DrawChild;
 use ui::widget::{ControlSize, Interaction, ListRowFace, RowLeading, Tone};
 
 /// Nesting deeper than this is drawn at this depth, so a malformed parent
@@ -291,7 +292,7 @@ impl TasksView {
             self.entry
                 .set_placeholder(&crate::resource::t("calendar-tasks-entry"));
             self.entry
-                .draw(ctx.scene, ctx.transform, ctx.text, theme, presence);
+                .draw_child(ctx.scene, ctx.transform, ctx.text, theme, presence);
             hits.push((entry, TasksAction::FocusEntry));
         }
 

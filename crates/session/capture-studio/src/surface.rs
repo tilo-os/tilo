@@ -23,6 +23,7 @@ use ui::winit::event::WindowEvent;
 use crate::i18n;
 use crate::link::{Ask, Scene, Studio, Take};
 use crate::resource::{Capture, CaptureEffect};
+use ui::widget::DrawChild;
 
 /// How long what became of a send stays up once it is known, the same as the
 /// receipt it belongs to.
@@ -629,7 +630,7 @@ impl Widget for StudioSurface {
     ) {
         self.catch_up();
         self.widget
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.take_intents();
         self.chip = match &self.saying {
             Some((said, _)) => said_chip(scene, transform, text_renderer, theme, self.rect, said),

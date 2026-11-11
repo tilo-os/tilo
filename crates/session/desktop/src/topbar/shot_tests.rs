@@ -6,6 +6,7 @@
 use super::fixture::FixtureChrome;
 use super::*;
 use tilo_desktop_model::{Collaborator, DesktopTree, Workspace, WorkspaceSlot};
+use ui::widget::DrawChild;
 
 /// This person, as their own avatar names them.
 const OWN: &str = "me-root";
@@ -74,7 +75,7 @@ fn draw(case: &Case) -> TopBarChrome {
     let mut text = TextRenderer::new();
     super::tests::lay_out_and_draw_with_text(&mut bar, case.width, &theme, &mut text);
     let mut scene = Scene::new();
-    bar.draw(
+    bar.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut text,

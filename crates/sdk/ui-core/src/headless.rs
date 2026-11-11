@@ -40,6 +40,7 @@ use crate::state::State;
 use crate::synthetic_input::key_input;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::{EventCtx, TaffyTreeExt, Widget};
 
 /// Viewport the driver lays out at unless a spec overrides it. Matches the
@@ -4036,7 +4037,7 @@ impl FrameHarness {
             f64::from(self.viewport.1),
         ));
         if let Some(history) = &mut self.history {
-            history.draw(
+            history.draw_child(
                 &mut self.scene,
                 transform,
                 &mut self.text,
@@ -4057,7 +4058,7 @@ impl FrameHarness {
             let _wake = self.enter_wake();
             self.presence
                 .with_permissions(self.permissions.clone(), || {
-                    self.root.draw(
+                    self.root.draw_child(
                         &mut self.scene,
                         transform,
                         &mut self.text,
@@ -4128,7 +4129,7 @@ impl FrameHarness {
                 .unwrap_or(surface);
             let (origin, card) = palette.place_in(window, &self.theme);
             palette.layout_with_text(&self.theme, origin, card, &mut self.text);
-            palette.draw(
+            palette.draw_child(
                 &mut self.scene,
                 transform,
                 &mut self.text,

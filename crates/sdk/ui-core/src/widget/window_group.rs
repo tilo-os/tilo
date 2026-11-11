@@ -4,6 +4,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::edge_resize::{WidthLimits, WindowEdge};
 use crate::widget::tabs::close_fade;
@@ -392,7 +393,7 @@ impl WindowGroup {
                 transform,
                 &self.bar_rect().inflate(32.0, 32.0),
             );
-            self.bar.draw(scene, transform, tr, theme, presence);
+            self.bar.draw_child(scene, transform, tr, theme, presence);
             scene.pop_layer();
         }
         if let Some((_, host)) = self
@@ -409,7 +410,7 @@ impl WindowGroup {
             );
             let was_focused = host.focused;
             host.set_focused(false);
-            host.draw(scene, transform, tr, theme, presence);
+            host.draw_child(scene, transform, tr, theme, presence);
             host.set_focused(was_focused);
             scene.pop_layer();
         }
@@ -2626,7 +2627,7 @@ impl WindowGroup {
             let ids: Vec<u64> = self.closing_hosts.keys().copied().collect();
             for id in ids {
                 if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == id) {
-                    h.draw(scene, transform, tr, theme, presence);
+                    h.draw_child(scene, transform, tr, theme, presence);
                 }
             }
             return;
@@ -2677,7 +2678,7 @@ impl WindowGroup {
                     * Affine::translate((centre.x, centre.y))
                     * Affine::scale(scale)
                     * Affine::translate((-centre.x, -centre.y));
-                h.draw(scene, close_transform, tr, theme, presence);
+                h.draw_child(scene, close_transform, tr, theme, presence);
                 scene.pop_layer();
             }
         }
@@ -2853,7 +2854,7 @@ impl WindowGroup {
         );
         let was_focused = host.focused;
         host.set_focused(false);
-        host.draw(scene, preview_transform, tr, theme, presence);
+        host.draw_child(scene, preview_transform, tr, theme, presence);
         host.set_focused(was_focused);
         scene.pop_layer();
 
@@ -3486,11 +3487,11 @@ impl Widget for WindowGroup {
         if let Some(out_id) = outgoing
             && let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == out_id)
         {
-            h.draw(scene, transform, tr, theme, presence);
+            h.draw_child(scene, transform, tr, theme, presence);
         }
         if let Some(standing_in) = self.tab_standing_in() {
             if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == standing_in) {
-                h.draw(scene, transform, tr, theme, presence);
+                h.draw_child(scene, transform, tr, theme, presence);
             }
         } else if let Some((_, h)) = self.hosts.iter_mut().find(|(i, _)| *i == active_id) {
             h.set_focused(focused);
@@ -3517,7 +3518,7 @@ impl Widget for WindowGroup {
                     &h.get_rect(),
                 );
             }
-            h.draw(scene, transform, tr, theme, presence);
+            h.draw_child(scene, transform, tr, theme, presence);
             if incoming.is_some() {
                 scene.pop_layer();
             }

@@ -1546,7 +1546,7 @@ fn the_migrated_chat_draws_no_workspace_of_its_own() {
     let mut app = crate::ChatApp::new_ephemeral();
     app.reload(&doc);
     app.rect = vello::kurbo::Rect::new(0.0, 0.0, 1280.0, 720.0);
-    ui::Widget::draw(
+    ui::widget::DrawChild::draw_child(
         &mut app,
         &mut vello::Scene::new(),
         vello::kurbo::Affine::IDENTITY,

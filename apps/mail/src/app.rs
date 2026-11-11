@@ -33,6 +33,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::mpsc::TryRecvError;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, ModelPath};
 
 #[cfg(test)]
@@ -3507,7 +3508,7 @@ impl MailApp {
         let theme = self.layout_theme.clone();
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
-        self.draw(
+        self.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,
@@ -4289,9 +4290,9 @@ impl Widget for MailApp {
     ) {
         // No ground of our own: the window paints it, the shell its regions.
         if self.is_first_run() {
-            self.first_run.draw(scene, t, tr, theme, presence);
+            self.first_run.draw_child(scene, t, tr, theme, presence);
         } else {
-            self.nav.draw(scene, t, tr, theme, presence);
+            self.nav.draw_child(scene, t, tr, theme, presence);
         }
         if let Some(id) = self.pending_menu.take() {
             self.open_menu_on_row(id, tr, theme);

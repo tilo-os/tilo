@@ -1319,6 +1319,7 @@ fn overlay_style() -> ui::taffy::Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::DrawChild;
 
     use crate::notifications::{RemoteNotificationRoute, RowShape};
 
@@ -1359,7 +1360,7 @@ mod tests {
     }
 
     fn paint(layer: &mut NotificationLayer, theme: &ui::Theme) {
-        layer.draw(
+        layer.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut ui::TextRenderer::new(),
@@ -1643,7 +1644,7 @@ mod tests {
         for interrupted in [false, true] {
             let (mut layer, notifications) = layer_with(1);
             let theme = ui::Theme::dark().with_reduce_motion(true);
-            layer.draw(
+            layer.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut ui::TextRenderer::new(),

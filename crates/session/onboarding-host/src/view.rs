@@ -1065,7 +1065,8 @@ impl OnboardingView {
         let _ = crate::view::tests::layout::lay_out_as_root_with_text(
             self, 1280.0, 800.0, &theme, &mut text,
         );
-        self.draw(
+        ui::widget::DrawChild::draw_child(
+            self,
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,

@@ -10,6 +10,7 @@ use super::{
     Affine, BAR_CONTROL_PX, ChromeIntent, Rect, Scene, TextRenderer, TextRole, Theme, TopBarChrome,
     t,
 };
+use ui::widget::DrawChild;
 /// The strip's separator: the chevron that opens the strip switcher.
 static STRIP_GLYPH: &[ui::icons::Icon] = &[ui::icons::Icon::ChevronRight];
 
@@ -227,7 +228,7 @@ impl TopBarChrome {
         let input_theme = theme
             .clone()
             .with_text_scale(theme.text_scale * theme.ui_scale);
-        input.draw(
+        input.draw_child(
             scene,
             transform,
             text_renderer,

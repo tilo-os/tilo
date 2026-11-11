@@ -34,6 +34,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{Scrollable, TaffyTreeExt, Widget};
 
 /// Which elements a caller asked for.
@@ -587,7 +588,7 @@ fn paint_empty_state(
         }
         if let Some(spinner) = spinner {
             spinner.set_rect(slot);
-            spinner.draw(
+            spinner.draw_child(
                 ctx.scene,
                 transform,
                 ctx.text,

@@ -34,6 +34,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
 use crate::widget::{Element, TaffyTreeExt, Tone, Widget, card_column_width};
 
@@ -914,7 +915,7 @@ impl Widget for StatGroup {
         presence: &PresenceCtx,
     ) {
         for tile in &mut self.tiles {
-            tile.draw(scene, transform, text_renderer, theme, presence);
+            tile.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

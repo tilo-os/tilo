@@ -37,6 +37,7 @@ use winit::event::WindowEvent;
 use crate::i18n::{t, t_args};
 use tilo_app::linked_accounts::service_icon;
 pub use tilo_app::linked_accounts::{LinkState, LinkedAccount};
+use ui::widget::DrawChild;
 
 /// The words for a status preset. The words for one way of sharing what you are doing.
 fn sharing_key(mode: ui::StatusSharing) -> &'static str {
@@ -1785,7 +1786,8 @@ impl Widget for LazyProfileCard {
             return;
         }
         if let Some(card) = self.card.as_mut() {
-            card.draw(scene, transform, text, theme, presence);
+            let card: &mut dyn Widget = &mut **card;
+            card.draw_child(scene, transform, text, theme, presence);
         }
     }
 

@@ -20,6 +20,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
+use crate::widget::DrawChild;
 
 /// See the module docs.
 #[crate::component::not_a_component(layout, "the language's `grid` and `split`")]
@@ -205,9 +206,10 @@ impl Widget for Columns {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.main.draw(scene, transform, text, theme, presence);
+        self.main
+            .draw_child(scene, transform, text, theme, presence);
         if let Some(aside) = &mut self.aside {
-            aside.draw(scene, transform, text, theme, presence);
+            aside.draw_child(scene, transform, text, theme, presence);
         }
     }
 

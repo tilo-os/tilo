@@ -20,6 +20,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
 use crate::widget::{
@@ -5491,7 +5492,7 @@ impl GroupRow {
                         transform,
                         &rect.inflate(16.0, 16.0),
                     );
-                    sibling.draw(scene, transform, tr, theme, presence);
+                    sibling.draw_child(scene, transform, tr, theme, presence);
                     scene.pop_layer();
                 }
             }
@@ -5743,7 +5744,7 @@ impl GroupRow {
         (tr, theme, presence): (&mut TextRenderer, &Theme, &PresenceCtx),
     ) {
         if !crate::window_pictures::wanted(self.groups[i].id) {
-            self.groups[i].draw(scene, transform, tr, theme, presence);
+            self.groups[i].draw_child(scene, transform, tr, theme, presence);
             return;
         }
         let drawing = self.record_group(i, Scene::new(), transform, (tr, theme, presence));
@@ -5767,7 +5768,7 @@ impl GroupRow {
         let group = &mut self.groups[i];
         let (id, rect) = (group.id, group.get_rect());
         let ((), parts) = crate::scene_parts::record(&mut local, |local| {
-            group.draw(local, transform, tr, theme, presence);
+            group.draw_child(local, transform, tr, theme, presence);
         });
         GroupDrawing(ApartDrawing {
             id,
@@ -5984,7 +5985,7 @@ impl GroupRow {
             } else {
                 transform
             };
-            h.draw(scene, t, tr, theme, presence);
+            h.draw_child(scene, t, tr, theme, presence);
         }
     }
 

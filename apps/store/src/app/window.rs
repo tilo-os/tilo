@@ -17,6 +17,7 @@ use super::{Shared, StoreState, parent_node, view};
 use crate::reports::Reports as Store;
 use crate::resource::{ReportProjection, StoreEffect};
 use crate::worker::StoreWorker;
+use ui::widget::DrawChild;
 
 /// The window: the shared [`StoreState`] in the shell its screens are
 /// composed into.
@@ -273,7 +274,7 @@ impl Widget for StoreApp {
         presence: &PresenceCtx,
     ) {
         if let Some(root) = self.root.as_mut() {
-            root.draw(scene, transform, text_renderer, theme, presence);
+            root.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

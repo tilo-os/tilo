@@ -31,6 +31,7 @@ use super::Widget;
 use super::capability::capability_mut;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 
 /// What the window's History control shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -377,7 +378,7 @@ impl RowFurniture {
             );
         }
         search.set_ground(theme.tokens.colors.surfaces.content);
-        search.draw(scene, transform, text, theme, presence);
+        search.draw_child(scene, transform, text, theme, presence);
         if let Some(control) = state.keyboard {
             let rect = control.rect(self);
             if rect.area() > 0.0 {

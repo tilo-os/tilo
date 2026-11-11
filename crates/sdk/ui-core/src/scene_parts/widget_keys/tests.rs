@@ -85,3 +85,61 @@ fn reset_clears_the_marks() {
     scene.reset();
     assert!(scene.encoding().resources.marks.is_empty());
 }
+
+/// Every widget a container draws itself, not only those drawn through the
+/// flow containers, carries a key of its own: a card grid draws its cards and
+/// each card its body.
+#[test]
+fn a_container_that_draws_its_children_itself_keys_each_of_them() {
+    use crate::presence::PresenceCtx;
+    use crate::text_render::TextRenderer;
+    use crate::theme::Theme;
+    use crate::widget::{Button, Card, CardGrid, DrawChild, Element, Widget};
+
+    let cards: Vec<Element> = (0..3)
+        .map(|i| {
+            Box::new(Card::new(Box::new(Button::new(
+                &format!("card-{i}"),
+                &format!("Card {i}"),
+            )))) as Element
+        })
+        .collect();
+    let mut grid: Element = Box::new(CardGrid::new(cards));
+    let theme = Theme::default();
+    let mut text = TextRenderer::new();
+    crate::widget::layout::lay_out_detached(
+        grid.as_mut(),
+        Rect::new(0.0, 0.0, 800.0, 600.0),
+        &theme,
+        &mut text,
+    )
+    .unwrap();
+
+    key_widgets(Some(keyer()));
+    begin_frame();
+    let mut scene = Scene::new();
+    grid.draw_child(
+        &mut scene,
+        Affine::IDENTITY,
+        &mut text,
+        &theme,
+        &PresenceCtx::default(),
+    );
+
+    fn keys(widget: &dyn Widget, out: &mut Vec<(&'static str, Option<String>)>) {
+        out.push((widget.concrete_type_name(), painted_key(widget)));
+        widget.for_each_child(&mut |child: &dyn Widget| keys(child, out));
+    }
+    let mut drawn = Vec::new();
+    keys(grid.as_ref(), &mut drawn);
+    key_widgets(None);
+
+    let unkeyed: Vec<_> = drawn.iter().filter(|(_, key)| key.is_none()).collect();
+    assert!(unkeyed.is_empty(), "drawn without a key: {unkeyed:?}");
+    let distinct: HashSet<_> = drawn.iter().map(|(_, key)| key.clone()).collect();
+    assert_eq!(distinct.len(), drawn.len(), "{drawn:?}");
+    assert!(
+        drawn.len() >= 7,
+        "the grid, three cards and their buttons: {drawn:?}"
+    );
+}

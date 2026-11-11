@@ -33,6 +33,7 @@ use super::scenario::Run;
 use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::ViewCx;
+use ui_core::widget::DrawChild;
 
 mod controls;
 mod facts;
@@ -1674,7 +1675,8 @@ impl RootModel for ResourceRoot {
         presence: &PresenceCtx,
     ) {
         self.paint_ground(scene, transform, theme, presence);
-        self.content.draw(scene, transform, text, theme, presence);
+        self.content
+            .draw_child(scene, transform, text, theme, presence);
         // The window drew: what its bar says of the save is seen.
         self.save.seen();
     }

@@ -56,6 +56,7 @@ use crate::strings::{tr, tr_args};
 
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
+use ui::widget::DrawChild;
 
 /// Compressed presentation bytes are bounded before opening the ZIP.  Archive
 /// member and aggregate expansion limits live beside the ODP/PPTX readers.
@@ -2007,7 +2008,7 @@ impl SlidesApp {
                 t,
                 &chrome.inspector_body,
             );
-            self.font_input.draw(scene, t, tr, &local, presence);
+            self.font_input.draw_child(scene, t, tr, &local, presence);
             scene.pop_layer();
         }
         if chrome.layout_picker_rect().is_some() {
@@ -2019,7 +2020,8 @@ impl SlidesApp {
                 t,
                 &chrome.inspector_body,
             );
-            self.layout_picker.draw(scene, t, tr, &local, presence);
+            self.layout_picker
+                .draw_child(scene, t, tr, &local, presence);
             scene.pop_layer();
         }
         if let Some(rect) = chrome.fill_picker_rect {
@@ -2048,7 +2050,7 @@ impl SlidesApp {
                 Point::new(rect.x0, panel.y0 + m.s4),
                 None,
             );
-            self.fill_picker.draw(scene, t, tr, &local, presence);
+            self.fill_picker.draw_child(scene, t, tr, &local, presence);
         }
     }
 
@@ -2064,7 +2066,7 @@ impl SlidesApp {
             self.notes.control_mut().apply_layout_external(nb);
             self.notes
                 .control_mut()
-                .draw(scene, t, tr, theme, &PresenceCtx::empty());
+                .draw_child(scene, t, tr, theme, &PresenceCtx::empty());
             return;
         }
         let notes = self
@@ -2076,7 +2078,7 @@ impl SlidesApp {
         }
         self.notes_preview.apply_layout_external(nb);
         self.notes_preview
-            .draw(scene, t, tr, theme, &PresenceCtx::empty());
+            .draw_child(scene, t, tr, theme, &PresenceCtx::empty());
     }
 
     fn draw_present(&mut self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
@@ -2580,7 +2582,7 @@ impl Widget for SlidesApp {
         // everything else.
         self.draw_words_overlay(scene, transform, text_renderer, theme, presence);
         self.ctx_menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.note_selection();
     }
 

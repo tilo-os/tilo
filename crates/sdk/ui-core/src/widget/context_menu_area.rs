@@ -18,6 +18,7 @@ use super::{ContextMenu, Element, EventCtx, MenuItem, Widget};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 
 /// One row of a context menu: what it shows, and what choosing it does.
 pub struct MenuEntry {
@@ -872,7 +873,7 @@ impl super::Decorator for ContextMenuArea {
             self.picker = Some((picker, pick));
         }
         if let Some((picker, _)) = self.picker.as_mut() {
-            picker.draw(scene, transform, text_renderer, theme, presence);
+            picker.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

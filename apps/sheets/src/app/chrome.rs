@@ -12,11 +12,12 @@ use super::annotations::CardMetrics;
 use super::{
     Affine, BlendMode, Button, Fill, GridMetrics, HashMap, MenuItem, Point, PresenceCtx,
     PresenceKey, Rect, RoundedRect, Scene, SheetsApp, TextRenderer, TextRole, TextStyle, Theme,
-    Widget, tab_palette_color,
+    tab_palette_color,
 };
 use ui::icons::Icon;
 use ui::num::f64_of_usize;
 use ui::surface::separator;
+use ui::widget::DrawChild;
 use ui::widget::paint_damage::PaintParts;
 use ui::widget::{
     ButtonFace, ColorSwatchFace, ControlSize, FieldFace, SegmentedFace, SegmentedStyle,
@@ -375,7 +376,7 @@ impl SheetsApp {
             // The shared editor owns shaping, scrolling, selection, clipboard,
             // IME and caret hit-testing inside its content band.
             input.apply_layout_external(text_rect);
-            input.draw(scene, transform, tr, theme, &PresenceCtx::default());
+            input.draw_child(scene, transform, tr, theme, &PresenceCtx::default());
         } else {
             let style = theme.text(TextRole::Body);
             let label = self.grid.selection_label();
@@ -612,7 +613,7 @@ impl SheetsApp {
         };
         rn.editor.apply_layout_external(rn.rect);
         rn.editor
-            .draw(scene, transform, tr, theme, &PresenceCtx::default());
+            .draw_child(scene, transform, tr, theme, &PresenceCtx::default());
     }
 
     /// Where the inline rename editor for tab `idx` sits: exactly on the tab's

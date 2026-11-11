@@ -23,6 +23,7 @@ use ui::widget::{WebView, Widget};
 
 use crate::html_mail::{InlinePart, Policy, Prepared};
 use crate::model::MessageId;
+use ui::widget::DrawChild;
 
 /// The smallest the reader zooms a wide mail out to fit: the engine's
 /// furthest zoom out (1.2⁻⁵).
@@ -438,10 +439,10 @@ impl HtmlBody {
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &clip);
         if sheet {
             ui::widget::primitives::paint_document_sheet(scene, t, rect, theme, |scene| {
-                view.draw(scene, t, tr, theme, presence);
+                view.draw_child(scene, t, tr, theme, presence);
             });
         } else {
-            view.draw(scene, t, tr, theme, presence);
+            view.draw_child(scene, t, tr, theme, presence);
         }
         scene.pop_layer();
         self.rect = Some(rect);

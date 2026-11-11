@@ -28,6 +28,7 @@ use crate::tokens::colors::Colors;
 use crate::virtual_viewport::{
     DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
 };
+use crate::widget::DrawChild;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
 
@@ -5098,7 +5099,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        Widget::draw(
+        DrawChild::draw_child(
             &mut self.core,
             scene,
             transform,

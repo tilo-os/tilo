@@ -31,6 +31,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{
     AppModel, Button, Element, ModelPath, ModelView, SkeletonFace, SkeletonShape, TaffyTreeExt,
     Widget,
@@ -1062,7 +1063,7 @@ impl Widget for ArrivingView {
         let rect = self.rect;
         let inner = &mut self.inner;
         layered(scene, transform, rect, incoming, |scene| {
-            inner.draw(scene, transform, text_renderer, theme, presence);
+            inner.draw_child(scene, transform, text_renderer, theme, presence);
         });
     }
 

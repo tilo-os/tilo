@@ -26,6 +26,7 @@ use crate::text_selection::{
 };
 use crate::theme::Theme;
 use crate::tokens::{SyntaxPalette, TextRole};
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
@@ -6477,7 +6478,7 @@ impl Widget for TextInput {
         if self.has_reveal_control() {
             self.refresh_reveal_control();
             self.reveal
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         #[cfg(test)]
         let spelling_probe = crate::profiling::frame_probe::span("single_line_spelling");

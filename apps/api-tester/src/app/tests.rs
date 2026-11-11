@@ -10,6 +10,7 @@ use automerge::{AutoCommit, ROOT};
 use ui::Theme;
 use ui::framework::testing::TestApp;
 use ui::tilo_resource::{Edit, Invoke, Operation as _, Replica, Resource as _};
+use ui::widget::DrawChild;
 
 /// The sample workspace, built through its edits and verbs.
 fn sample() -> AutoCommit {
@@ -1325,7 +1326,7 @@ fn long_navigation_labels_fit_the_shared_rows() {
         if widget.test_id() == Some("api.nav") {
             let rect = widget.get_rect();
             let mut scene = vello::Scene::new();
-            widget.draw(
+            widget.draw_child(
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 text,

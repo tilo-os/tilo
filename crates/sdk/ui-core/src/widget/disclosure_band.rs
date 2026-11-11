@@ -13,6 +13,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::floating_surface::DetachedContent;
 use crate::widget::{BandMotion, Element, TaffyTreeExt, Widget, layout_rect};
 
@@ -216,7 +217,7 @@ impl Widget for DisclosureBand {
             // building it.
             let mut painted = self.band.take_painted();
             self.child
-                .draw(&mut painted, Affine::IDENTITY, text, theme, presence);
+                .draw_child(&mut painted, Affine::IDENTITY, text, theme, presence);
             self.band.show_at_rest(painted, scene, transform);
             return;
         }
@@ -234,7 +235,7 @@ impl Widget for DisclosureBand {
         }
         let mut painted = self.band.take_painted();
         self.child
-            .draw(&mut painted, Affine::IDENTITY, text, theme, presence);
+            .draw_child(&mut painted, Affine::IDENTITY, text, theme, presence);
         self.band.show_moving(painted, scene, transform);
     }
 

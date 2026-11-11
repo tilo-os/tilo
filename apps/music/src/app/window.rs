@@ -29,6 +29,7 @@ use ui::widget::{AppModel, Continuable, Element, ModelPath, Queryable, TaffyTree
 use super::{Music, Page};
 use crate::actions::MusicEffect;
 use crate::model::Library;
+use ui::widget::DrawChild;
 
 /// The [`Music`] as the window and the view's effect handler share it.
 type Shared = Rc<RefCell<Music>>;
@@ -263,7 +264,7 @@ impl Widget for MusicApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.lend(|music| music.draw(scene, transform, text_renderer, theme, presence));
+        self.lend(|music| music.draw_child(scene, transform, text_renderer, theme, presence));
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

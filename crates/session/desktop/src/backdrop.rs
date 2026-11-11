@@ -572,13 +572,14 @@ impl ui::permissions::capability::PermissionGated for DesktopBackdrop {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::widget::DrawChild;
 
     fn picture(shade: u8) -> ImageData {
         ui::raster::rgba8(vec![shade, shade, shade, 255], 2, 2)
     }
 
     fn paint(backdrop: &mut DesktopBackdrop) {
-        backdrop.draw(
+        backdrop.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),

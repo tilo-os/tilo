@@ -30,6 +30,7 @@ use tilo_ui::theme::Theme;
 use tilo_ui::widget::Widget;
 
 use super::gallery_scene;
+use tilo_ui::widget::DrawChild;
 
 const WIDTH: u32 = 1280;
 const HEIGHT: u32 = 800;
@@ -97,7 +98,7 @@ pub fn run(_args: &[String]) {
 
         let t = tilo_ui::time::now();
         scene.reset();
-        root.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        root.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         prof.record(Pass::Draw, t.elapsed());
 
         prof.commit_frame_summed();

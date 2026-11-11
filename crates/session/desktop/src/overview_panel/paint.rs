@@ -22,6 +22,7 @@ use crate::overview::{WorkspaceCard, WorkspacePerson, WorkspaceShare};
 use crate::overview_picture::{Tile, draw_empty_strip, draw_strip_name, draw_tile_title};
 use crate::window_flight::WindowPicture;
 use crate::window_switcher::{PreviewWell, WindowApp, draw_preview_well};
+use ui::widget::DrawChild;
 
 /// A pictured window carried to another workspace is left this faint in its place.
 pub(super) const CARRIED_ALPHA: f32 = 0.35;
@@ -988,7 +989,7 @@ impl OverviewPanel {
         let input_theme = theme
             .clone()
             .with_text_scale(theme.text_scale * theme.ui_scale);
-        input.draw(
+        input.draw_child(
             scene,
             transform,
             &mut *ctx.text,

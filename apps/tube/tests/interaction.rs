@@ -24,6 +24,7 @@ use tube::TubeApp;
 use tube::model::Route;
 use ui::headless::Framed;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 use ui::widget::{MediaSize, Widget};
 use ui::window_toolbar::ToolbarEvent;
 use vello::kurbo::Rect;
@@ -110,7 +111,7 @@ fn image_draws(framed: &Framed<TubeApp>) -> usize {
 fn player_draws(app: TubeApp) -> usize {
     fn paint_player(widget: &mut dyn Widget, scene: &mut vello::Scene) -> bool {
         if widget.name() == "PlayerHost" {
-            widget.draw(
+            widget.draw_child(
                 scene,
                 vello::kurbo::Affine::IDENTITY,
                 &mut ui::TextRenderer::new(),
@@ -1538,7 +1539,7 @@ fn draw_cards(
     presence: &ui::presence::PresenceCtx,
 ) -> usize {
     if widget.name() == "MediaCard" {
-        widget.draw(scene, vello::kurbo::Affine::IDENTITY, text, theme, presence);
+        widget.draw_child(scene, vello::kurbo::Affine::IDENTITY, text, theme, presence);
         return 1;
     }
     widget

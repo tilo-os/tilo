@@ -40,6 +40,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::{EffectiveMotion, MotionSource};
+use crate::widget::DrawChild;
 use crate::widget::find_bar::{FindAbilities, FindOptions, FindSession, Findable, with_findable};
 use crate::widget::search_field::{FilterCount, apply_filter, with_filterable};
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, SearchField, Widget};
@@ -1854,7 +1855,8 @@ impl Widget for WindowSearch {
                 &cover,
             );
         }
-        self.field.draw(scene, transform, text, theme, presence);
+        self.field
+            .draw_child(scene, transform, text, theme, presence);
         if self.parts_opacity > 0.0 {
             let bounds = self
                 .parts

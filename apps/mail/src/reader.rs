@@ -23,6 +23,7 @@ use ui::text_render::{TextRenderer, TextStyle};
 use ui::theme::Theme;
 #[cfg(test)]
 use ui::webview::{SharedEngine, WebViewCommand};
+use ui::widget::DrawChild;
 use ui::widget::{
     AvatarFace, AvatarSize, Banner, BannerContent, BannerKind, Button, ButtonFace, ChipFace,
     ChipLead, ControlSize, EmptyState, EmptyStateContent, FindMatch, FindOptions, Findable,
@@ -824,7 +825,7 @@ impl MessageReader {
         let inset = body.input.text_inset_x(theme);
         let rect = Rect::new(flow.x - inset, flow.y, flow.x + flow.width + inset, flow.y);
         let height = body.input.place_wrapped(rect, flow.ctx.text, theme);
-        body.input.draw(
+        body.input.draw_child(
             flow.ctx.scene,
             flow.ctx.transform,
             flow.ctx.text,
@@ -1809,7 +1810,7 @@ mod tests {
 
     fn draw(reader: &mut MessageReader) {
         let mut scene = Scene::new();
-        reader.draw(
+        reader.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1820,7 +1821,7 @@ mod tests {
 
     fn draw_themed(reader: &mut MessageReader, theme: &Theme) {
         let mut scene = Scene::new();
-        reader.draw(
+        reader.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -2092,7 +2093,7 @@ mod tests {
         reader.set_html_engine(engine.clone());
         let dense = |reader: &mut MessageReader| {
             let mut scene = Scene::new();
-            reader.draw(
+            reader.draw_child(
                 &mut scene,
                 Affine::scale(2.0),
                 &mut TextRenderer::new(),

@@ -39,6 +39,7 @@ use crate::journal::{JournalLoadError, Page};
 use crate::model::{Filter, LogEntry, Priority};
 use crate::resource::{JournalFixture, Logs};
 use crate::view::{Bridge, JournalPane, JournalRow, Placeholder, Request, Shared};
+use ui::widget::DrawChild;
 use ui::window_toolbar::{ToolbarAction, ToolbarEvent};
 
 const POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -999,7 +1000,7 @@ impl Widget for LogsWindow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.shell.draw(scene, transform, tr, theme, presence);
+        self.shell.draw_child(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

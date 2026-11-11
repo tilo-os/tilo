@@ -50,6 +50,7 @@ use crate::model::{LocationId, SavedLocation, WeatherModel};
 use crate::net::{Request, RequestKind, Response};
 use crate::presentation::PlaceRowText;
 use ui::framework::Submit;
+use ui::widget::DrawChild;
 mod detail;
 use crate::resource::Weather;
 use crate::units::Units;
@@ -1309,7 +1310,7 @@ impl Core {
         let field = Rect::new(panel.x0 + pad, top, panel.x1 - pad, top + field_h);
         self.search_field_rect = field;
         self.search.apply_layout_external(field);
-        self.search.draw(scene, t, tr, &on_panel, presence);
+        self.search.draw_child(scene, t, tr, &on_panel, presence);
         self.search.draw_overlay(scene, t, tr, theme, presence);
     }
 

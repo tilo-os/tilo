@@ -27,6 +27,7 @@ use crate::gesture::{GesturePhase, TouchGestureArena, TouchGestureEvent};
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::composition_parts::Parts;
 use crate::widget::{
     Element, Manual, ManualInvalidation, MeasureConstraint, Widget, WidgetLayoutError,
@@ -608,7 +609,7 @@ impl Map {
                 continue;
             };
             pose.paint(scene, transform, bounds, |scene, transform| {
-                child.draw(scene, transform, text, theme, presence);
+                child.draw_child(scene, transform, text, theme, presence);
             });
         }
     }

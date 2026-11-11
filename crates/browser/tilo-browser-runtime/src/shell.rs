@@ -49,6 +49,7 @@ use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::vello::Scene;
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use ui::winit::event::{ElementState, WindowEvent};
 use ui::{TextRenderer, Theme};
@@ -1843,26 +1844,31 @@ impl Widget for BrowserShell {
     ) {
         let started = ui::time::now();
         self.drawn_minute.set(minute());
-        self.desk.draw(scene, transform, text, theme, presence);
+        self.desk
+            .draw_child(scene, transform, text, theme, presence);
         // Last of the desktop, so what the bar opens below its band stays
         // above windows.
-        self.top.draw(scene, transform, text, theme, presence);
+        self.top.draw_child(scene, transform, text, theme, presence);
         // Who is here, over the desk: the session's roster, its cards and every other person's
         // pointer, on the layer it placed.
         for layer in self.layers.iter_mut() {
-            layer.draw(scene, transform, text, theme, presence);
+            layer.draw_child(scene, transform, text, theme, presence);
         }
         // Over everything but the picker, while the person invites someone
         // or browses the directory.
-        self.invite.draw(scene, transform, text, theme, presence);
-        self.directory.draw(scene, transform, text, theme, presence);
+        self.invite
+            .draw_child(scene, transform, text, theme, presence);
+        self.directory
+            .draw_child(scene, transform, text, theme, presence);
         // Over everything, while the person reads or changes the keys.
-        self.guide.draw(scene, transform, text, theme, presence);
+        self.guide
+            .draw_child(scene, transform, text, theme, presence);
         // Over everything, while an agent waits on the person's answer.
-        self.questions.draw(scene, transform, text, theme, presence);
+        self.questions
+            .draw_child(scene, transform, text, theme, presence);
         // A window's menu, where its bar was clicked.
         self.window_menu
-            .draw(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, presence);
         // Over everything, while picking what to report.
         self.picker.draw(scene, transform, text, theme, self.rect);
         let built = ui::time::now().saturating_duration_since(started);

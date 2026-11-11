@@ -3,6 +3,7 @@ use crate::model::{Palette, Recurrence};
 use automerge::ROOT;
 use chrono::Datelike;
 use ui::headless::Framed;
+use ui::widget::DrawChild;
 use ui::widget::{Edits, ExternalDatePickerHit};
 
 #[path = "tests/caldav_sync.rs"]
@@ -1470,7 +1471,7 @@ fn detail_choices_and_invitation_handoff_are_exact_resource_actions() {
         app.relayout();
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -2032,7 +2033,7 @@ fn accessibility_exports_named_stable_controls_that_reuse_actions() {
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text,

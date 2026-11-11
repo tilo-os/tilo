@@ -947,6 +947,7 @@ mod tests {
     use crate::overview_tilo::TiloDesk;
     use crate::window_switcher::WindowApp;
     use ui::widget::AppKind;
+    use ui::widget::DrawChild;
     use winit::keyboard::{Key, ModifiersState, NamedKey};
 
     fn tab(id: u64, title: &str, active: bool) -> OverviewTab {
@@ -1513,7 +1514,7 @@ mod tests {
         panel.set_flight(flight.clone());
         flight.set_clock(1.0, HashMap::new());
         let mut scene = Scene::new();
-        panel.draw(
+        panel.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1544,7 +1545,7 @@ mod tests {
         // Closed and settled back, nothing is pictured.
         panel.open_on(false, OverviewDesk::default());
         flight.set_clock(0.0, HashMap::new());
-        panel.draw(
+        panel.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -1562,7 +1563,7 @@ mod tests {
         let mut text = TextRenderer::new();
         for step in 1..=4 {
             flight.set_clock(f64::from(step) / 4.0, HashMap::new());
-            panel.draw(
+            panel.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut text,
@@ -1638,7 +1639,7 @@ mod tests {
         assert!(panel.accessibility().is_none());
         assert_eq!(panel.get_rect(), Rect::ZERO);
         let mut scene = Scene::new();
-        panel.draw(
+        panel.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),

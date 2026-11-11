@@ -26,6 +26,7 @@ use crate::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_p
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::Button;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use crate::widget::link_popover::{LinkPopover, PageEntry};
@@ -7904,7 +7905,7 @@ fn draw_block(
             let mut quiet = ctx.theme.clone();
             quiet.text_primary = quiet.text_dim;
             quiet.tokens.colors.text_primary = quiet.tokens.colors.text_dim;
-            b.line.draw(
+            b.line.draw_child(
                 ctx.scene,
                 ctx.transform,
                 ctx.text_renderer,
@@ -7964,7 +7965,7 @@ fn draw_block(
             // behind that editor is still there, just not painted.
             let descriptor = formula_descriptor(&b.kind);
             if descriptor.is_none_or(|value| value.mode == crate::math::FormulaMode::Source) {
-                b.line.draw(
+                b.line.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text_renderer,
@@ -7978,7 +7979,7 @@ fn draw_block(
         BlockKind::Table { visual } => {
             if !visual {
                 let outer = ctx.table_cells.is_some().then(|| std::mem::take(ctx.scene));
-                b.line.draw(
+                b.line.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text_renderer,
@@ -8008,7 +8009,7 @@ fn draw_block(
             return;
         }
     }
-    b.line.draw(
+    b.line.draw_child(
         ctx.scene,
         ctx.transform,
         ctx.text_renderer,
@@ -9701,20 +9702,24 @@ impl Widget for BlockEditor {
                         y + 24.0 * self.text_scale,
                     ));
                 }
-                control
-                    .button
-                    .draw(ctx.scene, ctx.transform, ctx.text_renderer, theme, presence);
+                control.button.draw_child(
+                    ctx.scene,
+                    ctx.transform,
+                    ctx.text_renderer,
+                    theme,
+                    presence,
+                );
                 if self.focused == Some(idx)
                     || Rect::new(rect.x0, top, rect.x1, rect.y1).contains(self.last_mouse_pos)
                 {
-                    control.add_row.draw(
+                    control.add_row.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
                         theme,
                         presence,
                     );
-                    control.add_column.draw(
+                    control.add_column.draw_child(
                         ctx.scene,
                         ctx.transform,
                         ctx.text_renderer,
@@ -10068,7 +10073,7 @@ impl Widget for BlockEditor {
                 {
                     image
                         .button_mut()
-                        .draw(scene, transform, text_renderer, theme, presence);
+                        .draw_child(scene, transform, text_renderer, theme, presence);
                 }
             }
             if let Some(handle) = self.image_resize_handle(index) {

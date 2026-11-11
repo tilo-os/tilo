@@ -15,6 +15,7 @@ use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::{AppModel, ModelPath};
@@ -3037,7 +3038,7 @@ impl Widget for NotesApp {
             // Unclipped: the page tree's context menu is a floating surface
             // that reaches past its column.
             self.sidebar
-                .draw(scene, transform, text_renderer, &sidebar_theme, presence);
+                .draw_child(scene, transform, text_renderer, &sidebar_theme, presence);
             if self.outline_node.is_some() {
                 ui::widget::draw_child_at(
                     &mut *self.outline,

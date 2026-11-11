@@ -20,6 +20,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{Element, NativeViewLifecycle, TaffyTreeExt, Widget};
 
 /// Live parent-window context supplied before a native view is shown.
@@ -429,7 +430,7 @@ impl Widget for NativeView {
         }
 
         if let Some(fallback) = &mut self.fallback {
-            fallback.draw(scene, transform, text_renderer, theme, presence);
+            fallback.draw_child(scene, transform, text_renderer, theme, presence);
             return;
         }
 

@@ -34,6 +34,7 @@
 //! ```
 
 use std::collections::HashMap;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -2178,8 +2179,13 @@ impl Widget for MainPanel {
             // Its own part: naming the note repaints the title, not the page.
             self.title_label.apply_layout_external(self.title_rect);
             let mut title_scene = Scene::new();
-            self.title_label
-                .draw(&mut title_scene, transform, text_renderer, theme, presence);
+            self.title_label.draw_child(
+                &mut title_scene,
+                transform,
+                text_renderer,
+                theme,
+                presence,
+            );
             // Once the document has moved under the pinned title, one hairline
             // says where the title stops and the document is cut off.
             let pinned = Rect::new(
@@ -2229,7 +2235,7 @@ impl Widget for MainPanel {
             let mut outside = scene.clone();
             if let Some(header) = self.header.built_mut() {
                 let mut header_scene = Scene::new();
-                header.draw(&mut header_scene, transform, text_renderer, theme, presence);
+                header.draw_child(&mut header_scene, transform, text_renderer, theme, presence);
                 scene.append(&header_scene, None);
                 let rect = header.get_rect();
                 parts.push(ui::widget::paint_damage::PaintPart::new(
@@ -2244,7 +2250,7 @@ impl Widget for MainPanel {
             }
             let mut editor_scene = Scene::new();
             self.editor
-                .draw(&mut editor_scene, transform, text_renderer, theme, presence);
+                .draw_child(&mut editor_scene, transform, text_renderer, theme, presence);
             let pointer_chrome = self.editor.editor().pointer_chrome();
             if let Some(body) = &mut self.body_drawing {
                 body.pointer_chrome = pointer_chrome;

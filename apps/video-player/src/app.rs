@@ -68,6 +68,7 @@ use ui::tilo_resource::{ActionDecl, Id};
 use crate::actions::VideoEffect;
 use crate::preferences::{PLAYBACK_RATES, PlayerSettings, RecentMedia, RecentVideos, ResumePoints};
 use crate::shared::{Library as PlayerResource, library as verbs};
+use ui::widget::DrawChild;
 
 /// The playback preferences the player follows.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -1109,7 +1110,7 @@ impl PlayerState {
             self.paint_letterbox(scene, transform, theme);
         } else {
             self.player
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.paint_media_status(scene, transform, text_renderer, theme);
         self.paint_library_panel(scene, transform, text_renderer, theme);

@@ -11,6 +11,7 @@
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::component::{Component, Described, Event};
+use crate::widget::DrawChild;
 use crate::widget::modal_dialog::DialogAction;
 use crate::widget::{
     Button, Container, Element, FloatingPanel, ModalDialog, PanelAlign, Popover, PopoverSide,
@@ -173,7 +174,8 @@ impl Widget for DeclaredModal {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.dialog.draw(scene, transform, text, theme, presence);
+        self.dialog
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(
@@ -399,7 +401,8 @@ impl Widget for DeclaredPanel {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.panel.draw(scene, transform, text, theme, presence);
+        self.panel
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(
@@ -617,7 +620,8 @@ impl Widget for DeclaredPopover {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.popover.draw(scene, transform, text, theme, presence);
+        self.popover
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn handle_event(
@@ -788,7 +792,8 @@ impl Widget for DeclaredPopoverButton {
         theme: &crate::theme::Theme,
         presence: &crate::presence::PresenceCtx,
     ) {
-        self.pair.draw(scene, transform, text, theme, presence);
+        self.pair
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn draw_overlay(

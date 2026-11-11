@@ -5,6 +5,7 @@
 use crate::i18n::t;
 use crate::sessions::OpenState;
 use crate::target::{EnvironmentSummary, SessionTarget};
+use ui::widget::DrawChild;
 use ui::widget::{Button, ButtonFace, ButtonRole, ControlSize, TextInput};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1193,7 +1194,7 @@ impl TerminalWidget {
                 submit.x0 - gap,
                 field_y + button_h,
             ));
-            input.draw(scene, transform, tr, theme, presence);
+            input.draw_child(scene, transform, tr, theme, presence);
         }
     }
 

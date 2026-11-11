@@ -32,6 +32,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::control_size::ControlSize;
 use crate::widget::{Button, ButtonFace, ButtonRole, TaffyTreeExt, Widget, layout_rect};
 
@@ -1086,10 +1087,11 @@ impl Banner {
         presence: &PresenceCtx,
     ) {
         self.place_buttons(text, theme);
-        self.body.draw(scene, transform, text, theme, presence);
+        self.body
+            .draw_child(scene, transform, text, theme, presence);
         let on_well = theme.on_ground(well(theme));
         for button in self.buttons_mut() {
-            button.draw(scene, transform, text, &on_well, presence);
+            button.draw_child(scene, transform, text, &on_well, presence);
         }
     }
 }

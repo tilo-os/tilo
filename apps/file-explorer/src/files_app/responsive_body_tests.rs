@@ -9,6 +9,7 @@ use super::*;
 use taffy::prelude::*;
 use ui::framework::HostDelivery as _;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 
 include!("../native_proof_tests.rs");
 
@@ -167,7 +168,7 @@ impl H {
         let theme = Theme::dark();
         let presence = ui::presence::PresenceCtx::empty();
         let mut scene = vello::Scene::new();
-        self.w.draw(
+        self.w.draw_child(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,
             &mut self.tr,

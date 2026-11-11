@@ -3,6 +3,7 @@ use crate::presentation::MAX_KEYBOARD_CONTENT_WIDTH;
 use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
+use ui::widget::DrawChild;
 
 #[test]
 fn contextual_tools_retire_semantic_targets_and_cannot_use_custom_callbacks() {
@@ -717,7 +718,7 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("osk_dialpad.png");
@@ -745,7 +746,7 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
         let presence = PresenceCtx::empty();
         let mut tr = TextRenderer::new();
         let mut scene = Scene::new();
-        osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
         let dir = tempfile::tempdir().unwrap();
         let out = dir.path().join("osk_suggestion_bar.png");
@@ -1584,7 +1585,7 @@ fn every_panel_face_paints() {
     open_panel(&mut osk);
     let mut paint = |osk: &mut OskWidget| {
         let mut scene = Scene::new();
-        osk.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        osk.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         assert!(!scene.encoding().is_empty());
     };
     paint(&mut osk);

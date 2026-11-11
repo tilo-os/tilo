@@ -44,6 +44,7 @@ pub use crate::table_model::*;
 use crate::table_model::{DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::{TextInput, Widget};
 
 // ---------------------------------------------------------------------------
@@ -456,7 +457,7 @@ impl Table {
                 &rect,
             );
             input.suppress_caret_paint(suppress_caret);
-            input.draw(scene, transform, tr, theme, presence);
+            input.draw_child(scene, transform, tr, theme, presence);
             input.suppress_caret_paint(false);
         }
     }
@@ -1237,7 +1238,7 @@ impl Widget for Table {
 
         // Cells (real TextInputs paint their own text + caret).
         for cell in &mut self.cells {
-            cell.draw(scene, transform, text_renderer, theme, presence);
+            cell.draw_child(scene, transform, text_renderer, theme, presence);
         }
 
         let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);

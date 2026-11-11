@@ -18,6 +18,7 @@ use ui::kurbo::{Affine, Point, Rect};
 use ui::presence::PresenceCtx;
 use ui::taffy::{LengthPercentageAuto, NodeId, Position, Style, TaffyTree};
 use ui::vello::Scene;
+use ui::widget::DrawChild;
 use ui::widget::{EventCtx, TaffyTreeExt as _, Widget};
 use ui::winit::event::WindowEvent;
 use ui::{TextRenderer, Theme};
@@ -140,7 +141,8 @@ impl Widget for LayerWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.root.draw(scene, transform, text, theme, presence);
+        self.root
+            .draw_child(scene, transform, text, theme, presence);
         self.revision.set(self.revision.get().wrapping_add(1));
     }
 

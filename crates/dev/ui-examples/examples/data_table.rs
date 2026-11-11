@@ -33,6 +33,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::{TextKind, TextRenderer};
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::Widget;
 use tilo_ui::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
@@ -147,7 +148,7 @@ fn shoot(table: &mut DataTable<Proc>, scroll_y: f32, out: &Path) -> Option<Rect>
         Affine::IDENTITY,
         &clip,
     );
-    table.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    table.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     scene.pop_layer();
 
     let mut r = OffscreenRenderer::new(WIDTH, h);

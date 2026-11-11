@@ -34,6 +34,7 @@ use crate::search::{ScopeDecl, SearchOpener, SearchRequest};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::capability::capability_mut;
 use crate::widget::text::centered_text_top;
 use crate::widget::{ControlSize, TaffyTreeExt};
@@ -874,7 +875,7 @@ impl Widget for SearchField {
         }
         self.fit_placeholder(text_renderer, theme);
         self.input
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
 
         self.draw_trailing_slot(scene, transform, text_renderer, theme);
         if self.clear_visible() {
@@ -1207,9 +1208,9 @@ impl Widget for Filtered {
         presence: &PresenceCtx,
     ) {
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.content
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

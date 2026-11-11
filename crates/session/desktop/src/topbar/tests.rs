@@ -3,6 +3,7 @@ use automerge::AutoCommit;
 use tilo_desktop_model::{
     DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceSlot,
 };
+use ui::widget::DrawChild;
 
 #[test]
 fn compact_workspace_identity_outranks_redundant_position() {
@@ -24,7 +25,7 @@ fn desktop_topbar_uses_scaled_tokens_once_and_contains_workspace_text() {
     let mut renderer = TextRenderer::new();
     renderer.set_text_scale(2.0);
     let mut scene = Scene::new();
-    bar.draw(
+    bar.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut renderer,
@@ -164,7 +165,7 @@ pub(super) fn lay_out_and_draw_with_text(
         )
         .expect("layout");
     bar.apply_layout(&taffy, node, Point::ORIGIN);
-    bar.draw(
+    bar.draw_child(
         &mut Scene::new(),
         Affine::IDENTITY,
         text_renderer,
@@ -216,7 +217,7 @@ fn lay_out_over_windows(bar: &mut TopBarChrome) -> f32 {
 
 fn painted(bar: &mut TopBarChrome) -> bool {
     let mut scene = Scene::new();
-    bar.draw(
+    bar.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
@@ -1034,7 +1035,7 @@ fn a_wheel_over_the_time_changes_nothing() {
 fn scene_fingerprint(bar: &mut TopBarChrome) -> (Vec<u32>, usize, usize) {
     let mut scene = Scene::new();
     bar.cache_fp = CacheFingerprint::default();
-    bar.draw(
+    bar.draw_child(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
@@ -1530,7 +1531,7 @@ fn a_centre_that_swaps_again_and_again_settles_on_one_label() {
     let presence = PresenceCtx::default();
     let mut paint = |bar: &mut TopBarChrome| {
         let mut scene = Scene::new();
-        bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+        bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
     };
     paint(&mut bar);
     let start = ui::time::now();
@@ -1624,7 +1625,7 @@ fn the_centre_selector_grows_into_the_lane_and_back() {
         ui::time::testing::with_monotonic_time(at, || {
             bar.refresh_status_and_media_state();
             let mut scene = Scene::new();
-            bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+            bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
         });
     };
     let start = ui::time::now();
@@ -1967,7 +1968,7 @@ fn unread_activity_paints_nothing_on_the_people_control() {
         bar.apply_layout(&taffy, node, Point::ORIGIN);
         let mut scene = Scene::new();
         let mut tr = TextRenderer::new();
-        bar.draw(
+        bar.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -2040,7 +2041,7 @@ fn avatar_stack_has_breathing_room_to_tray_pill() {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let avatar = bar.avatar_stack_rect;
     let tray = bar.tray_pill_rect();
@@ -2101,7 +2102,7 @@ fn the_invite_button_invites_by_pointer_and_by_assistive_technology() {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     assert!(
         bar.collaborator_initials().is_empty() && bar.collaborator_overflow() == 0,
@@ -2183,7 +2184,7 @@ fn watching_pages_and_marked_agents_read_in_the_avatar_stack() {
             )
             .unwrap();
         bar.apply_layout(&taffy, node, Point::ORIGIN);
-        bar.draw(
+        bar.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -2359,7 +2360,7 @@ fn compact_topbar_aligns_floating_controls_and_keeps_the_corner_target() {
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
-    bar.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    bar.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let bar_bottom = bar.rect.y1;
     assert!(

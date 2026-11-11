@@ -3,6 +3,7 @@
     reason = "this file is one part of the `VideoEditorApp` impl split out of `app.rs`; it shares the parent's whole scope"
 )]
 use super::*;
+use ui::widget::DrawChild;
 
 impl VideoEditorApp {
     /// The bin's ground — the sidebar region docked, the floating drawer as an
@@ -436,7 +437,7 @@ impl VideoEditorApp {
         };
         if let Some((_, label)) = self.bin_rename.as_mut() {
             label.apply_layout_external(rect);
-            label.draw(scene, tf, tr, &panel, presence);
+            label.draw_child(scene, tf, tr, &panel, presence);
         }
     }
 }

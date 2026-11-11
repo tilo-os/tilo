@@ -57,6 +57,7 @@ use tilo_ui::offscreen::{OffscreenRenderTiming, OffscreenRenderer};
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::{
     Avatar, AvatarSize, Badge, Button, Column, ProgressBar, Row, ScrollAxis, Scrollable, Spinner,
@@ -1067,7 +1068,7 @@ fn full_draw(
     );
     let peer_damage = clock.pin(|| {
         let prev_vp = state.presence.push_viewport(vp);
-        state.root.draw(
+        state.root.draw_child(
             state.scene,
             Affine::IDENTITY,
             state.text_renderer,

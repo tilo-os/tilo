@@ -31,6 +31,7 @@ use ui::lock::MutexRecover as _;
 use ui::tilo_actions::{ActionKind, ConfirmationPolicy, ExecutionMode, OperationKind, ResultSpec};
 use ui::tilo_actions::{Availability, ResourceSpec};
 use ui::time::{Duration, Instant, UNIX_EPOCH};
+use ui::widget::DrawChild;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
@@ -6907,7 +6908,7 @@ impl FilesState {
         self.rename_input.apply_layout_external(rect);
         let input = &mut self.rename_input;
         self.rename_paint.record(scene, transform, |scene| {
-            input.draw(scene, transform, text_renderer, theme, presence);
+            input.draw_child(scene, transform, text_renderer, theme, presence);
             // The field, its focus ring and the correction chip it floats
             // past itself.
             let reach = f64::from(theme.tokens.spacing.s2);

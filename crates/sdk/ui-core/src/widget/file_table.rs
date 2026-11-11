@@ -40,6 +40,7 @@ use crate::selection::SelectionModel;
 use crate::text_render::{TextKind, TextRenderer};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::Widget;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable, text_band, type_line_height};
 
@@ -737,7 +738,7 @@ impl<R: FileRow> FileTable<R> {
         presence: &PresenceCtx,
     ) {
         if let Some(table) = self.table.as_mut() {
-            table.draw(scene, transform, text_renderer, theme, presence);
+            table.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

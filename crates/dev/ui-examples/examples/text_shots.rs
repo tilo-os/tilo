@@ -25,6 +25,7 @@ use tilo_ui::offscreen::OffscreenRenderer;
 use tilo_ui::presence::PresenceCtx;
 use tilo_ui::text_render::TextRenderer;
 use tilo_ui::theme::Theme;
+use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::{ColorPicker, NumberInput, TextInput, Widget};
 
 /// Lay a single widget out at `origin` through the real taffy pass and return
@@ -98,7 +99,7 @@ pub fn run(_args: &[String]) {
     // continuous highlight band paints.
     {
         let mut s = Scene::new();
-        ti.draw(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
+        ti.draw_child(&mut s, Affine::IDENTITY, &mut tr, &theme, &presence);
     }
     ti.set_selection(6, 13); // "Gallery"
 
@@ -120,9 +121,9 @@ pub fn run(_args: &[String]) {
     layout_one(&mut cp, Point::new(40.0, 150.0));
 
     let mut scene = Scene::new();
-    ti.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    ni.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
-    cp.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    ti.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    ni.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    cp.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 
     let w = 400u32;
     let h = 400u32;

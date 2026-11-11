@@ -19,6 +19,7 @@ use crate::paint::PaintCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::floating_surface;
 use crate::widget::scroll_region::ScrollRegion;
 use crate::widget::spinner::Spinner;
@@ -1308,7 +1309,7 @@ impl<R: FloatingRow> FloatingList<R> {
                 x + side,
                 rect.center().y + side / 2.0,
             ));
-            crate::widget::Widget::draw(
+            DrawChild::draw_child(
                 &mut self.spinner,
                 scene,
                 content,

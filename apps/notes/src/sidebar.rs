@@ -970,6 +970,7 @@ mod tests {
     use ui::Widget;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
+    use ui::widget::DrawChild;
     use vello::kurbo::{Point, Rect};
     use winit::event::{ElementState, Modifiers, WindowEvent};
     use winit::keyboard::NamedKey;
@@ -1055,7 +1056,7 @@ mod tests {
             .expect("the sidebar lays out");
             sidebar.apply_layout(&taffy, node, rect.origin());
             let mut scene = vello::Scene::new();
-            sidebar.draw(
+            sidebar.draw_child(
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
                 &mut text,

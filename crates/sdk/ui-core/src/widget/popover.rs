@@ -38,6 +38,7 @@ use crate::widget::{AppModel, ModelPath, TaffyTreeExt, Widget};
 /// [`Popover::resolved_side`].
 pub use crate::widget::floating_surface::PopoverSide;
 
+use crate::widget::DrawChild;
 /// Which edge of its anchor a popover lines up with.
 pub use crate::widget::floating_surface::PanelAlign;
 
@@ -837,7 +838,7 @@ impl Widget for PopoverPrompt {
                 &theme.text(TextRole::Label),
             );
         }
-        self.input.draw(scene, transform, tr, theme, presence);
+        self.input.draw_child(scene, transform, tr, theme, presence);
         if !self.hint.is_empty() {
             let y = self.field_rect().y1 + Self::gap(theme);
             tr.draw_style(
@@ -1309,7 +1310,7 @@ impl<C: Widget + 'static> Widget for Popover<C> {
                 }
                 let transform = transform * Affine::translate(shift);
                 self.content
-                    .draw(scene, transform, text_renderer, &on_panel, presence);
+                    .draw_child(scene, transform, text_renderer, &on_panel, presence);
                 self.content
                     .draw_overlay(scene, transform, text_renderer, &on_panel, presence);
             }
@@ -1698,7 +1699,7 @@ impl<C: Widget + 'static> Widget for PopoverButton<C> {
         // A keyboard activation reaches the button through the host.
         self.take_request();
         self.button
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

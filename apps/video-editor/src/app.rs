@@ -50,6 +50,7 @@ use crate::param::{Interp, Param};
 use crate::portal::{self, ImportChannel, ImportOutcome};
 use crate::probe;
 use crate::timecode::{clock, frame_step, snap_to_frame, timecode};
+use ui::widget::DrawChild;
 
 mod accessibility;
 mod bin_paint;
@@ -6008,13 +6009,13 @@ impl VideoEditorApp {
         }
         if let (Some((_, dropdown)), Some(rect)) = (self.font_picker.as_mut(), layout.title_font) {
             dropdown.apply_layout_external(rect);
-            dropdown.draw(scene, transform, tr, theme, presence);
+            dropdown.draw_child(scene, transform, tr, theme, presence);
         }
         if let (Some((media_id, field)), Some(rect)) = (self.title_edit.as_mut(), layout.title_text)
         {
             let media_id = *media_id;
             field.apply_layout_external(rect.inset(-4.0));
-            field.draw(scene, transform, tr, theme, presence);
+            field.draw_child(scene, transform, tr, theme, presence);
             crate::presence::draw_peer_field_carets(
                 &mut crate::presence::PeerPaintCtx::new(scene, transform, tr, theme, presence),
                 crate::presence::FIELD_TITLE_WORDS,
@@ -6034,7 +6035,7 @@ impl VideoEditorApp {
             .map(|(_, row)| self.marker_edit_rect(*row));
         if let (Some((_, label)), Some(rect)) = (self.marker_rename.as_mut(), marker_row) {
             label.apply_layout_external(rect);
-            label.draw(scene, transform, tr, theme, presence);
+            label.draw_child(scene, transform, tr, theme, presence);
         }
     }
 }
@@ -8192,7 +8193,7 @@ impl VideoEditorApp {
         );
         if let Some(field) = self.goto_entry.as_mut() {
             field.apply_layout_external(l.entry);
-            field.draw(scene, tf, tr, &panel, presence);
+            field.draw_child(scene, tf, tr, &panel, presence);
         }
         let (hint, hc) = if self.navigation.goto_notice {
             ("Not a timecode, try 1:30", c.semantic.danger)

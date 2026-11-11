@@ -38,6 +38,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
 #[path = "autocomplete_component.rs"]
@@ -1151,7 +1152,7 @@ impl Widget for Autocomplete {
         // The field itself; the suggestion list floats in `draw_overlay`.
         self.input.apply_layout_external(self.rect);
         self.input
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

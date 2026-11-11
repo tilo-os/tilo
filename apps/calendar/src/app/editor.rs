@@ -30,6 +30,7 @@ use crate::date;
 use crate::draw_util::text_in_band;
 use crate::event_popovers::{PopoverAnchors, PopoverKind as FormPopover};
 use crate::model::{Event, Palette, Priority, Recurrence, Task};
+use ui::widget::DrawChild;
 
 const DONE: &str = "Done";
 
@@ -969,7 +970,7 @@ impl CalendarApp {
                         &mut hits,
                     );
                     for choice in self.choices.shown_mut(true) {
-                        Widget::draw(&mut choice.dropdown, scene, t, text, &sheet, presence);
+                        choice.dropdown.draw_child(scene, t, text, &sheet, presence);
                     }
                 }
             }
@@ -985,7 +986,8 @@ impl CalendarApp {
             self.form.notes_label,
             self.form.notes_label.width(),
         );
-        self.notes_editor.draw(scene, t, text, &sheet, presence);
+        self.notes_editor
+            .draw_child(scene, t, text, &sheet, presence);
         scene.pop_layer();
         if self.detail_scroll_max > 0.0 {
             // The body scrolls: the shared quiet thumb in the sheet's
@@ -1107,7 +1109,7 @@ impl CalendarApp {
         let mouse = self.last_mouse;
         Self::draw_form_labels(&mut PaintCtx::new(scene, t, text, sheet), &f);
 
-        self.title_input.draw(scene, t, text, sheet, presence);
+        self.title_input.draw_child(scene, t, text, sheet, presence);
         hits.push((f.title, Action::FocusField(FormField::Title)));
 
         let popover = self.event_popovers.active();
@@ -1166,11 +1168,12 @@ impl CalendarApp {
             Self::draw_conflict(&mut PaintCtx::new(scene, t, text, sheet), f.conflict, count);
         }
 
-        self.location_input.draw(scene, t, text, sheet, presence);
+        self.location_input
+            .draw_child(scene, t, text, sheet, presence);
         hits.push((f.location, Action::FocusField(FormField::Location)));
 
         for choice in self.choices.shown_mut(false) {
-            Widget::draw(&mut choice.dropdown, scene, t, text, sheet, presence);
+            choice.dropdown.draw_child(scene, t, text, sheet, presence);
         }
 
         // The event's colour is user content: the swatches show the colours
@@ -1189,7 +1192,8 @@ impl CalendarApp {
             hits.push((target, Action::SetEventColor(*palette)));
         }
 
-        self.invite_input.draw(scene, t, text, sheet, presence);
+        self.invite_input
+            .draw_child(scene, t, text, sheet, presence);
         hits.push((f.invite, Action::FocusField(FormField::Invite)));
         let mut ctx = PaintCtx::new(scene, t, text, sheet);
         for (attendee, rect) in event.attendees.iter().zip(&f.guests) {
@@ -1367,14 +1371,8 @@ impl CalendarApp {
             panel.y0 + pad + grid_h,
         );
         self.task_due_picker.apply_layout_external(picker);
-        Widget::draw(
-            &mut self.task_due_picker,
-            scene,
-            t,
-            text,
-            &on_panel,
-            &PresenceCtx::empty(),
-        );
+        self.task_due_picker
+            .draw_child(scene, t, text, &on_panel, &PresenceCtx::empty());
         for (hit, rect) in self.task_due_picker.hit_regions_external() {
             let action = match hit {
                 ui::widget::ExternalDatePickerHit::PreviousMonth => Action::ShiftTaskDueMonth(-1),

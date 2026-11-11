@@ -16,6 +16,7 @@ use automerge::AutoCommit;
 use lsp_types::DiagnosticSeverity;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
+use ui::widget::DrawChild;
 use ui::widget::Widget as _;
 use vello::Scene;
 use vello::kurbo::Affine;
@@ -38,7 +39,7 @@ fn view_of(doc: &mut AutoCommit, lines: usize) -> EditorView {
 /// One frame through the production draw.
 fn painted(view: &mut EditorView, renderer: &mut TextRenderer, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
-    view.draw(
+    view.draw_child(
         &mut scene,
         Affine::IDENTITY,
         renderer,

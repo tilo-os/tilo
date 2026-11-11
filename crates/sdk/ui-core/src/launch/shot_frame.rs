@@ -8,6 +8,7 @@
 //! `sync` → `build_layout` → layout → `apply_layout` → draw → PNG, the same
 //! cycle as `ui::App`. [`render_widget_png`] runs that cycle unchanged.
 
+use crate::widget::DrawChild;
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
@@ -174,7 +175,7 @@ impl ShotFrame {
         crate::backdrop::layer_scene(&scene, 0);
         let previous = self.presence.push_viewport(self.window());
         self.presence.with_permissions(self.permission.clone(), || {
-            widget.draw(
+            widget.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut self.text,

@@ -20,6 +20,7 @@
 use automerge::{AutoCommit, ObjId};
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -4574,7 +4575,7 @@ impl Widget for BrowserWidget {
             ui::paint::fill_rect(scene, transform, rect, theme.tokens.colors.overlay_medium);
         }
         if let Some(c) = self.composed.element_mut() {
-            c.draw(scene, transform, text_renderer, theme, presence);
+            c.draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.paint_side_panel_edge(scene, transform, theme);
         // One hairline under the toolbar row separates it from the page;
@@ -4635,9 +4636,9 @@ impl Widget for BrowserWidget {
 
         self.page_menu
             .menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.back_menu
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if let Some(dialog) = self.page_dialogs.widget_mut() {
             dialog.draw_overlay(scene, transform, text_renderer, theme, presence);
         }

@@ -9,6 +9,7 @@ use super::{
 };
 use crate::actions;
 use ui::framework::Publishes;
+use ui::widget::DrawChild;
 
 /// The player's window over the shared [`PlayerState`].
 pub struct PlayerApp {
@@ -367,7 +368,7 @@ impl Widget for PlayerHost {
         presence: &PresenceCtx,
     ) {
         self.player_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {

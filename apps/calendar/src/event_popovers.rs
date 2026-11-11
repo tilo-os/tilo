@@ -17,6 +17,7 @@ use ui::presence::PresenceCtx;
 use ui::widget::{DatePicker, TimePicker, floating_surface};
 
 use crate::model::Event;
+use ui::widget::DrawChild;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum PopoverKind {
@@ -289,7 +290,7 @@ impl EventPopovers {
                 floating_surface::paint(scene, transform, backing, theme);
                 self.date_picker.apply_layout_external(rect);
                 self.date_picker
-                    .draw(scene, transform, text, &on_panel, presence);
+                    .draw_child(scene, transform, text, &on_panel, presence);
                 self.hits.push((backing, Hit::Guard));
             }
             PopoverKind::StartTime | PopoverKind::EndTime => {
@@ -303,7 +304,7 @@ impl EventPopovers {
                 let backing = rect.inflate(pad, pad);
                 floating_surface::paint(scene, transform, backing, theme);
                 picker.apply_layout_external(rect);
-                picker.draw(scene, transform, text, &on_panel, presence);
+                picker.draw_child(scene, transform, text, &on_panel, presence);
                 self.hits.push((backing, Hit::Guard));
             }
         }

@@ -34,6 +34,7 @@ use crate::theme::Theme;
 use crate::tokens::Metrics;
 use crate::tokens::TextRole;
 use crate::tokens::{EffectiveMotion, Layout, MotionSource};
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
 use crate::widget::edge_resize::{RectEdge, WindowEdge};
@@ -936,7 +937,7 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             &content_clip,
         );
         self.content
-            .draw(scene, content_visual, text_renderer, theme, presence);
+            .draw_child(scene, content_visual, text_renderer, theme, presence);
         scene.pop_layer();
         if clip_to_body {
             scene.pop_layer();

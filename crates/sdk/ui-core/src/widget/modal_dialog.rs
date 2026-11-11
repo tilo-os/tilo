@@ -25,6 +25,7 @@
 //! is the dialog's close control, published as a view action so agents and scripts
 //! close the dialog as a person does.
 
+use crate::widget::DrawChild;
 use crate::widget::{AppModel, ModelPath};
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -2234,7 +2235,7 @@ impl Widget for ModalDialog<dyn Widget> {
         let on_panel = on_sheet(theme);
         if let (Some(header), Some(rect)) = (self.header.as_mut(), layout.header) {
             let shift = Point::new(rect.x0, rect.y0) - self.header_origin;
-            header.draw(
+            header.draw_child(
                 scene,
                 transform * Affine::translate(shift),
                 text_renderer,
@@ -2255,7 +2256,7 @@ impl Widget for ModalDialog<dyn Widget> {
         let shift = self.content_target() - self.content_origin;
         let content_transform = transform * Affine::translate(shift);
         self.content
-            .draw(scene, content_transform, text_renderer, &on_panel, presence);
+            .draw_child(scene, content_transform, text_renderer, &on_panel, presence);
         if layout.body_overflows {
             scene.pop_layer();
         }

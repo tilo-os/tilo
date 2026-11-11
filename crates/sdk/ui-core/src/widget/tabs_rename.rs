@@ -13,6 +13,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{EditOutcome, EditableLabel, Widget};
 
 /// A tab being named: which one, and its field.
@@ -224,7 +225,7 @@ impl TabBar {
         if let Some(rename) = self.rename.as_mut() {
             rename
                 .label
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 }

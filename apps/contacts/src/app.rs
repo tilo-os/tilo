@@ -44,6 +44,7 @@ use crate::form::EditForm;
 use crate::model::{Contact, ContactId, Labeled, SortKey, group_names_equal};
 use crate::vcard::VCardVersion;
 use crate::view::{Bridge, ContactList, ListEntry, Request, Shared, empty_pane};
+use ui::widget::DrawChild;
 
 mod dialogs;
 mod effects;
@@ -2004,7 +2005,7 @@ impl Widget for ContactsApp {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        self.shell.draw(scene, transform, tr, theme, presence);
+        self.shell.draw_child(scene, transform, tr, theme, presence);
     }
 
     fn draw_overlay(

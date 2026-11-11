@@ -8,6 +8,7 @@
 //! the window shell's (`shell.rs`).
 
 use super::page_part::PagePart;
+use ui::widget::DrawChild;
 
 mod accessible;
 mod now_playing;
@@ -2617,7 +2618,7 @@ impl Music {
                 Rect::ZERO
             });
             if button.get_rect().area() > 0.0 {
-                button.draw(
+                button.draw_child(
                     ctx.scene,
                     ctx.transform,
                     ctx.text,
@@ -2660,7 +2661,7 @@ impl Music {
                     f64::from(size.height),
                 ),
             ));
-            button.draw(
+            button.draw_child(
                 ctx.scene,
                 ctx.transform,
                 ctx.text,

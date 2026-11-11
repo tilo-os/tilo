@@ -20,6 +20,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::Rhythm;
+use crate::widget::DrawChild;
 use crate::widget::{AppModel, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
 
 /// What a layout reads of the theme: the `rem`, the rhythm gaps and a control's least side,
@@ -701,7 +702,8 @@ impl<L: Layout + 'static> Widget for Arranged<L> {
             if self.layout.hidden(index) || presence.should_cull(slot.element.get_rect()) {
                 continue;
             }
-            slot.element.draw(scene, transform, text, theme, presence);
+            slot.element
+                .draw_child(scene, transform, text, theme, presence);
         }
     }
 

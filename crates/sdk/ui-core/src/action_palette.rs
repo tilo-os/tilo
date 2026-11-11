@@ -37,6 +37,7 @@ use crate::search::{
 };
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::{SearchField, SearchResultsView, Widget};
 use tilo_actions::{
     ActionContext, ActionInput, ConfirmationPolicy, EncodedAction, OperationKind, ResourceSpec,
@@ -58,7 +59,7 @@ const SCOPE_PREFIX: &str = "\u{1}scope\u{1f}";
 /// The group "Search in" rows are listed under.
 const SCOPES_KIND: &str = "Search in";
 
-mod api;
+pub(crate) mod api;
 mod empty_state;
 mod facet_chips;
 mod history;
@@ -2725,13 +2726,13 @@ impl ActionPalette {
             return;
         };
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.draw_facet_chips(scene, transform, text_renderer, theme);
         self.results
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if self.controls_node.is_some() {
             self.controls
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         pose.end(scene);
     }

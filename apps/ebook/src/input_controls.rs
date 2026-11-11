@@ -28,6 +28,7 @@ use ui::widget::{
 use crate::model::{Annotation, FontEntry, Settings};
 use crate::reader_theme::ReaderPalette;
 use crate::resource::Ebook;
+use ui::widget::DrawChild;
 
 /// The SDK editor a note or comment is written in, bound to the note's rich
 /// text: each keystroke is a field edit of the note's text the library's
@@ -347,7 +348,7 @@ impl NumberControls {
             control.input.set_value(value);
         }
         control.input.apply_layout_external(rect);
-        control.input.draw(
+        control.input.draw_child(
             scene,
             transform,
             text_renderer,
@@ -989,7 +990,7 @@ impl SchemeColorSheet {
             &spec,
         );
         picker.apply_layout_external(layout.body);
-        picker.draw(
+        picker.draw_child(
             scene,
             transform,
             text_renderer,

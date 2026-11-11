@@ -22,6 +22,7 @@ use crate::widget::{SearchField, Widget};
 
 use super::rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
 use super::{ActionPalette, FIELD_SIZE, HostStep};
+use crate::widget::DrawChild;
 
 /// Rows the list shows before it scrolls when the host sets no height.
 const DEFAULT_LIST_ROWS: f64 = 10.0;
@@ -889,7 +890,7 @@ impl ActionPalette {
         self.sync_field_focus();
         self.field.apply_layout_external(row_rect);
         self.field
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if self.shows_field_only() {
             text_renderer.set_text_scale(renderer_scale);
             return;

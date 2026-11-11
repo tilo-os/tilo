@@ -29,6 +29,7 @@ use ui::permissions::policy::{self, agent_answers};
 use ui::widget::{DescribedList, NavShell, Widget as _};
 
 use super::*;
+use ui::widget::DrawChild;
 
 mod clocks;
 mod mail;
@@ -180,7 +181,7 @@ impl Workspace {
     /// Paint the window into `scene`, as a frame does.
     fn paint(&mut self, scene: &mut ui::vello::Scene) {
         let mut text = ui::TextRenderer::new();
-        self.window.draw(
+        self.window.draw_child(
             scene,
             ui::kurbo::Affine::IDENTITY,
             &mut text,

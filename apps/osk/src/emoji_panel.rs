@@ -34,6 +34,7 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::i18n;
+use ui::widget::DrawChild;
 
 /// How many emoji chips a typed word may add to the suggestion strip.
 pub const EMOJI_SUGGESTIONS: usize = 2;
@@ -601,7 +602,7 @@ impl EmojiPanel {
             PanelMode::Closed => return,
             PanelMode::Browse => {
                 self.search
-                    .draw(scene, transform, text_renderer, theme, presence);
+                    .draw_child(scene, transform, text_renderer, theme, presence);
                 self.draw_tabs(scene, transform, text_renderer, theme);
                 scene.push_layer(
                     Fill::NonZero,
@@ -654,7 +655,7 @@ impl EmojiPanel {
             }
             PanelMode::Search => {
                 self.search
-                    .draw(scene, transform, text_renderer, theme, presence);
+                    .draw_child(scene, transform, text_renderer, theme, presence);
                 let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
                 crate::presentation::draw_cell(
                     &mut ctx,

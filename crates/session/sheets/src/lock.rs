@@ -38,6 +38,7 @@ use zeroize::{Zeroize, Zeroizing};
 use crate::Seat as _;
 use crate::presentation::Presentation;
 use crate::t;
+use ui::widget::DrawChild;
 
 /// The app the session mounts the lock screen as.
 pub const APP_ID: &str = "so.tilo.lock";
@@ -1024,7 +1025,7 @@ impl ui::widget::Decorator for Shaken {
         )]
         let moved = transform * ui::advanced::Affine::translate((dx, 0.0));
         self.inner
-            .draw(scene, moved, text_renderer, theme, presence);
+            .draw_child(scene, moved, text_renderer, theme, presence);
     }
 }
 
@@ -1068,7 +1069,7 @@ impl ui::widget::Decorator for Faded {
             &ui::vello::kurbo::RoundedRect::from_rect(face, f64::from(theme.tokens.radii.item)),
         );
         self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         scene.pop_layer();
     }
 }
@@ -1608,7 +1609,7 @@ impl ui::widget::Decorator for Stage {
         let submits = self.submits();
         let content = &mut self.content;
         pose.paint(scene, placement, bounds, |scene, xform| {
-            content.draw(scene, xform, text_renderer, theme, presence);
+            content.draw_child(scene, xform, text_renderer, theme, presence);
             if showed {
                 keyboard.paint(
                     scene,

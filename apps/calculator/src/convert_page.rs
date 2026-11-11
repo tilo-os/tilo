@@ -22,6 +22,7 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use crate::convert::{self, Dimension, Unit};
 use crate::draw::{self, Align};
+use ui::widget::DrawChild;
 
 /// What a press on the conversion page asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -505,7 +506,8 @@ impl ConvertPage {
             .icon(ui::icons::Icon::ArrowUpDown);
         Button::paint(scene, transform, text, theme, &swap);
 
-        self.field.draw(scene, transform, text, theme, presence);
+        self.field
+            .draw_child(scene, transform, text, theme, presence);
 
         // The answer, in the display's own numerals, with the copy target on
         // its end.

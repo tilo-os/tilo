@@ -2362,7 +2362,7 @@ impl ui::widget::Decorator for FeedsApp {
         // Results land live, every frame, without a document in hand.
         self.core.borrow_mut().drain_fetches_live();
         self.take_toast();
-        Widget::draw(&mut self.shell, scene, transform, text, theme, presence);
+        ui::widget::DrawChild::draw_child(&mut self.shell, scene, transform, text, theme, presence);
     }
 
     fn draw_overlay(

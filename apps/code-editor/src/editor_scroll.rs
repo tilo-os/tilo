@@ -596,6 +596,7 @@ mod tests {
     use ui::presence::PresenceCtx;
     use ui::text_render::TextRenderer;
     use ui::theme::Theme;
+    use ui::widget::DrawChild;
     use ui::widget::Widget as _;
     use vello::Scene;
     use vello::kurbo::{Affine, Rect, Vec2};
@@ -680,7 +681,7 @@ mod tests {
         let theme = Theme::dark();
         let mut renderer = TextRenderer::new();
         let mut frame = |view: &mut EditorView| {
-            view.draw(
+            view.draw_child(
                 &mut Scene::new(),
                 Affine::IDENTITY,
                 &mut renderer,

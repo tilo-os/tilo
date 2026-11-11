@@ -22,6 +22,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::search::SearchRequest;
 use crate::tokens::MotionSource;
+use crate::widget::DrawChild;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::widget::window_controls::{
     CONTROL_GAP, CONTROL_PX, ControlsState, WindowControl, WindowControls,
@@ -498,7 +499,8 @@ impl SlotRow {
         );
         self.row.paint(scene, transform, text, theme, presence);
         self.search.set_ground(theme.tokens.colors.surfaces.content);
-        self.search.draw(scene, transform, text, theme, presence);
+        self.search
+            .draw_child(scene, transform, text, theme, presence);
         // The window's own controls, in their pill over the bar's ground:
         // the one thing in the bar that is not the app's.
         let now = crate::motion::frame_now();

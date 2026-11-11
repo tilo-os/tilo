@@ -25,6 +25,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::MotionSource;
+use crate::widget::DrawChild;
 use crate::widget::decorator::concrete::Decorator;
 use crate::widget::{Element, Placement, layout_rect};
 
@@ -150,7 +151,7 @@ impl PageSlide {
             transform,
             &clip,
         );
-        page.draw(scene, transform * pose.transform, text, theme, presence);
+        page.draw_child(scene, transform * pose.transform, text, theme, presence);
         scene.pop_layer();
     }
 }

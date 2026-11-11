@@ -26,6 +26,7 @@ use crate::permissions::UserId;
 use crate::presence::{ParticipantKind, PresenceCtx};
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::completion::{CompletionSource, Tier};
 use crate::widget::marks::{Mark, MarkSpan};
 use crate::widget::mention_picker::{self, MentionCandidate};
@@ -528,7 +529,8 @@ impl Decorator for RichInput {
             self.people_source = Some(source);
             self.offer();
         }
-        self.line.draw(scene, transform, text, theme, presence);
+        self.line
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     /// The field's completion drawer floats above everything, as every field's does.

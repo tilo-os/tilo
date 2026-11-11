@@ -1742,7 +1742,7 @@ mod tests {
     /// Paint a frame of `view` at `theme` into a fresh scene.
     fn paint_frame(view: &mut HexView, tr: &mut TextRenderer, theme: &Theme) {
         let mut scene = Scene::new();
-        Widget::draw(
+        ui::widget::DrawChild::draw_child(
             view,
             &mut scene,
             Affine::IDENTITY,

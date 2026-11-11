@@ -415,6 +415,10 @@ pub fn draw_child_at(
     #[cfg(debug_assertions)]
     let open = scene.encoding().n_open_clips;
     let begun = crate::scene_parts::begin_widget(scene, child, index, transform);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one keyed draw path a widget is drawn through"
+    )]
     child.draw(scene, transform, text_renderer, theme, presence);
     crate::scene_parts::end_widget(scene, begun);
     #[cfg(debug_assertions)]
@@ -425,6 +429,123 @@ pub fn draw_child_at(
         child.concrete_type_name()
     );
 }
+
+/// Draw `child` with its key ([`draw_child_at`]) even where it misses the
+/// viewport: for a container that culls its children itself, draws one
+/// whose rect is not where it paints (a child moved by `transform`, a
+/// window's own content), or draws a root.
+pub fn draw_child_unculled(
+    child: &mut dyn Widget,
+    index: Option<usize>,
+    scene: &mut Scene,
+    transform: Affine,
+    text_renderer: &mut TextRenderer,
+    theme: &Theme,
+    presence: &PresenceCtx,
+) {
+    #[cfg(debug_assertions)]
+    let open = scene.encoding().n_open_clips;
+    let begun = crate::scene_parts::begin_widget(scene, child, index, transform);
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "the one keyed draw path a widget is drawn through"
+    )]
+    child.draw(scene, transform, text_renderer, theme, presence);
+    crate::scene_parts::end_widget(scene, begun);
+    #[cfg(debug_assertions)]
+    debug_assert_eq!(
+        scene.encoding().n_open_clips,
+        open,
+        "{} left a layer open (or ended one it did not begin) in its draw",
+        child.concrete_type_name()
+    );
+}
+
+/// [`draw_child_unculled`] as a method, for a container that draws a child
+/// itself: `child.draw_child(scene, transform, text_renderer, theme,
+/// presence)` takes the place of calling the child's [`Widget::draw`], and
+/// carries the child's key into the scene for a host that keys widgets.
+pub trait DrawChild {
+    /// Draw this widget as a child of the widget drawing now.
+    fn draw_child(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    );
+}
+
+// A widget type a container holds by value is drawn without making it a
+// trait object: a type that never was one gets no vtable (which would bring
+// every `Widget` method of the type into the program) for being keyed. One
+// copy per type, never inlined, so a call site is the one call it was.
+impl<W: Widget> DrawChild for W {
+    #[inline(never)]
+    fn draw_child(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        let begun = crate::scene_parts::begin_widget(scene, self, None, transform);
+        #[expect(
+            clippy::disallowed_methods,
+            reason = "the keyed draw path of a widget held by value"
+        )]
+        self.draw(scene, transform, text_renderer, theme, presence);
+        crate::scene_parts::end_widget(scene, begun);
+    }
+}
+
+/// The widget trait objects a container holds its children as.
+macro_rules! draw_child_of_dyn {
+    ($($object:path),* $(,)?) => {$(
+        impl DrawChild for dyn $object + '_ {
+            fn draw_child(
+                &mut self,
+                scene: &mut Scene,
+                transform: Affine,
+                text_renderer: &mut TextRenderer,
+                theme: &Theme,
+                presence: &PresenceCtx,
+            ) {
+                draw_child_unculled(self, None, scene, transform, text_renderer, theme, presence);
+            }
+        }
+
+        impl DrawChild for Box<dyn $object + '_> {
+            fn draw_child(
+                &mut self,
+                scene: &mut Scene,
+                transform: Affine,
+                text_renderer: &mut TextRenderer,
+                theme: &Theme,
+                presence: &PresenceCtx,
+            ) {
+                draw_child_unculled(
+                    &mut **self,
+                    None,
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    presence,
+                );
+            }
+        }
+    )*};
+}
+
+draw_child_of_dyn!(
+    Widget,
+    AppWidget,
+    crate::history_mode::host::HistoryChromeApi,
+    crate::action_palette::api::ActionPaletteApi,
+);
 
 /// What a gated, presence-publishing widget draws over itself once drawn:
 /// the denied-permission scrim, then the focus ring of the first peer on it.

@@ -13,6 +13,7 @@ use ui::theme::Theme;
 
 use crate::app::{ChatApp, Focus};
 use crate::timeline::TimelineCounts;
+use ui::widget::DrawChild;
 
 /// The size the owner's browser shows the Lounge at.
 const WINDOW: (f64, f64) = (1440.0, 900.0);
@@ -71,7 +72,7 @@ impl Frames {
     fn scene(&mut self, app: &mut ChatApp) -> Scene {
         app.rect = Rect::new(0.0, 0.0, WINDOW.0, WINDOW.1);
         let mut scene = Scene::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut self.text,

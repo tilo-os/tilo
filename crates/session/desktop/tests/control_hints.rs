@@ -21,7 +21,7 @@ use tilo_desktop_surface::DesktopSurface;
 use ui::control_hints::Learned;
 use ui::headless::FrameHarness;
 use ui::kurbo::Affine;
-use ui::widget::Widget;
+use ui::widget::DrawChild;
 
 fn window(id: u64, title: &str) -> Tab {
     Tab {
@@ -103,7 +103,7 @@ fn draw_chrome(frame: &mut FrameHarness) {
     let presence = ui::presence::PresenceCtx::default();
     let mut scene = ui::vello::Scene::new();
     let mut chrome = frame.root_mut::<DesktopChrome>();
-    chrome.draw(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
+    chrome.draw_child(&mut scene, Affine::IDENTITY, &mut text, &theme, &presence);
 }
 
 /// What a case leaves the feed as, before a frame.

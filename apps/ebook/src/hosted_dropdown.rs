@@ -20,6 +20,7 @@ use ui::theme::Theme;
 use ui::widget::{ControlSize, Dropdown, DropdownFace, Widget};
 
 use crate::input_controls::InputEventCtx;
+use ui::widget::DrawChild;
 
 pub(crate) struct HostedDropdown {
     id: String,
@@ -93,7 +94,7 @@ impl HostedDropdown {
     ) {
         self.widget.apply_layout_external(rect);
         self.widget
-            .draw(scene, transform, text, theme, &PresenceCtx::empty());
+            .draw_child(scene, transform, text, theme, &PresenceCtx::empty());
         self.drawn = true;
     }
 

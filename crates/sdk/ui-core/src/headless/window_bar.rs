@@ -16,6 +16,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::FrameHarness;
+use crate::widget::DrawChild;
 use crate::widget::{TabBar, TabDescriptor, Widget, WindowBar, WindowSearchRequest};
 
 /// The one tab the stand-in window shows.
@@ -609,7 +610,7 @@ impl FrameHarness {
     pub(super) fn painted_window_bar(&mut self, width: f64) -> TabBar {
         let _settled = crate::motion::testing::settled();
         let mut bar = self.window_bar(width);
-        bar.draw(
+        bar.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut self.text,
@@ -874,7 +875,7 @@ impl FrameHarness {
             &Rect::new(0.0, 0.0, width, bar.bar_height()),
         );
         bar.set_popup_area(Rect::new(0.0, 0.0, width, f64::from(self.viewport.1)));
-        bar.draw(
+        bar.draw_child(
             scene,
             transform,
             &mut self.text,
@@ -883,7 +884,7 @@ impl FrameHarness {
         );
         let search = &mut self.window_search;
         search.set_ground(ground);
-        search.draw(
+        search.draw_child(
             scene,
             transform,
             &mut self.text,

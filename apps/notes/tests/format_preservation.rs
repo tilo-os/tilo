@@ -1,5 +1,6 @@
 use crate::component_support::*;
 use notes::{markdown, read};
+use ui::widget::DrawChild;
 use ui::widget::{BlockEditor, BlockKind};
 
 #[allow(
@@ -83,7 +84,7 @@ fn block_kind_changes_preserve_marks_text_and_shaped_geometry() {
                 40.0 + f64::from(width),
                 60.0 + f64::from(size.height),
             ));
-            line.draw(
+            line.draw_child(
                 &mut vello::Scene::new(),
                 vello::kurbo::Affine::IDENTITY,
                 &mut renderer,

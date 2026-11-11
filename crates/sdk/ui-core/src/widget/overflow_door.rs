@@ -29,6 +29,7 @@ use crate::icons::Icon;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
 use crate::widget::{AppModel, Button, ModelPath, TaffyTreeExt, Widget};
 
@@ -277,7 +278,8 @@ impl Widget for OverflowDoor {
         if self.menu.is_open() {
             self.menu.layout_within(text, theme);
         }
-        self.button.draw(scene, transform, text, theme, presence);
+        self.button
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn draw_overlay(

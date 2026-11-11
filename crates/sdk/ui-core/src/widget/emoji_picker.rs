@@ -45,6 +45,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::{
     ControlSize, EventCtx, ModelPath, ScrollRegion, SearchField, SegmentedFace, SegmentedStyle,
     TaffyTreeExt, ToggleGroup, Widget,
@@ -1585,7 +1586,8 @@ impl Widget for EmojiPicker {
         } else {
             theme
         };
-        self.search.draw(scene, transform, text, theme, presence);
+        self.search
+            .draw_child(scene, transform, text, theme, presence);
 
         // The group tabs.
         let g = self.geometry.clone();

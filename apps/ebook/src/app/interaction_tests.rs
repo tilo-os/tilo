@@ -10,6 +10,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use ui::presence::PresenceCtx;
 use ui::testing::Dispatch;
 use ui::time::Duration;
+use ui::widget::DrawChild;
 use ui::widget::Edits;
 
 /// Point the compatibility `TILO_WORKSPACE_DIR` override at `path` until the
@@ -435,7 +436,7 @@ fn reader_controls_are_accessible_and_live() {
         let mut tr = TextRenderer::new();
         tr.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
-        app.draw(
+        app.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -645,7 +646,7 @@ fn draw_settled(
 ) {
     tilo_test_env::wait_until("the reader's chapter to be laid out", || {
         scene.reset();
-        app.draw(scene, Affine::IDENTITY, tr, theme, presence);
+        app.draw_child(scene, Affine::IDENTITY, tr, theme, presence);
         app.view != View::Reader || !app.layout_pending()
     });
 }
@@ -5101,7 +5102,7 @@ fn frame_at_text_scale(app: &mut BooksApp, doc: &mut AutoCommit, w: f64, h: f64,
     let mut tr = TextRenderer::new();
     tr.set_text_scale(scale);
     let mut scene = Scene::new();
-    app.draw(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
+    app.draw_child(&mut scene, Affine::IDENTITY, &mut tr, &theme, &presence);
 }
 
 fn hit_rect(app: &BooksApp, pred: impl Fn(&Action) -> bool) -> Option<Rect> {
@@ -5187,7 +5188,7 @@ fn selection_controls_dock_above_the_prose_without_moving_it() {
         app.rect = Rect::new(0.0, 0.0, width, 810.0);
         let mut text = TextRenderer::new();
         text.set_text_scale(theme.text_scale);
-        app.draw(
+        app.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut text,

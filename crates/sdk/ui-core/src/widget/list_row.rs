@@ -49,8 +49,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 const CHECK_ROW: &str = "tilo.ui.row.check";
 use crate::widget::avatar::AvatarFace;
 use crate::widget::{
-    ActionEmitter, ChipStyle, Element, Fact, MediaArt, MediaAspect, MediaSource, TaffyTreeExt,
-    Tone, Widget,
+    ActionEmitter, ChipStyle, DrawChild, Element, Fact, MediaArt, MediaAspect, MediaSource,
+    TaffyTreeExt, Tone, Widget,
 };
 
 /// What sits in a row's leading column.
@@ -2892,7 +2892,7 @@ impl Widget for ListRow {
         if let Some(trailing) = &mut self.trailing {
             trailing
                 .element
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

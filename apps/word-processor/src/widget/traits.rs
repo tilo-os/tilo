@@ -348,7 +348,7 @@ impl Editor {
             }
         }
         if self.context_menu.is_open() {
-            Widget::draw(
+            ui::widget::DrawChild::draw_child(
                 &mut self.context_menu,
                 scene,
                 transform,

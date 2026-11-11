@@ -36,6 +36,7 @@ use ui::widget::{
 use crate::app::{SortKey, Tab};
 use crate::model::{Metrics, ProcessDataStatus, ProcessInfo, fmt_rate, fmt_uptime};
 use crate::tree::SumMode;
+use ui::widget::DrawChild;
 
 /// One row of the process table: what the list shows of a process.
 #[derive(Clone, Debug, PartialEq)]
@@ -929,10 +930,10 @@ impl Widget for ProcessesPane {
         presence: &PresenceCtx,
     ) {
         if let Some(summary) = &mut self.summary {
-            summary.draw(scene, transform, text_renderer, theme, presence);
+            summary.draw_child(scene, transform, text_renderer, theme, presence);
         }
         self.body_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
@@ -1477,7 +1478,7 @@ impl Widget for ResourcesPane {
         presence: &PresenceCtx,
     ) {
         if let Some(page) = &mut self.page {
-            page.draw(scene, transform, text_renderer, theme, presence);
+            page.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

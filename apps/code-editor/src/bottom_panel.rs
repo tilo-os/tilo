@@ -19,6 +19,7 @@ use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::tokens::Rhythm;
+use ui::widget::DrawChild;
 use ui::widget::TaffyTreeExt;
 use ui::widget::{
     Container, Element, EmptyState, ListRow, Scrollable, Section, TabBar, TabDescriptor, Widget,
@@ -516,15 +517,15 @@ impl Widget for BottomPanel {
             theme.tokens.colors.surfaces.content,
         );
         self.tabs
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         self.sync_empty();
         if matches!(self.tab, PanelTab::Problems | PanelTab::Search)
             && let Some(list) = self.list.as_mut()
         {
-            list.draw(scene, transform, text_renderer, theme, presence);
+            list.draw_child(scene, transform, text_renderer, theme, presence);
         }
         if let Some((_, empty)) = self.empty.as_mut() {
-            empty.draw(scene, transform, text_renderer, theme, presence);
+            empty.draw_child(scene, transform, text_renderer, theme, presence);
         }
     }
 

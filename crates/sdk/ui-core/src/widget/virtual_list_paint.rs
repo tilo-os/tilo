@@ -8,11 +8,11 @@ use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
-use crate::widget::Widget;
 
 use super::remount::row_kept;
 use super::shown::ListShown;
 use super::{ListModel, RowSelection, VirtualList};
+use crate::widget::DrawChild;
 
 impl<M: ListModel> VirtualList<M> {
     /// Paint the frame: the rows in the viewport, the scrollbar beside them, a row's menu
@@ -230,7 +230,7 @@ impl<M: ListModel> VirtualList<M> {
                 now,
                 &mut |ctx| {
                     row.widget
-                        .draw(ctx.scene, row_transform, ctx.text, theme, presence);
+                        .draw_child(ctx.scene, row_transform, ctx.text, theme, presence);
                 },
             );
             if let Some(marks) = tree.as_ref() {
@@ -274,7 +274,7 @@ impl<M: ListModel> VirtualList<M> {
         if let Some(field) = self.rename.as_mut() {
             field
                 .input
-                .draw(scene, transform, text_renderer, theme, presence);
+                .draw_child(scene, transform, text_renderer, theme, presence);
         }
         if let Some(preview) = self.reorder.preview() {
             scene.fill(

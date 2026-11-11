@@ -39,6 +39,7 @@ use crate::geometry::Chrome;
 use crate::identity::LocalIdentity;
 use crate::model::{self, Channel, Id, Message, User};
 use crate::permissions::ChatPermissions;
+use ui::widget::DrawChild;
 
 // --- Floating call huddle home placement (fractions of the window) --------
 // The docked huddle's resting video rect before the user drags it. The
@@ -1993,7 +1994,7 @@ impl Widget for ChatApp {
             parts.draw(scene, "chat-call", window, |scene| {
                 self.draw_call_overlay_bg(scene, tf, tr, theme);
                 if host_has_frame {
-                    self.video.draw(scene, tf, tr, theme, presence);
+                    self.video.draw_child(scene, tf, tr, theme, presence);
                 }
                 self.draw_host_camera_off(scene, tf, tr, theme);
                 self.draw_call_overlay_fg(scene, tf, tr, theme, &mut hits);
@@ -2699,7 +2700,7 @@ impl ChatApp {
         if self.huddle_features_me() {
             if self.video.latest_frame().is_some() {
                 self.video
-                    .draw(scene, transform, text_renderer, theme, presence);
+                    .draw_child(scene, transform, text_renderer, theme, presence);
             }
             self.draw_host_camera_off(scene, transform, text_renderer, theme);
         } else {

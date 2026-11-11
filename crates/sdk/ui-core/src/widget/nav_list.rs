@@ -32,6 +32,7 @@ use crate::chrome::{NavCount, nav_row_height};
 use crate::icons::Icon;
 use crate::local_state::LocalBinding;
 use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
+use crate::widget::DrawChild;
 use crate::widget::{
     AppModel, FilterCount, Filterable, ListModel, ModelPath, RowStatus, Theme, Tone, VirtualList,
 };
@@ -2413,7 +2414,7 @@ impl crate::widget::decorator::concrete::Decorator for NavList {
             // A rail tile's caption wraps in the rail's width.
             self.list.update_model(|_| ());
         }
-        crate::widget::Widget::draw(&mut *self.list, scene, transform, text, theme, presence);
+        DrawChild::draw_child(&mut *self.list, scene, transform, text, theme, presence);
         if let Some(feed) = &self.feed {
             let model = self.list.model();
             let rows = (0..model.len())

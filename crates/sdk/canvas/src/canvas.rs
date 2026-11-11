@@ -226,6 +226,7 @@ impl<C: CanvasContent + 'static> Widget for DocumentCanvas<C> {
 mod tests {
     use super::*;
     use crate::ink::{CanvasRole, DocColor, Ink};
+    use tilo_ui::widget::DrawChild;
     use tilo_ui_paint::kurbo::RoundedRect;
 
     /// A page on paper with a theme-coloured rule and a document-coloured mark.
@@ -282,7 +283,7 @@ mod tests {
     fn draw(canvas: &mut DocumentCanvas<Page>, theme: &Theme) -> Scene {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        canvas.draw(
+        canvas.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut text,

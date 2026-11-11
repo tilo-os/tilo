@@ -62,6 +62,7 @@ use crate::view::{
 };
 use crate::vnc::{VncInput, VncSession};
 use ui::lock::MutexRecover as _;
+use ui::widget::DrawChild;
 
 /// A live transport backing an open session. SSH is a `russh` PTY channel
 /// feeding the terminal grid; VNC is an RFB client
@@ -1916,7 +1917,7 @@ impl Widget for RemoteApp {
         self.state().pump_session();
         self.check_views();
         self.body_mut()
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn draw_overlay(

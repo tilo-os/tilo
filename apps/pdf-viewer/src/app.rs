@@ -13,6 +13,7 @@ use std::collections::{HashMap, HashSet};
 use ui::chrome::{NavCount, NavRowFace};
 use ui::icons::Icon;
 use ui::tokens::TextRole;
+use ui::widget::DrawChild;
 #[cfg(test)]
 use ui::widget::Edits;
 use ui::widget::TaffyTreeExt;
@@ -9100,7 +9101,7 @@ pub(crate) mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw(
+                app.draw_child(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,
@@ -9188,7 +9189,7 @@ pub(crate) mod tests {
                     .unwrap();
                 app.apply_layout(&taffy, child, Point::ORIGIN);
                 let mut scene = Scene::new();
-                app.draw(
+                app.draw_child(
                     &mut scene,
                     Affine::IDENTITY,
                     tr,

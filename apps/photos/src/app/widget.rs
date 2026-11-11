@@ -22,6 +22,7 @@ use super::{
     AlbumEditorHit, COLLECTION_PAGE_SIZE, LibraryDestination, LibraryItem, PeopleIntent,
     PeopleSelection, Photos, PlaceItem, PlacesHit, capture_day, card_action_controls, wheel_pixels,
 };
+use ui::widget::DrawChild;
 
 /// The window's toolkit traits answered from the shared state: what each
 /// asks of the empty state, the window's own child, it is handed.
@@ -629,14 +630,19 @@ impl Photos {
             } else if self.library_destination == LibraryDestination::People || self.people_mode {
                 self.draw_people(scene, transform, text_renderer, theme);
                 if self.people_selection.is_some() && !self.people_merge_mode {
-                    self.people_name_input
-                        .draw(scene, transform, text_renderer, theme, presence);
+                    self.people_name_input.draw_child(
+                        scene,
+                        transform,
+                        text_renderer,
+                        theme,
+                        presence,
+                    );
                 }
                 for control in &mut self.people_controls {
                     if !control.is_card() {
                         control
                             .button
-                            .draw(scene, transform, text_renderer, theme, presence);
+                            .draw_child(scene, transform, text_renderer, theme, presence);
                     }
                 }
             } else if self.library_destination == LibraryDestination::Places {
@@ -647,7 +653,7 @@ impl Photos {
                 self.draw_library(empty, scene, transform, text_renderer, theme);
             }
         } else if let Some(v) = self.viewer.as_mut() {
-            v.draw(scene, transform, text_renderer, theme, presence);
+            v.draw_child(scene, transform, text_renderer, theme, presence);
             self.draw_viewer_details(scene, transform, text_renderer, theme);
         } else {
             Self::draw_empty_state(empty, scene, transform, text_renderer, theme);

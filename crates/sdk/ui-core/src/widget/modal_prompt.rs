@@ -37,6 +37,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{ControlSize, TextInput, Widget};
 
@@ -310,7 +311,7 @@ impl Widget for PromptBody {
                 &theme.text(TextRole::Label),
             );
         }
-        self.input.draw(scene, transform, tr, theme, presence);
+        self.input.draw_child(scene, transform, tr, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

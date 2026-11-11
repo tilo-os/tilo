@@ -30,6 +30,7 @@ use crate::scan::{Entry, ScanCancellation, ScanResult};
 use ui::format::{count, size};
 use ui::framework::PersonRecord;
 use ui::tilo_resource::AbsolutePath;
+use ui::widget::DrawChild;
 
 /// The app, as the surfaces name it when it asks for attention.
 pub(crate) const OWNER_NAME: &str = "Disk Usage Analyzer";
@@ -938,7 +939,8 @@ impl ui::widget::Decorator for SliceChart {
         presence: &PresenceCtx,
     ) {
         self.prepare(theme);
-        self.chart.draw(scene, transform, text, theme, presence);
+        self.chart
+            .draw_child(scene, transform, text, theme, presence);
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {

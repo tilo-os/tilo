@@ -32,6 +32,7 @@ use crate::color_compat::ColorCompat;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::{PressOutcome, ScrollMetrics, Scrollbar};
 use crate::widget::{Element, Widget};
@@ -1302,7 +1303,7 @@ impl Widget for DocumentViewport {
         let rect = self.rect;
         let content = &mut self.content;
         let mut draw_content = |scene: &mut Scene, at: Affine| match content {
-            Content::Widget(c) => c.draw(scene, at, text_renderer, theme, presence),
+            Content::Widget(c) => c.draw_child(scene, at, text_renderer, theme, presence),
             Content::Draw(draw) => draw(scene, at, text_renderer, theme, rect),
         };
         let canvas_xf = compose(transform, self.state.content_to_canvas());

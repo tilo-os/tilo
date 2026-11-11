@@ -1035,6 +1035,7 @@ impl Widget for MessageList {
 mod tests {
     use super::*;
     use crate::state::MailState;
+    use ui::widget::DrawChild;
 
     fn shared() -> Shared {
         MailState::shared(MailState::new_sample(crate::avatars::Avatars::new()))
@@ -1042,7 +1043,7 @@ mod tests {
 
     fn draw(list: &mut MessageList) {
         let mut scene = Scene::new();
-        list.draw(
+        list.draw_child(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),

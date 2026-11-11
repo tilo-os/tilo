@@ -1,3 +1,4 @@
+use crate::widget::DrawChild;
 // Frame layout and drawing shared by every host of App, and App's host-facing
 // behaviour. The native event-loop runner is `app/native_runner.rs`.
 
@@ -125,7 +126,7 @@ fn draw_frame_content_owning(
     let mut history_changed = false;
     if let Some(history) = &mut app.history {
         if tracked {
-            history.draw(
+            history.draw_child(
                 scene,
                 transform,
                 &mut app.text_renderer,
@@ -164,7 +165,7 @@ fn draw_frame_content_owning(
         };
         app.presence_ctx
             .with_permissions(app.permission_ctx.clone(), || {
-                app.root_widget.draw(
+                app.root_widget.draw_child(
                     widgets,
                     transform,
                     &mut app.text_renderer,
@@ -359,7 +360,7 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
     let secrets = crate::secret_paint::SecretPaint::begin();
     app.presence_ctx
         .with_permissions(app.permission_ctx.clone(), || {
-            app.root_widget.draw(
+            app.root_widget.draw_child(
                 widgets,
                 drawn.transform,
                 &mut app.text_renderer,

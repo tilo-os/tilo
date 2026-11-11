@@ -592,6 +592,12 @@ decorator_trait! {
             text: &mut TextRenderer,
         ) -> bool;
         fn apply_layout(taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point);
+        // Not `expect`: whether clippy sees a call inside this macro's
+        // expansion depends on the features the crate is built with.
+        #[allow(
+            clippy::disallowed_methods,
+            reason = "a decorator is the widget it wraps: that widget draws under the decorator's key"
+        )]
         fn draw(
             scene: &mut Scene,
             transform: Affine,

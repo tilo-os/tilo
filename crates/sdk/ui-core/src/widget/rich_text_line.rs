@@ -29,6 +29,7 @@ use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 use crate::widget::code_editor::TokenKind;
 use crate::widget::markdown_input;
@@ -1465,7 +1466,7 @@ impl Widget for RichTextLine {
         // TextInput owns glyph shaping and painting. This wrapper supplies
         // attributes and draws only mark decorations that are not glyphs.
         self.inner
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         #[cfg(test)]
         drop(input_probe);
 

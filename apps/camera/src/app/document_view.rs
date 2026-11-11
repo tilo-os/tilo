@@ -9,7 +9,7 @@ use ui::icons::Icon;
 use ui::paint::PaintCtx;
 use ui::widget::{
     Button, ButtonFace, ButtonRole, ControlSize, Dropdown, DropdownFace, EmptyState,
-    EmptyStateContent, Image, ImageFit, Widget,
+    EmptyStateContent, Image, ImageFit,
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -21,6 +21,7 @@ use crate::record::Record;
 use ui::framework::Actions;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
+use ui::widget::DrawChild;
 
 /// The visible choices of one document setting, in index order.
 pub(super) fn choice_labels(choice: DocumentChoice) -> &'static [&'static str] {
@@ -267,7 +268,7 @@ impl CameraApp {
         let layout = Self::document_layout(full, theme);
         for (field, rect) in self.document_controls.fields.iter_mut().zip(layout.fields) {
             field.apply_layout_external(rect);
-            field.draw(scene, t, tr, theme, presence);
+            field.draw_child(scene, t, tr, theme, presence);
         }
         let busy = self.document_job.is_some();
         let can_scan = self.selected_scanner.is_some() && !busy;

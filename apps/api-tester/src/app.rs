@@ -42,6 +42,7 @@ use crate::resource::{Workspace, workspace as verbs};
 use crate::response;
 use crate::sidebar::{self, SidebarView, parse_history, parse_request};
 use ui::framework::{Actions, Dispatcher, Live, Submit, ViewCx};
+use ui::widget::DrawChild;
 use ui::widget::{Slot, SlotHandle};
 
 mod store;
@@ -1540,7 +1541,7 @@ impl ui::widget::Decorator for ApiTesterApp {
             None => {}
         }
         self.nav
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
         if let Some(open) = self.menu.as_mut() {
             open.menu.layout_within(text_renderer, theme);
             Widget::draw_overlay(

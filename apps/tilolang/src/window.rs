@@ -35,6 +35,7 @@ use ui::widget::{AppModel, Element, ModelPath, Widget};
 use crate::names::Names;
 use crate::resource::{Live, Workspace, WorkspaceState, caller_of};
 use ui::tilo_resource::profiling::Phase;
+use ui::widget::DrawChild;
 
 /// The two vocabularies the window answers on the door: what an agent asks of the host, and
 /// showing what a search hit names.
@@ -927,7 +928,8 @@ impl Widget for Window {
                 let person = presence.person_of(&ui::permissions::UserId(user.id.clone()))?;
                 Some((user.id, person.0.clone()))
             }));
-        self.view.draw(scene, transform, text, theme, presence);
+        self.view
+            .draw_child(scene, transform, text, theme, presence);
         if let Some(undrawn) = self.undrawn.take() {
             let at = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)

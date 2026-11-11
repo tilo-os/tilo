@@ -36,9 +36,15 @@ transparent, as the input surface. Nothing changes for a mount without
    so they survive subtree caches, `Scene::append` and transforms.
    `ui::scene_parts` writes them while a host asks for them
    (`key_widgets`):
-   - every widget drawn through `draw_child` / `draw_child_at` and every
-     child of a flow container gets one key: its parent's key, its index
-     and its type, or its test id when it has one;
+   - every widget gets one key: its parent's key, its index and its type,
+     or its test id when it has one. A container draws each child through
+     the toolkit's draw paths: `draw_child` / `draw_child_at`, which also
+     cull a child outside the viewport, or `child.draw_child(…)`
+     (`widget::DrawChild`), which keys without culling, for a container
+     that culls itself or draws a child where its rect is not. Calling a
+     child's `Widget::draw` directly is a clippy error (`disallowed-methods`
+     in `clippy.toml` and the crates' own copies), so new code cannot skip
+     the key. Tests may draw the widget under test directly;
    - widgets that draw many items themselves key each item by its own id
      (`scene_parts::item_key`): the block editor's blocks and a virtual
      list's rows.
@@ -156,15 +162,14 @@ Against the targets:
 
 ## Next steps, with what this stage learned
 
-- **Keys for every widget.** Most containers call `child.draw(…)`
-  directly (about 300 call sites in ui-core alone), so only widgets drawn
-  through `draw_child`, flow containers, editor blocks and list rows are
-  keyed today; Notes' panels are drawn through `draw_child_at` for that
-  reason. Everything else is named by place inside the nearest keyed
-  ancestor, which is correct but rewrites more when it changes. Moving the
-  remaining containers to `draw_child_at` (or a lint that asks for it) is
-  mechanical and gives every widget its own element, every scroller its
-  native container and every semantic node its painted home.
+- **Keys for every widget: done.** Every container draws its children
+  through a keyed path, and clippy rejects a direct `Widget::draw` call
+  outside tests (about 480 call sites moved: 150 in ui-core, 325 in
+  apps and the session crates). Two gaps remain: a container that leaves a
+  child undrawn without saying so (`skip_widget`, or an index through
+  `draw_child_at`) shifts the keys of the children after it, which is
+  correct but rewrites more; and calls inside a macro's expansion are not
+  always linted, so the decorator's forwarding draw is allowed by name.
 - **Touch scrolling.** Wheels scroll natively. A touch drag does not yet:
   the transparent canvas above the HTML layer takes every pointer, and a
   touch sequence cannot be handed to another element once it began. The

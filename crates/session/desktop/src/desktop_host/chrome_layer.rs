@@ -12,6 +12,7 @@ use tilo_desktop_surface::{DesktopHandle, HostActionSource, NotificationLayer};
 use tilo_resource::Effect;
 use ui::presence::PresenceCtx;
 use ui::shortcut_table::{FixedAction, ShortcutAction};
+use ui::widget::DrawChild;
 use ui::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt as _, Widget};
 use ui::{TextRenderer, Theme};
 use vello::Scene;
@@ -2308,23 +2309,31 @@ impl Widget for DesktopChrome {
             theme,
             ui::time::now(),
         );
-        self.overview.draw(scene, transform, text, theme, presence);
+        self.overview
+            .draw_child(scene, transform, text, theme, presence);
         for bar in &mut self.compact {
             if bar.presence() != TopBarPresence::Hidden {
-                bar.draw(scene, transform, text, theme, presence);
+                bar.draw_child(scene, transform, text, theme, presence);
             }
         }
         // Last, so what the bar opens below its band stays above the rest.
-        self.bar.draw(scene, transform, text, theme, presence);
+        self.bar.draw_child(scene, transform, text, theme, presence);
         // The centre hangs under the bar's trailing end, over the windows.
         if let Some(notices) = self.notices.as_mut() {
-            notices.draw(scene, transform, text, theme, presence);
+            notices.draw_child(scene, transform, text, theme, presence);
         }
         // Above all of it: the emoji picker is modal, the one thing the person works with until it
         // closes.
         if self.emoji.is_open() {
             self.emoji.advance_scroll();
-            ui::Widget::draw(&mut self.emoji, scene, transform, text, theme, presence);
+            ui::widget::DrawChild::draw_child(
+                &mut self.emoji,
+                scene,
+                transform,
+                text,
+                theme,
+                presence,
+            );
         }
         // Drawn or not, the picker is as this frame shows it: one that closed is gone from it.
         self.emoji.mark_drawn();
@@ -2348,7 +2357,8 @@ impl Widget for DesktopChrome {
             .draw(&self.identify_displays, scene, transform, text, theme);
         // Topmost: the search palette dims what it stands over, a window in front included, and the
         // card over it.
-        self.search.draw(scene, transform, text, theme, presence);
+        self.search
+            .draw_child(scene, transform, text, theme, presence);
         // Above even search: Alt+Tab's panel, which is the walk the person is in the middle of and
         // the only thing a press reaches while it is up.
         let host = self.working_display().unwrap_or(self.rect);

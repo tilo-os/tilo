@@ -19,6 +19,7 @@ use winit::event::WindowEvent;
 
 use crate::motion::{Direction, WindowMotion};
 use crate::tokens::{EffectiveMotion, MotionSource};
+use crate::widget::DrawChild;
 
 /// How far a window's arrival has come `elapsed` after it spawned: it fades
 /// in and scales up in place (`motion::WindowMotion::OPEN`).
@@ -3097,7 +3098,7 @@ impl TileHost {
             let rect = self.rect;
             if let Some((_, card)) = &mut self.error_card {
                 card.apply_layout_external(rect);
-                card.draw(scene, transform, tr, theme, presence);
+                card.draw_child(scene, transform, tr, theme, presence);
             }
         } else {
             // The app and its history were laid out where the tile
@@ -3120,7 +3121,7 @@ impl TileHost {
                         // window.
                         let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
                         crate::scene_parts::begin(scene, key);
-                        w.draw(scene, content_transform, tr, theme, presence);
+                        w.draw_child(scene, content_transform, tr, theme, presence);
                         let hint = self.content_damage.hint(
                             &**w,
                             content_transform,
@@ -3132,7 +3133,7 @@ impl TileHost {
                         self.content_damage.forget();
                     }
                     if let Some(history) = &mut self.history {
-                        history.draw(scene, content_transform, tr, theme, presence);
+                        history.draw_child(scene, content_transform, tr, theme, presence);
                     }
                 }
                 TileContent::Stub { kind, label } => {

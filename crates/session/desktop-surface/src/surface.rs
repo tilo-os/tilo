@@ -42,6 +42,7 @@ use crate::session::{ActivityAsk, ActivityReads, ActivityRequests};
 
 use paging::Sideways;
 use strip::{build_row, build_row_lazily, strip_style};
+use ui::widget::DrawChild;
 
 mod arrivals;
 mod artwork;
@@ -2451,10 +2452,11 @@ impl DesktopSurface {
         presence: &ui::presence::PresenceCtx,
     ) {
         self.arrival_hints
-            .draw(scene, transform, text, theme, presence);
-        self.hung_apps.draw(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, presence);
+        self.hung_apps
+            .draw_child(scene, transform, text, theme, presence);
         self.acknowledgement
-            .draw(scene, transform, text, theme, presence);
+            .draw_child(scene, transform, text, theme, presence);
     }
 }
 

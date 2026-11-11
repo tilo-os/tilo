@@ -1633,6 +1633,7 @@ fn lerp_rect(a: Rect, b: Rect, t: f64) -> Rect {
 mod tests {
     use super::*;
     use std::collections::HashMap;
+    use ui::widget::DrawChild;
 
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -2604,7 +2605,7 @@ mod tests {
 
     /// Draw the desk once, as the frame does, at the clock the caller holds.
     fn paint(widgets: &mut DeskWidgets) {
-        widgets.draw(
+        widgets.draw_child(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),

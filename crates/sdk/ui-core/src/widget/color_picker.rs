@@ -25,6 +25,7 @@ use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::ButtonRole;
+use crate::widget::DrawChild;
 use crate::widget::TaffyTreeExt;
 #[path = "color_picker_component.rs"]
 mod component;
@@ -1086,7 +1087,7 @@ impl Widget for ColorPicker {
         // --- Hex input --- drawn here directly since `hex_input` isn't in
         // the taffy tree.
         self.hex_input
-            .draw(scene, transform, text_renderer, theme, presence);
+            .draw_child(scene, transform, text_renderer, theme, presence);
     }
 
     fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {

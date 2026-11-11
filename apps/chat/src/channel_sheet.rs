@@ -22,6 +22,7 @@ use ui::widget::{
 };
 
 use crate::model::{ChannelKind, Id};
+use ui::widget::DrawChild;
 
 /// Longest channel or category name the sheet takes.
 const MAX_NAME_CHARS: usize = 100;
@@ -372,7 +373,7 @@ impl ChannelSheet {
                 let field_h = field_height(theme);
                 let field = Rect::new(body.x0, y, body.x1, y + field_h);
                 name.apply_layout_external(field);
-                name.draw(scene, tf, tr, theme, presence);
+                name.draw_child(scene, tf, tr, theme, presence);
                 hits.push((field, BodyHit::Field(Field::Name)));
                 y = field.y1 + f64::from(sp.s6);
                 if mode != SheetMode::NewCategory {
@@ -404,7 +405,7 @@ impl ChannelSheet {
                     y = section(scene, tr, y, &crate::i18n::t("chat-sheet-topic"));
                     let field = Rect::new(body.x0, y, body.x1, y + field_h);
                     topic.apply_layout_external(field);
-                    topic.draw(scene, tf, tr, theme, presence);
+                    topic.draw_child(scene, tf, tr, theme, presence);
                     hits.push((field, BodyHit::Field(Field::Topic)));
                 }
             },

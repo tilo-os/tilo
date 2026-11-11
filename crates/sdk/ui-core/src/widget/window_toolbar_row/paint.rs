@@ -7,6 +7,7 @@ use super::{
     PresenceCtx, Rect, Scene, SegmentedFace, Slot, Slots, TextRenderer, Theme, ToggleGroup,
     ToolbarRow, VIEWS_SIZE, Widget, WindowToolbar, paint_icon_button, trailing_word,
 };
+use crate::widget::DrawChild;
 
 impl ToolbarRow {
     /// Paint the row's menus, in the window's top layer.
@@ -93,7 +94,7 @@ impl ToolbarRow {
                 Some(&mut words),
             );
             if let Some(field) = field {
-                Widget::draw(field, scene, transform, tr, theme, presence);
+                DrawChild::draw_child(field, scene, transform, tr, theme, presence);
             }
         });
         if let Some(trigger) = trigger {
@@ -609,7 +610,7 @@ pub(super) fn paint_location(
     {
         if text_rect.width() > 0.0 {
             crumbs.set_rect(Rect::new(text_rect.x0, rect.y0, text_rect.x1, rect.y1));
-            Widget::draw(crumbs, scene, transform, tr, theme, presence);
+            DrawChild::draw_child(crumbs, scene, transform, tr, theme, presence);
         }
         return None;
     }
