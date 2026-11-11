@@ -894,3 +894,26 @@ test('a moved field with the same text and selection does not count its text aga
     assert.deepEqual([root.children[0].selectionStart,root.children[0].selectionEnd],[5,5]);
   }finally{Intl.Segmenter.prototype.segment=segment;}
 });
+test('a node that only moved keeps its attributes and its key',()=>{
+  const root=new Element('div');const bridge=semanticBridge(root,()=>{},()=>{});
+  const tree=y=>({root:{path:'note',semantics:{semantic_key:'list',role:'List',name:'Blocks',children:[0,1,2].map(i=>({role:'ListItem',name:`Block ${i}`,value:`Line ${i}`,state:{focusable:true,selected:i===1},bounds:{x0:0,y0:y+i*40,x1:400,y1:y+i*40+40}}))}}});
+  bridge.update(tree(100));
+  const items=root.children[0].children;
+  assert.equal(items[1].getAttribute('aria-selected'),'true');
+  // A scroll moves every node on screen and changes nothing else: what the
+  // mirror writes for each is where it is, not what it says again.
+  const writes=[];const set=Element.prototype.setAttribute,unset=Element.prototype.removeAttribute;
+  Element.prototype.setAttribute=function(name,value){writes.push(name);return set.call(this,name,value);};
+  Element.prototype.removeAttribute=function(name){writes.push(name);return unset.call(this,name);};
+  const keys=items.map(item=>item.tiloState.key);
+  try{
+    for(let y=90;y>0;y-=10)bridge.update(tree(y));
+    assert.deepEqual(writes,[],'only moved: no attribute written');
+    assert.equal(items[2].style.top,'90px','still placed where it is drawn');
+    assert.ok(items.every((item,i)=>item.tiloState.key===keys[i]&&root.children[0].children[i]===item),'the same elements under the same keys');
+    const moved=tree(10);moved.root.semantics.children[2].name='Block two';
+    bridge.update(moved);
+    assert.deepEqual(writes.includes('aria-label'),true,'a changed name is written');
+    assert.equal(items[2].getAttribute('aria-label'),'Block two');
+  }finally{Element.prototype.setAttribute=set;Element.prototype.removeAttribute=unset;}
+});

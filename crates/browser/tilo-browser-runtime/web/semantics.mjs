@@ -70,6 +70,27 @@ export function applySemanticsPatch(tree,sequence,patch){
 // painted element (`dom-present.mjs`): a node whose widget was drawn
 // (`paint_key`) lives inside that element instead of in the mirror's own
 // layer, so the drawn and the accessible tree are one.
+// Keys kept for one widget before the ones it no longer names are dropped.
+const KEYS_PER_IDENTITY=4096;
+// Whether two values say the same, looking `depth` objects deep.
+function same(a,b,depth){
+  if(a===b)return true;
+  if(!depth||!a||!b||typeof a!=='object'||typeof b!=='object'||Array.isArray(a)!==Array.isArray(b))return false;
+  const keys=Object.keys(a);
+  if(keys.length!==Object.keys(b).length)return false;
+  for(const key of keys)if(!same(a[key],b[key],depth-1))return false;
+  return true;
+}
+// Whether a node shows what `before` showed, wherever each is drawn and
+// whatever is inside it: every field but its bounds and children, and
+// whether it has children (a leaf shows its value as text).
+export function sameFace(before,node){
+  if(!before||Boolean(before.children?.length)!==Boolean(node.children?.length))return false;
+  const keys=Object.keys(node);
+  if(keys.length!==Object.keys(before).length)return false;
+  for(const key of keys)if(key!=='bounds'&&key!=='children'&&!same(before[key],node[key],4))return false;
+  return true;
+}
 export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
   const elements=new Map();
   const recoverySurfaces=new Set();
@@ -85,6 +106,10 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
   let pendingFocus;
   // CSS pixels per layout pixel of the frame the canvas shows, on each axis.
   let scale=[1,1];
+  // Every key the last update wrote, by identity and then by what names the
+  // node under it: the next update hands out the very same strings, which
+  // the maps below hash once, instead of writing and hashing each again.
+  let keys=new Map();
   function clearActiveDescendant(){
     if(!activeDescendantHost)return;
     if(previousActiveDescendant===null)activeDescendantHost.removeAttribute('aria-activedescendant');else activeDescendantHost.setAttribute('aria-activedescendant',previousActiveDescendant);
@@ -352,11 +377,26 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // A place is the chain of paths down to a node, as JSON: a path holds `/`
     // itself, so two chains joined into one string could say the same thing.
     const placeOf=(node,place)=>JSON.stringify([...place,node.path]);
+    // As JSON, written once per widget: every key under it starts with it.
     const identityOf=(node,place)=>{
       const semanticKey=node.semantics.semantic_key;
-      return semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]
+      return JSON.stringify(semanticKey&&semanticOwners.get(semanticKey)===1?['semantic',semanticKey]
         :node.test_id&&testIds.get(node.test_id)===1?['test',node.test_id]
-        :pathOwners.get(node.path)===1?['path',node.path]:['place',placeOf(node,place)];
+        :pathOwners.get(node.path)===1?['path',node.path]:['place',placeOf(node,place)]);
+    };
+    // `JSON.stringify([identity,sub])` with the identity already written, the
+    // string the last update wrote where it wrote one.
+    const previousKeys=keys;keys=new Map();
+    const keyOf=(identity,sub)=>{
+      let subs=keys.get(identity);
+      if(!subs){
+        subs=previousKeys.get(identity);
+        if(!subs||subs.size>KEYS_PER_IDENTITY)subs=new Map();
+        keys.set(identity,subs);
+      }
+      let key=subs.get(sub);
+      if(key===undefined){key=`[${identity},${JSON.stringify(sub)}]`;subs.set(sub,key);}
+      return key;
     };
     // An element's key names one node or it names nothing: a widget's test ID
     // covers a row and the row's own contents, and one layer's key is drawn as
@@ -365,7 +405,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
     // other node's element standing above this one is no tree to append into.
     function countKeys(semantics,index,identity){
       if(semantics.state?.hidden)return;
-      const key=JSON.stringify([identity,semantics.semantic_key??semantics.action_target??index]);
+      const key=keyOf(identity,semantics.semantic_key??semantics.action_target??index);
       keyOwners.set(key,(keyOwners.get(key)??0)+1);
       (semantics.children??[]).forEach((child,i)=>countKeys(child,`${index}/${i}`,identity));
     }
@@ -383,7 +423,7 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       // technology, and neither is anything inside it.
       if(node.state?.hidden)return;
       const sub=node.semantic_key??node.action_target??index;
-      let key=JSON.stringify([identity,sub]);
+      let key=keyOf(identity,sub);
       if(keyOwners.get(key)>1)key=JSON.stringify([['inside',ancestry.at(-1)??null,index],sub]);
       live.add(key);
       let element=elements.get(key);
@@ -411,8 +451,11 @@ export function semanticBridge(root,invoke,report,shortcuts,inputScope,host) {
       element.tiloRect=bounds?[bounds.x0,bounds.y0,bounds.x1-bounds.x0,bounds.y1-bounds.y0]:enclosing??[0,0,0,0];
       place(element);
       // A node a patch left alone is the very object the element last
-      // showed (applySemanticsPatch keeps it), so it says nothing new.
-      const changed=element.tiloNode!==node;element.tiloNode=node;
+      // showed (applySemanticsPatch keeps it), so it says nothing new; one
+      // that only moved (a scroll moves every node on screen) says nothing
+      // new either, and writing its attributes again cost a scroll's mirror
+      // most of its time.
+      const changed=element.tiloNode!==node&&!sameFace(element.tiloNode,node);element.tiloNode=node;
       if(changed){
       const role=node.role&&typeof node.role==='object'?(node.role.Heading?'heading':undefined):roles[node.role];
       if(role)element.setAttribute('role',role);else element.removeAttribute('role');
