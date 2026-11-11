@@ -351,6 +351,9 @@ pub struct FrameHarness {
     root_wake: root_wake::RootWake,
     owner_wake_queue: Option<crate::owner_wake::OwnerWakeQueue>,
     owner_service_layout_retired: bool,
+    /// A frame is running: the live host serves its components' owner models
+    /// between frames, never inside the one building its layout.
+    frame_running: std::rc::Rc<std::cell::Cell<bool>>,
     /// The maps the last completed model service set aside, unread until
     /// its readmission checks them against the live tree.
     serviced_layout: Option<retained_layout::ServicedLayout>,
@@ -1470,6 +1473,7 @@ impl FrameHarness {
             root_wake: root_wake::RootWake::new(),
             owner_wake_queue: None,
             owner_service_layout_retired: false,
+            frame_running: std::rc::Rc::new(std::cell::Cell::new(false)),
             serviced_layout: None,
             composition_replaced: false,
             remount: false,
@@ -3110,6 +3114,21 @@ impl FrameHarness {
     }
 
     fn try_relayout(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        /// Marks the frame's body, restoring the enclosing frame's answer on
+        /// the way out: a frame a frame asks for is still the same frame.
+        struct Running {
+            running: std::rc::Rc<std::cell::Cell<bool>>,
+            previous: bool,
+        }
+        impl Drop for Running {
+            fn drop(&mut self) {
+                self.running.set(self.previous);
+            }
+        }
+        let _frame = Running {
+            running: std::rc::Rc::clone(&self.frame_running),
+            previous: self.frame_running.replace(true),
+        };
         self.adopt_loaded_history();
         self.adopt_loaded_palette();
         // The whole frame runs in the root's wake scope, as the live window's
@@ -6763,8 +6782,12 @@ impl FrameHarness {
     /// one still window rests instead of counting a queued wake as work for
     /// ever. A refusal keeps the requests queued (the batch restores them) and
     /// the next pass retries.
+    ///
+    /// A frame's own tick runs this too, for what a widget took up while the
+    /// frame ran; a service retires the layout a running frame is building,
+    /// so one that would runs after that frame instead.
     fn service_idle_owner_models(&mut self) {
-        if !self.has_pending_owner_models() {
+        if self.frame_running.get() || !self.has_pending_owner_models() {
             return;
         }
         if let Err(error) = self.service_pending_owner_models_report().result {

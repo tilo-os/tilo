@@ -769,9 +769,19 @@ fn the_today_list_takes_in_tomorrows_task_when_the_persons_midnight_passes() {
             .next_wake_deadline
             .is_some_and(|deadline| deadline <= ui::time::now());
         assert!(due, "the window's deadline is due past midnight");
-        app.frame();
+        // The frame the deadline asks for serves it, and what the view reads
+        // again comes back from the view's own thread: the host idles until
+        // the list shows the new day, as a live window draws when it wakes.
+        let shown = app
+            .harness()
+            .wait_until(ui::time::Duration::from_secs(5), |harness| {
+                harness.a11y_nodes().into_iter().any(|(_, node)| {
+                    node.label()
+                        .is_some_and(|label| label.contains("Reply to Mia"))
+                })
+            });
         assert!(
-            shows(&mut app, "Reply to Mia"),
+            shown && shows(&mut app, "Reply to Mia"),
             "the task due on the new day is listed once midnight passed"
         );
         // And the window waits again, for the next midnight or the history's moment reading
