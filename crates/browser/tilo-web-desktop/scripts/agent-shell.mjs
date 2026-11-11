@@ -224,6 +224,13 @@ async function untilDrawn(tab, fn, ms, interval = 150) {
     await sleep(interval);
   }
 }
+/** Until the page has presented `frames` more frames than now, or `ms` passed: what a press
+ * changed is drawn by then, however slowly the page draws. */
+async function afterFrames(tab, frames = 1, ms = 30000) {
+  const first = await presentedFrames(tab);
+  if (first === null) { await sleep(400); return; }
+  await until(async () => ((await presentedFrames(tab)) ?? first) - first >= frames || undefined, ms, 150);
+}
 /** A port nothing holds, and no other of this run's: a port is free again the
  * moment it is closed, so asking twice can answer with the same one. */
 const ports = new Set();
@@ -846,30 +853,34 @@ async function planActions(agent, apps) {
  * button shares with it. */
 const rosterOf = nodes => nodes.find(node => /people here now/i.test(node.name));
 
-/** Wait for the roster's own node, saying how long the panel took: a press
- * that opened nothing shows in the run's log with what the bar drew instead. */
-async function rosterOpens(tab, wait) {
-  const began = Date.now();
-  const panel = await untilDrawn(tab, async () => rosterOf(await semantics(tab)), wait, 150);
-  return {panel, took: Date.now() - began};
-}
+/** A person's card, open where the roster stands: what a face in the bar opens. */
+const personCardOf = nodes => matching(nodes, /^open card$/i) ?? matching(nodes, /^message$/i);
 
-/** The roster, open: the top bar's own people button ("Everyone here"), pressed as
- * a person presses it. Only that control opens who is here: the Console's Agents
- * page and a search result that reads like a person open their windows instead,
- * and following from one of those finds no Follow at all. */
+/** The roster, open, from the bar as a person opens it. The bar announces who is here as
+ * "Everyone here": its people button, or, where the faces fit, the faces themselves, which stand
+ * for it. A face opens its person's card in the roster's place, and pressed again goes from that
+ * card to everyone here. Only the bar opens who is here: the Console's Agents page and a search
+ * result that reads like a person open their windows instead, and following from one of those
+ * finds no Follow at all. */
 async function openPeople(tab) {
   if (rosterOf(await semantics(tab))) return null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
     if (!await press(tab, /^everyone here$/i, {what: 'the roster'})) {
       return `the bar offers no people button: ${names(await semantics(tab))}`;
     }
-    const {panel, took} = await rosterOpens(tab, 4000);
-    if (panel) {
+    const began = Date.now();
+    const opened = await untilDrawn(tab, async () => {
+      const nodes = await semantics(tab);
+      return rosterOf(nodes) ? 'roster' : personCardOf(nodes) ? 'card' : undefined;
+    }, 4000);
+    const took = Date.now() - began;
+    if (opened === 'roster') {
       log(`the roster opened ${took} ms after the press`);
       return null;
     }
-    log(`pressing the people button opened no roster after ${took} ms: ${names(await semantics(tab))}`);
+    log(opened === 'card'
+      ? `the face opened its person's card ${took} ms after the press; pressed again, it opens everyone here`
+      : `pressing the people button opened nothing after ${took} ms: ${names(await semantics(tab))}`);
   }
   return `the people button opened no roster: ${names(await semantics(tab))}`;
 }
@@ -1639,7 +1650,11 @@ try {
             const answer = await sending;
             step.answer = answer;
             log(`${combo}: agent ${step.label} -> ${verdict(answer)} ${answer.text.slice(0, 300)}`);
-            await sleep(1400);
+            // The person sees each change land before the agent makes the next: the page draws it
+            // on its next frame, which on a software-drawn page is seconds away, and a call sent
+            // sooner lands in the same frame as this one, so the follow shows two lines at once.
+            await afterFrames(tab, 1, 15000);
+            await sleep(600);
           }
         };
         await pacing(0, recordFrom);
@@ -1700,16 +1715,17 @@ try {
         // at every width — the panel is a bottom sheet on a phone, and a press on its invite
         // button is not a press elsewhere.
         await clickAt(tab, Math.round(width / 2), Math.round(height - 12));
-        await sleep(400);
+        await afterFrames(tab, 2);
         check(`${combo}: who is here stays while the desk is pressed`, Boolean(rosterOf(await semantics(tab))),
           names(await semantics(tab)));
         // A window filling the desk: the bar's own controls and the reading it shows stand apart at
         // every width, the phone's included.
         if (await press(tab, /^maximize$/i, {what: 'maximizing the window'})) {
-          await sleep(900);
+          // The window's control is Restore once it fills the desk.
+          await untilDrawn(tab, async () => matching(await semantics(tab), /^restore$/i), 900);
           await shot(tab, combo, 'maximized');
           await press(tab, /^(restore|maximize)$/i, {what: 'restoring the window'});
-          await sleep(600);
+          await untilDrawn(tab, async () => matching(await semantics(tab), /^maximize$/i), 600);
         }
         const overlay = await semantics(tab);
         note(`${combo}: the overlay lists the agent`, overlay.some(node => /claude code/i.test(node.name)), names(overlay));
