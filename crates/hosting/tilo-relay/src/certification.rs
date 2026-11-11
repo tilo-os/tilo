@@ -87,6 +87,10 @@ type AnsweredInvites = std::collections::HashSet<([u8; 32], [u8; 16])>;
 /// (`crate::web`'s login codes): only a request whose person and invite a
 /// claim of a sign-in code named, once.
 pub(crate) trait StandInApprover: Send + Sync {
+    /// Whether a computer resolving a setting-up code here made `request`,
+    /// so its tab, which wrote the link the code names, answers it: queued
+    /// even before that person was let into a workspace this host serves.
+    fn sets_up(&self, request: &CertificationRequest, now_ns: u64) -> bool;
     /// Whether a claim on this host expects `request`, and that person's
     /// stand-in may approve it now.
     fn expects(&self, request: &CertificationRequest, now_ns: u64) -> bool;
@@ -443,8 +447,15 @@ impl CertificationProtocol {
         let now = unix_now_ns();
         // A member of a workspace this host serves queues their own devices
         // beside the host's own, answered by their root rather than the
-        // owner's.
-        let member = self.admits(request.user_public_key).await;
+        // owner's. A person's tab shows its agent a setting-up code before
+        // the Lounge has let it into a workspace here, so a computer that
+        // resolves that code is queued the same way: once its request
+        // arrives, the tab is the one that answers it.
+        let member = self.admits(request.user_public_key).await
+            || self
+                .stand_in
+                .get()
+                .is_some_and(|codes| request.invite != [0; 16] && codes.sets_up(&request, now));
         // A request a person's stand-in here expects is queued like theirs,
         // whether or not they are a member of a workspace this host serves.
         let stand_in = self

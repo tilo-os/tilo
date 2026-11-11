@@ -91,6 +91,9 @@ struct Resolution {
 struct Entry {
     code: String,
     link: Option<String>,
+    /// The person and invite a setting-up code's link names: the request
+    /// that computer makes, which the tab that wrote the link answers.
+    pair: Option<([u8; 32], [u8; 16])>,
     expires_at_ms: u64,
     resolution: Option<Resolution>,
 }
@@ -255,9 +258,11 @@ impl LoginCodes {
         client: Option<IpAddr>,
         now_ms: u64,
     ) -> Result<Created, Refusal> {
-        if let Some(link) = &link {
-            pairing_link(link, self.host_origin.as_deref()).map_err(Refusal::Malformed)?;
-        }
+        let pair = link
+            .as_deref()
+            .map(|link| pairing_link(link, self.host_origin.as_deref()))
+            .transpose()
+            .map_err(Refusal::Malformed)?;
         let mut state = self.lock();
         state.prune(now_ms);
         if !state
@@ -284,6 +289,7 @@ impl LoginCodes {
             Entry {
                 code: code.clone(),
                 link,
+                pair,
                 expires_at_ms,
                 resolution: None,
             },
@@ -421,6 +427,19 @@ impl LoginCodes {
         })
     }
 
+    /// Whether a computer resolved a setting-up code naming `user` and
+    /// `invite` here, and the code is still live: `user`'s tab wrote the
+    /// link, so it answers the request that computer makes, even before the
+    /// tab was let into a workspace this host serves.
+    pub(super) fn sets_up(&self, user: &[u8; 32], invite: &[u8; 16], now_ms: u64) -> bool {
+        self.pruned(now_ms, |state| {
+            state
+                .entries
+                .values()
+                .any(|entry| entry.resolution.is_some() && entry.pair == Some((*user, *invite)))
+        })
+    }
+
     /// Take the claim for `user` that minted `invite`, so it approves
     /// nothing again; `true` when there was one to take.
     pub(super) fn take_claim(&self, user: &[u8; 32], invite: &[u8; 16], now_ms: u64) -> bool {
@@ -527,8 +546,12 @@ fn record(resolved: &mut Resolution, step: Step) {
 /// Check `link` is a Tilo pairing link for this host: a web address whose
 /// route carries `?pair=` with a person's root and an invite, and which names
 /// this host (or is written on it). `tilo login` reads it with the full
-/// grammar; this only keeps the host from naming anything else.
-pub(super) fn pairing_link(link: &str, host_origin: Option<&str>) -> Result<(), &'static str> {
+/// grammar; this only keeps the host from naming anything else. Answers the
+/// person and the invite it names.
+pub(super) fn pairing_link(
+    link: &str,
+    host_origin: Option<&str>,
+) -> Result<([u8; 32], [u8; 16]), &'static str> {
     if link.chars().count() > MAX_LINK_CHARS {
         return Err("a pairing link is at most 2048 characters");
     }
@@ -582,7 +605,12 @@ pub(super) fn pairing_link(link: &str, host_origin: Option<&str>) -> Result<(), 
             return Err("a pairing link names another host");
         }
     }
-    Ok(())
+    let (user_hex, invite_hex) = pair.split_at(64);
+    let (mut user, mut invite) = ([0; 32], [0; 16]);
+    hex::decode_to_slice(user_hex, &mut user)
+        .and_then(|()| hex::decode_to_slice(invite_hex, &mut invite))
+        .map_err(|_| "a pairing link names a person's root and a one-time invite")?;
+    Ok((user, invite))
 }
 
 #[cfg(test)]
@@ -607,6 +635,31 @@ mod tests {
             agent: None,
             detail: None,
         }
+    }
+
+    #[test]
+    fn a_setup_code_names_the_request_its_computer_makes_until_it_is_gone() {
+        let codes = LoginCodes::new(Some("https://eu1.tilo.sh".into()));
+        let (user, invite) = ([0xab; 32], [0x7f; 16]);
+        let created = codes.create(Some(link()), None, NOW).unwrap();
+        // Written but not typed yet: no computer made anything.
+        assert!(!codes.sets_up(&user, &invite, NOW));
+        codes.resolve(&created.code, None, NOW + 1).unwrap();
+        assert!(codes.sets_up(&user, &invite, NOW + 2));
+        assert!(
+            !codes.sets_up(&user, &[0x7e; 16], NOW + 2),
+            "another invite"
+        );
+        assert!(
+            !codes.sets_up(&[0xac; 32], &invite, NOW + 2),
+            "another person"
+        );
+        // The host forgets the code, and the request it named with it.
+        assert!(!codes.sets_up(&user, &invite, NOW + 1 + FOLLOW_LIFETIME_MS));
+        // A sign-in code names no link, so no request of its own.
+        let sign_in = codes.create(None, None, NOW).unwrap();
+        codes.resolve(&sign_in.code, None, NOW + 1).unwrap();
+        assert!(!codes.sets_up(&user, &invite, NOW + 2));
     }
 
     #[test]
@@ -767,11 +820,12 @@ mod tests {
     #[test]
     fn a_code_names_only_a_pairing_link_for_this_host() {
         let ours = Some("https://eu1.tilo.sh");
-        assert_eq!(pairing_link(&link(), ours), Ok(()));
-        assert_eq!(pairing_link(&link(), None), Ok(()));
+        let named = Ok(([0xab; 32], [0x7f; 16]));
+        assert_eq!(pairing_link(&link(), ours), named);
+        assert_eq!(pairing_link(&link(), None), named);
         assert!(pairing_link(&link(), Some("https://us1.tilo.sh")).is_err());
         let own = link().replace("tilo.sh/#/@eu1.tilo.sh/", "eu1.tilo.sh/#/");
-        assert_eq!(pairing_link(&own, ours), Ok(()));
+        assert_eq!(pairing_link(&own, ours), named);
         // A loopback host, written with its scheme as the link grammar writes it.
         let loopback = link().replace(
             "tilo.sh/#/@eu1.tilo.sh/",
@@ -779,7 +833,7 @@ mod tests {
         );
         assert_eq!(
             pairing_link(&loopback, Some("https://127.0.0.1:9781")),
-            Ok(())
+            named
         );
         assert!(pairing_link(&loopback, Some("https://127.0.0.1:9782")).is_err());
         assert!(pairing_link(&link().replace("pair=", "invite="), ours).is_err());

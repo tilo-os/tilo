@@ -1446,6 +1446,158 @@ async fn a_persons_stand_in_certifies_the_tab_a_device_of_theirs_claimed() {
     stop(relay, serving).await;
 }
 
+/// The tab that wrote a setting-up link, answering as its person's root: what
+/// the page asks the host, in process, once it may.
+struct TabRoot(crate::certification::CertificationProtocol);
+
+impl tilo_relay_client::MemberHost for TabRoot {
+    async fn ask(
+        &self,
+        approval: &tilo_relay_protocol::certify::MemberApproval,
+    ) -> Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError> {
+        Ok(self
+            .0
+            .member_approve(approval.clone(), tilo_clock::unix_now_ns()))
+    }
+}
+
+/// A computer that types the code a person's tab shows, the moment the tab
+/// shows it: the tab is not yet let into a workspace this host serves, so the
+/// host knows nothing of that person but the code they handed their agent.
+/// The request waits for the tab, which certifies it, instead of being
+/// refused as "another user identity". A request no code names is still
+/// refused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[expect(
+    clippy::significant_drop_tightening,
+    reason = "the relay serves the routes until it shuts down at the end"
+)]
+async fn a_computer_setting_up_for_a_tab_not_yet_let_in_waits_for_the_tab() {
+    use tilo_relay_client::certify::CertificationOutcome;
+    use tilo_relay_protocol::login_code as wire;
+    use tilo_user_identity::CertificationRequest;
+
+    let owner = SigningKey::from_bytes(&[171; 32]);
+    let host = host(&owner, 172, DeviceCapabilities::host());
+    let state = tempfile::tempdir().unwrap();
+    let relay = relay_at(&state, host.identity(), RelayConfig::default()).await;
+    let web = Arc::new(web_of(&relay, &host));
+    web.serve_stand_ins();
+    let (addr, serving) = serve_web(Arc::clone(&web)).await;
+
+    // The person's first tab: its root, and the link it writes into the code
+    // its agent's prompt carries.
+    let person = SigningKey::from_bytes(&[173; 32]);
+    let user = person.verifying_key().to_bytes();
+    let invite = [0x5e; 16];
+    let link = format!(
+        "https://tilo.sh/#/w/6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71?pair={}{}",
+        hex::encode(user),
+        hex::encode(invite)
+    );
+    let (_, _, created) = call_json(
+        addr,
+        wire::CREATE_ROUTE,
+        &serde_json::json!({ "link": link }),
+        None,
+    )
+    .await;
+    let created: wire::Created = serde_json::from_value(created).unwrap();
+    let (_, _, resolved) = call_json(
+        addr,
+        wire::RESOLVE_ROUTE,
+        &serde_json::json!({ "code": created.code }),
+        None,
+    )
+    .await;
+    let resolved: wire::Resolved = serde_json::from_value(resolved).unwrap();
+    assert_eq!(resolved.link.as_deref(), Some(link.as_str()));
+
+    let computer = SigningKey::from_bytes(&[174; 32]);
+    let request_for = |device: &SigningKey, invite: [u8; 16]| {
+        let now = tilo_clock::unix_now_ns();
+        CertificationRequest {
+            version: tilo_user_identity::CERTIFICATION_SCHEMA_VERSION,
+            user_public_key: user,
+            device_public_key: device.verifying_key().to_bytes(),
+            device_label: "Claude Code on build-box".into(),
+            requested: DeviceCapabilities::member(),
+            nonce: rand::random(),
+            invite,
+            issued_at_ns: now,
+            expires_at_ns: now + 30_000_000_000,
+            signature: [0; 64],
+        }
+        .sign(device)
+        .unwrap()
+    };
+    let ask = |device: SigningKey, invite: [u8; 16], pending: tokio::sync::oneshot::Sender<()>| {
+        let host_addr = relay.node_addr();
+        let request = request_for(&device, invite);
+        async move {
+            let endpoint = endpoint(&device).await;
+            let outcome = tilo_relay_client::certify::request_certification(
+                &endpoint,
+                host_addr,
+                request,
+                |_| {
+                    let _ = pending.send(());
+                },
+            )
+            .await
+            .unwrap();
+            endpoint.close().await;
+            outcome
+        }
+    };
+
+    // A code nobody typed names nothing, so a request it never named is
+    // refused, as before.
+    let (refused, _) = tokio::sync::oneshot::channel();
+    let outcome = tilo_test_env::within(
+        "a refusal",
+        ask(SigningKey::from_bytes(&[175; 32]), [0x5f; 16], refused),
+    )
+    .await;
+    assert!(
+        matches!(outcome, CertificationOutcome::Denied(_)),
+        "{outcome:?}"
+    );
+
+    // The computer the prompt names runs `tilo login` at once: its request
+    // waits for the tab rather than being turned away.
+    let (queued, queued_rx) = tokio::sync::oneshot::channel();
+    let asking = ask(computer.clone(), invite, queued);
+    tokio::pin!(asking);
+    tokio::select! {
+        outcome = &mut asking => panic!("answered before the tab could: {outcome:?}"),
+        sent = queued_rx => assert!(sent.is_ok(), "the host refused the computer, not queued it"),
+    };
+
+    // The tab is let in and answers the request it wrote the link for.
+    let tab = TabRoot(web.context.certification.clone());
+    let waiting = tilo_relay_client::pending_pairings(&tab, &person)
+        .await
+        .unwrap();
+    let [request] = waiting.as_slice() else {
+        panic!("one request waits for the tab: {waiting:?}")
+    };
+    assert_eq!(request.request.invite, invite);
+    let issued = tilo_relay_client::answer_pairing(&tab, &person, request.request_digest, true)
+        .await
+        .unwrap()
+        .expect("a certificate");
+    let outcome = tilo_test_env::within("the tab's answer", asking).await;
+    let CertificationOutcome::Issued { cert, .. } = outcome else {
+        panic!("the computer is certified: {outcome:?}")
+    };
+    assert_eq!(cert, issued);
+    assert_eq!(cert.device_public_key, computer.verifying_key().to_bytes());
+    assert_eq!(cert.user_public_key, user);
+
+    stop(relay, serving).await;
+}
+
 /// The secret `mail` carries for `parameter`, as the page it lands on reads
 /// it: the hex after `?<parameter>=` (or `&<parameter>=`) in the mail's text.
 fn link_secret(mail: &crate::door::mail::Mail, parameter: &str) -> String {
