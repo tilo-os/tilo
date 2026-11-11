@@ -1146,6 +1146,7 @@ answer-reopen = Wieder öffnen
 answer-why-unknown-app = Es gibt keine App, die das öffnet.
 answer-why-not-opened = Es wurde beendet, bevor ein Fenster erschien.
 answer-why-cannot-start = Apps können gerade nicht gestartet werden.
+peer-window-elsewhere = Auf einem anderen Gerät geöffnet. Teile das Fenster dort, um es auf diesem zu sehen.
 # Ein Kürzel des Desktops, für das eine Browserseite keine Oberfläche hat: sie
 # sagt das, statt nichts zu tun.
 answer-capture-not-in-browser = Bildschirmfotos und Aufnahmen gibt es in Tilo auf einem Computer

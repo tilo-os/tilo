@@ -1048,3 +1048,83 @@ fn a_window_launched_into_another_workspace_opens_there() {
         "the workspace in front shows no calculator of Garden's"
     );
 }
+
+/// Every description the desk exposes beside a name, depth first: what a
+/// notice says under its title.
+fn descriptions(root: &dyn ui::widget::Widget) -> Vec<String> {
+    fn node(access: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        out.extend(access.description.clone());
+        for child in &access.children {
+            node(child, out);
+        }
+    }
+    fn visit(widget: &dyn ui::widget::Widget, out: &mut Vec<String>) {
+        if let Some(access) = widget.accessibility() {
+            node(&access, out);
+        }
+        widget.for_each_child(&mut |child| visit(child, out));
+    }
+    let mut out = Vec::new();
+    visit(root, &mut out);
+    out
+}
+
+/// A window of the workspace that runs on another device has no surface on
+/// this one and none is on its way. Its tab says where the window is and what
+/// brings its picture here: it does not stand empty, as a window still coming
+/// does for a moment.
+#[test]
+fn a_window_open_on_another_device_says_where_it_is() {
+    let mut minter = tilo_desktop_model::IdMinter::new(7);
+    let elsewhere = tilo_desktop_model::Tab {
+        id: minter.mint(),
+        title: "Quarterly plan".into(),
+        tile: TileContent::PeerWindow {
+            app_id: "so.tilo.notes".into(),
+            label: "Quarterly plan".into(),
+            note: String::new(),
+            missing: None,
+        },
+        app_title: None,
+        view: String::new(),
+        pinned: false,
+    };
+    let tab = elsewhere.id;
+    let tree = tilo_desktop_surface::seed_tree(&mut minter, "Desk", vec![elsewhere]);
+    let (policy, surface) = DesktopPolicy::with_tree(tree, 7);
+    policy.set_viewport_width(WIDTH);
+    let mut driver = ui::headless::FrameHarness::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.set_caller_palette_enabled(false);
+    driver.relayout();
+    settle(&mut driver);
+
+    let texts = ui::a11y::texts(driver.root_widget());
+    assert!(
+        texts.iter().any(|text| text == "Quarterly plan"),
+        "the tab names the window: {texts:?}"
+    );
+    let said = descriptions(driver.root_widget());
+    assert!(
+        said.iter().any(|text| {
+            text == "Open on another device. Share the window there to see it on this one."
+        }),
+        "the tab says where the window is and what brings it here: {said:?}"
+    );
+    assert_eq!(
+        policy.layout(),
+        Layout::default(),
+        "no window of this device stands in its place"
+    );
+    assert_eq!(
+        tabs(&policy).len(),
+        1,
+        "the window keeps its tab: {tab} is still the peer's"
+    );
+}

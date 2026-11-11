@@ -239,6 +239,17 @@ impl TileSource for Windows {
             });
         }
         let Some(app) = self.crashed.borrow().get(&tab.id).cloned() else {
+            // A window that runs on another device of the workspace has no
+            // surface here and none is on its way: its tab says where the
+            // window is and what brings its picture here, rather than
+            // standing empty for good. A share from its device takes the
+            // tab over with that picture.
+            if matches!(tab.tile, TileContent::PeerWindow { .. }) {
+                return TileHost::new(ui::widget::TileContent::Notice {
+                    title: tab.title.clone(),
+                    detail: tilo_desktop_surface::i18n::t("peer-window-elsewhere"),
+                });
+            }
             return TileHost::new(ui::widget::TileContent::Arriving);
         };
         // The app is gone but its tab stays until the person decides what to
