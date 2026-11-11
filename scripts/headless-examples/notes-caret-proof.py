@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """A field a person types into in an app tells the desk where its caret is, with
-no input method running, and Super+V opens the clipboard under that caret.
+no input method running, Super+V opens the clipboard under that caret, and what
+the person copied in the app is in it and pastes elsewhere.
 
 A session starts on a scratch home with the tree's own Notes, the person opens
 Notes, makes a page with Ctrl+N and types into its body. Everything is read off
@@ -11,6 +12,9 @@ the desk's own state, as the paste pane and the presence carets read it:
   paste    Super+V, pressed the moment the caret moves, opens the clipboard pane
            under that caret's line, its first frame as tall as its page
   closed   Escape closes the pane and the caret stays where it was
+  copy     what Ctrl+A, Ctrl+C took in the page is in the pane, pastes into the
+           desk's search with Ctrl+V, and a copy the session's own action makes
+           joins it in the same history
 
 It needs the session and the tree's apps built (dist/dev/nested-session-build.sh,
 or `TILO_NESTED_SESSION_BUILD` naming where they were).
@@ -86,6 +90,17 @@ def keeps_a_record() -> bool:
     """Whether Notes keeps its notebook record in the session's state yet: once
     it does, its window takes the keyboard."""
     return any(NOTES in str(path) for path in STATE.rglob("*.automerge"))
+
+
+def query(session) -> str:
+    """What the desk's search field holds."""
+    return session.control({"op": "search_rows"})["answer"]["query"]
+
+
+def searching(session) -> bool:
+    """Whether the desk's search is open."""
+    return any(shown for slot, shown in (chrome(session).get("overlays") or {}).items()
+               if "search" in slot)
 
 
 def notes_window(session) -> dict | None:
@@ -169,6 +184,39 @@ def main() -> int:
         check("Escape closes the pane", closed is not None)
         check("the caret is still reported after the pane closes", caret(session) is not None,
               json.dumps(caret(session)))
+
+        # What was copied in the page pastes into another app's field: the desk's search.
+        session.chord("Super", "Space")
+        session.chord("Control", "v")
+        pasted = wait_for("the paste in the search", lambda: query(session) or None)
+        session.snapshot(SHOTS / "03-pasted-in-search.png")
+        check("Ctrl+V pastes the page's copy into the desk's search",
+              pasted == "Water the beds before noon", repr(pasted))
+        # Escape empties the query, then closes the search.
+        session.key("Escape")
+        session.key("Escape")
+        check("Escape closes the search", wait_for("the search closing",
+                                                   lambda: not searching(session)) is not None,
+              json.dumps(chrome(session).get("overlays")))
+
+        # The session's own copy goes on the clipboard and into the history the page's copy is
+        # in: it pastes as the page's did, and the pane lists both.
+        session.invoke("so.tilo.session", "session:clipboard\x1fcopy", {"text": "the autumn release"})
+        session.chord("Super", "Space")
+        session.chord("Control", "v")
+        pasted = wait_for("the session's copy in the search",
+                          lambda: (now := query(session)) and "autumn" in now and now)
+        check("Ctrl+V pastes the session's copy into the desk's search",
+              pasted == "the autumn release", repr(query(session)))
+        session.key("Escape")
+        session.key("Escape")
+        wait_for("the search closing", lambda: not searching(session))
+        session.chord("Super", "v")
+        wait_for("the clipboard pane", lambda: settled(lambda: pane(session)))
+        # The pane draws its rows once the history's reading reaches it.
+        time.sleep(1)
+        print(f"  shot {session.snapshot(SHOTS / '04-both-copies.png')}")
+        session.key("Escape")
     finally:
         session.stop()
 

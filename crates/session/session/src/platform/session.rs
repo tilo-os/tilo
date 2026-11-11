@@ -1325,6 +1325,10 @@ impl Session {
             crate::workspace_settings::WorkspaceTabs::new(&records, options.wake.handle());
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
+        // The desk's own fields copy and paste through the desktop's clipboard, as apps do.
+        ui::host::install_default(
+            ui::host::HostServices::null().with_clipboard(Arc::new(clipboard.desk())),
+        );
         let boot_join = crate::boot_join::BootJoin::at_boot(&directory_store, &handle);
         let community =
             crate::community::Community::for_site(crate::platform::directory::community_site());

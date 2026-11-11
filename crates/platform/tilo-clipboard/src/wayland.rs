@@ -263,18 +263,6 @@ enum ClipboardCommand {
 }
 
 impl WaylandClipboard {
-    /// Attach to the `wl_display` behind `display_ptr`.
-    ///
-    /// # Safety
-    ///
-    /// `display_ptr` must remain live until this value AND every outstanding
-    /// loader have finished. A timed-out text read can retain a loader after
-    /// this value is dropped. Use [`Self::from_owned_display`] when that
-    /// independent lifetime cannot be guaranteed.
-    pub unsafe fn new(display_ptr: *mut std::ffi::c_void) -> Self {
-        unsafe { Self::new_with_owner(display_ptr, None) }
-    }
-
     /// Attach while retaining the actual display owner for every worker,
     /// including loaders that survive runner close.
     pub fn from_owned_display(
