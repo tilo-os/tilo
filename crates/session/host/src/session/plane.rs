@@ -30,7 +30,7 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_client::Carrier;
 use tilo_relay_client::link::{Dialer, Purpose};
 
-use super::{Command, DeviceSigner, Task, lock};
+use super::{Command, DeviceSigner, Task};
 use channel_crypto::ChannelContentKeys;
 
 /// The message a page shows in its members' place when its live plane cannot
@@ -597,14 +597,17 @@ impl Task {
                     },
                 );
                 // The members' place goes back to listing who is on the plane.
-                self.set_live_note(None);
+                self.reports.set_live_note(None);
             }
             Err(Failed::Refused) => {
                 // A workspace the host admitted the page to that refuses its
                 // plane does not admit the page to the plane's channel; one
                 // that does not admit the page at all is asked again as soon
                 // as its admission may have moved.
-                let seated = lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true);
+                let seated = self
+                    .reports
+                    .read(|status| status.workspaces.get(&workspace_id).copied())
+                    == Some(true);
                 let wait = if seated { REFUSED_MS } else { RETRY_MS };
                 self.planes
                     .refused(workspace_id, tilo_clock::unix_now_ms().saturating_add(wait));
@@ -614,7 +617,7 @@ impl Task {
                 // place that it lists nobody from the plane; the reason is in
                 // the channel diagnostics either way.
                 if self.planes.missed(workspace_id) >= MISSES_BEFORE_NOTE {
-                    self.set_live_note(Some(UNREACHABLE));
+                    self.reports.set_live_note(Some(UNREACHABLE));
                 }
                 self.planes.later(
                     workspace_id,
@@ -780,7 +783,7 @@ impl Task {
             // as the page's app plays it.
             if heard.track == Track::Audio {
                 if let Ok(object) = tilo_live::voice::VoiceObject::decode(&heard.body) {
-                    self.emit(&tilo_session_client::Event::CallAudio {
+                    self.reports.emit(&tilo_session_client::Event::CallAudio {
                         ws: workspace_id,
                         from: heard.sender,
                         sequence: object.sequence,
@@ -798,7 +801,7 @@ impl Task {
                         Track::Screen(_) => tilo_live::video::Source::Screen,
                         _ => tilo_live::video::Source::Camera,
                     };
-                    self.emit(&tilo_session_client::Event::CallPicture {
+                    self.reports.emit(&tilo_session_client::Event::CallPicture {
                         ws: workspace_id,
                         from: heard.sender,
                         source,
@@ -828,7 +831,7 @@ impl Task {
             {
                 continue;
             }
-            self.emit(&tilo_session_client::Event::LivePlane {
+            self.reports.emit(&tilo_session_client::Event::LivePlane {
                 ws: workspace_id,
                 from: heard.sender,
                 track: heard.track,
@@ -862,7 +865,7 @@ impl Task {
             }
         };
         if let Some((wanted, keyframes)) = demand {
-            self.emit(&tilo_session_client::Event::CallDemand {
+            self.reports.emit(&tilo_session_client::Event::CallDemand {
                 ws: workspace_id,
                 wanted,
                 keyframes,
@@ -880,23 +883,6 @@ impl Task {
                 workspace_id,
                 tilo_clock::unix_now_ms().saturating_add(RETRY_MS),
             );
-        }
-    }
-
-    /// Put the note the page shows where its live plane would be (in place of
-    /// the members) in place, waking every watcher when it changed.
-    pub(super) fn set_live_note(&self, note: Option<&str>) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            let note = note.map(str::to_owned);
-            if shared.live_note == note {
-                return;
-            }
-            shared.live_note = note;
-            shared.wakes.clone()
-        };
-        for wake in &wakes {
-            wake();
         }
     }
 }

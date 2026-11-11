@@ -20,7 +20,7 @@ use super::{COMMIT_WAIT, Needs, Worker, bytes_of, is_part};
 /// (a change of it the replica may not have taken in yet) merged in, and
 /// whether the replica holds it at all.
 fn document(
-    peer: &tilo_session_host::PeerHandle,
+    peer: &tilo_session_client::Link,
     route: &DocumentRoute,
     written: Option<&[u8]>,
 ) -> (automerge::AutoCommit, bool) {

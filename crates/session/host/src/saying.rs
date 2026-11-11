@@ -5,17 +5,16 @@ use std::sync::Arc;
 
 use iroh_base::{EndpointAddr, EndpointId};
 use tilo_desktop_model::WorkspaceId;
-use tilo_session_client::presence::OwnPresence;
-use tilo_session_client::{Cmd, Device, Outbox, Presence, SayPresence, topic_of};
+use tilo_session_client::{
+    Cmd, Device, Link, Outbox, Presence, SayPresence, presence::OwnPresence, topic_of,
+};
 use tilo_user_identity::DeviceCert;
-
-use crate::session::PeerHandle;
 
 /// Where a client's presence frames go on `peer`'s session: the live plane of the workspace each
 /// frame names, or nothing where this session holds none — presence is ephemeral, and the next
 /// change says where its sender is.
 #[must_use]
-pub fn saying(peer: &PeerHandle) -> Arc<dyn SayPresence> {
+pub fn saying(peer: &Link) -> Arc<dyn SayPresence> {
     Arc::new(Saying { peer: peer.clone() })
 }
 
@@ -36,12 +35,7 @@ pub fn device(cert: &DeviceCert) -> Option<Device> {
 /// it says as `label` of the person `cert` belongs to, and nothing of itself until its word is set.
 /// What an agent and `tilo mcp` say on, so every member's board draws them beside the people.
 #[must_use]
-pub fn enter(
-    peer: &PeerHandle,
-    cert: &DeviceCert,
-    label: &str,
-    workspace: &str,
-) -> Option<Presence> {
+pub fn enter(peer: &Link, cert: &DeviceCert, label: &str, workspace: &str) -> Option<Presence> {
     let workspace_id = WorkspaceId::parse(workspace)?;
     let presence = Presence::over(
         Some(saying(peer)),
@@ -58,7 +52,7 @@ pub fn enter(
 }
 
 struct Saying {
-    peer: PeerHandle,
+    peer: Link,
 }
 
 impl std::fmt::Debug for Saying {

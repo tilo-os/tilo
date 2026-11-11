@@ -15,7 +15,7 @@
 
 mod support;
 
-use tilo_session_host::TransportPhase;
+use tilo_session_client::TransportPhase;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{HostSettings, enrol, start_host_serving, start_peer, wait_for};

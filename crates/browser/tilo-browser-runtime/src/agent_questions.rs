@@ -66,7 +66,7 @@ pub(crate) fn answer_for_root(peer: u32, root: &JsValue) -> Result<(), JsError> 
         while let Some(session) = crate::peer_sync::handle_of(peer) {
             let began = web_time::Instant::now();
             let (answered, mut answers) = mpsc::unbounded_channel();
-            let member_host = session.member_host();
+            let member_host = tilo_session_host::member_host(&session);
             let mut host = MemberQuestions {
                 host: &member_host,
                 root: &root,

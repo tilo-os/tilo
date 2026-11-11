@@ -23,9 +23,7 @@ use tilo_app::prelude::*;
 use tilo_peer_state::document_frame::ContentCipher;
 use tilo_relay::member_limits::MemberLimitsConfig;
 use tilo_relay_protocol::refusal::{PLAIN_TOO_FAST, plain_reason};
-use tilo_session_client::Event;
-use tilo_session_client::{Cmd, Outbox};
-use tilo_session_host::PeerHandle;
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{WORKSPACE, door, enrol, enter, route, start_host_limiting, wait_for, workspace};
@@ -98,7 +96,7 @@ enum Answer {
     },
 }
 
-async fn answer(peer: &PeerHandle) -> Answer {
+async fn answer(peer: &Link) -> Answer {
     let receipt = std::sync::Mutex::new(peer.barrier().unwrap());
     let answered = wait_for("the host's answer to the commit", || {
         let answered = receipt.lock().unwrap().try_recv().ok();

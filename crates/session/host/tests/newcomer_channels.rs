@@ -19,37 +19,20 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
+use tilo_session_host::MemoryPeerStore;
 use tilo_session_host::device::{Entering, door_entry};
-use tilo_session_host::{MemoryPeerStore, PeerHandle};
 use tilo_user_identity::{DeviceCert, UserIdentity};
 
-use support::{enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_for};
+use support::{enrol, enter_page, hears, in_workspace, start_workspace_host_relaying, wait_keyed};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
-}
-
-/// Whether `page`'s channel for `route` is ready.
-fn keyed(page: &PeerHandle, route: &DocumentRoute) -> bool {
-    let prefix = format!("route {}/{} ", route.app_id, route.record);
-    page.status()
-        .channels
-        .lines()
-        .any(|line| line.starts_with(&prefix) && line.contains(": ready;"))
-}
-
-async fn wait_keyed(page: &PeerHandle, route: &DocumentRoute) {
-    wait_for("the page keyed for the desktop", || {
-        let ready = keyed(page, route);
-        async move { ready.then_some(()) }
-    })
-    .await;
 }
 
 /// A change to the desktop of `base`, in an entry `key` of its own, by a
@@ -71,7 +54,7 @@ async fn visitor(
     workspace_id: u64,
     desktop: &DocumentRoute,
     name: &str,
-) -> PeerHandle {
+) -> Link {
     let (root, key) = (new_key(), new_key());
     let (cert, entry) = door_entry(
         host_cert,

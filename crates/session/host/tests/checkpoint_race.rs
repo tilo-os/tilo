@@ -25,13 +25,12 @@ tilo_automerge_isolate::test_worker!();
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_session_client::Outbox;
-use tilo_session_host::PeerHandle;
+use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, ready, route, start_host, start_peer, wait_for};
 
-async fn durable(peer: &PeerHandle) {
+async fn durable(peer: &Link) {
     let receipt = peer.barrier().unwrap();
     wait_for("durable", || async { receipt.try_recv().ok() })
         .await

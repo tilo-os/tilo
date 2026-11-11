@@ -32,7 +32,7 @@ mod sheet;
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable as _;
@@ -50,7 +50,7 @@ use tilo_relay_client::Host;
 use tilo_relay_protocol::directory::{DirectoryEntry, DirectoryPage, Face, door_path};
 use tilo_relay_protocol::workspaces::WorkspaceRole;
 use tilo_session::{Options, Session};
-use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerHandle};
+use tilo_session_host::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::Seat as _;
 use tilo_sheets::directory::{Listing, ListingAction, Status};
 
@@ -963,7 +963,7 @@ fn chat_with(line: &str) -> automerge::AutoCommit {
 /// door stand in front of it.
 /// Dropping it takes the page down before the runtime it runs on, and shuts the host down.
 struct Lounge {
-    page: Option<PeerHandle>,
+    page: Option<Link>,
     relay: Option<tilo_relay::daemon::Relay>,
     _door: Responder,
     /// The host's web listener, which serves the door's host (`/host`) a device asks before its
@@ -1181,7 +1181,7 @@ impl LoungeHost {
     /// fair history after it. The host keeps what its members write sealed,
     /// so it asks the page that wrote for the record it holds and folds that
     /// in: the page answers, as a page does, with the record.
-    fn page(&self, runtime: &tokio::runtime::Runtime, written: &str) -> PeerHandle {
+    fn page(&self, runtime: &tokio::runtime::Runtime, written: &str) -> Link {
         let route = DocumentRoute {
             app_id: CHAT.to_owned(),
             cluster_id: self.workspace.clone(),
@@ -1189,7 +1189,7 @@ impl LoungeHost {
         };
         let page = {
             let _entered = runtime.enter();
-            let page = PeerHandle::start(
+            let page = tilo_session_host::start_session(
                 PeerConfig {
                     host: Host::at(self.relay.node_addr()),
                     cert: self.page_device.clone(),

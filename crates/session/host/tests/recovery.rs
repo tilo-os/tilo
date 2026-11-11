@@ -20,9 +20,7 @@ mod support;
 // Placing the workspace has the host build its governance in an automerge worker.
 tilo_automerge_isolate::test_worker!();
 
-use tilo_session_client::Event;
-use tilo_session_client::{Cmd, Outbox};
-use tilo_session_host::{FailureSubject, LocalState};
+use tilo_session_client::{Cmd, Event, FailureSubject, LocalState, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{

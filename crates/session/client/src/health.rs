@@ -11,7 +11,7 @@ use serde::Serialize;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_peer_state::owner::RecordWrites;
 
-use crate::session::{Failure, FailureSubject, LocalState, PeerStatus, TransportPhase};
+use crate::link::{Entry, Failure, FailureSubject, LocalState, PeerStatus, TransportPhase};
 
 /// `PeerSnapshot` of a certified peer.
 #[derive(Clone, Debug, Serialize)]
@@ -70,10 +70,10 @@ pub enum EntryHealth {
 }
 
 impl EntryHealth {
-    fn of(entry: &crate::session::Entry) -> Self {
+    fn of(entry: &Entry) -> Self {
         use tilo_relay_protocol::workspaces::WorkspaceRole;
         match entry {
-            crate::session::Entry::Admitted {
+            Entry::Admitted {
                 workspace,
                 name,
                 role,
@@ -88,7 +88,7 @@ impl EntryHealth {
                     WorkspaceRole::Moderator => "moderator",
                 },
             },
-            crate::session::Entry::Refused {
+            Entry::Refused {
                 code,
                 message,
                 retry_after_secs,

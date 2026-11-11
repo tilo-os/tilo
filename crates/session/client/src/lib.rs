@@ -19,13 +19,20 @@ pub mod content;
 pub mod custody;
 pub mod engine;
 pub mod gate;
+pub mod health;
 pub mod identity;
+pub mod link;
 pub mod membership;
 pub mod plane;
 pub mod presence;
 
 pub use arrivals::Arrivals;
 pub use client::{Client, Presence};
+pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
+pub use link::{
+    Entry, Events, Failure, FailureSubject, Link, LocalState, PAGE_FAILURE_CODES, PeerStatus,
+    Reports, TransportPhase,
+};
 pub use plane::{
     Answer, CallFrame, CallPicture, CallShown, Closed, Cmd, Device, Event, Outbox, PageShown,
     Receipt, RecvTimeoutError, RosterDevice, SayPresence, Topic, Transport, TryRecvError,

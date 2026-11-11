@@ -35,7 +35,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::DocumentMutation;
 use test_http::{Reply, Responder};
@@ -50,7 +50,7 @@ use tilo_relay_client::Host;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_session::apps::Apps;
 use tilo_session::{AppActions, Options, Session};
-use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerHandle};
+use tilo_session_host::{MemoryPeerStore, PeerConfig};
 use tilo_sheets::directory::{ListingAction, Status};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
@@ -333,9 +333,9 @@ fn host_info(
 
 /// A page of `member` 's device on the room's iroh endpoint, in the room's workspace: the same
 /// session a member's browser runs.
-fn page(room: &Room, member: &Member) -> PeerHandle {
+fn page(room: &Room, member: &Member) -> Link {
     let _entered = room.runtime.enter();
-    let page = PeerHandle::start(
+    let page = tilo_session_host::start_session(
         PeerConfig {
             host: room.host.clone(),
             cert: member.cert.clone(),
@@ -703,7 +703,7 @@ fn pointer_here(session: &Session, tab: u64, (x, y): (f32, f32)) -> bool {
 #[track_caller]
 fn wait_until_their_pointer(
     session: &mut Session,
-    member_page: &PeerHandle,
+    member_page: &Link,
     room: &Room,
     tab: u64,
     at: (f32, f32),
@@ -759,7 +759,7 @@ fn window_in_front(session: &Session) -> Option<u64> {
 
 /// The member's pointer is drawn on the desk where they put it, and follows when they move it.
 #[track_caller]
-fn the_pointer_follows(session: &mut Session, member_page: &PeerHandle, room: &Room) {
+fn the_pointer_follows(session: &mut Session, member_page: &Link, room: &Room) {
     // Their pointer, over a window they work in: the desk draws it there,
     // without the roster being opened.
     let shown =
@@ -796,7 +796,7 @@ fn the_pointer_follows(session: &mut Session, member_page: &PeerHandle, room: &R
 
 /// The invitation the room issues for `person` , as its own API does: a page's `invite` over the
 /// host's session, made by a member of the workspace.
-fn invite(room: &Room, member_page: &PeerHandle, person: [u8; 32]) -> String {
+fn invite(room: &Room, member_page: &Link, person: [u8; 32]) -> String {
     let reply = member_page
         .ask_workspaces(tilo_relay_protocol::workspaces::WorkspacesRequest::Invite {
             workspace: room.workspace.clone(),

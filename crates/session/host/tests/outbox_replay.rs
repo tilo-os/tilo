@@ -20,10 +20,10 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};
 
 use automerge::AutoCommit;
-use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerHandle, TransportPhase};
+use tilo_session_host::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
@@ -31,7 +31,7 @@ use support::{
 };
 
 /// How many of `peer`'s writes to the workspace its replica's custody still holds.
-fn unadmitted(peer: &PeerHandle) -> usize {
+fn unadmitted(peer: &Link) -> usize {
     let workspace = tilo_desktop_model::WorkspaceId::parse(support::WORKSPACE).unwrap();
     peer.engine()
         .owner()
@@ -111,7 +111,7 @@ async fn outbox_survives_a_host_restart_and_is_replayed() {
     let iroh_listen = host.iroh_listen();
 
     let store = Arc::new(MemoryPeerStore::default());
-    let peer = PeerHandle::start(
+    let peer = tilo_session_host::start_session(
         PeerConfig {
             host: host.iroh(),
             cert: browser.cert.clone(),

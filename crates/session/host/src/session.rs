@@ -2,7 +2,7 @@
 //!
 //! One task owns the connection to the user's host and everything that must
 //! be serialized with it: document signing, the commit outbox, reconnects.
-//! Callers talk to it through a cheap [`PeerHandle`].
+//! Callers talk to it through the client's cheap [`Link`].
 //!
 //! - **Optimistic local edits, host order.** A published document frame is
 //!   signed, appended to the outbox (persisted through the [`PeerStore`]) and
@@ -16,13 +16,15 @@
 //!   the handshake (a revoked device), ends in [`TransportPhase::Failed`]
 //!   instead of retrying forever; only [`Cmd::Reconnect`] retries.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Write as _;
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 
 use std::time::Duration;
-use tilo_session_client::content::Kept;
-use tilo_session_client::{CallPicture, CallShown, Closed, Cmd, Event, Outbox, PageShown};
+use tilo_session_client::{
+    CallPicture, CallShown, Closed, Cmd, Event, Failure, FailureSubject, Link, Outbox, PageShown,
+    PeerStatus, Reports, TransportPhase, content::Kept,
+};
 use tilo_session_core::remote::Heard;
 
 use collab_types::DocumentMutation;
@@ -48,13 +50,11 @@ mod outbound;
 mod plane;
 mod voice;
 
-pub use agent_run::AgentRunCompletion;
+use agent_run::AgentRunCompletion;
 use connect::Dial;
-pub use connect::SessionMemberHost;
+pub use connect::{SessionMemberHost, member_host};
 #[cfg(test)]
 use connect::{connect, link_error};
-pub use entry::Entry;
-pub use entry::EntryCompletion;
 use entry::{Refusal, refusal};
 use governance::HostGovernance;
 
@@ -91,8 +91,6 @@ pub(crate) const WORKSPACE_DELETED: (&str, &str) = (
 /// How long a connected session waits for the host to admit its workspaces before
 /// it reports `admission-timeout`. Checked on the keep-alive tick.
 const ADMISSION_TIMEOUT_MS: u64 = 30_000;
-/// Failures kept at once; the oldest goes first.
-const MAX_FAILURES: usize = 16;
 
 /// Where to reach the user's host: the iroh endpoint it serves its peers'
 /// sessions on ([`tilo_relay_client::Host`]).
@@ -130,153 +128,8 @@ impl PeerConfig {
     }
 }
 
-/// Transport phase, in `SessionHealth` v1 vocabulary.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum TransportPhase {
-    /// First connection attempt.
-    Connecting,
-    /// Authenticated and serving.
-    Connected,
-    /// Lost the connection; retrying.
-    Reconnecting,
-    /// Waiting for the next retry.
-    Offline,
-    /// Refused; retries only on [`Cmd::Reconnect`].
-    Failed,
-    /// Disposed.
-    Closed,
-}
-
-/// A failure in `SessionHealth` v1 vocabulary.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Failure {
-    /// `FailureCode`: `transport-unavailable`, `transport-ended`,
-    /// `certificate-expired`, `certificate-rejected`, `not-admitted`,
-    /// `device-revoked`, `host-changed`, `workspace-deleted`, `agent-run-stopped`,
-    /// `protocol-rejected`, `permission-required`, `signature-rejected`,
-    /// `storage-transaction-failed`, `admission-timeout`, and the codes the
-    /// page reports (see [`PeerHandle::report_failure`]).
-    pub code: &'static str,
-    /// Safe product copy.
-    pub message: String,
-    /// When it happened (ms since the epoch).
-    pub at_ms: u64,
-    /// What failed. A subject other than [`FailureSubject::Session`] holds at
-    /// most one failure at a time.
-    pub subject: FailureSubject,
-}
-
-/// What a [`Failure`] is about. It decides the `SessionHealth` scope and the
-/// recovery the failure offers.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum FailureSubject {
-    /// The session itself: transport, identity, protocol.
-    Session,
-    /// The page's durable store (`retry-saving`).
-    Storage,
-    /// Admission of the joined workspaces (`refresh-checkpoint`).
-    Admission,
-    /// One desktop surface's renderer (`retry-desktop`).
-    Surface(String),
-    /// An asset one desktop surface could not load (`retry-asset`).
-    Asset {
-        surface: String,
-        /// The surface's id for the asset.
-        asset: String,
-    },
-}
-
-/// Failure codes the page may report for a subject it owns.
-pub const PAGE_FAILURE_CODES: &[&str] = &[
-    "storage-quota",
-    "storage-denied",
-    "storage-transaction-failed",
-    "asset-unavailable",
-    "gpu-unavailable",
-    "gpu-device-lost",
-    "renderer-initialization-failed",
-];
-
-/// Local durability of one record as the page's store reports it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LocalState {
-    /// Nothing reported yet.
-    Unknown,
-    /// Edits not yet written.
-    Pending,
-    /// A write is in flight.
-    Committing,
-    /// Everything written durably.
-    Durable,
-    /// The last write failed.
-    Failed,
-}
-
 /// A write in this device's custody: its id, bytes, channel and retention.
 type CustodyEntry = ([u8; 32], Vec<u8>, [u8; 32], neighbour_wire::Retention);
-
-/// Everything a snapshot is derived from.
-#[derive(Clone, Debug)]
-pub struct PeerStatus {
-    pub phase: TransportPhase,
-    /// Whether the current connection completed the handshake.
-    pub authenticated: bool,
-    /// Consecutive failed attempts.
-    pub attempt: u32,
-    /// When the next attempt runs (ms since the epoch).
-    pub next_attempt_at_ms: Option<u64>,
-    /// Last envelope from the host (ms since the epoch).
-    pub last_contact_at_ms: Option<u64>,
-    /// Joined workspaces and whether the host answered `Ready`.
-    pub workspaces: BTreeMap<u64, bool>,
-    /// Each record's local store state, as reported with [`PeerHandle::set_local_state`].
-    pub local: BTreeMap<DocumentRoute, LocalState>,
-    /// Current failures, newest last.
-    pub failures: Vec<Failure>,
-    /// Commits not yet acknowledged, over every route.
-    pub outgoing_pending: usize,
-    /// This device.
-    pub device: [u8; 32],
-    /// Bumped on every change.
-    pub generation: u64,
-    /// This page's channel state, one line per workspace, certificate and
-    /// route, for diagnostics.
-    pub channels: String,
-    /// The members each joined workspace's governance lists, by workspace, by
-    /// person id: what someone no longer among them made on the workspace's
-    /// desktop is released ([`tilo_desktop_model::ownership::released`]).
-    pub room_members: BTreeMap<String, BTreeSet<String>>,
-    /// Whose each member device of a joined workspace is, by workspace: device (hex) to person
-    /// (root key, hex), as the workspace's governance admitted them. Who is here is shown by
-    /// person from it, so someone the live plane never certified to this page is still theirs.
-    pub room_devices: BTreeMap<String, BTreeMap<String, String>>,
-    /// What the host answered the entry this session asked for
-    /// ([`PeerConfig::entering`]), once it did.
-    pub entry: Option<Entry>,
-}
-
-impl PeerStatus {
-    /// A session of `device` that has not connected yet.
-    pub(crate) fn connecting(device: [u8; 32]) -> Self {
-        Self {
-            phase: TransportPhase::Connecting,
-            authenticated: false,
-            attempt: 0,
-            next_attempt_at_ms: None,
-            last_contact_at_ms: None,
-            workspaces: BTreeMap::new(),
-            local: BTreeMap::new(),
-            failures: Vec::new(),
-            outgoing_pending: 0,
-            device,
-            generation: 0,
-            channels: String::new(),
-            room_members: BTreeMap::new(),
-            room_devices: BTreeMap::new(),
-            entry: None,
-        }
-    }
-}
 
 /// The workspace id a session asks the host's own operations under: none of its workspaces, the
 /// host itself (creating, listing and entering the person's workspaces). Its answers come back
@@ -284,6 +137,10 @@ impl PeerStatus {
 pub const HOST_ITSELF: u64 = 0;
 
 /// What a session's task is told: the client's own commands, and the transport's own.
+#[expect(
+    clippy::large_enum_variant,
+    reason = "nearly every command is the client's: boxing them would allocate for each to shrink the transport's few"
+)]
 enum Command {
     /// One of the client's commands.
     Client(Cmd),
@@ -301,22 +158,7 @@ enum Command {
     /// The plane of `workspace_id` ended: the relay closed it, or the plane
     /// no longer admits what it reads.
     PlaneEnded(u64),
-    AgentRun(String, AgentRunCompletion),
-    /// A member's root-signed approver command, asked from the endpoint
-    /// this session dials its host from ([`PeerHandle`]'s
-    /// [`tilo_relay_client::MemberHost`]).
-    AskMember(
-        Box<tilo_relay_protocol::certify::MemberApproval>,
-        tokio::sync::oneshot::Sender<
-            Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
-        >,
-    ),
-    /// Make another entry on the session's connection
-    /// ([`PeerHandle::enter_then`]).
-    Enter(tilo_relay_protocol::entering::Entering, EntryCompletion),
 }
-
-type Wake = Arc<dyn Fn() + Send + Sync>;
 
 /// What sealing a live frame came to.
 enum Sealing {
@@ -343,91 +185,6 @@ pub(crate) type LiveCompletion = tilo_session_client::Answer<Option<Vec<u8>>>;
 /// Where the host's answer to a workspace administration request goes ([`Cmd::Administer`]).
 pub(crate) type RoomsCompletion =
     tilo_session_client::Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>;
-type Queue = Arc<Mutex<VecDeque<Event>>>;
-
-struct Shared {
-    status: PeerStatus,
-    queues: Vec<std::sync::Weak<Mutex<VecDeque<Event>>>>,
-    wakes: Vec<Wake>,
-    /// Wakes that last as long as their consumer's event queue
-    /// ([`PeerHandle::on_event`]), dropped with it.
-    listeners: Vec<(std::sync::Weak<Mutex<VecDeque<Event>>>, Wake)>,
-    /// The current session's bearer token for its host's fetch proxy
-    /// (`tilo_net::proxy`, at `/peer/v1/fetch`); kept apart from
-    /// [`PeerStatus`], which diagnostics show.
-    fetch_proxy: Option<String>,
-    /// What the page shows where its live plane would be, when it has none:
-    /// that no plane could be reached ([`PeerHandle::live_note`]).
-    live_note: Option<String>,
-}
-
-/// A cheap handle on a running session.
-#[derive(Clone)]
-pub struct PeerHandle {
-    commands: mpsc::UnboundedSender<Command>,
-    /// This device's replicas of its workspaces, and what reads their records.
-    engine: Arc<tilo_session_client::engine::Engine>,
-    shared: Arc<Mutex<Shared>>,
-    events: Queue,
-}
-
-/// One consumer's view of the session's events: every event produced after
-/// it was created, independent of other consumers.
-pub struct PeerEvents(Queue);
-
-impl PeerEvents {
-    /// Take every event produced since the last call.
-    pub fn drain(&self) -> Vec<Event> {
-        self.0.lock_recover().drain(..).collect()
-    }
-}
-
-impl Shared {
-    /// Everyone to wake, forgetting the listeners whose queue is gone.
-    fn wakes_now(&mut self) -> Vec<Wake> {
-        self.listeners.retain(|(queue, _)| queue.strong_count() > 0);
-        self.wakes
-            .iter()
-            .cloned()
-            .chain(self.listeners.iter().map(|(_, wake)| Arc::clone(wake)))
-            .collect()
-    }
-}
-
-fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
-    shared.lock_recover()
-}
-
-/// Apply `change` to the status, bump its generation and wake the watchers
-/// once the lock is released.
-fn change_status(shared: &Mutex<Shared>, change: impl FnOnce(&mut PeerStatus)) {
-    let wakes = {
-        let mut shared = lock(shared);
-        change(&mut shared.status);
-        shared.status.generation = shared.status.generation.wrapping_add(1);
-        shared.wakes_now()
-    };
-    for wake in &wakes {
-        wake();
-    }
-}
-
-/// Add `failure`, replacing the one it supersedes: a session failure
-/// replaces one with its code, any other one its subject's.
-fn upsert(status: &mut PeerStatus, failure: Failure) {
-    status.failures.retain(|existing| {
-        if failure.subject == FailureSubject::Session {
-            existing.subject != FailureSubject::Session || existing.code != failure.code
-        } else {
-            existing.subject != failure.subject
-        }
-    });
-    status.failures.push(failure);
-    if status.failures.len() > MAX_FAILURES {
-        status.failures.remove(0);
-    }
-}
-
 #[derive(Debug, PartialEq, Eq)]
 enum Admission {
     Admitted,
@@ -447,345 +204,110 @@ fn admission_state(status: &PeerStatus, since_ms: Option<u64>, now_ms: u64) -> A
     }
 }
 
-impl PeerHandle {
-    /// Start the session task. It connects in the background; observe it
-    /// with [`Self::status`] and [`Self::on_change`].
-    pub fn start(
-        config: PeerConfig,
-        signer: Arc<dyn DeviceSigner>,
-        store: Arc<dyn PeerStore>,
-    ) -> Self {
-        let (commands, receiver) = mpsc::unbounded_channel();
-        let shared = Arc::new(Mutex::new(Shared {
-            status: PeerStatus::connecting(config.cert.device_public_key),
-            queues: Vec::new(),
-            wakes: Vec::new(),
-            listeners: Vec::new(),
-            fetch_proxy: None,
-            live_note: None,
-        }));
-        let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
-        lock(&shared).queues.push(Arc::downgrade(&events));
-        let record = store.load().unwrap_or_default();
-        let vault = store.channel_vault().unwrap_or_else(rand::random);
-        let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
-        let channel_state = crate::custody::StoredChannels::load(store.as_ref());
-        let gates = Arc::new(tilo_channels::Gates::default());
-        let channels = tilo_channels::ChannelKeyAccess::new(open_channels(
-            &replicas,
-            &channel_state,
-            vault,
-            &signer,
-            &gates,
-        ));
-        let engine = Arc::new(tilo_session_client::engine::Engine::holding(
-            replicas.owner(),
-            Arc::default(),
-            tilo_identity_host::custody::HostIdentity::kept(
-                config.cert.clone(),
-                Arc::clone(&signer),
-            ),
-            Arc::new(crate::custody::SessionCustody),
-        ));
-        engine.keys().set(Some(channels.clone()));
-        engine.held_writes().lock().extend(channel_state.held());
-        #[cfg(feature = "toolkit")]
-        crate::surfaces::decide_with_kept_surfaces();
-        let task = Task {
-            engine: Arc::clone(&engine),
-            replicas,
-            commands: commands.downgrade(),
-            config,
-            signer,
-            store,
-            dial: Dial::for_page(&vault),
-            shared: shared.clone(),
-            workspaces: BTreeSet::new(),
-            planes_due: BTreeSet::new(),
-            governance_batch: None,
-            kept: BTreeMap::new(),
-            placing: BTreeMap::new(),
-            planes: plane::Planes::default(),
-            record,
-            ciphers: Ciphers::new(),
-            channels,
-            governance: HostGovernance::default(),
-            outbound_due: false,
-            answered: Vec::new(),
-            arrived: Vec::new(),
-            let_go: BTreeSet::new(),
-            held_inbound: BTreeMap::new(),
-            channel_state,
-            route_keys: BTreeMap::new(),
-            new_keys: Vec::new(),
-            keys_generation: 0,
-            refused: (0, String::new()),
-            surface_wants: neighbour_wire::content::ContentWants::default(),
-            held_live: crate::held_live::HeldLive::new(),
-            positions: BTreeMap::new(),
-            opened_records: BTreeMap::new(),
-            opened_routes: BTreeSet::new(),
-            when_opened: BTreeSet::new(),
-            barriers: Vec::new(),
-            sent: BTreeMap::new(),
-            awaiting_surface: BTreeMap::new(),
-            surfaces_arrived: false,
-            compactions: Vec::new(),
-            replays: BTreeSet::new(),
-            held_barriers: Vec::new(),
-            admission_since: None,
-            delivered: BTreeMap::new(),
-            received: BTreeSet::new(),
-            voice: crate::voice::Participations::default(),
-            rooms_pending: BTreeMap::new(),
-            rooms_next: 0,
-            agent_runs_pending: BTreeMap::new(),
-            agent_runs_next: 0,
-            held_actions: Vec::new(),
-            begun: BTreeSet::new(),
-        };
-        n0_future::task::spawn(task.run(receiver));
-        Self {
-            commands,
-            engine,
-            shared,
-            events,
-        }
-    }
-
-    /// This device's replicas of its workspaces: what reads a record whose writes
-    /// [`Event::Landed`] said arrived.
-    #[must_use]
-    pub fn engine(&self) -> &Arc<tilo_session_client::engine::Engine> {
-        &self.engine
-    }
-
-    /// This session's health: its status, and this device's writes to each record as its
-    /// replica's custody keeps them.
-    pub fn snapshot(&self) -> crate::PeerSnapshot {
-        let owner = self.engine.owner();
-        let writes =
-            self.engine
-                .workspaces()
-                .into_iter()
-                .flat_map(|workspace| {
-                    owner.record_writes(workspace).into_iter().map(
-                        move |((app_id, record), writes)| {
-                            (
-                                DocumentRoute {
-                                    app_id,
-                                    cluster_id: workspace.to_string(),
-                                    record,
-                                },
-                                writes,
-                            )
-                        },
-                    )
-                })
-                .collect();
-        crate::PeerSnapshot::from_status(&self.status(), &writes)
-    }
-
-    /// Why this page shows no live presence, in the words it shows in its
-    /// members' place, or `None` while it has a plane: no plane could be
-    /// reached ([`plane::UNREACHABLE`]).
-    pub fn live_note(&self) -> Option<String> {
-        lock(&self.shared).live_note.clone()
-    }
-
-    fn send(&self, command: Command) -> Result<(), String> {
-        self.commands.send(command).map_err(|_| Closed.to_string())
-    }
-
-    /// End the session.
-    pub fn close(&self) {
-        let _ = Outbox::send(self, Cmd::Stop);
-    }
-
-    fn change(&self, change: impl FnOnce(&mut PeerStatus)) {
-        change_status(&self.shared, change);
-    }
-
-    /// Record the page store's durability of `route`. A failed write is the
-    /// storage failure; it clears once no route's store state is failed.
-    pub fn set_local_state(&self, route: DocumentRoute, state: LocalState) {
-        self.change(|status| {
-            status.local.insert(route, state);
-            if state == LocalState::Failed {
-                upsert(
-                    status,
-                    Failure {
-                        code: "storage-transaction-failed",
-                        message: "Changes could not be saved on this device.".into(),
-                        at_ms: tilo_clock::unix_now_ms(),
-                        subject: FailureSubject::Storage,
-                    },
-                );
-            } else if state == LocalState::Durable
-                && !status
-                    .local
-                    .values()
-                    .any(|state| *state == LocalState::Failed)
-            {
-                status
-                    .failures
-                    .retain(|failure| failure.subject != FailureSubject::Storage);
-            }
-        });
-    }
-
-    /// Report a failure of something the page owns: its store, a desktop
-    /// surface, a surface's asset. It replaces the subject's previous one.
-    ///
-    /// # Errors
-    ///
-    /// Rejects [`FailureSubject::Session`] and [`FailureSubject::Admission`],
-    /// which only the session reports, and codes outside
-    /// [`PAGE_FAILURE_CODES`].
-    pub fn report_failure(
-        &self,
-        subject: FailureSubject,
-        code: &str,
-        message: impl Into<String>,
-    ) -> Result<(), String> {
-        if matches!(subject, FailureSubject::Session | FailureSubject::Admission) {
-            return Err("the session reports its own failures".into());
-        }
-        let code = PAGE_FAILURE_CODES
-            .iter()
-            .copied()
-            .find(|known| *known == code)
-            .ok_or_else(|| format!("unknown failure code {code}"))?;
-        let message = message.into();
-        self.change(|status| {
-            upsert(
-                status,
-                Failure {
-                    code,
-                    message,
-                    at_ms: tilo_clock::unix_now_ms(),
-                    subject,
-                },
-            );
-        });
-        Ok(())
-    }
-
-    pub fn clear_failure(&self, subject: &FailureSubject) {
-        if !lock(&self.shared)
-            .status
-            .failures
-            .iter()
-            .any(|failure| failure.subject == *subject)
-        {
-            return;
-        }
-        self.change(|status| {
-            status
-                .failures
-                .retain(|failure| failure.subject != *subject);
-        });
-    }
-
-    /// Clear every failure of desktop surface `surface` and of its assets.
-    pub fn clear_surface(&self, surface: &str) {
-        let of_surface = |subject: &FailureSubject| match subject {
-            FailureSubject::Surface(id) | FailureSubject::Asset { surface: id, .. } => {
-                id == surface
-            }
-            _ => false,
-        };
-        if !lock(&self.shared)
-            .status
-            .failures
-            .iter()
-            .any(|failure| of_surface(&failure.subject))
-        {
-            return;
-        }
-        self.change(|status| {
-            status
-                .failures
-                .retain(|failure| !of_surface(&failure.subject));
-        });
-    }
-
-    /// The bearer token the host's fetch proxy takes (`tilo_net::proxy`, at
-    /// `/peer/v1/fetch`) while this session holds one; `None` otherwise, and
-    /// from a host that serves no proxy. It changes with every session, so
-    /// callers read it for each request.
-    pub fn fetch_proxy_session(&self) -> Option<String> {
-        lock(&self.shared).fetch_proxy.clone()
-    }
-
-    /// Current status.
-    pub fn status(&self) -> PeerStatus {
-        lock(&self.shared).status.clone()
-    }
-
-    /// Whose each member device of `workspace` is, as [`PeerStatus::room_devices`] says: device
-    /// (hex) to person (root key, hex), read without copying the rest of the status. Empty until
-    /// the workspace's governance admitted its members.
-    pub fn room_devices(&self, workspace: &str) -> BTreeMap<String, String> {
-        lock(&self.shared)
-            .status
-            .room_devices
-            .get(workspace)
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    /// Take every event produced since the last call on this handle's own
-    /// queue. Other consumers use [`Self::events`].
-    pub fn drain(&self) -> Vec<Event> {
-        PeerEvents(self.events.clone()).drain()
-    }
-
-    /// A new, independent event queue.
-    pub fn events(&self) -> PeerEvents {
-        let queue: Queue = Arc::new(Mutex::new(VecDeque::new()));
-        lock(&self.shared).queues.push(Arc::downgrade(&queue));
-        PeerEvents(queue)
-    }
-
-    /// Call `wake` whenever status or events change.
-    pub fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        lock(&self.shared).wakes.push(wake);
-    }
-
-    /// Call `wake` whenever status or events change, for as long as
-    /// `events` is read: a consumer that comes and goes leaves no wake
-    /// behind.
-    pub fn on_event(&self, events: &PeerEvents, wake: Arc<dyn Fn() + Send + Sync>) {
-        lock(&self.shared)
-            .listeners
-            .push((Arc::downgrade(&events.0), wake));
-    }
+/// Start a certified relay session with `config`'s host. It connects in the background; observe it
+/// with [`Link::status`] and [`Link::on_change`]. It ends with its last link.
+pub fn start_session(
+    config: PeerConfig,
+    signer: Arc<dyn DeviceSigner>,
+    store: Arc<dyn PeerStore>,
+) -> Link {
+    let (commands, receiver) = mpsc::unbounded_channel();
+    let reports = Reports::connecting(config.cert.device_public_key);
+    let record = store.load().unwrap_or_default();
+    let vault = store.channel_vault().unwrap_or_else(rand::random);
+    let replicas = crate::replica::Replicas::new(config.cert.clone(), Arc::clone(&store));
+    let channel_state = crate::custody::StoredChannels::load(store.as_ref());
+    let gates = Arc::new(tilo_channels::Gates::default());
+    let channels = tilo_channels::ChannelKeyAccess::new(open_channels(
+        &replicas,
+        &channel_state,
+        vault,
+        &signer,
+        &gates,
+    ));
+    let engine = Arc::new(tilo_session_client::engine::Engine::holding(
+        replicas.owner(),
+        Arc::default(),
+        tilo_identity_host::custody::HostIdentity::kept(config.cert.clone(), Arc::clone(&signer)),
+        Arc::new(crate::custody::SessionCustody),
+    ));
+    engine.keys().set(Some(channels.clone()));
+    engine.held_writes().lock().extend(channel_state.held());
+    #[cfg(feature = "toolkit")]
+    crate::surfaces::decide_with_kept_surfaces();
+    let task = Task {
+        engine: Arc::clone(&engine),
+        replicas,
+        commands: commands.downgrade(),
+        config,
+        signer,
+        store,
+        dial: Dial::for_page(&vault),
+        reports: Arc::clone(&reports),
+        workspaces: BTreeSet::new(),
+        planes_due: BTreeSet::new(),
+        governance_batch: None,
+        kept: BTreeMap::new(),
+        placing: BTreeMap::new(),
+        planes: plane::Planes::default(),
+        record,
+        ciphers: Ciphers::new(),
+        channels,
+        governance: HostGovernance::default(),
+        outbound_due: false,
+        answered: Vec::new(),
+        arrived: Vec::new(),
+        let_go: BTreeSet::new(),
+        held_inbound: BTreeMap::new(),
+        channel_state,
+        route_keys: BTreeMap::new(),
+        new_keys: Vec::new(),
+        keys_generation: 0,
+        refused: (0, String::new()),
+        surface_wants: neighbour_wire::content::ContentWants::default(),
+        held_live: crate::held_live::HeldLive::new(),
+        positions: BTreeMap::new(),
+        opened_records: BTreeMap::new(),
+        opened_routes: BTreeSet::new(),
+        when_opened: BTreeSet::new(),
+        barriers: Vec::new(),
+        sent: BTreeMap::new(),
+        awaiting_surface: BTreeMap::new(),
+        surfaces_arrived: false,
+        compactions: Vec::new(),
+        replays: BTreeSet::new(),
+        held_barriers: Vec::new(),
+        admission_since: None,
+        delivered: BTreeMap::new(),
+        received: BTreeSet::new(),
+        voice: crate::voice::Participations::default(),
+        rooms_pending: BTreeMap::new(),
+        rooms_next: 0,
+        agent_runs_pending: BTreeMap::new(),
+        agent_runs_next: 0,
+        held_actions: Vec::new(),
+        begun: BTreeSet::new(),
+    };
+    // The link's own queue is there before the session says anything.
+    let link = Link::new(Arc::new(Commands(commands)), engine, reports);
+    n0_future::task::spawn(task.run(receiver));
+    link
 }
 
-impl std::fmt::Debug for PeerHandle {
+/// The session's own sender: what its links say the client's commands through.
+struct Commands(mpsc::UnboundedSender<Command>);
+
+impl std::fmt::Debug for Commands {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PeerHandle").finish_non_exhaustive()
+        f.write_str("relay session")
     }
 }
 
 /// The session carries the client's commands: what a participant says to its workspaces goes
 /// through the relay session it keeps with its host.
-impl Outbox for PeerHandle {
+impl Outbox for Commands {
     fn send(&self, command: Cmd) -> Result<(), Closed> {
-        // The replica's readers read with them from now on, not once the session got to them.
-        if let Cmd::InstallChannelKeys(route, keys) = &command
-            && let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id)
-        {
-            self.engine.hand_keys(
-                workspace,
-                collab_types::ChannelRoute::new(&route.app_id, &route.record),
-                keys.clone(),
-            );
-        }
-        self.commands
-            .send(Command::Client(command))
-            .map_err(|_| Closed)
+        self.0.send(Command::Client(command)).map_err(|_| Closed)
     }
 }
 
@@ -835,7 +357,8 @@ struct Task {
     store: Arc<dyn PeerStore>,
     /// Where this session dials its host from, kept across reconnects.
     dial: Dial,
-    shared: Arc<Mutex<Shared>>,
+    /// What this session reports to its links.
+    reports: Arc<Reports>,
     workspaces: BTreeSet<u64>,
     /// The joined workspaces whose live plane may have to be joined, followed
     /// or left ([`Self::settle_planes`]): those whose governance, channel
@@ -1067,13 +590,14 @@ impl Task {
         if !changed {
             return true;
         }
-        let admitted: Vec<u64> = lock(&self.shared)
-            .status
-            .workspaces
-            .iter()
-            .filter(|(_, ready)| **ready)
-            .map(|(workspace_id, _)| *workspace_id)
-            .collect();
+        let admitted: Vec<u64> = self.reports.read(|status| {
+            status
+                .workspaces
+                .iter()
+                .filter(|(_, ready)| **ready)
+                .map(|(workspace_id, _)| *workspace_id)
+                .collect()
+        });
         for workspace_id in admitted {
             if let Some(hello) =
                 identity_hello(workspace_id, &self.config.cert, &self.config.revocations)
@@ -1164,43 +688,19 @@ impl Task {
             .is_ok()
     }
 
-    fn update(&self, change: impl FnOnce(&mut PeerStatus)) {
-        change_status(&self.shared, change);
-    }
-
-    fn emit(&self, event: &Event) {
-        let wakes = {
-            let mut shared = lock(&self.shared);
-            shared.queues.retain(|queue| {
-                let Some(queue) = queue.upgrade() else {
-                    return false;
-                };
-                queue.lock_recover().push_back(event.clone());
-                true
-            });
-            shared.wakes_now()
-        };
-        for wake in &wakes {
-            wake();
-        }
-    }
-
     fn fail(&self, code: &'static str, message: impl Into<String>) {
         self.fail_on(FailureSubject::Session, code, message);
     }
 
     fn fail_on(&self, subject: FailureSubject, code: &'static str, message: impl Into<String>) {
         let message = message.into();
-        self.update(|status| {
-            upsert(
-                status,
-                Failure {
-                    code,
-                    message,
-                    at_ms: tilo_clock::unix_now_ms(),
-                    subject,
-                },
-            );
+        self.reports.change(|status| {
+            status.upsert(Failure {
+                code,
+                message,
+                at_ms: tilo_clock::unix_now_ms(),
+                subject,
+            });
         });
     }
 
@@ -1241,7 +741,7 @@ impl Task {
                 })
                 .is_ok();
         }
-        self.update(|status| {
+        self.reports.change(|status| {
             for ready in status.workspaces.values_mut() {
                 *ready = false;
             }
@@ -1253,7 +753,7 @@ impl Task {
     /// `admission_since` are still not admitted, and clear it once they are.
     /// A timeout is reported once per subscription.
     fn check_admission(&mut self) {
-        let status = self.status();
+        let status = self.reports.status();
         match admission_state(&status, self.admission_since, tilo_clock::unix_now_ms()) {
             Admission::Admitted => {
                 self.admission_since = None;
@@ -1278,15 +778,11 @@ impl Task {
     }
 
     fn clear_admission_failure(&self) {
-        self.update(|status| {
+        self.reports.change(|status| {
             status
                 .failures
                 .retain(|failure| failure.subject != FailureSubject::Admission);
         });
-    }
-
-    fn status(&self) -> PeerStatus {
-        lock(&self.shared).status.clone()
     }
 
     fn bind_record_identity(&mut self) -> Result<(), &'static str> {
@@ -1318,7 +814,8 @@ impl Task {
     async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
         if let Err(message) = self.bind_record_identity() {
             self.fail("certificate-rejected", message);
-            self.update(|status| status.phase = TransportPhase::Failed);
+            self.reports
+                .change(|status| status.phase = TransportPhase::Failed);
             return;
         }
         let mut attempt: u32 = 0;
@@ -1326,13 +823,14 @@ impl Task {
         loop {
             if self.config.cert.is_expired_at(tilo_clock::unix_now_ns()) {
                 self.fail("certificate-expired", "This browser's certificate expired.");
-                self.update(|status| status.phase = TransportPhase::Failed);
+                self.reports
+                    .change(|status| status.phase = TransportPhase::Failed);
                 if !self.wait_for_reconnect(&mut commands).await {
                     return self.closed().await;
                 }
                 continue;
             }
-            self.update(|status| {
+            self.reports.change(|status| {
                 status.phase = if attempt == 0 {
                     TransportPhase::Connecting
                 } else {
@@ -1421,8 +919,8 @@ impl Task {
         // Nothing reconnects from here: the endpoint goes with the session,
         // and the host is told so.
         self.dial.shutdown().await;
-        lock(&self.shared).fetch_proxy = None;
-        self.update(|status| {
+        self.reports.set_fetch_proxy(None);
+        self.reports.change(|status| {
             status.phase = TransportPhase::Closed;
             status.authenticated = false;
         });
@@ -1450,7 +948,7 @@ impl Task {
     /// The session is up: connected and authenticated, its transport
     /// failures cleared, every workspace waiting to be admitted again.
     fn connected(&self) {
-        self.update(|status| {
+        self.reports.change(|status| {
             status.phase = TransportPhase::Connected;
             status.authenticated = true;
             status.attempt = 0;
@@ -1509,7 +1007,7 @@ impl Task {
     ) -> Exit {
         // The last session's fetch proxy token died with its connection; this
         // one mints its own as it starts.
-        lock(&self.shared).fetch_proxy = None;
+        self.reports.set_fetch_proxy(None);
         if !self.resume_session(&client) {
             return Exit::Lost("host session saturated during resume".into());
         }
@@ -1652,7 +1150,7 @@ impl Task {
                 return Err(Exit::Lost("host session saturated".into()));
             }
             if let Some(event) = event {
-                self.emit(&Event::Voice(event));
+                self.reports.emit(&Event::Voice(event));
             }
             return Ok(());
         }
@@ -1689,7 +1187,7 @@ impl Task {
         client: Option<&RelayClient>,
     ) {
         let Some(client) = client else {
-            self.emit(&Event::Remote(Heard::Undeliverable {
+            self.reports.emit(&Event::Remote(Heard::Undeliverable {
                 workspace_id,
                 to,
                 reason: "not connected to the host".into(),
@@ -1699,7 +1197,7 @@ impl Task {
         // The host's own operations, which no workspace decides, go to it on the session itself.
         if workspace_id == HOST_ITSELF {
             if to != self.config.host_cert.device_public_key {
-                self.emit(&Event::Remote(Heard::Undeliverable {
+                self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id,
                     to,
                     reason: "outside a workspace, only the host itself is asked".into(),
@@ -1712,7 +1210,7 @@ impl Task {
         if self.admitted_to(workspace_id) == Some(false) {
             if self.held_actions.len() >= MAX_HELD_ACTIONS {
                 let dropped = self.held_actions.remove(0);
-                self.emit(&Event::Remote(Heard::Undeliverable {
+                self.reports.emit(&Event::Remote(Heard::Undeliverable {
                     workspace_id: dropped.workspace_id,
                     to: dropped.to,
                     reason: "too many actions waited for the workspace's admission".into(),
@@ -1732,11 +1230,8 @@ impl Task {
     /// workspace it did not ask to join, `Some(false)` while the host has not
     /// admitted it yet, and `Some(true)` once it has.
     fn admitted_to(&self, workspace_id: u64) -> Option<bool> {
-        lock(&self.shared)
-            .status
-            .workspaces
-            .get(&workspace_id)
-            .copied()
+        self.reports
+            .read(|status| status.workspaces.get(&workspace_id).copied())
     }
 
     fn send_action(&self, client: &RelayClient, workspace_id: u64, to: [u8; 32], frame: Vec<u8>) {
@@ -1910,12 +1405,12 @@ impl Task {
                 self.publish_call_audio(workspace_id, frames);
                 true
             }
-            Command::AgentRun(label, done) => self.run_as_agent(label, done, client),
-            Command::AskMember(approval, done) => {
+            Command::Client(Cmd::AgentRun(label, done)) => self.run_as_agent(label, done, client),
+            Command::Client(Cmd::AskMember(approval, done)) => {
                 self.ask_member(approval, done);
                 true
             }
-            Command::Enter(entering, done) => {
+            Command::Client(Cmd::Enter(entering, done)) => {
                 self.enter(entering, done, client);
                 true
             }
@@ -1969,7 +1464,7 @@ impl Task {
         }
         self.workspaces.insert(workspace_id);
         self.planes_due.insert(workspace_id);
-        self.update(|status| {
+        self.reports.change(|status| {
             status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.received.clear();
@@ -1993,7 +1488,7 @@ impl Task {
         if !places_workspaces(&self.config.cert, &self.config.host_cert) {
             return self.join(workspace_id, client);
         }
-        self.update(|status| {
+        self.reports.change(|status| {
             status.workspaces.entry(workspace_id).or_insert(false);
         });
         self.placing.insert(workspace_id, (workspace, name));
@@ -2203,7 +1698,7 @@ impl Task {
             } => match self.open_live(workspace_id, &frame) {
                 // A run's narration is the host's own, signed outside the plane.
                 Opening::Opened(opened) if host_voice::plane_narrates_a_run(&opened) => {}
-                Opening::Opened(opened) => self.emit(&Event::Live {
+                Opening::Opened(opened) => self.reports.emit(&Event::Live {
                     ws: workspace_id,
                     from,
                     frame: opened,
@@ -2298,7 +1793,7 @@ impl Task {
     /// Hold `token` for the rest of this session: what a page sends with
     /// every read through its host's fetch proxy.
     fn grant_fetch_proxy(&self, token: &[u8; 32]) {
-        lock(&self.shared).fetch_proxy = Some(hex::encode(token));
+        self.reports.set_fetch_proxy(Some(hex::encode(token)));
     }
 
     /// Whether `envelope` is a member's ask for a workspace's record content, answered to that
@@ -2465,8 +1960,8 @@ impl Task {
         }
         self.persist_channels(false);
         let channels = self.describe_channels();
-        if lock(&self.shared).status.channels != channels {
-            self.update(|status| status.channels = channels);
+        if self.reports.read(|status| status.channels != channels) {
+            self.reports.change(|status| status.channels = channels);
         }
         delivered
     }
@@ -2651,72 +2146,6 @@ mod tests {
         }
     }
 
-    fn failure(code: &'static str, subject: FailureSubject) -> Failure {
-        Failure {
-            code,
-            message: String::new(),
-            at_ms: 0,
-            subject,
-        }
-    }
-
-    #[test]
-    fn a_subject_holds_one_failure_and_session_failures_one_per_code() {
-        let mut status = status(&[]);
-        upsert(
-            &mut status,
-            failure("transport-ended", FailureSubject::Session),
-        );
-        upsert(
-            &mut status,
-            failure("transport-unavailable", FailureSubject::Session),
-        );
-        upsert(
-            &mut status,
-            failure("transport-ended", FailureSubject::Session),
-        );
-        upsert(
-            &mut status,
-            failure("storage-transaction-failed", FailureSubject::Storage),
-        );
-        upsert(
-            &mut status,
-            failure("storage-quota", FailureSubject::Storage),
-        );
-        upsert(
-            &mut status,
-            failure("gpu-device-lost", FailureSubject::Surface("a".into())),
-        );
-        upsert(
-            &mut status,
-            failure("gpu-device-lost", FailureSubject::Surface("b".into())),
-        );
-        let codes: Vec<_> = status.failures.iter().map(|failure| failure.code).collect();
-        assert_eq!(
-            codes,
-            [
-                "transport-unavailable",
-                "transport-ended",
-                "storage-quota",
-                "gpu-device-lost",
-                "gpu-device-lost"
-            ]
-        );
-        for index in 0..MAX_FAILURES {
-            upsert(
-                &mut status,
-                failure(
-                    "asset-unavailable",
-                    FailureSubject::Asset {
-                        surface: "a".into(),
-                        asset: index.to_string(),
-                    },
-                ),
-            );
-        }
-        assert_eq!(status.failures.len(), MAX_FAILURES);
-    }
-
     #[test]
     fn workspaces_not_admitted_within_the_timeout_are_overdue_once_subscribed() {
         let since = 1_000;
@@ -2785,60 +2214,6 @@ mod tests {
              at 60000"
         );
         assert_eq!(planes.missed(7), 1, "an answer starts the count again");
-    }
-}
-
-/// This session as what asking another device's actions needs ([`Heard`]): the frames it carries
-/// to a device's key, and what it heard back, on a queue of its own, so any number of askers on
-/// one session each hear every answer.
-impl From<&PeerHandle> for Arc<dyn tilo_session_core::remote::RemoteSession> {
-    fn from(peer: &PeerHandle) -> Self {
-        Arc::new(Asking {
-            commands: peer.commands.clone(),
-            shared: Arc::clone(&peer.shared),
-            events: peer.events(),
-        })
-    }
-}
-
-/// One asker of another device's actions over a session.
-struct Asking {
-    commands: mpsc::UnboundedSender<Command>,
-    shared: Arc<Mutex<Shared>>,
-    events: PeerEvents,
-}
-
-impl tilo_session_core::remote::RemoteSession for Asking {
-    fn send_remote_action(
-        &self,
-        workspace_id: u64,
-        device: [u8; 32],
-        frame: Vec<u8>,
-    ) -> Result<(), String> {
-        self.commands
-            .send(Command::Client(Cmd::RemoteAction(
-                workspace_id,
-                device,
-                frame,
-            )))
-            .map_err(|_| "peer session is closed".to_string())
-    }
-
-    fn take_heard(&self) -> Vec<Heard> {
-        self.events
-            .drain()
-            .into_iter()
-            .filter_map(|event| match event {
-                Event::Remote(heard) => Some(heard),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn on_change(&self, wake: Arc<dyn Fn() + Send + Sync>) {
-        lock(&self.shared)
-            .listeners
-            .push((Arc::downgrade(&self.events.0), wake));
     }
 }
 

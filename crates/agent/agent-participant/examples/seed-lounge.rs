@@ -81,7 +81,7 @@ async fn main() -> Result<(), String> {
         )
         .await
         .map_err(|refused| format!("{name}: {}", refused.message))?;
-        let session = tilo_session_host::PeerHandle::start(
+        let session = tilo_session_host::start_session(
             tilo_session_host::PeerConfig {
                 host: tilo_session_host::Host::published(&address),
                 cert,

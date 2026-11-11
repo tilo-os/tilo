@@ -240,7 +240,8 @@ impl Task {
             .filter_map(|workspace_id| self.replicas.workspace(*workspace_id))
             .map(|workspace| self.custody(workspace).len())
             .sum();
-        self.update(|status| status.outgoing_pending = pending);
+        self.reports
+            .change(|status| status.outgoing_pending = pending);
     }
 
     /// Complete `done` once every write now in this device's custody is answered by its host.
@@ -336,7 +337,7 @@ impl Task {
             if let Some(refused) = withdrawn {
                 // The refused write left this device's replica: whoever reads it reads it again.
                 self.engine.arrivals().landed();
-                self.emit(&refused);
+                self.reports.emit(&refused);
             }
             // The host read this commit and would not take it: the session is
             // fine, and saying so keeps the app connected. What the host said is

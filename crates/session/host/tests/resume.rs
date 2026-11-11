@@ -21,15 +21,13 @@ tilo_automerge_isolate::test_worker!();
 use automerge::{AutoCommit, ROOT, transaction::Transactable as _};
 use collab_types::DocumentMutation;
 use tilo_relay_protocol::workspaces::WorkspacesRequest;
-use tilo_session_client::Event;
-use tilo_session_client::{Cmd, Outbox};
-use tilo_session_host::PeerHandle;
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, hears, holds, ready, route, say, start_host_at, start_peer, wait_for};
 
 /// How many members' writes landed in `peer`'s replica since the last count.
-fn landed(peer: &PeerHandle) -> usize {
+fn landed(peer: &Link) -> usize {
     peer.drain()
         .into_iter()
         .filter(|event| {
@@ -43,7 +41,7 @@ fn landed(peer: &PeerHandle) -> usize {
 /// the last delta before it has read that position; a reconnect then would
 /// present the position before it and be sent the delta again. The host
 /// answers a request on the same stream, after what it wrote before.
-async fn settled(peer: &PeerHandle) {
+async fn settled(peer: &Link) {
     let answer = peer.ask_workspaces(WorkspacesRequest::List).unwrap();
     tilo_test_env::within("the host to answer the page", answer)
         .await
@@ -52,7 +50,7 @@ async fn settled(peer: &PeerHandle) {
 }
 
 /// Wait for `peer` to be ready on a fresh session.
-async fn resumed(peer: &PeerHandle) {
+async fn resumed(peer: &Link) {
     wait_for("the new session", || {
         let ready = peer.snapshot().phase == "ready"
             && peer.status().workspaces.values().all(|ready| *ready);
@@ -64,12 +62,7 @@ async fn resumed(peer: &PeerHandle) {
 /// Have `author` publish `marker` into `doc` and return how many writes landed
 /// in `peer`'s replica before it: the workspace delivers in commit order, so
 /// anything replayed on the new session arrives ahead of the marker.
-async fn before_marker(
-    peer: &PeerHandle,
-    author: &PeerHandle,
-    doc: &mut AutoCommit,
-    marker: &str,
-) -> usize {
+async fn before_marker(peer: &Link, author: &Link, doc: &mut AutoCommit, marker: &str) -> usize {
     author.write(route(), &say(doc, marker)).unwrap();
     hears(peer, &route(), marker).await;
     settled(peer).await;

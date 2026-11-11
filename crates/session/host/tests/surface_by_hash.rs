@@ -22,7 +22,7 @@ tilo_automerge_isolate::test_worker!();
 use std::collections::BTreeSet;
 use std::sync::Arc;
 use std::time::SystemTime;
-use tilo_session_client::Outbox;
+use tilo_session_client::{Link, Outbox};
 
 use automerge::transaction::Transactable as _;
 use channel_crypto::{ChannelPeer, VaultKey};
@@ -33,7 +33,6 @@ use collab_types::{
 use neighbour_wire::NeighbourMsg;
 use tilo_relay::workspaces::WorkspaceContent;
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
-use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
 use support::{
@@ -103,7 +102,7 @@ fn vault() -> VaultKey {
 }
 
 /// Whether the page says it holds something for the note, and why.
-fn held(peer: &PeerHandle) -> Option<String> {
+fn held(peer: &Link) -> Option<String> {
     let note = support::route();
     let held = format!("held {}/{}:", note.app_id, note.record);
     peer.status()

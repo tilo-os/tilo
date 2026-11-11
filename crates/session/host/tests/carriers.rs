@@ -28,7 +28,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Link, Outbox, TransportPhase, VoiceEvent};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::presence::Presence;
@@ -37,10 +37,8 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::VoiceGrant;
-use tilo_session_client::{Event, VoiceEvent};
 use tilo_session_host::{
-    Carrier, Host, MemoryPeerStore, PeerHandle, TransportPhase, answer_pairing, certify,
-    pending_pairings,
+    Carrier, Host, MemoryPeerStore, answer_pairing, certify, pending_pairings,
 };
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason, UserIdentity,
@@ -161,7 +159,7 @@ impl Ada {
     }
 
     /// Ada's laptop, in the workspace over a direct session.
-    async fn laptop_peer(&self, host_cert: &DeviceCert) -> PeerHandle {
+    async fn laptop_peer(&self, host_cert: &DeviceCert) -> Link {
         place(&self.host.relay, &self.laptop.cert).await;
         let peer = start_peer(
             self.host.over(Carrier::Direct),
@@ -182,7 +180,7 @@ fn page(
     key: SigningKey,
     cert: &DeviceCert,
     host_cert: &DeviceCert,
-) -> PeerHandle {
+) -> Link {
     start_page(
         host.over(carrier),
         cert.clone(),
@@ -231,7 +229,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     // Until the session first reaches the host it has no endpoint to ask
     // from, and says so.
     let waiting = wait_for("the phone to wait for the root", || async {
-        pending_pairings(&session.member_host(), &ada.root)
+        pending_pairings(&tilo_session_host::member_host(&session), &ada.root)
             .await
             .ok()?
             .pop()
@@ -239,7 +237,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
     .await;
     assert_eq!(waiting.pairing_code, shown, "the person compares codes");
     let issued = answer_pairing(
-        &session.member_host(),
+        &tilo_session_host::member_host(&session),
         &ada.root,
         waiting.request_digest,
         true,
@@ -255,7 +253,7 @@ async fn the_persons_root_pairs_a_new_device(carrier: Carrier) {
         ada.host_device.cert.device_public_key
     );
     assert!(
-        pending_pairings(&session.member_host(), &ada.root)
+        pending_pairings(&tilo_session_host::member_host(&session), &ada.root)
             .await
             .unwrap()
             .is_empty()
@@ -388,7 +386,7 @@ async fn the_workspace_admits_the_device_and_its_live_plane_carries_it(carrier: 
 
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(
-    peer: &PeerHandle,
+    peer: &Link,
     pending: &mut Vec<Event>,
     what: &str,
     mut pick: impl FnMut(&VoiceEvent) -> Option<T>,

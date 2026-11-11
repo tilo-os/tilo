@@ -21,7 +21,7 @@
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use tilo_actions::InvocationId;
 use tilo_actions::door::ActionAddress;
@@ -34,9 +34,8 @@ use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{
     AGENTS_PROVIDER, AgentsStatus, STATUS_ACTION, SUPERVISOR_RESOURCE,
 };
-use tilo_session_client::Event;
 use tilo_session_core::remote::Heard;
-use tilo_session_host::{Host, PeerEvents, PeerHandle};
+use tilo_session_host::Host;
 
 use super::hosted::Hosted;
 use crate::support::{Device, WORKSPACE, admitted_to, ready, start_peer};
@@ -46,8 +45,8 @@ pub type Checkpoint = ([u8; 32], Vec<u8>);
 
 /// A page in a host's workspace.
 pub struct Page {
-    pub peer: PeerHandle,
-    pub events: PeerEvents,
+    pub peer: Link,
+    pub events: Events,
     pub host_key: [u8; 32],
     /// Each record of the workspace as it stood whenever someone else's write
     /// to it landed, in order, and as this page published it.
@@ -123,7 +122,7 @@ impl Page {
     /// `cluster_id` names under `host`'s host: `events` are its peer's,
     /// taken before it joined.
     pub fn joined(
-        (peer, events): (PeerHandle, PeerEvents),
+        (peer, events): (Link, Events),
         device: &Device,
         host: &Device,
         cluster_id: &str,

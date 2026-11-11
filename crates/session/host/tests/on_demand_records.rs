@@ -21,13 +21,11 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::collections::BTreeMap;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use automerge::AutoCommit;
 use collab_types::DocumentMutation;
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_client::Event;
-use tilo_session_host::PeerHandle;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, hears, ready, route, say, start_host, start_peer, wait_for, workspace};
@@ -66,7 +64,7 @@ struct Received {
 }
 
 impl Received {
-    fn take(&mut self, peer: &PeerHandle) {
+    fn take(&mut self, peer: &Link) {
         for event in peer.drain() {
             match event {
                 Event::Landed {
@@ -94,12 +92,7 @@ impl Received {
 }
 
 /// Take `peer`'s events until `done` holds.
-async fn until(
-    what: &str,
-    peer: &PeerHandle,
-    received: &mut Received,
-    done: impl Fn(&Received) -> bool,
-) {
+async fn until(what: &str, peer: &Link, received: &mut Received, done: impl Fn(&Received) -> bool) {
     wait_for(what, || {
         received.take(peer);
         let finished = done(received);
@@ -108,7 +101,7 @@ async fn until(
     .await;
 }
 
-async fn durable(peer: &PeerHandle) {
+async fn durable(peer: &Link) {
     let receipt = peer.barrier().unwrap();
     wait_for("durable", || async { receipt.try_recv().ok() })
         .await

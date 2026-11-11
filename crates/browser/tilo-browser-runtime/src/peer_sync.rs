@@ -16,8 +16,8 @@ use collab_types::presence::{
 use iroh_base::{EndpointAddr, EndpointId};
 use serde::{Deserialize, Serialize};
 use tilo_session::sync::{Client, Device, OwnPresence, Topic, Transport};
+use tilo_session_client::Link;
 use tilo_session_core::remote::SessionActions;
-use tilo_session_host::PeerHandle;
 use tilo_user_identity::DeviceCert;
 use wasm_bindgen::prelude::*;
 
@@ -190,7 +190,7 @@ const MAX_HELD_INTERACTIONS: usize = 32;
 struct Page {
     /// The device of the host this page's session is with.
     host: [u8; 32],
-    handle: PeerHandle,
+    handle: Link,
     /// The person this page belongs to, their root key as hex.
     user: String,
     /// The session's sync, saying this page's word on each workspace's presence track.
@@ -228,13 +228,7 @@ pub(crate) struct BoardView {
 
 /// Register `id`'s peer: the identity and handle its presence says on, and the host (`host`, its
 /// certificate) its session is with.
-pub(crate) fn register(
-    id: u32,
-    handle: &PeerHandle,
-    cert: &DeviceCert,
-    host: &DeviceCert,
-    label: &str,
-) {
+pub(crate) fn register(id: u32, handle: &Link, cert: &DeviceCert, host: &DeviceCert, label: &str) {
     let Ok(publisher) = EndpointId::from_bytes(&cert.device_public_key) else {
         return;
     };
@@ -285,7 +279,7 @@ pub(crate) fn register(
 
 /// Every started page of the person whose root is `user` (hex): what changes for that person as a
 /// whole, such as a revocation their root signs, reaches all of their sessions at once.
-pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
+pub(crate) fn handles_of(user: &str) -> Vec<Link> {
     PAGES.with_borrow(|pages| {
         pages
             .values()
@@ -297,7 +291,7 @@ pub(crate) fn handles_of(user: &str) -> Vec<PeerHandle> {
 
 /// The host handle of the started page `id`: what this page asks its session for over the peer it
 /// is with.
-pub(crate) fn handle_of(id: u32) -> Option<PeerHandle> {
+pub(crate) fn handle_of(id: u32) -> Option<Link> {
     PAGES.with_borrow(|pages| pages.get(&id).map(|page| page.handle.clone()))
 }
 

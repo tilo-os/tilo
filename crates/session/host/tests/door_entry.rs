@@ -20,7 +20,7 @@ tilo_automerge_isolate::test_worker!();
 
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Outbox, TransportPhase};
 
 use ed25519_dalek::Signer as _;
 use ed25519_dalek::SigningKey;
@@ -31,8 +31,8 @@ use tilo_relay_protocol::entering::{
     ENTRY_BINDING_LABEL, EnterRefusal, Entered, Entering as DoorEntry, Entry, entry_digest,
 };
 use tilo_relay_protocol::transport::{ALPN, Envelope};
+use tilo_session_host::MemoryPeerStore;
 use tilo_session_host::device::{Entering, Held, door_entry, entered};
-use tilo_session_host::{MemoryPeerStore, TransportPhase};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, UserIdentity};
 
 use support::{enrol, enter_page, in_workspace, start_peer, start_workspace_host};

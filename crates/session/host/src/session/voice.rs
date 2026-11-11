@@ -9,7 +9,7 @@ impl Task {
         if let Some(client) = client {
             client.send(Envelope::VoiceCalls { workspace_id }).is_ok()
         } else {
-            self.emit(&tilo_session_client::Event::Voice(
+            self.reports.emit(&tilo_session_client::Event::Voice(
                 tilo_session_client::VoiceEvent::Calls {
                     ws: workspace_id,
                     result: Err("not connected to the host".into()),
@@ -35,7 +35,7 @@ impl Task {
                 })
                 .is_ok()
         } else {
-            self.emit(&tilo_session_client::Event::Voice(
+            self.reports.emit(&tilo_session_client::Event::Voice(
                 tilo_session_client::VoiceEvent::CallResult {
                     ws: workspace_id,
                     request,

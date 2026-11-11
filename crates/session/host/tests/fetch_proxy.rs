@@ -16,7 +16,7 @@ use test_http::{Reply, Responder};
 use tilo_net::proxy::{self, Proxy};
 use tilo_net::{HeaderMap, HeaderValue, Url};
 use tilo_relay::web::FetchProxySetup;
-use tilo_session_host::PeerHandle;
+use tilo_session_client::Link;
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{HostSettings, enrol, start_host_plain, start_host_serving, start_peer, wait_for};
@@ -67,7 +67,7 @@ async fn fetch_through(
     Ok((status, headers, final_url, body.to_vec()))
 }
 
-async fn session(peer: &PeerHandle) -> String {
+async fn session(peer: &Link) -> String {
     wait_for("the host's fetch proxy session", || async {
         peer.fetch_proxy_session()
     })

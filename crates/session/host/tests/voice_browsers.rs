@@ -20,7 +20,7 @@ use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
 
 use channel_crypto::{ChannelContentKeys, ChannelGroup, MemberKey};
 use collab_types::scope::Scope;
@@ -34,9 +34,6 @@ use tilo_live::roster::Roster;
 use tilo_live::video::{Codec, Layer, Source, VideoObject};
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
-use tilo_session_client::Event;
-use tilo_session_client::VoiceEvent;
-use tilo_session_host::PeerHandle;
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 /// One tick of the native participant: a page publishes its pictures as its
@@ -130,7 +127,7 @@ fn call_operation(body: &[u8]) -> Option<CallOperation> {
 
 struct Page {
     workspace: String,
-    peer: PeerHandle,
+    peer: Link,
 }
 
 impl Page {

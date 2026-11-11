@@ -10,7 +10,7 @@ use tilo_relay_client::CoeditPayload;
 use tilo_relay_protocol::Envelope;
 use tilo_relay_session::RelayClient;
 
-use super::{Task, lock};
+use super::Task;
 
 /// The channels' workspace transport over the host session: what they say
 /// waits here for the session to send it, newest per channel, until the host
@@ -96,7 +96,10 @@ impl Task {
         // workspace is still on its way, rather than a whole replay late.
         let admitted = |workspace_id: u64| {
             self.begun.contains(&workspace_id)
-                || lock(&self.shared).status.workspaces.get(&workspace_id) == Some(&true)
+                || self
+                    .reports
+                    .read(|status| status.workspaces.get(&workspace_id).copied())
+                    == Some(true)
         };
         let device = self.config.cert.device_public_key;
         let mut delivered = true;

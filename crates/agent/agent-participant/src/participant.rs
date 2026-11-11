@@ -23,7 +23,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox, TransportPhase, content::Kept};
 
 use collab_types::presence::Shown;
 use iroh::EndpointId;
@@ -39,11 +39,7 @@ use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, AgentStep, TaskState};
 use tilo_relay_protocol::live::{LiveAnchor, LiveRecord};
-use tilo_session_client::Event;
-use tilo_session_client::content::Kept;
-use tilo_session_host::{
-    Host, MemoryPeerStore, PeerConfig, PeerEvents, PeerHandle, TransportPhase,
-};
+use tilo_session_host::{Host, MemoryPeerStore, PeerConfig};
 use tilo_user_identity::DeviceCert;
 
 pub mod actions;
@@ -234,8 +230,8 @@ type WitnessAnswer =
 pub struct AgentParticipant {
     identity: AgentIdentity,
     control: Arc<AgentControl>,
-    peer: PeerHandle,
-    events: PeerEvents,
+    peer: Link,
+    events: Events,
     workspace: String,
     workspace_id: u64,
     /// What the workspace is called ([`ParticipantConfig::workspace_name`]).
@@ -501,7 +497,7 @@ impl AgentParticipant {
 
     /// The certified session.
     #[must_use]
-    pub const fn peer(&self) -> &PeerHandle {
+    pub const fn peer(&self) -> &Link {
         &self.peer
     }
 
@@ -2343,8 +2339,8 @@ fn join(
     workspace_id: u64,
     store: Arc<dyn tilo_session_host::PeerStore>,
     control: &Arc<AgentControl>,
-) -> Result<(PeerHandle, PeerEvents), String> {
-    let peer = PeerHandle::start(
+) -> Result<(Link, Events), String> {
+    let peer = tilo_session_host::start_session(
         PeerConfig::member(
             config.host.clone(),
             identity.cert.clone(),

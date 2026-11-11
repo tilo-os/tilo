@@ -426,6 +426,24 @@ pub enum Cmd {
         tilo_relay_protocol::workspaces::WorkspacesRequest,
         Answer<Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>>,
     ),
+    /// Say this session is one run of the agent the label names: every request it makes from then
+    /// on is the agent's, for this device's person, and the person's agent door lists the run while
+    /// the session lasts. The answer is the host's.
+    AgentRun(String, Answer<Result<(), String>>),
+    /// Enter another workspace through its door, on a stream of its own on this session's
+    /// connection: a device in a session with its host redeems an invitation this way. The answer
+    /// is the host's, or why there was none.
+    Enter(
+        tilo_relay_protocol::entering::Entering,
+        Answer<Result<tilo_relay_protocol::entering::Entered, tilo_relay_client::LinkError>>,
+    ),
+    /// Ask the host a member's root-signed approver command (pairing, agents' questions).
+    AskMember(
+        Box<tilo_relay_protocol::certify::MemberApproval>,
+        Answer<
+            Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
+        >,
+    ),
     /// Announce a revocation this device's person's root signed to every workspace this session is
     /// admitted to.
     Revoke(tilo_user_identity::RevocationEntry),

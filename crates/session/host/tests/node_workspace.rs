@@ -33,7 +33,7 @@ tilo_automerge_isolate::test_worker!();
 use std::path::Path;
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox};
 use tilo_test_env::SpawnUnderEnvLockAsync as _;
 
 use automerge::transaction::Transactable as _;
@@ -54,8 +54,7 @@ use tilo_relay_protocol::workspaces::{
 };
 use tilo_session_host::invite::guest_certificate;
 use tilo_session_host::{
-    DeviceSigner, Host, IssuedRole, PeerHandle, SignError, SignFuture, certify_with_root,
-    issue_device_cert,
+    DeviceSigner, Host, IssuedRole, SignError, SignFuture, certify_with_root, issue_device_cert,
 };
 use tilo_user_identity::{IdentityPaths, RevocationList, persist};
 use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader, Lines};
@@ -110,7 +109,7 @@ fn dev_tls(state: &Path) -> TlsSource {
     }
 }
 
-async fn workspaces(peer: &PeerHandle, request: WorkspacesRequest) -> WorkspacesReply {
+async fn workspaces(peer: &Link, request: WorkspacesRequest) -> WorkspacesReply {
     let answer = peer.ask_workspaces(request).unwrap();
     tilo_test_env::within("the node answers its administration route", answer)
         .await
@@ -560,7 +559,7 @@ async fn enters(
     token: Option<&[u8]>,
     name: &str,
 ) -> (
-    tilo_session_host::PeerHandle,
+    tilo_session_client::Link,
     Result<tilo_relay_client::login::Admission, tilo_session_host::device::HostRefusal>,
 ) {
     let held = tilo_session_host::device::Held {
@@ -581,7 +580,7 @@ async fn enters(
     )
     .await
     .unwrap();
-    let peer = tilo_session_host::PeerHandle::start(
+    let peer = tilo_session_host::start_session(
         tilo_session_host::PeerConfig {
             host,
             cert: cert.clone(),

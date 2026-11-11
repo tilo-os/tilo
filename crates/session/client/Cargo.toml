@@ -27,6 +27,8 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 # How a workspace numbers itself on the plane.
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
+# Why a session's entry or a member's question to its host found no answer.
+tilo-relay-client = { path = "../../hosting/tilo-relay-client", default-features = false }
 # What asking another device's actions hears back.
 tilo-session-core = { path = "../core" }
 # The action a message from another member is, and the claims access answers it with, holding

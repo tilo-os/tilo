@@ -22,8 +22,7 @@ tilo_automerge_isolate::test_worker!();
 
 use automerge::AutoCommit;
 use tilo_automerge::ApplyIncoming as _;
-use tilo_session_client::Outbox;
-use tilo_session_host::PeerHandle;
+use tilo_session_client::{Link, Outbox};
 use tilo_user_identity::{DeviceCapabilities, UserIdentity};
 
 use support::{enrol, holds, ready, route, say, start_host, start_peer};
@@ -32,7 +31,7 @@ const EACH: usize = 12;
 
 /// Wait until everything `peer` published is durable, and answer the host's acknowledgement of
 /// its writes to the note: how many it kept, and its order of the last.
-async fn durable(peer: &PeerHandle) -> (u64, u64) {
+async fn durable(peer: &Link) -> (u64, u64) {
     support::durable(peer).await;
     let note = peer
         .snapshot()

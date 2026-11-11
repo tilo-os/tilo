@@ -17,7 +17,7 @@ use std::sync::Arc;
 use tilo_relay_client::Carrier;
 use tilo_relay_client::link::{Dialer, Purpose};
 
-use super::{DeviceSigner, LinkError, PeerConfig, PeerHandle, RelayClient, Task};
+use super::{DeviceSigner, LinkError, PeerConfig, RelayClient, Task};
 
 /// The statement a page's device signs to speak through `endpoint` for a day:
 /// long enough for a session and its planes to outlive one roster change,
@@ -79,7 +79,7 @@ impl Task {
     pub(super) fn ask_member(
         &self,
         approval: Box<tilo_relay_protocol::certify::MemberApproval>,
-        done: tokio::sync::oneshot::Sender<
+        done: tilo_session_client::Answer<
             Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError>,
         >,
     ) {
@@ -237,30 +237,37 @@ pub(super) fn link_error(error: tilo_relay_session::ClientError) -> LinkError {
     }
 }
 
-/// Where member commands reach the host over a session ([`PeerHandle::member_host`]): only the
-/// session's command queue, so it is shared across tasks wherever the queue is.
+/// Where member commands reach the host over a session ([`member_host`]): only the session's
+/// sender, so it is shared across tasks wherever the session is.
 #[derive(Clone)]
-pub struct SessionMemberHost(tokio::sync::mpsc::UnboundedSender<super::Command>);
+pub struct SessionMemberHost(std::sync::Arc<dyn tilo_session_client::Outbox + Send + Sync>);
 
-impl PeerHandle {
-    /// Ask the host member commands (pairing, agents' questions) over this session.
-    #[must_use]
-    pub fn member_host(&self) -> SessionMemberHost {
-        SessionMemberHost(self.commands.clone())
-    }
+/// Ask the host member commands (pairing, agents' questions) over `link`'s session.
+#[must_use]
+pub fn member_host(link: &tilo_session_client::Link) -> SessionMemberHost {
+    SessionMemberHost(std::sync::Arc::clone(link.outbox()))
 }
 
 impl tilo_relay_client::MemberHost for SessionMemberHost {
-    async fn ask(
+    fn ask(
         &self,
         approval: &tilo_relay_protocol::certify::MemberApproval,
-    ) -> Result<tilo_relay_protocol::certify::ApproverReply, tilo_relay_client::CertifyError> {
-        let (done, answer) = tokio::sync::oneshot::channel();
-        self.0
-            .send(super::Command::AskMember(Box::new(approval.clone()), done))
-            .map_err(|_| LinkError::Unavailable("peer session is closed".into()))?;
-        answer
-            .await
-            .map_err(|_| LinkError::Unavailable("the session ended".into()))?
+    ) -> impl std::future::Future<
+        Output = Result<
+            tilo_relay_protocol::certify::ApproverReply,
+            tilo_relay_client::CertifyError,
+        >,
+    > + Send {
+        let (done, answer) = tilo_session_client::answer();
+        let said = self.0.send(tilo_session_client::Cmd::AskMember(
+            Box::new(approval.clone()),
+            done,
+        ));
+        async move {
+            said.map_err(|_| LinkError::Unavailable("peer session is closed".into()))?;
+            answer
+                .await
+                .map_err(|_| LinkError::Unavailable("the session ended".into()))?
+        }
     }
 }

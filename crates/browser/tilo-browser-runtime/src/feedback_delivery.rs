@@ -17,8 +17,8 @@ use tilo_feedback_transport::{
     Capture, Enrollment, Identity, NoCapture, SignedReceipt, Startup, Transport,
 };
 use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session_client::{Events, Link};
 use tilo_session_core::remote::Heard;
-use tilo_session_host::{PeerEvents, PeerHandle};
 use tilo_user_identity::DeviceCert;
 
 /// How long the owner's admission of this reporter stands: long enough to
@@ -39,8 +39,8 @@ const FILED_STANDS: Duration = Duration::from_secs(120);
 thread_local! { static CONNECTIONS: RefCell<HashMap<u32, Rc<RefCell<Connection>>>> = RefCell::new(HashMap::new()); }
 
 pub(crate) struct Connection {
-    peer: PeerHandle,
-    events: PeerEvents,
+    peer: Link,
+    events: Events,
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,
@@ -64,7 +64,7 @@ pub(crate) struct Connection {
 
 pub(crate) fn configure(
     id: u32,
-    peer: PeerHandle,
+    peer: Link,
     reporter: DeviceCert,
     owner: DeviceCert,
     destination: FeedbackDestination,

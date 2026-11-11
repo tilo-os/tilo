@@ -79,7 +79,7 @@ impl Task {
                 let Ok(body) = presence.encode() else {
                     return;
                 };
-                self.emit(&tilo_session_client::Event::LivePlane {
+                self.reports.emit(&tilo_session_client::Event::LivePlane {
                     ws: workspace_id,
                     from: host,
                     track: tilo_live::live::Track::Presence,
@@ -92,7 +92,7 @@ impl Task {
                 else {
                     return;
                 };
-                self.emit(&tilo_session_client::Event::Live {
+                self.reports.emit(&tilo_session_client::Event::Live {
                     ws: workspace_id,
                     from: host,
                     frame,

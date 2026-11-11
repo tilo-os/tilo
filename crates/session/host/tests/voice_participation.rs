@@ -1,5 +1,5 @@
 //! A browser session's part in a governed call, through the session the
-//! page runs (`PeerHandle`): it lists the workspace's calls, joins one and keeps
+//! page runs (`Link`): it lists the workspace's calls, joins one and keeps
 //! the participation across a reconnect, and leaving ends its grant: the
 //! others' roster shrinks.
 
@@ -20,17 +20,14 @@ tilo_automerge_isolate::test_worker!();
 
 use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::voice::{CallOperation, VoiceGrant};
-use tilo_session_client::Event;
-use tilo_session_client::VoiceEvent;
-use tilo_session_client::{Cmd, Outbox};
-use tilo_session_host::PeerHandle;
+use tilo_session_client::{Cmd, Event, Link, Outbox, VoiceEvent};
 
 use call::{GovernedCall, native, operate};
 use support::{ready, start_peer, wait_for};
 
 /// The next call event of `peer` that `pick` accepts.
 async fn voice<T>(
-    peer: &PeerHandle,
+    peer: &Link,
     pending: &mut Vec<Event>,
     what: &str,
     mut pick: impl FnMut(&VoiceEvent) -> Option<T>,

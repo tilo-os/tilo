@@ -19,7 +19,7 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::time::Duration;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use tilo_actions::InvocationId;
 use tilo_actions::InvocationUpdate;
@@ -28,7 +28,6 @@ use tilo_actions::remote::{
     ActionHost as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, UpdateMark, settle_with,
 };
 use tilo_session_core::remote::SessionActions;
-use tilo_session_host::PeerHandle;
 use tilo_session_host::device::run_as_agent;
 use tilo_session_host::revoke_device;
 use tilo_user_identity::RevocationReason::Retired;
@@ -116,18 +115,13 @@ fn stop(grant: &str) -> InvokeArgument {
     })
 }
 
-async fn agent_says_its_run(agent: &PeerHandle) -> bool {
+async fn agent_says_its_run(agent: &Link) -> bool {
     run_as_agent(agent, "Claude Code").await.is_ok()
 }
 
 /// Someone else (`other`) reads nothing of the door and stops nothing of
 /// the computer `device` the agent runs on; the agent itself keeps no door.
-async fn nobody_else_reaches(
-    other: &PeerHandle,
-    agent: &PeerHandle,
-    device: [u8; 32],
-    host_key: [u8; 32],
-) {
+async fn nobody_else_reaches(other: &Link, agent: &Link, device: [u8; 32], host_key: [u8; 32]) {
     let workspace = support::workspace();
     let grant = hex::encode(device);
     let others = SessionActions::new(other, workspace, host_key);
@@ -147,15 +141,15 @@ async fn nobody_else_reaches(
 /// back as the same agent in a session of its own, which is answered.
 async fn comes_back_after_its_stop(
     host: &support::TestHost,
-    stopped: &PeerHandle,
+    stopped: &Link,
     computer: &support::Device,
     host_device: &support::Device,
-) -> PeerHandle {
+) -> Link {
     let workspace = support::workspace();
     wait_for("the stopped session to close", || {
         let status = stopped.status();
         async move {
-            (status.phase == tilo_session_host::TransportPhase::Closed
+            (status.phase == tilo_session_client::TransportPhase::Closed
                 && status
                     .failures
                     .iter()
@@ -180,9 +174,9 @@ async fn comes_back_after_its_stop(
 /// root speaks only for the devices it certified, so the host (keeping its
 /// state at `state`) keeps theirs and the agent stays in.
 async fn revoked_by_someone_else(
-    other: &PeerHandle,
+    other: &Link,
     other_root: &ed25519_dalek::SigningKey,
-    agent: &PeerHandle,
+    agent: &Link,
     computer: &support::Device,
     state: &std::path::Path,
 ) {
@@ -256,7 +250,7 @@ async fn the_persons_door_lists_stops_and_revokes_their_agent_and_nobody_elses()
     let invited = door(&host, &root, &host_device, support::WORKSPACE, person).await;
     let (cert, key) = (&stranger.cert, &stranger.key);
     peers.push(enter(&host, invited, cert, key, &host_device.cert, workspace).await);
-    let [page, stopped, other] = <[PeerHandle; 3]>::try_from(peers).ok().unwrap();
+    let [page, stopped, other] = <[Link; 3]>::try_from(peers).ok().unwrap();
     let host_key = host_device.cert.device_public_key;
     let grant = hex::encode(computer.cert.device_public_key);
 

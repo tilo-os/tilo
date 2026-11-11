@@ -70,7 +70,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Events, Link, Outbox};
 
 use crate::apps::{AppCatalogue, Seed};
 use crate::host::CatalogueFactory;
@@ -95,8 +95,7 @@ use tilo_actions::{
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::room_workspace_id;
-use tilo_session_client::Event;
-use tilo_session_host::{MemoryPeerStore, PeerConfig, PeerEvents, PeerHandle};
+use tilo_session_host::{MemoryPeerStore, PeerConfig};
 use tilo_user_identity::RevocationList;
 use ui::permissions::policy::{ActionKind, Answer, TreePath};
 
@@ -825,8 +824,8 @@ fn sealed_for(
 
 /// The service's membership of one workspace.
 struct Workspace {
-    peer: PeerHandle,
-    events: PeerEvents,
+    peer: Link,
+    events: Events,
     /// Set while requests wait for this workspace: its next change hands the
     /// service's thread [`Job::Joined`], which looks at what waited again.
     awaited: Arc<AtomicBool>,
@@ -857,7 +856,7 @@ impl Workspace {
         shared: &Arc<Shared>,
     ) -> Result<Self, String> {
         let _runtime = member.runtime.enter();
-        let peer = PeerHandle::start(
+        let peer = tilo_session_host::start_session(
             PeerConfig {
                 host: member.endpoint.host.clone(),
                 cert: member.endpoint.host_cert.clone(),

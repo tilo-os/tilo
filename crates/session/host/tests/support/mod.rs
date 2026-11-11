@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};
 
 use automerge::{AutoCommit, ROOT, ReadDoc as _, transaction::Transactable as _};
 use collab_types::DocumentMutation;
@@ -27,7 +27,7 @@ use tilo_relay::web::{TlsSource, WebConfig, WebHandle};
 use tilo_relay::workspaces::PreAdmitRequest;
 use tilo_relay_client::{Approver, Carrier};
 use tilo_relay_protocol::workspaces::{JoinReply, PreAdmission, WorkspaceRole};
-use tilo_session_host::{Host, MemoryPeerStore, PeerConfig, PeerHandle, TransportPhase};
+use tilo_session_host::{Host, MemoryPeerStore, PeerConfig};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, issue_device_cert,
@@ -519,12 +519,7 @@ where
     }
 }
 
-pub fn start_peer(
-    host: Host,
-    cert: DeviceCert,
-    host_cert: DeviceCert,
-    key: SigningKey,
-) -> PeerHandle {
+pub fn start_peer(host: Host, cert: DeviceCert, host_cert: DeviceCert, key: SigningKey) -> Link {
     start_peer_with_store(
         host,
         cert,
@@ -541,8 +536,8 @@ pub fn start_peer_with_store(
     host_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
-) -> PeerHandle {
-    PeerHandle::start(
+) -> Link {
+    tilo_session_host::start_session(
         PeerConfig {
             host,
             cert,
@@ -588,8 +583,8 @@ pub fn start_page(
     host_cert: DeviceCert,
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
-) -> PeerHandle {
-    PeerHandle::start(
+) -> Link {
+    tilo_session_host::start_session(
         PeerConfig {
             host,
             cert,
@@ -611,8 +606,8 @@ pub fn enter_page(
     key: SigningKey,
     store: Arc<MemoryPeerStore>,
     entering: tilo_relay_protocol::entering::Entering,
-) -> PeerHandle {
-    PeerHandle::start(
+) -> Link {
+    tilo_session_host::start_session(
         PeerConfig {
             host,
             cert,
@@ -625,7 +620,7 @@ pub fn enter_page(
     )
 }
 
-pub async fn ready(peers: &[&PeerHandle]) {
+pub async fn ready(peers: &[&Link]) {
     wait_for("sessions ready", || async {
         peers
             .iter()
@@ -640,7 +635,7 @@ pub async fn ready(peers: &[&PeerHandle]) {
 /// [`ready`] too, so a page that is about to act in one waits on that one
 /// rather than on the session: an action sent before the host subscribed the
 /// page is refused by the relay and never answered.
-pub async fn admitted_to(peer: &PeerHandle, workspace: u64) {
+pub async fn admitted_to(peer: &Link, workspace: u64) {
     wait_for("the session admitted to its workspace", || {
         let status = peer.status();
         async move {
@@ -653,17 +648,36 @@ pub async fn admitted_to(peer: &PeerHandle, workspace: u64) {
 }
 
 /// Wait until a participant of the workspace admitted `peer` to the note's channel.
-pub async fn admitted(peer: &PeerHandle) {
-    let note = format!("route {}/{} ", route().app_id, route().record);
+pub async fn admitted(peer: &Link) {
+    wait_keyed(peer, &route()).await;
+}
+
+/// Whether a participant of the workspace admitted `peer` to `route`'s channel: it holds its keys.
+pub fn keyed(peer: &Link, route: &DocumentRoute) -> bool {
+    let prefix = format!("route {}/{} ", route.app_id, route.record);
+    peer.status()
+        .channels
+        .lines()
+        .any(|line| line.starts_with(&prefix) && line.contains(": ready;"))
+}
+
+/// Wait until a participant of the workspace admitted `peer` to `route`'s channel.
+pub async fn wait_keyed(peer: &Link, route: &DocumentRoute) {
     wait_for("a participant to admit the page", || {
-        let ready = peer
-            .status()
-            .channels
-            .lines()
-            .any(|line| line.starts_with(&note) && line.contains(": ready;"));
+        let ready = keyed(peer, route);
         async move { ready.then_some(()) }
     })
     .await;
+}
+
+/// Write `mutation` to `route` from `peer`'s device, once a participant admitted it to the
+/// record's channel, and wait until the host has it: what the workspace holds of that record from
+/// then on.
+pub async fn written(peer: &Link, route: &DocumentRoute, mutation: &DocumentMutation) {
+    peer.send(Cmd::OpenRoute(route.clone())).unwrap();
+    wait_keyed(peer, route).await;
+    peer.write(route.clone(), mutation).unwrap();
+    durable(peer).await;
 }
 
 pub fn route() -> DocumentRoute {
@@ -688,7 +702,7 @@ pub fn say(doc: &mut AutoCommit, text: &str) -> DocumentMutation {
 }
 
 /// What `peer`'s replica of its workspace holds of `route` now, when it reads.
-pub fn record_of(peer: &PeerHandle, route: &DocumentRoute) -> Option<AutoCommit> {
+pub fn record_of(peer: &Link, route: &DocumentRoute) -> Option<AutoCommit> {
     let bytes = peer
         .engine()
         .record(&route.cluster_id, &route.app_id, &route.record)
@@ -697,14 +711,14 @@ pub fn record_of(peer: &PeerHandle, route: &DocumentRoute) -> Option<AutoCommit>
 }
 
 /// What `peer`'s replica says in `route`: every text [`say`] noted in it.
-pub fn said(peer: &PeerHandle, route: &DocumentRoute) -> BTreeSet<String> {
+pub fn said(peer: &Link, route: &DocumentRoute) -> BTreeSet<String> {
     record_of(peer, route)
         .map(|doc| doc.keys(ROOT).collect())
         .unwrap_or_default()
 }
 
 /// Wait until `peer`'s replica says `text` in `route`.
-pub async fn hears(peer: &PeerHandle, route: &DocumentRoute, text: &str) {
+pub async fn hears(peer: &Link, route: &DocumentRoute, text: &str) {
     in_replica(peer, route, &format!("the replica to say {text:?}"), || {
         said(peer, route).contains(text).then_some(())
     })
@@ -714,7 +728,7 @@ pub async fn hears(peer: &PeerHandle, route: &DocumentRoute, text: &str) {
 /// Wait until `probe` finds what it reads in `peer`'s replica; a timeout says what the
 /// session's channels and failures were.
 async fn in_replica<T>(
-    peer: &PeerHandle,
+    peer: &Link,
     route: &DocumentRoute,
     what: &str,
     mut probe: impl FnMut() -> Option<T>,
@@ -739,7 +753,7 @@ async fn in_replica<T>(
 
 /// Wait until every write `peer` published is durable on its host; a timeout says what the
 /// session's channels, failures and custody were.
-pub async fn durable(peer: &PeerHandle) {
+pub async fn durable(peer: &Link) {
     let receipt = peer.barrier().unwrap();
     let deadline = tilo_test_env::hang_deadline();
     loop {
@@ -760,7 +774,7 @@ pub async fn durable(peer: &PeerHandle) {
 
 /// What `peer`'s replica last refused to keep and how many writes it refused, as its status
 /// says it: `None` while it refused nothing.
-pub fn refused(peer: &PeerHandle) -> Option<String> {
+pub fn refused(peer: &Link) -> Option<String> {
     peer.status()
         .channels
         .lines()
@@ -769,7 +783,7 @@ pub fn refused(peer: &PeerHandle) -> Option<String> {
 }
 
 /// Wait until `peer`'s replica of `route` holds every change `doc` holds, and answer it.
-pub async fn holds(peer: &PeerHandle, route: &DocumentRoute, doc: &AutoCommit) -> AutoCommit {
+pub async fn holds(peer: &Link, route: &DocumentRoute, doc: &AutoCommit) -> AutoCommit {
     let heads = doc.clone().get_heads();
     in_replica(peer, route, "the replica to hold the record", || {
         record_of(peer, route).filter(|held| {
@@ -866,7 +880,7 @@ pub async fn enter(
     key: &SigningKey,
     host_cert: &DeviceCert,
     workspace_id: u64,
-) -> PeerHandle {
+) -> Link {
     redeem(host, door, cert, key).await;
     let peer = start_peer(host.iroh(), cert.clone(), host_cert.clone(), key.clone());
     peer.send(Cmd::Join(workspace_id)).unwrap();
@@ -874,7 +888,7 @@ pub async fn enter(
     peer
 }
 
-pub async fn in_workspace(peer: &PeerHandle, workspace_id: u64) {
+pub async fn in_workspace(peer: &Link, workspace_id: u64) {
     ready(&[peer]).await;
     wait_for("the governed workspace to let the page in", || async {
         (peer.status().workspaces.get(&workspace_id) == Some(&true)).then_some(())
@@ -892,6 +906,6 @@ fn random_bytes() -> [u8; 32] {
 /// [`ready`], blocking the calling thread, for a step that runs inside a
 /// fixture's synchronous setup: the caller must be on a multi-thread runtime,
 /// where blocking one worker leaves the others driving the sessions.
-pub fn ready_blocking(peers: &[&PeerHandle]) {
+pub fn ready_blocking(peers: &[&Link]) {
     tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(ready(peers)));
 }

@@ -27,14 +27,14 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox};
 
 use collab_types::presence::{Payload, Presence, ShellSelection, agent_rgb};
 use tilo_actions::remote::{ActorPlace, Caller, RemoteActionTarget};
 use tilo_actions::{InteractionPhase, InvocationId};
 use tilo_relay_protocol::host_voice::HostWords;
 use tilo_relay_protocol::live::LiveRecord;
-use tilo_session_host::{PeerHandle, narration};
+use tilo_session_host::narration;
 
 use super::{CatalogueQuery, InvokeRequest, Outcome, invoke_arguments, record_of as route_of};
 
@@ -82,7 +82,7 @@ impl RunVoices {
     /// a caller in no run.
     pub(super) fn acting(
         &mut self,
-        (peer, workspace_id, cluster): (&PeerHandle, u64, &str),
+        (peer, workspace_id, cluster): (&Link, u64, &str),
         caller: &Caller,
         (invocation, target, args): (
             InvocationId,
@@ -142,7 +142,7 @@ impl RunVoices {
     /// run.
     pub(super) fn saying(
         &mut self,
-        (peer, workspace_id, cluster): (&PeerHandle, u64, &str),
+        (peer, workspace_id, cluster): (&Link, u64, &str),
         caller: &Caller,
         line: String,
         provider: Option<&str>,
@@ -168,7 +168,7 @@ impl RunVoices {
     /// it is at. Nothing for a caller in no run.
     pub(super) fn arrived(
         &mut self,
-        (peer, workspace_id, cluster): (&PeerHandle, u64, &str),
+        (peer, workspace_id, cluster): (&Link, u64, &str),
         caller: &Caller,
     ) {
         let present = caller
@@ -188,7 +188,7 @@ impl RunVoices {
     /// arrives the first time. `None` for a caller in no run.
     fn voice(
         &mut self,
-        peer: &PeerHandle,
+        peer: &Link,
         (workspace_id, cluster): (u64, &str),
         caller: &Caller,
     ) -> Option<(String, &mut Voice)> {
@@ -232,7 +232,7 @@ impl RunVoices {
 
     /// Say again what is due by now, on each workspace's `peer`: a present
     /// run's word, and the leaving of a run whose session ended.
-    pub(super) fn tick<'a>(&mut self, peer: impl Fn(u64) -> Option<&'a PeerHandle>) {
+    pub(super) fn tick<'a>(&mut self, peer: impl Fn(u64) -> Option<&'a Link>) {
         let now = Instant::now();
         self.runs.retain(|(workspace_id, run), voice| {
             let Some(peer) = peer(*workspace_id) else {
@@ -257,7 +257,7 @@ impl RunVoices {
 
 impl Voice {
     /// Say the run's face: the agent it is, what it does and where.
-    fn say(&mut self, peer: &PeerHandle, workspace_id: u64, run: &str, now: Instant) {
+    fn say(&mut self, peer: &Link, workspace_id: u64, run: &str, now: Instant) {
         self.seq = self.seq.wrapping_add(1);
         self.said_at = now;
         let (r, g, b) = self.colour;

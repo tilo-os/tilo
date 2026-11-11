@@ -35,7 +35,7 @@ mod support;
 
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Outbox};
 
 use common::{Driveable, KeywordModel, catalogue, find_edit};
 use tilo_actions::InvocationId;
@@ -51,7 +51,6 @@ use tilo_agent_participant::{
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_session_client::Event;
 use tilo_session_core::remote::Heard;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
@@ -85,8 +84,8 @@ impl Driveable for Agent<'_> {
 /// Send `message` from the browser to the agent's device and wait for the
 /// agent's answer, pumping the agent meanwhile.
 async fn ask(
-    browser: &tilo_session_host::PeerHandle,
-    events: &tilo_session_host::PeerEvents,
+    browser: &tilo_session_client::Link,
+    events: &tilo_session_client::Events,
     agent: &mut AgentParticipant,
     agent_key: [u8; 32],
     message: RemoteActionMessage,
@@ -168,7 +167,7 @@ fn page(
 }
 
 /// What the browser's replica holds of `route`, saved.
-fn held(browser: &tilo_session_host::PeerHandle, route: &DocumentRoute) -> Option<Vec<Vec<u8>>> {
+fn held(browser: &tilo_session_client::Link, route: &DocumentRoute) -> Option<Vec<Vec<u8>>> {
     browser
         .engine()
         .record(&route.cluster_id, &route.app_id, &route.record)
@@ -178,7 +177,7 @@ fn held(browser: &tilo_session_host::PeerHandle, route: &DocumentRoute) -> Optio
 }
 
 /// Take the browser's events: every write that landed is one of `writers`'.
-fn only_written_by(events: &tilo_session_host::PeerEvents, writers: &[[u8; 32]]) {
+fn only_written_by(events: &tilo_session_client::Events, writers: &[[u8; 32]]) {
     for event in events.drain() {
         if let Event::Landed {
             author: Some(author),

@@ -47,7 +47,7 @@ tilo_automerge_isolate::test_worker!();
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
@@ -72,9 +72,8 @@ use tilo_relay_protocol::agents::{
     agent_resource,
 };
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
-use tilo_session_client::Event;
 use tilo_session_core::remote::Heard;
-use tilo_session_host::{PeerHandle, certify};
+use tilo_session_host::certify;
 use tilo_user_identity::{
     CertificationPolicy, DeviceCapabilities, DeviceCert, RevocationList, UserIdentity,
     issue_device_cert,
@@ -200,7 +199,7 @@ async fn approve_agent(host: &TestHost, root: &SigningKey, laptop: &Device) -> S
 
 /// One remote action from the browser to the host's agent supervisor.
 async fn call(
-    browser: &PeerHandle,
+    browser: &Link,
     host_device: [u8; 32],
     agent: Option<&mut AgentParticipant>,
     address: ActionAddress,
@@ -259,7 +258,7 @@ fn completed(receipt: &InvocationReceipt) -> serde_json::Value {
 }
 
 async fn status(
-    browser: &PeerHandle,
+    browser: &Link,
     host_device: [u8; 32],
     agent: &mut AgentParticipant,
 ) -> AgentsStatus {
@@ -278,7 +277,7 @@ async fn status(
 /// each was authored by `author`, until the record contains `text`.
 async fn receive_until(
     agent: &mut AgentParticipant,
-    (browser, events): (&PeerHandle, &tilo_session_host::PeerEvents),
+    (browser, events): (&Link, &tilo_session_client::Events),
     route: &DocumentRoute,
     page: &mut Replica,
     author: [u8; 32],

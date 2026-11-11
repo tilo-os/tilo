@@ -391,7 +391,7 @@ pub async fn enter_page(
     .await
     .unwrap();
     let address = info.address.expect("the relay takes device sessions");
-    let session = tilo_session_host::PeerHandle::start(
+    let session = tilo_session_host::start_session(
         tilo_session_host::PeerConfig {
             host: tilo_session_host::Host::published(&address),
             cert: page.cert.clone(),

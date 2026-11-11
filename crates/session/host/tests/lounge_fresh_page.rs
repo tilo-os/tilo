@@ -42,10 +42,9 @@ tilo_automerge_isolate::test_worker!();
 use std::io::{BufRead, BufReader, Write as _};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::Arc;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Link, Outbox};
 
 use std::time::Duration;
-use tilo_session_client::Event;
 use tilo_session_host::HttpFuture;
 
 use collab_types::presence::Presence;
@@ -54,8 +53,8 @@ use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_relay_protocol::operator::{OperatorCommand, OperatorEvent};
 use tilo_relay_protocol::workspaces::{WorkspaceRole, WorkspacesReply, WorkspacesRequest};
+use tilo_session_host::Host;
 use tilo_session_host::invite::guest_certificate;
-use tilo_session_host::{Host, PeerHandle};
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
@@ -366,7 +365,7 @@ impl Lounge {
     }
 
     /// A page of `who`'s device on this host's door.
-    fn page(&self, who: &Person) -> PeerHandle {
+    fn page(&self, who: &Person) -> Link {
         self.page_entering(who, None)
     }
 
@@ -375,11 +374,11 @@ impl Lounge {
         &self,
         who: &Person,
         entering: Option<tilo_relay_protocol::entering::Entering>,
-    ) -> PeerHandle {
+    ) -> Link {
         // A page reaches its host over WebTransport, at the listener `/host`
         // names: exactly what a browser in the Lounge has.
         let host = Host::published(&self.address).over(tilo_relay_client::Carrier::WebTransport);
-        tilo_session_host::PeerHandle::start(
+        tilo_session_host::start_session(
             tilo_session_host::PeerConfig {
                 host,
                 cert: who.cert.clone(),
@@ -426,7 +425,7 @@ async fn person(name: &str) -> Person {
 
 /// A page that joins and takes part: `who`'s device, admitted by `invitation`, which its
 /// session's first message carries.
-async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> PeerHandle {
+async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> Link {
     let held = tilo_session_host::device::Held {
         cert: who.cert.clone(),
         host_cert: Some(lounge.host_cert.clone()),
@@ -458,7 +457,7 @@ async fn fresh_page(lounge: &Lounge, who: &Person, invitation: &[u8]) -> PeerHan
 
 /// The messages of `channel` in the page's Chat, read through Chat's own
 /// model over the record and message parts the page's replica holds.
-fn chat_messages(page: &PeerHandle, workspace: &str, channel: &str) -> Vec<chat::model::Message> {
+fn chat_messages(page: &Link, workspace: &str, channel: &str) -> Vec<chat::model::Message> {
     let record = DocumentRoute {
         app_id: CHAT_APP.to_owned(),
         cluster_id: workspace.to_owned(),
@@ -653,7 +652,7 @@ async fn a_fresh_page_joins_the_lounge_and_reads_chat() {
         page.live_note(),
         second.live_note()
     );
-    let roster = |page: &PeerHandle| {
+    let roster = |page: &Link| {
         page.status()
             .room_members
             .get(&lounge.workspace)
@@ -769,7 +768,7 @@ async fn two_pages_join_a_fresh_lounge_and_see_each_other_point() {
 
 /// Wait until `page` is in the workspace's live plane: the plane reports the
 /// devices it reads and the objects it heard, which it lists only once joined.
-async fn wait_for_plane(page: &PeerHandle) {
+async fn wait_for_plane(page: &Link) {
     let started = tokio::time::Instant::now();
     loop {
         let channels = page.status().channels;
@@ -799,7 +798,7 @@ fn room_id(lounge: &Lounge) -> u64 {
 /// ([`Event::LivePlane`] with `Track::Presence`): the plane opened the
 /// scope's seal, and the body is the [`Presence`] frame the device said.
 async fn presence_frames(
-    page: &PeerHandle,
+    page: &Link,
     secs: u64,
 ) -> (
     Vec<([u8; 32], Vec<u8>)>,
@@ -820,7 +819,7 @@ async fn presence_frames(
 /// Take every presence frame `page` holds now into `frames` (with its sender)
 /// and `people`, and report whether it held any.
 fn gather_presence(
-    page: &PeerHandle,
+    page: &Link,
     frames: &mut Vec<([u8; 32], Vec<u8>)>,
     people: &mut std::collections::BTreeSet<[u8; 32]>,
 ) -> bool {

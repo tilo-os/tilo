@@ -762,7 +762,7 @@ async fn leaves_who_is_here(ending: Ending) {
         );
         assert_eq!(
             agent.peer.status().phase,
-            tilo_session_host::TransportPhase::Closed,
+            tilo_session_client::TransportPhase::Closed,
             "a stopped agent's session connects no more"
         );
     }

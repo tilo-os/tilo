@@ -20,9 +20,9 @@ use tilo_relay_session::workspaces::{
 use tilo_user_identity::DeviceCert;
 use web_time::{Duration as Wait, Instant};
 
-use crate::session::{HOST_ITSELF, PeerConfig, PeerHandle, TransportPhase};
+use crate::session::{HOST_ITSELF, PeerConfig};
 use crate::{MemoryPeerStore, PeerStore};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Link, Outbox, TransportPhase};
 use tilo_session_core::remote::SessionActions;
 
 /// How long joining a workspace waits for its host to admit this device.
@@ -39,7 +39,7 @@ const ANSWERING: u32 = 20_000;
 #[derive(Clone)]
 pub struct Device {
     /// The session with the workspaces' host.
-    peer: PeerHandle,
+    peer: Link,
     cert: DeviceCert,
     /// The host's own device: whose device answers a workspace's own actions.
     host_cert: DeviceCert,
@@ -63,7 +63,7 @@ impl Device {
     #[must_use]
     pub fn over(config: PeerConfig, signer: Arc<dyn DeviceSigner>, label: &str) -> Self {
         Self {
-            peer: PeerHandle::start(
+            peer: crate::session::start_session(
                 config.clone(),
                 signer,
                 Arc::new(MemoryPeerStore::default()) as Arc<dyn PeerStore>,
@@ -78,7 +78,7 @@ impl Device {
     /// The device whose session `peer` already is: a page's, which started its session itself.
     /// `cert` must be the one `peer` was started with.
     #[must_use]
-    pub fn of(peer: PeerHandle, cert: DeviceCert, host_cert: DeviceCert, label: &str) -> Self {
+    pub fn of(peer: Link, cert: DeviceCert, host_cert: DeviceCert, label: &str) -> Self {
         Self {
             peer,
             cert,
@@ -165,7 +165,7 @@ impl Device {
 
     /// The session itself.
     #[must_use]
-    pub fn session(&self) -> &PeerHandle {
+    pub fn session(&self) -> &Link {
         &self.peer
     }
 
@@ -239,7 +239,7 @@ impl Device {
 
     /// Redeem `invitation`, which admits this very device to a workspace, shown to its people as
     /// `name`: an entry on its own stream of this device's connection to the host
-    /// ([`PeerHandle::enter_then`]), so the session it holds stays as it is.
+    /// ([`Cmd::Enter`]), so the session it holds stays as it is.
     ///
     /// # Errors
     /// The invitation names no workspace, the session is not connected, or the workspace refused
@@ -247,10 +247,10 @@ impl Device {
     pub async fn redeem(&self, invitation: &[u8], name: &str) -> Result<Admission, CertifyError> {
         let entering =
             invitation_entering(invitation, name, None).map_err(CertifyError::Request)?;
-        let (done, receive) = tokio::sync::oneshot::channel();
+        let (done, receive) = tilo_session_client::answer();
         self.peer
-            .enter_then(entering, done)
-            .map_err(CertifyError::Request)?;
+            .send(Cmd::Enter(entering, done))
+            .map_err(|closed| CertifyError::Request(closed.into()))?;
         let entered = receive.await.map_err(|_| {
             CertifyError::Request("the session ended before the host answered".into())
         })??;
@@ -748,13 +748,13 @@ pub async fn door_entry(
 /// # Errors
 /// The door or the workspace refused (the door's own code: `banned`, `removed`,
 /// `invitation-only`, `full` with the wait it asked for, `refused`), or no answer came in time.
-pub async fn entered(peer: &PeerHandle) -> Result<Admission, HostRefusal> {
+pub async fn entered(peer: &Link) -> Result<Admission, HostRefusal> {
     let started = Instant::now();
     let waits = ADMITTING.max(tilo_relay_protocol::entering::ENTERING_DEADLINE);
     loop {
         let status = peer.status();
         match status.entry {
-            Some(crate::session::Entry::Admitted {
+            Some(tilo_session_client::Entry::Admitted {
                 workspace,
                 workspace_id,
                 name,
@@ -767,7 +767,7 @@ pub async fn entered(peer: &PeerHandle) -> Result<Admission, HostRefusal> {
                     role,
                 });
             }
-            Some(crate::session::Entry::Refused {
+            Some(tilo_session_client::Entry::Refused {
                 code,
                 message,
                 retry_after_secs,
@@ -977,9 +977,14 @@ impl From<HostRefusal> for CertifyError {
 ///
 /// # Errors
 /// The session is already another agent's run, the session is closed, or the host did not answer.
-pub async fn run_as_agent(peer: &PeerHandle, label: &str) -> Result<(), String> {
-    let (done, receive) = tokio::sync::oneshot::channel();
-    peer.run_as_agent_then(label, done)?;
+pub async fn run_as_agent(peer: &Link, label: &str) -> Result<(), String> {
+    let label: String = label
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(tilo_relay_protocol::transport::MAX_AGENT_LABEL_CHARS)
+        .collect();
+    let (done, receive) = tilo_session_client::answer();
+    peer.send(Cmd::AgentRun(label, done))?;
     receive
         .await
         .map_err(|_| "the session ended before the host answered".to_owned())?

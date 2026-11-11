@@ -77,12 +77,13 @@ impl Task {
         // Its frames are in the replica before anyone hears the record opened.
         self.keep_arrived();
         if let Some((_, route)) = self.opened_records.get(&channel) {
-            self.emit(&tilo_session_client::Event::RecordOpened {
-                ws: workspace_id,
-                channel,
-                route: Some(route.clone()),
-                frames,
-            });
+            self.reports
+                .emit(&tilo_session_client::Event::RecordOpened {
+                    ws: workspace_id,
+                    channel,
+                    route: Some(route.clone()),
+                    frames,
+                });
         }
     }
 }

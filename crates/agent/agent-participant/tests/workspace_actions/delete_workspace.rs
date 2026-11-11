@@ -98,7 +98,7 @@ async fn invite(
 
 /// Wait until `page` heard that `workspace_id` was deleted, and stopped
 /// holding it: it says `workspace-deleted`, never that it was not admitted.
-async fn heard_deleted(page: &tilo_session_host::session::PeerHandle, workspace_id: u64) {
+async fn heard_deleted(page: &tilo_session_client::Link, workspace_id: u64) {
     let deadline = tilo_test_env::hang_deadline();
     loop {
         let status = page.status();
@@ -117,7 +117,7 @@ async fn heard_deleted(page: &tilo_session_host::session::PeerHandle, workspace_
             assert!(!status.workspaces.contains_key(&workspace_id), "{status:?}");
             assert_eq!(
                 status.phase,
-                tilo_session_host::session::TransportPhase::Failed,
+                tilo_session_client::TransportPhase::Failed,
                 "a page holding only it is done: {status:?}"
             );
             return;

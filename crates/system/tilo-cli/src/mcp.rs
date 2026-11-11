@@ -107,7 +107,7 @@ impl Serving {
         // The session closes on its own task: the process waits for it rather than ending it
         // with the runtime, which would leave the host waiting out the connection's silence.
         let closed = async {
-            while peer.status().phase != tilo_session_host::TransportPhase::Closed {
+            while peer.status().phase != tilo_session_client::TransportPhase::Closed {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         };

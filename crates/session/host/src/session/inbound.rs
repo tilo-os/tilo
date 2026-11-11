@@ -30,7 +30,7 @@ impl Task {
     /// Tell this device's readers that `route` changed in its replica.
     pub(super) fn landed(&self, route: &DocumentRoute, author: Option<[u8; 32]>) {
         self.engine.arrivals().landed();
-        self.emit(&tilo_session_client::Event::Landed {
+        self.reports.emit(&tilo_session_client::Event::Landed {
             author,
             route: route.clone(),
         });
@@ -56,7 +56,7 @@ impl Task {
         self.placing.remove(&workspace_id);
         self.fail(WORKSPACE_DELETED.0, WORKSPACE_DELETED.1);
         let nothing_left = self.workspaces.is_empty();
-        self.update(|status| {
+        self.reports.change(|status| {
             status.workspaces.remove(&workspace_id);
             if nothing_left {
                 status.phase = TransportPhase::Failed;
@@ -67,7 +67,7 @@ impl Task {
     /// The host admitted this session to `workspace_id` and sent its replay;
     /// it sends records `when_opened` in a public workspace.
     fn ready(&mut self, workspace_id: u64, when_opened: bool) {
-        self.update(|status| {
+        self.reports.change(|status| {
             status.workspaces.insert(workspace_id, true);
         });
         // The workspace is ready once what the host replayed before it is in the replica:
@@ -77,7 +77,7 @@ impl Task {
         if let Ok(peer) =
             iroh_base::EndpointId::from_bytes(&self.config.host_cert.device_public_key)
         {
-            self.emit(&tilo_session_client::Event::HostReady {
+            self.reports.emit(&tilo_session_client::Event::HostReady {
                 ws: workspace_id,
                 peer,
                 records_when_opened: when_opened,
@@ -87,7 +87,8 @@ impl Task {
 
     pub(super) fn inbound(&mut self, envelope: Envelope) {
         let now = tilo_clock::unix_now_ms();
-        self.update(|status| status.last_contact_at_ms = Some(now));
+        self.reports
+            .change(|status| status.last_contact_at_ms = Some(now));
         if !matches!(envelope, Envelope::Delta { .. }) {
             self.admit_governance();
         }
@@ -151,7 +152,7 @@ impl Task {
             content @ Envelope::RecordContent { .. } => self.record_content(content, now),
             envelope => {
                 if let Some(event) = addressed(envelope, self.config.host_cert.device_public_key) {
-                    self.emit(&event);
+                    self.reports.emit(&event);
                 }
             }
         }
@@ -190,7 +191,7 @@ impl Task {
         if let Some(arrived) = self.surface_wants.piece(&device, frame, now) {
             self.surfaces_arrived |= crate::surfaces::keep(&arrived.hash, arrived.bytes);
         } else if let Some(event) = addressed(envelope, self.config.host_cert.device_public_key) {
-            self.emit(&event);
+            self.reports.emit(&event);
         }
     }
 
@@ -199,15 +200,15 @@ impl Task {
     pub(super) fn follow_governance(&mut self, workspace_id: u64) {
         self.planes_due.insert(workspace_id);
         if let Some((workspace, members)) = self.replicas.members(workspace_id) {
-            if self.status().room_members.get(&workspace) != members.as_ref() {
-                self.update(|status| match members {
+            if self.reports.status().room_members.get(&workspace) != members.as_ref() {
+                self.reports.change(|status| match members {
                     Some(members) => _ = status.room_members.insert(workspace.clone(), members),
                     None => _ = status.room_members.remove(&workspace),
                 });
             }
             let devices = self.replicas.member_devices(workspace_id);
-            if self.status().room_devices.get(&workspace) != devices.as_ref() {
-                self.update(|status| match devices {
+            if self.reports.status().room_devices.get(&workspace) != devices.as_ref() {
+                self.reports.change(|status| match devices {
                     Some(devices) => _ = status.room_devices.insert(workspace.clone(), devices),
                     None => _ = status.room_devices.remove(&workspace),
                 });
@@ -229,7 +230,10 @@ impl Task {
     /// is admitted through the workspace's replica; channel governance and
     /// documents go on.
     pub(super) fn inbound_body(&mut self, workspace_id: u64, body: &[u8], author: [u8; 32]) {
-        let retained = lock(&self.shared).status.workspaces.get(&workspace_id) != Some(&true);
+        let retained = self
+            .reports
+            .read(|status| status.workspaces.get(&workspace_id).copied())
+            != Some(true);
         match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(body) {
             Ok(neighbour_wire::NeighbourMsg::SyncResp { changes, room }) => {
                 self.gather_governance(workspace_id, author, retained, room, changes);

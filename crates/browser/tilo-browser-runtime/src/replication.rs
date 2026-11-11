@@ -44,7 +44,7 @@ use neighbour_wire::content::ContentWants;
 use tilo_automerge::ApplyIncoming as _;
 use tilo_peer_state::document_frame::DocumentRoute;
 use tilo_session::sync::{Cmd, Event, Outbox};
-use tilo_session_host::{PeerEvents, PeerHandle};
+use tilo_session_client::{Events, Link};
 use ui::automerge::{AutoCommit, ReadDoc as _, transaction::Transactable as _};
 use ui::collaboration::record_content::ContentLane;
 use ui::record::{RecordId, RecordStore, RecordSync};
@@ -97,10 +97,10 @@ struct Mounted {
 }
 
 pub(crate) struct Joined {
-    peer: PeerHandle,
+    peer: Link,
     /// The certified device key, hex.
     device: String,
-    events: PeerEvents,
+    events: Events,
     uuid: String,
     workspace: u64,
     store: Rc<MemoryStore>,
@@ -188,8 +188,8 @@ fn storage_key(app: &str, workspace: &str, record: &str) -> Result<StorageKey, &
 pub(crate) fn open(
     id: u32,
     device: String,
-    peer: PeerHandle,
-    events: PeerEvents,
+    peer: Link,
+    events: Events,
     workspace: &str,
     (store, kept): (Rc<MemoryStore>, Kept),
 ) -> Result<(), String> {
@@ -443,7 +443,7 @@ pub(crate) fn host_then(
 /// Ask `peer`'s host `request` of its workspace administration, and hand `answered` the answer
 /// once it comes.
 fn ask_then(
-    peer: &PeerHandle,
+    peer: &Link,
     request: tilo_relay_protocol::workspaces::WorkspacesRequest,
     answered: impl FnOnce(Result<tilo_relay_protocol::workspaces::WorkspacesReply, String>) + 'static,
 ) -> Result<(), tilo_session::sync::Closed> {

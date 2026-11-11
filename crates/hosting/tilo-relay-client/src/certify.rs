@@ -365,7 +365,7 @@ impl Approver {
 
 /// Where a member's root-signed approver commands ([`MemberApproval`]s)
 /// reach a host. A device already holding a session to the host asks over
-/// that session's endpoint (`tilo_session_host::PeerHandle`); a device with
+/// that session's endpoint (`tilo_session_client::Link`); a device with
 /// none yet binds one of its own ([`MemberApprover`]).
 pub trait MemberHost: Sync {
     /// The host's answer to `approval`.

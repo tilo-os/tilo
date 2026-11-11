@@ -32,7 +32,7 @@ mod participant;
 mod support;
 
 use std::sync::Mutex;
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::Event;
 
 use collab_types::DocumentMutation;
 use common::{Body as _, Driveable};
@@ -46,11 +46,9 @@ use tilo_relay_protocol::agents::{AgentStatus, TaskState};
 use tilo_relay_protocol::delegation::{DelegateScope, Delegation};
 use tilo_relay_protocol::directory::Listing;
 use tilo_relay_protocol::workspaces::WorkspaceRole;
-use tilo_session_client::Event;
-use tilo_session_host::PeerHandle;
 use tilo_user_identity::{CertificationPolicy, DeviceCapabilities, UserIdentity};
 
-use support::{door, enrol, enter, start_workspace_host, wait_for};
+use support::{door, enrol, enter, start_workspace_host, wait_for, written};
 
 const WRITER: &str = "so.tilo.word-processor";
 const CHAT: &str = "so.tilo.chat";
@@ -116,36 +114,6 @@ impl Driveable for Held<'_> {
             StepAction::Open | StepAction::Continue(_) | StepAction::Wait(_) => Ok(()),
         }
     }
-}
-
-/// Whether `peer`'s channel for `route` is ready.
-fn keyed(peer: &PeerHandle, route: &DocumentRoute) -> bool {
-    let prefix = format!("route {}/{} ", route.app_id, route.record);
-    peer.status()
-        .channels
-        .lines()
-        .any(|line| line.starts_with(&prefix) && line.contains(": ready;"))
-}
-
-/// Write `document` to `route` from `member`'s device, once the workspace's
-/// host has admitted it to the record's channel, and wait until the host has
-/// it: what the workspace holds of that record from then on.
-async fn written(member: &PeerHandle, route: &DocumentRoute, document: Vec<u8>) {
-    member.send(Cmd::OpenRoute(route.clone())).unwrap();
-    let route_keyed = route.clone();
-    wait_for("the member's channel to be keyed", || async {
-        keyed(member, &route_keyed).then_some(())
-    })
-    .await;
-    member
-        .write(route.clone(), &DocumentMutation::Snapshot(document))
-        .unwrap();
-    let receipt = member.barrier().unwrap();
-    wait_for("the member's write to be durable on the host", || async {
-        receipt.try_recv().ok()
-    })
-    .await
-    .unwrap();
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -216,7 +184,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
     written(
         &member,
         &note_route,
-        note.read(|doc| doc.clone().save()).unwrap(),
+        &DocumentMutation::Snapshot(note.read(|doc| doc.clone().save()).unwrap()),
     )
     .await;
 
@@ -230,7 +198,12 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         cluster_id: workspace.clone(),
         record: String::new(),
     };
-    written(&member, &chat_route, chat_document.save()).await;
+    written(
+        &member,
+        &chat_route,
+        &DocumentMutation::Snapshot(chat_document.save()),
+    )
+    .await;
     // Its messages fill parts: the newest the workspace holds is part 1,
     // which a device holding no part asks for by the chain's head.
     let channel_id = chat::projection::read(&chat_document)
@@ -263,7 +236,7 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         cluster_id: workspace.clone(),
         record: chat::parts::part(index).route().to_owned(),
     };
-    written(&member, &part_route(1), newest).await;
+    written(&member, &part_route(1), &DocumentMutation::Snapshot(newest)).await;
 
     // The agent: its own device under the owner, delegated the workspace and
     // the two apps; its model's plan opens what the task names.

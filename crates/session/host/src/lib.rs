@@ -4,7 +4,8 @@
 //! A device holds a device key, which [`tilo_relay_client::certify`] has the
 //! person's host ask a root-holding device to certify, and
 //! [`tilo_relay_client::invite`] certifies with a joining person's own root.
-//! [`session::PeerHandle`] keeps one certified relay session to that host, and
+//! [`session::start_session`] keeps one certified relay session to that host, held through the
+//! client's [`tilo_session_client::Link`], and
 //! [`device::Device`] is the one entry a program takes it by:
 //!
 //! - the **durable plane**: signed document envelopes ([`document`]) sent as
@@ -17,8 +18,6 @@
 //! - **calls** ([`voice`] for the relay's own media path, and the plane's
 //!   camera and screen tracks for what a call carries): the grants that admit
 //!   the page to a call, and the pictures and voice it publishes and shows.
-//!
-//! [`health`] derives `PeerSnapshot` and `SessionHealth` v1 from it.
 //!
 //! The identity layer's device side is [`tilo_relay_client`]: this crate enters
 //! the workspace a signed-in computer's link names ([`device::Device::enter`])
@@ -41,7 +40,6 @@ pub mod custody;
 pub mod device;
 pub mod document;
 pub mod entered;
-pub mod health;
 mod held_live;
 pub mod narration;
 mod replica;
@@ -54,11 +52,7 @@ pub mod voice;
 pub mod way_in;
 
 pub use custody::{MemoryPeerStore, PeerRecord, PeerStore};
-pub use health::{EntryHealth, PeerSnapshot, SessionHealth};
-pub use session::{
-    Entry, EntryCompletion, Failure, FailureSubject, LocalState, PAGE_FAILURE_CODES, PeerConfig,
-    PeerEvents, PeerHandle, PeerStatus, SessionMemberHost, TransportPhase,
-};
+pub use session::{PeerConfig, SessionMemberHost, member_host, start_session};
 /// The identity layer's device side, re-exported for this crate's own tests
 /// and its peers.
 pub use tilo_relay_client::https::{HttpClient, HttpFuture, host_info, workspace_deleted};

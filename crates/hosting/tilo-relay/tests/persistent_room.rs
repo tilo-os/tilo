@@ -510,8 +510,8 @@ fn page(
     key: ed25519_dalek::SigningKey,
     cert: tilo_user_identity::DeviceCert,
     host_cert: &tilo_user_identity::DeviceCert,
-) -> tilo_session_host::PeerHandle {
-    tilo_session_host::PeerHandle::start(
+) -> tilo_session_client::Link {
+    tilo_session_host::start_session(
         tilo_session_host::PeerConfig {
             host,
             cert,
@@ -551,7 +551,7 @@ async fn enter_through_door(
         .await
         .unwrap();
     let host_cert = info.host_cert.clone();
-    let session = tilo_session_host::PeerHandle::start(
+    let session = tilo_session_host::start_session(
         tilo_session_host::PeerConfig {
             host: host_of(info),
             cert: cert.clone(),
@@ -617,7 +617,7 @@ fn unenrolled_owner_device() -> (ed25519_dalek::SigningKey, tilo_user_identity::
 /// the page's copy of it.
 async fn assert_page_reads_the_chat(
     who: &str,
-    visiting: &tilo_session_host::PeerHandle,
+    visiting: &tilo_session_client::Link,
     workspace_id: u64,
     route: &tilo_peer_state::document_frame::DocumentRoute,
     channels: &[&str],

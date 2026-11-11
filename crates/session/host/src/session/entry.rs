@@ -9,25 +9,13 @@ use std::time::Duration;
 
 use tokio::sync::mpsc;
 
-use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, PeerHandle, Task, TransportPhase};
+use tilo_session_client::Entry;
 
-/// Where the host's answer to another entry goes, see [`PeerHandle::enter_then`].
-pub type EntryCompletion =
-    tokio::sync::oneshot::Sender<Result<tilo_relay_protocol::entering::Entered, LinkError>>;
-impl PeerHandle {
-    /// Enter another workspace as `entering` says, on a stream of its own on
-    /// this session's connection ([`tilo_relay_protocol::entering`]): a
-    /// device in a session with its host redeems an invitation this way.
-    /// `done` gets the host's answer, or why there was none: the session is
-    /// not connected, or the host did not answer the entry.
-    pub fn enter_then(
-        &self,
-        entering: tilo_relay_protocol::entering::Entering,
-        done: EntryCompletion,
-    ) -> Result<(), String> {
-        self.send(Command::Enter(entering, done))
-    }
-}
+use super::{Command, Exit, MAX_BACKOFF, NOT_ADMITTED, Task, TransportPhase};
+
+/// Where the host's answer to another entry goes ([`Cmd::Enter`]).
+pub(super) type EntryCompletion =
+    tilo_session_client::Answer<Result<tilo_relay_protocol::entering::Entered, LinkError>>;
 
 /// What a failed connection says about this device.
 #[derive(Debug, PartialEq, Eq)]
@@ -94,52 +82,22 @@ pub(super) const fn door_code(
     }
 }
 
-/// The host's answer to a session's entry through a workspace's door.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Entry {
-    /// The workspace admitted this device.
-    Admitted {
-        /// The workspace's UUID.
-        workspace: String,
-        /// Its relay workspace.
-        workspace_id: u64,
-        /// Its name.
-        name: String,
-        /// What the person may do there.
-        role: tilo_relay_protocol::workspaces::WorkspaceRole,
-    },
-    /// The door or the workspace did not let it in: the door's `code`
-    /// (`banned`, `removed`, `invitation-only`, `full`, `refused`), or
-    /// `not-admitted` when the workspace refused the device the door let in;
-    /// what was said, and how long the door asked to wait before the next try.
-    Refused {
-        code: &'static str,
-        message: String,
-        retry_after_secs: Option<u64>,
-        /// The door's own refusal as it answered it: its code, and what it
-        /// says about a wait list the workspace keeps, so the page offers to
-        /// leave an address there.
-        door: Option<tilo_relay_protocol::directory::DoorRefused>,
-    },
-}
-
-impl Entry {
-    pub(super) fn refused(refusal: &tilo_relay_protocol::entering::EnterRefusal) -> Self {
-        use tilo_relay_protocol::entering::EnterRefusal;
-        Self::Refused {
-            code: door_code(refusal),
-            message: refusal.reason().to_owned(),
-            retry_after_secs: match refusal {
-                EnterRefusal::Door {
-                    retry_after_secs, ..
-                } => *retry_after_secs,
-                EnterRefusal::Workspace(_) => None,
-            },
-            door: match refusal {
-                EnterRefusal::Door { refused, .. } => Some(refused.clone()),
-                EnterRefusal::Workspace(_) => None,
-            },
-        }
+/// The entry `refusal` refused, as the session's status keeps it.
+fn refused_entry(refusal: &tilo_relay_protocol::entering::EnterRefusal) -> Entry {
+    use tilo_relay_protocol::entering::EnterRefusal;
+    Entry::Refused {
+        code: door_code(refusal),
+        message: refusal.reason().to_owned(),
+        retry_after_secs: match refusal {
+            EnterRefusal::Door {
+                retry_after_secs, ..
+            } => *retry_after_secs,
+            EnterRefusal::Workspace(_) => None,
+        },
+        door: match refusal {
+            EnterRefusal::Door { refused, .. } => Some(refused.clone()),
+            EnterRefusal::Workspace(_) => None,
+        },
     }
 }
 
@@ -175,7 +133,7 @@ impl Task {
                     );
                     self.pump_channels(true);
                 }
-                self.update(|status| {
+                self.reports.change(|status| {
                     status.entry = Some(Entry::Admitted {
                         workspace,
                         workspace_id,
@@ -186,8 +144,8 @@ impl Task {
                 None
             }
             Entered::Refused(refused) => {
-                let entry = Entry::refused(&refused);
-                self.update(|status| status.entry = Some(entry));
+                let entry = refused_entry(&refused);
+                self.reports.change(|status| status.entry = Some(entry));
                 Some(Exit::Refused(
                     door_code(&refused),
                     refused.reason().to_owned(),
@@ -259,7 +217,7 @@ impl Task {
             250u64.saturating_mul(1u64 << attempt.min(7)),
         ));
         let delay_ms = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
-        self.update(|status| {
+        self.reports.change(|status| {
             status.phase = TransportPhase::Offline;
             status.authenticated = false;
             status.attempt = attempt;
@@ -277,7 +235,7 @@ impl Task {
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> bool {
         self.fail(code, message);
-        self.update(|status| {
+        self.reports.change(|status| {
             status.phase = TransportPhase::Failed;
             status.authenticated = false;
         });

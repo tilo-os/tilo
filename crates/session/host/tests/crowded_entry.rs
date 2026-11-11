@@ -44,18 +44,17 @@ mod support;
 tilo_automerge_isolate::test_worker!();
 
 use std::time::{Duration, Instant};
-use tilo_session_client::{Cmd, Outbox};
+use tilo_session_client::{Cmd, Event, Link, Outbox, TransportPhase};
 
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use tilo_peer_state::document_frame::DocumentRoute;
-use tilo_session_client::Event;
 use tilo_session_host::device::{Entering, door_entry};
-use tilo_session_host::{Host, MemoryPeerStore, PeerHandle, TransportPhase};
+use tilo_session_host::{Host, MemoryPeerStore};
 use tilo_user_identity::UserIdentity;
 
-use support::{enrol, enter_page, start_workspace_host_relaying};
+use support::{enrol, enter_page, keyed, start_workspace_host_relaying};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -135,7 +134,7 @@ impl tilo_session_host::HttpClient for Network<'_> {
 /// it, counting what crosses it.
 enum Wire {
     Datagrams(Datagrams),
-    Stream(Link),
+    Stream(DelayedLink),
 }
 
 impl Wire {
@@ -160,7 +159,7 @@ fn trace_wire(way: &str, bytes: usize) {
 
 /// A network between a page and the host's WebTransport listener: every
 /// datagram each way arrives `round_trip / 2` after it was sent, in order,
-/// and the bytes of those that reach the page are counted, as [`Link`] counts
+/// and the bytes of those that reach the page are counted, as [`DelayedLink`] counts
 /// a stream's. One page's session crosses it: the first address to send is
 /// the page's.
 struct Datagrams {
@@ -273,13 +272,13 @@ impl Datagrams {
 /// that reach the device are counted. A device reaching its host only
 /// through the relay sends nothing else, so this is all of its session's
 /// path to the host.
-struct Link {
+struct DelayedLink {
     addr: std::net::SocketAddr,
     received: std::sync::Arc<std::sync::atomic::AtomicU64>,
     sent: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-impl Link {
+impl DelayedLink {
     async fn start(upstream: std::net::SocketAddr, round_trip: Duration) -> Self {
         use std::sync::atomic::AtomicU64;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -410,15 +409,6 @@ fn env_usize(name: &str, default: usize) -> usize {
         .ok()
         .and_then(|value| value.parse().ok())
         .unwrap_or(default)
-}
-
-/// Whether `page`'s channel for `route` is ready.
-fn keyed(page: &PeerHandle, route: &DocumentRoute) -> bool {
-    let prefix = format!("route {}/{} ", route.app_id, route.record);
-    page.status()
-        .channels
-        .lines()
-        .any(|line| line.starts_with(&prefix) && line.contains(": ready;"))
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
@@ -596,7 +586,7 @@ struct Member {
 
 impl Member {
     /// The page of `name`, in the workspace and holding the desktop's keys.
-    async fn arrive(&self, name: &str) -> PeerHandle {
+    async fn arrive(&self, name: &str) -> Link {
         let (root, key) = (new_key(), new_key());
         let (cert, entry) = door_entry(
             &self.host_cert,
@@ -624,7 +614,7 @@ impl Member {
         page.send(Cmd::OpenRoute(self.desktop.clone())).unwrap();
         let waiting = Instant::now();
         while !keyed(&page, &self.desktop) {
-            if let Some(tilo_session_host::Entry::Refused { .. }) = &page.status().entry {
+            if let Some(tilo_session_client::Entry::Refused { .. }) = &page.status().entry {
                 panic!("the door turned {name} away: {:?}", page.status().entry);
             }
             assert!(
@@ -639,7 +629,7 @@ impl Member {
 
     /// Write `part`, `page`'s own part of the shared desktop, and wait until
     /// the host keeps it.
-    async fn leave_part(&self, page: &PeerHandle, part: Vec<u8>) {
+    async fn leave_part(&self, page: &Link, part: Vec<u8>) {
         page.write(self.desktop.clone(), &DocumentMutation::Incremental(part))
             .unwrap();
         let receipt = page.barrier().unwrap();
@@ -1020,7 +1010,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
                 .into_iter()
                 .next()
                 .expect("the packet relay's address");
-            let link = Link::start(upstream, round_trip).await;
+            let link = DelayedLink::start(upstream, round_trip).await;
             let mut relay: url::Url = (*place.relay).clone();
             relay.set_port(Some(link.addr.port())).unwrap();
             let host = Host::through(iroh::EndpointAddr::new(place.host), Some(relay.into()))
@@ -1081,7 +1071,7 @@ async fn guest_enters(place: &Place<'_>, way: Way, round_trip: Duration) -> Entr
         }
         if admitted.is_none() {
             match &status.entry {
-                Some(tilo_session_host::Entry::Admitted { workspace, .. }) => {
+                Some(tilo_session_client::Entry::Admitted { workspace, .. }) => {
                     assert_eq!(workspace, place.workspace);
                     admitted = Some(started.elapsed());
                 }

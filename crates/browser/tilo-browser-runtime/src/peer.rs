@@ -35,10 +35,11 @@ use tilo_relay_client::{Answer, AnswerFuture};
 use tilo_relay_protocol::live::{LiveAnchor, LiveFrame, LiveRecord, OpsFrame, PreviewOp};
 use tilo_relay_protocol::web::{PageHost, PageHostAddress};
 use tilo_session::sync::{Cmd, Event, Outbox};
+use tilo_session_client::{Events, FailureSubject, Link, LocalState};
 use tilo_session_host::device::{Device, HostRefusal};
 use tilo_session_host::{
-    DeviceSigner, FailureSubject, Host, HttpClient, HttpFuture, LocalState, PeerConfig, PeerEvents,
-    PeerHandle, PeerRecord, PeerStore, SignError, SignFuture,
+    DeviceSigner, Host, HttpClient, HttpFuture, PeerConfig, PeerRecord, PeerStore, SignError,
+    SignFuture,
 };
 use tilo_user_identity::{DeviceCert, RevocationEntry, RevocationList, RevocationReason};
 use wasm_bindgen::prelude::*;
@@ -1547,19 +1548,19 @@ pub struct WasmPeer {
     device_key: [u8; 32],
     reporter_cert: DeviceCert,
     owner_cert: DeviceCert,
-    handle: PeerHandle,
+    handle: Link,
     /// This page's device in its person's workspaces, over the same session: how it enters them.
     device: Device,
-    durable_events: PeerEvents,
-    live_events: PeerEvents,
-    voice_events: PeerEvents,
+    durable_events: Events,
+    live_events: Events,
+    voice_events: Events,
     /// Joined workspaces by workspace, to name them in call events.
     voice_workspaces: RefCell<std::collections::HashMap<u64, String>>,
     listeners: Rc<RefCell<Vec<Function>>>,
     /// Where the workspace's documents are kept (the profile's store, or memory
     /// for a peer in no profile) and a queue opened at start, until a workspace
     /// is joined and replicated ([`crate::replication`]).
-    replication: RefCell<Option<(PeerEvents, ReplicaStore)>>,
+    replication: RefCell<Option<(Events, ReplicaStore)>>,
     /// The workspace the person takes part in through this page, once joined
     /// as a person: the one that names them.
     speaking_workspace: RefCell<Option<String>>,
@@ -1609,7 +1610,7 @@ fn peer_store(
 /// as the page joins and whenever the person renames themself, so a name
 /// the workspace recorded earlier is corrected on the next visit. A person who
 /// chose no name keeps the one they were admitted with.
-fn set_member_name(handle: &PeerHandle, workspace: &str, name: &str) {
+fn set_member_name(handle: &Link, workspace: &str, name: &str) {
     if name.trim().is_empty() {
         return;
     }
@@ -1684,7 +1685,7 @@ impl WasmPeer {
         let owner_cert = config.host_cert.clone();
         let display_name = config.display_name;
         let revocations = own_revocations(config.revocations, &config.cert)?;
-        let handle = PeerHandle::start(
+        let handle = tilo_session_host::start_session(
             PeerConfig {
                 host: dialled(config.address),
                 cert: config.cert,
@@ -1873,7 +1874,9 @@ impl WasmPeer {
     /// person's root custody the page holds: over this session, with no
     /// connection of its own.
     pub fn pairing(&self) -> PairingHost {
-        PairingHost(PairingReach::Session(self.handle.member_host()))
+        PairingHost(PairingReach::Session(tilo_session_host::member_host(
+            &self.handle,
+        )))
     }
 
     /// Answer what this person's agents on this session's host ask them,
