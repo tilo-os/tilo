@@ -1923,7 +1923,7 @@ impl UpdatesModel {
                             percent: 0,
                             message: t_args(
                                 "upd-fw-preparing",
-                                &[("total", total.to_string().into())],
+                                &[("total", i64::try_from(total).unwrap_or(i64::MAX).into())],
                             ),
                         };
                     }
