@@ -54,7 +54,8 @@ pub struct Browser {
     label = "Browser",
     initialize = Browser::default,
     scopes = Browser::scopes,
-    children = Browser::sites
+    children = Browser::sites,
+    facts = Browser::document_facts
 )]
 impl Browser {
     /// Bookmark a page.
@@ -193,6 +194,37 @@ impl Browser {
                 CATALOG.t("browser-library-section-downloads"),
             ),
         ]
+    }
+
+    /// What the document holds, as a person would state it: the bookmarks
+    /// in order, the preferences, and the sites tracker protection is off
+    /// for. It is the document's read, and so what the action directory
+    /// discloses the window through: Show page and the window's other views
+    /// change only what their caller sees, and a window disclosed through
+    /// one of them is never listed to an agent, nor the page on it.
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the signature is the one `#[resource(facts = path)]` takes"
+    )]
+    fn document_facts(&self) -> Result<serde_json::Value, String> {
+        Ok(serde_json::json!({
+            "bookmarks": self
+                .bookmarks
+                .values()
+                .map(|bookmark| {
+                    serde_json::json!({ "title": bookmark.title, "address": bookmark.url })
+                })
+                .collect::<Vec<_>>(),
+            "homepage": self.preferences.homepage,
+            "search_engine": self.preferences.search_engine,
+            "blocks_ads_and_trackers": self.preferences.adblock_enabled,
+            "clears_data_on_exit": self.preferences.clear_on_exit,
+            "sites_without_tracker_protection": self
+                .site_exceptions
+                .iter()
+                .cloned()
+                .collect::<Vec<String>>(),
+        }))
     }
 
     /// Each site tracker protection is off for, as a place that turns it
@@ -1056,6 +1088,116 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// [`reachable_by_an_agent`] from the top of the directory, as an agent's door walks it: the
+    /// rows the window's directory starts with, then what each listed resource holds. A row an
+    /// agent is not shown hides everything below it, the window's own row included.
+    fn reachable_from_the_top(app: &mut TestApp<BrowserShell>) -> (Vec<(String, String)>, String) {
+        use ui::collaboration::action_directory::ActionDirectorySnapshot;
+        use ui::tilo_actions::OperationKind;
+        let resources = app.harness().resources();
+        let descriptors = ui::tilo_actions::door::survey(&resources);
+        let snapshot = ActionDirectorySnapshot::build(&resources, &descriptors, |_| None);
+        let mut reached = Vec::new();
+        let mut top = String::new();
+        let mut rows: Vec<_> = snapshot.roots.iter().map(|row| (row, true)).collect();
+        while let Some((row, at_top)) = rows.pop() {
+            match (&row.action, &row.visibility) {
+                (Some(action), _) => reached.push((row.resource.clone(), action.clone())),
+                (None, Some(visibility)) => {
+                    let private_view = visibility.governing_kind == Some(OperationKind::View)
+                        && !visibility.contract.is_participant_view()
+                        && !visibility.contract.reads_document();
+                    if at_top {
+                        use std::fmt::Write as _;
+                        let _ = write!(
+                            top,
+                            "{} is disclosed through {} ({}); ",
+                            row.resource,
+                            visibility.action,
+                            if private_view {
+                                "a private view"
+                            } else {
+                                "listed"
+                            }
+                        );
+                    }
+                    if !private_view {
+                        rows.extend(
+                            snapshot
+                                .nodes
+                                .get(&row.resource)
+                                .map_or(&[][..], |node| &node.rows)
+                                .iter()
+                                .map(|row| (row, false)),
+                        );
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        (reached, top)
+    }
+
+    /// An agent at the door lists a Browser window from the top: the window's own row, then the
+    /// page on it. The page's actions reach it only when every row above the page is one an agent
+    /// is shown.
+    #[test]
+    fn an_agent_reaches_the_page_from_the_top_of_the_windows_directory() {
+        let url = "https://github.com/ada";
+        for arguments in [&[ui::webview::VISITOR_WINDOW_FLAG, url][..], &[url][..]] {
+            let engine = ui::webview::test_engine::TestEngine::new();
+            crate::browser_widget::test_window_engine::install(engine.clone());
+            let mut app = TestApp::<BrowserShell>::launched(arguments).expect("Browser opens");
+            engine.push_event(ui::webview::WebViewEvent::LoadFinished);
+            app.settle();
+            let (reached, top) = reachable_from_the_top(&mut app);
+            for action in ["read-page", "navigate"] {
+                assert!(
+                    reached
+                        .iter()
+                        .any(|(resource, id)| resource == "browser.page" && id == action),
+                    "{arguments:?}: {action} on browser.page is not reached from the top of the \
+                     directory; at the top: {top}reached: {reached:?}"
+                );
+            }
+        }
+    }
+
+    /// The document states its bookmarks in order, as a person would name them, and its
+    /// preferences: what the window's row in the action directory is disclosed through.
+    #[test]
+    fn the_document_states_its_bookmarks_and_preferences() {
+        let mut app = TestApp::<BrowserShell>::capture(Some("library-bookmarks")).unwrap();
+        app.settle();
+        let state = app.state();
+        let facts = state
+            .document_facts()
+            .expect("the document states its facts");
+        let stated: Vec<(String, String)> = facts["bookmarks"]
+            .as_array()
+            .expect("the bookmarks are a list")
+            .iter()
+            .map(|bookmark| {
+                (
+                    bookmark["title"].as_str().unwrap_or_default().to_owned(),
+                    bookmark["address"].as_str().unwrap_or_default().to_owned(),
+                )
+            })
+            .collect();
+        let held: Vec<(String, String)> = state
+            .bookmarks
+            .values()
+            .map(|bookmark| (bookmark.title.clone(), bookmark.url.clone()))
+            .collect();
+        assert_eq!(stated.len(), 2, "{facts}");
+        assert_eq!(stated, held);
+        assert_eq!(facts["homepage"], state.preferences.homepage.as_str());
+        assert_eq!(
+            facts["search_engine"],
+            state.preferences.search_engine.as_str()
+        );
     }
 
     #[test]
