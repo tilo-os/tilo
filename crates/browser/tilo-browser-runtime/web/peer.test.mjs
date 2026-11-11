@@ -1221,7 +1221,10 @@ test('a workspace’s reports go through the page’s peer in the destination’
 test('feedback startup waits for owner admission and never joins another workspace', async () => {
   const runtime = fakeRuntime();
   const peer = await connect(options(runtime, memoryStore(), {live: false, voice: false}));
-  runtime.peer.hasRecord = () => true;
+  // A workspace that sends its records when they are opened has sent this
+  // page no chat yet: the owner's admission, not the page's copy, says the
+  // channel is there, so nothing waits for the chat to arrive.
+  runtime.peer.hasRecord = () => false;
   let status = 'awaiting authenticated admission';
   let configured;
   runtime.peer.configureFeedback = value => { configured = JSON.parse(value); };

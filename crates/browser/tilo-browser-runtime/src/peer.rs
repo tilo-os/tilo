@@ -1767,7 +1767,7 @@ impl WasmPeer {
     /// Select an existing destination. Admission comes only from the connected
     /// owner, asynchronously; mount after feedbackStatus reports ready.
     /// # Errors
-    /// Refuses missing existing membership, record or a repeated configuration.
+    /// Refuses missing existing membership or a repeated configuration.
     #[wasm_bindgen(js_name = configureFeedback)]
     pub fn configure_feedback(&self, destination: &str) -> Result<(), JsError> {
         crate::feedback_code::configure(

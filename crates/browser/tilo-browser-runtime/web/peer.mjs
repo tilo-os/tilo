@@ -1130,10 +1130,12 @@ async function connect({
     get actions() { return actions; },
     /** Bind feedback before mounting the desktop. The destination only selects
      * an existing text channel: Rust obtains identity and current capabilities
-     * from the authenticated owner. This creates no membership or grant. */
+     * from the authenticated owner. This creates no membership or grant.
+     * Whether the channel's chat exists is the owner's to say, in the
+     * admission it answers with: a workspace that sends its records when
+     * they are opened sends this page no chat until someone opens Chat. */
     async configureFeedback(destination) {
       if (!workspace || destination?.room !== workspace || disposed) throw new Error('Feedback needs this existing workspace');
-      await certifiedPeer.whenRecord('so.tilo.chat', '', {signal});
       if (typeof peer?.configureFeedback !== 'function') throw new Error('Feedback delivery is unavailable in this runtime');
       peer.configureFeedback(JSON.stringify(destination));
       await untilSnapshot(() => {

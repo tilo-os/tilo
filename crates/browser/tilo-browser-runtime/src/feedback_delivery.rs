@@ -78,11 +78,14 @@ pub(crate) fn configure(
     }
     .validate()
     .map_err(|error| error.to_string())?;
+    // Whether the destination's chat exists is the owner's to say: its
+    // admission reads the channel from what the workspace keeps. A workspace
+    // that sends its records when they are opened sends this page no chat
+    // until someone opens Chat, so the page's own copy proves nothing.
     if crate::replication::device_of(id).as_deref()
         != Some(hex::encode(reporter.device_public_key).as_str())
-        || !crate::replication::has_record(id, "so.tilo.chat", "")
     {
-        return Err("feedback requires an already joined peer and existing Chat source".into());
+        return Err("feedback requires an already joined peer".into());
     }
     CONNECTIONS.with_borrow_mut(|connections| {
         if connections.contains_key(&id) {
