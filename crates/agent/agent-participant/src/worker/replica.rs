@@ -77,6 +77,19 @@ struct Inner {
     beside_dirty: bool,
     /// Content the worker holds, put again into a worker that replaces it.
     held: BTreeSet<String>,
+    /// The record's store asks its workspace's hosts for what it lacks
+    /// ([`ConfinedReplica::ask_workspace_for_missing`]), and the records they
+    /// answered they hold none of: told again to a worker that replaces it.
+    asks_workspace: Option<BTreeSet<String>>,
+}
+
+/// A worker's reply to a request that only says it was carried out.
+fn done(reply: Result<Reply, AppError>) -> Result<(), AppError> {
+    match reply? {
+        Reply::Done => Ok(()),
+        Reply::Failed(reason) => Err(worker_error(reason)),
+        _ => Err(worker_error("the worker answered out of turn")),
+    }
 }
 
 fn worker_error(reason: impl Into<String>) -> AppError {
@@ -150,6 +163,7 @@ impl ConfinedReplica {
                 beside: BTreeMap::new(),
                 beside_dirty: false,
                 held: BTreeSet::new(),
+                asks_workspace: None,
             }),
         };
         if fresh {
@@ -268,6 +282,21 @@ impl ConfinedReplica {
                         }
                     }
                 }
+                // So do what the workspace was asked and answered.
+                if let Some(answered) = &inner.asks_workspace {
+                    let told = std::iter::once(Request::AskWorkspace).chain(answered.iter().map(
+                        |record| Request::Answered {
+                            record: record.clone(),
+                        },
+                    ));
+                    for request in told {
+                        match process.call(&request).map_err(worker_error)? {
+                            Reply::Done => {}
+                            Reply::Failed(reason) => return Err(worker_error(reason)),
+                            _ => return Err(worker_error("the worker answered out of turn")),
+                        }
+                    }
+                }
                 inner.process = Some(process);
                 inner.dirty = false;
                 inner.beside_dirty = false;
@@ -276,6 +305,58 @@ impl ConfinedReplica {
             Reply::Failed(reason) => Err(worker_error(reason)),
             _ => Err(worker_error("the worker named another record")),
         }
+    }
+
+    /// Take the record's store to come from its workspace's hosts:
+    /// [`crate::Replica::ask_workspace_for_missing`].
+    ///
+    /// # Errors
+    ///
+    /// The worker could not be told.
+    pub fn ask_workspace_for_missing(&self) -> Result<(), AppError> {
+        let mut inner = self.lock();
+        if inner.asks_workspace.is_some() {
+            return Ok(());
+        }
+        inner.asks_workspace = Some(BTreeSet::new());
+        let reply = self.call(&mut inner, &Request::AskWorkspace);
+        drop(inner);
+        done(reply)
+    }
+
+    /// What the record's store asks its workspace's hosts for:
+    /// [`crate::Replica::wanted_records`]. Empty when the worker cannot answer.
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        let reply = self.call(&mut self.lock(), &Request::Wanted);
+        match reply {
+            Ok(Reply::Wanted(records)) => records
+                .iter()
+                .filter_map(|record| super::serve::parse_record(record))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The workspace's hosts hold none of `record`:
+    /// [`crate::Replica::workspace_answered`].
+    ///
+    /// # Errors
+    ///
+    /// The worker could not be told.
+    pub fn workspace_answered(&self, record: &RecordId) -> Result<(), AppError> {
+        let mut inner = self.lock();
+        if let Some(answered) = &mut inner.asks_workspace {
+            answered.insert(record.as_str().to_owned());
+        }
+        let reply = self.call(
+            &mut inner,
+            &Request::Answered {
+                record: record.as_str().to_owned(),
+            },
+        );
+        drop(inner);
+        done(reply)
     }
 
     /// Where the agent's last operation left it: [`crate::Replica::presence`].

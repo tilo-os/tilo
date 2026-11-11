@@ -680,6 +680,29 @@ impl AttachedView {
         Ok(changed)
     }
 
+    /// Take the view's records to come from its workspace's hosts, which may
+    /// send a record only once it is asked for (a public workspace):
+    /// [`RecordStore::ask_workspace_for_missing`]. A chain the view holds no
+    /// part of asks for its head then, and writes to it wait for the answer.
+    pub fn ask_workspace_for_missing(&self) {
+        self.records.ask_workspace_for_missing();
+    }
+
+    /// What the view's records ask the workspace's hosts for
+    /// ([`RecordStore::wanted_records`]).
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<ui_core::record::RecordId> {
+        self.records.wanted_records()
+    }
+
+    /// The workspace's hosts sent all they hold of `record`, none of it
+    /// ([`RecordStore::note_workspace_answered`]); the view takes it up at its
+    /// next frame.
+    pub fn workspace_answered(&mut self, record: ui_core::record::RecordId) {
+        self.records.note_workspace_answered(record);
+        self.frame.relayout();
+    }
+
     /// The chains of records the app keeps beside its own
     /// ([`Chain`](super::Chain)), as the view publishes them: each chain's
     /// id and the kind of its parts.

@@ -297,6 +297,9 @@ impl Worker {
                     })
                     .collect(),
             ),
+            request @ (Request::AskWorkspace | Request::Wanted | Request::Answered { .. }) => {
+                workspace_reply(replica, request)
+            }
             Request::Presence => Reply::Presence(
                 replica
                     .presence()
@@ -440,6 +443,32 @@ fn resident_text_renderer() -> ui::TextRenderer {
 }
 
 /// A record id as [`RecordId::as_str`] spells it.
+/// What a held record's store answers about the records it reads through its
+/// workspace's hosts.
+fn workspace_reply(replica: &mut crate::Replica, request: Request) -> Reply {
+    match request {
+        Request::AskWorkspace => {
+            replica.ask_workspace_for_missing();
+            Reply::Done
+        }
+        Request::Wanted => Reply::Wanted(
+            replica
+                .wanted_records()
+                .into_iter()
+                .map(|record| record.as_str().to_owned())
+                .collect(),
+        ),
+        Request::Answered { record } => match parse_record(&record) {
+            Some(record) => {
+                replica.workspace_answered(record);
+                Reply::Done
+            }
+            None => Reply::Failed("invalid record id".into()),
+        },
+        _ => Reply::Failed("not a request about the workspace's records".into()),
+    }
+}
+
 pub(super) fn parse_record(text: &str) -> Option<RecordId> {
     let primary = RecordId::package_primary();
     if text == primary.as_str() {

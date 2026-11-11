@@ -6,9 +6,10 @@
 //! first change it published forked the workspace's.
 //!
 //! Over the real session, a member's device writes a note and the workspace's
-//! own chat; an agent joining afterwards opens the note by its id, and opens
-//! Chat naming no record. Both waits for what the workspace holds and opens
-//! the member's documents, and neither founds one.
+//! own chat, whose newest part is its second; an agent joining afterwards
+//! opens the note by its id, and opens Chat naming no record. Both waits for
+//! what the workspace holds and opens the member's documents, and neither
+//! founds one; a message the agent posts goes to the chat's newest part.
 
 #![allow(
     clippy::unwrap_used,
@@ -228,6 +229,39 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         record: String::new(),
     };
     written(&member, &chat_route, chat_document.save()).await;
+    // Its messages fill parts: the newest the workspace holds is part 1,
+    // which a device holding no part asks for by the chain's head.
+    let channel_id = chat::projection::read(&chat_document)
+        .channel_rows()
+        .into_iter()
+        .find(|channel| channel.name == MEMBER_CHANNEL)
+        .expect("the member's channel")
+        .id
+        .as_str()
+        .to_owned();
+    // Part 1, as a member's window starts it in this workspace's chat.
+    let member_records = support::scratch_dir();
+    let store = ui::record::RecordOwners::new(member_records.path().to_owned())
+        .open(CHAT, &workspace)
+        .unwrap();
+    let base = std::rc::Rc::new(chat::demo::Workspace::of(chat_document.clone()).read());
+    let chain = ui::framework::Chain::<chat::parts::ChatPart>::detached_in(
+        store,
+        <chat::ChatShell as ui::framework::ResourceApp>::ID,
+        "member",
+        move || std::rc::Rc::clone(&base),
+    )
+    .unwrap();
+    chain
+        .write_start(1, &chat::demo::demo_part("member"))
+        .unwrap();
+    let newest = chain.part_bytes(1).expect("part 1 is held");
+    let part_route = |index: u64| DocumentRoute {
+        app_id: CHAT.into(),
+        cluster_id: workspace.clone(),
+        record: chat::parts::part(index).route().to_owned(),
+    };
+    written(&member, &part_route(1), newest).await;
 
     // The agent: its own device under the owner, delegated the workspace and
     // the two apps; its model's plan opens what the task names.
@@ -347,6 +381,62 @@ async fn an_agent_waits_for_a_public_workspaces_records_and_never_founds_them() 
         founded <= 1,
         "the agent founded a chat of its own in the workspace's: it writes only \
          its own introduction there ({founded} documents)"
+    );
+
+    // A message the agent posts goes to the chat's newest part, which it
+    // asked the workspace for, never to a first part of its own.
+    let post = held
+        .survey()
+        .into_iter()
+        .map(|descriptor| descriptor.address)
+        .find(|address| address.action == "post")
+        .expect("the chat offers to post");
+    let arguments = serde_json::json!({
+        "channel": channel_id, "text": "the agent's message"
+    });
+    let arguments = arguments.as_object().unwrap().clone();
+    let _ = member.drain();
+    wait_for("the agent's message posted", || {
+        let posted = agent.invoke(&chat_route, &post, &arguments);
+        agent.pump();
+        async move { posted.ok().map(drop) }
+    })
+    .await;
+    let parts_written = |events: Vec<PeerEvent>| -> Vec<String> {
+        events
+            .into_iter()
+            .filter_map(|event| match event {
+                PeerEvent::Document(document)
+                    if document.author == agent_key
+                        && chat::parts::part_index(&ui::record::RecordId::parse(
+                            &document.route.record,
+                        )?)
+                        .is_some() =>
+                {
+                    Some(document.route.record)
+                }
+                _ => None,
+            })
+            .collect()
+    };
+    let mut written_parts = Vec::new();
+    // One written into a part of the agent's own never reaches the member,
+    // who follows the chat's newest part.
+    wait_for(
+        "the agent's message to reach the member in the newest part",
+        || {
+            agent.pump();
+            written_parts.extend(parts_written(member.drain()));
+            let done = !written_parts.is_empty();
+            async move { done.then_some(()) }
+        },
+    )
+    .await;
+    assert!(
+        written_parts
+            .iter()
+            .all(|record| *record == part_route(1).record),
+        "the agent wrote into a part other than the chat's newest: {written_parts:?}"
     );
 
     // The plans are the two the tasks asked for: the second task was not

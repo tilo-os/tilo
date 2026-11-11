@@ -697,6 +697,10 @@ impl AgentParticipant {
                 }
                 self.ready = true;
                 self.when_opened = records_when_opened;
+                let held: Vec<DocumentRoute> = self.apps.keys().cloned().collect();
+                for route in &held {
+                    self.ask_workspace_through(route);
+                }
                 if self.control.status() == AgentStatus::Starting {
                     self.control.set_status(AgentStatus::Waiting);
                 }
@@ -1924,6 +1928,7 @@ impl AgentParticipant {
                 tracing::warn!(%error, "agent: a part's change could not be committed");
             }
         }
+        self.ask_wanted();
     }
 
     /// Records of the workspace the agent has seen but not opened.
@@ -2016,6 +2021,7 @@ impl AgentParticipant {
             self.peer.publish(route.clone(), mutation)?;
         }
         self.apps.insert(route.clone(), app);
+        self.ask_workspace_through(&route);
         self.hold_waiting_parts(&route);
         self.introduce_in_chat(&route);
         self.generation = self.generation.wrapping_add(1);

@@ -729,6 +729,11 @@ impl<P: Chained> ChainState<P> {
     /// one was.
     fn look(&self) -> bool {
         let looked = self.workspace.store.kept_revision();
+        // Holding no part, the chain asks for its head, should its store have
+        // come to read records through the workspace since it opened.
+        if self.parts.borrow().is_empty() {
+            let _ = self.workspace.store.awaits_chain_head(&self.chain);
+        }
         let head = self.parts.borrow().keys().next_back().copied();
         // Only the newest is the head; the parts between are opened when
         // someone reads back to them.

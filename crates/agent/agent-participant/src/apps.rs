@@ -784,6 +784,25 @@ impl Replica {
         self.view.beside(record).is_some()
     }
 
+    /// Take this replica's records to come from its workspace's hosts, which
+    /// send a public workspace's records only once they are asked for: a
+    /// chain it holds no part of asks for its head, and writes to it wait
+    /// for the answer ([`Self::wanted_records`]).
+    pub fn ask_workspace_for_missing(&self) {
+        self.view.ask_workspace_for_missing();
+    }
+
+    /// What this replica's records ask the workspace's hosts for.
+    #[must_use]
+    pub fn wanted_records(&self) -> Vec<RecordId> {
+        self.view.wanted_records()
+    }
+
+    /// The workspace's hosts hold none of `record`, which this replica asked for.
+    pub fn workspace_answered(&mut self, record: RecordId) {
+        self.view.workspace_answered(record);
+    }
+
     /// The records held beside this one ([`Self::keeps_beside`]), by id.
     #[must_use]
     pub fn records_beside(&self) -> Vec<RecordId> {

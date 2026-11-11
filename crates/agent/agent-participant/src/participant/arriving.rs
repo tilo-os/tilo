@@ -19,7 +19,8 @@ impl AgentParticipant {
     /// host sent `frames` of it, and none means the workspace holds none of
     /// it, so it is the agent's to make ([`Self::record_on_its_way`]).
     pub(super) fn record_answered(&mut self, route: DocumentRoute, frames: u32) {
-        if !self.asked_records.remove(&route) {
+        // Answered once: it is not asked again, whatever the answer.
+        if !self.asked_records.contains(&route) {
             return;
         }
         if frames == 0 {
@@ -28,7 +29,65 @@ impl AgentParticipant {
                 record = %route.record,
                 "agent: the workspace holds no such record"
             );
+            // What a held record asked for of what it keeps beside it (a
+            // chain's head or part) is told to it.
+            if let Some(record) = ui::record::RecordId::parse(&route.record) {
+                for (held, app) in &self.apps {
+                    if held.app_id == route.app_id
+                        && let Err(error) = app.workspace_answered(&record)
+                    {
+                        tracing::warn!(%error, "agent: a record was not told the workspace's answer");
+                    }
+                }
+            }
             self.absent_records.insert(route);
+        }
+    }
+
+    /// Have the record held at `route` read what it lacks through the
+    /// workspace, in a workspace that sends records when they are opened:
+    /// a chain it holds no part of then asks for its head, and its writes
+    /// wait for the answer, rather than starting a part beside the chain's
+    /// newest ([`Self::ask_wanted`] asks for what it wants).
+    pub(super) fn ask_workspace_through(&mut self, route: &DocumentRoute) {
+        if !self.when_opened {
+            return;
+        }
+        let Some(app) = self.apps.get(route) else {
+            return;
+        };
+        if let Err(error) = app.ask_workspace_for_missing() {
+            tracing::warn!(%error, "agent: a record does not read through the workspace");
+        }
+        self.ask_wanted();
+    }
+
+    /// Ask the host for every record a held record wants of the workspace
+    /// (a chain's head, an earlier part), once each.
+    pub(super) fn ask_wanted(&mut self) {
+        if !self.when_opened {
+            return;
+        }
+        let wanted: Vec<DocumentRoute> = self
+            .apps
+            .iter()
+            .flat_map(|(held, app)| {
+                app.wanted_records()
+                    .into_iter()
+                    .map(|record| DocumentRoute {
+                        app_id: held.app_id.clone(),
+                        cluster_id: held.cluster_id.clone(),
+                        record: record.route().to_owned(),
+                    })
+            })
+            .collect();
+        for route in wanted {
+            if self.absent_records.contains(&route) || !self.asked_records.insert(route.clone()) {
+                continue;
+            }
+            if let Err(error) = self.peer.open_route(route) {
+                tracing::warn!(%error, "agent: a record the workspace may hold was not asked for");
+            }
         }
     }
 
