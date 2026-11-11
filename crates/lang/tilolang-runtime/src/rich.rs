@@ -107,6 +107,18 @@ fn projects(block: &BlockView) -> bool {
         .any(|mark| mark.name == PROJECTION && mark.start == 0 && mark.end == len)
 }
 
+/// Whether `block` is the empty paragraph a line break left open, and nothing more: the place
+/// the next line starts. Text continues it; a block of its own (an embed) takes it, since the
+/// break already ended the paragraph before it, while a paragraph somebody left empty (two line
+/// breaks) stands on its own and the block comes after it.
+fn left_open(block: &BlockView) -> bool {
+    block.kind == "paragraph"
+        && block.text.trim().is_empty()
+        && block.marks.is_empty()
+        && block.attrs.is_empty()
+        && block.children.is_empty()
+}
+
 /// The paragraph `b` as one reader reads it ([`RichValue::read_text`]).
 fn read_block(
     b: &BlockView,
@@ -244,61 +256,75 @@ impl RichValue {
         out
     }
 
-    /// Append `label` as a run referring to `to`, after the text so far, in the last paragraph
-    /// (a new one when there is none).
-    pub fn push_reference(&mut self, label: &str, to: &Reference) {
-        if self.blocks.is_empty() {
+    /// The paragraph more text continues: the last one, or a new one when there is none or the
+    /// last is a block of its own (an embed), which text never runs on into.
+    fn open_paragraph(&mut self) -> Option<&mut BlockView> {
+        if self.blocks.last().is_none_or(projects) {
             self.blocks.push(paragraph(""));
         }
-        let Some(last) = self.blocks.last_mut() else {
+        self.blocks.last_mut()
+    }
+
+    /// Append `text` as a run of the paragraph the text continues ([`Self::open_paragraph`]),
+    /// named by `mark` when it is more than words.
+    fn push_run(&mut self, text: &str, mark: Option<(&str, MarkValue)>) {
+        let Some(last) = self.open_paragraph() else {
             return;
         };
         let start = last.text.chars().count();
-        last.text.push_str(label);
+        last.text.push_str(text);
         let end = last.text.chars().count();
-        if start < end {
+        if let Some((name, value)) = mark
+            && start < end
+        {
             last.marks.push(MarkSpan {
                 start,
                 end,
-                name: MENTION.to_owned(),
-                value: MarkValue::Str(to.mark_value()),
+                name: name.to_owned(),
+                value,
             });
         }
+    }
+
+    /// Append `block`, which is a block of its own (an embed): it takes the place of the empty
+    /// paragraph a line break left open ([`left_open`]), since that break already ended the
+    /// paragraph it followed.
+    fn push_own_block(&mut self, block: BlockView) {
+        match self.blocks.last_mut() {
+            Some(last) if left_open(last) => *last = block,
+            _ => self.blocks.push(block),
+        }
+    }
+
+    /// Append `label` as a run referring to `to`, after the text so far, in the last paragraph
+    /// (a new one when there is none).
+    pub fn push_reference(&mut self, label: &str, to: &Reference) {
+        self.push_run(label, Some((MENTION, MarkValue::Str(to.mark_value()))));
     }
 
     /// Append the moment `at` (RFC 3339) as a run every reader reads in their own zone and
     /// language (`tilo_doc::inline_time`); the run is the moment as written, for a reader that
     /// shows text as it is.
     pub fn push_time(&mut self, at: &str) {
-        if self.blocks.is_empty() {
-            self.blocks.push(paragraph(""));
-        }
-        let Some(last) = self.blocks.last_mut() else {
-            return;
-        };
-        let start = last.text.chars().count();
-        last.text.push_str(at);
-        let end = last.text.chars().count();
-        if start < end {
-            last.marks.push(MarkSpan {
-                start,
-                end,
-                name: tilo_doc::inline_time::MARK.to_owned(),
-                value: MarkValue::Str(
+        self.push_run(
+            at,
+            Some((
+                tilo_doc::inline_time::MARK,
+                MarkValue::Str(
                     tilo_doc::inline_time::InlineTime {
                         at: at.to_owned(),
                         show: tilo_doc::inline_time::Show::default(),
                     }
                     .mark_value(),
                 ),
-            });
-        }
+            )),
+        );
     }
 
     /// Append `label` as a paragraph of its own projecting `to` (an embed): what a card of it
     /// shows where the text is drawn, opening it.
     pub fn push_projection(&mut self, label: &str, to: &Reference) {
-        self.blocks.push(BlockView {
+        self.push_own_block(BlockView {
             id: String::new(),
             kind: "paragraph".to_owned(),
             text: label.to_owned(),
@@ -315,25 +341,31 @@ impl RichValue {
 
     /// Append `other` with its formatting: its first paragraph continues the last one, the
     /// rest follow it. A paragraph that is one projection (an embed) is a block of its own, so
-    /// it never continues the paragraph before it.
+    /// it never continues the paragraph before it, and text never runs on into it.
     pub fn push_rich(&mut self, other: &Self) {
         let mut blocks = other.blocks.iter();
-        let first = blocks.next();
-        match (first, self.blocks.last_mut()) {
-            (Some(first), Some(last)) if !projects(first) => {
-                let shift = last.text.chars().count();
-                last.text.push_str(&first.text);
-                last.marks.extend(first.marks.iter().map(|m| MarkSpan {
-                    start: m.start.saturating_add(shift),
-                    end: m.end.saturating_add(shift),
-                    ..m.clone()
-                }));
-            }
-            (Some(first), _) => self.blocks.push(BlockView {
-                id: String::new(),
-                ..first.clone()
-            }),
-            (None, _) => {}
+        let Some(first) = blocks.next() else {
+            return;
+        };
+        let own = BlockView {
+            id: String::new(),
+            ..first.clone()
+        };
+        if projects(first) {
+            self.push_own_block(own);
+        } else if self.blocks.is_empty() {
+            self.blocks.push(own);
+        } else {
+            let Some(last) = self.open_paragraph() else {
+                return;
+            };
+            let shift = last.text.chars().count();
+            last.text.push_str(&first.text);
+            last.marks.extend(first.marks.iter().map(|m| MarkSpan {
+                start: m.start.saturating_add(shift),
+                end: m.end.saturating_add(shift),
+                ..m.clone()
+            }));
         }
         self.blocks.extend(blocks.map(|b| BlockView {
             id: String::new(),
@@ -341,14 +373,14 @@ impl RichValue {
         }));
     }
 
-    /// Append `text`, unformatted, to the last paragraph; a line break starts a new one.
+    /// Append `text`, unformatted, to the last paragraph; a line break starts a new one. Text a
+    /// paragraph ends with (`"…\n"`) leaves the next line open: the paragraph after it holds
+    /// only what comes next, and a block of its own takes its place rather than standing after
+    /// an empty one.
     pub fn push_text(&mut self, text: &str) {
         let mut lines = text.split('\n');
         if let Some(first) = lines.next() {
-            match self.blocks.last_mut() {
-                Some(last) => last.text.push_str(first),
-                None => self.blocks.push(paragraph(first)),
-            }
+            self.push_run(first, None);
         }
         for line in lines {
             self.blocks.push(paragraph(line));

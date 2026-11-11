@@ -408,6 +408,49 @@ mod cases {
     }
 
     #[test]
+    fn a_line_break_before_a_card_opens_its_place_and_keeps_an_empty_line_a_person_left() {
+        let b = Workspace::on(&AmStore::new(), None);
+        let task = b.task("Fix the build");
+        let texts = |post: &ResourceRef| {
+            b.body(post)
+                .blocks
+                .iter()
+                .map(|block| block.text.clone())
+                .collect::<Vec<String>>()
+        };
+        let post = returned_ref(b.call(
+            "embed_under_line",
+            vec![Value::resource(&b.board), Value::resource(&task)],
+        ));
+        assert_eq!(
+            texts(&post),
+            ["What to take to the market:", "Fix the build"],
+            "the break ends the paragraph, so the card stands where the next line starts"
+        );
+        // A card of the task, and nothing between it and the line it stands under.
+        let body = b.body(&post);
+        assert_eq!(body.blocks.len(), 2, "no empty paragraph: {body:?}");
+        assert!(
+            !body.blocks[1].id.is_empty(),
+            "the card is stored as a block"
+        );
+        assert_eq!(
+            body.projections().len(),
+            1,
+            "the card projects the task: {body:?}"
+        );
+        let blank = returned_ref(b.call(
+            "embed_after_blank_line",
+            vec![Value::resource(&b.board), Value::resource(&task)],
+        ));
+        assert_eq!(
+            texts(&blank),
+            ["What to take to the market:", "", "Fix the build"],
+            "an empty line a person typed stands, and the card comes under it"
+        );
+    }
+
+    #[test]
     fn anchors_resolve_to_the_paragraphs_they_cite() {
         let b = Workspace::on(&AmStore::new(), None);
         let post = b.say("Intro\nDetails\nOutro");

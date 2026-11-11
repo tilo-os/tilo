@@ -87,6 +87,17 @@ action embed(p: Post, t: Task) {
     p.body = RichText(p.body, RichText.embed(t))
 }
 
+/// Posts a line and a card of `t` under it: the line's break ends the paragraph, so the card
+/// starts the next one.
+action embed_under_line(b: Board, t: Task) -> Post {
+    b.posts.insert(Post(body: RichText("What to take to the market:\n", RichText.embed(t))))
+}
+
+/// Posts a line, the empty line a person left under it, and a card of `t` below that.
+action embed_after_blank_line(b: Board, t: Task) -> Post {
+    b.posts.insert(Post(body: RichText("What to take to the market:\n\n", RichText.embed(t))))
+}
+
 /// Posts a Markdown document as its body.
 action import_body(b: Board, markdown: Text) -> Post {
     b.posts.insert(Post(body: RichText.from_markdown(markdown)))
