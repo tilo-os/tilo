@@ -13,7 +13,7 @@
 //! messages the deployed Lounge holds. The same agent then posts into that
 //! chat, and into one holding nothing, and the two are compared.
 
-use super::resource_support::{admit_person, on_messages, open_admitted_peer};
+use super::resource_support::{admit_person, open_admitted_peer};
 use super::{
     ActionAddress, ActionHostError, Browser, DeviceCapabilities, DocumentRoute, InvokeArgument,
     ReceiptStatus, common, enrol, record_provider, start,
@@ -190,8 +190,7 @@ async fn a_post_costs_the_same_however_long_the_chat_has_run() {
 
     // The chat grown to the Lounge's size: one part, written as a page of the
     // workspace starts it, holding the messages the deployed Lounge holds.
-    let mut page =
-        Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
+    let page = Browser::open_workspace(&hosted, &owner_device, &host, &workspace.workspace).await;
     let mut source = common::open_in(
         &workspace.workspace,
         "so.tilo.chat",
