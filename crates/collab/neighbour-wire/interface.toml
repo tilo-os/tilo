@@ -23,7 +23,7 @@ sources = [
     "crates/collab/neighbour-wire/src/offer.rs",
     "crates/collab/neighbour-wire/src/colorimetry.rs",
     "crates/collab/neighbour-wire/src/hdr_metadata.rs",
-    "crates/collab/neighbour-wire/src/record_sync.rs",
+    "crates/collab/actions/src/record_sync.rs",
     "crates/collab/neighbour-wire/src/retention.rs",
     "crates/collab/neighbour-wire/src/unit_chain.rs",
     "crates/collab/tilo-user-identity/src/cert.rs",
