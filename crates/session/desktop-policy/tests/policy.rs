@@ -781,8 +781,11 @@ fn a_floated_windows_cover_is_where_the_desk_draws_it() {
     assert_eq!(covers.len(), 1, "one window floats: {covers:?}");
     let (window, cover) = covers[0];
     assert_eq!(window, 2, "the cover is of the window that floats");
+    // A window an app opens floating stands as a card beside the window it
+    // opened next to: the cover is that card and what the desk draws round it.
+    let (card_width, card_height) = ui::widget::FLOAT_CARD_SIZE;
     assert_eq!(
-        (cover.width() > 640.0, cover.height() > 480.0),
+        (cover.width() > card_width, cover.height() > card_height),
         (true, true),
         "the whole of its bar and body and the lift it stands on, as the desk draws it: {cover:?}"
     );
