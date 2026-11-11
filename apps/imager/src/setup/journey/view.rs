@@ -1408,7 +1408,8 @@ impl InstallerPreview {
             let mut notice = page::related();
             if self.demo {
                 notice = notice.push(Box::new(
-                    ui::widget::Banner::info(t("installer-demo-notice"))
+                    ui::widget::Banner::info(t("installer-demo-notice-title"))
+                        .with_message(t("installer-demo-notice-body"))
                         .with_id("installer.demo-notice"),
                 ));
             }

@@ -594,21 +594,31 @@ fn internal_row(state: &InternalProjection) -> LiveRow {
 }
 
 fn hardware_row(hardware: &HardwareProjection) -> LiveRow {
+    let model = hardware
+        .model
+        .clone()
+        .unwrap_or_else(|| super::strings::t("installer-hardware-unknown-model"));
+    let summary = super::strings::t_args(
+        if hardware.blocking {
+            "installer-hardware-summary-blocking"
+        } else {
+            "installer-hardware-summary"
+        },
+        &[
+            ("supported", hardware.supported.into()),
+            ("limited", hardware.limited.into()),
+            ("unsupported", hardware.unsupported.into()),
+            ("unverified", hardware.unverified.into()),
+        ],
+    );
     let mut row = LiveRow::new(
         format!("{SETUP_ROW_ID}.hardware"),
         "imager.setup.hardware",
-        "Hardware compatibility",
+        model,
     )
     .presentation(ResourcePresentation {
-        detail: Some(format!(
-            "{}: {} supported, {} limited, {} unsupported, {} unverified.",
-            hardware.model.as_deref().unwrap_or("Unknown model"),
-            hardware.supported,
-            hardware.limited,
-            hardware.unsupported,
-            hardware.unverified,
-        )),
-        badge: Some("Hardware".into()),
+        detail: Some(summary),
+        badge: None,
         preview: None,
     });
     for component in &hardware.components {
@@ -616,11 +626,14 @@ fn hardware_row(hardware: &HardwareProjection) -> LiveRow {
             LiveRow::new(
                 format!("{SETUP_ROW_ID}.hardware.{}", component.kind),
                 "imager.setup.hardware.component",
-                format!("{}: {}", component.kind, component.status),
+                super::strings::t(&format!("installer-hardware-component-{}", component.kind)),
             )
             .presentation(ResourcePresentation {
                 detail: (!component.name.is_empty()).then(|| component.name.clone()),
-                badge: Some(component.status.into()),
+                badge: Some(super::strings::t(&format!(
+                    "installer-hardware-state-{}",
+                    component.status
+                ))),
                 preview: None,
             }),
         );
@@ -637,14 +650,18 @@ pub fn row(state: &SetupProjection) -> LiveRow {
         "desktop" => "Tilo Desktop",
         _ => "Full Tilo",
     };
-    let mut root = LiveRow::new(SETUP_ROW_ID, "imager.setup", "Guided Tilo setup")
-        .presentation(ResourcePresentation {
-            detail: Some(format!("Review, {experience}")),
-            badge: Some("Review".into()),
-            preview: None,
-        })
-        .row(internal_row(&state.internal))
-        .row(super::desktop_journey::row(&state.desktop));
+    let mut root = LiveRow::new(
+        SETUP_ROW_ID,
+        "imager.setup",
+        super::strings::t("imager-setup-resource-root"),
+    )
+    .presentation(ResourcePresentation {
+        detail: Some(format!("Review, {experience}")),
+        badge: Some(super::strings::t("imager-setup-badge-review")),
+        preview: None,
+    })
+    .row(internal_row(&state.internal))
+    .row(super::desktop_journey::row(&state.desktop));
     if let Some(hardware) = &state.hardware {
         root = root.row(hardware_row(hardware));
     }

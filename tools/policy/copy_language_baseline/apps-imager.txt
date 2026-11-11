@@ -1,17 +1,2 @@
 # Copy that still breaks a rule of tools/policy/check_copy_language.py.
 # Fix a message and delete its line; nothing may be added.
-en-US imager-folder-cloud-unavailable narration
-en-US imager-setup-internal-plan-free narration
-en-US installer-accounts-dav-saved-intro narration
-en-US installer-migration-state-unavailable narration
-en-US installer-original-boot-step narration
-en-US installer-service-source-needs-access instruction
-en-US installer-accounts-intro glyph
-en-US installer-demo-notice glyph
-en-US installer-logins-select-group glyph
-en-US installer-service-source-discord glyph
-en-US installer-service-source-discord-origin glyph
-en-US installer-service-source-slack glyph
-en-US installer-windows-budget glyph
-en-US installer-windows-category-summary glyph
-en-US installer-windows-path glyph

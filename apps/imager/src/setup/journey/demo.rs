@@ -52,9 +52,11 @@ mod tests {
         app.with_widget::<super::super::InstallerPreview, _>(|preview| {
             let notice = super::super::visual_tests::control(preview, "installer.demo-notice")
                 .expect("every demo page must identify its example data");
+            let accessibility = notice.accessibility().unwrap();
+            assert_eq!(accessibility.name.as_deref(), Some("Preview only"));
             assert_eq!(
-                notice.accessibility().unwrap().name.as_deref(),
-                Some("Preview only · Example data. Nothing will be installed or connected.")
+                accessibility.description.as_deref(),
+                Some("Example data. Nothing will be installed or connected.")
             );
             let rect = notice.get_rect();
             assert!(rect.width() > 0.0 && rect.height() > 0.0, "{rect:?}");

@@ -9,18 +9,31 @@ installer-windows-choose-outlook = Outlook-Archive oder lokale Speicher auswähl
 installer-windows-choose-steam = Steam-Daten auswählen
 installer-windows-choose-steam-library = Eine weitere Steam-Bibliothek auswählen
 installer-windows-choose-other = Einen anderen Ordner auswählen
-installer-windows-budget = Bekannte Größen: kopieren { $copy }; an der Quelle behalten { $retain }; ausdrücklich ausgeschlossen { $excluded }; lokal nicht verfügbar { $unavailable }
+installer-windows-budget-copy = Kopieren
+installer-windows-budget-retain = Am Ursprungsort belassen
+installer-windows-budget-excluded = Ausgeschlossen
+installer-windows-budget-unavailable = Lokal nicht verfügbar
 installer-windows-incomplete = Diese Bestandsaufnahme ist unvollständig. Nicht verfügbare, nicht unterstützte oder nicht lesbare Daten bleiben an der Quelle. Ersetze Windows nicht auf Grundlage dieses Exports.
 installer-windows-grant-library = Die verwiesene Bibliothek prüfen: { $path }
-installer-windows-category-summary = { $category }: { $count } Einträge, { $size } bekannt ({ $unknown } Größen unbekannt); { $unavailable } nicht verfügbar. { $decision }
 installer-windows-empty = In diesem ausgewählten Ordner wurden keine Dateien gefunden.
+installer-windows-category-entries = { $count ->
+    [one] 1 Eintrag
+   *[other] { $count } Einträge
+}
+installer-windows-category-unknown-sizes = { $count ->
+    [one] 1 Größe unbekannt
+   *[other] { $count } Größen unbekannt
+}
+installer-windows-category-unavailable = { $count ->
+    [one] 1 nicht verfügbar
+   *[other] { $count } nicht verfügbar
+}
 installer-windows-open-source = Quellordner öffnen
 installer-windows-open-pending = Ein Quellordner wird bereits geöffnet.
 installer-windows-open-failed = Der Quellordner konnte nicht geöffnet werden. Prüfe, ob er noch verfügbar ist, und versuche es erneut.
 installer-windows-gaps = { $count } Teile konnten nicht vollständig geprüft werden. Behalte die Originale.
 installer-windows-show-paths = Quellpfade prüfen
 installer-windows-hide-paths = Quellpfade ausblenden
-installer-windows-path = { $path }: { $size }; { $availability }
 installer-windows-size-unknown = Größe unbekannt
 installer-windows-availability-local = lokal verfügbar
 installer-windows-availability-placeholder = nur online; wird nicht kopiert
@@ -132,7 +145,7 @@ imager-import-error-connected-unavailable = Verbundene Ordner sind auf diesem Co
 imager-import-error-folder-mode-unknown = Wähle für diesen Ordner „Kopieren“ oder „Später“
 imager-import-error-stale-operation = Dieser Ordnerimport ist nicht mehr verfügbar
 imager-import-error-stale-folder = Diese gespeicherte Ordnerauswahl ist nicht mehr verfügbar
-imager-import-error-command-refused = Der Ordnerimport konnte nicht fortgesetzt werden. Öffne auf diesem Computer den Importstand (read-status), um Details zu sehen
+imager-import-error-command-refused = Der Ordnerimport konnte nicht fortgesetzt werden. Lies den Importstand für Details.
 imager-import-detail-root = { $operations ->
         [one] Eine Kopie
        *[other] { $operations } Kopien
@@ -333,13 +346,13 @@ imager-user-account-username = Den Benutzernamen des ersten Benutzers geändert
 installer-preview-destination-heading = Willkommen bei Tilo
 installer-preview-destination-intro = Wo möchtest du es installieren?
 installer-preview-computer-title = Auf diesem Computer
-installer-preview-computer-body = Füge Tilo, das System, auf dem deine Apps laufen, neben deinem aktuellen System hinzu. Du prüfst die Änderungen am Laufwerk vor der Installation.
+installer-preview-computer-body = Installiere Tilo neben deinem aktuellen System. Du prüfst die Änderungen am Laufwerk vor der Installation.
 installer-preview-computer-usb-body = Die direkte Installation ist in diesem Build nicht aktiviert. Du kannst stattdessen ein USB-Installationsmedium erstellen.
-installer-native-full-os-body = Prüfe die Installation neben Windows ohne USB-Laufwerk. Die Verfügbarkeit hängt von diesem Computer und diesem Build ab.
+installer-native-full-os-body = Installiere neben Windows, ohne USB-Laufwerk. Du prüfst die Änderungen am Laufwerk vor der Installation.
 installer-preview-another-title = Auf einem anderen Computer
 installer-preview-another-body = Erstelle ein USB-Installationsmedium für einen anderen Computer. Du brauchst ein USB-Laufwerk, das gelöscht werden darf; der andere Computer muss davon starten können.
 installer-preview-target-heading = Auf welchem Computer soll Tilo laufen?
-installer-preview-target-intro = Benenne diesen Computer oder importiere den Hardwarebericht, den er erstellt hat. Dieser Computer kann dessen Laufwerke, Starteinstellungen und Schutz nicht prüfen; das Installationsprogramm auf jenem Computer tut das, bevor sich etwas ändert.
+installer-preview-target-intro = Benenne diesen Computer oder importiere den Hardwarebericht, den er erstellt hat. Das Installationsprogramm auf jenem Computer prüft Laufwerke, Start und Schutz, bevor sich etwas ändert.
 installer-preview-target-identity-heading = Der andere Computer
 installer-preview-target-manufacturer-label = Hersteller
 installer-preview-target-model-label = Modell
@@ -396,7 +409,7 @@ installer-hardware-summary = { $supported } unterstützt, { $limited } eingeschr
 installer-hardware-summary-blocking = { $supported } unterstützt, { $limited } eingeschränkt, { $unsupported } nicht unterstützt und { $unverified } nicht geprüft. Eine Komponente, ohne die der Schreibtisch nicht startet, wird nicht unterstützt; die Installation kann erst weitergehen, wenn das geklärt ist.
 installer-hardware-summary-declared = Ein Modellname zeigt nicht, ob Tilo auf diesem Computer läuft. Benenne Hersteller, Modell und Variante oder Platine, oder importiere den dort erstellten Hardwarebericht.
 installer-hardware-summary-imported-check = Das Installationsprogramm auf diesem Computer prüft Start, Änderungen am Laufwerk und Schutz erneut, bevor es handelt.
-installer-hardware-summary-observation = Das laufende System zeigt, welche Geräte es gibt und welche Treiber es gebunden hat; die gewählte Tilo-Version wurde dafür nicht geprüft.
+installer-hardware-summary-observation = Das laufende System verwendet diese Geräte. Die gewählte Tilo-Version wurde dafür nicht geprüft.
 installer-hardware-scope-observation = Im laufenden System beobachtet, nicht mit der Tilo-Version abgeglichen.
 installer-hardware-needs-attention = Braucht Aufmerksamkeit
 installer-hardware-working = Funktioniert
@@ -510,7 +523,7 @@ installer-preview-purpose-intro = Dasselbe Tilo OS, mit Voreinstellungen für se
 installer-preview-purpose-computer-title = Computer
 installer-preview-purpose-computer-body = Für den Alltag. Lege in den Energieeinstellungen fest, wann er in den Ruhezustand geht; deine zugelassenen Geräte synchronisieren, solange er wach ist.
 installer-preview-purpose-server-title = Immer erreichbarer Server
-installer-preview-purpose-server-body = Läuft auch im Leerlauf weiter, damit deine zugelassenen Geräte synchronisieren können. Bildschirmabschaltung, Sperre, Deckel- und Akkuschutz bleiben aktiv. Verwende eine zuverlässige Stromversorgung; dies erlaubt keinen Fernzugriff und schaltet keine Suche nach Geräten in der Nähe ein.
+installer-preview-purpose-server-body = Läuft auch im Leerlauf weiter, damit deine zugelassenen Geräte synchronisieren können. Bildschirmabschaltung, Sperre, Deckel- und Akkuschutz bleiben aktiv. Verwende eine zuverlässige Stromversorgung.
 installer-preview-devices-heading = Diesen Computer benennen
 installer-preview-devices-intro = Unter diesem Namen erkennen deine anderen Tilo-Geräte diesen Computer.
 installer-preview-device-name-label = Computername
@@ -671,7 +684,8 @@ installer-preview-identity-invalid-color = Wähle eine gültige Farbe für dein 
 installer-preview-invalid-choice = Diese Auswahl ist auf dieser Seite nicht verfügbar.
 installer-preview-wrong-page = Diese Aktion ist auf der aktuellen Seite nicht verfügbar.
 installer-demo-unavailable = Diese Aktion ist in der Vorführung nicht verfügbar.
-installer-demo-notice = Nur Vorschau mit Beispieldaten. Es wird nichts installiert oder verbunden.
+installer-demo-notice-title = Nur Vorschau
+installer-demo-notice-body = Beispieldaten. Es wird nichts installiert oder verbunden.
 installer-preview-at-start = Du bist am Anfang der Einrichtung.
 installer-preview-finished = Die Vorschau ist abgeschlossen. Du kannst einen anderen Weg ausprobieren.
 installer-preview-avatar-change = Bild ändern…
@@ -697,7 +711,7 @@ installer-preview-storage-existing = Dein aktuelles System
 installer-preview-storage-tilo = Tilo
 installer-preview-storage-temporary = Vorübergehender Platz für das Installationsprogramm
 installer-preview-storage-shrink = Die Partition deines aktuellen Systems wird in der Größe verändert. Ihre Dateien bleiben, wo sie sind.
-installer-preview-storage-shortfall = Diese Installation braucht { $needed }; verfügbar sind { $available }. Lass die Originaldateien und das System unverändert. Wähle eine kleinere Größe für Tilo, falls angeboten, oder verwende ein USB-Installationsmedium mit einem anderen Ziellaufwerk. Wenn du Dateien zuerst auf vorhandenen externen Speicher verschiebst, prüfe die Kopie unabhängig, bevor du Platz freigibst. Du kannst jetzt beenden, ohne zu installieren.
+installer-preview-storage-shortfall = Diese Installation braucht { $needed }; verfügbar sind { $available }. Wähle eine kleinere Größe für Tilo oder installiere per USB auf ein anderes Laufwerk. Wenn du Dateien zuerst auf anderen Speicher verschiebst, prüfe die Kopie, bevor du Platz freigibst. Es wurde nichts geändert.
 installer-preview-storage-unreadable = Dieses Laufwerk kann von deinem aktuellen System aus nicht vorbereitet werden. Du kannst stattdessen ein USB-Installationsmedium verwenden.
 installer-recovery-heading = In einen Wiederherstellungsordner kopieren
 installer-recovery-native-unavailable = Das überprüfte, fortsetzbare Kopieren zur Wiederherstellung ist auf diesem Rechner nicht verfügbar: Die Haltbarkeit von Verzeichniseinträgen ist hier nicht nachgewiesen. Behalte das Original und verwende den gewöhnlichen Weg über das Installationsmedium; eine Sicherung oder Wiederherstellung aus der Cloud wird nicht angenommen.
@@ -1025,10 +1039,11 @@ installer-belongings-provider-other = einen Dienst
 imager-setup-home-consumer-unavailable = Diese Tilo-Version kann deine Dateien und App-Daten nicht übernehmen. Wähle eine neuere Version, bevor du fortfährst.
 installer-service-sessions-title = Anmeldungen bei Websites
 installer-logins-source-body = Nur Anmeldungen bei Slack und Discord. Vielleicht wirst du trotzdem gebeten, dich erneut anzumelden.
-installer-logins-group-count = { $selected } von { $total } ausgewählt
-installer-logins-group-selectable-count = { $selected } von { $total } verfügbaren Anmeldungen ausgewählt
 installer-logins-group-unselectable = Keine Anmeldungen können ausgewählt werden
-installer-logins-select-group = Alle auswählen ({ $count })
+installer-logins-select-group = { $count ->
+    [one] Die 1 Anmeldung auswählen
+   *[other] Alle { $count } Anmeldungen auswählen
+}
 installer-service-sessions-body = Nimm deine Anmeldungen bei Slack oder Discord aus einem Browser mit, den du verwendest. Vielleicht musst du dich trotzdem erneut anmelden.
 installer-review-service-session-body = Vielleicht musst du dich erneut anmelden.
 installer-service-source-slack = Slack aus { $source }
@@ -1064,8 +1079,9 @@ installer-migration-state-unavailable = Deine Einrichtung konnte auf diesem Comp
 installer-migration-state-full = Auf diesem Computer ist nicht genug Platz, um deine Einrichtung zu speichern. Gib etwas Platz frei und versuche es erneut. Deine Originaldateien sind unverändert.
 imager-write-stopping = Wird sicher angehalten… Lass das Laufwerk angeschlossen, bis der Abbruch abgeschlossen ist.
 imager-write-exit-unowned = Das Ende des Abbildschreibers kann nicht überprüft werden.
-imager-write-worker-stopped = Der Abbildschreiber hat unerwartet angehalten.
+imager-write-worker-stopped = Das Schreiben auf das Laufwerk wurde unerwartet beendet. Schließe das Laufwerk wieder an, prüfe den Vorgang erneut und versuche es noch einmal.
 imager-write-worker-start-failed = Der Abbildschreiber konnte nicht starten: { $error }
+imager-write-cancelled = Vor dem Ende angehalten. Das Laufwerk ist womöglich unvollständig. Prüfe den Vorgang und versuche es erneut, bevor du es verwendest.
 installer-media-worker-stopped = Die Übertragung deiner Einrichtung hat unerwartet angehalten.
 installer-media-cleanup-failed = Die Übertragung deiner Einrichtung ist noch nicht vollständig beendet.
 installer-service-source-needs-access = In { $source } wurden verschlüsselte Websitedaten gefunden. Wähle die Quelle, damit versucht wird, sie mit dem Schlüsselbund deines aktuellen Computers zu lesen. Vielleicht musst du dich in Tilo erneut anmelden.
@@ -1245,7 +1261,7 @@ installer-online-connected-mail = Für E-Mail verbunden
 installer-online-connected-calendar = Für Kalender verbunden
 installer-online-connected = Hier verbunden
 installer-online-adopted = Hier abgeschlossene Anmeldungen werden sicher an deinen Benutzer im installierten Tilo übergeben. Für diese verbundenen Dienste musst du dich nicht erneut anmelden.
-installer-online-loading = Verbunden bedeutet, dass der Zugriff erlaubt ist, nicht dass alle Inhalte bereitstehen. Dateien und Kalender müssen beim Öffnen möglicherweise noch geladen werden.
+installer-online-loading = Verbunden heißt, dass der Zugriff erlaubt ist. Dateien und Kalender werden beim Öffnen geladen.
 installer-online-suggestions-note = Prüfe einen Vorschlag, um die bearbeitbaren Angaben unten vorauszufüllen. Wähle Dienste und melde dich hier an, um sie zu verbinden; Windows-Anmeldetokens werden nicht importiert.
 installer-online-skip-note = Du kannst die Einrichtung offline abschließen. Beim Fortfahren wird eine unvollständige Anmeldung abgebrochen; bereits hier verbundene Konten bleiben erhalten. Ohne Verbindung zu einem Dienst sind dessen Online-Dateien, E-Mails und Kalender nicht über Tilo verfügbar. Du kannst ihn nach der Installation verbinden.
 installer-hardware-unavailable = Dieser Computer sagt zu wenig über sein Modell aus, um den Kompatibilitätsbericht zu erstellen; deshalb wurde nichts an ihm geprüft.

@@ -2485,10 +2485,7 @@ impl ImagerApp {
             .filter(|last| !last.phase.is_active())
             .unwrap_or_else(|| Progress {
                 phase: JobPhase::Failed,
-                error: Some(
-                    "The writer stopped unexpectedly. Reconnect the drive, then review and retry."
-                        .into(),
-                ),
+                error: Some(crate::setup::strings::t("imager-write-worker-stopped")),
                 ..self.progress.clone()
             });
         if failed {
@@ -2502,10 +2499,7 @@ impl ImagerApp {
         // turn that race into a claim that the medium is ready to use.
         if outcome.phase == JobPhase::Success && cancelled {
             outcome.phase = JobPhase::Failed;
-            outcome.error = Some(
-                "Image writing was cancelled. The drive may be incomplete; review and retry before using it."
-                    .into(),
-            );
+            outcome.error = Some(crate::setup::strings::t("imager-write-cancelled"));
         }
         let name = self
             .source
@@ -5715,7 +5709,7 @@ mod tests {
 
             assert_eq!(app.progress.phase, JobPhase::Failed);
             assert!(app.progress.error.as_deref().is_some_and(|message| {
-                message.contains("cancelled") && message.contains("incomplete")
+                message.contains("incomplete") && message.contains("review and retry")
             }));
             assert_eq!(app.step, Step::Done);
         }

@@ -533,21 +533,24 @@ impl InstallerPreview {
         }
         if let Some(inventory) = &self.belongings.windows {
             let budget = inventory.budget();
-            content = content.push(Box::new(Text::new(&t_args(
-                "installer-windows-budget",
-                &[
-                    ("copy", ui::format::memory(budget.copy_bytes).into()),
-                    ("retain", ui::format::memory(budget.retained_bytes).into()),
-                    (
-                        "excluded",
-                        ui::format::memory(budget.explicitly_excluded_bytes).into(),
-                    ),
-                    (
-                        "unavailable",
-                        ui::format::memory(budget.unavailable_bytes).into(),
-                    ),
-                ],
-            ))));
+            content = content.push(Box::new(ui::widget::PropertyList::new(vec![
+                Property::new(
+                    t("installer-windows-budget-copy"),
+                    ui::format::memory(budget.copy_bytes),
+                ),
+                Property::new(
+                    t("installer-windows-budget-retain"),
+                    ui::format::memory(budget.retained_bytes),
+                ),
+                Property::new(
+                    t("installer-windows-budget-excluded"),
+                    ui::format::memory(budget.explicitly_excluded_bytes),
+                ),
+                Property::new(
+                    t("installer-windows-budget-unavailable"),
+                    ui::format::memory(budget.unavailable_bytes),
+                ),
+            ])));
             content = content.push(Box::new(Text::new(&t("installer-windows-backup-plan"))));
             if !budget.coverage_complete {
                 content = content.push(Box::new(Text::new(&t("installer-windows-incomplete"))));
@@ -636,23 +639,21 @@ impl InstallerPreview {
                         Decision::RetainOriginal => "retain-original",
                         Decision::Exclude => "exclude",
                     };
-                    items.push(Box::new(Text::new(&t_args(
-                        "installer-windows-category-summary",
-                        &[
-                            (
-                                "category",
-                                t(&format!("installer-windows-category-{category_id}")).into(),
-                            ),
-                            ("count", group.entries.to_string().into()),
-                            (
-                                "decision",
-                                t(&format!("installer-windows-{decision_id}")).into(),
-                            ),
-                            ("size", ui::format::memory(group.known_bytes).into()),
-                            ("unknown", group.unknown_sizes.to_string().into()),
-                            ("unavailable", group.unavailable.to_string().into()),
-                        ],
-                    ))));
+                    items.push(Box::new(Facts::new(vec![
+                        Fact::text(t_args(
+                            "installer-windows-category-entries",
+                            &[("count", group.entries.into())],
+                        )),
+                        Fact::text(ui::format::memory(group.known_bytes)),
+                        Fact::text(t_args(
+                            "installer-windows-category-unknown-sizes",
+                            &[("count", group.unknown_sizes.into())],
+                        )),
+                        Fact::text(t_args(
+                            "installer-windows-category-unavailable",
+                            &[("count", group.unavailable.into())],
+                        )),
+                    ])));
                     items.push(Box::new(Text::new(&t_args(
                         &format!("installer-windows-plan-{decision_id}"),
                         &[("destination", group.destination.clone().into())],
@@ -686,29 +687,16 @@ impl InstallerPreview {
                                     _ => "unsupported",
                                 }
                             };
-                            items.push(Box::new(Text::new(&t_args(
-                                "installer-windows-path",
-                                &[
-                                    ("path", entry.path.clone().into()),
-                                    (
-                                        "size",
-                                        entry
-                                            .bytes
-                                            .map_or_else(
-                                                || t("installer-windows-size-unknown"),
-                                                ui::format::memory,
-                                            )
-                                            .into(),
-                                    ),
-                                    (
-                                        "availability",
-                                        t(&format!(
-                                            "installer-windows-availability-{availability}"
-                                        ))
-                                        .into(),
-                                    ),
-                                ],
-                            ))));
+                            items.push(Box::new(Text::new(&entry.path)));
+                            items.push(Box::new(Facts::new(vec![
+                                Fact::text(entry.bytes.map_or_else(
+                                    || t("installer-windows-size-unknown"),
+                                    ui::format::memory,
+                                )),
+                                Fact::text(t(&format!(
+                                    "installer-windows-availability-{availability}"
+                                ))),
+                            ])));
                         }
                     }
                     for decision in ["copy", "retain-original", "exclude"] {
