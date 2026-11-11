@@ -120,6 +120,15 @@ browser the browser does the TLS, and the default is unchanged.
 `tilo-net`'s `iroh_trust` tests pin it: a relay under a local CA is
 refused at the default, and reached once the CA is in the store.
 
+## Datagrams follow the relay handshake's answer (`src/socket/transports/relay/actor.rs`)
+
+The relay actor builds its relay clients with
+`ClientBuilder::send_before_confirmed(true)` (`vendor/iroh-relay`), so the
+datagrams queued while it dialled, such as a connection's QUIC Initial, go
+out right behind the handshake's answer instead of a round trip later. A
+relay that denies the client ends the connection's stream with that error,
+and the actor dials again as it does for a lost connection.
+
 ## Upstream
 
 Prepared for an upstream issue/PR against `n0-computer/iroh` (not opened):

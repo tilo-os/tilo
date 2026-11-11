@@ -187,6 +187,7 @@ on:
       - "vendor/cosmic-text/**"
       - "vendor/genawaiter-proc-macro/**"
       - "vendor/iroh/**"
+      - "vendor/iroh-relay/**"
       - "vendor/netwatch/**"
       - "vendor/noq-udp/**"
       - "vendor/pulldown-cmark/**"

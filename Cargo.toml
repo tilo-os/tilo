@@ -1459,6 +1459,10 @@ serde_json = { path = "vendor/serde_json" }
 # kernel cancels on resume or a clock step replaces it). See each crate's
 # TILO-PATCH.md.
 iroh = { path = "vendor/iroh" }
+# A relay client sends right behind its answer to the relay's challenge
+# instead of waiting a round trip for the relay to confirm it; iroh turns that
+# on for its relay connections. See vendor/iroh-relay/TILO-PATCH.md.
+iroh-relay = { path = "vendor/iroh-relay" }
 netwatch = { path = "vendor/netwatch" }
 # A static musl build reads every packet's timestamp without panicking. See
 # vendor/noq-udp/TILO-PATCH.md.

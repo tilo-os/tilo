@@ -64,7 +64,7 @@ data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
 der-ca01ad9e24f5d932 = { package = "der", version = "0.7", default-features = false, features = ["derive", "flagset", "oid", "pem", "std"] }
 deranged = { version = "0.5", features = ["powerfmt", "serde"] }
-derive_more = { version = "2", features = ["as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from"] }
+derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "rand_core"] }
 ecdsa = { version = "0.17", features = ["algorithm", "getrandom", "pem", "std"] }
@@ -314,8 +314,8 @@ data-encoding = { version = "2" }
 der-c38e5c1d305a1b54 = { package = "der", version = "0.8", default-features = false, features = ["oid", "pem", "std"] }
 der-ca01ad9e24f5d932 = { package = "der", version = "0.7", default-features = false, features = ["derive", "flagset", "oid", "pem", "std"] }
 deranged = { version = "0.5", features = ["powerfmt", "serde"] }
-derive_more = { version = "2", features = ["as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from"] }
-derive_more-impl = { version = "2", features = ["as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from"] }
+derive_more = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from"] }
+derive_more-impl = { version = "2", features = ["add", "add_assign", "as_ref", "debug", "deref", "deref_mut", "display", "from", "into", "try_from"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
 digest-a6292c17cd707f01 = { package = "digest", version = "0.11", features = ["alloc", "mac", "oid", "rand_core"] }
 displaydoc = { version = "0.2" }

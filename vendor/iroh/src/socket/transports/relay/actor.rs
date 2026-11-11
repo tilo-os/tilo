@@ -325,7 +325,11 @@ impl ActiveRelayActor {
             dns_resolver,
         )
         .tls_client_config(tls_config)
-        .address_family_selector(move || prefer_ipv6.load(Ordering::Relaxed));
+        .address_family_selector(move || prefer_ipv6.load(Ordering::Relaxed))
+        // TILO PATCH: the first datagrams (a dial's QUIC Initial) go out right
+        // behind the relay handshake's answer, a round trip sooner. See
+        // TILO-PATCH.md, "Datagrams follow the relay handshake's answer".
+        .send_before_confirmed(true);
         if let Some(proxy_url) = proxy_url {
             builder = builder.proxy_url(proxy_url);
         }

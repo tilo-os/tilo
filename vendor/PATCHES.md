@@ -1,5 +1,16 @@
 # Patches against upstream
 
+## iroh relay handshake without its confirmation's round trip
+
+`iroh-relay` 1.0.3 is the checksum-verified registry release with one opt-in
+client change: a relay client that answered the relay's challenge sends its
+datagrams right away and reads the relay's confirmation (or denial) as its
+stream's first frame, where it waited a round trip for it. The relay server
+already reads in that order, so relays need no change. `vendor/iroh` turns it
+on for its relay actor. A page entering a workspace reaches its host a round
+trip sooner. `vendor/iroh-relay/TILO-PATCH.md` has the details and an
+upstream-ready description. Remove it once upstream releases the change.
+
 ## Rig Chat tool-name fragments
 
 `rig-core` 0.44.0 is the checksum-verified MIT registry runtime crate. Its
