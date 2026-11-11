@@ -93,3 +93,46 @@ fn the_palette_names_itself_in_the_windows_language() {
     assert_eq!(query(&palette).name.as_deref(), Some("To"));
     assert_eq!(query(&palette).description, None);
 }
+
+/// A search over what the host found is named as an app's palette names its
+/// own: the field is the search field it is, the words the empty field shows
+/// say what it searches, and a step asks in the host's own words — so a screen
+/// reader hears the same thing from the desktop's search bar.
+#[test]
+fn the_hosts_search_names_its_field_as_the_palette_does() {
+    let open = |placeholder: &str| {
+        let mut palette = ActionPalette::rows(vec![CommandEntry::new("apps", "Mail")]);
+        palette.set_query_placeholder(placeholder);
+        palette.open();
+        palette
+    };
+
+    speak("en-US");
+    let palette = open("Search apps, windows, documents and actions\u{2026}");
+    assert_eq!(query(&palette).name.as_deref(), Some("Search"));
+    assert_eq!(
+        query(&palette).description.as_deref(),
+        Some("Search apps, windows, documents and actions\u{2026}")
+    );
+
+    speak("de-DE");
+    let palette = open("Apps, Fenster, Dokumente und Aktionen durchsuchen\u{2026}");
+    assert_eq!(query(&palette).name.as_deref(), Some("Suche"));
+    assert_eq!(
+        query(&palette).description.as_deref(),
+        Some("Apps, Fenster, Dokumente und Aktionen durchsuchen\u{2026}")
+    );
+
+    // A step collecting one row's argument is asked in the row's own words,
+    // and its name is all a screen reader has to hear of it.
+    let step = ArgumentSpec {
+        prompt: "Neuer Name".to_owned(),
+        placeholder: "Zum Beispiel: Notizen".to_owned(),
+        prefill: None,
+        kind: ArgumentKind::Text,
+    };
+    let mut palette = palette;
+    palette.open_argument_step("apps", step);
+    assert_eq!(query(&palette).name.as_deref(), Some("Neuer Name"));
+    assert_eq!(query(&palette).description, None);
+}

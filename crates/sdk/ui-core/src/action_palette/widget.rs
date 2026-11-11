@@ -4,6 +4,24 @@ use super::{
     ActionPalette, Affine, ConfirmState, HashMap, ModelPath, NodeId, Point, PresenceCtx, Rect,
     Scene, Size, Style, TaffyTree, TextRenderer, Theme, Widget, WindowEvent,
 };
+use crate::widget::SearchField;
+
+/// What names the palette's field and what its description adds, whichever
+/// rows the palette is over: a step collecting an action's argument is asked
+/// in the action's own words, which a description would only repeat; a query
+/// is the search field it is, and what the query covers is its description.
+pub(crate) fn field_announcement(
+    field: &SearchField,
+    question: Option<&str>,
+) -> (String, Option<String>) {
+    match question
+        .map(|question| crate::i18n!(question))
+        .filter(|question| !question.is_empty())
+    {
+        Some(question) => (question, None),
+        None => field.query_name_and_description(),
+    }
+}
 
 impl Widget for ActionPalette {
     fn needs_redraw(&self) -> bool {
@@ -203,19 +221,17 @@ impl Widget for ActionPalette {
             && let Some(field) = self.field.accessibility()
         {
             let target = self.target("field");
-            // The query is the field it is, named by the field; what it covers
-            // stays its description. A step collecting an action's argument is
-            // asked in the action's own words, as the host-fed palette names
-            // it, and the placeholder repeating them adds nothing.
-            let field = if self.in_argument_mode() {
-                field
-                    .with_name(crate::i18n!(self.field.placeholder()))
-                    .with_optional_description(None)
-            } else {
-                field
-            };
+            // A step collecting an action's argument is asked in the action's
+            // own words; the query is the search field it is, the empty
+            // field's words saying what it covers.
+            let (name, description) = field_announcement(
+                &self.field,
+                self.in_argument_mode().then(|| self.field.placeholder()),
+            );
             children.push(
                 field
+                    .with_name(name)
+                    .with_optional_description(description)
                     .with_hashed_key(&target)
                     .with_action_target(target)
                     .with_bounds(self.field.get_rect()),
