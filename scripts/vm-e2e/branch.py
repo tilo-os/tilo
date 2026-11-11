@@ -712,11 +712,31 @@ def listed_actions(vm: TiloVm, *query: str) -> list[dict]:
     """Every row the desktop lists for `query`, page after page: a page holds at most 256 rows
     (`MAX_CATALOGUE_PAGE`), and the desk's own chrome fills most of the first."""
     keep_awake(vm)
+    for _ in range(LISTING_READS):
+        rows = read_listing(vm, query)
+        if rows is not None:
+            return rows
+    raise VmError(f"the action listing changed on each of {LISTING_READS} reads while it was paged")
+
+
+# How often a listing is read again from its first page when it moved on while paged, as it
+# does while an app that just opened publishes its actions.
+LISTING_READS = 10
+
+
+def read_listing(vm: TiloVm, query: tuple[str, ...]) -> list[dict] | None:
+    """One paged read of the listing, or `None` when it moved on between two pages
+    (`stale_cursor`): a page past the first is cut from the listing the first was."""
     rows, cursor = [], None
     for _ in range(40):
         page = ["--cursor", cursor] if cursor else []
-        listed = vm.control_json("actions", "list", *query, "--json", "--programmatic",
-                                 "--wait=8000", "--limit", "256", *page)
+        try:
+            listed = vm.control_json("actions", "list", *query, "--json", "--programmatic",
+                                     "--wait=8000", "--limit", "256", *page)
+        except VmError as exc:
+            if cursor and "stale_cursor" in str(exc):
+                return None
+            raise
         rows.extend(listed.get("actions", []))
         cursor = listed.get("next_cursor")
         if not cursor:
