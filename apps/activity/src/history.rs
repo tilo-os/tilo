@@ -61,7 +61,7 @@ fn feed(cx: &ViewCx<Filter>, nav: &Nav, query: &wire::FeedQuery, narrows: bool) 
         let mut parts = vec![filters(cx, &nav, feed, narrows)];
         let found = found(feed, &filter);
         if feed.entries.is_empty() {
-            parts.push(empty(feed));
+            parts.push(empty(feed, narrows));
         } else {
             let shown = feed.clone();
             let listed = nav.clone();
@@ -133,13 +133,16 @@ fn found(feed: &wire::Feed, filter: &Filter) -> Vec<wire::Entry> {
         .collect()
 }
 
-fn empty(feed: &wire::Feed) -> Element {
+/// The empty feed; the hint to clear filters only shows when a filter narrows it.
+fn empty(feed: &wire::Feed, narrows: bool) -> Element {
     let state = if feed.pending {
         EmptyState::new(tr("activity-history-pending")).with_icon(Icon::Clock)
-    } else {
+    } else if narrows {
         EmptyState::new(tr("activity-history-empty"))
             .with_message(tr("activity-history-empty-message"))
             .with_icon(Icon::History)
+    } else {
+        EmptyState::new(tr("activity-history-empty")).with_icon(Icon::History)
     };
     Box::new(state.with_id("activity-history-empty"))
 }

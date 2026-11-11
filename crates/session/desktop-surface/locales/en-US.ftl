@@ -272,7 +272,6 @@ activity-lens-agent-tasks = Agent tasks  { $count }
 activity-lens-unclassified = Unclassified  { $count }
 activity-provenance = Provenance
 activity-select-prompt = Select a work session or a range of actions
-activity-select-hint = See who did it, what it touched, and compare before and after.
 activity-detail-open = Open
 activity-detail-open-app = Open app
 activity-detail-compare = Compare

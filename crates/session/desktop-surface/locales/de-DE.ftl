@@ -284,7 +284,6 @@ activity-lens-agent-tasks = Agent-Aufgaben  { $count }
 activity-lens-unclassified = Nicht zugeordnet  { $count }
 activity-provenance = Herkunft
 activity-select-prompt = Wähle eine Arbeitssitzung oder einen Bereich von Aktionen
-activity-select-hint = Sieh, wer es war, was es betraf, und vergleiche vorher und nachher.
 activity-detail-open = Öffnen
 activity-detail-open-app = App öffnen
 activity-detail-compare = Vergleichen
