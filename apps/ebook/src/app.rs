@@ -6993,7 +6993,7 @@ impl BooksApp {
     fn draw_add_book_tile(&mut self, ctx: &mut PaintCtx<'_>, tile: Rect, body: Rect) {
         DropZoneFace::new("Add a book")
             .icon(Icon::Plus)
-            .message(crate::resource::CATALOG.t("ebook-drop-epub"))
+            .message(&crate::resource::CATALOG.t("ebook-drop-epub"))
             .drag_over(self.file_open.is_hovering())
             .paint(ctx, tile, 0.0);
         let hit = tile.intersect(body);

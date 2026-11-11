@@ -518,7 +518,7 @@ impl SheetsApp {
         {
             ctx.text.draw_style(
                 ctx.scene,
-                crate::resource::CATALOG.t("sheets-numbers-none"),
+                &crate::resource::CATALOG.t("sheets-numbers-none"),
                 theme.tokens.colors.text_dim,
                 ctx.transform
                     * Affine::translate((area.x0, ChromeMetrics::centred_top(area, line))),

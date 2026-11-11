@@ -294,7 +294,9 @@ impl SettingsPane {
                 Box::new(preference_toggle(
                     Toggle::from_state(&self.presentation.adblock)
                         .with_id("settings.adblock")
-                        .with_accessible_name(crate::resource::CATALOG.t("browser-a11y-block-ads")),
+                        .with_accessible_name(
+                            &crate::resource::CATALOG.t("browser-a11y-block-ads"),
+                        ),
                     self.actions.adblock.clone(),
                 )),
             ),
@@ -305,7 +307,7 @@ impl SettingsPane {
                     Toggle::from_state(&self.presentation.clear_on_exit)
                         .with_id("settings.clear_on_exit")
                         .with_accessible_name(
-                            crate::resource::CATALOG.t("browser-a11y-clear-on-quit"),
+                            &crate::resource::CATALOG.t("browser-a11y-clear-on-quit"),
                         ),
                     self.actions.clear_on_exit.clone(),
                 )),

@@ -1298,7 +1298,7 @@ impl Core {
         let on_panel = theme.on_ground(ui::chrome::panel_ground(theme));
         tr.draw_style(
             scene,
-            crate::i18n::t("weather-add-place"),
+            &crate::i18n::t("weather-add-place"),
             on_panel.text_primary,
             t * Affine::translate((panel.x0 + pad, panel.y0 + pad)),
             None,

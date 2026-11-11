@@ -662,7 +662,7 @@ impl EditForm {
                 Toggle::from_state(&self.favorite)
                     .with_id("contacts.form.favorite")
                     .with_accessible_name(
-                        crate::account_editor::CATALOG.t("contacts-a11y-favorite"),
+                        &crate::account_editor::CATALOG.t("contacts-a11y-favorite"),
                     ),
             ));
 

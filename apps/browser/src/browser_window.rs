@@ -363,15 +363,15 @@ impl BrowserWindow {
             .page
             .download_exit_status()
             .unwrap_or_else(|| "Waiting for native transfer cleanup".into());
+        let heading = if cancelling {
+            crate::resource::CATALOG.t("browser-quit-cancelling-downloads")
+        } else {
+            crate::resource::CATALOG.t("browser-quit-downloads-running")
+        };
         let mut column = Column::new()
             .with_intrinsic_height()
             .push(Box::new(
-                Text::new(if cancelling {
-                    crate::resource::CATALOG.t("browser-quit-cancelling-downloads")
-                } else {
-                    crate::resource::CATALOG.t("browser-quit-downloads-running")
-                })
-                .with_role(ui::tokens::TextRole::Heading),
+                Text::new(&heading).with_role(ui::tokens::TextRole::Heading),
             ))
             .push(Box::new(
                 Text::new(&status).with_role(ui::tokens::TextRole::Caption),

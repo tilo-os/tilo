@@ -444,16 +444,14 @@ impl Credentials {
                     .on_effect(self.command(Action::Refresh))
                 }
             });
+        let title = if self.address_mode {
+            crate::resource::CATALOG.t("browser-section-address-autofill")
+        } else {
+            crate::resource::CATALOG.t("browser-section-passwords")
+        };
         let mut header = Row::new()
             .no_wrap()
-            .push(Box::new(
-                Text::new(if self.address_mode {
-                    crate::resource::CATALOG.t("browser-section-address-autofill")
-                } else {
-                    crate::resource::CATALOG.t("browser-section-passwords")
-                })
-                .with_role(TextRole::Title),
-            ))
+            .push(Box::new(Text::new(&title).with_role(TextRole::Title)))
             .push(Box::new(Spacer::new()));
         if let Some(refresh) = refresh {
             header = header.push(Box::new(refresh));
