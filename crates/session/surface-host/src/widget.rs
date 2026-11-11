@@ -819,6 +819,12 @@ impl SurfaceHost for WidgetHost {
     }
 
     fn prepare_frame(&mut self) -> bool {
+        // The tree draws carets only while this surface holds the keyboard: the same answer that
+        // decides whether keys reach it ([`SurfaceHost::wants_keyboard`]). A surface that just lost
+        // or took the keyboard draws again, so the caret goes with it.
+        if self.host.set_keyboard_held(self.wants_keyboard()) {
+            self.owe();
+        }
         if self.asked.replace(false) {
             // What asked for this pass is outside the tree and needs the tree
             // to have taken it: a widget that reads something the host holds

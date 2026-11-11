@@ -32,6 +32,8 @@ import sys
 import tempfile
 import time
 
+from PIL import Image
+
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import real_apps  # noqa: E402
 from real_apps import Failed, until  # noqa: E402
@@ -87,6 +89,65 @@ def settled(read, pause: float = 0.3):
     first = read()
     time.sleep(pause)
     return first if first and read() == first else None
+
+
+# `intent.accent_ink`, the colour a caret is drawn in.
+CARET = bytes((129, 168, 255))
+
+
+def bars_in(path, rect) -> list[list[int]]:
+    """The caret bars in the PNG at `path` inside `rect`, `[x0, y0, x1, y1]` each: the caret's ink,
+    a line tall and as wide as the pen. Only a field that holds the keyboard paints one."""
+    x0, y0, x1, y1 = (int(value) for value in rect)
+    image = Image.open(path).convert("RGB")
+    crop = image.crop((max(0, x0), max(0, y0), max(x0 + 8, x1), max(y0 + 8, y1)))
+    width, height = crop.size
+    data = crop.tobytes()
+    found: dict[tuple[int, int, int], list[int]] = {}
+    at = data.find(CARET)
+    while at != -1:
+        if at % 3 == 0:
+            pixel = at // 3
+            x, y = pixel % width, pixel // width
+            top = y
+            while top > 0 and data[((top - 1) * width + x) * 3:][:3] == CARET:
+                top -= 1
+            bottom = y + 1
+            while bottom < height and data[(bottom * width + x) * 3:][:3] == CARET:
+                bottom += 1
+            if 10 <= bottom - top <= 44:
+                found[(x, top, bottom)] = [x0 + x, y0 + top, x0 + x + 1, y0 + bottom]
+        at = data.find(CARET, at + 3)
+    # A caret is as wide as the pen: the columns of one bar are one caret.
+    bars: list[list[int]] = []
+    for bar in sorted(found.values(), key=lambda bar: (bar[1], bar[0])):
+        if bars and bars[-1][1] == bar[1] and bars[-1][3] == bar[3] and bars[-1][2] == bar[0]:
+            bars[-1][2] = bar[2]
+        else:
+            bars.append(bar)
+    return [bar for bar in bars if 1 <= bar[2] - bar[0] <= 4]
+
+
+def carets_in(session, rect, shot=None, frames: int = 2) -> list[list[int]]:
+    """The caret bars inside `rect` now: `shot` first when there is one, then fresh frames until a
+    caret is found, so a caret on any side of its blink counts."""
+    if shot is not None:
+        bars = bars_in(shot, rect)
+        if bars:
+            return bars
+    bars: list[list[int]] = []
+    for frame in range(frames):
+        path = SHOTS / f"caret-{frame}.png"
+        session.snapshot(path)
+        bars = bars_in(path, rect)
+        if bars:
+            return bars
+    return bars
+
+
+def around(rect, margin: float = 8.0) -> list[float]:
+    """`rect` with `margin` on every side, where a caret of a field that moved slightly still is."""
+    return [rect[0] - margin, rect[1] - margin, rect[2] + margin, rect[3] + margin]
 
 
 def keeps_a_record() -> bool:
@@ -186,6 +247,15 @@ def main() -> int:
         span = room(session) or opened
         shot = session.snapshot(SHOTS / "02-super-v-at-caret.png")
         print(f"  shot {shot}")
+        # The pane holds the keyboard, so the page's field under it keeps its text and gives up its
+        # caret: the pane's search is the only caret the desk shows.
+        pane_at = pane(session) or [0, 0, 0, 0]
+        on_pane = carets_in(session, pane_at, shot)
+        on_page = carets_in(session, around(at), shot)
+        check("the pane's search is the only caret over the page's field",
+              bool(on_pane) and not on_page,
+              f"pane carets {json.dumps(on_pane)}, page carets {json.dumps(on_page)}, "
+              f"page caret {json.dumps(at)}")
         session.key("Escape")
         closed = wait_for("the pane closing", lambda: pane(session) is None)
         check("Escape closes the pane", closed is not None)
@@ -262,6 +332,8 @@ def main() -> int:
         # matches what was typed into it.
         session.chord("Super", "Space")
         wait_for("the search open", lambda: searching(session) or None)
+        # Where the desk's own search draws its caret while it is the one typed into.
+        search_caret = wait_for("the search's caret", lambda: settled(lambda: caret(session)))
         session.chord("Super", "v")
         wait_for("the clipboard pane over the search", lambda: settled(lambda: pane(session)))
         check("the search stays open under the pane", searching(session),
@@ -270,7 +342,16 @@ def main() -> int:
         session.type("beds")
         check("the search under the pane keeps what it held", query(session) == "",
               repr(query(session)))
-        session.snapshot(SHOTS / "06-pane-over-search.png")
+        over = session.snapshot(SHOTS / "06-pane-over-search.png")
+        # Only the surface holding the keyboard paints a caret: the pane's search, not the desk's
+        # search it opened over (which keeps its text and takes its caret back with the pane gone).
+        pane_at = pane(session) or [0, 0, 0, 0]
+        on_search = carets_in(session, around(search_caret or [0, 0, 0, 0]), over)
+        on_pane = carets_in(session, pane_at, over)
+        check("the search under the pane keeps its text and shows no caret", not on_search,
+              f"search carets {json.dumps(on_search)}, search caret {json.dumps(search_caret)}")
+        check("the pane's search is the one caret the desk shows", bool(on_pane) and not on_search,
+              f"pane carets {json.dumps(on_pane)}, pane {json.dumps(pane_at)}")
         session.key("Enter")
         check("Enter closes the pane",
               wait_for("the pane closing", lambda: pane(session) is None) is not None)
@@ -278,6 +359,12 @@ def main() -> int:
         session.snapshot(SHOTS / "07-entered-into-search.png")
         check("Enter pastes the copy that matches what was typed, not the newest",
               pasted == "Water the beds before noon", repr(pasted))
+        # The search under it takes the keyboard, and its caret, back.
+        back = wait_for("the search's caret again", lambda: settled(lambda: caret(session)))
+        back_bars = carets_in(session, around(back or [0, 0, 0, 0]),
+                              SHOTS / "07-entered-into-search.png")
+        check("the search under the pane shows the caret again", bool(back_bars),
+              f"carets {json.dumps(back_bars)}, search caret {json.dumps(back)}")
         session.type("!")
         check("the search has the keyboard back",
               wait_for("the search typed into", lambda: query(session).endswith("!") or None)

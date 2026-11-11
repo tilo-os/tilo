@@ -550,6 +550,9 @@ pub struct FrameHarness {
     /// The name the focused control answered to before a rebuild could replace it: what tells a
     /// rebuilt part the person's focus still stands.
     focus_name: Option<String>,
+    /// Whether the surface this tree draws holds the keyboard: its fields keep their text and
+    /// selection without it, and paint no caret ([`crate::caret_owner`]).
+    keyboard_held: bool,
     /// Whether this layout's keyboard came from a control answering by name alone; the frame's own
     /// snapshot of where the keyboard was outranks a name.
     focus_by_name: bool,
@@ -1559,6 +1562,7 @@ impl FrameHarness {
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
             focused: None,
             focus_name: None,
+            keyboard_held: true,
             focus_by_name: false,
             focus_trap_active: false,
             active_input_instance: None,
@@ -3284,6 +3288,9 @@ impl FrameHarness {
     }
 
     fn try_relayout_content(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+        // Every field of this tree paints a caret only while the surface it draws holds the
+        // keyboard: the text and selection stay either way.
+        let _carets = crate::caret_owner::holding(self.keyboard_held);
         // Asked again of the tree this frame draws, after whatever reached
         // it since the last: the frame reads the answer several times.
         self.history_standing.set(None);

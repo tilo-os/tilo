@@ -189,12 +189,24 @@ impl App {
             WindowEvent::Focused(false) => {
                 self.input.keyboard_layout = None;
                 self.input.window_focused = false;
+                // The field the person left keeps its text and selection, and gives up the caret
+                // with the keyboard: the frame is drawn again where the caret stood.
+                if self.input.keyboard_held {
+                    self.input.keyboard_held = false;
+                    self.root_widget.release_scene_cache();
+                    window.request_redraw();
+                }
             }
             // A window that takes the keyboard hands it to the app's entry
             // when nothing in it holds it: what is typed after it opens, or
             // is brought forward, reaches the app.
             WindowEvent::Focused(true) => {
                 self.input.window_focused = true;
+                if !self.input.keyboard_held {
+                    self.input.keyboard_held = true;
+                    self.root_widget.release_scene_cache();
+                    window.request_redraw();
+                }
                 self.hand_keyboard_to_app();
             }
             _ => {}

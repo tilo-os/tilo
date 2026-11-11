@@ -60,6 +60,9 @@ fn draw_frame_content_with(
     // What a widget places again as it paints (a floating panel measured
     // against its labels) lands on this display's pixels as layout does.
     let _grid = crate::widget::layout::enter_device_scale(f64::from(scale_factor));
+    // A window that does not hold the keyboard paints no caret: what is typed next lands in the
+    // surface that took it.
+    let _carets = crate::caret_owner::holding(app.input.keyboard_held);
     let owner = app.motion_owner();
     crate::motion::own(owner, || {
         draw_frame_content_owning(app, scene, size, scale_factor, t_draw_start, culled)

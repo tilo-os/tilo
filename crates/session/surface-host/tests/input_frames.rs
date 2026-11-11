@@ -9,6 +9,7 @@
     reason = "test fixtures: a failed lookup is the assertion"
 )]
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -80,6 +81,48 @@ fn key(pressed: bool, text: &str) -> HostKey {
         text: Some(text.to_owned()),
         modifiers: KeyModifiers::default(),
     }
+}
+
+#[test]
+fn a_surface_that_loses_the_keyboard_draws_again_without_its_carets() {
+    let _settled = ui::motion::testing::settled();
+    let holds = Rc::new(Cell::new(true));
+    let field = Field::default();
+    let mut host = WidgetHost::new(
+        Box::new(field),
+        Placement {
+            origin: (0, 0),
+            size: (320, 240),
+            scale: 1.0,
+        },
+        false,
+    )
+    .with_keyboard({
+        let holds = Rc::clone(&holds);
+        Rc::new(move || holds.get())
+    });
+    assert!(host.prepare_frame(), "the window's first frame draws it");
+    assert!(
+        host.host_mut().keyboard_held(),
+        "the field holds the keyboard"
+    );
+    let drawn = host.revision();
+
+    // Another surface took the keyboard: the tree keeps its text, gives up the caret, and draws
+    // again, so the frame the person sees has no caret in it.
+    holds.set(false);
+    assert!(
+        host.prepare_frame(),
+        "the surface draws the frame its caret left"
+    );
+    assert_eq!(host.revision(), drawn + 1);
+    assert!(!host.host_mut().keyboard_held());
+
+    // The keyboard comes back: the caret comes back with it.
+    holds.set(true);
+    assert!(host.prepare_frame(), "the caret's frame is drawn again");
+    assert!(host.host_mut().keyboard_held());
+    assert_eq!(host.revision(), drawn + 2);
 }
 
 #[test]

@@ -2885,7 +2885,7 @@ impl TextInput {
         (caret_position, shape): (TextPosition, &RoundedRect),
     ) {
         self.ml_caret = None;
-        if !self.is_focused || self.effectively_disabled() {
+        if !self.is_focused || !crate::caret_owner::shown() || self.effectively_disabled() {
             return;
         }
         let Some(layout) = self.single_layout.as_ref() else {
@@ -2926,6 +2926,10 @@ impl TextInput {
         transform: Affine,
         theme: &Theme,
     ) -> Option<Rect> {
+        if !crate::caret_owner::shown() {
+            self.ml_caret = None;
+            return None;
+        }
         let (caret, shape) = self.ml_caret.take()?;
         let bounds = shape.rect();
         let painted = caret.intersect(bounds);
@@ -3369,7 +3373,11 @@ impl TextInput {
         self.draw_body_gutter_numbers(scene, transform, tr, theme, size, gutter_w, &gutter_nums);
         self.draw_body_rows(scene, transform, tr, size, left, &row_draws);
 
-        if !self.caret_paint_suppressed && self.is_focused && !self.effectively_disabled() {
+        if !self.caret_paint_suppressed
+            && self.is_focused
+            && crate::caret_owner::shown()
+            && !self.effectively_disabled()
+        {
             let caret = self.caret_rect_ml(self.core.caret(), theme.caret_width);
             scene.fill(
                 vello::peniko::Fill::NonZero,

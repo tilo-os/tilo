@@ -356,7 +356,7 @@ impl TextInput {
         transform: Affine,
         theme: &Theme,
     ) {
-        if self.caret_paint_suppressed {
+        if self.caret_paint_suppressed || !crate::caret_owner::shown() {
             return;
         }
         let cursor_rect = if self.core.has_preedit()

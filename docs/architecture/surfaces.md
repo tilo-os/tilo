@@ -104,6 +104,10 @@ input behind it from the same rect, so what looks covered is covered.
 - **Restore**: closing a surface returns focus to whatever held it when the
   surface opened — the window, the field, the tab — recorded at open time, not
   re-derived at close.
+- **Caret**: only the surface holding the keyboard draws one. The field under
+  a surface opened over it keeps its text and selection, draws without a caret,
+  and gets the caret back with the keyboard when the surface closes
+  (`ui::caret_owner`).
 - A `Passive` surface never takes focus, and never traps it.
 - A surface opened while another is up stacks on it and gets focus; the one
   below keeps its state and its focus record, so a chain of popups unwinds.

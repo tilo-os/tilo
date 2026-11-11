@@ -154,6 +154,8 @@ pub mod auth_backdrop;
 pub mod backdrop;
 pub mod call_pictures;
 pub mod caps_lock;
+/// Who the keyboard belongs to, which is who paints a caret.
+pub mod caret_owner;
 pub mod chart_palette;
 pub mod charts;
 pub mod chrome;
