@@ -171,6 +171,10 @@ pub(crate) struct Visual {
     /// Whether an alert was asked for since the last frame drew one: the frame after it starts the
     /// alert, so no time between the two takes it.
     pub(crate) flash_pending: bool,
+    /// The instant the frame being drawn is for, as [`begin_frame`] read it: the alert's strength
+    /// is read at that instant, so a frame that takes a while to build shows the alert it was
+    /// built for rather than one already faded by the time it is composited.
+    pub(crate) frame_at: Option<Instant>,
 }
 
 impl Visual {
@@ -320,10 +324,15 @@ pub(crate) fn finish_flash(state: &mut State, now: Instant) {
 /// Prepare every output's visual alert for the frame about to be drawn at `now` : an alert asked
 /// for since the last frame starts now, and one whose run is over is put away. Every frame goes
 /// through here — the session's own frames and the ones a display's vertical blank draws — so an
-/// alert runs from a frame that shows it whichever frame that is.
+/// alert runs from a frame that shows it whichever frame that is. The frame's instant is kept with
+/// each output, so what the frame computes for the alert is what it was built for, however long
+/// the frame takes to compose.
 pub(crate) fn begin_frame(state: &mut State, now: Instant) {
     start_flash(state, now);
     finish_flash(state, now);
+    for output in state.space.outputs() {
+        change(output, |visual| visual.frame_at = Some(now));
+    }
 }
 
 /// Whether any output is showing the visual alert at `now` .
