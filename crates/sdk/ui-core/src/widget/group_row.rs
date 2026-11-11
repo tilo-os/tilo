@@ -698,14 +698,17 @@ impl Pan {
     }
 
     /// Whether a frame at `now` would show a direct pan elsewhere than the strip is: fingers down
-    /// and the resampled path not yet where the last frame put it. Resting fingers ask for nothing.
+    /// and the resampled path not yet where the last frame put it, or read ahead of the fingers'
+    /// newest report, which a frame brings back to it once they rest. Resting fingers ask for
+    /// nothing.
     fn direct_pan_moving(&self, now: Instant) -> bool {
         let Some(origin) = self.strip_pan_origin else {
             return false;
         };
-        self.resampled_travel(now).is_some_and(|travel| {
-            (self.rubber_banded(origin + travel) - self.scroll_x).abs() > f64::EPSILON
-        })
+        self.finger_path.predicting(now)
+            || self.resampled_travel(now).is_some_and(|travel| {
+                (self.rubber_banded(origin + travel) - self.scroll_x).abs() > f64::EPSILON
+            })
     }
 
     /// Record the fingers' total `travel` at `at`: the strip shows it at once, and the next frame

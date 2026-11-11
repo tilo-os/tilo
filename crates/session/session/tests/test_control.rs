@@ -805,6 +805,92 @@ fn a_drag_through_the_socket_moves_a_tab_into_another_group() {
     );
 }
 
+/// Where the window titled `title` stands on the screen, as `list_targets` reports it, and the
+/// picture the session shows, written to `png`.
+fn swipe_frame(session: &mut Session, socket: &Path, title: &str, png: &Path) -> f64 {
+    let shot = ask(
+        session,
+        socket,
+        &json!({"op": "snapshot", "path": png.to_str().unwrap()}),
+    );
+    assert!(shot.get("ok").is_some(), "the snapshot is written: {shot}");
+    let targets = ask(session, socket, &json!({"op": "list_targets"}));
+    target_rect(&targets, title)
+        .unwrap_or_else(|| panic!("{title} stands somewhere: {targets}"))
+        .0
+}
+
+/// Three fingers through the socket carry a strip wider than the screen while they are down, each
+/// held swipe going on with the same gesture, and lifted while moving the strip coasts on: the
+/// control door drives the desk's gestures the way a touchpad does.
+#[test]
+fn a_held_swipe_through_the_socket_carries_the_strip_with_the_fingers() {
+    let _settled = ui::motion::testing::settled();
+    let root = private_home();
+    let socket = root.path().join("test-control.sock");
+    let shots = std::env::var_os("STRIP_SWIPE_SHOTS")
+        .map_or_else(|| root.path().to_path_buf(), PathBuf::from);
+    let windows = [
+        (20, "Alpha"),
+        (21, "Beta"),
+        (22, "Gamma"),
+        (23, "Delta"),
+        (24, "Epsilon"),
+        (25, "Zeta"),
+    ];
+    let mut session = session_showing(desk(&windows), &socket);
+    let before = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-0-before.png"),
+    );
+
+    let swipe = |session: &mut Session, dx: f64, release: bool| {
+        let answer = ask(
+            session,
+            &socket,
+            &json!({"op": "swipe", "fingers": 3, "dx": dx, "dy": 0.0, "steps": 12,
+                    "release": release}),
+        );
+        assert_eq!(answer, json!({"ok": {}}), "the swipe is taken");
+    };
+    // Rightward under natural scrolling, the default: the windows go with the fingers.
+    swipe(&mut session, 150.0, false);
+    let first = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-1-held.png"),
+    );
+    swipe(&mut session, 150.0, false);
+    let second = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-2-held.png"),
+    );
+    assert!(
+        (first - before - 150.0).abs() <= 2.0 && (second - first - 150.0).abs() <= 2.0,
+        "the strip is where the fingers holding it took it: {before} then {first} then {second}"
+    );
+    // Lifted while still moving, the strip coasts on the way they went and rests there.
+    swipe(&mut session, 150.0, true);
+    for _ in 0..30 {
+        session.step(Duration::from_millis(16)).expect("step");
+    }
+    let rested = swipe_frame(
+        &mut session,
+        &socket,
+        "Epsilon",
+        &shots.join("swipe-3-lifted.png"),
+    );
+    assert!(
+        rested > second + 150.0,
+        "the strip coasts past where the fingers lifted: {second} then {rested}"
+    );
+}
+
 /// A secondary click through the socket on a window's bar opens the window's menu, as the
 /// person's own right click does.
 #[test]

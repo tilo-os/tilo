@@ -40,15 +40,9 @@ pub enum DeskGesture {
     /// Those fingers lifted (or the hand was taken back): the strip coasts
     /// on the velocity they let go at, or stays where it was.
     StripDragEnd { cancelled: bool },
-    /// Three fingers up or down: the strip `steps` on.
+    /// Three fingers up or down lifted past the threshold: the strip
+    /// `steps` on, sliding as a finger's change does.
     StepStrip(i32),
-    /// Three fingers landed on the deck: it follows them from here. `travel`
-    /// is their signed travel in pixels since they landed, positive toward
-    /// the strips below.
-    StripDeckDrag { travel: f64 },
-    /// Those fingers lifted, having carried the deck `travel`: the strip
-    /// `steps` on from it, or none when they came back.
-    StepStripFrom { travel: f64, steps: i32 },
     /// Four fingers up or down: the workspace `delta` on.
     SwitchWorkspace(i32),
     /// A pinch in opens the overview (`true`), out closes it.
@@ -80,6 +74,23 @@ pub(crate) struct GestureReader {
 }
 
 impl GestureReader {
+    /// Whether the desk takes `gesture`, handing what it asks to `asked`.
+    pub(crate) fn take(
+        &mut self,
+        gesture: &GestureEvent,
+        config: Option<GestureConfig>,
+        asked: impl FnOnce(DeskGesture),
+    ) -> bool {
+        match self.read(gesture, config) {
+            Reading::Clients => false,
+            Reading::Taken => true,
+            Reading::Asked(desk) => {
+                asked(desk);
+                true
+            }
+        }
+    }
+
     /// `gesture` as the desk's, when `config` reads gestures (the person asked
     /// for them) and it has three or more fingers.
     pub(crate) fn read(
@@ -117,15 +128,11 @@ impl GestureReader {
             }
         };
         let asked = match action {
-            // A vertical deck drag hands its travel to the desk on every
-            // update, so the strips are under the fingers; so does the
-            // horizontal one, which carries the shown strip with them.
-            Some(GestureAction::StripDeckUpdate { travel, began }) => {
+            // Up and down, the travel decides at the lift; sideways, every
+            // update carries the shown strip with the fingers.
+            Some(GestureAction::StripDeckUpdate { travel, .. }) => {
                 self.travel = travel;
-                if began {
-                    return Reading::Asked(DeskGesture::StripDeckDrag { travel });
-                }
-                Some(DeskGesture::StripDeckDrag { travel })
+                None
             }
             Some(GestureAction::StripPanUpdate { travel, began }) => {
                 self.travel = travel;
@@ -135,25 +142,15 @@ impl GestureReader {
                 Some(DeskGesture::StripDragEnd { cancelled })
             }
             Some(GestureAction::StripDeckEnd { cancelled: false }) => {
-                Some(DeskGesture::StepStripFrom {
-                    travel: self.travel,
-                    steps: step(self.travel).unwrap_or(0),
-                })
+                step(self.travel).map(DeskGesture::StepStrip)
             }
             Some(GestureAction::SwitchWorkspace(delta)) => {
                 Some(DeskGesture::SwitchWorkspace(delta))
             }
             Some(GestureAction::ShowOverview) => Some(DeskGesture::Overview(true)),
             Some(GestureAction::HideOverview) => Some(DeskGesture::Overview(false)),
-            // A cancelled deck drag is the hand coming back: the strip
-            // returns the way it went.
-            Some(GestureAction::StripDeckEnd { cancelled: true }) => {
-                Some(DeskGesture::StepStripFrom {
-                    travel: self.travel,
-                    steps: 0,
-                })
-            }
-            None => None,
+            // A cancelled deck drag is the hand coming back: nothing moves.
+            Some(GestureAction::StripDeckEnd { cancelled: true }) | None => None,
         };
         match asked {
             Some(asked) => Reading::Asked(asked),
@@ -1143,14 +1140,10 @@ impl WindowPolicy for StripPolicy {
 
     fn gesture(&mut self, gesture: &GestureEvent) -> bool {
         let config = self.desk.borrow().gesture_config;
-        match self.gestures.read(gesture, config) {
-            Reading::Clients => false,
-            Reading::Taken => true,
-            Reading::Asked(asked) => {
-                self.desk.borrow_mut().gestures.push(asked);
-                true
-            }
-        }
+        let desk = &self.desk;
+        self.gestures.take(gesture, config, |asked| {
+            desk.borrow_mut().gestures.push(asked);
+        })
     }
 
     fn take_close_requests(&mut self) -> Vec<u64> {

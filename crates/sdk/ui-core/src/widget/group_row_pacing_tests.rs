@@ -274,9 +274,17 @@ fn lifted_fingers_throw_the_strip_and_it_coasts_to_rest() {
         strip.frames
     );
 
-    // Fingers that stopped before lifting throw nothing.
+    // Fingers that stopped before lifting throw nothing, and while they rest the strip stands
+    // where their newest report put it, not where they would have gone on to: the swipe's last
+    // report, at 288 ms, carried them 1500 px/s x 296 ms.
+    let origin = Strip::new(10).row().scroll_x();
     let (_, mut strip) = swipe(125.0, 90.0, speed, 300.0);
     let rested = strip.frame(400.0);
+    assert!(
+        (rested - origin - 444.0).abs() < 0.01,
+        "resting fingers hold the strip where they are: {rested} from {origin}"
+    );
+    assert!(!strip.animating(420.0), "and ask for no frames");
     strip.report(Report::End(strip.at(420.0)));
     assert_eq!(strip.frame(430.0), rested);
     assert_eq!(strip.frame(600.0), rested, "a release at rest stays put");

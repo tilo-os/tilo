@@ -1849,6 +1849,10 @@ impl Widget for DesktopSurface {
         "DesktopSurface"
     }
 
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
+
     fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         if let Some(row) = self.shown_row() {
             row.sync(state, path);

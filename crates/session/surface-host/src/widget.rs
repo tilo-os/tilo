@@ -142,9 +142,6 @@ pub struct WidgetHost {
     /// The display's grid: what the tree moves through is drawn once per
     /// display frame, so the screens show as many frames as they run at.
     cadence: Cadence,
-    /// Fingers are carrying the desk's strips: the surface draws them
-    /// following the hand until it lets go.
-    hand_on_deck: bool,
     /// What the role that placed the tree closes when the pointer is pressed
     /// elsewhere: the shared handle runs it before the tree is borrowed, so
     /// the role may ask the layer it holds to draw again.
@@ -202,7 +199,6 @@ impl WidgetHost {
             name: None,
             asked: Rc::new(std::cell::Cell::new(false)),
             cadence: Cadence::new(),
-            hand_on_deck: false,
             dismissed: None,
         }
     }
@@ -306,44 +302,6 @@ impl WidgetHost {
     #[must_use]
     pub const fn host(&self) -> &FrameHarness {
         &self.host
-    }
-
-    /// Whether the desk's fingers are already carrying its strips: the travel
-    /// that opened a gesture then moves the deck it landed on instead of
-    /// opening another.
-    #[must_use]
-    pub const fn wants_hand_on_deck(&self) -> bool {
-        self.hand_on_deck
-    }
-
-    /// Fingers landed on the deck, `travel` pixels into the gesture.
-    pub fn begin_strip_deck(&mut self, travel: f64) {
-        self.hand_on_deck = true;
-        self.deck_drag(travel, true);
-    }
-
-    /// The fingers have carried the deck `travel` pixels since they landed.
-    pub fn drag_strip_deck(&mut self, travel: f64) {
-        self.deck_drag(travel, false);
-    }
-
-    /// The fingers lifted after carrying the deck `travel` pixels.
-    pub fn end_strip_deck(&mut self, travel: f64) {
-        self.hand_on_deck = false;
-        self.deck_drag(travel, false);
-    }
-
-    /// Draw the desk's strips following the fingers.
-    fn deck_drag(&mut self, travel: f64, began: bool) {
-        self.with_surface(|surface| {
-            let shown = surface.shown_strip_id();
-            let slides = surface.slides_mut();
-            if began {
-                slides.begin_lift(shown);
-            }
-            slides.lift_to(travel);
-        });
-        self.owe();
     }
 
     /// Three fingers landed on the strip shown, `travel` pixels into the

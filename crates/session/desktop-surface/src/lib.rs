@@ -38,7 +38,6 @@ pub use surface::peer_view::{
     NeighbourMsg, PeerAction, PeerId, PeerOutcome, PeerRead, PeerStreamStart, PeerSurface,
     PeerSurfaces, PeerTiles, PeerView, PictureWake, Standing, SurfaceId,
 };
-pub use surface::slide::Slides;
 pub use surface::{
     ActivityModel, ActivityPaneCode, AppInbox, AppNotifier, DesktopHandle, DesktopNotifications,
     DesktopSurface, HistorySource, HostAction, HostActionSource, LivenessChoice, NotificationLayer,
