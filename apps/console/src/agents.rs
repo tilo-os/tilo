@@ -148,14 +148,14 @@ impl Seen {
     }
 }
 
-/// The place's content and its header's commands: every run, or the run
-/// chosen, whose way back is the shell's.
-pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, Vec<Element>) {
+/// The place's content: every run, or the run chosen, whose way back is the
+/// shell's.
+pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
     let runs = &reads.runs;
     let door_state = reads.door.answer().state();
     let chosen = nav.run.get();
     let nav = nav.clone();
-    let content = Box::new(cx.arriving(&runs.answer(), move |cx, runs| {
+    Box::new(cx.arriving(&runs.answer(), move |cx, runs| {
         let (nav, runs, chosen) = (nav.clone(), runs.clone(), chosen.clone());
         cx.switch(&door_state, move |cx, door| {
             let seen = Seen {
@@ -171,8 +171,7 @@ pub(crate) fn view(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> (Element, 
                 (None, None) => list(cx, &nav, &seen),
             }
         })
-    })) as Element;
-    (content, Vec::new())
+    })) as Element
 }
 
 /// The door as far as it answered: nothing connected until it does, and

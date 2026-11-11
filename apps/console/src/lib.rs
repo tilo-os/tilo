@@ -41,6 +41,7 @@ mod record;
 #[cfg(feature = "samples")]
 mod sample;
 mod usage;
+mod window;
 mod workspaces;
 
 use ui::time::{Duration, SystemTime};
@@ -446,13 +447,14 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
 
     let place = nav.place();
     // The run shown in place of the list has one way back to it, the shell's:
-    // leading the header at every width, and the narrow window's own Back
+    // leading the window's bar at every width, and the narrow window's own Back
     // where the places push under it.
     let (open, close) = (nav.clone(), nav.clone());
     let shell = ui::widget::NavShell::new()
         .content_kind(ui::widget::ContentKind::Page)
         .with_id("console.shell")
         .mode(ui::widget::NavMode::Push)
+        .with_window_toolbar()
         .with_pane_state(&nav.pane)
         .sidebar(Box::new(sidebar))
         .sidebar_header(tr("console-title"), Vec::new())
@@ -460,29 +462,32 @@ fn window(cx: &ViewCx<Console>, nav: &Nav, reads: &Reads) -> Element {
             move || open.run.get().is_some() || open.agent.get().is_some(),
             move || close.back(),
         );
-    Box::new(match place {
+    // What the window shows names it, in its bar and so in its tab: an agent's
+    // card is its client's, every other place its own.
+    let (shell, location) = match place {
         Place::Agents if nav.run.get().is_none() && nav.agent.get().is_some() => {
             let client = nav.agent.get().unwrap_or_default();
-            shell
-                .content(agent_card::view(cx, nav, reads, &client))
-                .content_header(client, Vec::new())
+            let shell = shell.content(agent_card::view(cx, nav, reads, &client));
+            (shell, client)
         }
-        Place::Agents => {
-            let (content, actions) = agents::view(cx, nav, reads);
-            shell
-                .content(content)
-                .content_header(tr(place.label()), actions)
-        }
-        Place::Workspaces => shell
-            .content(workspaces::view(cx, reads))
-            .content_header(tr(place.label()), Vec::new()),
-        Place::Connect => shell
-            .content(connect::view(cx, reads))
-            .content_header(tr(place.label()), Vec::new()),
-        Place::Usage => shell
-            .content(usage::view())
-            .content_header(tr(place.label()), Vec::new()),
-    })
+        Place::Agents => (
+            shell.content(agents::view(cx, nav, reads)),
+            tr(place.label()),
+        ),
+        Place::Workspaces => (
+            shell.content(workspaces::view(cx, reads)),
+            tr(place.label()),
+        ),
+        Place::Connect => (shell.content(connect::view(cx, reads)), tr(place.label())),
+        Place::Usage => (shell.content(usage::view()), tr(place.label())),
+    };
+    let link = shell.window_bar_link();
+    Box::new(window::ConsoleWindow::new(
+        Box::new(shell),
+        cx.toolbar(),
+        link,
+        location,
+    ))
 }
 
 ui::dev_reload_entry!(App);
