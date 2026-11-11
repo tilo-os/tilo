@@ -774,6 +774,8 @@ impl Converter<'_> {
         }
         let color = css_color(self.doc.style(li, S::Fg)).unwrap_or_default();
         let node_key = self.doc.node_key(node);
+        // A computed border width is zero unless its style is a visible one,
+        // so the widths alone say whether the page gave the box a border.
         let bordered = [
             S::BorderTopW,
             S::BorderRightW,
@@ -781,8 +783,7 @@ impl Converter<'_> {
             S::BorderLeftW,
         ]
         .into_iter()
-        .any(|width| px(self.doc.style(li, width)) > 0.0)
-            && !matches!(self.doc.style(li, S::BorderStyle), "none" | "hidden");
+        .any(|width| px(self.doc.style(li, width)) > 0.0);
         let filled = css_color(self.doc.style(li, S::Bg)).is_some_and(|bg| bg.0[3] > 0);
         if !bordered && !filled {
             self.push(
