@@ -6971,13 +6971,13 @@ impl Widget for TextInput {
         if self.action.is_none() && self.on_change.is_none() && self.change_verb.is_none() {
             node = node.with_action_target(self.test_id().unwrap_or("text_input"));
         }
-        if !secret {
-            node = node.with_text_selection(self.core.anchor(), self.core.caret());
-        } else {
+        if secret {
             // The characters stay here; a page showing this field as HTML
             // keeps what the person typed and needs to know when the app
             // dropped it, so the field it shows is cleared with it.
             node = node.with_value_length(self.text.encode_utf16().count());
+        } else {
+            node = node.with_text_selection(self.core.anchor(), self.core.caret());
         }
         if !self.accessible_name.is_empty() {
             node = node.with_name(crate::i18n!(&self.accessible_name));
