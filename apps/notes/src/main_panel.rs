@@ -1158,6 +1158,40 @@ impl MainPanel {
         true
     }
 
+    /// PageUp and PageDown while the caret is in the note page its body, as
+    /// on any page: a paragraph has no page of its own to move through, so
+    /// they reached nothing and the note never moved. The caret stays where
+    /// it is; typing brings the view back to it. With Shift they extend the
+    /// selection, the editor's.
+    fn page_while_writing(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
+    ) -> bool {
+        let WindowEvent::KeyboardInput { event: key, .. } = event else {
+            return false;
+        };
+        let direction = match key.logical_key {
+            Key::Named(NamedKey::PageDown) => 1.0,
+            Key::Named(NamedKey::PageUp) => -1.0,
+            _ => return false,
+        };
+        if *ctx.handled
+            || !self.editor.is_focused()
+            || !ctx.modifiers.state().is_empty()
+            || self.scroll_thumb().is_none()
+        {
+            return false;
+        }
+        if key.state == ElementState::Pressed {
+            let page = self.scroll_metrics().viewport * ui::widget::scrollbar::PAGE_FRACTION;
+            self.set_scroll_offset(self.scroll_y + direction * page);
+            self.dirty = true;
+        }
+        *ctx.handled = true;
+        true
+    }
+
     fn handle_scrollbar_event(&mut self, event: &WindowEvent, handled: &mut bool) -> bool {
         if self.scroll_thumb().is_none() {
             self.scrollbar.release();
@@ -2396,6 +2430,9 @@ impl Widget for MainPanel {
         }
 
         if self.handle_scrollbar_event(event, ctx.handled) {
+            return;
+        }
+        if self.page_while_writing(event, ctx) {
             return;
         }
 

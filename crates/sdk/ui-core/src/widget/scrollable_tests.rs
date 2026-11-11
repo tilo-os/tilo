@@ -2168,3 +2168,78 @@ fn a_browsers_swipe_past_the_top_springs_back_once_it_pauses() {
         assert_eq!(s.drawn_offset(), (0.0, 0.0), "sprung back to the top");
     });
 }
+
+/// A field that holds the keyboard focus and handles no key: a note's
+/// paragraph has no page of its own to move through.
+struct FocusedField {
+    rect: Rect,
+}
+
+impl Widget for FocusedField {
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        let style = Style {
+            size: Size::from_lengths(200.0, 2000.0),
+            ..Default::default()
+        };
+        taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.rect = crate::widget::layout_rect(taffy, node, origin);
+    }
+
+    fn is_focused(&self) -> bool {
+        true
+    }
+
+    fn name(&self) -> &'static str {
+        "FocusedField"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+#[test]
+fn a_page_key_the_focused_field_leaves_alone_pages_the_view_holding_it() {
+    let mut scroll =
+        Scrollable::new_vertical().with_child(Box::new(FocusedField { rect: Rect::ZERO }));
+    let mut taffy = TaffyTree::new();
+    let mut nodes = HashMap::new();
+    let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
+    taffy
+        .compute_layout(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(200.0),
+                height: taffy::AvailableSpace::Definite(300.0),
+            },
+        )
+        .unwrap();
+    scroll.apply_layout(&taffy, node, Point::ZERO);
+    assert!(
+        !scroll.is_focused(),
+        "the field has the focus, not the view"
+    );
+    assert!(
+        dispatch(&mut scroll, &named_key(NamedKey::PageDown)),
+        "PageDown taken"
+    );
+    let page = scroll.offset_y();
+    assert!(page > 200.0, "a page down: {page}");
+    assert!(
+        dispatch(&mut scroll, &named_key(NamedKey::PageUp)),
+        "PageUp taken"
+    );
+    assert_eq!(scroll.offset_y(), 0.0, "back at the top");
+    assert!(
+        !dispatch(&mut scroll, &named_key(NamedKey::PageUp)),
+        "at the top, PageUp is left to the view around it"
+    );
+}

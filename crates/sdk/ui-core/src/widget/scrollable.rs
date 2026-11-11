@@ -1726,6 +1726,35 @@ impl Widget for Scrollable {
         {
             child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
+        // A page key the focused content left alone (a note's paragraph, a
+        // form's field) pages the view holding it, as on any page; a view
+        // that cannot move further leaves it to the one around it.
+        if !*ctx.handled
+            && let WindowEvent::KeyboardInput { event: ke, .. } = event
+            && ke.state == ElementState::Pressed
+            && matches!(
+                ke.logical_key,
+                winit::keyboard::Key::Named(
+                    winit::keyboard::NamedKey::PageUp | winit::keyboard::NamedKey::PageDown
+                )
+            )
+            && !ctx.modifiers.state().intersects(
+                winit::keyboard::ModifiersState::CONTROL
+                    | winit::keyboard::ModifiersState::ALT
+                    | winit::keyboard::ModifiersState::SUPER,
+            )
+            && self
+                .child
+                .as_deref()
+                .is_some_and(crate::widget::context_menu_area::focus_within)
+        {
+            let before = (self.offset_x, self.offset_y);
+            self.on_navigation_key(&ke.logical_key);
+            if (self.offset_x, self.offset_y) != before {
+                *ctx.handled = true;
+                return;
+            }
+        }
         // An already-focused editor can consume a press without requesting
         // focus again. Only use the pane as a fallback for an unhandled
         // background press; never displace the child's existing focus.
