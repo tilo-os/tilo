@@ -1629,14 +1629,23 @@ impl Widget for Panel {
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let shown = self.shown.borrow();
-        if (self.open.get() || shown.standing()) && !self.profile.is_open() {
-            // Each control says where it stands and carries what pressing it does, so a reader
-            // presses the roster's own buttons as the person does.
-            return Some(shown.overlay.accessibility_with_targets());
-        }
+        // Each control says where it stands and carries what pressing it does, so a reader
+        // presses the roster's own buttons as the person does.
+        let roster = ((self.open.get() || shown.standing()) && !self.profile.is_open())
+            .then(|| shown.overlay.accessibility_with_targets());
         drop(shown);
-        // The banner stands beside the windows, so it is read whether the roster is up or not.
-        self.banner.accessibility()
+        // The banner stands beside the windows, so it is read whether the roster is up or not: a
+        // reader following someone with who is here open still hears whose view this is, and can
+        // stop following from the bar as the person does.
+        let banner = self.banner.accessibility();
+        match (banner, roster) {
+            (Some(banner), Some(roster)) => Some(
+                ui::a11y::AccessNode::new(ui::a11y::Role::Group)
+                    .with_hashed_key("people-layer")
+                    .with_children(vec![banner, roster]),
+            ),
+            (banner, roster) => banner.or(roster),
+        }
     }
 
     /// Following's Stop is the banner's own verb, and the pinned roster's controls are its own,

@@ -1208,6 +1208,13 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
         "{:?}",
         said_by(&panel)
     );
+    // The bar's banner says whose view this is beside the roster kept on screen: it is read
+    // whether the roster is up or not.
+    assert!(
+        said_by(&panel).iter().any(|name| name == "Following Ada"),
+        "the banner is read beside the kept roster: {:?}",
+        said_by(&panel)
+    );
     capture(&mut session, "roster-following");
     let stop = holding(&people(&session), "Stop following Ada");
     press(&mut session, stop);
