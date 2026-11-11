@@ -691,24 +691,58 @@ impl HostedBrowsers {
     /// the certificate it was given expires.
     pub fn stopped(&self, workspace_id: u64) {
         let stopped = self.open.lock_recover().remove(&workspace_id);
-        self.refuse(workspace_id);
+        let devices = {
+            let authority = self.authority.lock_recover();
+            authority.as_ref().map_or_else(Vec::new, |authority| {
+                authority.environments.placed_in(workspace_id)
+            })
+        };
+        self.refuse(
+            devices
+                .iter()
+                .map(|(device, _, until_ns)| (*device, *until_ns)),
+        );
         if let Some(stopped) = &stopped {
             self.sessions.stop(&stopped.workspace);
             self.list(workspace_id, &stopped.device, false);
         }
-        // Every connection the device had here audits on this: the planes that
-        // carried it refuse it, and its sessions end.
+        // Every connection the devices had here audits on this: the planes
+        // that carried them refuse them, and their sessions end.
         crate::authority_epoch::bump();
     }
 
-    /// Refuse every environment device `workspace_id` has, on every plane,
-    /// until the certificate each was given expires.
-    fn refuse(&self, workspace_id: u64) {
+    /// One environment's device stopped — its session ended and did not come
+    /// back: refuse it on every plane, forget its window, end what is left of
+    /// the session in the VM and delist it. A device placed for the same
+    /// workspace since is another environment, and is not this stop's.
+    ///
+    /// The refusal comes first and is written down, so what follows may fail:
+    /// the device stays refused until its certificate expires.
+    fn stopped_device(&self, workspace_id: u64, device: [u8; 32], until_ns: u64) {
+        let stopped = {
+            let mut open = self.open.lock_recover();
+            match open.get(&workspace_id) {
+                Some(up) if up.window.device == device => open.remove(&workspace_id),
+                Some(_) | None => None,
+            }
+        };
+        self.refuse(std::iter::once((device, until_ns)));
+        if let Some(stopped) = &stopped {
+            self.sessions.stop(&stopped.workspace);
+            self.list(workspace_id, &stopped.device, false);
+        }
+        crate::authority_epoch::bump();
+    }
+
+    /// Refuse `devices`, on every plane, until the certificate each was given
+    /// expires. A refusal that cannot be written down is still refused here,
+    /// and a restart confines it no wider than its scope.
+    fn refuse(&self, devices: impl Iterator<Item = ([u8; 32], u64)>) {
         let authority = self.authority.lock_recover();
         let Some(authority) = authority.as_ref() else {
             return;
         };
-        for (device, _, until_ns) in authority.environments.placed_in(workspace_id) {
+        for (device, until_ns) in devices {
             if let Err(error) = authority.environments.stop(device, until_ns) {
                 tracing::error!(
                     %error,
@@ -742,9 +776,19 @@ impl HostedBrowsers {
             {
                 return;
             }
+            let until_ns = browsers
+                .open
+                .lock_recover()
+                .get(&workspace_id)
+                .filter(|up| up.window.device == device)
+                .and_then(|up| up.device.expires_at_ns)
+                .unwrap_or_else(|| tilo_clock::unix_now_ns().saturating_add(lifetime_ns()));
             // Stopping asks VM hosts and writes workspace membership: never on
             // a runtime thread.
-            let _ = tokio::task::spawn_blocking(move || browsers.stopped(workspace_id)).await;
+            let _ = tokio::task::spawn_blocking(move || {
+                browsers.stopped_device(workspace_id, device, until_ns);
+            })
+            .await;
         });
     }
 

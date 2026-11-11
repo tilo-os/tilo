@@ -32,9 +32,10 @@
 //! workspace's person by certificate, and the workspace lists it as one while
 //! its session runs: losing the register would leave it an ordinary member.
 //! So the register is the relay's own state ([`EnvironmentRegistry::at`]),
-//! written before the device is certified and listed, and read back when the
-//! relay starts: a relay that restarts with an environment still placed still
-//! confines it, whatever the workspace's persisted membership says.
+//! written before the device is handed to its session and listed, and read
+//! back when the relay starts: a relay that restarts with an environment still
+//! placed confines it again, whatever the workspace's persisted membership
+//! says.
 //!
 //! An environment that stops is a [`Environment::Stopped`] entry in the same
 //! register, written before the device is delisted and kept until the
@@ -307,9 +308,11 @@ impl EnvironmentRegistry {
     /// Forget `device` entirely: it never left the relay, so nothing holds it.
     pub fn forget(&self, device: &[u8; 32]) {
         let mut devices = self.table.devices.write_recover();
-        if devices.remove(device).is_some() {
+        let forgotten = devices.remove(device).is_some();
+        if forgotten {
             let _ = self.save(&devices);
         }
+        drop(devices);
         self.table.connected.write_recover().remove(device);
     }
 
@@ -351,12 +354,16 @@ impl EnvironmentRegistry {
     /// A session of `device` authenticated here: its environment is up, and an
     /// end that was being waited on is not one.
     pub fn arrived(&self, device: [u8; 32]) {
-        if self.of(&device, tilo_clock::unix_now_ns()).is_none() {
+        if !matches!(
+            self.of(&device, tilo_clock::unix_now_ns()),
+            Some(Environment::Placed(_))
+        ) {
             return;
         }
         let mut connected = self.table.connected.write_recover();
         let count = connected.entry(device).or_insert(0);
         *count = count.saturating_add(1);
+        drop(connected);
     }
 
     /// A session of `device` ended: when it was the last one, the relay that
@@ -413,7 +420,9 @@ impl EnvironmentRegistry {
                 devices.remove(&device);
             }
         }
-        self.save(&devices).map_err(|error| {
+        let kept = self.save(&devices);
+        drop(devices);
+        kept.map_err(|error| {
             let error = format!("{what}: {error}");
             tracing::error!(%error, device = %hex::encode(device));
             error

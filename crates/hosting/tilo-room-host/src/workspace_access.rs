@@ -48,7 +48,10 @@
 //! ([`crate::environment`]), on the planes a window's session works on — and
 //! its one record is what it reaches within them: the state plane's replay,
 //! live fan-out, opening and changes ask its scope what a frame's record is,
-//! and the live plane offers it no namespace but its own.
+//! and the live plane offers it no namespace but its own. A device whose
+//! environment stopped is refused by step 1 on every plane, as a revoked one
+//! is, until the certificate it was given expires: the register says so before
+//! anything is delisted, so no plane admits it in between.
 //!
 //! A public workspace is no exception to the rule: whoever visits it is a
 //! member of it with the role its owner gave them, and every device certified
@@ -314,7 +317,7 @@ impl RelayTrust<'_> {
         // revoked one is, until the certificate it was given expires: this is
         // the check every plane and every audit makes.
         if matches!(
-            crate::environment::environment_of(self.environments, &peer.device_public_key),
+            self.environments.of(&peer.device_public_key, now_ns),
             Some(crate::environment::Environment::Stopped { .. })
         ) {
             return Err(DenyReason::EnvironmentStopped);
