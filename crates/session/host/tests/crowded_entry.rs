@@ -31,7 +31,7 @@ use tilo_session_host::device::{Entering, door_entry};
 use tilo_session_host::{Host, MemoryPeerStore, PeerEvent, PeerHandle, TransportPhase};
 use tilo_user_identity::UserIdentity;
 
-use support::{enrol, enter_page, start_page, start_workspace_host_relaying, wait_for};
+use support::{enrol, enter_page, start_workspace_host_relaying};
 
 fn new_key() -> SigningKey {
     SigningKey::generate(&mut UnwrapErr(SysRng))
@@ -268,7 +268,7 @@ fn keyed(page: &PeerHandle, route: &DocumentRoute) -> bool {
 async fn a_fresh_guest_enters_a_crowded_workspace() {
     trace_steps();
     let members = env_usize("TILO_CROWD_MEMBERS", 300);
-    let online = env_usize("TILO_CROWD_KEYED", 1);
+    let online = env_usize("TILO_CROWD_KEYED", members);
     let record_bytes = env_usize("TILO_CROWD_BYTES", 3_500_000);
     let (owner, _) = UserIdentity::generate("Owner", 1);
     // The Lounge's host is certified as a hosted workspace host is: it owns its
@@ -303,134 +303,91 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
         record: "desktop".into(),
     };
 
-    // The crowd: people who came through the door, each a device of their own,
-    // a few at a time as people arrive.
+    // The crowd: people who came through the door, each a device of their
+    // own, a few at a time as people arrive. Each page enters as a visitor's
+    // does, its entry carrying its request for the workspace's keys, writes its
+    // own part of the shared desktop once it holds them, and goes away: the
+    // workspace's channel group holds every one of them, as the Lounge's
+    // holds every member who ever came. The first stays, and writes the
+    // workspace's records: the shared desktop and a spread of others,
+    // `record_bytes` in all.
     let seeded = Instant::now();
-    let mut crowd = Vec::new();
-    let mut arriving = tokio::task::JoinSet::new();
-    for n in 0..members {
-        if arriving.len() >= 10
-            && let Some(entered) = arriving.join_next().await
-        {
-            crowd.push(entered.unwrap());
-        }
-        let host_cert = host_device.cert.clone();
-        let workspace = lounge.workspace.clone();
-        let doors = workspaces.clone();
-        arriving.spawn(async move {
-            let (key, cert) = through_the_door(&doors, &workspace, &format!("Member {n}")).await;
-            (key, cert, host_cert)
-        });
-    }
-    while let Some(entered) = arriving.join_next().await {
-        crowd.push(entered.unwrap());
-    }
-    eprintln!(
-        "seeded {members} members through the door in {:?}",
-        seeded.elapsed()
-    );
-
-    // The first member writes the workspace's records: the shared desktop and
-    // a spread of others, `record_bytes` in all.
-    // The members still here when the guest arrives: the first, who wrote.
-    let mut staying: Vec<PeerHandle> = Vec::new();
     let mut base = desktop_base(64 * 1024);
-    let keyed_at = Instant::now();
-    for (index, chunk) in crowd
-        .iter()
-        .take(online)
-        .collect::<Vec<_>>()
-        .chunks(100)
-        .enumerate()
-    {
-        let batch: Vec<PeerHandle> = chunk
-            .iter()
-            .map(|(key, cert, host_cert)| {
-                let page = start_page(
-                    page_host(),
-                    cert.clone(),
-                    host_cert.clone(),
-                    key.clone(),
-                    std::sync::Arc::new(MemoryPeerStore::default()),
-                );
-                page.join(lounge.workspace_id).unwrap();
-                page.open_route(desktop.clone()).unwrap();
-                page
-            })
-            .collect();
-        let waiting = Instant::now();
-        while !batch.iter().all(|page| keyed(page, &desktop)) {
-            assert!(
-                waiting.elapsed() < Duration::from_secs(240),
-                "batch {index} never keyed; a page's channels:\n{}",
-                batch
-                    .iter()
-                    .find(|page| !keyed(page, &desktop))
-                    .map(|page| page.status().channels)
-                    .unwrap_or_default()
-            );
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        eprintln!("batch {index} keyed in {:?}", waiting.elapsed());
-        if index == 0 {
-            let author = &batch[0];
-            author
-                .publish(desktop.clone(), &DocumentMutation::Snapshot(base.save()))
-                .unwrap();
-            let records = record_bytes / (100 * 1024);
-            for record in 0..records {
-                let route = DocumentRoute {
-                    app_id: "so.tilo.notes".into(),
-                    cluster_id: lounge.workspace.clone(),
-                    record: format!("note-{record}"),
-                };
-                author.open_route(route.clone()).unwrap();
-                author
-                    .publish(
-                        route,
-                        &DocumentMutation::Snapshot(
-                            record_of(100 * 1024, record as u64 + 7).save(),
-                        ),
-                    )
-                    .unwrap();
-            }
-            // The crowd's chat: its newest part, which a chain's reader
-            // finds by opening the chain's head.
-            let chat = chat_part(&lounge.workspace);
-            author.open_route(chat.clone()).unwrap();
-            author
-                .publish(
-                    chat,
-                    &DocumentMutation::Snapshot(record_of(CHAT_BYTES, 3).save()),
-                )
-                .unwrap();
-        }
-        // Every member's device writes its own part of the shared desktop.
-        for (offset, page) in batch.iter().enumerate() {
-            page.publish(
-                desktop.clone(),
-                &DocumentMutation::Incremental(desktop_part(&mut base, index * 100 + offset, 600)),
+    let first = Member {
+        host: page_host(),
+        host_cert: host_device.cert.clone(),
+        workspace: lounge.workspace.clone(),
+        workspace_id: lounge.workspace_id,
+        desktop: desktop.clone(),
+    };
+    let author = first.arrive("Member 0").await;
+    author
+        .publish(desktop.clone(), &DocumentMutation::Snapshot(base.save()))
+        .unwrap();
+    let records = record_bytes / (100 * 1024);
+    for record in 0..records {
+        let route = DocumentRoute {
+            app_id: "so.tilo.notes".into(),
+            cluster_id: lounge.workspace.clone(),
+            record: format!("note-{record}"),
+        };
+        author.open_route(route.clone()).unwrap();
+        author
+            .publish(
+                route,
+                &DocumentMutation::Snapshot(record_of(100 * 1024, record as u64 + 7).save()),
             )
             .unwrap();
-        }
-        for page in &batch {
-            let receipt = page.barrier().unwrap();
-            wait_for("the batch's writes durable", || async {
-                receipt.try_recv().ok()
-            })
-            .await
-            .unwrap();
-        }
-        // Most of the crowd is away: their pages close once keyed.
-        for (offset, page) in batch.into_iter().enumerate() {
-            if index == 0 && offset == 0 {
-                staying.push(page);
-            } else {
-                page.close();
-            }
-        }
     }
-    eprintln!("keyed {online} member devices in {:?}", keyed_at.elapsed());
+    // The crowd's chat: its newest part, which a chain's reader finds by
+    // opening the chain's head.
+    let chat = chat_part(&lounge.workspace);
+    author.open_route(chat.clone()).unwrap();
+    author
+        .publish(
+            chat,
+            &DocumentMutation::Snapshot(record_of(CHAT_BYTES, 3).save()),
+        )
+        .unwrap();
+    first
+        .leave_part(&author, desktop_part(&mut base, 0, 600))
+        .await;
+    let staying = vec![author];
+    let mut arriving = tokio::task::JoinSet::new();
+    for n in 1..members {
+        while arriving.len() >= ARRIVING {
+            arriving.join_next().await.unwrap().unwrap();
+        }
+        if n % 50 == 0 {
+            eprintln!("{n} members in after {:?}", seeded.elapsed());
+        }
+        let name = format!("Member {n}");
+        if n >= online {
+            // Beyond those who came with a page that took the keys: people
+            // the door let in whose devices never came back.
+            let doors = workspaces.clone();
+            let workspace = lounge.workspace.clone();
+            arriving.spawn(async move {
+                through_the_door(&doors, &workspace, &name).await;
+            });
+            continue;
+        }
+        let part = desktop_part(&mut base, n, 600);
+        let member = first.clone();
+        arriving.spawn(async move {
+            let page = member.arrive(&name).await;
+            member.leave_part(&page, part).await;
+            page.close();
+        });
+    }
+    while let Some(arrived) = arriving.join_next().await {
+        arrived.unwrap();
+    }
+    eprintln!(
+        "seeded {members} members, {} with pages that took the keys, in {:?}",
+        online.min(members),
+        seeded.elapsed()
+    );
 
     // A fresh guest, first over a network that costs nothing, then over one
     // whose every round trip takes `ROUND_TRIP`: the first is what the host and
@@ -521,6 +478,85 @@ async fn a_fresh_guest_enters_a_crowded_workspace() {
     }
 }
 
+/// How many people come through the door at once while the crowd is seeded.
+const ARRIVING: usize = 16;
+
+/// A member of the crowd arriving with a page of their own, as a new
+/// visitor's page enters: through the door, its entry carrying its request
+/// for the workspace's keys.
+#[derive(Clone)]
+struct Member {
+    host: Host,
+    host_cert: tilo_user_identity::DeviceCert,
+    workspace: String,
+    workspace_id: u64,
+    desktop: DocumentRoute,
+}
+
+impl Member {
+    /// The page of `name`, in the workspace and holding the desktop's keys.
+    async fn arrive(&self, name: &str) -> PeerHandle {
+        let (root, key) = (new_key(), new_key());
+        let (cert, entry) = door_entry(
+            &self.host_cert,
+            &self.workspace,
+            &key,
+            Entering {
+                held: None,
+                root: Some(&root),
+                label: "Browser",
+                name,
+                token: None,
+            },
+        )
+        .await
+        .unwrap();
+        let page = enter_page(
+            self.host.clone(),
+            cert,
+            self.host_cert.clone(),
+            key,
+            std::sync::Arc::new(MemoryPeerStore::default()),
+            entry,
+        );
+        page.join(self.workspace_id).unwrap();
+        page.open_route(self.desktop.clone()).unwrap();
+        let waiting = Instant::now();
+        while !keyed(&page, &self.desktop) {
+            if let Some(tilo_session_host::Entry::Refused { .. }) = &page.status().entry {
+                panic!("the door turned {name} away: {:?}", page.status().entry);
+            }
+            assert!(
+                waiting.elapsed() < Duration::from_secs(240),
+                "{name}'s page never held the desktop's keys; its channels:\n{}",
+                page.status().channels
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        page
+    }
+
+    /// Write `part`, `page`'s own part of the shared desktop, and wait until
+    /// the host keeps it.
+    async fn leave_part(&self, page: &PeerHandle, part: Vec<u8>) {
+        page.publish(self.desktop.clone(), &DocumentMutation::Incremental(part))
+            .unwrap();
+        let receipt = page.barrier().unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if let Ok(kept) = receipt.try_recv() {
+                kept.unwrap();
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a member's part of the desktop was never kept"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
+
 /// A person coming through `workspace`'s door with a device of their own, as the host's door
 /// and the workspace's join take them, in process: the crowd that came before leaves no session
 /// behind it, only the members it made.
@@ -605,17 +641,20 @@ const ROUND_TRIP: Duration = Duration::from_millis(400);
 
 /// What the host and the page may spend on a fresh guest's entry, from its
 /// first request until its desktop shows: the session and the door (about
-/// 0.1 s), the workspace admitting the guest (about 50 ms for 300 members), the
-/// replay written, the page taking it in (0.2 to 0.45 s), the desktop's keys,
-/// which the host's participants commit while the admission's answer travels.
-/// The quick entry shows in 0.3 to 0.8 s on the builder.
+/// 0.1 s), the workspace admitting the guest (about 60 ms for 300 members),
+/// the participants' commit that adds the guest to a channel group of 300 and
+/// carries its Welcome (about 85 ms), the replay written, and the page taking
+/// in its Welcome, the commits after it, the governance and the 300 members'
+/// parts of the desktop. Every member's page holds the keys, as in the Lounge,
+/// so each of those channel frames works through a group of 300. The quick
+/// entry shows in 1.1 to 1.25 s on the builder.
 ///
 /// Nothing here waits on a clock: a guest whose certificate was issued a
 /// moment before its entry is in the workspace's channel group at once, so
 /// the quick entry is held to this allowance alone. The allowance is kept
 /// wider than the quick entry needs because the slow entry is held to it too,
 /// with its round trips beside it.
-const COMPUTE: Duration = Duration::from_millis(1_300);
+const COMPUTE: Duration = Duration::from_millis(1_500);
 
 /// How many round trips a fresh guest may wait, one after another, beside
 /// [`COMPUTE`]: the slow entry's desktop shows within this many of
@@ -636,28 +675,34 @@ const COMPUTE: Duration = Duration::from_millis(1_300);
 ///   connection, so no challenge of the host's comes first) and has the
 ///   guest's first requests right behind it: 0.5;
 /// - the host's answer and the replay of governance and the desktop behind
-///   it, about 0.45 MB, from a 256 KiB initial window rather than QUIC's
-///   14 KB, which took six: 1.5.
+///   it, about 0.8 MB for a crowd of 300 that all hold the keys (see
+///   [`MAX_BYTES`]), from a 256 KiB initial window rather than QUIC's 14 KB:
+///   2.
 ///
 /// The desktop's keys take none of their own: the hello carries the guest's
 /// request for them, and the Welcome is the first thing its replay writes.
 /// The host's certificate takes none either: the page's site hands it over
-/// with the page. Four in all, which the fixed allowance reads as about two;
-/// at 400 ms the desktop shows in about 2.1 s.
-const MAX_ROUND_TRIPS: f64 = 2.5;
+/// with the page. Four and a half in all, which the fixed allowance reads as
+/// about three and a half; at 400 ms the desktop shows in about 2.7 s.
+const MAX_ROUND_TRIPS: f64 = 3.5;
 
-/// What a fresh guest may receive before its desktop shows, about 0.49 MB
-/// for 300 members: its Welcome first, once, then the workspace's bootstrap
-/// (its member roster), its governance (a compressed base with the changes
-/// since, which a host starts over once they weigh half the base, so at most
-/// one and a half times the governance) and its shared desktop. Starting over
-/// only once the changes weighed as much as the base sent this guest 0.52 MB. The Lounge is public, so the members'
-/// records (3.5 MB here) and its chat (0.3 MB in its newest part) come only
-/// when the guest opens them, and a page, which admits no one to a channel's
-/// group, is sent no member's request to be admitted to one. Governance sent
-/// twice or uncompressed, any of those records or the chat sent with the
-/// desktop, or the Welcome sent again crosses this.
-const MAX_BYTES: u64 = 500_000;
+/// What a fresh guest may receive before its desktop shows, 0.75 to 0.84 MB
+/// for 300 members who all hold the keys: its Welcome first, once (about
+/// 65 KB, the group's ratchet tree of 300), then the workspace's bootstrap (its
+/// member roster, about 140 KB), its governance (a compressed base of about
+/// 260 KB with the changes since, which a host starts over once they weigh
+/// half the base, so between one and one and a half times the base: how many
+/// changes a guest meets depends on how the crowd's admissions fell into
+/// changes, which is what moves the total from run to run), each member
+/// device's hello (about 70 KB) and the shared desktop, whose members' parts
+/// are compacted into its checkpoint as they come (0.2 to 0.35 MB). The Lounge
+/// is public, so the members' records (3.5 MB here) and its chat (0.3 MB in
+/// its newest part) come only when the guest opens them, and a page, which
+/// admits no one to a channel's group, is sent no member's request to be
+/// admitted to one. Governance sent twice or uncompressed, any of those
+/// records or the chat sent with the desktop, or the Welcome sent again
+/// crosses this.
+const MAX_BYTES: u64 = 900_000;
 
 /// One guest's entry, as it went.
 struct Entry {
