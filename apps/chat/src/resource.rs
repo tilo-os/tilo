@@ -118,7 +118,7 @@ impl Chat {
     /// What the chat record holds, for a caller that reads it: with no item,
     /// the workspace's channels; with a channel, what it is about. Its messages
     /// are kept in parts beside the record: a caller reads them from the
-    /// chain the window publishes, or with `read-workspace`.
+    /// chain the window publishes, or through the record door.
     pub fn content(&self, item: Option<&Id>) -> Result<serde_json::Value, String> {
         let Some(item) = item else {
             return Ok(serde_json::json!({
@@ -749,17 +749,6 @@ fn answer(chat: &SharedChat, effect: ChatEffect, cx: &mut EffectCx<Chat>) -> Eff
         return chat
             .borrow()
             .export_transcript(&cx.live().get(), channel, format.as_deref());
-    }
-    if let ChatEffect::ReadWorkspace { message, channel } = &effect {
-        let state = cx.live().get();
-        return Ok(ui::framework::Effected::value(
-            crate::effects::read_workspace(
-                &state,
-                &chat.borrow().held_messages(),
-                message.as_deref(),
-                channel.as_deref(),
-            ),
-        ));
     }
     if let Some(url) = crate::external::browser_destination(&effect)? {
         return Ok(cx.thread(

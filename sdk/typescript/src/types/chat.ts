@@ -538,10 +538,6 @@ export interface Workspace extends tilo.Resource {
     report: string;
     update: unknown;
   }): Promise<tilo.Run | void>;
-  readWorkspace(args?: {
-    message?: string;
-    channel?: string;
-  }): Promise<void>;
   exportContent(args: {
     channel: string;
     format?: string;

@@ -74,8 +74,48 @@ pub trait RecordReads: Send + Sync {
     }
 }
 
+/// Copies of records already in hand, by id, read as they are: what a reader planning with what
+/// it holds reads. Any other record is absent, and nothing wakes a wait for a write.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeldCopies(pub std::collections::HashMap<String, Vec<u8>>);
+
+impl HeldCopies {
+    /// `asks` read from these copies by `caller` now, as every reader is answered
+    /// ([`RecordReadings::readable`]).
+    ///
+    /// # Errors
+    ///
+    /// As [`read_records`] and [`RecordReadings::readable`].
+    pub fn readable(
+        &self,
+        caller: &Caller,
+        asks: &[RecordAsk],
+    ) -> Result<serde_json::Value, String> {
+        read_records(self, caller, asks, None, tilo_clock::Instant::now())
+            .map_err(|error| error.to_string())?
+            .readable()
+    }
+}
+
+impl RecordReads for HeldCopies {
+    fn read(&self, _: &Caller, address: &RecordAddress) -> Result<RecordCopy, ActionHostError> {
+        Ok(self
+            .0
+            .get(&address.record)
+            .map_or(RecordCopy::Absent, |bytes| {
+                RecordCopy::Document(bytes.clone())
+            }))
+    }
+
+    fn watch(&self, _: &Caller, _: &RecordAddress, _: &RecordWake) -> Result<(), ActionHostError> {
+        Ok(())
+    }
+}
+
 /// One record a reader asks for: alone, or `joined`, the chain of parts whose base it is
-/// ([`crate::record_sync`]): part `0`, `1`, … up to the first the workspace holds none of.
+/// ([`crate::record_sync`]): part `0`, `1`, … up to the first the workspace holds none of. A
+/// chain's head ([`crate::record_sync::chain_head`]) asked alone reads its newest part, under
+/// that part's id: what a reader that follows a chain reads, whatever its length.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RecordAsk {
     pub address: RecordAddress,
@@ -109,10 +149,17 @@ pub fn read_records(
         let mut revision = blake3::Hasher::new();
         let mut records = Vec::new();
         for ask in asks {
+            let newest_only = match crate::record_sync::record_sync(&ask.address.record) {
+                crate::record_sync::RecordSync::ChainHead { base } if !ask.joined => Some(base),
+                _ => None,
+            };
+            let chained = ask.joined || newest_only.is_some();
+            let base = newest_only.unwrap_or(&ask.address.record);
+            let mut read = Vec::new();
             let mut part = 0;
             loop {
-                let record = if ask.joined {
-                    crate::record_sync::record_part(&ask.address.record, part)
+                let record = if chained {
+                    crate::record_sync::record_part(base, part)
                 } else {
                     ask.address.record.clone()
                 };
@@ -138,16 +185,27 @@ pub fn read_records(
                     revision.update(&(bytes.len() as u64).to_le_bytes());
                     revision.update(bytes);
                 }
-                let last = !ask.joined || !matches!(copy, Some(RecordCopy::Document(_)));
+                let last = !chained || !matches!(copy, Some(RecordCopy::Document(_)));
                 // The part after a chain's last is watched, not answered: its first write wakes.
-                if !(ask.joined && part > 0 && matches!(copy, Some(RecordCopy::Absent))) {
-                    records.push((address.record, copy));
+                if !(chained && part > 0 && matches!(copy, Some(RecordCopy::Absent))) {
+                    read.push((address.record, copy));
                 }
                 if last {
                     break;
                 }
                 part = part.saturating_add(1);
             }
+            // A head answers the newest part alone; every part read stays in the revision, so
+            // a write to any of them, or a new part, wakes its reader.
+            if newest_only.is_some()
+                && let Some(newest) = read
+                    .iter()
+                    .rposition(|(_, copy)| matches!(copy, Some(RecordCopy::Document(_))))
+                    .or_else(|| read.len().checked_sub(1))
+            {
+                read = vec![read.swap_remove(newest)];
+            }
+            records.extend(read);
         }
         let revision = revision.finalize().to_hex().to_string();
         let now = tilo_clock::Instant::now();
@@ -362,38 +420,10 @@ pub trait RecordChanges: Send + Sync {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashMap;
-
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT};
-    use tilo_lock::MutexRecover as _;
 
     use super::*;
-
-    /// Records held as documents, by id; any other is absent.
-    #[derive(Default)]
-    struct Held(std::sync::Mutex<HashMap<String, Vec<u8>>>);
-
-    impl RecordReads for Held {
-        fn read(&self, _: &Caller, address: &RecordAddress) -> Result<RecordCopy, ActionHostError> {
-            Ok(self
-                .0
-                .lock_recover()
-                .get(&address.record)
-                .map_or(RecordCopy::Absent, |bytes| {
-                    RecordCopy::Document(bytes.clone())
-                }))
-        }
-
-        fn watch(
-            &self,
-            _: &Caller,
-            _: &RecordAddress,
-            _: &RecordWake,
-        ) -> Result<(), ActionHostError> {
-            Ok(())
-        }
-    }
 
     fn message(text: &str) -> Vec<u8> {
         let mut doc = AutoCommit::new();
@@ -427,10 +457,8 @@ mod tests {
 
     #[test]
     fn a_record_reads_as_plain_data_with_its_text_counters_and_bytes() {
-        let held = Held::default();
-        held.0
-            .lock_recover()
-            .insert("note".into(), message("hello"));
+        let mut held = HeldCopies::default();
+        held.0.insert("note".into(), message("hello"));
         let caller = Caller::local_person("me");
         let now = tilo_clock::Instant::now();
         let read = read_records(
@@ -470,10 +498,10 @@ mod tests {
 
     #[test]
     fn a_chain_reads_joined_up_to_its_last_part_and_a_new_part_changes_its_revision() {
-        let held = Held::default();
+        let mut held = HeldCopies::default();
         let part = |index| crate::record_sync::record_part("chain", index);
-        held.0.lock_recover().insert(part(0), message("first"));
-        held.0.lock_recover().insert(part(1), message("second"));
+        held.0.insert(part(0), message("first"));
+        held.0.insert(part(1), message("second"));
         let caller = Caller::local_person("me");
         let now = tilo_clock::Instant::now();
         let read = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
@@ -490,7 +518,7 @@ mod tests {
         );
         let same = read_records(&held, &caller, &[ask("chain", true)], None, now).unwrap();
         assert_eq!(same.revision, read.revision);
-        held.0.lock_recover().insert(part(2), message("third"));
+        held.0.insert(part(2), message("third"));
         let grown = read_records(
             &held,
             &caller,
@@ -501,5 +529,21 @@ mod tests {
         .unwrap();
         assert_ne!(grown.revision, read.revision);
         assert_eq!(grown.records.len(), 3);
+        // The head is the newest part alone, its revision moved by a new part.
+        let newest_part = crate::record_sync::chain_head("chain");
+        let newest = read_records(&held, &caller, &[ask(&newest_part, false)], None, now).unwrap();
+        assert_eq!(
+            values(&newest),
+            [(
+                part(2),
+                serde_json::json!({"messages": [
+                    {"text": "third", "likes": 2, "avatar": {"bytes": 3}}
+                ]})
+            )]
+        );
+        held.0.insert(part(3), message("fourth"));
+        let moved = read_records(&held, &caller, &[ask(&newest_part, false)], None, now).unwrap();
+        assert_ne!(moved.revision, newest.revision);
+        assert_eq!(moved.records[0].0, part(3));
     }
 }

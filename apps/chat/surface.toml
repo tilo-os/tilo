@@ -300,14 +300,6 @@ params = [
 ]
 
 [[resources.verbs]]
-id = "read-workspace"
-kind = "read"
-params = [
-  { name = "message", type = { option = "text" }, required = false },
-  { name = "channel", type = { option = "text" }, required = false },
-]
-
-[[resources.verbs]]
 id = "export-content"
 kind = "read"
 params = [

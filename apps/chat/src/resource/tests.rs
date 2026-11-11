@@ -632,12 +632,11 @@ fn a_window_publishes_its_effects_beside_the_chat_verbs() {
     for id in ["join-call", "leave-call", "mute", "unmute", "call-status"] {
         assert!(lounge.iter().any(|action| action == id), "{id}: {lounge:?}");
     }
-    // `read-workspace` reads the chat of the workspace the window is already
-    // in; every other action that names a workspace would be Chat making one.
+    // An action that names a workspace would be Chat making one.
     let named = root
         .iter()
         .map(String::as_str)
-        .filter(|action| action.contains("workspace") && *action != "read-workspace");
+        .filter(|action| action.contains("workspace"));
     assert!(
         named.count() == 0,
         "Chat runs in a workspace and makes none: {root:?}"

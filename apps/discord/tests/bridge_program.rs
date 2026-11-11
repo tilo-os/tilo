@@ -199,7 +199,8 @@ fn mirrored_post(step: &str, extra: &[(&str, Binding)]) -> Vec<Step> {
 fn pass() -> Vec<Step> {
     let plan_step = |id: &str, pointer: &str| Binding::step(id, pointer);
     vec![
-        // Chat's record of the workspace, and its messages' chain of parts.
+        // Chat's record of the workspace, and the newest part of its
+        // messages' chain: however long the chat, a pass reads no more.
         Step::new(
             "chat",
             StepKind::Read {
@@ -212,8 +213,50 @@ fn pass() -> Vec<Step> {
             "messages",
             StepKind::Read {
                 app: CHAT_APP.into(),
-                record: chat::parts::chain().route().to_owned(),
-                joined: true,
+                record: ui::tilo_actions::record_sync::chain_head(chat::parts::chain().route()),
+                joined: false,
+            },
+        ),
+        // A change to a message of an earlier part (an edit, a reaction, a
+        // reply in its thread) is read in its part too.
+        Step::new(
+            "no-change",
+            StepKind::SetVar {
+                name: "changed".into(),
+                value: Binding::Literal(Value::Null),
+            },
+        ),
+        Step::new(
+            "changed-part",
+            StepKind::If {
+                cond: Condition::All(vec![
+                    Condition::Equals {
+                        left: input("event/kind"),
+                        right: text(MESSAGES_KIND),
+                    },
+                    Condition::Not(Box::new(Condition::Equals {
+                        left: input("event/record"),
+                        right: plan_step("messages", "/records/0/record"),
+                    })),
+                ]),
+                then: vec![
+                    Step::new(
+                        "changed",
+                        StepKind::Read {
+                            app: CHAT_APP.into(),
+                            record: "{{input.event/record}}".into(),
+                            joined: false,
+                        },
+                    ),
+                    Step::new(
+                        "changed-read",
+                        StepKind::SetVar {
+                            name: "changed".into(),
+                            value: plan_step("changed", ""),
+                        },
+                    ),
+                ],
+                otherwise: Vec::new(),
             },
         ),
         guild(
@@ -226,6 +269,7 @@ fn pass() -> Vec<Step> {
                     Binding::Object(BTreeMap::from([
                         ("chat".to_owned(), plan_step("chat", "")),
                         ("messages".to_owned(), plan_step("messages", "")),
+                        ("changed".to_owned(), Binding::Var("changed".into())),
                     ])),
                 ),
                 ("context", input("context")),

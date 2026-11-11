@@ -374,8 +374,21 @@ impl Checker<'_> {
                 record,
                 joined,
             } => {
+                if let Some(named) = crate::shortcut::read_record_binding(record) {
+                    self.value(&named, scope, path);
+                }
                 self.read(path, app, record, *joined);
-                Some((Ty::Object(None), None))
+                // The door's answer: every reader reads a record so.
+                let answer = serde_json::json!({"type": "object", "properties": {
+                    "revision": {"type": "string"},
+                    "records": {"type": "array", "items": {"type": "object", "properties": {
+                        "record": {"type": "string"},
+                        "value": {},
+                        "absent": {"type": "boolean"},
+                        "arriving": {"type": "boolean"},
+                    }}},
+                }});
+                Some((Ty::Object(Some(answer.clone())), Some(answer)))
             }
             StepKind::Ask { param } => {
                 for reason in param.validate_declaration() {

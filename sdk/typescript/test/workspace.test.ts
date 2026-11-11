@@ -68,6 +68,24 @@ describe("reading a workspace", () => {
     await tilo.close();
   });
 
+  it("reads a conversation from the chat record", async () => {
+    const house = door();
+    const chain = "derived:messages@derived:default@tab:0000000000000000";
+    house.records.set(`so.tilo.chat:${chain}`, { messages: { m1: { channel: "general", text: "hi" } } });
+    const workspace = open(house).workspace("jane-doe");
+
+    const read = (await workspace.record("so.tilo.chat", chain, { parts: true, after: "r0" })) as any;
+
+    expect(read.records[0].value.messages.m1.text).toBe("hi");
+    expect(house.asked("tilo_read").at(-1)?.arguments).toEqual({
+      path: `record:so.tilo.chat:${chain}`,
+      parts: true,
+      after: "r0",
+    });
+    const absent = (await workspace.record("so.tilo.chat")) as any;
+    expect(absent.records).toEqual([{ record: "", absent: true }]);
+  });
+
   it("answers search hits", async () => {
     const tilo = open(door());
 

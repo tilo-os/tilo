@@ -669,19 +669,6 @@ class Workspace(Resource):
         """Runs the app's action."""
         return self.action("triage", report=report, update=update)
 
-    def read_workspace(self,
-        *,
-        message: str | None = None,
-        channel: str | None = None,
-    ) -> None:
-        """Runs the app's action."""
-        args: dict[str, Any] = {}
-        if message is not None:
-            args["message"] = message
-        if channel is not None:
-            args["channel"] = channel
-        return self.action("read-workspace", **args)
-
     def export_content(self,
         *,
         channel: str,

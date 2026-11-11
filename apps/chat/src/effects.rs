@@ -122,19 +122,6 @@ pub enum ChatEffect {
         #[param("The message")]
         text: String,
     },
-    /// Read workspace
-    ///
-    /// The workspace's categories and channels and its people as the record
-    /// stores them, the names of the workspace's own emoji, and, when
-    /// asked, one message with the message it answers or a channel's latest
-    /// messages: what a bot mirroring the workspace elsewhere works from.
-    #[effect(kind = "read", returns, audience = "agents")]
-    ReadWorkspace {
-        #[param("A message to include, with the message it answers")]
-        message: Option<String>,
-        #[param("A channel whose latest messages to include, each with the message it answers")]
-        channel: Option<String>,
-    },
     /// Export conversation
     ///
     /// Keeps the channel's transcript, oldest first, each line by the name
@@ -299,7 +286,7 @@ impl ChatApp {
                     "videoCapture": false,
                 })));
             }
-            ChatEffect::ReadWorkspace { .. } | ChatEffect::ExportContent { .. } => {
+            ChatEffect::ExportContent { .. } => {
                 return Err("the record answers this read".into());
             }
             ChatEffect::OpenSlackChannel { .. } | ChatEffect::OpenDiscordChannel { .. } => {
@@ -707,75 +694,6 @@ impl ChatApp {
         self.reselect();
         Ok(())
     }
-}
-
-/// How many of a channel's latest messages [`read_workspace`] includes: a
-/// post's change names its channel, not the message it made, so a bot finds
-/// that message among the channel's newest.
-const READ_LATEST: usize = 20;
-
-/// The answer of [`ChatEffect::ReadWorkspace`]: the record's own JSON form of
-/// the workspace's categories and channels, every person, the channels holding
-/// any message (`busy`), the names of the workspace's own emoji (`emoji`,
-/// each written `:name:` in reactions and text), and `message` and the
-/// latest messages of `channel`, each with the message it answers.
-pub(crate) fn read_workspace(
-    chat: &Chat,
-    held: &crate::messages::Messages,
-    message: Option<&str>,
-    channel: Option<&str>,
-) -> serde_json::Value {
-    use ui::tilo_resource::Model as _;
-    // A filed report reads as the message its channel shows.
-    let reports: std::collections::BTreeMap<tilo_resource::Id, crate::record::Message> =
-        chat.feedback_messages().collect();
-    let found = |id: &tilo_resource::Id| held.get(id).or_else(|| reports.get(id));
-    let mut wanted: Vec<tilo_resource::Id> = message
-        .map(tilo_resource::Id::from_raw)
-        .into_iter()
-        .collect();
-    if let Some(channel) = channel {
-        // The tail of the channel as the window shows it.
-        let latest = chat.message_rows(held, channel);
-        let skip = latest.len().saturating_sub(READ_LATEST);
-        wanted.extend(
-            latest
-                .into_iter()
-                .skip(skip)
-                .map(|message| tilo_resource::Id::from_raw(message.id)),
-        );
-    }
-    // Each with the message it answers, once.
-    let answered: Vec<tilo_resource::Id> = wanted
-        .iter()
-        .filter_map(|id| found(id)?.parent.clone())
-        .collect();
-    wanted.extend(answered);
-    let mut messages = Vec::new();
-    let mut seen = std::collections::BTreeSet::new();
-    for id in wanted {
-        if !seen.insert(id.clone()) {
-            continue;
-        }
-        if let Some(found) = found(&id) {
-            messages.push(serde_json::json!({ "id": id.as_str(), "value": found.to_json() }));
-        }
-    }
-    let busy: std::collections::BTreeSet<&str> = held
-        .iter()
-        .map(|(_, found)| found.channel.as_str())
-        .collect();
-    serde_json::json!({
-        "categories": chat.categories.to_json(),
-        "channels": chat.channels.to_json(),
-        "people": chat.people.to_json(),
-        "busy": busy,
-        "emoji": ui::workspace_emoji::emoji()
-            .iter()
-            .map(|emoji| emoji.name.clone())
-            .collect::<Vec<_>>(),
-        "messages": messages,
-    })
 }
 
 impl ChatApp {

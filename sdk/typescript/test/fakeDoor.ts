@@ -89,6 +89,8 @@ export class FakeDoor {
     },
   ];
   asks: Record<string, Answer> = {};
+  /** Records the record door answers, by `app:record`. */
+  records = new Map<string, unknown>();
   polls = 0;
   stream = false;
   watchPage: number | null = null;
@@ -477,6 +479,14 @@ export class FakeDoor {
 
   private read(args: Answer): Answer {
     const path = String(args.path ?? "");
+    if (path.startsWith("record:")) {
+      const [, app, ...rest] = path.split(":");
+      const record = rest.join(":");
+      const value = this.records.get(`${app}:${record}`);
+      return value === undefined
+        ? { revision: "r0", records: [{ record, absent: true }] }
+        : { revision: "r1", records: [{ record, value }] };
+    }
     if (!(path in this.fields)) {
       return this.failed(path, "not_found", `no resource ${path}`, "tilo_ls lists what is here");
     }

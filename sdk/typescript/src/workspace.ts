@@ -261,6 +261,24 @@ export class Workspace {
     return (await this.resource(path).load()) as Resource;
   }
 
+  /**
+   * A record of `app` as plain data, `{revision, records: [{record, value}]}`: the app's
+   * record of the workspace for an empty `record`. `parts` reads the chain of parts the
+   * record is the base of (a chat's messages); `after` waits for a write past that
+   * revision. Chat's conversations are read so.
+   */
+  async record(
+    app: string,
+    record = "",
+    options: { parts?: boolean; after?: string | null } = {},
+  ): Promise<Record<string, unknown>> {
+    const args: Record<string, unknown> = { path: `record:${app}:${record}`, parts: options.parts ?? false };
+    if (options.after != null) {
+      args.after = options.after;
+    }
+    return this.call("tilo_read", args);
+  }
+
   /** A resource as a typed object: fields, actions and field edits. */
   resource(path: string): Resource {
     return resourceProxy(this, path);

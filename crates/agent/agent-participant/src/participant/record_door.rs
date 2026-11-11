@@ -7,9 +7,7 @@ use std::collections::HashMap;
 
 use tilo_actions::ActionOutput;
 use tilo_actions::door::{ActionAddress, ActionDescriptor};
-use tilo_actions::remote::{
-    Caller, RecordAddress, RecordAsk, RecordCopy, RecordReads, RecordWake, read_records,
-};
+use tilo_actions::remote::{Caller, HeldCopies, RecordAddress, RecordAsk};
 use tilo_agent::surface;
 use tilo_peer_state::document_frame::DocumentRoute;
 
@@ -73,34 +71,6 @@ pub(super) fn reads(route: &DocumentRoute, address: &ActionAddress) -> bool {
     *address == self::address(route)
 }
 
-/// The records `replica` holds, as the door reads them.
-struct Held(HashMap<String, Vec<u8>>);
-
-impl RecordReads for Held {
-    fn read(
-        &self,
-        _: &Caller,
-        address: &RecordAddress,
-    ) -> Result<RecordCopy, tilo_actions::remote::ActionHostError> {
-        Ok(self
-            .0
-            .get(&address.record)
-            .map_or(RecordCopy::Absent, |bytes| {
-                RecordCopy::Document(bytes.clone())
-            }))
-    }
-
-    /// Read once: what the agent holds now is what it plans with.
-    fn watch(
-        &self,
-        _: &Caller,
-        _: &RecordAddress,
-        _: &RecordWake,
-    ) -> Result<(), tilo_actions::remote::ActionHostError> {
-        Ok(())
-    }
-}
-
 /// `replica`'s record of `route`, and every record held beside it, through the door, as
 /// `agent` reads them.
 pub(super) fn read(
@@ -123,16 +93,8 @@ pub(super) fn read(
         });
         held.insert(record.route().to_owned(), bytes);
     }
-    let readings = read_records(
-        &Held(held),
-        &Caller::local_agent(agent),
-        &asks,
-        None,
-        tilo_clock::Instant::now(),
-    )
-    .map_err(|error| error.to_string())?;
     Ok(ActionOutput {
-        value: Some(readings.readable()?),
+        value: Some(HeldCopies(held).readable(&Caller::local_agent(agent), &asks)?),
         resources: Vec::new(),
     })
 }

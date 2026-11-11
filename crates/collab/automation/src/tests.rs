@@ -998,24 +998,50 @@ fn a_read_step_reads_records_through_the_door_inside_the_grant() {
     assert!(read["revision"].is_string());
     assert!(host.started().is_empty(), "a read invokes nothing");
 
-    let private = Shortcut {
-        steps: vec![read_step("private", "private", false)],
+    // A read names its record from the run, and a condition asks whether a
+    // value carries a field: one it lacks is absent, not a failure.
+    let when = |field: &str, then| {
+        let cond = Condition::Truthy(Binding::Var(format!("event/{field}")));
+        let otherwise = Vec::new();
+        Step::new(
+            field,
+            StepKind::If {
+                cond,
+                then,
+                otherwise,
+            },
+        )
+    };
+    let set = StepKind::SetVar {
+        name: "event".into(),
+        value: Binding::Literal(json!({"record": "private"})),
+    };
+    let run = Shortcut {
+        steps: vec![
+            Step::new("event", set),
+            when("source", vec![read_step("never", "", false)]),
+            when(
+                "record",
+                vec![read_step("private", "{{var.event/record}}", false)],
+            ),
+        ],
         ..reads
     };
-    let refused = unattended(&host, &private);
+    check(&run, &host.catalog(), &NoShortcuts).unwrap();
+    let refused = unattended(&host, &run);
     assert!(
         matches!(read_failure(&refused), Some(StepFailure::Host { error }) if matches!(**error, ActionHostError::Refused { .. })),
         "{refused:?}"
     );
 }
 
-/// Why the run's first step did not read: a read is a step of the run's
-/// own, which a later step reading it fails with.
+/// Why the run's read did not read: a read is a step of the run's own, which
+/// a later step reading it fails with.
 fn read_failure(report: &RunReport) -> Option<&StepFailure> {
-    match &report.steps.first()?.status {
+    report.steps.iter().find_map(|step| match &step.status {
         StepStatus::Failed { failure, .. } => Some(failure),
         StepStatus::Succeeded { .. } => None,
-    }
+    })
 }
 
 #[test]

@@ -273,10 +273,12 @@ pub enum StepKind {
     },
     /// Read one record of the workspace as it is now, through the record
     /// door every reader reads records through: `record` of `app` (empty for
-    /// the app's record of the workspace), or with `joined` the chain of
-    /// parts whose base it is. The output is the door's answer, `{revision,
-    /// records: [{record, value | absent | arriving}]}`. A read changes
-    /// nothing; what the run does with it, it does through actions.
+    /// the app's record of the workspace; a chain's head for its newest
+    /// part), or with `joined` the chain of parts whose base it is. `record`
+    /// may name it from the run with `{{...}}` placeholders, as a template
+    /// does: the record an event changed. The output is the door's answer,
+    /// `{revision, records: [{record, value | absent | arriving}]}`. A read
+    /// changes nothing; what the run does with it, it does through actions.
     Read {
         app: String,
         #[serde(default)]
@@ -284,6 +286,15 @@ pub enum StepKind {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         joined: bool,
     },
+}
+
+/// The binding a read step's `record` is, when it names its record from the
+/// run with `{{...}}` placeholders ([`StepKind::Read`]).
+#[must_use]
+pub fn read_record_binding(record: &str) -> Option<Binding> {
+    record
+        .contains("{{")
+        .then(|| Binding::Template(record.to_owned()))
 }
 
 fn default_item() -> String {

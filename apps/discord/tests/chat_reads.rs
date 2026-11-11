@@ -75,30 +75,35 @@ fn a_verb_answers_the_ids_it_created() {
 }
 
 /// Chat's records as the bridge's program reads them through the record door:
-/// its record of the workspace, and its messages' chain read joined.
+/// its record of the workspace, and the newest part of its messages' chain.
 fn read(app: &TestApp<ChatShell>) -> tilo::ChatRead {
-    let reading = |records: Vec<(String, Vec<u8>)>| {
-        let records: Vec<_> = records
-            .into_iter()
-            .map(|(record, bytes)| {
-                let value = ui::tilo_actions::remote::RecordCopy::Document(bytes)
-                    .readable()
-                    .unwrap();
-                json!({"record": record, "value": value})
-            })
-            .collect();
-        json!({"revision": "r", "records": records})
-    };
+    use ui::tilo_actions::remote::{Caller, HeldCopies, RecordAddress, RecordAsk};
     let own = app.record().clone();
-    let parts = (0..)
-        .map_while(|index| {
-            let part = chat::parts::part(index);
-            Some((part.route().to_owned(), app.record_document(&part)?))
-        })
-        .collect();
+    let mut held = HeldCopies::default();
+    held.0
+        .insert(String::new(), app.record_document(&own).unwrap());
+    for part in (0..).map(chat::parts::part) {
+        let Some(bytes) = app.record_document(&part) else {
+            break;
+        };
+        held.0.insert(part.route().to_owned(), bytes);
+    }
+    let door = |record: String| {
+        let address = RecordAddress {
+            app: "so.tilo.chat".into(),
+            record,
+        };
+        let ask = RecordAsk {
+            address,
+            joined: false,
+        };
+        held.readable(&Caller::local_agent("bot"), &[ask]).unwrap()
+    };
+    let newest = ui::tilo_actions::record_sync::chain_head(chat::parts::chain().route());
     tilo::ChatRead::of(&json!({
-        "chat": reading(vec![(String::new(), app.record_document(&own).unwrap())]),
-        "messages": reading(parts),
+        "chat": door(String::new()),
+        "messages": door(newest),
+        "changed": null,
     }))
 }
 

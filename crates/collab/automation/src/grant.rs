@@ -927,9 +927,9 @@ mod tests {
                 ActionKind::Undoable,
             ),
             permission(
-                "so.tilo.chat",
-                "chat.workspace",
-                "read-workspace",
+                "so.tilo.discord",
+                "discord.guild",
+                "plan-event",
                 ActionKind::Read,
             ),
         ]);

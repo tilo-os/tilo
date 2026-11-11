@@ -108,19 +108,26 @@ pub struct WorkspaceChat {
 }
 
 /// Chat's records as the bridge reads them through the record door: Chat's
-/// record of the workspace and every message of its chain of parts, in the
-/// chain's order, with each filed report's message after them.
+/// record of the workspace and the messages of the parts read of its chain
+/// (its newest, and the one a change was made in), in the chain's order,
+/// with each filed report's message after them.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatRead {
     record: Value,
     messages: Vec<(String, Value)>,
+    /// The channels holding a message in a part not read, as the parts read
+    /// count them ([`ChatRead::of`]).
+    earlier: std::collections::BTreeSet<String>,
 }
 
 impl ChatRead {
-    /// The door's readings `{"chat", "messages"}`: Chat's record of the
-    /// workspace, and its messages' chain read joined, each `{revision,
-    /// records: [{record, value}]}`. A part still arriving or absent reads as
-    /// holding nothing.
+    /// The door's readings `{"chat", "changed", "messages"}`: Chat's record
+    /// of the workspace, the part of its messages a change was made in
+    /// (`null` for none), and the chain's head, its newest part, each
+    /// `{revision, records: [{record, value}]}`. A part still arriving or
+    /// absent reads as holding nothing. However long the chat, a pass reads
+    /// at most two parts: each part counts the messages of every channel in
+    /// the parts before it, which tells the channels that hold any.
     #[must_use]
     pub fn of(read: &Value) -> Self {
         let values = |reading: Option<&Value>| -> Vec<Value> {
@@ -138,11 +145,27 @@ impl ChatRead {
             .into_iter()
             .next()
             .unwrap_or_default();
-        let messages = values(read.get("messages"))
+        let parts: Vec<Value> = ["changed", "messages"]
+            .into_iter()
+            .flat_map(|reading| values(read.get(reading)))
+            .collect();
+        let messages = parts
             .iter()
             .flat_map(|part| entries(part, "messages"))
             .collect();
-        Self::new(record, messages)
+        let earlier = parts
+            .iter()
+            .filter_map(|part| part.get("earlier")?.as_object())
+            .flat_map(|counts| counts.values())
+            .filter_map(Value::as_object)
+            .flatten()
+            .filter(|(_, count)| count.as_i64().is_some_and(|count| count > 0))
+            .map(|(channel, _)| channel.clone())
+            .collect();
+        Self {
+            earlier,
+            ..Self::new(record, messages)
+        }
     }
 
     /// Chat's record of the workspace and the messages its parts hold, in
@@ -150,7 +173,11 @@ impl ChatRead {
     #[must_use]
     pub fn new(record: Value, mut messages: Vec<(String, Value)>) -> Self {
         messages.extend(reports(&record));
-        Self { record, messages }
+        Self {
+            record,
+            messages,
+            earlier: std::collections::BTreeSet::new(),
+        }
     }
 }
 
@@ -258,11 +285,12 @@ impl WorkspaceChat {
                 archived: flag(&v, "archived"),
             })
             .collect();
-        let busy: std::collections::BTreeSet<String> = chat
-            .messages
-            .iter()
-            .map(|(_, message)| text(message, "channel"))
-            .collect();
+        let mut busy = chat.earlier.clone();
+        busy.extend(
+            chat.messages
+                .iter()
+                .map(|(_, message)| text(message, "channel")),
+        );
         let busy = busy.into_iter().collect();
         Self {
             categories,
@@ -484,6 +512,29 @@ mod tests {
                   "attachments": [{"$variant": "file", "name": "a.txt", "blob": "ff", "size": 5}]}),
             )],
         )
+    }
+
+    #[test]
+    fn reads_the_parts_read_and_counts_the_channels_of_the_parts_before() {
+        let part =
+            |record: &str, value: Value| json!({"records": [{"record": record, "value": value}]});
+        let message =
+            |channel: &str, k: &str| json!({"k": k, "v": {"channel": channel, "text": k}});
+        let read = ChatRead::of(&json!({
+            "chat": part("", json!({"channels": {}})),
+            "changed": part("p1", json!({"messages": {"m1": message("c_a", "a")}})),
+            "messages": part("p2", json!({
+                "messages": {"m2": message("c_b", "b")},
+                "earlier": {"0": {"c_old": 3, "c_gone": 0}, "1": {"c_a": 1}}
+            })),
+        }));
+        let ids: Vec<String> = messages(&read).into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["m1", "m2"], "the changed part, then the newest");
+        assert_eq!(
+            WorkspaceChat::from_chat(&read).busy,
+            ["c_a", "c_b", "c_old"],
+            "a channel counted in an earlier part holds messages"
+        );
     }
 
     #[test]
