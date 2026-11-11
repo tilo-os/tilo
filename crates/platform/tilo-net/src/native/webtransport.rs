@@ -303,3 +303,158 @@ impl RecvStream {
         }
     }
 }
+
+/// How a [`Listener`] answers a session request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Answer {
+    /// Not served here: 404.
+    Refuse,
+    /// Served, with no subprotocol.
+    Accept,
+    /// Served, answering this subprotocol.
+    AcceptAs(String),
+}
+
+/// A WebTransport server on one UDP socket: HTTP/3 beside a host's HTTPS
+/// listener, on the same port and with the same certificate, so a page
+/// reaches it at the origin it already trusts.
+pub struct Listener {
+    endpoint: web_transport_quinn::quinn::Endpoint,
+}
+
+/// Handshakes one listener runs at once; a peer past that is refused before
+/// its TLS handshake.
+const MAX_PENDING_HANDSHAKES: usize = 64;
+/// How long a peer has to finish QUIC, TLS and its CONNECT request.
+const HANDSHAKE_BUDGET: std::time::Duration = std::time::Duration::from_secs(10);
+/// A session ends after this long without a packet from the peer.
+const SERVER_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Keeps an idle session open through NAT bindings and the idle timeout.
+const SERVER_KEEP_ALIVE: std::time::Duration = std::time::Duration::from_secs(10);
+/// Streams of each direction one session holds open at once: a session's
+/// own, a call's pictures, and room to start over.
+const SERVER_MAX_STREAMS: u32 = 256;
+
+impl Listener {
+    /// Listen on `socket`, presenting the certificate `certificate` resolves.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Protocol`] when TLS or QUIC rejects the configuration,
+    /// [`NetError::Connect`] when the socket cannot be used.
+    pub fn bind(
+        socket: std::net::UdpSocket,
+        certificate: std::sync::Arc<dyn rustls::server::ResolvesServerCert>,
+    ) -> Result<Self, NetError> {
+        use web_transport_quinn::quinn;
+        let mut tls = rustls::ServerConfig::builder_with_provider(super::tls::crypto_provider())
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .map_err(|error| NetError::Protocol(format!("TLS: {error}")))?
+            .with_no_client_auth()
+            .with_cert_resolver(certificate);
+        tls.alpn_protocols = vec![web_transport_quinn::ALPN.as_bytes().to_vec()];
+        tls.max_early_data_size = 0;
+        let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls)
+            .map_err(|error| NetError::Protocol(format!("QUIC: {error}")))?;
+        let mut config = quinn::ServerConfig::with_crypto(std::sync::Arc::new(crypto));
+        let mut transport = quinn::TransportConfig::default();
+        transport
+            .max_concurrent_bidi_streams(SERVER_MAX_STREAMS.into())
+            .max_concurrent_uni_streams(SERVER_MAX_STREAMS.into())
+            .max_idle_timeout(Some(
+                quinn::IdleTimeout::try_from(SERVER_IDLE_TIMEOUT)
+                    .map_err(|error| NetError::Protocol(error.to_string()))?,
+            ))
+            .keep_alive_interval(Some(SERVER_KEEP_ALIVE));
+        config.transport_config(std::sync::Arc::new(transport));
+        let runtime = quinn::default_runtime()
+            .ok_or_else(|| NetError::Protocol("no async runtime for the QUIC listener".into()))?;
+        let endpoint = quinn::Endpoint::new(
+            quinn::EndpointConfig::default(),
+            Some(config),
+            socket,
+            runtime,
+        )
+        .map_err(|error| NetError::connect(chain(&error)))?;
+        Ok(Self { endpoint })
+    }
+
+    /// The address the listener is bound to.
+    ///
+    /// # Errors
+    ///
+    /// [`NetError::Connect`] when the socket has no local address.
+    pub fn local_addr(&self) -> Result<std::net::SocketAddr, NetError> {
+        self.endpoint
+            .local_addr()
+            .map_err(|error| NetError::connect(chain(&error)))
+    }
+
+    /// Accept sessions until the listener closes, handing each to `serve`
+    /// with the path its CONNECT request named. `serves` reads the path and
+    /// the subprotocols the peer offered and gives the [`Answer`]. At most [`MAX_PENDING_HANDSHAKES`]
+    /// handshakes run at once, each within [`HANDSHAKE_BUDGET`]; dropping the
+    /// future aborts every session it serves.
+    pub async fn serve<S, F, Fut>(self, serves: S, serve: F)
+    where
+        S: Fn(&str, &[String]) -> Answer + Clone + Send + 'static,
+        F: Fn(String, crate::webtransport::Session) -> Fut + Clone + Send + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let pending = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_PENDING_HANDSHAKES));
+        let mut tasks = tokio::task::JoinSet::new();
+        loop {
+            tokio::select! {
+                incoming = self.endpoint.accept() => {
+                    let Some(incoming) = incoming else { break };
+                    let Ok(permit) = pending.clone().try_acquire_owned() else {
+                        incoming.refuse();
+                        continue;
+                    };
+                    let (serves, serve) = (serves.clone(), serve.clone());
+                    tasks.spawn(async move {
+                        let request = tokio::time::timeout(HANDSHAKE_BUDGET, async {
+                            let connection = incoming.await.ok()?;
+                            web_transport_quinn::Request::accept(connection).await.ok()
+                        })
+                        .await
+                        .ok()
+                        .flatten();
+                        let Some(request) = request else { return };
+                        let path = request.url.path().to_owned();
+                        let answer = if request.url.query().is_none() {
+                            serves(&path, &request.protocols)
+                        } else {
+                            Answer::Refuse
+                        };
+                        let response = match answer {
+                            Answer::Accept => web_transport_quinn::proto::ConnectResponse::OK,
+                            Answer::AcceptAs(protocol) => {
+                                web_transport_quinn::proto::ConnectResponse::OK.with_protocol(protocol)
+                            }
+                            Answer::Refuse => {
+                            let _ = tokio::time::timeout(
+                                std::time::Duration::from_millis(100),
+                                request.reject(web_transport_quinn::proto::http::StatusCode::NOT_FOUND),
+                            )
+                            .await;
+                            return;
+                            }
+                        };
+                        let session =
+                            tokio::time::timeout(HANDSHAKE_BUDGET, request.respond(response))
+                        .await;
+                        drop(permit);
+                        if let Ok(Ok(session)) = session {
+                            serve(path, crate::webtransport::Session::from_backend(Session(session))).await;
+                        }
+                    });
+                }
+                _ = tasks.join_next(), if !tasks.is_empty() => {}
+            }
+        }
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+        self.endpoint.close(0u32.into(), b"listener closed");
+    }
+}
