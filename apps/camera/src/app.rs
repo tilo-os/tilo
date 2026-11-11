@@ -1411,18 +1411,7 @@ impl CameraApp {
                 let settings = self.document_settings.scan;
                 let spawn = ui::rt::spawn_thread("camera-document-capture", move || {
                     let result = tilo_capture::scanner::scan_page(&scanner_device, settings)
-                        .and_then(|bytes| {
-                            ui::png::decode_rgba8(&bytes)
-                                .ok()
-                                .and_then(|page| {
-                                    ui::image_codec::DecodedImage::from_rgba(
-                                        page.width,
-                                        page.height,
-                                        page.rgba,
-                                    )
-                                })
-                                .ok_or_else(|| "scanner returned an invalid PNG".to_owned())
-                        });
+                        .and_then(|bytes| crate::document_scan::scanned_page(&bytes));
                     let _ = sender.send(DocumentJobResult::Capture(result));
                 });
                 if let Err(error) = spawn {

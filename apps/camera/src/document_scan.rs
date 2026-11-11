@@ -167,6 +167,19 @@ impl Page {
     }
 }
 
+/// The page a scanner handed back as `bytes`, decoded by the toolkit's
+/// codec: the browser's own decoder on the web, where a page decodes at all.
+/// The caller is the capture worker, which may wait for the decode.
+///
+/// # Errors
+///
+/// Why the bytes are no image the codec reads.
+pub fn scanned_page(bytes: &[u8]) -> Result<DecodedImage, String> {
+    ui::rt::block_on(ui::image_codec::decode(bytes, None))
+        .map_err(|error| error.to_string())?
+        .map_err(|error| error.to_string())
+}
+
 #[derive(Default)]
 pub struct ScanSession {
     pub pages: Vec<Page>,
@@ -224,6 +237,25 @@ impl ScanSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A scanner's page is decoded by the toolkit's codec, whatever the
+    /// scanner wrote: a PNG and a JPEG of the same size both come back as
+    /// the page's pixels, and bytes that are no image are refused.
+    #[test]
+    fn a_scanned_page_is_decoded_by_the_toolkits_codec() {
+        let pixels = [30_u8, 60, 90, 255].repeat(12 * 8);
+        let png = ui::png::encode_rgba8(12, 8, &pixels).expect("the fixture encodes");
+        let page = scanned_page(&png).expect("a scanned PNG decodes");
+        assert_eq!((page.width, page.height), (12, 8));
+        assert_eq!(page.rgba, pixels);
+
+        let jpeg = ui::jpeg::encode_rgba8_opaque(12, 8, &pixels, 95).expect("the fixture encodes");
+        let page = scanned_page(&jpeg).expect("a scanned JPEG decodes");
+        assert_eq!((page.width, page.height), (12, 8));
+
+        let refused = scanned_page(b"not an image").expect_err("the scanner wrote no image");
+        assert!(!refused.is_empty(), "{refused}");
+    }
 
     #[test]
     fn capture_errors_become_actionable_without_leaking_backend_output() {
