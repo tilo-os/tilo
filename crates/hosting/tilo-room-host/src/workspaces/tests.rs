@@ -838,12 +838,12 @@ fn a_long_tail_compacts_into_a_fresh_checkpoint() {
     assert_eq!(workspace.record.generation, 2);
 }
 
-/// A few changes heavier than the workspace's base start it over, however few
-/// they are; many light ones do not until they weigh as much.
+/// A few changes weighing half the workspace's base start it over, however
+/// few they are; many light ones do not until they weigh as much.
 #[test]
 fn a_heavy_tail_compacts_and_a_light_one_does_not() {
     let base = Publication {
-        bytes: vec![0; 2 * MIN_PUBLICATION_TAIL_BYTES],
+        bytes: vec![0; 4 * MIN_PUBLICATION_TAIL_BYTES],
         checkpoint: true,
     };
     let change = |len: usize| Publication {
@@ -853,13 +853,13 @@ fn a_heavy_tail_compacts_and_a_light_one_does_not() {
     let light: Vec<Publication> = std::iter::once(base.clone())
         .chain((0..100).map(|_| change(1024)))
         .collect();
-    assert!(!starts_over(&light), "100 KiB of changes on a 128 KiB base");
+    assert!(!starts_over(&light), "100 KiB of changes on a 256 KiB base");
     let heavy = vec![
         base,
         change(MIN_PUBLICATION_TAIL_BYTES),
         change(MIN_PUBLICATION_TAIL_BYTES),
     ];
-    assert!(starts_over(&heavy), "two changes as heavy as the base");
+    assert!(starts_over(&heavy), "two changes as heavy as half the base");
     let small = vec![
         Publication {
             bytes: vec![0; 1024],
@@ -2737,8 +2737,8 @@ async fn publication_shape(workspaces: &Workspaces, workspace: &str) -> Shape {
 /// every member once per arrival. A change that takes something back starts
 /// the workspace over at the next arrival, so a newcomer is never given what
 /// was withdrawn before they came. Otherwise the workspace starts over from a
-/// fresh base only once the changes since its last one weigh as much as that
-/// base, and the base holds its state in one compressed change: what a
+/// fresh base only once the changes since its last one weigh half as much as
+/// that base, and the base holds its state in one compressed change: what a
 /// newcomer fetches stays near the size of the workspace as it stands, not of
 /// its history.
 #[allow(
@@ -2792,7 +2792,7 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
     );
     let mut before = publication_shape(&workspaces, &workspace).await;
 
-    // Arrivals go on until the changes since the base outweigh it.
+    // Arrivals go on until the changes since the base weigh half of it.
     let mut started = None;
     for seed in 31..=250 {
         let (guest, guest_cert) = guest_device();
@@ -2805,10 +2805,11 @@ async fn a_crowd_joining_adds_to_the_room_rather_than_starting_it_over() {
         }
         before = shape;
     }
-    let before = started.expect("the room starts over once its changes outweigh its base");
+    let before = started.expect("the room starts over once its changes weigh half its base");
     assert!(
-        before.tail_bytes >= before.base_bytes.max(MIN_PUBLICATION_TAIL_BYTES),
-        "the room started over before its changes outweighed its base: {} B of changes on a {} B base",
+        before.tail_bytes >= (before.base_bytes / 2).max(MIN_PUBLICATION_TAIL_BYTES),
+        "the room started over before its changes weighed half its base: {} B of changes on a \
+         {} B base",
         before.tail_bytes,
         before.base_bytes
     );

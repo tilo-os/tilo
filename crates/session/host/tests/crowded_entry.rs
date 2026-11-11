@@ -649,10 +649,12 @@ const MAX_ROUND_TRIPS: f64 = 6.5;
 /// The door, the workspace's challenge and the admission ride the session.
 const MAX_REQUESTS: usize = 1;
 
-/// What a fresh guest may receive before its desktop shows, about 0.46 MB
+/// What a fresh guest may receive before its desktop shows, about 0.49 MB
 /// for 300 members: its Welcome first, once, then the workspace's bootstrap
 /// (its member roster), its governance (a compressed base with the changes
-/// since) and its shared desktop. The Lounge is public, so the members'
+/// since, which a host starts over once they weigh half the base, so at most
+/// one and a half times the governance) and its shared desktop. Starting over
+/// only once the changes weighed as much as the base sent this guest 0.52 MB. The Lounge is public, so the members'
 /// records (3.5 MB here) and its chat (0.3 MB in its newest part) come only
 /// when the guest opens them, and a page, which admits no one to a channel's
 /// group, is sent no member's request to be admitted to one. Governance sent
