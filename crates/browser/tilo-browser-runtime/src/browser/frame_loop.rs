@@ -167,8 +167,7 @@ impl ApplicationHandler<u64> for Runner {
         let result = with_mount_quietly(id, |m| {
             m.service_owner_models();
             if let Some(failure) = m.gpu.as_ref().and_then(Gpu::failure) {
-                m.error = Some(failure);
-                m.publish(id);
+                m.frame_failed(id, failure);
             } else {
                 m.window.request_redraw();
             }
@@ -219,8 +218,7 @@ impl ApplicationHandler<u64> for Runner {
                 WindowEvent::RedrawRequested => {
                     m.redraws = m.redraws.wrapping_add(1);
                     if let Err(e) = m.draw() {
-                        m.error = Some(e);
-                        m.publish(id);
+                        m.frame_failed(id, e);
                     }
                 }
                 WindowEvent::Resized(_) | WindowEvent::ScaleFactorChanged { .. } => {
@@ -476,8 +474,7 @@ pub(super) async fn watch_first_frame(id: u64) {
                     first_frame::Drive::Wait => {}
                     first_frame::Drive::Draw => {
                         if let Err(e) = m.draw() {
-                            m.error = Some(e);
-                            m.publish(id);
+                            m.frame_failed(id, e);
                             return Ok(false);
                         }
                     }

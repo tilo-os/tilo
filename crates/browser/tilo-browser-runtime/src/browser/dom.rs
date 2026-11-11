@@ -58,8 +58,7 @@ fn present_queued() {
     for id in ids {
         let result = with_mount_quietly(id, |m| {
             if let Err(error) = m.draw_dom() {
-                m.error = Some(error);
-                m.publish(id);
+                m.frame_failed(id, error);
             }
             Ok(())
         });

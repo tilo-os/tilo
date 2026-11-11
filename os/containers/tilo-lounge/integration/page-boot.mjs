@@ -274,5 +274,39 @@ if (after?.offset !== before.offset) {
 }
 await checkPage('swiping over Sheets');
 console.log('ok: a sideways swipe over Sheets scrolls Sheets and leaves the strip');
+
+// 6. The GPU device is lost mid-session, as a driver reset or the browser
+// does it: the desk makes a new device and draws on, with every window it
+// had, and a person can keep working there. A desktop that stopped instead
+// says so in its phase.
+const beforeLoss = {
+  frames: await frames(),
+  gpu: await tab.evaluate('globalThis.tiloMount?.state()?.gpuGeneration ?? null'),
+  windows: (await tab.evaluate('JSON.stringify(globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.map(entry => entry.app) ?? [])').then(JSON.parse)),
+};
+if (!await tab.evaluate('globalThis.tiloMount?.loseGpu?.() ?? false')) {
+  await fail('the page had no GPU device to lose');
+}
+await until(`(() => {
+  const state = globalThis.tiloMount?.state();
+  return !!state && state.phase !== 'failed' && (state.gpuGeneration ?? 0) > ${beforeLoss.gpu ?? 0}
+    && (state.frames ?? 0) > ${beforeLoss.frames};
+})()`, 'the desk drawing again on a new GPU device after its device was lost', 60_000);
+await open('Calculator', 'so.tilo.calculator');
+await settled(2);
+const afterLoss = JSON.parse(await tab.evaluate(`JSON.stringify({
+  phase: globalThis.tiloMount?.state()?.phase ?? null,
+  error: globalThis.tiloMount?.state()?.error ?? null,
+  gpu: globalThis.tiloMount?.state()?.gpuGeneration ?? null,
+  windows: globalThis.tiloMount?.navigation?.getSnapshot?.().entries?.map(entry => entry.app) ?? [],
+})`));
+report.gpuLoss = {beforeLoss, afterLoss};
+if (afterLoss.phase === 'failed' || afterLoss.error) {
+  await fail(`the desktop stopped after its GPU device was lost: ${JSON.stringify(afterLoss)}`);
+}
+const kept = beforeLoss.windows.filter(app => !afterLoss.windows.includes(app));
+if (kept.length) await fail(`windows were gone after the GPU device was lost: ${JSON.stringify(kept)}`);
+await checkPage('drawing on after the GPU device was lost');
+console.log('ok: a GPU device lost mid-session is made again, and the desk draws on with its windows');
 report.frames = await frames();
 await finish(0);

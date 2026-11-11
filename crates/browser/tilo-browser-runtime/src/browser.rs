@@ -495,6 +495,8 @@ pub(crate) struct Mount {
     /// one (the mount closing) settles its request as failed.
     image_tickets: RefCell<HashMap<(usize, String), ui::image_store::ImageCompletionTicket>>,
     error: Option<String>,
+    /// When this mount made its GPU again lately ([`Mount::frame_failed`]).
+    gpu_remakes: crate::gpu_recovery::GpuRemakes,
     /// The last composed scene exceeded `scene_within_limits` (reported once).
     oversized_scene: bool,
     /// The last frame's layout failed and was skipped
@@ -1612,6 +1614,7 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         blob_waiting: RefCell::default(),
         image_tickets: RefCell::default(),
         error: None,
+        gpu_remakes: crate::gpu_recovery::GpuRemakes::default(),
         oversized_scene: false,
         skipped_frame: false,
         followed_view: ui::headless::FollowedView::default(),
@@ -2213,11 +2216,10 @@ impl Mount {
         }
         // The GPU's own answer, bounded: a completion the browser never
         // reports stops holding the page back after
-        // [`crate::frame_pacing::LOST_AFTER`], and a GPU that leaves several
-        // frames out in a row is a lost device, said in the words the page
-        // recovers from.
+        // [`crate::frame_pacing::LOST_AFTER`]. A slow GPU is not a lost one:
+        // the device's own `lost` and errors say that, below.
         if matches!(
-            pacing::gate(&mut gpu.pacing, &mut self.held, &self.window)?,
+            pacing::gate(&mut gpu.pacing, &mut self.held, &self.window),
             pacing::Gate::Hold
         ) {
             return Ok(());
@@ -2235,9 +2237,14 @@ impl Mount {
             .get(gpu.surface.dev_id)
             .ok_or("WebGPU device missing")?;
         if let Some(reason) = handle.loss_monitor().reason() {
-            return Err(format!(
-                "WebGPU device lost: {reason}; call recover to recreate the renderer"
-            ));
+            let lost =
+                format!("WebGPU device lost: {reason}; call recover to recreate the renderer");
+            // The device's own word: the GPU is what failed, and is made again.
+            shared
+                .failure
+                .lock_recover()
+                .get_or_insert_with(|| lost.clone());
+            return Err(lost);
         }
         // The target may show a frame the renderer drew with geometry
         // missing: this one repaints it whole. It still shows that frame
@@ -2766,6 +2773,36 @@ impl Mount {
         }
     }
 
+    /// A frame failed with `error`. When the GPU is what failed (its device
+    /// lost, or an error from it), the device, surface and renderer are made
+    /// again and the desk redraws on them, keeping every document; anything
+    /// else, or a GPU that keeps failing ([`crate::gpu_recovery`]), stops the
+    /// desktop with `error`.
+    fn frame_failed(&mut self, id: u64, error: String) {
+        let gpu_failed = self.gpu.as_ref().and_then(Gpu::failure).is_some();
+        if gpu_failed && self.gpu_remakes.admit(ui::time::now()) {
+            web_sys::console::warn_1(&JsValue::from_str(&format!(
+                "Browser runtime: the GPU failed ({error}); making it again and drawing on"
+            )));
+            self.remake_gpu(id);
+            return;
+        }
+        self.error = Some(error);
+        self.publish(id);
+    }
+
+    /// Let go of the GPU this mount draws with and make a new device, surface
+    /// and renderer: the next generation, whose first frame draws the desk
+    /// whole.
+    fn remake_gpu(&mut self, id: u64) {
+        unconfigure(&self.canvas);
+        if let Some(gpu) = self.gpu.take() {
+            release_gpu(id, gpu);
+        }
+        self.generation = self.generation.saturating_add(1);
+        initialize_gpu(id, self.generation, Arc::clone(&self.window), self.caps);
+    }
+
     fn publish(&mut self, id: u64) {
         self.publish_frame(id, FrameChange::Other, false);
     }
@@ -3009,19 +3046,38 @@ pub fn pending_writes(id: u64) -> Result<JsValue, JsValue> {
 #[wasm_bindgen]
 pub fn recover(id: u64) -> Result<(), JsValue> {
     with_mount(id, |m| {
-        unconfigure(&m.canvas);
-        if let Some(gpu) = m.gpu.take() {
-            release_gpu(id, gpu);
-        }
-        m.generation = m.generation.saturating_add(1);
         // A GPU that failed drawing at full resolution recovers one size
         // smaller, rather than failing the same way again.
         if m.error.take().is_some() {
             m.caps = m.caps.after_gpu_failure();
             m.viewport.set_caps(m.caps);
         }
-        initialize_gpu(id, m.generation, Arc::clone(&m.window), m.caps);
+        m.remake_gpu(id);
         Ok(())
+    })
+}
+
+/// Lose the mount's GPU device, as a driver reset or the browser does: what a
+/// test of the page's recovery from a lost device asks for. The desk makes a
+/// new device and draws on.
+///
+/// # Errors
+///
+/// Rejects a closed mount.
+#[wasm_bindgen]
+pub fn lose_gpu(id: u64) -> Result<bool, JsValue> {
+    with_mount(id, |m| {
+        let Some(gpu) = &m.gpu else {
+            return Ok(false);
+        };
+        let Ok(shared) = gpu.shared.try_borrow() else {
+            return Ok(false);
+        };
+        let Some(handle) = shared.cx.devices.get(gpu.surface.dev_id) else {
+            return Ok(false);
+        };
+        handle.device.destroy();
+        Ok(true)
     })
 }
 

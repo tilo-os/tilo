@@ -287,3 +287,10 @@ mod viewport;
     allow(dead_code, reason = "only the browser draws; the host runs its tests")
 )]
 mod frame_pacing;
+// How often a lost GPU is made again: its tests run on the host too.
+#[cfg(any(target_arch = "wasm32", test))]
+#[cfg_attr(
+    not(target_arch = "wasm32"),
+    allow(dead_code, reason = "only the browser draws; the host runs its tests")
+)]
+mod gpu_recovery;

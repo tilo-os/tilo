@@ -7,7 +7,7 @@ use std::sync::Arc;
 use wasm_bindgen::JsValue;
 use winit::window::Window;
 
-use crate::frame_pacing::{FramePacing, LOST_AFTER_STALLS, Pacing, late_note, lost_note};
+use crate::frame_pacing::{FramePacing, Pacing, late_note};
 
 /// What the frame loop may do with the frame it has ready.
 pub(super) enum Gate {
@@ -19,21 +19,21 @@ pub(super) enum Gate {
 }
 
 /// Whether the frame a mount has ready may draw now, asked of the GPU's own
-/// outstanding frames. `Err` is a GPU that has left so many frames unreported
-/// that it is treated as lost, in the words the page recovers from. `held` is
-/// the mount's account of why a frame was not drawn, for a first frame that
-/// never comes.
+/// outstanding frames. A frame the GPU never reported is drawn without, and
+/// said; however many there are, the device is not taken for lost here: only
+/// its own `lost` and errors say that. `held` is the mount's account of why a
+/// frame was not drawn, for a first frame that never comes.
 pub(super) fn gate(
     pacing: &mut FramePacing,
     held: &mut &'static str,
     window: &Arc<Window>,
-) -> Result<Gate, String> {
+) -> Gate {
     match pacing.verdict(ui::time::now()) {
-        Pacing::Draw => Ok(Gate::Draw),
+        Pacing::Draw => Gate::Draw,
         Pacing::Wait => {
             *held = "the GPU drawing earlier frames";
             window.request_redraw();
-            Ok(Gate::Hold)
+            Gate::Hold
         }
         Pacing::Late {
             frame,
@@ -44,10 +44,7 @@ pub(super) fn gate(
             // thing a mount that keeps drawing can tell about a freeze.
             web_sys::console::warn_1(&JsValue::from_str(&late_note(frame, waiting, stalls)));
             *held = "a frame the GPU never reported drawn";
-            if stalls >= LOST_AFTER_STALLS {
-                return Err(lost_note(stalls, waiting));
-            }
-            Ok(Gate::Draw)
+            Gate::Draw
         }
     }
 }

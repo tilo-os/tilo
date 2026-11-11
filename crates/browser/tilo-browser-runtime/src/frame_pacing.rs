@@ -13,8 +13,9 @@
 //! on it for ever freezes the page — no frame, no status, nothing to show the
 //! person why. So a frame that has been out for longer than [`LOST_AFTER`]
 //! stops holding the page back, the mount draws without it, and says how long
-//! it waited; a GPU that leaves several frames out in a row is treated as
-//! lost, through the same path a lost device takes.
+//! it waited. A slow GPU is not a lost one: however many frames it leaves
+//! out, the page keeps drawing and counting them, and only the device's own
+//! word (WebGPU's `lost`, or an error from it) takes it for lost.
 use std::collections::VecDeque;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -36,10 +37,6 @@ pub const IN_FLIGHT: usize = 2;
 /// gives up the pacing it is part of. A GPU that keeps up reports in
 /// milliseconds.
 pub const LOST_AFTER: Duration = Duration::from_secs(6);
-
-/// Frames in a row the GPU left unreported (nothing at all came back between
-/// them): it is not late, it is gone.
-pub const LOST_AFTER_STALLS: u32 = 3;
 
 /// What a mount's frame loop may do with the frame it is about to draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,15 +115,6 @@ impl FramePacing {
         self.stalls
     }
 
-    /// Whether the GPU has left so many frames out that it is treated as
-    /// lost: what [`Pacing::Late`]'s `stalls` says to the page, read here by
-    /// the tests.
-    #[cfg(test)]
-    #[must_use]
-    pub fn lost(&self) -> bool {
-        self.stalls >= LOST_AFTER_STALLS
-    }
-
     /// Match the completions the GPU reported to the frames they finish, and
     /// start counting stalls again: a GPU that reports anything is working,
     /// however late.
@@ -157,22 +145,11 @@ impl Done {
 
 /// What the mount logs when it stops waiting for a frame's completion: which
 /// frame the GPU owes, how long it has been out, and how many it has left out
-/// before the device is treated as lost.
+/// since it last reported one.
 #[must_use]
 pub fn late_note(frame: u64, waiting: Duration, stalls: u32) -> String {
     format!(
-        "Browser runtime: frame {frame} was handed to the GPU {:.1} s ago and it has not reported it drawn; drawing without it ({stalls} of {LOST_AFTER_STALLS} before the device is treated as lost)",
-        waiting.as_secs_f64(),
-    )
-}
-
-/// Why the mount stops drawing when the GPU leaves frame after frame out: the
-/// same words a lost device is reported in, so the page offers the same
-/// recovery.
-#[must_use]
-pub fn lost_note(stalls: u32, waiting: Duration) -> String {
-    format!(
-        "WebGPU device lost: the GPU has not reported {stalls} frames drawn, the last one {:.1} s after it was handed over; call recover to recreate the renderer",
+        "Browser runtime: frame {frame} was handed to the GPU {:.1} s ago and it has not reported it drawn; drawing without it ({stalls} left out since it last reported one)",
         waiting.as_secs_f64(),
     )
 }
@@ -312,32 +289,29 @@ mod tests {
     }
 
     /// A GPU that never reports a frame done — a completion lost for good, a
-    /// device gone without saying so: the page keeps presenting, each frame it
-    /// stops waiting for is counted and said with the frame's number and how
-    /// long it had been out, and after a few in a row the device is treated as
-    /// lost.
+    /// software rasteriser starved of the CPU: the page keeps presenting, and
+    /// each frame it stops waiting for is counted and said with the frame's
+    /// number and how long it had been out. Slow is not lost: no number of
+    /// them makes the page give the device up.
     #[test]
     fn a_gpu_that_never_reports_keeps_the_page_drawing_and_says_so() {
         let mut page = Loop::default();
         // A person keeps working — every frame has something to draw — and the
-        // GPU never reports one of them done.
-        for _ in 0..2_000 {
+        // GPU never reports one of them done, for two minutes.
+        for _ in 0..7_500 {
             page.input('x');
             page.animation_frame(FRAME);
-            if page.pacing.lost() {
-                break;
-            }
         }
         assert!(
-            page.drawn.len() >= 3,
-            "a page whose GPU never answers keeps presenting: {:?}",
-            page.notes
+            page.drawn.len() >= 10,
+            "a page whose GPU never answers keeps presenting: {} frames, {:?}",
+            page.drawn.len(),
+            page.notes.first()
         );
         assert_eq!(
-            page.pacing.stalls(),
-            LOST_AFTER_STALLS,
-            "the frames the GPU left out were counted: {:?}",
-            page.notes
+            usize::try_from(page.pacing.stalls()).ok(),
+            Some(page.notes.len()),
+            "every frame the GPU left out was counted and said"
         );
         let first = page.notes.first().expect("the first stall was said");
         assert!(
@@ -345,18 +319,21 @@ mod tests {
             "the note names the frame and how long it waited: {first}"
         );
         assert!(
-            first.contains(&format!("1 of {LOST_AFTER_STALLS}")),
-            "and how many the GPU may leave out: {first}"
+            first.contains("1 left out since it last reported one"),
+            "and how many it has left out: {first}"
         );
         assert!(
-            page.pacing.lost(),
-            "so many frames in a row is a lost device: {:?}",
-            page.notes
+            page.notes.iter().all(|note| !note.contains("lost")),
+            "no stall says the device is lost: {:?}",
+            page.notes.last()
         );
-        assert!(
-            lost_note(page.pacing.stalls(), LOST_AFTER).contains("WebGPU device lost"),
-            "and the page is told the words a lost device is told"
-        );
+        // The GPU comes back and reports what it owes: the count starts again.
+        while !page.gpu.is_empty() {
+            page.gpu_finishes_one();
+        }
+        page.input('y');
+        page.animation_frame(FRAME);
+        assert_eq!(page.pacing.stalls(), 0, "a GPU that reports is working");
     }
 
     /// A GPU a second and a half behind is waited for, not given up on: the
@@ -376,6 +353,5 @@ mod tests {
         }
         assert_eq!(page.notes, Vec::<String>::new(), "no frame was given up on");
         assert_eq!(page.pacing.stalls(), 0);
-        assert!(!page.pacing.lost());
     }
 }
