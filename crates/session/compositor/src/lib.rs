@@ -472,8 +472,10 @@ impl Compositor {
         self.recorder.end_tick();
     }
 
-    /// Whether a client has drawn something no frame has shown yet: the frame the desk owes answers
-    /// it, and until it is drawn a client is waiting on this turn.
+    /// Whether something an output shows changed since its last frame: a client's commit, a place
+    /// the policy moved a window to, a hosted surface's layer. The display builds that frame for its
+    /// next blank, so an output owes a change for up to a refresh after it arrived, and a client
+    /// that drew it waits on this turn until it is drawn.
     pub fn owes_frame(&self) -> bool {
         !self.data.state.redraw.is_empty()
     }
