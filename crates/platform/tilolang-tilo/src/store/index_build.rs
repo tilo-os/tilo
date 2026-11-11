@@ -26,6 +26,15 @@ use crate::index::view::View;
 use crate::index::{self as idx, Index, IndexError, Opened};
 use crate::reads::Places;
 
+/// Whose the things a chunk the record's manifest names are: the apps the store knows them by, or
+/// every app's, where it holds no record of them ([`Inner::chunks_of_apps`]).
+enum Theirs<'a> {
+    /// The apps whose runs or placed resources the record has in the chunk.
+    Apps(BTreeSet<&'a str>),
+    /// Any app's: the manifest names something there the store cannot say the app of.
+    Any,
+}
+
 /// Where a package's index is in being had.
 pub(super) enum IndexState {
     /// Read from: it reflects `heads`, with what the store wrote over it in the overlay.
@@ -188,11 +197,16 @@ impl TiloStore {
     }
 
     /// Whether every index read from covers the record: it is read from, every chunk the
-    /// manifest names is either held and derived or, not held, stamped by the index an earlier
-    /// run kept, and no chunk the store holds is left to derive. Until it does, a length or
-    /// count the store answers is the part of the workspace read so far, not the workspace's
-    /// (`Store::settled`). A window shows what has no final answer yet as not yet known, rather
-    /// than as a count that changes under the person reading it.
+    /// manifest names that has something of an app the store reads from is either held and
+    /// derived or, not held, stamped by the index an earlier run kept, and no chunk the store
+    /// holds is left to derive. Until it does, a length or count the store answers is the part of
+    /// the workspace read so far, not the workspace's (`Store::settled`). A window shows what has
+    /// no final answer yet as not yet known, rather than as a count that changes under the person
+    /// reading it.
+    ///
+    /// A chunk the record names nothing of any app the store reads from in is another app's, and
+    /// is no part of what these indexes answer: a window that never reads it holds every row of
+    /// its own all the same ([`Inner::chunks_of_apps`]).
     #[must_use]
     pub fn index_whole(&self) -> bool {
         self.held().whole()
@@ -488,9 +502,10 @@ impl Inner {
         self.apps.values().all(AppIndex::answers)
     }
 
-    /// The chunks the manifest names that no index read from reflects, and that the store does
-    /// not hold: what it reads to cover the record ([`TiloStore::load_short`]). Empty when it
-    /// cannot read chunks: its indexes are what the record's manifest was read into.
+    /// The chunks the record's manifest names that no index read from reflects, the store does
+    /// not hold, and that hold something of an app the store reads from: what it reads to cover
+    /// the record ([`TiloStore::load_short`]). Empty when it cannot read chunks: its indexes are
+    /// what the record's manifest was read into.
     fn chunks_to_read(&self) -> Vec<ChunkNo> {
         if self.chunk_loader.is_none() || !self.chunks.has_record() {
             return Vec::new();
@@ -501,18 +516,20 @@ impl Inner {
             .filter(|held| held.answers())
             .flat_map(|held| held.heads.keys().copied())
             .collect();
+        let whose = self.chunks_of_apps();
         self.chunks
             .placement()
             .chunks()
             .iter()
             .copied()
             .filter(|chunk| !reflected.contains(chunk) && self.chunks.mirror(*chunk).is_none())
+            .filter(|chunk| self.read_for_an_app(&whose, *chunk))
             .collect()
     }
 
     /// Whether every index read from covers the record: none is being built, every chunk the
-    /// manifest names is covered by the index, and no chunk the store holds is left to derive
-    /// ([`TiloStore::index_whole`]).
+    /// manifest names that has something of an app the store reads from is covered by that app's
+    /// index, and no chunk the store holds is left to derive ([`TiloStore::index_whole`]).
     fn whole(&self) -> bool {
         if !self.chunks.has_record() {
             return true;
@@ -523,20 +540,92 @@ impl Inner {
         // A chunk the store holds is the index's once it derived it ([`Self::unreflected`]), and
         // one it does not hold is the index's when the index was read stamped with it: a window
         // opens over the index a run kept without reading the whole record, and counts the whole
-        // of it from that index.
-        for chunk in self.chunks.placement().chunks() {
-            if self.chunks.mirror(chunk).is_some() {
-                continue;
-            }
-            if !self
-                .apps
-                .values()
-                .all(|held| held.heads.contains_key(&chunk))
-            {
-                return false;
+        // of it from that index. A chunk the record names nothing of an app in is another app's:
+        // an index that never read it holds every row of its own all the same, and waits for no
+        // stamp it can never write ([`Self::chunks_of_apps`]).
+        let unheld: Vec<ChunkNo> = self
+            .chunks
+            .placement()
+            .chunks()
+            .into_iter()
+            .filter(|chunk| self.chunks.mirror(*chunk).is_none())
+            .collect();
+        if !unheld.is_empty() {
+            let whose = self.chunks_of_apps();
+            for chunk in unheld {
+                if !self.stamped(&whose, chunk) {
+                    return false;
+                }
             }
         }
         self.apps.keys().all(|app| self.unreflected(app).is_empty())
+    }
+
+    /// The apps the record's manifest says have something in each chunk it names: the runs of a
+    /// collection of one of their resources, and the resources it places there. A chunk the
+    /// manifest names nothing of any app in is missing here, and is no app's.
+    fn chunks_of_apps(&self) -> BTreeMap<ChunkNo, Theirs<'_>> {
+        let placement = self.chunks.placement();
+        let mut whose: BTreeMap<ChunkNo, Theirs<'_>> = BTreeMap::new();
+        let mut note = |chunk: ChunkNo, doc: &str| {
+            match self.app_of(doc) {
+                Some(app) => match whose.entry(chunk) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(Theirs::Apps(BTreeSet::from([app])));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut held) => {
+                        if let Theirs::Apps(apps) = held.get_mut() {
+                            apps.insert(app);
+                        }
+                    }
+                },
+                // What the store holds no record of may be any app's: it is read before the
+                // index that would count it is said to cover the record.
+                None => {
+                    whose.insert(chunk, Theirs::Any);
+                }
+            }
+        };
+        for ((holder, _field), runs) in placement.all_runs() {
+            for chunk in runs.keys() {
+                note(*chunk, doc_of(holder));
+            }
+        }
+        for (id, chunk) in placement.placed() {
+            note(*chunk, doc_of(id));
+        }
+        whose
+    }
+
+    /// The app the store knows the resource `doc` by, from the chunks it holds.
+    fn app_of(&self, doc: &str) -> Option<&str> {
+        self.index.get(doc).map(|(app, _)| app.as_str())
+    }
+
+    /// Whether every app with something in `chunk` has its index stamped with it: a chunk no app
+    /// has anything in needs no stamp from any of them.
+    fn stamped(&self, whose: &BTreeMap<ChunkNo, Theirs<'_>>, chunk: ChunkNo) -> bool {
+        let stamped = |app: &str| {
+            self.apps
+                .get(app)
+                .is_none_or(|held| held.heads.contains_key(&chunk))
+        };
+        match whose.get(&chunk) {
+            None => true,
+            Some(Theirs::Apps(apps)) => apps.iter().all(|app| stamped(app)),
+            Some(Theirs::Any) => self.apps.keys().all(|app| stamped(app)),
+        }
+    }
+
+    /// Whether the record names something of an app the store reads from in `chunk`: what it
+    /// reads, as no index reflects it ([`Self::chunks_to_read`]). A chunk that is no loaded
+    /// app's holds nothing a window can show, and is not read for one.
+    fn read_for_an_app(&self, whose: &BTreeMap<ChunkNo, Theirs<'_>>, chunk: ChunkNo) -> bool {
+        match whose.get(&chunk) {
+            None => false,
+            Some(Theirs::Apps(apps)) => apps.iter().any(|app| self.apps.contains_key(*app)),
+            Some(Theirs::Any) => !self.apps.is_empty(),
+        }
     }
 
     /// Whether the store still expects the chunks beside the record's own that the manifest

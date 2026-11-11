@@ -8,11 +8,13 @@ use std::sync::Arc;
 
 use automerge::AutoCommit;
 use serde_json::{Value as Json, json};
+use tilo_actions::{ActionContext, ActionInvoker};
 use tilo_resource::{Edit, EditOp, Id, Segment};
 use tilolang_runtime::Principal;
 use tilolang_runtime::store::Store as _;
 use tilolang_runtime::value::{ResourceRef, Value};
 use tilolang_tilo::action::{Authorship, DynAction, DynEdit};
+use tilolang_tilo::chunk::{self, ChunkNo, Chunks};
 use tilolang_tilo::host::{Host, Opening};
 use tilolang_tilo::index::Contents;
 use tilolang_tilo::publish::PlanRequest;
@@ -22,6 +24,11 @@ use crate::fixtures::{APP as APP_COUNTER, COUNTER, Replica, TODO, field_id, type
 
 const APP: &str = "so.tilo.todo";
 const KIND: &str = "tl.so.tilo.todo.TodoList";
+
+/// What the list's item says, and the chunk above the record it starts: the record's own run is
+/// full, so the item of [`run_chunk`] goes there.
+const ITEM: &str = "in a run";
+const FIRST_ABOVE: ChunkNo = 1;
 
 /// A small deterministic generator: the same sequence every run.
 struct Rng(u64);
@@ -247,14 +254,14 @@ fn workspace() -> (Replica, String, String) {
 }
 
 /// What a person sees of the list: the rows of its `items`, and the items the record holds.
-fn listed(replica: &Replica, root: &str) -> Vec<String> {
-    let meta = &replica.host.packages()[0].meta;
+fn listed(host: &Host, root: &str) -> Vec<String> {
+    let meta = &host.packages()[0].meta;
     let list = ResourceRef::root(root, type_id(meta, "TodoList"));
     let spec = tilolang_runtime::store::FieldSpec {
         id: field_id(meta, "TodoList", "items"),
         kind: tilolang_runtime::meta::FieldKind::Collection,
     };
-    tilolang_runtime::store::Store::listing(replica.host.store(), &list, &spec)
+    tilolang_runtime::store::Store::listing(host.store(), &list, &spec)
         .unwrap()
         .ids()
 }
@@ -302,7 +309,11 @@ fn an_item_each_replica_added_before_they_met_is_the_lists_on_both() {
             1,
             "{name}: one map of items"
         );
-        assert_eq!(listed(replica, &root), items(replica, &root), "{name}");
+        assert_eq!(
+            listed(&replica.host, &root),
+            items(replica, &root),
+            "{name}"
+        );
         assert_eq!(kept(replica), anew(replica, &lock), "{name}: the index");
     }
 }
@@ -342,7 +353,7 @@ fn a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one() {
                 "{write_by}: {name} reads both maps' items"
             );
             assert_eq!(
-                listed(replica, &root),
+                listed(&replica.host, &root),
                 items(replica, &root),
                 "{write_by}: {name}: the rows are the items"
             );
@@ -370,7 +381,7 @@ fn a_record_that_holds_two_maps_of_items_reads_both_and_keeps_one() {
                 "{write_by}: {name}: every item is the list's"
             );
             assert_eq!(
-                listed(replica, &root),
+                listed(&replica.host, &root),
                 items(replica, &root),
                 "{write_by}: {name}"
             );
@@ -607,7 +618,7 @@ fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
         "the index takes the undo in"
     );
     assert_eq!(
-        listed(&ada, &root),
+        listed(&ada.host, &root),
         items(&ada, &root),
         "the rows are the items"
     );
@@ -625,7 +636,7 @@ fn an_undo_of_a_removal_keeps_the_index_and_builds_none_anew() {
         "the redo builds no index anew"
     );
     assert_eq!(
-        listed(&ada, &root),
+        listed(&ada.host, &root),
         items(&ada, &root),
         "the rows are the items again"
     );
@@ -1056,6 +1067,187 @@ fn a_window_opens_over_the_index_an_earlier_window_kept() {
         anew(&ada, &lock)
     );
     let _ = root;
+}
+
+/// Apply `action` to `doc` as the workspace commits one: the change names the action it
+/// recorded, so a replica that receives it reads which action it was.
+fn apply_recorded(doc: &mut AutoCommit, action: &DynAction) {
+    let encoded = action.encode().expect("the action encodes");
+    let context = ActionContext::for_resource(
+        action.resources().first().copied().unwrap_or("workspace"),
+        &action.kind,
+        &action.kind,
+    )
+    .with_app(&action.app, "tilolang")
+    .with_invoker(ActionInvoker::actor("ada"));
+    // The document's own actor writes it: a fork of it is a replica of its own, and two
+    // replicas' changes never share a sequence number.
+    tilo_actions::apply_local_with_context(doc, action, encoded, None, context)
+        .expect("the action applies");
+}
+
+/// What a replica that was sent the record alone has of Ada's workspace: the record, and the run
+/// chunk the record's manifest names as a document of its own. The record's own run is full, so
+/// the list's item starts the chunk above it, as the items of a long list do. Its list, the item
+/// the chunk holds, and the lock the package's ids are read with.
+fn run_chunk() -> (Chunks, String, String, String) {
+    let (mut ada, root, lock) = workspace();
+    let meta = ada.host.packages()[0].meta.clone();
+    let items = field_id(&meta, "TodoList", "items");
+    chunk::run(
+        &mut ada.doc,
+        &root,
+        &items,
+        chunk::FIRST,
+        "a0",
+        chunk::ITEMS,
+    )
+    .unwrap();
+    ada.doc.commit();
+    ada.host.sync_from(&ada.doc);
+    let action = plan(&ada, "add", json!({ "text": ITEM }), &root);
+    let item = action
+        .edits
+        .iter()
+        .find_map(|edit| match edit.bare() {
+            DynEdit::Insert { item, .. } => Some(item.clone()),
+            _ => None,
+        })
+        .expect("the action inserts the item");
+    // The manifest the action writes is the record's, and the item is the chunk's: each change
+    // is written where the action addressed it.
+    let mut record = ada.doc.clone();
+    let mut run = AutoCommit::new();
+    for edit in &action.edits {
+        let one = DynAction {
+            edits: vec![edit.clone()],
+            ..action.clone()
+        };
+        match edit.chunk() {
+            // The run's manifest is the record's, wherever the action addressed it.
+            Some(chunk::FIRST) | None => apply_recorded(&mut record, &one),
+            Some(number) => {
+                assert_eq!(
+                    number, FIRST_ABOVE,
+                    "the item starts the chunk above the record"
+                );
+                apply_recorded(&mut run, &one);
+            }
+        }
+    }
+    record.commit();
+    run.commit();
+    let mut chunks = Chunks::of(record);
+    chunks.insert(FIRST_ABOVE, run);
+    (chunks, root, item, lock)
+}
+
+#[test]
+fn a_window_over_the_record_alone_is_whole_when_the_run_chunk_holds_no_rows_it_reads() {
+    // A window of another app in the workspace: the run chunk above the record holds the list's
+    // items, and nothing of what this window reads. Its index holds every row of its own, so it
+    // counts them whole rather than waiting for a chunk it never needs.
+    let (chunks, _root, _item, _lock) = run_chunk();
+    let counter = Replica::new("ada", AutoCommit::new(), &[(COUNTER, "")]).1[0]
+        .ids
+        .clone();
+    let dir = TempDir::new("other-apps-run");
+    let open = || {
+        Host::open(
+            Opening {
+                record: chunks.first(),
+                chunks: None,
+                index_dir: Some(dir.path().to_owned()),
+                device: None,
+            },
+            Principal::new("ada"),
+            || None,
+        )
+        .unwrap()
+    };
+    let host = open();
+    host.load_builtin(COUNTER, &counter).unwrap();
+    host.wait_index();
+    assert!(host.index_ready(), "the counter's index is built");
+    assert_eq!(
+        host.store()
+            .held_chunks()
+            .into_iter()
+            .map(|(number, _, _)| number)
+            .collect::<Vec<ChunkNo>>(),
+        [chunk::FIRST],
+        "the window reads the record's own chunk"
+    );
+    assert!(
+        host.store().index_whole(),
+        "no app the window reads has a row in the run chunk: every count it answers is whole"
+    );
+    host.persist_index();
+    drop(host);
+
+    // Opened again over the record and the index it kept: the index is read, and covers what its
+    // window reads without a stamp of another app's chunk.
+    let again = open();
+    again.load_builtin(COUNTER, &counter).unwrap();
+    assert!(
+        again.index_ready(),
+        "the second window reads the kept index"
+    );
+    assert_eq!(again.store().stats().builds, 0, "nothing is built anew");
+    assert!(
+        again.store().index_whole(),
+        "the kept index covers every row the window reads"
+    );
+}
+
+#[test]
+fn a_window_over_the_record_alone_reads_the_run_chunk_that_holds_its_rows() {
+    // The same record, the app whose rows the run chunk holds: the index does not cover it until
+    // the chunk is read, and says so. A store that can read the chunk reads it, and the item it
+    // holds is in the list.
+    let (chunks, root, item, lock) = run_chunk();
+    let behind = Host::open(
+        Opening {
+            record: chunks.first(),
+            chunks: None,
+            index_dir: None,
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    behind.load_builtin(TODO, &lock).unwrap();
+    behind.wait_index();
+    assert!(behind.index_ready(), "the index is built");
+    assert!(
+        !behind.store().index_whole(),
+        "the run chunk holds a row of the list, and the window has not read it"
+    );
+    drop(behind);
+
+    let host = Host::open(
+        Opening {
+            record: chunks.first(),
+            chunks: Some(&chunks),
+            index_dir: None,
+            device: None,
+        },
+        Principal::new("ada"),
+        || None,
+    )
+    .unwrap();
+    host.load_builtin(TODO, &lock).unwrap();
+    host.wait_index();
+    assert!(
+        host.store().index_whole(),
+        "the chunk the run names is read: every row of the list is the index's"
+    );
+    assert_eq!(
+        listed(&host, &root),
+        [item],
+        "the item the run chunk holds is in the list"
+    );
 }
 
 #[test]
