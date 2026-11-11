@@ -272,16 +272,24 @@ impl Inner {
     }
 }
 
-/// The edits the changes of `source` since `seen` carry, in order: what the store's own writes
-/// are the record's by ([`Inner::drop_committed_local`]). Every change of a tilolang action
-/// records the action it made, and so the edits it wrote; a change that records none — the
-/// record's own genesis, a merge — took none of the store's writes.
-fn committed_edits(source: &Doc, seen: &[automerge::ChangeHash]) -> Vec<DynEdit> {
+/// The edits the changes of `source` since `seen` carry, in order, each with the change carrying
+/// it: what the store's own writes are the record's by ([`Inner::drop_committed_local`]). Every
+/// change of a tilolang action records the action it made, and so the edits it wrote; a change
+/// that records none — the record's own genesis, a merge — took none of the store's writes.
+fn committed_edits(
+    source: &Doc,
+    seen: &[automerge::ChangeHash],
+) -> Vec<(automerge::ChangeHash, DynEdit)> {
     source
         .committed_document()
         .get_changes(seen)
         .iter()
-        .flat_map(idx::reflect::edits_of)
+        .flat_map(|change| {
+            let hash = change.hash();
+            idx::reflect::edits_of(change)
+                .into_iter()
+                .map(move |edit| (hash, edit))
+        })
         .collect()
 }
 

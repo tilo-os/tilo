@@ -361,6 +361,15 @@ impl TiloStore {
         held.snapshot.contents().ok()
     }
 
+    /// Whether the store reads nothing over its indexes: no write of its own is pending, and the
+    /// index each app reads from reflects every write the record took. What tests check once
+    /// the record holds every write and the indexes caught up.
+    #[must_use]
+    pub fn overlay_empty(&self) -> bool {
+        let inner = self.held();
+        inner.overlay.is_empty() && inner.accepted.is_empty()
+    }
+
     /// Wait for the commits to the indexes so far to reach the disk: when a window closes.
     pub fn persist_index(&self) {
         for held in self.held().apps.values() {

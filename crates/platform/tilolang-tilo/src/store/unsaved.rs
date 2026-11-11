@@ -9,7 +9,8 @@
 //! The record moving on ([`crate::store::TiloStore::sync`]) drops the store's writes the record
 //! now holds and leaves every other one — the derived ones, which the record never holds, and
 //! the saved ones whose change has not come back yet: [`Inner::drop_committed_local`] takes the
-//! committed ones out of [`super::Inner::local`], [`Inner::rescan`] keeps the derived docs
+//! committed ones out of [`super::Inner::local`] — the overlay keeps them until the index their
+//! app reads from reflects the change that carried them — [`Inner::rescan`] keeps the derived docs
 //! known, and [`Inner::reapply_kept`] writes everything still pending onto the record's new copy
 //! again. An origin's update thus never round-trips through the record: no action is committed,
 //! no peer replays it, and no index is rebuilt for it; and a change that arrives from elsewhere
@@ -21,18 +22,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+use automerge::ChangeHash;
 use tilolang_runtime::ids::{AppId, DocId, TypeId};
 use tilolang_runtime::store::{ChangeNote, ChangeSummary, FieldKey, ListingChange, Version};
 
 use crate::action::{DynEdit, Made, apply_edits};
-use crate::chunk::ChunkNo;
+use crate::chunk::{ChunkNo, Chunks, Stamps};
 use crate::index as idx;
 use crate::index::derive::Derive;
 use crate::index::overlay::{Overlay, OverlaySink};
 use crate::index::reflect::Ends;
 use crate::schema::lookup;
 
-use super::{Inner, ItemTouches, LocalWrite, TxnState, scan_of, version_fields};
+use super::{Accepted, Inner, ItemTouches, LocalWrite, TxnState, scan_of, version_fields};
 
 /// Whether a write touches only resources its origin derives
 /// ([`crate::schema::TypeSchema::derived`]): it belongs in the unsaved layer. `touched` names
@@ -180,24 +182,31 @@ impl Inner {
     }
 
     /// The store's writes the record now holds — the ones in the chunk `chunk` whose edit is one
-    /// of `committed`, the edits the record's new changes carry — taking them out of the
-    /// store's pending writes and its overlay. Every write the record has not taken stays: a
-    /// change that arrives from elsewhere leaves the edits a person has here, and the reads that
-    /// answer from the store keep showing them, until the record's change for them comes back.
+    /// of `committed`, the edits the record's new changes carry, each with the change carrying
+    /// it — taking them out of the store's pending writes. Each stays in the overlay, as
+    /// accepted by its change, until the index its app reads from reflects that change
+    /// ([`Self::rebuild_overlay`]): an index still being derived off the frame does not hold it
+    /// yet, and the write reads back from the overlay meanwhile. Every write the record has not
+    /// taken stays pending: a change that arrives from elsewhere leaves the edits a person has
+    /// here, and the reads that answer from the store keep showing them, until the record's
+    /// change for them comes back.
     pub(super) fn drop_committed_local(
         &mut self,
         chunk: ChunkNo,
-        committed: &[DynEdit],
+        committed: &[(ChangeHash, DynEdit)],
     ) -> ItemTouches {
         let mut items = ItemTouches::new();
-        let mut held: Vec<DynEdit> = committed.iter().map(|edit| edit.bare().clone()).collect();
+        let mut held: Vec<(ChangeHash, DynEdit)> = committed
+            .iter()
+            .map(|(change, edit)| (*change, edit.bare().clone()))
+            .collect();
         let mut kept = Vec::with_capacity(self.local.len());
         for write in std::mem::take(&mut self.local) {
             let at = if write.derived || write.chunk != chunk {
                 None
             } else {
                 let bare = write.edit.bare();
-                held.iter().position(|edit| edit == bare)
+                held.iter().position(|(_, edit)| edit == bare)
             };
             // A write an origin derives is never the record's, whatever edit the record's
             // changes carry: it stays in the mirror and the overlay.
@@ -205,10 +214,11 @@ impl Inner {
                 kept.push(write);
                 continue;
             };
-            held.swap_remove(at);
-            for (key, id) in write.items {
-                items.entry(key).or_default().insert(id);
+            let (change, _) = held.swap_remove(at);
+            for (key, id) in &write.items {
+                items.entry(key.clone()).or_default().insert(id.clone());
             }
+            self.accepted.push(Accepted { write, change });
         }
         self.local = kept;
         items
@@ -326,18 +336,34 @@ impl Inner {
 }
 
 impl Inner {
-    /// Derive the store's writes anew into an empty overlay: after a rollback, or once an
-    /// index they were written over changed. What the record holds is the index's, not derived
-    /// here again ([`Self::settle_versions`]).
+    /// Derive the store's writes anew into an empty overlay: after a rollback, once an index
+    /// they were written over changed, or once the record took some. What an index reflects is
+    /// the index's, not derived here again: a write whose versions the record told
+    /// ([`Self::settle_versions`]), and one the record accepted whose change the index its app
+    /// reads from has taken in ([`Self::drop_committed_local`]), which leaves the store then.
     pub(super) fn rebuild_overlay(&mut self) {
+        let accepted = std::mem::take(&mut self.accepted);
+        self.accepted = accepted
+            .into_iter()
+            .filter(|accepted| {
+                self.apps.get(&accepted.write.app).is_some_and(|held| {
+                    !reflects(
+                        &held.heads,
+                        &self.chunks,
+                        accepted.write.chunk,
+                        &accepted.change,
+                    )
+                })
+            })
+            .collect();
         let mut overlay = Overlay::default();
         if self.chunks.has_record() {
             let settled = &self.settled;
-            for write in self
+            let pending = self
                 .local
                 .iter()
-                .filter(|write| !settled.contains(&write.seed))
-            {
+                .filter(|write| !settled.contains(&write.seed));
+            for write in pending.chain(self.accepted.iter().map(|accepted| &accepted.write)) {
                 let Some(held) = self.apps.get(&write.app).filter(|held| held.answers()) else {
                     continue;
                 };
@@ -472,4 +498,25 @@ impl Inner {
             .retain(|seed| self.local.iter().any(|write| write.seed == *seed));
         self.settled.extend(settled);
     }
+}
+
+/// Whether an index stamped with `heads` reflects `change`, a change of the chunk `chunk`: the
+/// index derived the chunk up to heads that take it in. The chunk's change is in what the store
+/// holds of it, so an index at the chunk's heads reflects it, and one that never derived the
+/// chunk does not.
+fn reflects(heads: &Stamps, chunks: &Chunks, chunk: ChunkNo, change: &ChangeHash) -> bool {
+    let Some(heads) = heads.get(&chunk) else {
+        return false;
+    };
+    let Some(mirror) = chunks.mirror(chunk) else {
+        // The chunk left the store: nothing reads it to derive the write from.
+        return true;
+    };
+    let document = mirror.committed_document();
+    heads.contains(change)
+        || heads.as_slice() == document.get_heads().as_slice()
+        || !document
+            .get_changes(heads)
+            .iter()
+            .any(|since| since.hash() == *change)
 }

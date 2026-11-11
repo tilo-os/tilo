@@ -208,6 +208,13 @@ struct LocalWrite {
     derived: bool,
 }
 
+/// A write of the store's the record holds, with the change that carried it: the overlay derives
+/// it until the index its app reads from reflects that change ([`Inner::rebuild_overlay`]).
+struct Accepted {
+    write: LocalWrite,
+    change: automerge::ChangeHash,
+}
+
 impl LocalWrite {
     /// What it reached, as derivation takes it.
     fn reached(&self) -> Reached {
@@ -362,6 +369,11 @@ struct Inner {
     /// record's carries what they wrote, so reads hold it from the index and the writes are not
     /// derived into the overlay again.
     settled: BTreeSet<Vec<u8>>,
+    /// The store's writes the record holds that an index read from does not reflect yet: what
+    /// the overlay keeps deriving until that index's heads take in the change that carried each
+    /// ([`Inner::drop_committed_local`]), so a write the record accepted while its app's index
+    /// is still being derived reads back all along.
+    accepted: Vec<Accepted>,
     stats: StoreStats,
     /// Every resource of the workspace: its app and type.
     index: BTreeMap<DocId, (AppId, TypeId)>,
@@ -705,6 +717,7 @@ impl TiloStore {
                 chunks: Chunks::default(),
                 local: Vec::new(),
                 settled: BTreeSet::new(),
+                accepted: Vec::new(),
                 stats: StoreStats::default(),
                 index: BTreeMap::new(),
                 apps: BTreeMap::new(),
