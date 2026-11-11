@@ -5066,6 +5066,20 @@ outputs = ["/target/publish/vm-host/image.oci.tar", "/target/publish/vm-host/dig
 timeout_secs = 7200
 default = false
 
+# What a workspace's VM costs with its Browser open, cold and as a clone of its
+# size's template, and how long a page takes to its first frame
+# (tools/ci/hosted-vm-measure.sh): the VM host image and the guest this checkout
+# builds, on a machine with KVM. Asked for, never on its own.
+[[check]]
+name = "hosted-vm-measure"
+run = "bash tools/ci/hosted-vm-measure.sh /target/images/image-vm-host/image.oci.tar /target/publish/hosted-guest/image /target/hosted-vm-measure"
+needs = ["image-vm-host", "image-hosted-guest"]
+requires = ["arch=x86_64", "/dev/kvm", "disk-100g"]
+isolation = "vm"
+outputs = ["/target/hosted-vm-measure/**"]
+timeout_secs = 3600
+default = false
+
 [[check]]
 name = "test-image-vm-host"
 image = "registry.tilo.so/tilo/buildah@sha256:07e637ad7a1df37f44afea8287935b350224ac193d63e5cc96debb50a366853c"

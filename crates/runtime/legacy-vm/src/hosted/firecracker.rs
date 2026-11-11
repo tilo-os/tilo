@@ -18,6 +18,21 @@
 //! removed while the VM runs ([`SnapshotFiles::in_use`]) and only a
 //! completed suspend writes it back. A VM whose state file is missing boots
 //! cold from its disk.
+//!
+//! # Clones
+//!
+//! A workspace's first wake need not boot: it can start as a clone of a
+//! template ([`clone_vm`]), a VM of its size booted once from the guest image
+//! and snapshotted with the session's and Chromium's files already in its
+//! page cache. The clone's disk is a reflinked copy of the template's, and
+//! its memory file *is* the template's (a hard link), so every clone of a
+//! template maps the same file privately and the host keeps one copy of what
+//! none of them wrote. Its first suspend copies that file before merging
+//! into it ([`SnapshotFiles::complete`]), so a clone never writes the
+//! template, and the jail never hands a linked file to a VM's uid. The
+//! template holds no identity: a workspace's is handed to its session at the
+//! hand-off, and Firecracker's VM generation ID has each clone's kernel
+//! reseed its randomness when it is restored.
 
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
@@ -197,9 +212,15 @@ impl SnapshotFiles {
     }
 
     /// Finish a suspend whose files Firecracker wrote and which has exited:
-    /// merge the diff, then make the state valid.
+    /// merge the diff, then make the state valid. Memory still shared with a
+    /// template is copied first: the diff goes into the clone's own copy.
     pub fn complete(&self) -> io::Result<()> {
         if self.diff.is_file() {
+            if shared(&self.memory) {
+                let private = self.memory.with_extension("mem.private");
+                copy_sparse(&self.memory, &private)?;
+                std::fs::rename(&private, &self.memory)?;
+            }
             merge_diff(&self.diff, &self.memory)?;
             std::fs::remove_file(&self.diff)?;
         }
@@ -218,6 +239,52 @@ fn remove_if_present(path: &Path) -> io::Result<()> {
         Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
         _ => Ok(()),
     }
+}
+
+/// Whether `path` has other names: a clone's memory still shared with its
+/// template.
+#[must_use]
+pub fn shared(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).is_ok_and(|meta| meta.nlink() > 1)
+}
+
+/// Copy `from` to `to`, sharing its blocks where the filesystem can and
+/// keeping its holes, as the service's own to write.
+fn copy_sparse(from: &Path, to: &Path) -> io::Result<()> {
+    let _ = std::fs::remove_file(to);
+    let status = std::process::Command::new("cp")
+        .arg("--reflink=auto")
+        .arg("--sparse=always")
+        .arg(from)
+        .arg(to)
+        .status()?;
+    if !status.success() {
+        return Err(io::Error::other(format!(
+            "could not copy {}",
+            from.display()
+        )));
+    }
+    // The copy takes the source's mode, and a guest image or a template is
+    // read-only.
+    std::fs::set_permissions(
+        to,
+        <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
+    )
+}
+
+/// Make `files`' VM a clone of `template`'s snapshot: its memory linked to
+/// the template's, its state copied, and its disk a reflinked copy of the
+/// template's, written last, as a VM is what its disk says.
+pub fn clone_vm(template: &VmFiles, files: &VmFiles) -> io::Result<()> {
+    let (from, to) = (template.snapshot(), files.snapshot());
+    std::fs::create_dir_all(files.vmm())?;
+    to.discard()?;
+    std::fs::hard_link(&from.memory, &to.memory)?;
+    copy_sparse(&from.state, &to.state)?;
+    let partial = files.disk().with_extension("raw.partial");
+    copy_sparse(&template.disk(), &partial)?;
+    std::fs::rename(&partial, files.disk())
 }
 
 /// What a file takes on disk, holes not counted.
@@ -475,24 +542,7 @@ pub fn create_disk(machine: &Machine, disk: &Path, size: VmSize) -> io::Result<(
     let partial = disk.with_extension("raw.partial");
     let _ = std::fs::remove_file(&partial);
     if let Some(base) = &machine.base_disk {
-        let status = std::process::Command::new("cp")
-            .arg("--reflink=auto")
-            .arg("--sparse=always")
-            .arg(base)
-            .arg(&partial)
-            .status()?;
-        if !status.success() {
-            return Err(io::Error::other(format!(
-                "could not copy {}",
-                base.display()
-            )));
-        }
-        // The copy takes the base's mode, and a fetched guest's root
-        // filesystem is read-only: the VM's own disk is the service's to write.
-        std::fs::set_permissions(
-            &partial,
-            <std::fs::Permissions as std::os::unix::fs::PermissionsExt>::from_mode(0o600),
-        )?;
+        copy_sparse(base, &partial)?;
         grow_disk(&partial, size)?;
     } else {
         std::fs::File::create(&partial)?.set_len(size.disk_bytes())?;
@@ -545,6 +595,40 @@ mod tests {
             VmSize::Small.disk_bytes(),
             "grown to the VM's size"
         );
+    }
+
+    #[test]
+    fn a_clone_shares_its_templates_memory_until_its_first_suspend() {
+        let dir = tempfile::tempdir().unwrap();
+        let template = files(&dir.path().join("template"));
+        let (from, disk) = (template.snapshot(), template.disk());
+        std::fs::create_dir_all(template.vmm()).unwrap();
+        std::fs::write(&disk, b"the template's disk").unwrap();
+        std::fs::write(&from.state, b"state").unwrap();
+        std::fs::write(&from.memory, [1_u8; 8192]).unwrap();
+        for path in [&disk, &from.state, &from.memory] {
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444)).unwrap();
+        }
+        let clone = files(&dir.path().join("clone"));
+        clone_vm(&template, &clone).unwrap();
+        let to = clone.snapshot();
+        assert!(to.valid(), "the clone wakes by restoring");
+        assert_eq!(std::fs::read(clone.disk()).unwrap(), b"the template's disk");
+        assert!(
+            shared(&to.memory) && shared(&from.memory),
+            "one memory file, mapped by both"
+        );
+        // phase: its first suspend writes its own copy, never the template
+        to.in_use().unwrap();
+        let diff = std::fs::File::create(&to.diff).unwrap();
+        diff.set_len(8192).unwrap();
+        diff.write_all_at(&[9; 4096], 4096).unwrap();
+        std::fs::write(&to.new_state, b"its state").unwrap();
+        to.complete().unwrap();
+        assert!(!shared(&to.memory), "the clone's memory is its own now");
+        assert_eq!(std::fs::read(&from.memory).unwrap(), [1_u8; 8192]);
+        let memory = std::fs::read(&to.memory).unwrap();
+        assert_eq!((memory[0], memory[4096]), (1, 9));
     }
 
     fn files(dir: &Path) -> VmFiles {

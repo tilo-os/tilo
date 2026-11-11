@@ -115,7 +115,8 @@ fn passed_dir(fd: RawFd, owners: &[u32], what: &str) -> io::Result<File> {
 /// Make `dir` and the regular files directly in it `uid`'s, group `gid`,
 /// readable and writable by both; the directory set-group-id so what is
 /// made in it is `gid`'s too. Symbolic links and anything else are left
-/// alone, and never followed.
+/// alone, and never followed, and so is a file with another name: a clone's
+/// memory is its template's, which no VM may write.
 fn hand_over(dir: &File, uid: u32, gid: u32) -> io::Result<()> {
     use rustix::fs::{Mode, OFlags};
     let fd = dir.as_raw_fd();
@@ -135,7 +136,9 @@ fn hand_over(dir: &File, uid: u32, gid: u32) -> io::Result<()> {
             continue;
         };
         let stat = rustix::fs::fstat(&file).map_err(io::Error::from)?;
-        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile
+            || stat.st_nlink > 1
+        {
             continue;
         }
         rustix::fs::fchown(

@@ -59,6 +59,7 @@ fn config(scratch: &std::path::Path, run: &str) -> ServiceConfig {
             ),
             jail: None,
             relay: None,
+            templates: None,
         },
     }
 }

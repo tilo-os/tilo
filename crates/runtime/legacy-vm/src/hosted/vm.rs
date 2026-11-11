@@ -88,6 +88,67 @@ pub struct Settings {
     /// cluster address), the VM dials it as it is. `None`: the host serves
     /// no Browser.
     pub relay: Option<Endpoint>,
+    /// Where the templates a new VM is cloned from are kept, one per size
+    /// ([`firecracker::clone_vm`]). Only jailed VMs are cloned: a jail names
+    /// a VM's disk and sockets at the same path for every VM, which a
+    /// snapshot records. `None`: every new VM boots cold.
+    pub templates: Option<PathBuf>,
+}
+
+/// What a template's guest reads before it is snapshotted: the session's,
+/// Browser's and Chromium's files, so each clone finds them in the page
+/// cache it shares with every other clone.
+const WARM: &str = "find /usr/bin/tilo-session /usr/libexec/tilo /usr/lib/tilo-runtime \
+    /usr/share/tilo-apps -type f -exec cat {} + >/dev/null 2>&1; sync";
+
+/// What a template was made from: the guest image and the size. A template
+/// of another image is not one.
+fn template_stamp(settings: &Settings, size: VmSize) -> String {
+    let machine = &settings.machine;
+    format!(
+        "{}\n{}\n{size}\n{WARM}\n",
+        machine.kernel.display(),
+        machine
+            .base_disk
+            .as_ref()
+            .map_or_else(String::new, |disk| disk.display().to_string())
+    )
+}
+
+/// Where `size`'s template is kept, when `settings` keep templates.
+#[must_use]
+pub fn template_dir(settings: &Settings, size: VmSize) -> Option<PathBuf> {
+    settings.jail.as_ref()?;
+    Some(settings.templates.as_ref()?.join(size.as_str()))
+}
+
+/// `size`'s template, when one was made from this guest image.
+#[must_use]
+pub fn template(settings: &Settings, size: VmSize) -> Option<VmFiles> {
+    let state = template_dir(settings, size)?;
+    let files = VmFiles {
+        run: state.clone(),
+        state,
+        jailed: true,
+    };
+    let stamp = std::fs::read_to_string(files.state.join("template")).ok()?;
+    (stamp == template_stamp(settings, size) && files.snapshot().valid() && files.disk().is_file())
+        .then_some(files)
+}
+
+/// Make the suspended VM at `files` `size`'s template: read-only, and
+/// stamped with what it was made from.
+pub fn freeze_template(settings: &Settings, size: VmSize, files: &VmFiles) -> Result<(), VmError> {
+    use std::os::unix::fs::PermissionsExt as _;
+    let snapshot = files.snapshot();
+    for path in [&files.disk(), &snapshot.state, &snapshot.memory] {
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o444))?;
+    }
+    tilo_files::native::atomic::write_creating_parent(
+        &files.state.join("template"),
+        template_stamp(settings, size).as_bytes(),
+    )?;
+    Ok(())
 }
 
 /// How the last wake went: what an agent waited for its first command.
@@ -312,11 +373,14 @@ impl HostedVm {
     fn execute(&mut self, actions: &[Action]) -> Result<(), VmError> {
         for action in actions {
             match action {
-                Action::CreateDisk => firecracker::create_disk(
-                    &self.settings.machine,
-                    &self.files.disk(),
-                    self.meter.identity.size,
-                )?,
+                Action::CreateDisk => match template(&self.settings, self.meter.identity.size) {
+                    Some(template) => firecracker::clone_vm(&template, &self.files)?,
+                    None => firecracker::create_disk(
+                        &self.settings.machine,
+                        &self.files.disk(),
+                        self.meter.identity.size,
+                    )?,
+                },
                 Action::Define => {}
                 Action::Start => self.start()?,
                 Action::AwaitAgent => {
@@ -684,14 +748,25 @@ impl HostedVm {
 
     /// `sync` in the guest: what it wrote is on its disk.
     fn sync_guest(&self) -> Result<(), VmError> {
+        self.run_in_guest(&["sync"], Duration::from_secs(30))
+    }
+
+    /// Read the session's, Browser's and Chromium's files into the guest's
+    /// page cache: what a template does before it is snapshotted.
+    pub fn warm(&self) -> Result<(), VmError> {
+        self.run_in_guest(&["sh", "-c", WARM], Duration::from_secs(300))
+    }
+
+    /// Run `argv` in the guest and wait for it to end.
+    fn run_in_guest(&self, argv: &[&str], patience: Duration) -> Result<(), VmError> {
         let link = self.link.as_ref().ok_or(VmError::NotRunning)?;
         let stream = link.connect(AGENT_PORT)?;
-        stream.set_read_timeout(Some(Duration::from_secs(30)))?;
+        stream.set_read_timeout(Some(patience))?;
         let (mut out, mut err) = (std::io::sink(), std::io::sink());
         client::launch(
             stream,
             &legacy_agent_protocol::Launch {
-                argv: vec!["sync".to_string()],
+                argv: argv.iter().map(ToString::to_string).collect(),
                 cwd: Some("/".to_string()),
                 env: Vec::new(),
                 stdio: legacy_agent_protocol::Stdio::Null,

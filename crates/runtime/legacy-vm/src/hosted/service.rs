@@ -52,6 +52,9 @@ const WAITING_FOR_MS: u64 = 15_000;
 /// it is killed.
 const BROWSER_GRACE: Duration = Duration::from_secs(5);
 
+/// How long after a template was last tried another try waits.
+const TEMPLATE_RETRY_MS: u64 = 10 * 60 * 1000;
+
 /// Where a host keeps its VMs and what it boots them with.
 #[derive(Clone, Debug)]
 pub struct ServiceConfig {
@@ -128,6 +131,8 @@ pub struct Service {
     waiting: Mutex<BTreeMap<String, (u64, u64)>>,
     /// How long a browser session may be idle, and live.
     browser_limits: Limits,
+    /// When each size's template was last tried: building, or failed.
+    templates: Mutex<BTreeMap<VmSize, u64>>,
 }
 
 /// Why a workspace's Browser did not open.
@@ -218,6 +223,7 @@ impl Service {
             memory_budget_mib: None,
             waiting: Mutex::new(BTreeMap::new()),
             browser_limits: Limits::default(),
+            templates: Mutex::new(BTreeMap::new()),
             config,
         };
         let vms_dir = service.config.state.join("vms");
@@ -541,11 +547,16 @@ impl Service {
     }
 
     /// End the browser sessions at their limits, each on a thread of its
-    /// own, as a session is given time to write its profile. Called between
-    /// polls.
-    pub fn maintain(&self) {
+    /// own, as a session is given time to write its profile, and make the
+    /// template of each size in use that has none. Called between polls.
+    pub fn maintain(self: &Arc<Self>) {
         let now = (self.clock)();
         let entries: Vec<Arc<Entry>> = lock(&self.vms).values().cloned().collect();
+        let sizes: std::collections::BTreeSet<VmSize> =
+            entries.iter().map(|entry| *lock(&entry.size)).collect();
+        for size in sizes {
+            self.keep_template(size, now);
+        }
         for entry in entries {
             let end = lock(&entry.browser)
                 .as_ref()
@@ -555,6 +566,75 @@ impl Service {
                 std::thread::spawn(move || end_browser(&entry, BROWSER_GRACE));
             }
         }
+    }
+
+    /// Start making `size`'s template when it has none, there is room for
+    /// one more VM of its size, and it was not tried lately.
+    fn keep_template(self: &Arc<Self>, size: VmSize, now: u64) {
+        let settings = &self.config.settings;
+        if super::vm::template_dir(settings, size).is_none()
+            || super::vm::template(settings, size).is_some()
+            || !self.room_for(size, "")
+        {
+            return;
+        }
+        {
+            let mut tried = lock(&self.templates);
+            if tried
+                .get(&size)
+                .is_some_and(|at| now.saturating_sub(*at) < TEMPLATE_RETRY_MS)
+            {
+                return;
+            }
+            tried.insert(size, now);
+        }
+        let service = Arc::clone(self);
+        std::thread::spawn(move || match service.make_template(size) {
+            Ok(()) => eprintln!("tilo-legacy hosted: the {size} template is ready"),
+            Err(error) => eprintln!("tilo-legacy hosted: the {size} template: {error}"),
+        });
+    }
+
+    /// Make `size`'s template: boot a VM of that size from the guest image,
+    /// read the session's and Chromium's files into its page cache, snapshot
+    /// it, and keep it read-only for new VMs to be cloned from. No workspace
+    /// ever ran in it, so it holds no identity.
+    pub fn make_template(&self, size: VmSize) -> Result<(), VmError> {
+        let settings = &self.config.settings;
+        let Some(state) = super::vm::template_dir(settings, size) else {
+            return Ok(());
+        };
+        if state.exists() {
+            std::fs::remove_dir_all(&state)?;
+        }
+        let files = VmFiles {
+            state,
+            run: self.config.run.join(format!("template-{size}")),
+            jailed: settings.jail.is_some(),
+        };
+        let mut vm = HostedVm::open(
+            VmIdentity {
+                vm: format!("template/{size}"),
+                workspace: "template".to_owned(),
+                environment: size.as_str().to_owned(),
+                account: String::new(),
+                size,
+            },
+            files.clone(),
+            Arc::new(settings.clone()),
+            None,
+            Arc::clone(&self.clock),
+        )?;
+        let made = (|| {
+            vm.ensure(&[], false)?;
+            vm.warm()?;
+            vm.suspend()?;
+            super::vm::freeze_template(settings, size, &files)
+        })();
+        if made.is_err() {
+            let _ = vm.stop();
+        }
+        made
     }
 
     pub fn suspend(&self, workspace: &str, environment: &str) -> Result<(), VmError> {
@@ -852,6 +932,7 @@ mod tests {
                 self_exe: dir.join("tilo-legacy"),
                 jail: None,
                 relay: None,
+                templates: None,
             },
         }
     }
