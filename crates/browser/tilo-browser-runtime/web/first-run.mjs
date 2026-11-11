@@ -112,14 +112,17 @@ export function stepLines(polled, mode = 'setup') {
   done('Tilo is installed');
   if (!steps.has('logged-in')) return [...lines, {text: `${agent} is logging in as you…`}];
   done(`${agent} logged in as you`);
-  if (!steps.has('tools-added')) return [...lines, {text: `Adding Tilo’s tools to ${agent}…`}];
-  done(`Tilo’s tools are added to ${agent}`);
+  // Each line the host lists is one the computer reported: the tools are
+  // said to be added only when it confirmed them, which an agent that adds
+  // them itself confirms in its own time.
+  if (steps.has('tools-added')) done(`Tilo’s tools are added to ${agent}`);
+  // Nor is a restart the computer asked for a restart that happened.
   if (steps.has('entered')) {
-    if (steps.has('restart')) done(`${agent} restarted`);
     done(`${agent} is in your workspace`);
     return lines;
   }
   if (steps.has('restart')) return [...lines, {text: `Restart ${agent}, then it continues`, act: true}];
+  if (!steps.has('tools-added')) return [...lines, {text: `Adding Tilo’s tools to ${agent}…`}];
   return [...lines, {text: `${agent} is entering your workspace…`}];
 }
 

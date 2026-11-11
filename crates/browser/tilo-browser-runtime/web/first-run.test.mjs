@@ -91,8 +91,13 @@ test('each step reads in plain words: done ones checked, the one under way last'
     ['✓ Tilo is installed', '✓ Claude Code logged in as you', '… Adding Tilo’s tools to Claude Code…']);
   assert.deepEqual(texts({resolved: true, agent, steps: ['resolved', 'logged-in', 'tools-added', 'restart']}).slice(-2),
     ['✓ Tilo’s tools are added to Claude Code', '! Restart Claude Code, then it continues']);
+  // A restart the agent was asked for is not one that happened: the screen
+  // claims only the steps the CLI reported.
   assert.deepEqual(texts({resolved: true, agent, steps: ['resolved', 'logged-in', 'tools-added', 'restart', 'entered']}).slice(-2),
-    ['✓ Claude Code restarted', '✓ Claude Code is in your workspace']);
+    ['✓ Tilo’s tools are added to Claude Code', '✓ Claude Code is in your workspace']);
+  assert.deepEqual(texts({resolved: true, agent, steps: ['resolved', 'logged-in', 'entered']}).slice(-2),
+    ['✓ Claude Code logged in as you', '✓ Claude Code is in your workspace'],
+    'tools are never said to be added when the CLI did not confirm them');
   const signIn = polled => stepLines(polled, 'sign-in').map(({text}) => text);
   assert.deepEqual(signIn({resolved: false}), ['Waiting for your agent']);
   assert.deepEqual(stepLines(null, 'sign-in'), [{text: 'Waiting for your agent', wait: true}]);
