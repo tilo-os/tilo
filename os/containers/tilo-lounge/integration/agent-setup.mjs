@@ -25,7 +25,7 @@
 import {execFile, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {connect} from 'node:tls';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 
 const [site, relay, tiloBin, siteCa, out] = process.argv.slice(2);
@@ -273,7 +273,7 @@ const claudeConfiguration = (() => {
 })();
 report.claudeConfiguration = claudeConfiguration;
 const written = claudeConfiguration?.mcpServers?.tilo;
-if (!written || JSON.stringify(written.args) !== '["mcp"]' || !/\/agent-setup-cli\/tilo$/.test(written.command ?? '')) {
+if (!written || JSON.stringify(written.args) !== '["mcp"]' || resolve(written.command ?? '') !== resolve(tiloBin)) {
   await fail(`the fake agent wrote no server running Tilo's command: ${JSON.stringify(claudeConfiguration)}`);
 }
 if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
