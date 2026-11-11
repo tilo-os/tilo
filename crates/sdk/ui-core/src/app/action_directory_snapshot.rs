@@ -107,6 +107,27 @@ impl App {
             })
     }
 
+    /// A pin of the one row `capture` is reported against, so its report
+    /// holds that row rather than the whole surface its input froze, which
+    /// the next keystroke's input needs room to freeze.
+    pub(super) fn report_pin(
+        &mut self,
+        capture: &crate::local_document_action::CapturedAction,
+    ) -> Option<std::rc::Rc<LocalDocumentDirectoryPin>> {
+        let published = capture.published.as_ref()?;
+        let row = self.checkpoint_local_directory_row(
+            &capture.revision,
+            &published.resource,
+            &published.action,
+        )?;
+        self.restore_local_directory_row(
+            capture.revision.clone(),
+            published.resource.clone(),
+            published.action.clone(),
+            row,
+        )
+    }
+
     pub(super) fn restore_local_directory_row(
         &mut self,
         revision: String,

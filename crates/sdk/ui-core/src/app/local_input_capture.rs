@@ -375,7 +375,10 @@ impl App {
             .collect();
         for (route, queue) in queues {
             failures.extend(queue.take_refusals());
-            for (capture, lease) in queue.drain_leased() {
+            for (capture, mut lease) in queue.drain_leased() {
+                if let Some(pin) = self.report_pin(&capture) {
+                    lease.narrow_pin(pin);
+                }
                 let mut request_id = capture.invocation.as_u64_pair().0;
                 while self.local_input_capture.pending.contains_key(&request_id) {
                     request_id = request_id.wrapping_add(1);

@@ -373,6 +373,59 @@ fn retained_local_directory_pins_are_bounded_without_evicting_pending_reports() 
     );
 }
 
+/// A change on its way to the broker holds the one row it is reported
+/// against, not the whole surface its input froze: the next keystroke's
+/// input has room to freeze its own.
+#[test]
+fn a_report_holds_only_the_row_it_is_reported_against() {
+    let (mut app, _) = declared_directory(2);
+    publish_declared_directory(&mut app);
+    let revision = app.action_directory_revision();
+    let surface = app
+        .try_pin_local_document_action_directory(&revision)
+        .ok()
+        .unwrap();
+    let capture = crate::local_document_action::CapturedAction {
+        custody: None,
+        invocation: uuid::Uuid::nil(),
+        capture_id: uuid::Uuid::nil(),
+        revision: revision.clone(),
+        published: Some(crate::local_document_action::PublishedInvocation {
+            resource: "declared:0".into(),
+            action: "inspect".into(),
+            arguments: serde_json::Map::new(),
+        }),
+        encoded: tilo_actions::EncodedAction {
+            type_id: COUNTER_TYPE.into(),
+            payload: Vec::new(),
+        },
+        context: None,
+        original_heads: Vec::new(),
+        mutation_hashes: Vec::new(),
+    };
+    let held = app.report_pin(&capture).expect("the row the report names");
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:1", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    drop(surface);
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:0", "inspect"),
+        runtime_collab::ActionDirectoryResolution::Found { .. }
+    ));
+    assert!(matches!(
+        app.resolve_local_document_action_directory(&revision, "declared:1", "inspect"),
+        runtime_collab::ActionDirectoryResolution::NotFound
+    ));
+    drop(held);
+    assert!(
+        app.actions
+            .local_document_directory_pins
+            .iter()
+            .all(|pin| pin.strong_count() == 0)
+    );
+}
+
 #[test]
 fn retained_local_directory_rejects_oversized_snapshot() {
     // 64 resources with 32 KiB labels: several times the pin budget in
